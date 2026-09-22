@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Tauri
+apps/desktop/target/
+
+# Local state — never commit
+.env
+.env.*
+*.db
+*.db-journal
+*.sqlite3
+data/
+persona/USER.md
+persona/IDENTITY.md
+memory/
+
+# Models (large; fetched by the installer)
+models/*.onnx
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
