@@ -54,6 +54,7 @@ V2 is the public foundation, extracted from a private build that its creator has
 4. **G4 — Safe by construction.** No irreversible action without a confirmation that is frozen and survives context compaction. Secure network defaults.
 5. **G5 — Ten minutes to "Hello Trillion."** One-line install, then a conversational onboarding. The user brings their own ElevenLabs, Deepgram and Anthropic keys; setup takes under two minutes. Every provider sits behind an interface, so cheaper and local alternatives drop in later (a no-paid-keys tier is a beta goal).
 6. **G6 — Built for contributors.** Modular repository, typed interfaces, green CI, documented extension points.
+7. **G7 — Self-contained.** Running Trillion requires no account, service, subscription or hosted dependency of ours. The only external services involved are the ones the user chooses to connect, using their own keys, held on their own machine.
 
 ### Non-goals for Phase 0 and 1
 - Matching competitors' channel count. Slack and Telegram come later; the rest are community work.
@@ -63,6 +64,28 @@ V2 is the public foundation, extracted from a private build that its creator has
 - Multi-user hosting. The data model must still be multi-user-ready (§8.4).
 - **The phone app (PWA) and any hosted infrastructure:** no Postgres, cloud sidecar, internet-facing server, phone routes or phone auth. Deferred until we decide to build hosting.
 - Business-specific integrations such as revenue dashboards or CRM.
+
+### The self-contained rule
+
+**Trillion is software you run, not a service you join.** Installing it must never require creating an account with us or with anyone else, and using it must never depend on infrastructure we operate.
+
+**The shell may depend on:**
+- the user's own machine — its filesystem, keychain, microphone and speakers
+- a local SQLite database
+- model files downloaded once at install from a pinned URL with a checksum
+- **provider APIs the user explicitly connected, with keys the user supplied**
+
+**The shell may not depend on, at runtime:**
+- a secrets manager or remote configuration service (no Doppler, Vault, AWS Secrets Manager, or similar)
+- a hosted database, queue, cache or sidecar of ours
+- a login, licence check, activation call, feature-flag fetch or update ping
+- an analytics or crash-reporting endpoint that is on by default
+- a CDN for fonts, scripts, styles or assets
+- any service the user did not knowingly connect
+
+**Development-time dependencies are a separate matter.** GitHub, PyPI, npm and CI exist for people building Trillion, not for people running it. A dependency is only acceptable at runtime if it passes the test below.
+
+**The airplane test:** with the network off, Trillion must still start, render the Galaxy, open settings, read and write memory, and explain why voice is unavailable. Only the calls to the user's chosen providers may fail, and they must fail with a clear message rather than a crash or a hang. This is a required test (`tests/integration/test_offline_start.py`).
 
 ### Success metrics (Phase 1 alpha)
 
@@ -207,13 +230,30 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | ID | Requirement | Pri |
 |---|---|---|
 | CON-1 | `ConnectorSpec(id, name, purpose, fields, runtime, impl)` validated at import time. Liveness probes that only raise an alert on "broken", never on "unknown". | P0 |
-| CON-2 | Credentials: OS keychain, with an AES-256-GCM local store as fallback (key IDs so keys can rotate). Late-bound resolution so a rotated key takes effect without a restart. Secrets are never logged or shown; only name and length are displayed. | P0 |
+| CON-2 | **Credentials live on the user's machine and nowhere else.** See the secrets requirements in §6.5a. | P0 |
 | CON-3 | Built-in tools for the Shell: `web_fetch`, `weather`, file tools (list, read, write, search in user-granted directories), `memory_*`, `describe_self`, `confirm/cancel_pending_action`. | P0 |
 | CON-4 | Google (Gmail and Calendar) via OAuth PKCE on a loopback redirect, with multiple accounts. `send_email` and calendar create/modify are **irreversible**. | P1 |
 | CON-5 | **MCP client**: mount stdio and HTTP MCP servers. Each MCP tool needs a `risk` mapping supplied by the user or the manifest, **defaulting to `irreversible`**. All output is untrusted. | P1 |
 | CON-6 | **AgentSkills `SKILL.md` compatibility**: load skills from the curated registry or a local path the user chose. Skills declare the capabilities they need and are gated by the spine. No public marketplace in P0 or P1. | P1 |
 | CON-7 | Plugin discovery through Python entry points (`trillion.tools`, `trillion.connectors`, `trillion.checkers`, `trillion.channels`) instead of hand registration. | P0 |
 | CON-8 | Importers: `trillion import openclaw\|hermes` carries over identity or user files, memories and skills. The soul is **not** imported over Trillion's. | P2 |
+
+### 6.5a Secrets — `trillion/secrets`
+
+The private build kept every key in a hosted secrets manager. **That is exactly what V2 must not do.** A user running Trillion on their laptop should have their keys in their own operating system's keychain, entered once, readable by nothing but this app.
+
+| ID | Requirement | Pri |
+|---|---|---|
+| SEC-1 | **Primary store: the OS keychain.** macOS Keychain, Windows Credential Manager, or Secret Service (libsecret) on Linux, through one `SecretStore` interface. One entry per credential, namespaced `trillion/<connector>/<field>`. | P0 |
+| SEC-2 | **Fallback store**, for headless Linux or a locked-down keychain: an encrypted file at `~/.trillion/secrets.age` (AES-256-GCM). The data key is wrapped by a key held in the keychain when one exists, and otherwise derived from a user passphrase with Argon2id. Mode `0600`, and the app refuses to read it if the permissions are wider. | P0 |
+| SEC-3 | **Environment variables are read but never written.** `TRILLION_ANTHROPIC_API_KEY` and friends are honoured for development and CI, and onboarding offers to import them into the keychain once. The app never writes a key to `.env`, to a config file, or to the database. | P0 |
+| SEC-4 | **Never in plaintext anywhere durable**: not in the SQLite file, not in logs at any level, not in prompts, not in telemetry, not in `trillion doctor` output, not in a crash dump. Diagnostics show the name, the length and the last 4 characters at most. | P0 |
+| SEC-5 | **Redaction at the boundary.** A log filter scrubs anything matching a known key shape before it is written, so a mistake in a future contributor's logging statement cannot leak a key. Tested with fixtures for each provider's key format. | P0 |
+| SEC-6 | **Memory hygiene**: a secret is fetched when a request is made and is not cached in a long-lived global. Late-bound resolution means rotating a key takes effect without a restart. | P0 |
+| SEC-7 | **The user can see and control what they've stored.** Settings → Connectors lists each stored credential with its name, when it was added and when it was last used, plus buttons to replace and to delete. Deleting removes it from the keychain immediately. | P0 |
+| SEC-8 | **No key ever reaches us.** There is no endpoint of ours that a key could be sent to. The onboarding screen says this in plain language. | P0 |
+| SEC-9 | `trillion doctor --secrets` reports which store is in use, which credentials are present and whether each one works, without printing any value. | P0 |
+| SEC-10 | **The deny floor blocks reads of the secret store and the keychain by any tool**, including file tools, skills and MCP servers. A tool asking for `~/.trillion/secrets.age` is refused, and the attempt is logged. | P0 |
 
 ### 6.6 Surfaces — `apps/`
 
@@ -235,7 +275,9 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | ONB-3 | **Conversational onboarding in the app**: the orb wakes up and Trillion introduces herself *in her voice*. She asks the user's name and timezone and how blunt they want her, which writes `USER.md`. She asks **what they want to call her** (`agent_name`, which writes `IDENTITY.md`), explains that the wake phrase stays "Hello Trillion", and then asks for the ElevenLabs, Deepgram and Anthropic keys (VOI-11a; pasted into a secure field, never spoken). Until the ElevenLabs key is in, onboarding runs as text and the orb still reacts. She explains the confirmation rule by demonstrating it. | P0 |
 | ONB-4 | Missing keys are shown clearly: which features each missing key disables, and a link to get it. Works with no keys at all once a local tier exists (beta). | P0 / P2 |
 | ONB-5 | `trillion doctor` diagnoses mic, providers, ports, keychain and model files. | P0 |
-| ONB-6 | Telemetry off by default. Opt-in anonymous metrics for latency and crashes only. | P0 |
+| ONB-7 | **Model and asset files** (wake word ONNX, the embedding model, fonts) are fetched once at install from a pinned URL, verified against a checksum, and cached under `~/.trillion/models`. Nothing is fetched at runtime. An offline install can point at a local directory instead. | P0 |
+| ONB-8 | **No phone-home.** No version ping, licence check, feature-flag fetch or update check runs unless the user asks (`trillion update --check`). The first-run screen states what does and does not leave the machine. | P0 |
+| ONB-6 | **Telemetry is off, and in the shell it does not exist.** No analytics or crash-reporting client is bundled. If one is ever added it must be opt-in, anonymous, limited to latency and crash counts, documented field by field, and disabled by a single setting. | P0 |
 
 ---
 
@@ -246,7 +288,7 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | **Latency budgets (premium)** | End of speech detected ≤ 400ms after the final transcript · LLM first token ≤ 500ms · TTS first audio ≤ 300ms after the first sentence · total p50 ≤ 1.2s |
 | **Rendering** | 60fps on a 2020 M1 Air at 1440p. Automatic performance mode below 45fps. The Galaxy uses less than 15% of one core when idle. |
 | **Footprint** | The core uses less than 400MB RAM when idle, excluding local models. |
-| **Privacy** | Everything is local by default. The only network traffic goes to providers the user configured. Conversation text is never logged at INFO or above. |
+| **Privacy** | Everything is local. The only outbound traffic goes to providers the user connected, and `trillion doctor --egress` lists every destination the current configuration can reach. Conversation text is never logged at INFO or above. Nothing is sent to the project's own servers, because there are none. |
 | **Security** | See SPN-11. `gitleaks` plus dependency audit in CI. `SECURITY.md` with a disclosure process. No listener that can be reached from outside without pairing. |
 | **Portability** | macOS 13+ (P0). Windows 11 and Ubuntu 22.04+ (P2). Python 3.13. Node 22 LTS for the front-end build only. |
 | **Quality** | Typed Python (mypy strict on `spine/`, `voice/` and `brain/`). ruff. The TypeScript front end in strict mode. Tests required for every requirement tagged P0. |
@@ -273,7 +315,8 @@ trillion/
 │   ├── memory/              # stores, embeddings, summarizer
 │   ├── agents/              # manifests, loop, loop guard, supervisor, dynamic agents
 │   ├── scheduler/           # routines, task queue, attention engine
-│   ├── connectors/          # specs, credentials, probes, oauth
+│   ├── secrets/             # SecretStore: OS keychain + encrypted-file fallback
+│   ├── connectors/          # specs, probes, oauth (credentials come from secrets/)
 │   ├── tools/               # built-in first-party tools
 │   ├── channels/            # adapter interface + gate (slack/telegram in P2)
 │   ├── storage/             # repo interfaces, SQLite impl, migrations/ (no hosted DB in the shell)
@@ -308,6 +351,12 @@ class Tool(Protocol):
 class ChannelAdapter(Protocol):
     async def run(self, on_event: Callable[[ChannelEvent], Awaitable[None]]) -> None: ...
     async def reply(self, target: ReplyTarget, text: str) -> None: ...
+
+class SecretStore(Protocol):
+    def get(self, key: str) -> str | None: ...       # e.g. "elevenlabs/api_key"
+    def set(self, key: str, value: str) -> None: ...  # keychain, or encrypted file
+    def delete(self, key: str) -> None: ...
+    def describe(self, key: str) -> SecretInfo: ...   # name, length, added_at, last_used — never the value
 
 class MemoryStore(Protocol):
     async def write(self, m: MemoryIn) -> str: ...
@@ -391,7 +440,9 @@ Versioning: `hello` negotiates `protocol: 1`.
     - the containment test (no V1 business identifiers, personal paths or private data, and no secrets; maintainer names are allowed only in `docs/`, `CODEOWNERS` and license files)
     - gitleaks
     - ruff, mypy and tsc
-11. `README`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `docs/architecture.md` and this PRD are all in place.
+11. **Keys are in the OS keychain.** Nothing readable appears in the database, logs or config, and `trillion doctor --secrets` proves each key works without printing one.
+12. **The airplane test passes.** With the network off, Trillion starts, renders, opens settings, reads and writes memory, and says clearly why voice is unavailable.
+13. `README`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `docs/architecture.md` and this PRD are all in place.
 
 **Out of scope for Phase 0:** Google, MCP, skills, routines, Living Mind, channels, phone, Windows and Linux, signed builds.
 

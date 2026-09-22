@@ -29,7 +29,7 @@ A pull request will be rejected, however good the rest of it is, if it:
 5. **Makes the identity files writable by the agent.** The agent may never edit its own soul.
 6. **Binds a listener to anything but `127.0.0.1` by default,** or accepts a request without a session token.
 7. **Logs conversation text, prompts, or any secret value.** Key names and lengths only.
-8. **Adds a runtime CDN dependency.** Vendor it or bundle it.
+8. **Adds a runtime dependency on a service the user did not connect.** No CDN, no secrets manager, no hosted database, no licence check, no update ping, no analytics. Vendor it, bundle it, or make it a provider the user chooses. Trillion has to start and run with the network off ("the airplane test").
 9. **Hardcodes the agent's name.** Use `{agent_name}`; the brand is Trillion, but the user's agent may be called anything.
 10. **Ships personal data** — a real person's name, path, email, key or account — in code, prompts or fixtures. CI checks this, and so do we.
 

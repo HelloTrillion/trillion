@@ -39,7 +39,10 @@ FORBIDDEN = {
     ],
     "private infrastructure": [
         r"trillion-cloud",
-        r"doppler",
+        # Actual usage, not the word: naming Doppler in a "we do not depend on
+        # this" list is legitimate and must not fail the build.
+        r"doppler\s+(run|secrets|setup|login)",
+        r"DOPPLER_(TOKEN|PROJECT|CONFIG)",
         r"hellotrillion\.ai/collab",
     ],
     "credentials": [
