@@ -45,7 +45,7 @@ Other agents have deleted inboxes while an instruction to "confirm first" scroll
 | **2 · Public beta** | Windows + Linux, local no-key voice tier, Slack + Telegram, docs site | planned |
 | **3 · 1.0** | Signed skill registry, semantic turn detection | planned |
 
-The full specification, including every requirement ID that Phase 0 must satisfy, is in [`docs/PRD.md`](docs/PRD.md).
+The full specification, including every requirement ID that Phase 0 must satisfy, is in [`docs/PRD.md`](docs/PRD.md). How each one gets proven is in [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Architecture
 

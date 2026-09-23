@@ -46,7 +46,7 @@ git clone https://github.com/HelloTrillion/trillion.git
 cd trillion
 ```
 
-Build instructions land with the first code in each area. Until then, [`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs.
+Build instructions land with the first code in each area. Until then, [`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs. [`docs/TESTING.md`](docs/TESTING.md) says how each one is proven — when you implement a requirement, its scenario there is what "done" means.
 
 ## Working agreement
 

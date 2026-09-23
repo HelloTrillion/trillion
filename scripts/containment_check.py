@@ -23,10 +23,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Identifiers from the private codebase. A hit is a bug, not a style problem.
 FORBIDDEN = {
+    # Matched case-insensitively like every other category: "KevinFremon" and
+    # "/Users/KEVIN/..." slipped through while this block was case-sensitive.
     "owner identity": [
-        r"kevinfremon",
-        r"/Users/[a-z]+/code/Hello-Trillion",
-        r"\bKevin\b",
+        r"kevin\s*fremon",
+        r"/Users/[A-Za-z0-9._-]+/code/Hello-Trillion",
+        r"\bkevin\b",
     ],
     "businesses": [
         r"Lightbulb Moment Labs(?!, Inc\.)",  # the legal name in LICENSE/NOTICE is fine
@@ -90,6 +92,61 @@ def exempt(rel: Path, category: str) -> bool:
     return rel.name in NAME_ALLOWED or (rel.parts and rel.parts[0] in NAME_ALLOWED_DIRS)
 
 
+# Fixtures that must be caught, and text that must not be. A reviewer found
+# real misses here (case-sensitive owner patterns), so the check now checks
+# itself in CI.
+SELFTEST_CAUGHT = [
+    "kevinfremon",
+    "KevinFremon",
+    "Kevin Fremon",
+    "/Users/KEVIN/code/Hello-Trillion",
+    "/Users/kevinfremon/code/Hello-Trillion",
+    "superschema",
+    "SuperSchema",
+    "doppler run -- uv run python",
+    "DOPPLER_TOKEN=abc",
+    "sk-ant-api03-AAAAAAAAAAAA",
+    "xoxb-1234567890-abcdefghij",
+    "ghp_AAAAAAAAAAAAAAAAAAAAAAAA",
+]
+SELFTEST_ALLOWED = [
+    "Trillion is a voice-first agent.",
+    "We do not depend on a secrets manager such as Doppler or Vault.",
+    "The orb turns gold when the microphone is hot.",
+]
+
+
+def selftest() -> int:
+    """Prove the patterns catch what they claim to catch."""
+    failures: list[str] = []
+
+    for sample in SELFTEST_CAUGHT:
+        if not any(
+            re.search(p, sample, re.IGNORECASE)
+            for patterns in FORBIDDEN.values()
+            for p in patterns
+        ):
+            failures.append(f"  MISSED: {sample!r} should be caught but is not")
+
+    for sample in SELFTEST_ALLOWED:
+        for category, patterns in FORBIDDEN.items():
+            for p in patterns:
+                if re.search(p, sample, re.IGNORECASE):
+                    failures.append(
+                        f"  FALSE POSITIVE: {sample!r} matched {p!r} [{category}]"
+                    )
+
+    if failures:
+        print("Containment self-test FAILED:\n" + "\n".join(failures))
+        return 1
+
+    print(
+        f"Containment self-test passed: {len(SELFTEST_CAUGHT)} caught, "
+        f"{len(SELFTEST_ALLOWED)} allowed."
+    )
+    return 0
+
+
 def main() -> int:
     findings: list[str] = []
 
@@ -104,7 +161,7 @@ def main() -> int:
             if exempt(rel, category):
                 continue
             for pattern in patterns:
-                for m in re.finditer(pattern, text, re.IGNORECASE if category != "owner identity" else 0):
+                for m in re.finditer(pattern, text, re.IGNORECASE):
                     line = text.count("\n", 0, m.start()) + 1
                     findings.append(f"  {rel}:{line}  [{category}]  matched {pattern!r}")
 
@@ -122,4 +179,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     sys.exit(main())

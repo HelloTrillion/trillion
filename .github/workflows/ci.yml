@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Containment check covers what it claims
+        run: python3 scripts/containment_check.py --selftest
       - name: No private identifiers or credentials
         run: python3 scripts/containment_check.py
       - name: gitleaks

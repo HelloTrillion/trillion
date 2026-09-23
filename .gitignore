@@ -15,16 +15,18 @@ dist/
 # Tauri
 apps/desktop/target/
 
-# Local state — never commit
+# Local state — never commit.
+# Runtime state lives in ~/.trillion/ (see PER-2), not in a checkout; these
+# anchored rules catch the case where someone runs from a source tree.
 .env
 .env.*
 *.db
 *.db-journal
 *.sqlite3
-data/
-persona/USER.md
-persona/IDENTITY.md
-memory/
+/data/
+/persona/USER.md
+/persona/IDENTITY.md
+/memory/
 
 # Models (large; fetched by the installer)
 models/*.onnx
