@@ -33,6 +33,10 @@ A pull request will be rejected, however good the rest of it is, if it:
 9. **Hardcodes the agent's name.** Use `{agent_name}`; the brand is Trillion, but the user's agent may be called anything.
 10. **Ships personal data** — a real person's name, path, email, key or account — in code, prompts or fixtures. CI checks this, and so do we.
 
+11. **Leaves two implementations live past a decision.** Exactly one code path decides any routing, classification or status. A flag or a shadow run is temporary; when the decision is made, the loser is deleted, not left behind a flag. CI checks that no two paths write the same decision field.
+
+Every rule above has a structural enforcement — the credential doesn't exist, the tool has no argument field, the lint fails — and a test. A rule that is only prose is a rule that goes missing under pressure.
+
 If you think one of these rules is wrong, open an issue and argue the case. Don't route around it in a pull request.
 
 ## Getting started
