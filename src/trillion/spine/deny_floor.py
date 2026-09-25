@@ -10,6 +10,7 @@ string fails closed.
 from __future__ import annotations
 
 import os
+import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,7 +78,8 @@ def _resolve(raw: str) -> Path:
 
 
 def _on_disk(existing: Path) -> Path:
-    if _F_GETPATH is None:
+    # The platform check lets type checkers on Windows skip the macOS-only branch.
+    if sys.platform == "win32" or _F_GETPATH is None:
         return existing
     try:
         # O_NONBLOCK: a FIFO must not hang the check.
@@ -135,6 +137,9 @@ def check(
         raw = args[name]
         if not isinstance(raw, str) or not raw.strip():
             return Denial(name, "a path must be a non-empty string")
+        # Windows resolves a NUL without complaint; fail closed everywhere instead.
+        if "\x00" in raw:
+            return Denial(name, "the path could not be resolved")
         try:
             p = _resolve(raw)
             forms = _spellings(p)

@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,7 @@ def test_canonical_falls_back_when_the_prefix_cannot_be_opened(tmp_path):
         locked.chmod(0o700)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the F_GETPATH lookup is macOS-only")
 def test_canonical_falls_back_when_the_lookup_fails(tmp_path, monkeypatch):
     def boom(*_a: object) -> bytes:
         raise OSError("no")
