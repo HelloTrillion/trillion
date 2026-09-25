@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trillion — Galaxy</title>
+  </head>
+  <body>
+    <canvas id="galaxy" aria-hidden="true"></canvas>
+    <main class="panel" aria-label="Galaxy controls">
+      <h1>Trillion <span>Galaxy</span></h1>
+      <p class="status" role="status" aria-live="polite" id="status">Idle</p>
+      <div class="group" id="states" role="group" aria-label="Orb state"></div>
+      <div class="group" role="group" aria-label="Audio">
+        <button type="button" id="mic">Microphone: off</button>
+        <button type="button" id="speak">Test speaking (soft tone)</button>
+        <button type="button" id="flare-btn">Flare</button>
+      </div>
+      <div class="group" role="group" aria-label="Display">
+        <button type="button" id="perf">Performance: auto</button>
+        <button type="button" id="theme">Theme: dark</button>
+      </div>
+      <p class="note" id="note"></p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
