@@ -1,7 +1,10 @@
+import fcntl
+import os
 from pathlib import Path
 
 import pytest
 
+from trillion.spine import deny_floor
 from trillion.spine.contract import Risk, ToolDefinition
 from trillion.spine.deny_floor import DenyPolicy, check
 
@@ -37,6 +40,17 @@ def setup(tmp_path: Path) -> tuple[DenyPolicy, tuple[Path, ...], Path]:
         ".env",
         ".ENV.local",
         "sub/.env.production",
+        # Unicode spellings a case-insensitive, normalization-insensitive volume opens as
+        # the protected name: long s (U+017F), sharp s, and full-width letters.
+        ".\u017fsh/id",
+        ".\u00dfh/id",
+        ".aw\u017f/credentials",
+        ".SSH/id",
+        ".\uff45\uff4e\uff56",
+        ".envrc",
+        ".ENVRC",
+        "prod.env",
+        "sub/prod.ENV",
     ],
 )
 def test_protected_names_are_refused(setup, rel):
@@ -104,3 +118,65 @@ def test_an_unresolvable_path_fails_closed(setup):
 def test_an_absent_optional_path_argument_is_skipped(setup):
     policy, roots, _ = setup
     assert check(DEF, {}, policy, roots) is None
+
+
+def test_a_folded_spelling_of_a_protected_root_is_refused(tmp_path):
+    granted = tmp_path / "granted"
+    keychains = granted / "Library" / "Keychains"
+    keychains.mkdir(parents=True)
+    policy = DenyPolicy(protected_roots=(keychains,))
+    for leaf in ("Keychain\u017f", "KEYCHAINS", "Keychain\uff53"):
+        target = granted / "Library" / leaf / "login.keychain-db"
+        assert check(DEF, {"path": str(target)}, policy, (granted,)) is not None, leaf
+
+
+def test_a_protected_root_spelled_with_long_s_still_protects(tmp_path):
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    policy = DenyPolicy(protected_roots=(granted / "Secret\u017f",))
+    denial = check(DEF, {"path": str(granted / "secrets" / "x")}, policy, (granted,))
+    assert denial is not None and "protected" in denial.reason
+
+
+def test_a_granted_root_spelled_differently_still_grants(tmp_path):
+    granted = tmp_path / "Granted"
+    granted.mkdir()
+    policy = DenyPolicy(protected_roots=())
+    alias = tmp_path / "GRANTED"
+    assert check(DEF, {"path": str(granted / "a.txt")}, policy, (alias,)) is None
+
+
+@pytest.mark.skipif(not hasattr(fcntl, "F_GETPATH"), reason="F_GETPATH is macOS-only")
+def test_the_on_disk_spelling_is_what_gets_checked(tmp_path):
+    real = tmp_path / "Real"
+    real.mkdir()
+    if not (tmp_path / "REAL").exists():
+        pytest.skip("case-sensitive volume")
+    canon = deny_floor.canonical(tmp_path / "REAL" / "missing" / "leaf")
+    assert canon.parts[-3:] == ("Real", "missing", "leaf")
+
+
+def test_canonical_falls_back_without_f_getpath(tmp_path, monkeypatch):
+    monkeypatch.setattr(deny_floor, "_F_GETPATH", None)
+    p = tmp_path / "x" / "y"
+    assert deny_floor.canonical(p) == p
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can open anything")
+def test_canonical_falls_back_when_the_prefix_cannot_be_opened(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        assert deny_floor.canonical(locked) == locked
+    finally:
+        locked.chmod(0o700)
+
+
+def test_canonical_falls_back_when_the_lookup_fails(tmp_path, monkeypatch):
+    def boom(*_a: object) -> bytes:
+        raise OSError("no")
+
+    monkeypatch.setattr(deny_floor, "_F_GETPATH", 50)
+    monkeypatch.setattr(deny_floor.fcntl, "fcntl", boom)
+    assert deny_floor.canonical(tmp_path) == tmp_path

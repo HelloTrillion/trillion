@@ -49,3 +49,18 @@ async def test_revoking_a_folder_blocks_an_already_proposed_write(spine: Spine) 
     )
     assert res.reason is Refusal.DENIED_BY_FLOOR
     assert not (spine.granted / "x.txt").exists()
+
+
+async def test_a_unicode_spelling_of_a_real_ssh_folder_is_refused(spine: Spine) -> None:
+    """On APFS `.\u017fsh` and `.\u00dfh` open `.ssh`. On a case-sensitive volume the path
+    does not exist, and it must still be refused by the fold rule."""
+    (spine.granted / ".ssh").mkdir()
+    (spine.granted / ".ssh" / "id").write_text("PRIVATE")
+    for alias in (".\u017fsh", ".\u00dfh", ".SSH"):
+        r = await spine.call("file_read", {"path": str(spine.granted / alias / "id")})
+        assert r.reason is Refusal.DENIED_BY_FLOOR, alias
+        assert "PRIVATE" not in r.to_model()
+        w = await spine.call(
+            "file_create", {"path": str(spine.granted / alias / "new"), "content": "x"}
+        )
+        assert w.reason is Refusal.DENIED_BY_FLOOR and w.pending_id is None, alias
