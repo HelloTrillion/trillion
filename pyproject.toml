@@ -5,13 +5,21 @@ description = "The voice-first AI agent with a face."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "jsonschema>=4.26.0",
+]
 
 [project.scripts]
 trillion = "trillion.cli.main:entrypoint"
 
 # Plugin discovery (CON-7). First-party tools register here too.
 [project.entry-points."trillion.tools"]
+file_list = "trillion.tools.files:FileList"
+file_read = "trillion.tools.files:FileRead"
+file_create = "trillion.tools.files:FileCreate"
+file_overwrite = "trillion.tools.files:FileOverwrite"
+file_append = "trillion.tools.files:FileAppend"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]
@@ -31,6 +39,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.9",
+    "types-jsonschema>=4.26.0.20260518",
 ]
 
 [tool.ruff]
