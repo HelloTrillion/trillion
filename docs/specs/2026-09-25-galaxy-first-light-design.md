@@ -43,7 +43,7 @@ packages/galaxy/
 ```
 
 ## 3. Decisions
-- **One WebGL context (GAL-4).** V1 used two canvases. Here a single renderer draws the landscape scene, then the orb scene with `autoClear = false`.
+- **One WebGL context (GAL-4).** V1 used two canvases. Here a single renderer draws three passes with `autoClear = false`: the screen-space sky, the particle network (its own drifting camera), then the orb after `clearDepth()`.
 - **One state table (GAL-2).** The six states and their targets live only in `states.ts`. The orb eases every parameter toward the current target each frame, using a frame-rate-independent factor: `1 - (1 - k)^(dt·60)`.
 - **Arming and rings are added back.** V1's modular orb had neither. Arming is dim ember (Appendix B). The three rings fade to opacity 0.6 during `processing`.
 - **Audio maths is pure** (`levels.ts`): voice level from bins 10–60%, bass from the first 6 bins, treble from 65% and above. Attack 0.45, decay 0.08. The mic role applies ×2.4 gain with a 0.10 floor. When playback cannot be analysed, a synthetic envelope is used.
@@ -51,7 +51,8 @@ packages/galaxy/
   - `setState`, `attachAnalyser`, `flare`, `setPerfMode`, `setTheme` and `destroy` are implemented.
   - `addSatellite`, `removeSatellite` and `pulseArc` exist with their final signatures, but they are documented no-ops until GAL-7/8 (Phase 1). The API contract is stable from day one.
 - **Colours.** Shader colours are linear-RGB floats in `states.ts`. UI hex values live only in `tokens.css`, which has dark and light themes. A lint script (`scripts/check_raw_hex.py`) fails on hex outside `tokens.css`.
-- **Nothing is copied verbatim from V1.** The shaders and constants are re-derived from Appendix B, and V1 is only a behavioural reference.
+- **The look matches V1's desktop galaxy** (maintainer direction, 2026-09-25): the orb, sky and network shaders and constants are ported from the predecessor, which has the same copyright holder and contains no private data. The network is eight clusters of glowing nodes joined by faint lines, plus stray nodes and dust; it brightens and swells while she speaks or thinks. Agent avatars are not part of it (the constellation, GAL-7, is Phase 1).
+- **Light theme.** The sky becomes a pale dawn with the nebula as soft tints and no stars; particles and the orb glow switch from additive to normal blending so they read on a light background.
 
 ## 4. Tests
 - vitest tests for the state table (every state defines every parameter), easing convergence and frame-rate independence, the audio-level maths with fixture arrays, and the perf-mode trigger (FPS below 45 for 3s, with hysteresis).

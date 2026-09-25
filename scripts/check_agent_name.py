@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BRAND = re.compile(r"\bTrillion\b")
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-TEXT_SUFFIXES = {".md", ".txt"}
+BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".onnx", ".wav", ".mp3"}
 
 
 def agent_facing_files(root: Path) -> list[Path]:
@@ -30,7 +30,12 @@ def agent_facing_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
+def plain_hits(text: str) -> list[int]:
+    return [text.count("\n", 0, m.start()) + 1 for m in BRAND.finditer(text)]
+
+
 def text_hits(text: str) -> list[int]:
+    """Markdown: HTML comments are for maintainers, not the model."""
     stripped = HTML_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     return [stripped.count("\n", 0, m.start()) + 1 for m in BRAND.finditer(stripped)]
 
@@ -62,13 +67,16 @@ def scan(root: Path) -> list[str]:
     findings: list[str] = []
     for path in agent_facing_files(root):
         rel = path.relative_to(root)
+        if path.suffix.lower() in BINARY_SUFFIXES:
+            continue
         text = path.read_text(encoding="utf-8")
+        # Every other file is checked: a .yaml or .j2 prompt must not slip through.
         if path.suffix == ".py":
             lines = python_hits(text)
-        elif path.suffix in TEXT_SUFFIXES:
+        elif path.suffix == ".md":
             lines = text_hits(text)
         else:
-            continue
+            lines = plain_hits(text)
         findings.extend(f"  {rel}:{n}  hardcodes the brand; use {{agent_name}}" for n in lines)
     return findings
 
@@ -87,6 +95,10 @@ def selftest() -> int:
         failures.append("  MISSED: f-string literal part")
     if python_hits('X = "I am {agent_name}"\n') != []:
         failures.append("  FALSE POSITIVE: placeholder string")
+    if plain_hits("system: You are Trillion.\n") != [1]:
+        failures.append("  MISSED: mention in a non-Markdown prompt file (e.g. .yaml, .j2)")
+    if plain_hits("<!-- Trillion -->") != [1]:
+        failures.append("  FALSE NEGATIVE: comment carve-out must apply to Markdown only")
     if failures:
         print("Agent-name self-test FAILED:\n" + "\n".join(failures))
         return 1

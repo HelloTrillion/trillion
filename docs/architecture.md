@@ -23,7 +23,7 @@ The `§8.1` tree from the PRD is the target layout. Today, only `trillion/cli` h
 | `trillion/memory` | placeholder |
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |
-| `trillion/secrets` | placeholder |
+| `trillion/secrets` | not yet created (SEC-*, next cycle) |
 | `trillion/connectors` | placeholder |
 | `trillion/channels` | placeholder |
 

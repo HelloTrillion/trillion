@@ -58,7 +58,7 @@ galaxy.destroy();         // stops the loop and frees GPU resources
 | `arming` | Ember | The mic was requested; no audio has arrived yet |
 | `listening` | Gold, swells with your voice | The mic is live |
 | `processing` | Teal and purple, with three rings | Thinking |
-| `speaking` | Bright teal, rides the playback | Trillion is talking |
+| `speaking` | Bright teal, rides the playback | The agent is talking |
 | `error` | Red | Something went wrong |
 
 ## Development

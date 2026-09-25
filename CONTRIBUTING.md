@@ -54,9 +54,11 @@ Before you push, the same checks CI runs:
 
 ```bash
 uv run ruff check . && uv run ruff format --check . && uv run mypy
-python3 scripts/containment_check.py
-python3 scripts/check_agent_name.py
-python3 scripts/check_raw_hex.py
+uv run pytest
+for s in containment_check check_agent_name check_raw_hex; do
+  python3 scripts/$s.py --selftest && python3 scripts/$s.py
+done
+pnpm typecheck && pnpm test && pnpm -r --if-present run build
 ```
 
 [`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs. [`docs/TESTING.md`](docs/TESTING.md) says how each one is proven. [`docs/architecture.md`](docs/architecture.md) is the map.

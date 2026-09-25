@@ -115,3 +115,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Package builds (exports point at dist/)
+        run: pnpm -r --if-present run build
