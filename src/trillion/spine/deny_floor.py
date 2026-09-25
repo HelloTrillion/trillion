@@ -9,8 +9,8 @@ string fails closed.
 
 from __future__ import annotations
 
-import fcntl
 import os
+import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,10 +18,16 @@ from pathlib import Path
 from trillion import paths
 from trillion.spine.contract import JSON, ToolDefinition
 
+try:
+    import fcntl
+except ImportError:  # Windows: resolve() already returns the on-disk spelling there.
+    _F_GETPATH: int | None = None
+else:
+    # macOS only: ask the kernel for the path of an open descriptor, as stored on disk.
+    _F_GETPATH = getattr(fcntl, "F_GETPATH", None)
+
 PROTECTED_SEGMENTS: frozenset[str] = frozenset({".git", ".ssh", ".aws", ".gnupg"})
 
-# macOS only: ask the kernel for the path of an open descriptor, as stored on disk.
-_F_GETPATH: int | None = getattr(fcntl, "F_GETPATH", None)
 _MAXPATHLEN = 1024
 
 
@@ -72,7 +78,8 @@ def _resolve(raw: str) -> Path:
 
 
 def _on_disk(existing: Path) -> Path:
-    if _F_GETPATH is None:
+    # The platform check lets type checkers on Windows skip the macOS-only branch.
+    if sys.platform == "win32" or _F_GETPATH is None:
         return existing
     try:
         # O_NONBLOCK: a FIFO must not hang the check.
@@ -130,6 +137,9 @@ def check(
         raw = args[name]
         if not isinstance(raw, str) or not raw.strip():
             return Denial(name, "a path must be a non-empty string")
+        # Windows resolves a NUL without complaint; fail closed everywhere instead.
+        if "\x00" in raw:
+            return Denial(name, "the path could not be resolved")
         try:
             p = _resolve(raw)
             forms = _spellings(p)

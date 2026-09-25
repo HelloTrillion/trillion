@@ -1,3 +1,4 @@
+import os
 import sqlite3
 
 import pytest
@@ -46,6 +47,7 @@ async def test_connection_pragmas(tmp_path):
     await conn.close()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses ACLs, not POSIX modes (SUR-3c)")
 async def test_the_database_is_private_to_the_user(tmp_path):
     """Pending actions hold argument values (file contents, amounts): owner-only."""
     import os

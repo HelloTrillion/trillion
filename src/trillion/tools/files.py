@@ -228,6 +228,20 @@ class FileOverwrite(BaseTool):
         return _matches(_path(args), _bytes(args), "replaced")
 
 
+def _open_for_append(raw: Path) -> int:
+    """Open `raw` for append without following a final symlink.
+
+    POSIX refuses the link atomically with O_NOFOLLOW. Windows has no such flag, so
+    it refuses links and junctions just before opening instead; the tiny window
+    left there is tracked with the parent-directory case in issue #2.
+    """
+    flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_BINARY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow and (raw.is_symlink() or raw.is_junction()):
+        raise OSError(f"refusing to follow a link: {raw.name}")
+    return os.open(raw, flags | nofollow)
+
+
 class FileAppend(BaseTool):
     definition = ToolDefinition(
         name="file_append",
@@ -262,7 +276,7 @@ class FileAppend(BaseTool):
         # final symlink, so a link swapped in after that check is never followed.
         raw = Path(str(args["path"])).expanduser()
         try:
-            fd = os.open(raw, os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW)
+            fd = _open_for_append(raw)
         except OSError as e:
             return ToolResult(
                 ok=False,
@@ -274,8 +288,8 @@ class FileAppend(BaseTool):
             f.write(data)
             f.flush()
             # Read back through the same descriptor: evidence about the file we wrote.
-            size = os.fstat(fd).st_size
-            tail = os.pread(fd, len(data), size - len(data)) if data else b""
+            f.seek(-len(data), os.SEEK_END)
+            tail = f.read(len(data)) if data else b""
         if tail == data:
             return ToolResult(ok=True, content=f"appended to {raw.name}", effect="confirmed")
         return ToolResult(ok=False, content="the end of the file does not match", effect="unknown")

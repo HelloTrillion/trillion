@@ -1,5 +1,5 @@
-import fcntl
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -146,7 +146,7 @@ def test_a_granted_root_spelled_differently_still_grants(tmp_path):
     assert check(DEF, {"path": str(granted / "a.txt")}, policy, (alias,)) is None
 
 
-@pytest.mark.skipif(not hasattr(fcntl, "F_GETPATH"), reason="F_GETPATH is macOS-only")
+@pytest.mark.skipif(deny_floor._F_GETPATH is None, reason="F_GETPATH is macOS-only")
 def test_the_on_disk_spelling_is_what_gets_checked(tmp_path):
     real = tmp_path / "Real"
     real.mkdir()
@@ -162,7 +162,10 @@ def test_canonical_falls_back_without_f_getpath(tmp_path, monkeypatch):
     assert deny_floor.canonical(p) == p
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can open anything")
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX permissions; root can open anything",
+)
 def test_canonical_falls_back_when_the_prefix_cannot_be_opened(tmp_path):
     locked = tmp_path / "locked"
     locked.mkdir()
@@ -173,6 +176,7 @@ def test_canonical_falls_back_when_the_prefix_cannot_be_opened(tmp_path):
         locked.chmod(0o700)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the F_GETPATH lookup is macOS-only")
 def test_canonical_falls_back_when_the_lookup_fails(tmp_path, monkeypatch):
     def boom(*_a: object) -> bytes:
         raise OSError("no")

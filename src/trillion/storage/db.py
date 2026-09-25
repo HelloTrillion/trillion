@@ -34,7 +34,11 @@ async def connect(path: Path) -> aiosqlite.Connection:
 def _make_private(path: Path) -> None:
     """Pending actions and outcomes hold argument values: owner-only, whatever the umask.
 
-    SQLite creates the -wal and -shm files with the database file's mode."""
+    SQLite creates the -wal and -shm files with the database file's mode. Windows
+    ignores POSIX modes (it uses ACLs, which the home directory already restricts);
+    real Windows hardening is Phase 1 (SUR-3c)."""
+    if os.name == "nt":
+        return
     os.chmod(path.parent, 0o700)
     os.chmod(path, 0o600)
     for suffix in ("-wal", "-shm"):
