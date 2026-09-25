@@ -62,6 +62,7 @@ ResponseStatus = Literal[
 ]
 
 _DETAIL_LIMIT = 2000
+_TOOL_DETAIL_LIMIT = 300
 _UNHASHABLE = "unhashable"
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
@@ -95,6 +96,11 @@ class RouterResponse:
 
 def _refused(reason: Refusal, detail: str = "") -> RouterResponse:
     return RouterResponse(status="refused", reason=reason, detail=detail)
+
+
+def _tool_detail(text: str) -> str:
+    """Text a tool wrote (a precheck reason, say) is defanged and cut before the model sees it."""
+    return neutralize(text)[0][:_TOOL_DETAIL_LIMIT]
 
 
 def _safe_hash(args: JSON) -> str | None:
@@ -189,7 +195,9 @@ class Router:
 
         pre = await self._precheck(tool, call.args, ctx)
         if not pre.ok:
-            return await audited(risk, _refused(Refusal.PRECONDITION_FAILED, pre.reason))
+            return await audited(
+                risk, _refused(Refusal.PRECONDITION_FAILED, _tool_detail(pre.reason))
+            )
 
         if tool.definition.risk in GATED:
             response = await self._propose(tool, call.args, ctx, represented_from=None)
@@ -301,8 +309,10 @@ class Router:
         pre = await self._precheck(tool, a.args, ctx)
         if not pre.ok:
             invalidated = _by(ctx, "invalidated")
-            await self._move(a.id, approved, Status.INVALIDATED, invalidated, detail=pre.reason)
-            return _refused(Refusal.PRECONDITION_CHANGED, pre.reason)
+            await self._move(
+                a.id, approved, Status.INVALIDATED, invalidated, detail=pre.reason[:_DETAIL_LIMIT]
+            )
+            return _refused(Refusal.PRECONDITION_CHANGED, _tool_detail(pre.reason))
 
         claimed = await self._move(a.id, approved, Status.EXECUTING, _by(ctx, "executing"))
         if not claimed:
@@ -347,7 +357,7 @@ class Router:
             return _refused(Refusal.DENIED_BY_FLOOR, denial.reason)
         pre = await self._precheck(tool, a.args, ctx)
         if not pre.ok:
-            return _refused(Refusal.PRECONDITION_FAILED, pre.reason)
+            return _refused(Refusal.PRECONDITION_FAILED, _tool_detail(pre.reason))
         return await self._propose(tool, a.args, ctx, represented_from=a.id)
 
     async def mark_delivered(self, pending_id: str, owner_id: str, surface: str) -> bool:
@@ -491,7 +501,7 @@ class Router:
             case Status.SUPERSEDED:
                 return _refused(Refusal.SUPERSEDED)
             case Status.INVALIDATED:
-                return _refused(Refusal.PRECONDITION_CHANGED, detail)
+                return _refused(Refusal.PRECONDITION_CHANGED, _tool_detail(detail))
             case Status.PROPOSED:
                 return RouterResponse(
                     status="confirmation_required", pending_id=a.id, summary=a.summary
