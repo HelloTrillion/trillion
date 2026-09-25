@@ -125,7 +125,7 @@ def _safe_summary(text: str) -> str:
 def _safe_hash(args: JSON) -> str | None:
     try:
         return args_hash(dict(args))
-    except (TypeError, ValueError):  # NaN, non-JSON values
+    except (TypeError, ValueError, RecursionError):  # NaN, non-JSON values, absurd nesting
         return None
 
 
@@ -234,7 +234,11 @@ class Router:
             return await audited(risk, _refused(Refusal.INVALID_ARGS, "arguments must be JSON"))
 
         validator = Draft202012Validator(dict(tool.definition.input_schema))
-        error = best_match(validator.iter_errors(dict(call.args)))
+        try:
+            error = best_match(validator.iter_errors(dict(call.args)))
+        except (RecursionError, TypeError, ValueError) as e:
+            logger.warning("validating arguments for %s raised %s", call.name, type(e).__name__)
+            return await audited(risk, _refused(Refusal.INVALID_ARGS, "arguments too complex"))
         if error is not None:
             return await audited(risk, _refused(Refusal.INVALID_ARGS, error.message[:300]))
 

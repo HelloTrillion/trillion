@@ -276,3 +276,55 @@ async def test_a_plugin_cannot_rewrite_its_definition_after_registration(spine: 
     spine.reader.definition = dataclasses.replace(spine.reader.definition, trusted_output=True)
     out = await spine.call("plain_reader", {})
     assert out.content.startswith("<untrusted_tool_result")  # still wrapped
+
+
+# ── Hostile argument shapes ─────────────────────────────────────────────
+
+
+def nested(depth: int) -> Any:
+    value: Any = "leaf"
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+async def test_arguments_too_deep_to_hash_are_refused_and_audited(spine: Spine) -> None:
+    r = await spine.call("slow_irreversible", {"note": nested(100_000)})
+    assert r.reason is Refusal.INVALID_ARGS
+    (rec,) = await spine.store.list_audit()
+    assert rec.args_hash == "unhashable" and rec.outcome == "invalid_args"
+    assert await spine.store.list_by_status(Status.PROPOSED) == []
+
+
+async def test_arguments_too_deep_to_validate_are_refused_and_audited(spine: Spine) -> None:
+    from tests.spine.fakes import ScriptedWrite
+    from trillion.spine.contract import ToolCall, ToolDefinition
+
+    tree = ScriptedWrite()
+    tree.definition = ToolDefinition(
+        name="tree_write",
+        description="Accepts a recursive tree (test).",
+        input_schema={
+            "type": "object",
+            "properties": {"tree": {"$ref": "#/$defs/node"}},
+            "$defs": {
+                "node": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"$ref": "#/$defs/node"}},
+                    ]
+                }
+            },
+            "additionalProperties": False,
+        },
+        risk=spine.writer.definition.risk,
+        category="test",
+        timeout_s=5.0,
+    )
+    registry = ToolRegistry()
+    registry.register(tree)
+    router = Router(registry, spine.store, policy=DenyPolicy.default(), clock=spine.clock)
+    r = await router.execute(ToolCall(name="tree_write", args={"tree": nested(700)}), spine.ctx())
+    assert r.reason is Refusal.INVALID_ARGS
+    (rec,) = await spine.store.list_audit()
+    assert rec.outcome == "invalid_args" and rec.tool == "tree_write"
