@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trillion — Galaxy</title>
+  </head>
+  <body>
+    <canvas id="galaxy" aria-hidden="true"></canvas>
+    <div class="theme-switch" role="radiogroup" aria-label="Theme">
+      <button type="button" role="radio" data-theme-choice="dark" aria-checked="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <span>Dark</span>
+      </button>
+      <button type="button" role="radio" data-theme-choice="light" aria-checked="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/></svg>
+        <span>Light</span>
+      </button>
+    </div>
+    <main class="panel" aria-label="Galaxy controls">
+      <h1>Trillion <span>Galaxy</span></h1>
+      <p class="status" role="status" aria-live="polite" id="status">Idle</p>
+      <div class="group" id="states" role="group" aria-label="Orb state"></div>
+      <div class="group" role="group" aria-label="Audio">
+        <button type="button" id="mic">Microphone: off</button>
+        <button type="button" id="speak">Test speaking (soft tone)</button>
+        <button type="button" id="flare-btn">Flare</button>
+      </div>
+      <div class="group" role="group" aria-label="Display">
+        <button type="button" id="perf">Performance: auto</button>
+      </div>
+      <p class="note" id="note"></p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

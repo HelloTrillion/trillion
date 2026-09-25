@@ -62,7 +62,19 @@ NAME_ALLOWED = {"LICENSE", "NOTICE", "CODEOWNERS", "TRADEMARKS.md"}
 NAME_ALLOWED_DIRS = {"docs"}
 
 SKIP_DIRS = {".git", "node_modules", "dist", ".venv", "__pycache__", "models"}
-SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".onnx", ".ico", ".woff", ".woff2"}
+SKIP_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".mp3",
+    ".wav",
+    ".onnx",
+    ".ico",
+    ".woff",
+    ".woff2",
+}
 
 
 def tracked_files() -> list[Path]:
@@ -70,14 +82,18 @@ def tracked_files() -> list[Path]:
     try:
         out = subprocess.run(
             ["git", "ls-files", "-z"],
-            cwd=ROOT, capture_output=True, text=True, check=True,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         paths = [ROOT / p for p in out.split("\0") if p]
     except (subprocess.CalledProcessError, FileNotFoundError):
         paths = [p for p in ROOT.rglob("*") if p.is_file()]
 
     return [
-        p for p in paths
+        p
+        for p in paths
         if p.is_file()
         and not SKIP_DIRS & set(p.relative_to(ROOT).parts)
         and p.suffix.lower() not in SKIP_SUFFIXES
@@ -122,9 +138,7 @@ def selftest() -> int:
 
     for sample in SELFTEST_CAUGHT:
         if not any(
-            re.search(p, sample, re.IGNORECASE)
-            for patterns in FORBIDDEN.values()
-            for p in patterns
+            re.search(p, sample, re.IGNORECASE) for patterns in FORBIDDEN.values() for p in patterns
         ):
             failures.append(f"  MISSED: {sample!r} should be caught but is not")
 
@@ -132,9 +146,7 @@ def selftest() -> int:
         for category, patterns in FORBIDDEN.items():
             for p in patterns:
                 if re.search(p, sample, re.IGNORECASE):
-                    failures.append(
-                        f"  FALSE POSITIVE: {sample!r} matched {p!r} [{category}]"
-                    )
+                    failures.append(f"  FALSE POSITIVE: {sample!r} matched {p!r} [{category}]")
 
     if failures:
         print("Containment self-test FAILED:\n" + "\n".join(failures))

@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  # gitleaks lists a pull request's commits to scan them; read-only.
+  pull-requests: read
 
 jobs:
   containment:
@@ -48,3 +50,72 @@ jobs:
             fi
           done < <(git rev-list "$base..$head" --no-merges)
           exit $missing
+
+  python:
+    name: Python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - name: Unit and integration tests
+        run: uv run pytest tests/unit tests/integration
+
+  spine:
+    name: Spine safety suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: tests/spine (protected; 95% branch coverage on trillion.spine)
+        run: |
+          if find tests/spine -name 'test_*.py' | grep -q .; then
+            uv run pytest tests/spine --cov=trillion.spine --cov-branch --cov-fail-under=95
+          else
+            echo "No spine tests yet."
+          fi
+
+  structure:
+    name: Structural rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python3 scripts/check_agent_name.py --selftest
+      - run: python3 scripts/check_agent_name.py
+      - run: python3 scripts/check_raw_hex.py --selftest
+      - run: python3 scripts/check_raw_hex.py
+
+  js:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Package builds (exports point at dist/)
+        run: pnpm -r --if-present run build

@@ -1,0 +1,62 @@
+/*
+ * Trillion design tokens (GAL-11). The only file in apps/ or packages/
+ * allowed to contain hex colours — scripts/check_raw_hex.py enforces it.
+ * Dark is the default; light is a real theme, not an inversion.
+ */
+:root,
+[data-theme='dark'] {
+  --color-bg-0: #0E0F13;
+  --color-bg-1: #16171D;
+  --color-bg-2: #1E2028;
+  --color-text-0: #F0F0EC;
+  --color-text-1: #9B9B97;
+  --color-text-2: #5C5C58;
+  --color-accent: #2DD4A8;
+  --color-amber: #F5A524;
+  --color-danger: #EF4444;
+  --color-border: rgb(240 240 236 / 0.08);
+  --color-surface-glass: rgb(22 23 29 / 0.72);
+
+  --mind-core: #2DD4A8;
+  --mind-memory: #A78BFA;
+  --mind-working: #67E8F9;
+  --mind-agents: #E88FB3;
+  --mind-knowledge: #F5A524;
+}
+
+[data-theme='light'] {
+  --color-bg-0: #F6F6F3;
+  --color-bg-1: #FFFFFF;
+  --color-bg-2: #ECECE7;
+  --color-text-0: #16171D;
+  --color-text-1: #55565C;
+  --color-text-2: #8A8B90;
+  --color-accent: #0F9E7A;
+  --color-amber: #B87200;
+  --color-danger: #C62828;
+  --color-border: rgb(22 23 29 / 0.1);
+  --color-surface-glass: rgb(255 255 255 / 0.72);
+}
+
+:root {
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --motion-slow: 300ms;
+
+  /* Inter and JetBrains Mono are self-hosted by the app (no CDN); these stacks fall back cleanly. */
+  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+}

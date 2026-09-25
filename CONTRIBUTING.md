@@ -44,9 +44,24 @@ If you think one of these rules is wrong, open an issue and argue the case. Don'
 ```bash
 git clone https://github.com/HelloTrillion/trillion.git
 cd trillion
+uv sync                 # Python 3.13 toolchain and dependencies
+uv run pytest           # every Python test
+pnpm install            # JS workspace (Node 22+)
+pnpm --filter @hellotrillion/galaxy dev   # the orb, in your browser
 ```
 
-Build instructions land with the first code in each area. Until then, [`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs. [`docs/TESTING.md`](docs/TESTING.md) says how each one is proven — when you implement a requirement, its scenario there is what "done" means.
+Before you push, the same checks CI runs:
+
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run mypy
+uv run pytest
+for s in containment_check check_agent_name check_raw_hex; do
+  python3 scripts/$s.py --selftest && python3 scripts/$s.py
+done
+pnpm typecheck && pnpm test && pnpm -r --if-present run build
+```
+
+[`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs. [`docs/TESTING.md`](docs/TESTING.md) says how each one is proven. [`docs/architecture.md`](docs/architecture.md) is the map.
 
 ## Working agreement
 
