@@ -5,7 +5,10 @@ description = "The voice-first AI agent with a face."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "jsonschema>=4.26.0",
+]
 
 [project.scripts]
 trillion = "trillion.cli.main:entrypoint"
@@ -31,6 +34,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.9",
+    "types-jsonschema>=4.26.0.20260518",
 ]
 
 [tool.ruff]
