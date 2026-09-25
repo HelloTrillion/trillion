@@ -1,7 +1,7 @@
 # Trillion V2 — Product Requirements Document
 
-**Version:** 0.1 (draft) · **Date:** 2026-09-22 · **Repository:** `HelloTrillion/trillion`
-**Status:** The specification for Phase 0, "the Shell." Requirement IDs here (`GAL-3`, `VOI-2`, `SPN-5`, …) are what issues and pull requests refer to.
+**Version:** 0.2 (draft) · **Date:** 2026-09-22 · **Repository:** `HelloTrillion/trillion`
+**Status:** The specification for Phase 0, "the Shell." Requirement IDs here (`GAL-3`, `VOI-2`, `SPN-5`, …) are what issues and pull requests refer to. 2026-09-25: consistency pass after peer review (wake word P1, Linux P0, ladder-ordered onboarding, write tools).
 
 > This document is self-contained: you do not need any prior context to build from it. It states what must be true; [`TESTING.md`](TESTING.md) states how each requirement is proven, and holds the scenarios and fixtures that would otherwise bloat this one. It describes behaviour that has been proven in a private single-user build, now being extracted into this public foundation.
 
@@ -324,7 +324,7 @@ Deferring the voiceprint work is a deliberate scoping call, not an oversight: it
 |---|---|---|
 | CON-1 | `ConnectorSpec(id, name, purpose, fields, runtime, impl)` validated at import time. Liveness probes only alert on "broken", never on "unknown" — **and they report per capability, not per connector**, so "speech-to-text is healthy, text-to-speech is down" is a distinguishable, alertable state rather than an average that reads as fine. VOI-14 needs this to know which leg failed. Unknown is never treated as alive. | P0 |
 | CON-2 | **Credentials live on the user's machine and nowhere else.** See the secrets requirements in §6.5a. | P0 |
-| CON-3 | Built-in tools for the Shell: `web_fetch`, `weather`, file tools (list, read, write, search in user-granted directories), `memory_*`, `describe_self`, `confirm/cancel_pending_action`. | P0 |
+| CON-3 | Built-in tools for the Shell: `web_fetch`, `weather`, file tools in user-granted directories: `file_list`, `file_read` and `file_search` (read), and `file_create`, `file_overwrite` and `file_append` — **every write is `irreversible` and asks first**, and overwrite is unrecoverable, so it needs a tap (SPN-14), `memory_*`, `describe_self`, `confirm/cancel_pending_action`. | P0 |
 | CON-4 | Google (Gmail and Calendar) via OAuth PKCE on a loopback redirect, with multiple accounts. `send_email` and calendar create/modify are **irreversible**. | P1 |
 | CON-5 | **MCP client**: mount stdio and HTTP MCP servers. Each MCP tool needs a `risk` mapping supplied by the user or the manifest, **defaulting to `irreversible`**. All output is untrusted. | P1 |
 | CON-6a | **Say plainly what gating does and does not do.** Routing every tool call through the spine controls what an extension can *ask the host to do*. It does **not** sandbox code: an in-process Python extension runs with the application's own privileges and could bypass the spine entirely. Phase 0 policy follows from that — first-party and curated extensions only, no arbitrary install path, and this limitation stated in `SECURITY.md` rather than implied away. Out-of-process isolation is the real answer and is Phase 2 work. | P0 |
@@ -373,8 +373,8 @@ The private build kept every key in a hosted secrets manager. **That is exactly 
 | ONB-1 | `curl -fsSL https://hellotrillion.ai/install.sh \| sh` installs uv, the core, the wake-word and embedding models, and the desktop app. There is also `brew install trillion`. | P1 (P0: `uv tool install` + `trillion setup`) |
 | ONB-2 | `trillion setup` checks mic, providers and ports, then opens the app. | P0 |
 | ONB-2a | **Setup before any credential exists.** Everything up to the first model call is deterministic and local: directories, database and migrations, the user data directory, model and asset files, device checks. Setup is **resumable** after a partial run, and each validated key visibly enables its rung of the ladder (§4) as it is entered. The P0 developer install states where the web and desktop assets come from. | P0 |
-| ONB-3 | **Conversational onboarding in the app**: the orb wakes up and Trillion introduces herself *in her voice*. She asks the user's name and timezone and how blunt they want her, which writes `USER.md`. She asks **what they want to call her** (`agent_name`, which writes `IDENTITY.md`), explains that the wake phrase stays "Hello Trillion", and then asks for the ElevenLabs, Deepgram and Anthropic keys (VOI-11a; pasted into a secure field, never spoken). Until the ElevenLabs key is in, onboarding runs as text and the orb still reacts. She explains the confirmation rule by demonstrating it. | P0 |
-| ONB-4 | Missing keys are shown clearly: which features each missing key disables, and a link to get it. Works with no keys at all once a local tier exists (beta). | P0 / P2 |
+| ONB-3 | **Conversational onboarding in the app**: the orb wakes up and Trillion introduces herself *in her voice*. She asks the user's name and timezone and how blunt they want her, which writes `USER.md`. She asks **what they want to call her** (`agent_name`, which writes `IDENTITY.md`), explains that the wake phrase (when it arrives in Phase 1) stays "Hello Trillion", and then walks the capability ladder (§4): a model key first (Anthropic, or any OpenAI-compatible endpoint including local Ollama), then ElevenLabs (VOI-11a), then Deepgram. Keys are pasted into a secure field, never spoken, and each one can be skipped (ONB-9). Until the ElevenLabs key is in, onboarding runs as text and the orb still reacts. She explains the confirmation rule by demonstrating it. | P0 |
+| ONB-4 | Missing keys are shown clearly: which features each missing key disables, and a link to get it. With no keys at all the app runs at rung 0 (§4). The free local voice path is VOI-11b. | P0 |
 | ONB-5 | `trillion doctor` diagnoses mic, providers, ports, keychain and model files. | P0 |
 | ONB-7 | **Model and asset files** (wake word ONNX, the embedding model, fonts) are fetched once at install from a pinned URL, verified against a checksum, and cached under `~/.trillion/models`. Nothing is fetched at runtime. An offline install can point at a local directory instead. | P0 |
 | ONB-8 | **No phone-home.** No version ping, licence check, feature-flag fetch or update check runs unless the user asks (`trillion update --check`). The first-run screen states what does and does not leave the machine. | P0 |
@@ -395,7 +395,7 @@ The private build kept every key in a hosted secrets manager. **That is exactly 
 | **Privacy** | **Conversation text is never written to application logs at any level.** (An earlier draft said "never at INFO or above", which is not the same promise; the stricter rule is the one that holds.) Transcripts live only in the local database the user owns. |
 | **Data flow** | Stated plainly, because "local-first" is not the same as "nothing leaves": with cloud providers configured, **audio goes to the speech-to-text provider, and prompt text — including recalled memory and tool results — goes to the model provider, and reply text goes to the text-to-speech provider.** `trillion doctor --egress` lists every destination the current configuration can reach. Each provider's retention policy is linked in Settings, local alternatives remove the egress entirely (VOI-11b), and nothing is ever sent to the project's own servers, because there are none. |
 | **Security** | See SPN-11. `gitleaks` plus dependency audit in CI. `SECURITY.md` with a disclosure process. No listener that can be reached from outside without pairing. |
-| **Portability** | macOS 13+ (P0). Windows 11 and Ubuntu 22.04+ (P2). Python 3.13. Node 22 LTS for the front-end build only. |
+| **Portability** | macOS 13+ and Ubuntu 22.04+ (P0, SUR-3a). Windows 11 (P1, SUR-3c). Python 3.13. Node 22 LTS for the front-end build only. |
 | **Quality** | Typed Python (mypy strict on `spine/`, `voice/` and `brain/`). ruff. The TypeScript front end in strict mode. Tests required for every requirement tagged P0. |
 
 ---
@@ -497,7 +497,7 @@ Versioning: `hello` negotiates `protocol: 1`.
 ### 8.4 Data model (migration 001)
 
 - Every table has `owner_id TEXT NOT NULL`. A local install has one owner (`local`), which makes a hosted multi-user tier a deployment change rather than a rewrite.
-- Migrations are numbered files (`001_core.sql`, …) with a version table. Plugins own their own migrations under a namespaced prefix.
+- Migrations are numbered files with a version table and a checksum. Each track adds its own migration when it lands (`001_spine.sql` first); the table list below is the Phase 0 target, not the contents of 001. Plugins own their own migrations under a namespaced prefix.
 
 **Core tables:**
 - `owners`
@@ -514,7 +514,7 @@ Versioning: `hello` negotiates `protocol: 1`.
 - `agent_prompt_versions`
 - `routines`
 - `briefings`
-- `connector_credentials`
+- `connector_credentials` (metadata only: name, store kind, added_at, last_used — never a value; SEC-4)
 - `connector_health`
 - `usage`
 - `preferences`
@@ -532,7 +532,7 @@ Versioning: `hello` negotiates `protocol: 1`.
 
 1. `uv tool install trillion && trillion setup` succeeds. `trillion doctor` is green.
 2. The app opens. The orb idles in the galaxy at 60fps. Performance mode and reduced motion work.
-3. Onboarding: the agent introduces itself, learns the user's name, takes a name of its own (say "Nova"), and the privileged setup path writes `USER.md` and `IDENTITY.md` into `~/.trillion/persona/`. From then on it calls itself Nova, and saying "Hello Trillion" still wakes it.
+3. Onboarding: the agent introduces itself, learns the user's name, takes a name of its own (say "Nova"), and the privileged setup path writes `USER.md` and `IDENTITY.md` into `~/.trillion/persona/`. From then on it calls itself Nova. (The "Hello Trillion" wake word is Phase 1, VOI-10a; the separate wake.phrase / wake.model settings already exist.)
 4. Click the mic or press the hotkey. The orb goes ember (arming), then gold (listening). Speak. It turns purple (processing), then teal (speaking), and replies in under 1.2s p50 on premium, in character.
 5. **The ladder holds.** With no keys, the app starts and explains itself (item 12). With only a local Ollama endpoint, a full typed conversation works, memory and all. With an ElevenLabs key, she speaks in the voice the user picked from their own account. Swapping any provider for a fake one in tests needs no change to the core.
 6. "Remember that I take my coffee black." Restart. "How do I take my coffee?" She knows.
@@ -553,7 +553,7 @@ Versioning: `hello` negotiates `protocol: 1`.
 15. **The airplane test passes.** With the network off, Trillion starts, renders, opens settings, reads and writes memory, and says clearly why voice is unavailable.
 16. `README`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `docs/architecture.md` and this PRD are all in place.
 
-**Out of scope for Phase 0:** Google, MCP, skills, routines, Living Mind, channels, phone, Windows and Linux, signed builds.
+**Out of scope for Phase 0:** Google, MCP, skills, routines, Living Mind, channels, the wake word (VOI-10a), phone, Windows, signed builds. Linux is in scope (SUR-3a).
 
 **Suggested work breakdown** (parallel tracks for collaborators):
 
@@ -562,9 +562,9 @@ Every track needs a named owner and a target date before Phase 0 is called done 
 | Track | Contents | Depends on | Owner | Target |
 |---|---|---|---|---|
 | A · Galaxy | `packages/galaxy` GAL-1…6, 11, 12 | — | _unassigned_ | _tbd_ |
-| B · Voice | VOI-1…8, 11, 13…18 on the Python and web sides | protocol (§8.3) | _unassigned_ | _tbd_ |
+| B · Voice | VOI-1…11, 13…18 (VOI-9 tap barge-in, VOI-10 push-to-talk; VOI-10a wake word is P1) on the Python and web sides | protocol (§8.3) | _unassigned_ | _tbd_ |
 | C · Spine | SPN-1…7, 9, 11–17, 19; SEC-1…11 | tool contract | _unassigned_ | _tbd_ |
-| D · Brain + Persona + Memory | BRN-1…9; PER-1…11; MEM-1…3, 5, 7, 8 | C (router) | _unassigned_ | _tbd_ |
+| D · Brain + Persona + Memory | BRN-1…9; PER-1…6, 8…11; MEM-1…3, 5, 7, 8 | C (router) | _unassigned_ | _tbd_ |
 | E · App + Onboarding | SUR-1, SUR-2 (dev), SUR-6, SUR-8, SUR-9, ONB-2…11 | A, B | _unassigned_ | _tbd_ |
 | F · Repo + CI | layout, CI, containment test, docs | — (first) | _unassigned_ | _tbd_ |
 
@@ -579,7 +579,7 @@ Every track needs a named owner and a target date before Phase 0 is called done 
   - **speaker identity** (§5.3a): enrollment, SPN-14a voice-verified confirmation with replay and clone fixtures, SPN-15a borderline re-score, SPN-18 speaker-scoped gate, PER-13 default-private to an unrecognized voice
   - user agents and routines (AGT-3…9) with the recovery contract and its five scenarios (see `docs/TESTING.md`), constellation, arcs
   - the wake word (VOI-10a), once redistribution rights for the model are confirmed
-  - voice barge-in, wake word
+  - voice barge-in (VOI-9 P1 half)
   - signed Mac build, one-line installer
   - persona, drift, honest-failure and latency evals (EVL-1, 3, 4, 5, 7)
   - SUR-7 confirmations view; BRN-10 cost attribution; BRN-11 model tiering; SEC-11 composed security alerts
@@ -601,7 +601,7 @@ Every track needs a named owner and a target date before Phase 0 is called done 
 ## 11. Contribution model and release
 
 - **Repository:** `github.com/hellotrillion/trillion` (public at Phase 2). The Python package and CLI are `trillion`; the visual engine is `@hellotrillion/galaxy` on npm.
-- **License:** Apache-2.0 (pending §13). The brand is Hello Trillion (hellotrillion.ai); a short `TRADEMARKS.md` says the code is open but the name and logo belong to the project.
+- **License:** Apache-2.0 (settled; §13). The brand is Hello Trillion (hellotrillion.ai); a short `TRADEMARKS.md` says the code is open but the name and logo belong to the project.
 - **Governance:** maintainer-led. `CODEOWNERS` requires maintainer review on `src/trillion/spine/`, `src/trillion/persona/`, `persona/`, `src/trillion/voice/` capture, and `tests/spine/`.
 - **The "never" list lives in [`CONTRIBUTING.md`](../CONTRIBUTING.md) and only there.** It is not repeated here: two copies drift, and a contributor citing the shorter one is how a rule quietly disappears. Every entry has a structural enforcement and a test.
 - **Versioning:** CalVer `vYYYY.M.PATCH`. `-beta.N` pre-releases. Release channels are stable, beta and dev.
@@ -629,7 +629,7 @@ Every track needs a named owner and a target date before Phase 0 is called done 
 - **Phone PWA and hosted infrastructure** are out of scope (SUR-4, §8.5).
 - **ElevenLabs** (bring your own key) is the shell's text-to-speech provider, behind a provider interface (VOI-11).
 - **Brand vs. name:** the brand is always Trillion, and users name their agent (PER-1a).
-- **Wake word:** "Hello Trillion" is the default for everyone and is separate from the agent's name (VOI-10).
+- **Wake word:** "Hello Trillion" is the default for everyone and is separate from the agent's name (VOI-10a, Phase 1).
 - **Brand and trademark:** Hello Trillion / hellotrillion.ai. The owner handles trademark if it comes up.
 - **Repository:** `hellotrillion/trillion`.
 
