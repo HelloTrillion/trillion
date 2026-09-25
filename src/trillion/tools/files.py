@@ -230,10 +230,25 @@ class FileAppend(BaseTool):
         return Precondition.failed("no such file")
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        p, data = _path(args), _bytes(args)
-        with p.open("ab") as f:
+        data = _bytes(args)
+        # The floor checked where the path resolves. Open the path as given and refuse a
+        # final symlink, so a link swapped in after that check is never followed.
+        raw = Path(str(args["path"])).expanduser()
+        try:
+            fd = os.open(raw, os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW)
+        except OSError as e:
+            return ToolResult(
+                ok=False,
+                content="the file could not be opened safely for appending",
+                effect="none",
+                error_kind=type(e).__name__,
+            )
+        with os.fdopen(fd, "ab+") as f:
             f.write(data)
-        tail = p.read_bytes()[-len(data) :] if data else b""
+            f.flush()
+            # Read back through the same descriptor: evidence about the file we wrote.
+            size = os.fstat(fd).st_size
+            tail = os.pread(fd, len(data), size - len(data)) if data else b""
         if tail == data:
-            return ToolResult(ok=True, content=f"appended to {p.name}", effect="confirmed")
+            return ToolResult(ok=True, content=f"appended to {raw.name}", effect="confirmed")
         return ToolResult(ok=False, content="the end of the file does not match", effect="unknown")
