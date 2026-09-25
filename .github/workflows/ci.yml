@@ -83,13 +83,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
-      - name: tests/spine (protected; 95% branch coverage on trillion.spine)
-        run: |
-          if find tests/spine -name 'test_*.py' | grep -q .; then
-            uv run pytest tests/spine --cov=trillion.spine --cov-branch --cov-fail-under=95
-          else
-            echo "No spine tests yet."
-          fi
+      - name: tests/unit + tests/spine (95% branch coverage on trillion.spine)
+        run: uv run pytest tests/unit tests/spine --cov=trillion.spine --cov-branch --cov-report=term-missing --cov-fail-under=95
 
   structure:
     name: Structural rules

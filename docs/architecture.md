@@ -8,14 +8,14 @@ This is the map: one process, what each package does, how a tool call moves thro
 
 ## 2. Module map
 
-The `§8.1` tree from the PRD is the target layout. Today, only `trillion/cli` has working code; `trillion/spine`, `trillion/storage` and `trillion/tools` are being built this cycle (see the design doc below); everything else is a placeholder package waiting for its track.
+The `§8.1` tree from the PRD is the target layout. Today, `trillion/cli`, `trillion/spine`, `trillion/storage` and `trillion/tools` have working code (see the design doc below); everything else is a placeholder package waiting for its track.
 
 | Package | Status |
 |---|---|
 | `trillion/cli` | exists — the `trillion` command |
-| `trillion/spine` | in progress — see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
-| `trillion/storage` | in progress — see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
-| `trillion/tools` | in progress — see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
+| `trillion/spine` | exists — the router, the confirmation state machine, the deny floor, untrusted wrapping, the loop guard; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
+| `trillion/storage` | exists — SQLite, checksummed migrations, the spine store; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
+| `trillion/tools` | exists — the file tools; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
 | `trillion/api` | placeholder |
 | `trillion/brain` | placeholder |
 | `trillion/persona` | placeholder |
@@ -52,22 +52,22 @@ Every tool call — from the model, a sub-agent, a skill, an MCP server or a cha
 
 ## 4. Where each guarantee lives
 
-Every row below is planned for this cycle; none of it is implemented yet. The status column exists so this table stays honest as the work lands — a row moves out of "planned" only when its test passes in CI.
+The status column keeps this table honest: a row says "enforced" only when the test beside it proves it. The `tests/spine/` suite runs in CI with 95% branch coverage on `trillion.spine` required.
 
 | Guarantee | Module | Test | Status |
 |---|---|---|---|
-| A tool must declare a risk level; there is no default | `spine/contract.py`, `spine/registry.py` | `tests/spine/test_registry.py` | planned (this cycle) |
-| Arguments cannot change on the "yes" turn | `spine/contract.py` — the confirm tool's schema has no argument fields | `tests/spine/test_confirmation.py` | planned (this cycle) |
-| A confirmation can't be created and satisfied on the same turn | `spine/confirm.py` — `transition()` | `tests/spine/test_confirmation.py` | planned (this cycle) |
-| Only the session that raised a pending action can confirm it, and a channel message can never close it | `spine/router.py` — `resolve()` (SPN-14, SPN-16) | `tests/spine/test_confirmation.py` | planned (this cycle) |
-| The deny floor applies on both the normal and the confirmed path | `spine/deny_floor.py` | `tests/spine/test_deny_floor.py` | planned (this cycle) |
-| Untrusted output is wrapped by default, not opt-in | `spine/untrusted.py` | `tests/spine/test_untrusted_default.py` | planned (this cycle) |
-| One approval produces exactly one execution | `spine/router.py` — the atomic claim | `tests/spine/test_outcomes.py` | planned (this cycle) |
-| A crash near an external effect is recorded as unknown, never guessed or silently retried | `spine/router.py`, `spine/confirm.py` | `tests/spine/test_outcomes.py` | planned (this cycle) |
-| The decision record is immutable | `storage/migrations/001_spine.sql` — triggers on the `decisions` and `tool_audit` tables | `tests/spine/test_structure.py` | planned (this cycle) |
-| Only the router ever calls `Tool.execute` | `spine/router.py` | `tests/spine/test_structure.py` | planned (this cycle) |
-| There are no hard-delete tools | `spine/registry.py`, `storage/` | `tests/spine/test_structure.py` | planned (this cycle) |
-| The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py` | planned (this cycle) |
+| A tool must declare a risk level; there is no default | `spine/contract.py`, `spine/registry.py` | `tests/unit/test_contract.py`, `tests/unit/test_registry.py` | enforced |
+| Arguments cannot change on the "yes" turn | `spine/confirm.py` — the confirm tool's schema has no argument fields; `spine/router.py` refuses any extra field | `tests/spine/test_confirmation.py` | enforced |
+| A confirmation can't be created and satisfied on the same turn | `spine/confirm.py` — `decide()` | `tests/spine/test_confirmation.py`, `tests/spine/test_compaction.py` | enforced |
+| Only the session that raised a pending action can confirm it, and a channel message can never close it | `spine/confirm.py` — `decide()`, applied by `spine/router.py` — `resolve()` (SPN-14, SPN-16) | `tests/spine/test_confirmation.py` | enforced |
+| The deny floor applies on both the normal and the confirmed path | `spine/deny_floor.py`, called by `spine/router.py` on both paths | `tests/spine/test_deny_floor.py`, `tests/spine/test_file_tools.py` | enforced |
+| Untrusted output is wrapped by default, not opt-in | `spine/untrusted.py`, `spine/neutralize.py` | `tests/spine/test_untrusted_default.py` | enforced |
+| One approval produces exactly one execution | `spine/router.py` — the atomic claim; `storage/sqlite/spine_store.py` — compare-and-set | `tests/spine/test_outcomes.py`, `tests/spine/test_router_edges.py` | enforced |
+| A crash near an external effect is recorded as unknown, never guessed or silently retried | `spine/router.py` — `recover()`, `final_status()` | `tests/spine/test_outcomes.py`, `tests/spine/test_honest_failure.py` | enforced |
+| The decision record is immutable | `storage/migrations/001_spine.sql` — triggers on the `decisions`, `decision_deliveries` and `tool_audit` tables | `tests/spine/test_structure.py` | enforced |
+| Only the router ever calls `Tool.execute` | `spine/router.py` | `tests/spine/test_structure.py` | enforced |
+| There are no hard-delete tools | `spine/registry.py`, `storage/` | `tests/spine/test_structure.py` | enforced |
+| The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py` | enforced |
 
 ## 5. Frontend
 
