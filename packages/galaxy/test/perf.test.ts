@@ -41,12 +41,13 @@ describe('qualityFor', () => {
     expect(qualityFor(true, 3).pixelRatio).toBe(1);
   });
 
-  it('halves detail and dust in perf mode', () => {
+  it('thins detail, dust and nodes in perf mode', () => {
     const full = qualityFor(false, 1);
     const lite = qualityFor(true, 1);
     expect(full.orbDetail).toBe(24);
     expect(lite.orbDetail).toBeLessThan(full.orbDetail);
     expect(lite.dustCount).toBeLessThan(full.dustCount);
+    expect(lite.nodeCount).toBeLessThan(full.nodeCount);
   });
 });
 

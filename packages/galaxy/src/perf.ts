@@ -43,12 +43,13 @@ export interface Quality {
   readonly pixelRatio: number;
   readonly orbDetail: number;
   readonly dustCount: number;
+  readonly nodeCount: number;
 }
 
 export function qualityFor(perfActive: boolean, devicePixelRatio: number): Quality {
   return perfActive
-    ? { pixelRatio: 1, orbDetail: 12, dustCount: 200 }
-    : { pixelRatio: Math.min(2, devicePixelRatio), orbDetail: 24, dustCount: 500 };
+    ? { pixelRatio: 1, orbDetail: 12, dustCount: 200, nodeCount: 60 }
+    : { pixelRatio: Math.min(2, devicePixelRatio), orbDetail: 24, dustCount: 500, nodeCount: 100 };
 }
 
 /** Multiplier on every time-driven motion; honours prefers-reduced-motion. */

@@ -1,11 +1,14 @@
 import {
-  AdditiveBlending, BackSide, Group, IcosahedronGeometry, Mesh, MeshBasicMaterial,
+  AdditiveBlending, BackSide, NormalBlending, Group, IcosahedronGeometry, Mesh, MeshBasicMaterial,
   ShaderMaterial, TorusGeometry, Vector3,
 } from 'three';
 import type { Levels } from '../audio/levels';
 import { NOISE_GLSL } from '../shaders/noise';
 import type { OrbParams } from '../states';
 
+// Shaders match the predecessor's desktop orb, which has been tuned in daily use:
+// a calm surface at rest (displacement scales with breath and audio), a thin
+// fresnel edge, and a soft back-face glow.
 const ORB_VERTEX = /* glsl */ `
 ${NOISE_GLSL}
 uniform float uTime;
@@ -15,24 +18,23 @@ uniform float uAudio;
 uniform float uBass;
 uniform float uBreath;
 varying vec3 vNormal;
-varying vec3 vViewDir;
+varying vec3 vPosition;
 varying float vDisp;
 void main() {
-  float t = uTime * uNoiseSpeed;
-  vec3 p = position * 1.6;
-  float n = snoise(p + t) * 0.5
-          + snoise(p * 2.0 + t * 1.3) * 0.25
-          + snoise(p * 4.0 + t * 1.7) * 0.125 * (0.4 + uAudio);
-  float d = uBreath * 0.04
-          + n * min(uAmp, 0.12)
-          + n * uAudio * uAmp * 0.55
-          + uBass * uAmp * 0.35 * sin(position.y * 6.0 + uTime * 4.0);
-  d = clamp(d, -0.45, 0.45);
-  vec3 displaced = position + normal * d;
-  vec4 mv = modelViewMatrix * vec4(displaced, 1.0);
   vNormal = normalize(normalMatrix * normal);
-  vViewDir = normalize(-mv.xyz);
+  float n1 = snoise(position * 1.5 + uTime * uNoiseSpeed * 0.3) * 0.5;
+  float n2 = snoise(position * 3.0 + uTime * uNoiseSpeed * 0.5) * 0.3;
+  float n3 = snoise(position * 6.0 + uTime * uNoiseSpeed * 1.8) * 0.2 * uAudio;
+  float noiseVal = n1 + n2 + n3;
+  float breathDisp = uBreath * 0.04;
+  float audioDisp = uAudio * uAmp * 0.55;
+  float bassDisp = uBass * uAmp * 0.35;
+  float bassPush = uBass * 0.08 * sin(uTime * 2.5 + length(position) * 3.0);
+  float d = clamp(noiseVal * (breathDisp + audioDisp + bassDisp + 0.02) + bassPush, -0.45, 0.45);
+  vec3 displaced = position + normal * d;
   vDisp = d;
+  vec4 mv = modelViewMatrix * vec4(displaced, 1.0);
+  vPosition = mv.xyz;
   gl_Position = projectionMatrix * mv;
 }
 `;
@@ -44,24 +46,25 @@ uniform float uMix;
 uniform float uOpacity;
 uniform float uFresnel;
 varying vec3 vNormal;
-varying vec3 vViewDir;
+varying vec3 vPosition;
 varying float vDisp;
 void main() {
-  float fres = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0), uFresnel);
-  vec3 col = mix(uColor, uColor2, uMix);
-  col = mix(col, uColor2, clamp(vDisp * 2.0, 0.0, 1.0) * 0.5);
-  col += fres * col * 0.8;
-  gl_FragColor = vec4(col, uOpacity * (0.35 + fres * 0.65));
+  vec3 viewDir = normalize(-vPosition);
+  float fresnel = pow(1.0 - abs(dot(viewDir, vNormal)), uFresnel);
+  vec3 base = mix(uColor, uColor2, uMix);
+  float dispTint = smoothstep(-0.05, 0.25, vDisp);
+  vec3 col = base * (0.1 + fresnel * 0.9 + dispTint * 0.25);
+  gl_FragColor = vec4(col, uOpacity * (0.2 + fresnel * 0.8));
 }
 `;
 
 const GLOW_VERTEX = /* glsl */ `
 varying vec3 vNormal;
-varying vec3 vViewDir;
+varying vec3 vPosition;
 void main() {
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vNormal = normalize(normalMatrix * normal);
-  vViewDir = normalize(-mv.xyz);
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vPosition = mv.xyz;
   gl_Position = projectionMatrix * mv;
 }
 `;
@@ -70,14 +73,11 @@ const GLOW_FRAGMENT = /* glsl */ `
 uniform vec3 uColor;
 uniform float uOpacity;
 varying vec3 vNormal;
-varying vec3 vViewDir;
+varying vec3 vPosition;
 void main() {
-  // Back faces of a 1.3 shell around a 1.0 core: |n·v| is ~0.64 at the core's
-  // silhouette, 0 at the shell's edge, 1 dead centre. Peak the halo at the
-  // core's edge and fade both ways, so it rims the orb instead of filling it.
-  float f = abs(dot(normalize(vNormal), normalize(vViewDir)));
-  float rim = smoothstep(0.0, 0.64, f) * (1.0 - smoothstep(0.64, 0.95, f));
-  gl_FragColor = vec4(uColor * rim, rim * uOpacity * 1.5);
+  vec3 viewDir = normalize(-vPosition);
+  float fresnel = pow(1.0 - abs(dot(viewDir, vNormal)), 2.5);
+  gl_FragColor = vec4(uColor, uOpacity * fresnel * 0.6);
 }
 `;
 
@@ -168,6 +168,15 @@ export class Orb {
     }
   }
 
+  /** Additive glow washes to white on a light sky; blend it normally there. */
+  setTheme(light: boolean): void {
+    const blending = light ? NormalBlending : AdditiveBlending;
+    if (this.glow.material.blending !== blending) {
+      this.glow.material.blending = blending;
+      this.glow.material.needsUpdate = true;
+    }
+  }
+
   setDetail(detail: number): void {
     this.core.geometry.dispose();
     this.core.geometry = new IcosahedronGeometry(1.0, detail);
@@ -175,10 +184,10 @@ export class Orb {
 
   update(f: OrbFrame): void {
     const { params: p, levels, time, dt, flare, motion } = f;
-    const t = time * motion;
+    const t = time; // already scaled by motion in index.ts
 
     // Processing: the colour mix swings on a 2s cycle, with a pulse each cycle.
-    const cycle = 0.5 + 0.5 * Math.sin(t * Math.PI);
+    const cycle = 0.5 + 0.5 * Math.sin(t * 1.5);
     const pulse = p.colorOscillation * Math.pow(Math.max(0, Math.sin(t * Math.PI)), 8) * 0.05;
 
     this.u.uTime.value = t;
@@ -186,7 +195,7 @@ export class Orb {
     this.u.uAmp.value = p.displacementAmp * (1 + flare * 0.6) * (0.5 + 0.5 * motion);
     this.u.uAudio.value = levels.level;
     this.u.uBass.value = levels.bass;
-    this.u.uBreath.value = Math.sin(t * 0.8);
+    this.u.uBreath.value = 0.5 + 0.5 * Math.sin(t * 0.7);
     this.u.uColor.value.set(p.color[0], p.color[1], p.color[2]);
     this.u.uColor2.value.set(p.colorSecondary[0], p.colorSecondary[1], p.colorSecondary[2]);
     this.u.uMix.value = Math.min(1, p.colorMix + p.colorOscillation * cycle);
@@ -194,15 +203,16 @@ export class Orb {
     this.u.uFresnel.value = p.fresnelPower;
 
     this.gu.uColor.value.copy(this.u.uColor.value);
-    this.gu.uOpacity.value = p.glowOpacity * (1 + flare * 2);
+    this.gu.uOpacity.value = (p.glowOpacity + levels.level * 0.25) * (1 + flare * 2);
 
     const scale = 1 + levels.level * 0.12 + levels.bass * 0.08 + flare * 0.1 + pulse;
     this.core.scale.setScalar(scale);
-    this.glow.scale.setScalar(scale * (1 + levels.level * 0.1));
+    this.glow.scale.setScalar(1 + levels.level * 0.2 + levels.bass * 0.12 + flare * 0.1);
 
     this.spinAngle += dt * motion * (p.rotationSpeed + levels.level * 0.4);
     this.core.rotation.y = this.spinAngle;
-    this.core.rotation.x = this.spinAngle * 0.35;
+    this.core.rotation.x = this.spinAngle * 0.3;
+    this.glow.rotation.copy(this.core.rotation);
 
     for (const ring of this.rings) {
       ring.mesh.material.opacity = p.ringOpacity;

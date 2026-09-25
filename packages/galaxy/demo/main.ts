@@ -41,7 +41,9 @@ const ctx = (): AudioContext => (audio ??= new AudioContext());
 // Microphone: arming until the stream is live, then listening.
 const micBtn = byId<HTMLButtonElement>('mic');
 let mic: { stream: MediaStream; detach: () => void } | null = null;
+let arming = false;
 micBtn.addEventListener('click', async () => {
+  if (arming) return;
   if (mic) {
     mic.detach();
     for (const t of mic.stream.getTracks()) t.stop();
@@ -51,8 +53,10 @@ micBtn.addEventListener('click', async () => {
     return;
   }
   galaxy.setState('arming');
+  arming = true;
+  let stream: MediaStream | null = null;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const c = ctx();
     await c.resume();
     const detach = galaxy.attachAnalyser(c.createMediaStreamSource(stream), 'mic');
@@ -61,13 +65,18 @@ micBtn.addEventListener('click', async () => {
     note.textContent = '';
     galaxy.setState('listening');
   } catch {
+    for (const t of stream?.getTracks() ?? []) t.stop();
     galaxy.setState('error');
     note.textContent = "I can't hear your microphone. Check the browser's permission for this page.";
+  } finally {
+    arming = false;
   }
 });
 
 // Speaking: a quiet tone with a speech-like amplitude wobble, through the playback analyser.
+let toneId = 0;
 byId<HTMLButtonElement>('speak').addEventListener('click', async () => {
+  const mine = ++toneId;
   const c = ctx();
   await c.resume();
   const osc = c.createOscillator();
@@ -89,7 +98,9 @@ byId<HTMLButtonElement>('speak').addEventListener('click', async () => {
   lfo.stop(stopAt);
   osc.onended = () => {
     detach();
-    if (galaxy.getState() === 'speaking') galaxy.setState(mic ? 'listening' : 'idle');
+    if (mine === toneId && galaxy.getState() === 'speaking') {
+      galaxy.setState(mic ? 'listening' : 'idle');
+    }
   };
 });
 
@@ -105,11 +116,31 @@ perfBtn.addEventListener('click', () => {
   perfBtn.textContent = `Performance: ${mode}`;
 });
 
-const themeBtn = byId<HTMLButtonElement>('theme');
-let theme: Theme = 'dark';
-themeBtn.addEventListener('click', () => {
-  theme = theme === 'dark' ? 'light' : 'dark';
+// Theme: a two-option switch, remembered per browser, defaulting to the OS setting.
+const THEME_KEY = 'galaxy-demo-theme';
+const readTheme = (): Theme => {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch {
+    // Storage can be blocked; fall through to the OS preference.
+  }
+  return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+};
+const themeButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]')];
+const applyTheme = (theme: Theme): void => {
   document.documentElement.dataset['theme'] = theme;
   galaxy.setTheme(theme);
-  themeBtn.textContent = `Theme: ${theme}`;
-});
+  for (const b of themeButtons) {
+    b.setAttribute('aria-checked', String(b.dataset['themeChoice'] === theme));
+  }
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    // Not remembered; still applied.
+  }
+};
+for (const b of themeButtons) {
+  b.addEventListener('click', () => applyTheme(b.dataset['themeChoice'] === 'light' ? 'light' : 'dark'));
+}
+applyTheme(readTheme());
