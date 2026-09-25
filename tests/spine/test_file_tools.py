@@ -80,3 +80,24 @@ async def test_the_fingerprint_is_frozen_with_the_proposal(spine: Spine) -> None
     s = await spine.call("spend_money", {"amount_cents": 1})
     c = await spine.store.get_pending(s.pending_id or "")
     assert c is not None and c.precondition_token is None  # no hook, nothing to compare
+
+
+async def test_a_file_that_grows_after_the_size_check_is_not_read_whole(spine: Spine) -> None:
+    from trillion.spine.contract import JSON, Precondition, ToolContext
+    from trillion.tools.files import MAX_READ_BYTES
+
+    big = spine.granted / "grows.log"
+    big.write_text("small")
+    reader = spine.registry.get("file_read")
+    assert reader is not None
+    checked = reader.precheck
+
+    async def check_then_grow(args: JSON, ctx: ToolContext) -> Precondition:
+        verdict = await checked(args, ctx)
+        big.write_bytes(b"x" * (MAX_READ_BYTES * 3))
+        return verdict
+
+    reader.precheck = check_then_grow  # type: ignore[method-assign]
+    r = await spine.call("file_read", {"path": str(big)})
+    assert r.status == "failed", r.status
+    assert len(r.content) < 10_000

@@ -124,8 +124,18 @@ class FileRead(BaseTool):
         return Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        text = _path(args).read_text(encoding="utf-8", errors="replace")
-        clean, _ = neutralize(text)
+        # The precheck saw the size; the file can grow before we read. Never read more
+        # than the limit plus one byte, and refuse if that byte is there.
+        with _path(args).open("rb") as f:
+            data = f.read(MAX_READ_BYTES + 1)
+        if len(data) > MAX_READ_BYTES:
+            return ToolResult(
+                ok=False,
+                content=f"the file grew past {human_size(MAX_READ_BYTES)} while being read",
+                effect="none",
+                error_kind="too_large",
+            )
+        clean, _ = neutralize(data.decode("utf-8", errors="replace"))
         return ToolResult(ok=True, content=clean, effect="none")
 
 
