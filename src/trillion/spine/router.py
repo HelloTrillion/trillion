@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import unicodedata
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -64,6 +65,7 @@ ResponseStatus = Literal[
 
 _DETAIL_LIMIT = 2000
 _TOOL_DETAIL_LIMIT = 300
+_SUMMARY_LIMIT = 200
 _UNHASHABLE = "unhashable"
 _TARGET_CHANGED = "the target changed since you were asked"
 _NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
@@ -104,6 +106,17 @@ def _refused(reason: Refusal, detail: str = "") -> RouterResponse:
 def _tool_detail(text: str) -> str:
     """Text a tool wrote (a precheck reason, say) is defanged and cut before the model sees it."""
     return neutralize(text)[0][:_TOOL_DETAIL_LIMIT]
+
+
+def _safe_summary(text: str) -> str:
+    """The approval card is what the user consents to (SPN-2a). Whatever a tool put in it
+    (a model-chosen file name, say) is neutralized, kept to one line with no control or
+    format characters (no bidi overrides), and cut to a length a card can show."""
+    clean = neutralize(text)[0]
+    for ws in ("\r\n", "\n", "\r", "\t"):
+        clean = clean.replace(ws, " ")
+    clean = "".join(c for c in clean if unicodedata.category(c) not in ("Cc", "Cf"))
+    return clean[:_SUMMARY_LIMIT]
 
 
 def _safe_hash(args: JSON) -> str | None:
@@ -235,7 +248,7 @@ class Router:
         frozen: dict[str, Any] = json.loads(canonical_json(dict(args)))
         try:
             target = tool.target(frozen)
-            summary = tool.describe(frozen).text
+            summary = _safe_summary(tool.describe(frozen).text)
             token = _fingerprint(tool, frozen)
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)
