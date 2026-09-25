@@ -122,9 +122,7 @@ async def test_1_1_10_spend_and_unrecoverable_need_a_tap(spine: Spine) -> None:
     )
     assert voice.reason is Refusal.TAP_REQUIRED
     assert spine.spend.calls == []
-    tap = await spine.call(
-        "confirm_pending_action", {"pending_id": r.pending_id}, turn=2, via="tap"
-    )
+    tap = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert tap.status == "succeeded" and spine.spend.calls == [{"amount_cents": 500}]
 
     f = spine.granted / "keep.md"
@@ -132,9 +130,7 @@ async def test_1_1_10_spend_and_unrecoverable_need_a_tap(spine: Spine) -> None:
     o = await spine.call("file_overwrite", {"path": str(f), "content": "new"})
     typed = await spine.call("confirm_pending_action", {"pending_id": o.pending_id}, turn=2)
     assert typed.reason is Refusal.TAP_REQUIRED and f.read_text() == "original"
-    tapped = await spine.call(
-        "confirm_pending_action", {"pending_id": o.pending_id}, turn=2, via="tap"
-    )
+    tapped = await spine.router.resolve(o.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert tapped.status == "succeeded" and f.read_text() == "new"
 
 
@@ -157,3 +153,18 @@ async def test_a_newer_proposal_for_the_same_target_supersedes(spine: Spine) -> 
     new = await spine.call("confirm_pending_action", {"pending_id": b.pending_id}, turn=2)
     assert new.status == "succeeded"
     assert (spine.granted / "note.txt").read_text() == "two"
+
+
+async def test_a_tap_belongs_to_one_action_not_to_the_turn(spine: Spine) -> None:
+    """The user taps card A. In the same turn the model confirms spend card B: not a tap."""
+    b = await spine.call("spend_money", {"amount_cents": 99_00})
+    a = await propose_note(spine, "a.txt")
+    tapped = await spine.router.resolve(a.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert tapped.status == "succeeded"
+    smuggled = await spine.call(
+        "confirm_pending_action", {"pending_id": b.pending_id}, turn=2, via="tap"
+    )
+    assert smuggled.reason is Refusal.TAP_REQUIRED
+    assert spine.spend.calls == []
+    pending_b = await spine.store.get_pending(b.pending_id or "")
+    assert pending_b is not None and pending_b.status is Status.PROPOSED

@@ -8,6 +8,7 @@ Logs carry names, ids, statuses and exception class names only.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import uuid
@@ -166,6 +167,10 @@ class Router:
             decision: Literal["confirm", "cancel"] = (
                 "confirm" if call.name == CONFIRM_TOOL.name else "cancel"
             )
+            # A tap belongs to one action, not to the turn it happened in: the model can
+            # never pass one on. Only the UI's direct `resolve` call carries `via="tap"`.
+            if ctx.via == "tap":
+                ctx = dataclasses.replace(ctx, via="text")
             return await self.resolve(pid, decision, ctx)
 
         tool = self._registry.get(call.name)
@@ -254,6 +259,14 @@ class Router:
     async def resolve(
         self, pending_id: str, decision: Literal["confirm", "cancel"], ctx: ToolContext
     ) -> RouterResponse:
+        """Confirm or cancel one pending action.
+
+        A tap belongs to an action, not to a turn. `ctx.via == "tap"` is honoured only
+        here, when the UI calls `resolve` directly with the id of the card the user
+        tapped. A model-issued `confirm_pending_action` goes through `execute`, which
+        downgrades any `via="tap"` to `"text"` before it reaches this method, so a tap
+        on card A can never close the gate on card B.
+        """
         start = self._clock()
         a = await self._store.get_pending(pending_id)
         if a is None or a.owner_id != ctx.owner_id:

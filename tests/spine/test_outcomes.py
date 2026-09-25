@@ -35,7 +35,7 @@ async def test_1_2_1_crash_mid_execution_is_unknown_and_never_retried(spine: Spi
     assert spine.slow.executions == 0
     # A second startup does not touch it again, and confirming it runs nothing.
     assert await spine.router.recover((spine.granted,)) == []
-    again = await spine.call("confirm_pending_action", {"pending_id": pid}, turn=2, via="tap")
+    again = await spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
     assert again.status == "unknown"
     assert spine.slow.executions == 0
 
