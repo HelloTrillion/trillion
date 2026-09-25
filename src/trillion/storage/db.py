@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 from pathlib import Path
 
 import aiosqlite
@@ -25,4 +27,16 @@ async def connect(path: Path) -> aiosqlite.Connection:
         "PRAGMA synchronous=NORMAL",
     ):
         await conn.execute(pragma)
+    _make_private(path)
     return conn
+
+
+def _make_private(path: Path) -> None:
+    """Pending actions and outcomes hold argument values: owner-only, whatever the umask.
+
+    SQLite creates the -wal and -shm files with the database file's mode."""
+    os.chmod(path.parent, 0o700)
+    os.chmod(path, 0o600)
+    for suffix in ("-wal", "-shm"):
+        with contextlib.suppress(FileNotFoundError):
+            os.chmod(f"{path}{suffix}", 0o600)

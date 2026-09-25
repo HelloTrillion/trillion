@@ -44,3 +44,27 @@ async def test_connection_pragmas(tmp_path):
     async with conn.execute("PRAGMA foreign_keys") as cur:
         assert (await cur.fetchone())[0] == 1
     await conn.close()
+
+
+async def test_the_database_is_private_to_the_user(tmp_path):
+    """Pending actions hold argument values (file contents, amounts): owner-only."""
+    import os
+    import stat
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o755)
+    old = os.umask(0o022)
+    try:
+        conn = await connect(home / "t.db")
+    finally:
+        os.umask(old)
+    try:
+        await migrate(conn)
+        files = [home / "t.db", home / "t.db-wal", home / "t.db-shm"]
+        present = [f for f in files if f.exists()]
+        assert home / "t.db" in present
+        for f in present:
+            assert stat.S_IMODE(f.stat().st_mode) == 0o600, f
+        assert stat.S_IMODE(home.stat().st_mode) == 0o700
+    finally:
+        await conn.close()
