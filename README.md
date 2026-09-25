@@ -65,6 +65,8 @@ src/trillion/    Python core
 
 Everything runs on your machine, in one process, against a local SQLite file. There is no server to expose, no account to create, and no infrastructure of ours involved at any point — your API keys live in your operating system's keychain, and the only outbound traffic goes to providers you connected yourself. With the network off, Trillion still starts. Model, speech-to-text and text-to-speech providers all sit behind interfaces: the first release uses Anthropic, Deepgram and your own ElevenLabs account, with cheaper and fully local options to follow.
 
+Try the orb: `pnpm install && pnpm --filter @hellotrillion/galaxy dev`
+
 ## Contributing
 
 We want help, and the fastest way in is [`CONTRIBUTING.md`](CONTRIBUTING.md). It explains the three-pillar test every feature has to pass, the **never list** (things a pull request may never do), and the sign-off we require on commits.
