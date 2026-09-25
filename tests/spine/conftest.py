@@ -72,9 +72,10 @@ def no_values_in_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
     """Never-list #7: nothing a test passes as an argument or output may reach a log."""
     caplog.set_level(logging.DEBUG)
     yield
-    leaked = [r.getMessage() for r in caplog.records if MARKER in r.getMessage()]
+    # `caplog.records` here would hold only this teardown's records; check every phase.
+    records = [r for when in ("setup", "call", "teardown") for r in caplog.get_records(when)]
+    leaked = [f"{r.name}: {r.getMessage()[:200]}" for r in records if MARKER in r.getMessage()]
     assert leaked == [], leaked
-    assert MARKER not in caplog.text
 
 
 @pytest.fixture
