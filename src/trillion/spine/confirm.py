@@ -79,6 +79,7 @@ class PendingAction:
     represented_from: str | None
     effect_status: str | None = None
     outcome_detail: str | None = None
+    precondition_token: str | None = None
 
 
 _STATUS_REFUSAL = {

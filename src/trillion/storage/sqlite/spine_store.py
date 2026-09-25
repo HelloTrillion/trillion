@@ -19,7 +19,7 @@ from trillion.spine.store import DecisionIn, DecisionRow, DeliveryRow
 _PENDING_COLUMNS = (
     "id, owner_id, tool, args_json, args_hash, summary, target, risk, recoverable, session_id,"
     " created_turn, status, expires_at, represented_from, effect_status, outcome_detail,"
-    " created_at, updated_at"
+    " created_at, updated_at, precondition_token"
 )
 
 
@@ -45,6 +45,9 @@ def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
         ),
         effect_status=(str(r["effect_status"]) if r["effect_status"] is not None else None),
         outcome_detail=(str(r["outcome_detail"]) if r["outcome_detail"] is not None else None),
+        precondition_token=(
+            str(r["precondition_token"]) if r["precondition_token"] is not None else None
+        ),
     )
 
 
@@ -77,7 +80,7 @@ class SqliteSpineStore:
         async with self._tx() as conn:
             await conn.execute(
                 f"INSERT INTO pending_actions ({_PENDING_COLUMNS})"  # noqa: S608
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     a.id,
                     a.owner_id,
@@ -97,6 +100,7 @@ class SqliteSpineStore:
                     a.outcome_detail,
                     a.created_at,
                     a.created_at,
+                    a.precondition_token,
                 ),
             )
             await self._decision(conn, a.owner_id, a.id, decision, a.created_at)

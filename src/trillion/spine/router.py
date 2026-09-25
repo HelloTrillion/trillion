@@ -65,6 +65,8 @@ ResponseStatus = Literal[
 _DETAIL_LIMIT = 2000
 _TOOL_DETAIL_LIMIT = 300
 _UNHASHABLE = "unhashable"
+_TARGET_CHANGED = "the target changed since you were asked"
+_NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
     Status.UNKNOWN: "unknown",
@@ -109,6 +111,12 @@ def _safe_hash(args: JSON) -> str | None:
         return args_hash(dict(args))
     except (TypeError, ValueError):  # NaN, non-JSON values
         return None
+
+
+def _fingerprint(tool: Tool, args: JSON) -> str | None:
+    """`Tool.fingerprint`, or None for a tool that does not implement the hook."""
+    hook = getattr(tool, "fingerprint", None)
+    return None if hook is None else hook(args)
 
 
 def _by(ctx: ToolContext, event: str) -> DecisionIn:
@@ -228,6 +236,7 @@ class Router:
         try:
             target = tool.target(frozen)
             summary = tool.describe(frozen).text
+            token = _fingerprint(tool, frozen)
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)
             return _refused(Refusal.PRECONDITION_FAILED, "the action could not be described")
@@ -249,6 +258,7 @@ class Router:
             created_at=now,
             expires_at=now + EXPIRY_MS,
             represented_from=represented_from,
+            precondition_token=token,
         )
         await self._store.insert_pending(action, _by(ctx, "proposed"))
         logger.info("pending action %s proposed for %s", action.id, name)
@@ -326,6 +336,20 @@ class Router:
                 a.id, approved, Status.INVALIDATED, invalidated, detail=pre.reason[:_DETAIL_LIMIT]
             )
             return _refused(Refusal.PRECONDITION_CHANGED, _tool_detail(pre.reason))
+
+        # The precheck says the action can still run; the fingerprint says whether the
+        # target is still what the user saw (an edited file must not be clobbered).
+        try:
+            token = _fingerprint(tool, a.args)
+        except Exception as e:
+            logger.warning("fingerprint of %s raised %s", a.tool, type(e).__name__)
+            token = _NO_FINGERPRINT
+        if token != a.precondition_token:
+            invalidated = _by(ctx, "invalidated")
+            await self._move(
+                a.id, approved, Status.INVALIDATED, invalidated, detail=_TARGET_CHANGED
+            )
+            return _refused(Refusal.PRECONDITION_CHANGED, _TARGET_CHANGED)
 
         claimed = await self._move(a.id, approved, Status.EXECUTING, _by(ctx, "executing"))
         if not claimed:

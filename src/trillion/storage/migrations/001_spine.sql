@@ -26,6 +26,7 @@ CREATE TABLE pending_actions (
     represented_from  TEXT REFERENCES pending_actions(id),
     effect_status     TEXT,
     outcome_detail    TEXT,
+    precondition_token TEXT,  -- Tool.fingerprint() at proposal; compared before execution
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER NOT NULL
 );

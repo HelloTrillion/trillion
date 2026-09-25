@@ -88,6 +88,13 @@ class Tool(Protocol):
 
     def target(self, args: JSON) -> str: ...
 
+    def fingerprint(self, args: JSON) -> str | None:
+        """The state of the target when the action is proposed, or None to opt out.
+
+        Recorded with the proposal and compared again after approval: if it differs,
+        the target changed since the user was asked, and nothing runs."""
+        ...
+
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition: ...
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult: ...
@@ -105,6 +112,9 @@ class BaseTool:
 
     def target(self, args: JSON) -> str:
         return self.definition.name
+
+    def fingerprint(self, args: JSON) -> str | None:
+        return None
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         return Precondition.passed()

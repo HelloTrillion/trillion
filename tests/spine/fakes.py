@@ -96,6 +96,8 @@ class ScriptedTool(BaseTool):
         self.precheck_result = Precondition.passed()
         self.precheck_error: Exception | None = None
         self.describe_error: Exception | None = None
+        self.fingerprint_value: str | None = None
+        self.fingerprint_error: Exception | None = None
         self.reconcile_result: ToolResult | None = None
         self.reconcile_error: Exception | None = None
 
@@ -103,6 +105,11 @@ class ScriptedTool(BaseTool):
         if self.describe_error is not None:
             raise self.describe_error
         return ActionSummary(text="Run the scripted action")
+
+    def fingerprint(self, args: JSON) -> str | None:
+        if self.fingerprint_error is not None:
+            raise self.fingerprint_error
+        return self.fingerprint_value
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if self.precheck_error is not None:

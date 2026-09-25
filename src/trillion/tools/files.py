@@ -61,6 +61,14 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _content_fingerprint(args: JSON) -> str:
+    p = _path(args)
+    if not p.is_file():
+        return "missing"
+    with p.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
 def _where(p: Path) -> str:
     return f"{p.name} in {p.parent.name or p.parent}"
 
@@ -139,6 +147,9 @@ class FileCreate(BaseTool):
     def target(self, args: JSON) -> str:
         return str(_path(args))
 
+    def fingerprint(self, args: JSON) -> str | None:
+        return "present" if os.path.lexists(_path(args)) else "absent"
+
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         p = _path(args)
         if p.exists():
@@ -180,6 +191,9 @@ class FileOverwrite(BaseTool):
 
     def target(self, args: JSON) -> str:
         return str(_path(args))
+
+    def fingerprint(self, args: JSON) -> str | None:
+        return _content_fingerprint(args)
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if _path(args).is_file():
@@ -223,6 +237,9 @@ class FileAppend(BaseTool):
 
     def target(self, args: JSON) -> str:
         return str(_path(args))
+
+    def fingerprint(self, args: JSON) -> str | None:
+        return _content_fingerprint(args)
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if _path(args).is_file():

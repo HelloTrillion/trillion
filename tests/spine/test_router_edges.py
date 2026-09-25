@@ -222,3 +222,40 @@ async def test_a_trusted_result_is_not_wrapped_but_an_untrusted_one_is(spine: Sp
     r = await spine.call("scripted", {})
     res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
     assert res.content.startswith('<untrusted_tool_result tool="scripted">')
+
+
+# ── Fingerprints ────────────────────────────────────────────────────────
+
+
+async def test_a_fingerprint_that_raises_at_proposal_proposes_nothing(spine: Spine) -> None:
+    spine.scripted.fingerprint_error = RuntimeError(MARKER)
+    r = await spine.call("scripted", {})
+    assert r.reason is Refusal.PRECONDITION_FAILED
+    assert await spine.store.list_by_status(Status.PROPOSED) == []
+
+
+async def test_a_fingerprint_that_raises_at_confirmation_runs_nothing(spine: Spine) -> None:
+    spine.scripted.fingerprint_value = "v1"
+    r = await spine.call("scripted", {})
+    spine.scripted.fingerprint_error = RuntimeError(MARKER)
+    res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    assert res.reason is Refusal.PRECONDITION_CHANGED
+    assert spine.scripted.executions == 0
+    # Re-reading the record gives the same answer.
+    again = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=3)
+    assert again.reason is Refusal.PRECONDITION_CHANGED and spine.scripted.executions == 0
+
+
+async def test_a_tool_without_the_hook_is_not_fingerprinted(spine: Spine) -> None:
+    class Bare:
+        definition = spine.slow.definition
+
+        def target(self, args: JSON) -> str:
+            return "t"
+
+        def describe(self, args: JSON) -> Any:
+            return spine.slow.describe(args)
+
+    from trillion.spine.router import _fingerprint
+
+    assert _fingerprint(Bare(), {}) is None  # type: ignore[arg-type]
