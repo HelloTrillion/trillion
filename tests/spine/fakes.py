@@ -130,6 +130,25 @@ class ScriptedTool(BaseTool):
         return self.reconcile_result
 
 
+class ScriptedWrite(BaseTool):
+    """An ungated `write` tool that returns whatever it is told (SPN-17a on the normal path)."""
+
+    definition = ToolDefinition(
+        name="scripted_write",
+        description="Write something recoverable (test).",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        risk=Risk.WRITE,
+        category="test",
+        timeout_s=5.0,
+    )
+
+    def __init__(self) -> None:
+        self.result = ToolResult(ok=True, content="", effect="confirmed")
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        return self.result
+
+
 class UnconfiguredReader(BaseTool):
     """A third-party-style tool that says nothing about trust: must be wrapped."""
 

@@ -11,6 +11,7 @@ import pytest
 from tests.spine.fakes import (
     MARKER,
     ScriptedTool,
+    ScriptedWrite,
     SlowIrreversible,
     SpendTool,
     UnconfiguredReader,
@@ -49,6 +50,7 @@ class Spine:
     slow: SlowIrreversible
     scripted: ScriptedTool
     reader: UnconfiguredReader
+    writer: ScriptedWrite
 
     def ctx(self, **kw: Any) -> ToolContext:
         base = ToolContext(
@@ -88,7 +90,7 @@ async def spine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterato
     store = SqliteSpineStore(conn)
     clock = FakeClock()
     spend, slow = SpendTool(), SlowIrreversible()
-    scripted, reader = ScriptedTool(), UnconfiguredReader()
+    scripted, reader, writer = ScriptedTool(), UnconfiguredReader(), ScriptedWrite()
     registry = ToolRegistry()
     for tool in (
         FileList(),
@@ -100,8 +102,9 @@ async def spine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterato
         slow,
         scripted,
         reader,
+        writer,
     ):
         registry.register(tool)
     router = Router(registry, store, policy=DenyPolicy.default(), clock=clock)
-    yield Spine(router, registry, store, clock, granted, spend, slow, scripted, reader)
+    yield Spine(router, registry, store, clock, granted, spend, slow, scripted, reader, writer)
     await conn.close()

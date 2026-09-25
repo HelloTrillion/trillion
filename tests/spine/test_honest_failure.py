@@ -45,3 +45,22 @@ async def test_a_timeout_is_unknown_not_failed(spine: Spine) -> None:
     assert res.status == "unknown"
     a = await spine.store.get_pending(r.pending_id or "")
     assert a is not None and a.effect_status == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (ToolResult(ok=True, content="", effect="none"), "failed"),
+        (ToolResult(ok=True, content="queued", effect="unknown"), "unknown"),
+        (ToolResult(ok=True, content="saved", effect="confirmed"), "succeeded"),
+    ],
+)
+async def test_an_ungated_write_needs_evidence_too(
+    spine: Spine, result: ToolResult, expected: str
+) -> None:
+    """Only a read may call `ok` a success on its own; a write must show its effect."""
+    spine.writer.result = result
+    r = await spine.call("scripted_write", {})
+    assert r.status == expected
+    (rec,) = await spine.store.list_audit()
+    assert rec.outcome == expected

@@ -39,6 +39,7 @@ from trillion.spine.contract import (
     GATED,
     JSON,
     Precondition,
+    Risk,
     Tool,
     ToolCall,
     ToolContext,
@@ -233,8 +234,10 @@ class Router:
         result = await self._run(tool, call.args, ctx)
         if guard is not None:
             guard.record_result(call.name, ok=result.ok)
-        # Reads have no effect to evidence, so `ok` is enough off the gated path.
-        status = Status.SUCCEEDED if result.ok else final_status(result)
+        # Only a read has no effect to evidence, so only a read may call `ok` a success.
+        # A write needs the same evidence as a gated action (SPN-17a).
+        is_read = tool.definition.risk is Risk.READ
+        status = Status.SUCCEEDED if is_read and result.ok else final_status(result)
         response = self._result_response(tool, status, result.content, result.error_kind, warning)
         return await audited(risk, response, "executed")
 
