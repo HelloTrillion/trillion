@@ -9,7 +9,6 @@ string fails closed.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import unicodedata
 from dataclasses import dataclass
@@ -18,10 +17,16 @@ from pathlib import Path
 from trillion import paths
 from trillion.spine.contract import JSON, ToolDefinition
 
+try:
+    import fcntl
+except ImportError:  # Windows: resolve() already returns the on-disk spelling there.
+    _F_GETPATH: int | None = None
+else:
+    # macOS only: ask the kernel for the path of an open descriptor, as stored on disk.
+    _F_GETPATH = getattr(fcntl, "F_GETPATH", None)
+
 PROTECTED_SEGMENTS: frozenset[str] = frozenset({".git", ".ssh", ".aws", ".gnupg"})
 
-# macOS only: ask the kernel for the path of an open descriptor, as stored on disk.
-_F_GETPATH: int | None = getattr(fcntl, "F_GETPATH", None)
 _MAXPATHLEN = 1024
 
 
