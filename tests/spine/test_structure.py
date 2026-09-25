@@ -98,3 +98,52 @@ def test_the_log_check_sees_the_call_phase(caplog: pytest.LogCaptureFixture) -> 
 
 async def test_the_database_driver_does_not_log_statements(spine: Spine) -> None:
     assert logging.getLogger("aiosqlite").getEffectiveLevel() > logging.DEBUG
+
+
+FROZEN_COLUMNS = (
+    "args_json",
+    "id",
+    "owner_id",
+    "tool",
+    "args_hash",
+    "summary",
+    "target",
+    "risk",
+    "recoverable",
+    "session_id",
+    "created_turn",
+    "created_at",
+    "represented_from",
+    "precondition_token",
+)
+
+
+async def test_what_the_user_approves_cannot_be_edited_in_the_database(spine: Spine) -> None:
+    """Only the lifecycle columns move. The proposal itself is frozen at the storage layer."""
+    doc = spine.granted / "doc.md"
+    doc.write_text("v1")
+    r = await spine.call("file_overwrite", {"path": str(doc), "content": "x"})
+    other = await spine.call("slow_irreversible", {})
+    pid = r.pending_id or ""
+    conn = spine.store._conn
+    await conn.execute("INSERT INTO owners (id, created_at) VALUES ('other', 0)")
+    values: dict[str, object] = {
+        "owner_id": "other",
+        "risk": "spend",
+        "recoverable": 1,
+        "created_turn": 99,
+        "created_at": 1,
+        "represented_from": other.pending_id,
+    }
+    for col in FROZEN_COLUMNS:
+        value = values.get(col, "tampered")
+        with pytest.raises(aiosqlite.Error, match="frozen"):
+            await conn.execute(
+                f"UPDATE pending_actions SET {col} = ? WHERE id = ?",  # noqa: S608
+                (value, pid),
+            )
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.summary == r.summary and a.args["content"] == "x"
+    # The lifecycle still moves.
+    res = await spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
+    assert res.status == "succeeded"

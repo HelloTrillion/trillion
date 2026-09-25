@@ -33,6 +33,24 @@ CREATE TABLE pending_actions (
 CREATE INDEX pending_actions_open
     ON pending_actions (owner_id, session_id, tool, target, status);
 CREATE INDEX pending_actions_status ON pending_actions (status);
+-- SPN-2a: what the user approves is frozen. Only the lifecycle columns (status,
+-- expires_at, effect_status, outcome_detail, updated_at) may change.
+CREATE TRIGGER pending_actions_frozen BEFORE UPDATE ON pending_actions
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.owner_id IS NOT OLD.owner_id
+  OR NEW.tool IS NOT OLD.tool
+  OR NEW.args_json IS NOT OLD.args_json
+  OR NEW.args_hash IS NOT OLD.args_hash
+  OR NEW.summary IS NOT OLD.summary
+  OR NEW.target IS NOT OLD.target
+  OR NEW.risk IS NOT OLD.risk
+  OR NEW.recoverable IS NOT OLD.recoverable
+  OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.created_turn IS NOT OLD.created_turn
+  OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.represented_from IS NOT OLD.represented_from
+  OR NEW.precondition_token IS NOT OLD.precondition_token
+BEGIN SELECT RAISE(ABORT, 'pending action proposals are frozen'); END;
 
 -- SPN-17: one immutable row per resolution event.
 CREATE TABLE decisions (
