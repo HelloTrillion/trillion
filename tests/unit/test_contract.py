@@ -1,6 +1,16 @@
+import time
+
 import pytest
 
-from trillion.spine.contract import GATED, Precondition, Risk, ToolDefinition
+from trillion.spine.clock import system_clock
+from trillion.spine.contract import (
+    GATED,
+    BaseTool,
+    Precondition,
+    Risk,
+    ToolContext,
+    ToolDefinition,
+)
 
 
 def test_risk_is_required():
@@ -27,3 +37,22 @@ def test_precondition_helpers():
     assert Precondition.passed().ok
     failed = Precondition.failed("gone")
     assert not failed.ok and failed.reason == "gone"
+
+
+async def test_base_tool_defaults_are_inert():
+    class T(BaseTool):
+        definition = ToolDefinition(
+            name="t", description="d", input_schema={}, risk=Risk.READ, category="c", timeout_s=1
+        )
+
+    ctx = ToolContext(owner_id="o", session_id="s", turn=1, call_id="c", via="text")
+    t = T()
+    assert t.target({}) == "t"
+    assert (await t.precheck({}, ctx)).ok
+    assert await t.reconcile({}, ctx) is None
+    with pytest.raises(NotImplementedError):
+        await t.execute({}, ctx)
+
+
+def test_the_system_clock_is_epoch_milliseconds():
+    assert abs(system_clock() - time.time() * 1000) < 5000

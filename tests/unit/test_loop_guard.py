@@ -39,3 +39,8 @@ def test_ceilings():
     tick.now = 6.0
     assert g.check_call("x", "1").reason is StopReason.WALL_CLOCK
     assert g.add_cost(0.6).reason is StopReason.COST
+
+
+def test_cost_under_the_ceiling_is_ok():
+    g = LoopGuard(Limits(max_cost_usd=1.0))
+    assert g.add_cost(0.5).verdict is Verdict.OK

@@ -49,7 +49,7 @@ async def test_a_changed_precondition_reason_is_defanged_on_every_read(spine: Sp
     res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
     assert res.reason is Refusal.PRECONDITION_CHANGED
     assert "SYSTEM:" not in res.detail and len(res.detail) <= 300
-    # Asking again reads the stored reason back through _from_record: still defanged.
+    # Asking again is refused the same way, and still shows nothing the tool wrote raw.
     again = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=3)
     assert again.reason is Refusal.PRECONDITION_CHANGED
     assert "SYSTEM:" not in again.detail and len(again.detail) <= 300

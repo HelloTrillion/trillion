@@ -81,3 +81,22 @@ def test_duplicate_names_are_rejected():
 def test_definitions_include_the_meta_tools():
     names = {x.name for x in ToolRegistry().definitions()}
     assert {"confirm_pending_action", "cancel_pending_action"} <= names
+
+
+def test_a_definition_must_be_a_tool_definition():
+    class Loose(BaseTool):
+        definition = "loose"  # type: ignore[assignment]
+
+    with pytest.raises(RegistryError, match="ToolDefinition"):
+        ToolRegistry().register(Loose())
+
+
+def test_an_invalid_json_schema_is_rejected():
+    with pytest.raises(RegistryError, match="invalid input_schema"):
+        ToolRegistry().register(make(d(input_schema={"type": 7})))
+
+
+def test_discover_loads_the_first_party_file_tools():
+    r = ToolRegistry.discover()
+    names = {x.name for x in r.definitions()}
+    assert {"file_list", "file_read", "file_create", "file_overwrite", "file_append"} <= names

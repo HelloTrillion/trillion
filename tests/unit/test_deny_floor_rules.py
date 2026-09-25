@@ -93,3 +93,14 @@ def test_default_policy_protects_home_and_package(monkeypatch, tmp_path):
     policy = DenyPolicy.default()
     assert paths.home().resolve() in policy.protected_roots
     assert paths.package_root() in policy.protected_roots
+
+
+def test_an_unresolvable_path_fails_closed(setup):
+    policy, roots, granted = setup
+    denial = check(DEF, {"path": str(granted / "bad\x00name")}, policy, roots)
+    assert denial is not None and "resolved" in denial.reason
+
+
+def test_an_absent_optional_path_argument_is_skipped(setup):
+    policy, roots, _ = setup
+    assert check(DEF, {}, policy, roots) is None
