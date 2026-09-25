@@ -24,7 +24,7 @@ void main() {
           + snoise(p * 2.0 + t * 1.3) * 0.25
           + snoise(p * 4.0 + t * 1.7) * 0.125 * (0.4 + uAudio);
   float d = uBreath * 0.04
-          + n * uAmp
+          + n * min(uAmp, 0.12)
           + n * uAudio * uAmp * 0.55
           + uBass * uAmp * 0.35 * sin(position.y * 6.0 + uTime * 4.0);
   d = clamp(d, -0.45, 0.45);
@@ -57,9 +57,12 @@ void main() {
 
 const GLOW_VERTEX = /* glsl */ `
 varying vec3 vNormal;
+varying vec3 vViewDir;
 void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vNormal = normalize(normalMatrix * normal);
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vViewDir = normalize(-mv.xyz);
+  gl_Position = projectionMatrix * mv;
 }
 `;
 
@@ -67,9 +70,14 @@ const GLOW_FRAGMENT = /* glsl */ `
 uniform vec3 uColor;
 uniform float uOpacity;
 varying vec3 vNormal;
+varying vec3 vViewDir;
 void main() {
-  float intensity = pow(max(0.0, 0.72 - dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.0);
-  gl_FragColor = vec4(uColor * intensity, intensity * uOpacity * 4.0);
+  // Back faces of a 1.3 shell around a 1.0 core: |n·v| is ~0.64 at the core's
+  // silhouette, 0 at the shell's edge, 1 dead centre. Peak the halo at the
+  // core's edge and fade both ways, so it rims the orb instead of filling it.
+  float f = abs(dot(normalize(vNormal), normalize(vViewDir)));
+  float rim = smoothstep(0.0, 0.64, f) * (1.0 - smoothstep(0.64, 0.95, f));
+  gl_FragColor = vec4(uColor * rim, rim * uOpacity * 1.5);
 }
 `;
 
