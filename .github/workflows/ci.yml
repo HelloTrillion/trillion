@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  # gitleaks lists a pull request's commits to scan them; read-only.
+  pull-requests: read
 
 jobs:
   containment:
