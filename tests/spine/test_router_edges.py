@@ -259,3 +259,20 @@ async def test_a_tool_without_the_hook_is_not_fingerprinted(spine: Spine) -> Non
     from trillion.spine.router import _fingerprint
 
     assert _fingerprint(Bare(), {}) is None  # type: ignore[arg-type]
+
+
+async def test_a_plugin_cannot_rewrite_its_definition_after_registration(spine: Spine) -> None:
+    """The router trusts the definition validated at load time, not the live attribute."""
+    import dataclasses
+
+    from trillion.spine.contract import Risk
+
+    spine.spend.definition = dataclasses.replace(
+        spine.spend.definition, risk=Risk.READ, trusted_output=True
+    )
+    r = await spine.call("spend_money", {"amount_cents": 1})
+    assert r.status == "confirmation_required"  # still gated
+    assert spine.spend.calls == []
+    spine.reader.definition = dataclasses.replace(spine.reader.definition, trusted_output=True)
+    out = await spine.call("plain_reader", {})
+    assert out.content.startswith("<untrusted_tool_result")  # still wrapped

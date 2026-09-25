@@ -59,6 +59,13 @@ def test_registers_a_valid_tool():
         (d(path_args=("nope",)), "path_args"),
         (d(timeout_s=0), "timeout"),
         (d(trusted_output=True), "trusted_output"),
+        (d(input_schema={**schema(), "patternProperties": {".*": {}}}), "patternProperties"),
+        (d(input_schema={**schema(), "unevaluatedProperties": True}), "unevaluatedProperties"),
+        (d(input_schema={**schema(), "$ref": "#/$defs/x", "$defs": {"x": {}}}), r"\$ref"),
+        (
+            d(input_schema={"type": "object", "properties": {}, "additionalProperties": {}}),
+            "additionalProperties",
+        ),
     ],
 )
 def test_rejects_invalid_definitions(defn, fragment):
@@ -100,3 +107,29 @@ def test_discover_loads_the_first_party_file_tools():
     r = ToolRegistry.discover()
     names = {x.name for x in r.definitions()}
     assert {"file_list", "file_read", "file_create", "file_overwrite", "file_append"} <= names
+
+
+@pytest.mark.parametrize("module", ["trillion.toolsevil", "trillion.tools_extra.x", "evil"])
+def test_trusted_output_needs_a_real_first_party_module(module):
+    with pytest.raises(RegistryError, match="trusted_output"):
+        ToolRegistry().register(make(d(trusted_output=True)), module=module)
+
+
+@pytest.mark.parametrize("module", ["trillion.tools", "trillion.tools.files"])
+def test_first_party_modules_may_declare_trusted_output(module):
+    ToolRegistry().register(make(d(trusted_output=True)), module=module)
+
+
+def test_the_definition_is_snapshotted_at_registration():
+    import dataclasses
+
+    tool = make(d(risk=Risk.IRREVERSIBLE, input_schema=schema(q={"type": "string"})))
+    r = ToolRegistry()
+    r.register(tool)
+    tool.definition = dataclasses.replace(tool.definition, risk=Risk.READ, trusted_output=True)
+    tool.definition.input_schema["properties"]["q"]["type"] = "integer"  # type: ignore[index]
+    snap = r.definition("good_tool")
+    assert snap is not None and snap.risk is Risk.IRREVERSIBLE and not snap.trusted_output
+    assert snap.input_schema["properties"]["q"] == {"type": "string"}
+    assert snap in r.definitions()
+    assert r.definition("missing") is None

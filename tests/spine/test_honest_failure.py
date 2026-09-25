@@ -7,7 +7,11 @@ import dataclasses
 import pytest
 
 from tests.spine.conftest import Spine
-from trillion.spine.contract import ToolResult
+from tests.spine.fakes import ScriptedTool
+from trillion.spine.contract import ToolCall, ToolResult
+from trillion.spine.deny_floor import DenyPolicy
+from trillion.spine.registry import ToolRegistry
+from trillion.spine.router import Router
 
 
 @pytest.mark.parametrize(
@@ -38,10 +42,15 @@ async def test_the_status_is_exactly_what_came_back(
 
 
 async def test_a_timeout_is_unknown_not_failed(spine: Spine) -> None:
-    spine.scripted.definition = dataclasses.replace(spine.scripted.definition, timeout_s=0.05)
-    spine.scripted.hang = True
-    r = await spine.call("scripted", {})
-    res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    # The router uses the definition snapshotted at registration, so register a short one.
+    hanging = ScriptedTool()
+    hanging.definition = dataclasses.replace(hanging.definition, timeout_s=0.05)
+    hanging.hang = True
+    registry = ToolRegistry()
+    registry.register(hanging)
+    router = Router(registry, spine.store, policy=DenyPolicy.default(), clock=spine.clock)
+    r = await router.execute(ToolCall(name="scripted", args={}), spine.ctx())
+    res = await router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2))
     assert res.status == "unknown"
     a = await spine.store.get_pending(r.pending_id or "")
     assert a is not None and a.effect_status == "unknown"

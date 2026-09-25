@@ -38,11 +38,13 @@ from trillion.spine.confirm import (
 from trillion.spine.contract import (
     GATED,
     JSON,
+    ActionSummary,
     Precondition,
     Risk,
     Tool,
     ToolCall,
     ToolContext,
+    ToolDefinition,
     ToolResult,
 )
 from trillion.spine.hashing import args_hash, canonical_json
@@ -133,6 +135,35 @@ def _fingerprint(tool: Tool, args: JSON) -> str | None:
     return None if hook is None else hook(args)
 
 
+class _Registered:
+    """A registered tool seen through the definition validated when it was registered.
+
+    The router reads risk, path_args, schema, timeout and trust only from here, so a
+    plugin that reassigns its own `definition` later cannot ungate or untrust itself."""
+
+    def __init__(self, tool: Tool, definition: ToolDefinition) -> None:
+        self._tool = tool
+        self.definition = definition
+
+    def describe(self, args: JSON) -> ActionSummary:
+        return self._tool.describe(args)
+
+    def target(self, args: JSON) -> str:
+        return self._tool.target(args)
+
+    def fingerprint(self, args: JSON) -> str | None:
+        return _fingerprint(self._tool, args)
+
+    async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
+        return await self._tool.precheck(args, ctx)
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        return await self._tool.execute(args, ctx)
+
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        return await self._tool.reconcile(args, ctx)
+
+
 def _by(ctx: ToolContext, event: str) -> DecisionIn:
     return DecisionIn(event=event, decided_by=ctx.session_id, via=ctx.via)
 
@@ -195,7 +226,7 @@ class Router:
                 ctx = dataclasses.replace(ctx, via="text")
             return await self.resolve(pid, decision, ctx)
 
-        tool = self._registry.get(call.name)
+        tool = self._get(call.name)
         if tool is None:
             return await audited("unknown", _refused(Refusal.UNKNOWN_TOOL))
         risk = tool.definition.risk.value
@@ -321,7 +352,7 @@ class Router:
 
     async def _execute_approved(self, a: PendingAction, ctx: ToolContext) -> RouterResponse:
         approved = Status.APPROVED
-        tool = self._registry.get(a.tool)
+        tool = self._get(a.tool)
         if tool is None:
             await self._move(
                 a.id,
@@ -402,7 +433,7 @@ class Router:
         a = await self._expire_if_due(a, now, ctx)
         if a.status not in REPRESENTABLE:
             return _refused(Refusal.NOT_REPRESENTABLE, a.status.value)
-        tool = self._registry.get(a.tool)
+        tool = self._get(a.tool)
         if tool is None:
             return _refused(Refusal.UNKNOWN_TOOL)
         denial = deny_floor.check(tool.definition, a.args, self._policy, ctx.granted_roots)
@@ -441,7 +472,7 @@ class Router:
                 via="text",
                 granted_roots=granted_roots,
             )
-            tool = self._registry.get(a.tool)
+            tool = self._get(a.tool)
             result: ToolResult | None = None
             if tool is not None:
                 try:
@@ -461,6 +492,12 @@ class Router:
         return touched
 
     # ── Helpers ──────────────────────────────────────────────────────────
+
+    def _get(self, name: str) -> _Registered | None:
+        tool, definition = self._registry.get(name), self._registry.definition(name)
+        if tool is None or definition is None:
+            return None
+        return _Registered(tool, definition)
 
     async def _expire_if_due(self, a: PendingAction, now: int, ctx: ToolContext) -> PendingAction:
         if a.status is not Status.PROPOSED or now < a.expires_at:
@@ -535,7 +572,7 @@ class Router:
 
     def _from_record(self, a: PendingAction) -> RouterResponse:
         detail = a.outcome_detail or ""
-        tool = self._registry.get(a.tool)
+        tool = self._get(a.tool)
         trusted = tool is not None and tool.definition.trusted_output
         shown = detail if trusted or not detail else wrap(a.tool, detail)
         match a.status:
