@@ -25,7 +25,14 @@ from trillion.spine.router import Router, RouterResponse
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
-from trillion.tools.files import FileAppend, FileCreate, FileList, FileOverwrite, FileRead
+from trillion.tools.files import (
+    FileAppend,
+    FileCreate,
+    FileEdit,
+    FileList,
+    FileOverwrite,
+    FileRead,
+)
 
 
 class FakeClock:
@@ -98,6 +105,7 @@ async def spine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterato
         FileCreate(),
         FileOverwrite(),
         FileAppend(),
+        FileEdit(),
         spend,
         slow,
         scripted,

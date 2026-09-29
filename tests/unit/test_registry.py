@@ -120,6 +120,18 @@ def test_first_party_modules_may_declare_trusted_output(module):
     ToolRegistry().register(make(d(trusted_output=True)), module=module)
 
 
+@pytest.mark.parametrize("module", ["trillion.toolsevil", "trillion.tools_extra.x", "evil"])
+def test_lossless_output_needs_a_real_first_party_module(module):
+    """Skipping the neutralizer (SPN-6) is reserved exactly like trusted_output: a plugin
+    that could declare it could hand the model raw role markers from anywhere."""
+    with pytest.raises(RegistryError, match="lossless_output"):
+        ToolRegistry().register(make(d(lossless_output=True)), module=module)
+
+
+def test_discover_loads_file_edit():
+    assert "file_edit" in {x.name for x in ToolRegistry.discover().definitions()}
+
+
 def test_the_definition_is_snapshotted_at_registration():
     import dataclasses
 

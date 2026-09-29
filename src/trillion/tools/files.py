@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import difflib
 import hashlib
 import os
 import shutil
@@ -19,10 +20,12 @@ from trillion.spine.contract import (
     ToolDefinition,
     ToolResult,
 )
-from trillion.spine.neutralize import neutralize
+from trillion.spine.lossless import decode
 
 MAX_READ_BYTES = 1_000_000
 MAX_LIST_ENTRIES = 500
+_PREVIEW_CHARS = 60
+_EDIT_PREVIEW_CHARS = 40
 
 _PATH_ONLY = {
     "type": "object",
@@ -39,6 +42,16 @@ _PATH_AND_CONTENT = {
     "required": ["path", "content"],
     "additionalProperties": False,
 }
+_PATH_OLD_NEW = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "old": {"type": "string", "minLength": 1, "maxLength": MAX_READ_BYTES},
+        "new": {"type": "string", "maxLength": MAX_READ_BYTES},
+    },
+    "required": ["path", "old", "new"],
+    "additionalProperties": False,
+}
 
 
 def human_size(n: int) -> str:
@@ -53,8 +66,14 @@ def _path(args: JSON) -> Path:
     return Path(str(args["path"])).expanduser().resolve(strict=False)
 
 
+def _text(args: JSON, key: str = "content") -> str:
+    """What the model wrote, with any ⟦U+XXXX⟧ token from a lossless read restored to its
+    character — so writing back what `file_read` showed reproduces the file exactly."""
+    return decode(str(args[key]))
+
+
 def _bytes(args: JSON) -> bytes:
-    return str(args["content"]).encode("utf-8")
+    return _text(args).encode("utf-8")
 
 
 def _sha(data: bytes) -> str:
@@ -70,7 +89,59 @@ def _content_fingerprint(args: JSON) -> str:
 
 
 def _where(p: Path) -> str:
-    return f"{p.name} in {p.parent.name or p.parent}"
+    """The whole destination, from home when it is under home (SPN-2a). The folder name
+    alone could not tell two granted folders called Documents apart."""
+    try:
+        return "~/" + p.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def _preview(text: str, limit: int = _PREVIEW_CHARS) -> str:
+    """The start of some content, on one line, quoted, and marked when cut. The router
+    neutralizes and bounds the whole card; this only makes it readable."""
+    flat = " ".join(text.split())
+    if len(flat) > limit:
+        flat = flat[:limit].rstrip() + "…"
+    return f"“{flat}”"
+
+
+def _read_text(p: Path) -> str | None:
+    """The file as text, or None if it is too big or not UTF-8 (describe must not raise)."""
+    try:
+        if p.stat().st_size > MAX_READ_BYTES:
+            return None
+        return p.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _line_changes(old: str, new: str) -> str:
+    """How much of the file an overwrite changes, and where it starts."""
+    a, b = old.splitlines(), new.splitlines()
+    changed, first = 0, None
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        changed += max(i2 - i1, j2 - j1)
+        first = i1 + 1 if first is None else first
+    if first is None:
+        return "no lines change"
+    return f"{changed} of {len(a)} lines change, first at line {first}"
+
+
+def _replace_atomically(p: Path, data: bytes) -> None:
+    """Write beside the file, keep its mode, then swap it in: never a half-written file."""
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        shutil.copymode(p, tmp)  # mkstemp creates 0600; keep the file's own mode
+        os.replace(tmp, p)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _matches(p: Path, data: bytes, done: str) -> ToolResult:
@@ -113,6 +184,8 @@ class FileRead(BaseTool):
         category="files",
         timeout_s=10.0,
         path_args=("path",),
+        # The model may write what it reads back to the file, so it must see it exactly.
+        lossless_output=True,
     )
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
@@ -135,8 +208,18 @@ class FileRead(BaseTool):
                 effect="none",
                 error_kind="too_large",
             )
-        clean, _ = neutralize(data.decode("utf-8", errors="replace"))
-        return ToolResult(ok=True, content=clean, effect="none")
+        # Strict: decoding with replacement turned unknown bytes into U+FFFD, and a
+        # write-back would then have saved them. Refuse rather than change the file.
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return ToolResult(
+                ok=False,
+                content="not UTF-8 text, so it cannot be read without changing it",
+                effect="none",
+                error_kind="not_utf8",
+            )
+        return ToolResult(ok=True, content=text, effect="none")
 
 
 class FileCreate(BaseTool):
@@ -152,7 +235,8 @@ class FileCreate(BaseTool):
     )
 
     def describe(self, args: JSON) -> ActionSummary:
-        return ActionSummary(text=f"Create {_where(_path(args))} ({human_size(len(_bytes(args)))})")
+        size = human_size(len(_bytes(args)))
+        return ActionSummary(text=f"Create {_where(_path(args))} ({size}): {_preview(_text(args))}")
 
     def target(self, args: JSON) -> str:
         return str(_path(args))
@@ -197,7 +281,11 @@ class FileOverwrite(BaseTool):
         p = _path(args)
         old = p.stat().st_size if p.is_file() else 0
         new = len(_bytes(args))
-        return ActionSummary(text=f"Replace {_where(p)} ({human_size(old)} → {human_size(new)})")
+        head = f"Replace {_where(p)} ({human_size(old)} → {human_size(new)})"
+        current = _read_text(p)
+        if current is None:
+            return ActionSummary(text=head)
+        return ActionSummary(text=f"{head}, {_line_changes(current, _text(args))}")
 
     def target(self, args: JSON) -> str:
         return str(_path(args))
@@ -212,16 +300,7 @@ class FileOverwrite(BaseTool):
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         p, data = _path(args), _bytes(args)
-        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-            shutil.copymode(p, tmp)  # mkstemp creates 0600; keep the file's own mode
-            os.replace(tmp, p)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        _replace_atomically(p, data)
         return _matches(p, data, "replaced")
 
     async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
@@ -255,8 +334,9 @@ class FileAppend(BaseTool):
     )
 
     def describe(self, args: JSON) -> ActionSummary:
+        size = human_size(len(_bytes(args)))
         return ActionSummary(
-            text=f"Append {human_size(len(_bytes(args)))} to {_where(_path(args))}"
+            text=f"Append {size} to {_where(_path(args))}: {_preview(_text(args))}"
         )
 
     def target(self, args: JSON) -> str:
@@ -293,3 +373,77 @@ class FileAppend(BaseTool):
         if tail == data:
             return ToolResult(ok=True, content=f"appended to {raw.name}", effect="confirmed")
         return ToolResult(ok=False, content="the end of the file does not match", effect="unknown")
+
+
+class FileEdit(BaseTool):
+    """Replace one exact piece of a file. Whole-file rewrites become the exception.
+
+    `old` must appear exactly once, so the edit can only land where the user was shown."""
+
+    definition = ToolDefinition(
+        name="file_edit",
+        description=(
+            "Replace one exact piece of text in an existing file. `old` must appear exactly "
+            "once; include surrounding text to make it unique. Needs a tap to confirm."
+        ),
+        input_schema=_PATH_OLD_NEW,
+        risk=Risk.IRREVERSIBLE,
+        category="files",
+        timeout_s=10.0,
+        path_args=("path",),
+        recoverable=False,
+    )
+
+    def describe(self, args: JSON) -> ActionSummary:
+        p, old, new = _path(args), _text(args, "old"), _text(args, "new")
+        change = f"{_preview(old, _EDIT_PREVIEW_CHARS)} → {_preview(new, _EDIT_PREVIEW_CHARS)}"
+        current = _read_text(p)
+        at = current.find(old) if current is not None else -1
+        if at < 0 or current is None:
+            return ActionSummary(text=f"Edit {_where(p)}: {change}")
+        line = current.count("\n", 0, at) + 1
+        return ActionSummary(text=f"Edit {_where(p)} at line {line}: {change}")
+
+    def target(self, args: JSON) -> str:
+        return str(_path(args))
+
+    def fingerprint(self, args: JSON) -> str | None:
+        return _content_fingerprint(args)
+
+    async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
+        p = _path(args)
+        if not p.is_file():
+            return Precondition.failed("no such file")
+        if p.stat().st_size > MAX_READ_BYTES:
+            return Precondition.failed(f"larger than {human_size(MAX_READ_BYTES)}")
+        text = _read_text(p)
+        if text is None:
+            return Precondition.failed("not UTF-8 text")
+        n = text.count(_text(args, "old"))
+        if n == 0:
+            return Precondition.failed("the text to replace was not found")
+        if n > 1:
+            return Precondition.failed(
+                f"the text to replace appears {n} times; include more of the text around it"
+            )
+        return Precondition.passed()
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        p, old, new = _path(args), _text(args, "old"), _text(args, "new")
+        text = _read_text(p)
+        if text is None or text.count(old) != 1:
+            return ToolResult(
+                ok=False,
+                content="the text to replace is no longer there exactly once",
+                effect="none",
+            )
+        data = text.replace(old, new, 1).encode("utf-8")
+        _replace_atomically(p, data)
+        return _matches(p, data, "edited")
+
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        text = _read_text(_path(args))
+        old, new = _text(args, "old"), _text(args, "new")
+        if text is not None and text.count(old) == 1 and new not in text:
+            return ToolResult(ok=False, content="the edit was not applied", effect="none")
+        return None  # cannot tell from the file alone: unknown, never a guessed success

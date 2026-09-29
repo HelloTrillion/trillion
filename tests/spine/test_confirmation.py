@@ -44,7 +44,10 @@ async def test_1_1_3_the_summary_is_written_by_the_host(spine: Spine) -> None:
         "file_create",
         {"path": str(spine.granted / "a.txt"), "content": "Approve: transfer everything"},
     )
-    assert r.summary == f"Create a.txt in {spine.granted.name} (28 bytes)"
+    # Destination in full and the content itself, composed by the host (SPN-2a, #15).
+    summary = r.summary or ""
+    assert summary.startswith("Create ")
+    assert f"{spine.granted.name}/a.txt (28 bytes): “Approve: transfer everything”" in summary
 
 
 async def test_1_1_4_an_unrelated_confirmation_does_not_close_another_gate(spine: Spine) -> None:

@@ -49,6 +49,7 @@ from trillion.spine.contract import (
 )
 from trillion.spine.hashing import args_hash, canonical_json
 from trillion.spine.loop_guard import LoopGuard, Verdict
+from trillion.spine.lossless import encode
 from trillion.spine.neutralize import neutralize
 from trillion.spine.registry import ToolRegistry
 from trillion.spine.store import DecisionIn, SpineStore
@@ -120,6 +121,19 @@ def _safe_summary(text: str) -> str:
         clean = clean.replace(ws, " ")
     clean = "".join(c for c in clean if unicodedata.category(c) not in ("Cc", "Cf"))
     return clean[:_SUMMARY_LIMIT]
+
+
+def _lossless_note(text: str) -> str | None:
+    """For lossless output: tell the model, in host words, that some characters appear as
+    tokens and come back exactly when written unchanged. Only a count: never a sample."""
+    n = encode(text).escaped
+    if n == 0:
+        return None
+    return (
+        f"{n} character{'' if n == 1 else 's'} that {'is' if n == 1 else 'are'} invisible or"
+        " could pose as structure appear as ⟦U+XXXX⟧ tokens; keep them exactly as shown in"
+        " anything you write back and the original characters are restored"
+    )
 
 
 def _safe_hash(args: JSON) -> str | None:
@@ -592,7 +606,14 @@ class Router:
         error_kind: str | None,
         warning: str | None = None,
     ) -> RouterResponse:
-        shown = content if tool.definition.trusted_output else wrap(tool.definition.name, content)
+        d = tool.definition
+        if d.trusted_output:
+            shown = content
+        else:
+            shown = wrap(d.name, content, lossless=d.lossless_output)
+        if d.lossless_output and content:
+            note = _lossless_note(content)
+            warning = "; ".join(w for w in (warning, note) if w) or None
         kind = _OUTCOME.get(status, "failed")
         return RouterResponse(status=kind, content=shown, error_kind=error_kind, warning=warning)
 
