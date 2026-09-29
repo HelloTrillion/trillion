@@ -65,6 +65,11 @@ class LoopGuard:
     def check_call(self, tool: str, args_hash: str) -> GuardDecision:
         if self._clock() - self._start > self._limits.max_seconds:
             return GuardDecision(Verdict.STOP, StopReason.WALL_CLOCK)
+        # The failure count is enforced here, before the next call runs. `record_result`
+        # only reports it: a verdict returned after a call has already happened can warn,
+        # but only this check can stop the one after it.
+        if self._failures[tool] >= FAIL_STOP:
+            return GuardDecision(Verdict.STOP, StopReason.FAILING_TOOL)
         key = (tool, args_hash)
         self._repeats[key] += 1
         n = self._repeats[key]

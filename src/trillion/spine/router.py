@@ -224,7 +224,23 @@ class Router:
             # never pass one on. Only the UI's direct `resolve` call carries `via="tap"`.
             if ctx.via == "tap":
                 ctx = dataclasses.replace(ctx, via="text")
-            return await self.resolve(pid, decision, ctx)
+            resolved = await self.resolve(pid, decision, ctx)
+            # An approved action that then fails is a failure of its tool, counted like
+            # any other (SPN-7): otherwise a proposal that fails every time could be
+            # proposed, approved and retried forever.
+            if (
+                guard is not None
+                and decision == "confirm"
+                and resolved.status
+                in (
+                    "failed",
+                    "unknown",
+                )
+            ):
+                a = await self._store.get_pending(pid)
+                if a is not None:
+                    guard.record_result(a.tool, ok=False)
+            return resolved
 
         tool = self._get(call.name)
         if tool is None:
@@ -257,6 +273,10 @@ class Router:
 
         pre = await self._precheck(tool, call.args, ctx)
         if not pre.ok:
+            # A refused precheck is a call that made no progress, the same as a failed
+            # run: twenty reads of files that do not exist are one loop (SPN-7).
+            if guard is not None:
+                guard.record_result(call.name, ok=False)
             return await audited(
                 risk, _refused(Refusal.PRECONDITION_FAILED, _tool_detail(pre.reason))
             )
@@ -268,7 +288,9 @@ class Router:
 
         result = await self._run(tool, call.args, ctx)
         if guard is not None:
-            guard.record_result(call.name, ok=result.ok)
+            g = guard.record_result(call.name, ok=result.ok)
+            if g.verdict is not Verdict.OK and g.reason is not None and warning is None:
+                warning = f"loop guard: {g.reason.value}"
         # Only a read has no effect to evidence, so only a read may call `ok` a success.
         # A write needs the same evidence as a gated action (SPN-17a).
         is_read = tool.definition.risk is Risk.READ
