@@ -8,7 +8,16 @@ from typing import Any
 from tests.spine.conftest import Spine
 from tests.spine.fakes import MARKER
 from trillion.spine.confirm import Refusal, Status
-from trillion.spine.contract import JSON, Precondition, ToolContext, ToolResult
+from trillion.spine.contract import (
+    JSON,
+    ActionSummary,
+    BaseTool,
+    Precondition,
+    Risk,
+    ToolContext,
+    ToolDefinition,
+    ToolResult,
+)
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.loop_guard import LoopGuard
 from trillion.spine.registry import ToolRegistry
@@ -94,12 +103,97 @@ async def test_the_loop_guard_warns_then_stops_through_the_router(spine: Spine) 
     assert seen[4].reason is Refusal.LOOP_GUARD and seen[4].detail == "repeat"
 
 
-async def test_failures_count_toward_the_loop_guard(spine: Spine) -> None:
+class _FailingLookup(BaseTool):
+    """Fails every time, whatever argument it is given, so the repeat rule never trips."""
+
+    definition = ToolDefinition(
+        name="failing_lookup",
+        description="always fails",
+        input_schema={
+            "type": "object",
+            "properties": {"n": {"type": "integer"}},
+            "required": ["n"],
+            "additionalProperties": False,
+        },
+        risk=Risk.READ,
+        category="test",
+        timeout_s=5.0,
+    )
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        return ToolResult(ok=False, content="nope", effect="none", error_kind="boom")
+
+
+async def test_a_failing_tool_is_stopped_by_the_router_not_just_counted(spine: Spine) -> None:
+    """SPN-7: a failing tool warns at 3 and stops at 8. The router discarded the guard's
+    verdict, and the old test checked the guard's counter rather than what the router
+    did, so a tool failing with different arguments each time was never stopped."""
+    spine.registry.register(_FailingLookup())
     guard = LoopGuard()
-    spine.reader.ok = False
-    for _ in range(3):
-        await spine.call("plain_reader", {}, guard)
-    assert guard.record_result("plain_reader", ok=False).verdict.value == "warn"
+    seen = [await spine.call("failing_lookup", {"n": i}, guard) for i in range(9)]
+    assert all(r.status == "failed" for r in seen[:8])
+    assert seen[1].warning is None
+    assert seen[2].warning == "loop guard: failing_tool"  # the third failure warns
+    assert seen[8].reason is Refusal.LOOP_GUARD and seen[8].detail == "failing_tool"
+
+
+async def test_precheck_refusals_count_as_failures(spine: Spine) -> None:
+    """Busy but not making progress: reading files that do not exist is the same loop
+    as failed reads, and a precheck refusal never reached the counter at all."""
+    guard = LoopGuard()
+    missing = [str(spine.granted / f"missing-{i}.txt") for i in range(9)]
+    seen = [await spine.call("file_read", {"path": p}, guard) for p in missing]
+    assert all(r.reason is Refusal.PRECONDITION_FAILED for r in seen[:8])
+    assert seen[8].reason is Refusal.LOOP_GUARD and seen[8].detail == "failing_tool"
+
+
+class _FailingGated(BaseTool):
+    """A gated action that fails after approval, with a fresh argument every time."""
+
+    definition = ToolDefinition(
+        name="failing_gated",
+        description="always fails once approved",
+        input_schema={
+            "type": "object",
+            "properties": {"n": {"type": "integer"}},
+            "required": ["n"],
+            "additionalProperties": False,
+        },
+        risk=Risk.IRREVERSIBLE,
+        category="test",
+        timeout_s=5.0,
+    )
+
+    def describe(self, args: JSON) -> ActionSummary:
+        return ActionSummary(text=f"Try thing {args['n']}")
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        return ToolResult(ok=False, content="nope", effect="none", error_kind="boom")
+
+
+async def test_approved_actions_that_fail_count_too(spine: Spine) -> None:
+    """Gated executions were never recorded: a model could keep proposing, and the user
+    keep approving, an action that fails every time."""
+    spine.registry.register(_FailingGated())
+    guard = LoopGuard()
+    for i in range(8):
+        p = await spine.call("failing_gated", {"n": i}, guard, turn=2 * i + 1)
+        assert p.status == "confirmation_required"
+        r = await spine.call(
+            "confirm_pending_action", {"pending_id": p.pending_id}, guard, turn=2 * i + 2
+        )
+        assert r.status == "failed"
+    ninth = await spine.call("failing_gated", {"n": 8}, guard, turn=17)
+    assert ninth.reason is Refusal.LOOP_GUARD and ninth.detail == "failing_tool"
+
+
+async def test_fewer_than_eight_failures_do_not_stop_a_tool(spine: Spine) -> None:
+    guard = LoopGuard()
+    for i in range(7):
+        await spine.call("file_read", {"path": str(spine.granted / f"missing-{i}.txt")}, guard)
+    (spine.granted / "real.txt").write_text("hi")
+    r = await spine.call("file_read", {"path": str(spine.granted / "real.txt")}, guard)
+    assert r.status == "succeeded"
 
 
 async def test_a_precheck_that_raises_is_a_refusal(spine: Spine) -> None:
