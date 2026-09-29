@@ -35,7 +35,7 @@ def _unwrap(content: str) -> str:
 
 async def test_read_then_overwrite_is_byte_identical(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_text(ORIGINAL, encoding="utf-8")
+    doc.write_bytes(ORIGINAL.encode("utf-8"))
     read = await spine.call("file_read", {"path": str(doc)})
     assert read.status == "succeeded"
     seen = _unwrap(read.content or "")
@@ -46,12 +46,24 @@ async def test_read_then_overwrite_is_byte_identical(spine: Spine) -> None:
     p = await spine.call("file_overwrite", {"path": str(doc), "content": edited})
     ok = await spine.router.resolve(p.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert ok.status == "succeeded"
-    assert doc.read_text(encoding="utf-8") == ORIGINAL.replace("# Notes", "# Notes (edited)")
+    assert doc.read_bytes().decode("utf-8") == ORIGINAL.replace("# Notes", "# Notes (edited)")
+
+
+async def test_windows_line_endings_survive_the_round_trip(spine: Spine) -> None:
+    """A file saved with CRLF comes back with CRLF: nothing normalizes line endings."""
+    crlf = ORIGINAL.replace("\n", "\r\n")
+    doc = spine.granted / "crlf.md"
+    doc.write_bytes(crlf.encode("utf-8"))
+    seen = _unwrap((await spine.call("file_read", {"path": str(doc)})).content or "")
+    p = await spine.call("file_overwrite", {"path": str(doc), "content": seen})
+    ok = await spine.router.resolve(p.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert ok.status == "succeeded"
+    assert doc.read_bytes() == crlf.encode("utf-8")
 
 
 async def test_the_read_is_still_wrapped_as_untrusted(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_text(ORIGINAL, encoding="utf-8")
+    doc.write_bytes(ORIGINAL.encode("utf-8"))
     read = await spine.call("file_read", {"path": str(doc)})
     assert (read.content or "").startswith('<untrusted_tool_result tool="file_read">')
 
@@ -60,7 +72,7 @@ async def test_the_host_explains_the_tokens(spine: Spine) -> None:
     """The model is told, in host words, that tokens are there and must be kept. A count
     only — never a sample, which would be the file's own words again."""
     doc = spine.granted / "notes.md"
-    doc.write_text(ORIGINAL, encoding="utf-8")
+    doc.write_bytes(ORIGINAL.encode("utf-8"))
     read = await spine.call("file_read", {"path": str(doc)})
     note = read.warning or ""
     assert "⟦U+XXXX⟧" in note and "restored" in note
@@ -69,7 +81,7 @@ async def test_the_host_explains_the_tokens(spine: Spine) -> None:
 
 async def test_a_plain_file_carries_no_note(spine: Spine) -> None:
     doc = spine.granted / "plain.txt"
-    doc.write_text("just words\n", encoding="utf-8")
+    doc.write_bytes("just words\n".encode("utf-8"))
     read = await spine.call("file_read", {"path": str(doc)})
     assert read.warning is None
 
@@ -97,7 +109,7 @@ async def test_other_tools_are_still_neutralized(spine: Spine) -> None:
 async def test_an_edit_of_text_read_with_tokens_lands_exactly(spine: Spine) -> None:
     """Editing a line the model saw with tokens in it: it passes them back as shown."""
     doc = spine.granted / "notes.md"
-    doc.write_text(ORIGINAL, encoding="utf-8")
+    doc.write_bytes(ORIGINAL.encode("utf-8"))
     seen = _unwrap((await spine.call("file_read", {"path": str(doc)})).content or "")
     old_line = next(line for line in seen.split("\n") if line.startswith("Emoji"))
     p = await spine.call(
@@ -107,12 +119,12 @@ async def test_an_edit_of_text_read_with_tokens_lands_exactly(spine: Spine) -> N
     ok = await spine.router.resolve(p.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert ok.status == "succeeded"
     want = ORIGINAL.replace(f"a {LIGATURE}le.", f"a {LIGATURE}le. (kept)")
-    assert doc.read_text(encoding="utf-8") == want
+    assert doc.read_bytes().decode("utf-8") == want
 
 
 async def test_an_edit_changes_only_the_named_text(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_text(ORIGINAL, encoding="utf-8")
+    doc.write_bytes(ORIGINAL.encode("utf-8"))
     p = await spine.call(
         "file_edit", {"path": str(doc), "old": "print('hi')", "new": "print('hello')"}
     )
@@ -120,12 +132,12 @@ async def test_an_edit_changes_only_the_named_text(spine: Spine) -> None:
     assert "line 4" in (p.summary or "")
     ok = await spine.router.resolve(p.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert ok.status == "succeeded"
-    assert doc.read_text(encoding="utf-8") == ORIGINAL.replace("print('hi')", "print('hello')")
+    assert doc.read_bytes().decode("utf-8") == ORIGINAL.replace("print('hi')", "print('hello')")
 
 
 async def test_an_edit_whose_text_is_missing_is_refused(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_text(ORIGINAL, encoding="utf-8")
+    doc.write_bytes(ORIGINAL.encode("utf-8"))
     r = await spine.call("file_edit", {"path": str(doc), "old": "not in the file", "new": "x"})
     assert r.reason is Refusal.PRECONDITION_FAILED
     assert "not found" in (r.detail or "")
@@ -133,7 +145,7 @@ async def test_an_edit_whose_text_is_missing_is_refused(spine: Spine) -> None:
 
 async def test_an_ambiguous_edit_is_refused(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_text("same\nsame\n", encoding="utf-8")
+    doc.write_bytes("same\nsame\n".encode("utf-8"))
     r = await spine.call("file_edit", {"path": str(doc), "old": "same", "new": "x"})
     assert r.reason is Refusal.PRECONDITION_FAILED
     assert "2 times" in (r.detail or "")
@@ -141,11 +153,11 @@ async def test_an_ambiguous_edit_is_refused(spine: Spine) -> None:
 
 async def test_an_edit_notices_the_file_changed_since_the_proposal(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_text("alpha beta\n", encoding="utf-8")
+    doc.write_bytes("alpha beta\n".encode("utf-8"))
     p = await spine.call("file_edit", {"path": str(doc), "old": "beta", "new": "gamma"})
-    doc.write_text("alpha beta, plus the user's own edit\n", encoding="utf-8")
+    doc.write_bytes("alpha beta, plus the user's own edit\n".encode("utf-8"))
     res = await spine.router.resolve(p.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert res.reason is Refusal.PRECONDITION_CHANGED
-    assert doc.read_text(encoding="utf-8") == "alpha beta, plus the user's own edit\n"
+    assert doc.read_bytes().decode("utf-8") == "alpha beta, plus the user's own edit\n"
     a = await spine.store.get_pending(p.pending_id or "")
     assert a is not None and a.status is Status.INVALIDATED
