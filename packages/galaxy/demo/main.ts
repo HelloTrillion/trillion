@@ -15,6 +15,9 @@ const note = byId<HTMLParagraphElement>('note');
 const stateButtons = new Map<OrbStateName, HTMLButtonElement>();
 
 const galaxy = createGalaxy(byId<HTMLCanvasElement>('galaxy'), {
+  // The state buttons show every look, including gold with no microphone. A real host
+  // leaves this off, so gold only ever means the microphone is live.
+  demo: true,
   onStateChange: (s) => {
     status.textContent = STATE_LABELS[s];
     for (const [name, btn] of stateButtons) btn.setAttribute('aria-pressed', String(name === s));

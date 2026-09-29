@@ -46,7 +46,9 @@ galaxy.setPerfMode('on');
 galaxy.destroy();         // stops the loop and frees GPU resources
 ```
 
-`attachAnalyser` only taps the node: it never changes what is heard. When no analyser is attached, listening and speaking fall back to a gentle synthetic pulse so the orb never looks dead.
+`attachAnalyser` only taps the node: it never changes what is heard. When no playback analyser is attached, speaking falls back to a gentle synthetic pulse so the orb never looks dead.
+
+**Gold means the microphone is live, and nothing else.** If you call `setState('listening')` before a microphone is attached, the orb shows `arming` (ember) until `attachAnalyser(node, 'mic')` is called, and `onStateChange` reports `arming` too, so a screen reader never announces listening when nothing is recording. `getState()` still returns what you asked for. For demos and screenshots, `createGalaxy(canvas, { demo: true })` lets `listening` pulse gold without a microphone.
 
 `addSatellite`, `removeSatellite` and `pulseArc` already have their final signatures but are no-ops in this release; the constellation (GAL-7) and energy arcs (GAL-8) arrive in Phase 1.
 
@@ -56,7 +58,7 @@ galaxy.destroy();         // stops the loop and frees GPU resources
 |---|---|---|
 | `idle` | Dim teal, slow breath | Nothing is happening |
 | `arming` | Ember | The mic was requested; no audio has arrived yet |
-| `listening` | Gold, swells with your voice | The mic is live |
+| `listening` | Gold, swells with your voice | The mic is live (shows `arming` until a mic is attached) |
 | `processing` | Teal and purple, with three rings | Thinking |
 | `speaking` | Bright teal, rides the playback | The agent is talking |
 | `error` | Red | Something went wrong |

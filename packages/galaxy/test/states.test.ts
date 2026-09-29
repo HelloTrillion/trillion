@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS, type OrbParams } from '../src/states';
+import {
+  ORB_STATE_NAMES,
+  ORB_STATES,
+  STATE_LABELS,
+  displayedState,
+  type OrbParams,
+} from '../src/states';
 
 const KEYS: (keyof OrbParams)[] = [
   'color', 'colorSecondary', 'opacity', 'fresnelPower', 'noiseSpeed',
@@ -53,3 +59,28 @@ describe('ORB_STATES', () => {
     for (const name of ORB_STATE_NAMES) expect(STATE_LABELS[name].length).toBeGreaterThan(0);
   });
 });
+
+// Gold is the recording light (VOI-8, VOI-15d). A host that says `listening` before
+// its microphone is attached must not light it: the orb shows `arming` until audio
+// is really there. Only an explicit demo mode may pulse gold with no mic (#18).
+describe('displayedState', () => {
+  it('shows arming, not gold, while listening with no microphone', () => {
+    expect(displayedState('listening', false)).toBe('arming');
+  });
+
+  it('shows gold once a microphone is attached', () => {
+    expect(displayedState('listening', true)).toBe('listening');
+  });
+
+  it('lets an explicit demo pulse gold without a microphone', () => {
+    expect(displayedState('listening', false, true)).toBe('listening');
+  });
+
+  it('leaves every other state alone, mic or not', () => {
+    for (const s of ORB_STATE_NAMES.filter((n) => n !== 'listening')) {
+      expect(displayedState(s, false)).toBe(s);
+      expect(displayedState(s, true)).toBe(s);
+    }
+  });
+});
+
