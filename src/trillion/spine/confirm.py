@@ -80,6 +80,9 @@ class PendingAction:
     effect_status: str | None = None
     outcome_detail: str | None = None
     precondition_token: str | None = None
+    # True once retention has cleared the full arguments (#20): `args` is then the slim
+    # copy, with long values replaced by their fingerprints, and the action cannot run.
+    args_cleared: bool = False
 
 
 _STATUS_REFUSAL = {

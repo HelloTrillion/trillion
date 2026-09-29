@@ -52,6 +52,7 @@ from trillion.spine.loop_guard import LoopGuard, Verdict
 from trillion.spine.lossless import encode
 from trillion.spine.neutralize import neutralize
 from trillion.spine.registry import ToolRegistry
+from trillion.spine.retention import RETENTION_DAYS, RETENTION_MS
 from trillion.spine.store import DecisionIn, SpineStore
 from trillion.spine.untrusted import wrap
 
@@ -393,6 +394,16 @@ class Router:
     async def _execute_approved(self, a: PendingAction, ctx: ToolContext) -> RouterResponse:
         approved = Status.APPROVED
         tool = self._get(a.tool)
+        if a.args_cleared:  # pragma: no cover - retention clears settled actions only
+            await self._move(
+                a.id,
+                approved,
+                Status.FAILED,
+                _by(ctx, "failed"),
+                effect="none",
+                detail="its details were cleared",
+            )
+            return _refused(Refusal.PRECONDITION_CHANGED, "its details were cleared")
         if tool is None:
             await self._move(
                 a.id,
@@ -473,6 +484,11 @@ class Router:
         a = await self._expire_if_due(a, now, ctx)
         if a.status not in REPRESENTABLE:
             return _refused(Refusal.NOT_REPRESENTABLE, a.status.value)
+        if a.args_cleared:
+            return _refused(
+                Refusal.NOT_REPRESENTABLE,
+                f"its details are kept for {RETENTION_DAYS} days after it settles; ask afresh",
+            )
         tool = self._get(a.tool)
         if tool is None:
             return _refused(Refusal.UNKNOWN_TOOL)
@@ -483,6 +499,19 @@ class Router:
         if not pre.ok:
             return _refused(Refusal.PRECONDITION_FAILED, _tool_detail(pre.reason))
         return await self._propose(tool, a.args, ctx, represented_from=a.id)
+
+    async def forget_settled_arguments(self) -> int:
+        """Clear the full arguments of actions settled more than 30 days ago (#20).
+
+        Run at startup and daily. The frozen record keeps a slim copy and its hash, so
+        what was approved stays provable; the outcome, decisions and audit are kept."""
+        now = self._clock()
+        cleared = await self._store.clear_settled_args(
+            settled_before_ms=now - RETENTION_MS, now_ms=now
+        )
+        if cleared:
+            logger.info("cleared the arguments of %d settled action(s)", cleared)
+        return cleared
 
     async def mark_delivered(self, pending_id: str, owner_id: str, surface: str) -> bool:
         """Record the first render of a pending action on a surface. Later calls do nothing."""
