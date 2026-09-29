@@ -7,9 +7,9 @@ import { approach, stepParams } from './easing';
 import { Landscape } from './landscape/landscape';
 import { Orb } from './orb/orb';
 import { type PerfMode, PerfGovernor, motionScale, qualityFor } from './perf';
-import { ORB_STATES, type OrbParams, type OrbStateName } from './states';
+import { ORB_STATES, displayedState, type OrbParams, type OrbStateName } from './states';
 
-export { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS } from './states';
+export { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS, displayedState } from './states';
 export type { OrbParams, OrbStateName } from './states';
 export type { AnalyserRole, Levels } from './audio/levels';
 export type { PerfMode } from './perf';
@@ -23,8 +23,16 @@ export interface GalaxyOptions {
   readonly seed?: number;
   /** Override the prefers-reduced-motion media query. */
   readonly reducedMotion?: boolean;
-  /** Called whenever the state changes, for a live region (SUR-6). */
+  /**
+   * Called whenever the state the orb *shows* changes, for a live region (SUR-6).
+   * That is `arming`, not `listening`, until a microphone is attached.
+   */
   readonly onStateChange?: (state: OrbStateName) => void;
+  /**
+   * Let `listening` pulse gold with no microphone attached. For demos and
+   * screenshots only: gold means recording, and without this it only ever does.
+   */
+  readonly demo?: boolean;
   /** Called when perf mode switches on or off. */
   readonly onPerfChange?: (active: boolean) => void;
 }
@@ -123,11 +131,23 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   };
   if (perfActive) opts.onPerfChange?.(true);
 
-  const targetLevels = (): Levels => {
-    if (state === 'speaking') {
+  // What the orb shows can differ from what the host asked for: `listening` with no
+  // microphone attached shows `arming`, so gold never lights without a recording.
+  const shown = (): OrbStateName => displayedState(state, bank.has('mic'), opts.demo === true);
+  let announced: OrbStateName = 'idle';
+  const announce = (): void => {
+    const s = shown();
+    if (s === announced) return;
+    announced = s;
+    opts.onStateChange?.(s);
+  };
+
+  const targetLevels = (s: OrbStateName): Levels => {
+    if (s === 'speaking') {
       return bank.has('playback') ? bank.read('playback') : syntheticSpeech(clock);
     }
-    if (state === 'listening') {
+    if (s === 'listening') {
+      // Without a mic this is reachable only in demo mode (displayedState).
       return bank.has('mic') ? bank.read('mic') : syntheticListening(clock);
     }
     return SILENT;
@@ -146,12 +166,13 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
 
     const motion = motionScale(reduced);
     animClock += dt * motion;
-    params = stepParams(params, ORB_STATES[state], dt);
-    levels = smooth(levels, targetLevels());
+    const showing = shown();
+    params = stepParams(params, ORB_STATES[showing], dt);
+    levels = smooth(levels, targetLevels(showing));
     flareLevel = approach(flareLevel, 0, 0.05, dt);
     light = approach(light, theme === 'light' ? 1 : 0, 0.08, dt);
     // The network answers her voice (and her thinking), not the user's mic.
-    const voiced = state === 'speaking' || state === 'processing';
+    const voiced = showing === 'speaking' || showing === 'processing';
 
     orb.update({ params, levels, time: animClock, dt, flare: flareLevel, motion });
     landscape.update({
@@ -173,12 +194,18 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     setState(next) {
       if (destroyed || next === state) return;
       state = next;
-      opts.onStateChange?.(next);
+      announce();
     },
+    /** The state the host asked for. The orb may be showing `arming` instead. */
     getState: () => state,
     attachAnalyser(node, role) {
       if (destroyed) return () => {};
-      return bank.attach(node, role);
+      const detach = bank.attach(node, role);
+      announce();
+      return () => {
+        detach();
+        if (!destroyed) announce();
+      };
     },
     flare(strength = 1) {
       flareLevel = Math.min(1.5, flareLevel + Math.max(0, strength));

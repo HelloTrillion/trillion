@@ -67,6 +67,19 @@ export const ORB_STATES: Readonly<Record<OrbStateName, OrbParams>> = {
 };
 
 /** Text for the accessibility live region (SUR-6). Not spoken by the agent. */
+/**
+ * The state the orb actually shows. Gold is the recording light (VOI-8), so a host
+ * that asks for `listening` before its microphone is attached gets `arming` until the
+ * audio is really there. Only an explicit demo may pulse gold with no microphone.
+ */
+export function displayedState(
+  state: OrbStateName,
+  micAttached: boolean,
+  demo = false,
+): OrbStateName {
+  return state === 'listening' && !micAttached && !demo ? 'arming' : state;
+}
+
 export const STATE_LABELS: Readonly<Record<OrbStateName, string>> = {
   idle: 'Idle',
   arming: 'Waiting for the microphone',
