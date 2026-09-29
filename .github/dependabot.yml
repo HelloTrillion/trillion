@@ -1,0 +1,14 @@
+# Keeps the commit-SHA pins in .github/workflows current (#19). Actions are pinned to
+# full SHAs so a publisher moving a tag cannot change what runs in CI; Dependabot
+# proposes each update as a reviewable pull request instead.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
