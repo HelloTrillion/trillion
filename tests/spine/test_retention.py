@@ -153,3 +153,16 @@ async def test_the_side_table_refuses_deletes(spine: Spine) -> None:
     await _written(spine)
     with pytest.raises(aiosqlite.Error, match="append-only"):
         await spine.store._conn.execute("DELETE FROM pending_action_args")
+
+
+async def test_a_large_edit_is_slimmed_too(spine: Spine) -> None:
+    """file_edit arrived after the retention design: its old/new text can be as large
+    as a whole file, and it is slimmed and cleared the same way."""
+    doc = spine.granted / "big.md"
+    doc.write_bytes(b"head\n" + BIG.encode() + b"\ntail\n")
+    r = await spine.call("file_edit", {"path": str(doc), "old": BIG, "new": BIG + "!"})
+    assert r.status == "confirmation_required", r
+    (row,) = await _raw(spine, "SELECT args_json FROM pending_actions WHERE id = ?", r.pending_id)
+    assert BIG not in row["args_json"]
+    a = await spine.store.get_pending(r.pending_id or "")
+    assert a is not None and a.args["old"] == BIG  # full arguments still there to run
