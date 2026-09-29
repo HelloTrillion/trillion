@@ -34,6 +34,11 @@ class ToolDefinition:
     path_args: tuple[str, ...] = ()
     recoverable: bool = True
     trusted_output: bool = False
+    # Wrapped as untrusted like any result, but escaped reversibly instead of neutralized
+    # (spine/lossless.py): the model's view carries the same guarantees and decodes back
+    # exactly, so a read → write round trip cannot rewrite the user's file. First-party
+    # tools only.
+    lossless_output: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
