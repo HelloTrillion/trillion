@@ -14,6 +14,7 @@ from trillion.spine.audit import AuditRecord
 from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.contract import Risk
 from trillion.spine.hashing import canonical_json
+from trillion.spine.retention import SETTLED, slim
 from trillion.spine.store import DecisionIn, DecisionRow, DeliveryRow
 
 _PENDING_COLUMNS = (
@@ -21,10 +22,22 @@ _PENDING_COLUMNS = (
     " created_turn, status, expires_at, represented_from, effect_status, outcome_detail,"
     " created_at, updated_at, precondition_token"
 )
+# Reads join the full arguments, which live apart from the frozen row (#20). Built only
+# from the constant column list above, never from input.
+_SELECT_PENDING = (
+    "SELECT "  # noqa: S608
+    + ", ".join(f"p.{c.strip()}" for c in _PENDING_COLUMNS.split(","))
+    + ", x.args_json AS full_args_json, x.cleared_at AS args_cleared_at"
+    " FROM pending_actions p LEFT JOIN pending_action_args x ON x.pending_id = p.id"
+)
 
 
 def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
-    args: dict[str, Any] = json.loads(str(r["args_json"]))
+    # The full arguments when they are still kept; otherwise the frozen row's copy,
+    # which is the slim one — or, for a row written before #20, the full one.
+    full = r["full_args_json"]
+    args: dict[str, Any] = json.loads(str(full if full is not None else r["args_json"]))
+    cleared = full is None and r["args_cleared_at"] is not None
     return PendingAction(
         id=str(r["id"]),
         owner_id=str(r["owner_id"]),
@@ -48,6 +61,7 @@ def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
         precondition_token=(
             str(r["precondition_token"]) if r["precondition_token"] is not None else None
         ),
+        args_cleared=cleared,
     )
 
 
@@ -85,8 +99,8 @@ class SqliteSpineStore:
                     a.id,
                     a.owner_id,
                     a.tool,
-                    canonical_json(a.args),
-                    a.args_hash,
+                    canonical_json(slim(a.args)),  # the frozen copy is the slim one
+                    a.args_hash,  # ...and this still covers the full arguments
                     a.summary,
                     a.target,
                     a.risk.value,
@@ -103,11 +117,16 @@ class SqliteSpineStore:
                     a.precondition_token,
                 ),
             )
+            await conn.execute(
+                "INSERT INTO pending_action_args (pending_id, owner_id, args_json)"
+                " VALUES (?, ?, ?)",
+                (a.id, a.owner_id, canonical_json(a.args)),
+            )
             await self._decision(conn, a.owner_id, a.id, decision, a.created_at)
 
     async def get_pending(self, pending_id: str) -> PendingAction | None:
         async with self._conn.execute(
-            f"SELECT {_PENDING_COLUMNS} FROM pending_actions WHERE id = ?",  # noqa: S608
+            f"{_SELECT_PENDING} WHERE p.id = ?",
             (pending_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -147,18 +166,36 @@ class SqliteSpineStore:
         self, owner_id: str, session_id: str, tool: str, target: str
     ) -> list[PendingAction]:
         async with self._conn.execute(
-            f"SELECT {_PENDING_COLUMNS} FROM pending_actions"  # noqa: S608
-            " WHERE owner_id = ? AND session_id = ? AND tool = ? AND target = ? AND status = ?",
+            f"{_SELECT_PENDING}"
+            " WHERE p.owner_id = ? AND p.session_id = ? AND p.tool = ? AND p.target = ?"
+            " AND p.status = ?",
             (owner_id, session_id, tool, target, Status.PROPOSED.value),
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
 
     async def list_by_status(self, status: Status) -> list[PendingAction]:
         async with self._conn.execute(
-            f"SELECT {_PENDING_COLUMNS} FROM pending_actions WHERE status = ?",  # noqa: S608
+            f"{_SELECT_PENDING} WHERE p.status = ?",
             (status.value,),
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
+
+    async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:
+        """Clear the full arguments of every action that settled before the cutoff.
+
+        Clearing is the only change `pending_action_args` accepts. The frozen row, its
+        outcome, its decisions and its audit records are not touched."""
+        statuses = sorted(s.value for s in SETTLED)
+        marks = ", ".join("?" for _ in statuses)
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE pending_action_args SET args_json = NULL, cleared_at = ?"  # noqa: S608
+                " WHERE args_json IS NOT NULL AND pending_id IN ("
+                f"  SELECT id FROM pending_actions WHERE status IN ({marks})"
+                "   AND updated_at <= ?)",
+                (now_ms, *statuses, settled_before_ms),
+            )
+            return int(cur.rowcount or 0)
 
     async def list_decisions(self, pending_id: str) -> list[DecisionRow]:
         async with self._conn.execute(
