@@ -81,7 +81,7 @@ async def test_the_host_explains_the_tokens(spine: Spine) -> None:
 
 async def test_a_plain_file_carries_no_note(spine: Spine) -> None:
     doc = spine.granted / "plain.txt"
-    doc.write_bytes("just words\n".encode("utf-8"))
+    doc.write_bytes(b"just words\n")
     read = await spine.call("file_read", {"path": str(doc)})
     assert read.warning is None
 
@@ -145,7 +145,7 @@ async def test_an_edit_whose_text_is_missing_is_refused(spine: Spine) -> None:
 
 async def test_an_ambiguous_edit_is_refused(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_bytes("same\nsame\n".encode("utf-8"))
+    doc.write_bytes(b"same\nsame\n")
     r = await spine.call("file_edit", {"path": str(doc), "old": "same", "new": "x"})
     assert r.reason is Refusal.PRECONDITION_FAILED
     assert "2 times" in (r.detail or "")
@@ -153,9 +153,9 @@ async def test_an_ambiguous_edit_is_refused(spine: Spine) -> None:
 
 async def test_an_edit_notices_the_file_changed_since_the_proposal(spine: Spine) -> None:
     doc = spine.granted / "notes.md"
-    doc.write_bytes("alpha beta\n".encode("utf-8"))
+    doc.write_bytes(b"alpha beta\n")
     p = await spine.call("file_edit", {"path": str(doc), "old": "beta", "new": "gamma"})
-    doc.write_bytes("alpha beta, plus the user's own edit\n".encode("utf-8"))
+    doc.write_bytes(b"alpha beta, plus the user's own edit\n")
     res = await spine.router.resolve(p.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
     assert res.reason is Refusal.PRECONDITION_CHANGED
     assert doc.read_bytes().decode("utf-8") == "alpha beta, plus the user's own edit\n"
