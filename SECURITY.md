@@ -78,11 +78,13 @@ is a known limit of this phase.
 
 - **There is no shell tool.** The only tools are the file tools, confined to
   folders the user granted.
-- **Every file write asks first.** All four file-writing tools are declared
+- **Every file write asks first.** The file-writing tools — `file_create`,
+  `file_overwrite`, `file_append` and `file_edit` — are all declared
   `irreversible`, so they are gated: the arguments are frozen when proposed,
   the confirmation carries no arguments of its own, and the target is
   re-checked before anything runs. (The spine lets a tool declared `write`
-  run without asking; none of the shipped tools is.)
+  run without asking. The only shipped `write` tools are the spine's own
+  `confirm_pending_action` and `cancel_pending_action`.)
 - **The deny floor** refuses Trillion's own data folder (its database,
   secrets file and identity files), its source code, the macOS keychains,
   and `.git`, `.ssh`, `.aws`, `.gnupg` and `.env` files — on the normal path
