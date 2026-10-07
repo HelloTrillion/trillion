@@ -9,7 +9,12 @@ from trillion.storage.migrate import MigrationChecksumError, migrate
 
 async def test_applies_once_and_records_checksum(tmp_path):
     conn = await connect(tmp_path / "t.db")
-    assert await migrate(conn) == ["001_spine", "002_args_retention"]
+    assert await migrate(conn) == [
+        "001_spine",
+        "002_args_retention",
+        "003_conversations",
+        "004_preferences",
+    ]
     assert await migrate(conn) == []
     async with conn.execute("SELECT id FROM owners") as cur:
         assert [r[0] for r in await cur.fetchall()] == ["local"]

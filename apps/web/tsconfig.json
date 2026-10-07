@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["vite/client"],
+    "paths": { "@hellotrillion/galaxy": ["../../packages/galaxy/src/index.ts"] }
+  },
+  "include": ["src", "test", "vite.config.ts", "vitest.config.ts"]
+}

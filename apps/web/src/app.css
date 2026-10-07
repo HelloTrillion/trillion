@@ -1,0 +1,429 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--color-bg-0);
+  color: var(--color-text-0);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+button {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-2);
+  color: var(--color-text-0);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ── Top bar ─────────────────────────────────────────────────────────── */
+
+.top {
+  position: fixed;
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  letter-spacing: 0.02em;
+}
+
+.status {
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.model {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+
+.theme-switch {
+  display: flex;
+  padding: 3px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-glass);
+  border: 1px solid var(--color-border);
+  backdrop-filter: blur(12px);
+}
+
+.theme-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.theme-switch button[aria-checked='true'] {
+  background: var(--color-bg-2);
+  color: var(--color-text-0);
+}
+
+/* ── Conversation ────────────────────────────────────────────────────── */
+
+.stage {
+  position: fixed;
+  inset: auto 0 0;
+  margin: 0 auto;
+  width: min(680px, calc(100vw - 32px));
+  padding-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transcript {
+  max-height: 44vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+  scrollbar-width: thin;
+  /* Older lines fade into the galaxy instead of ending at a hard edge. */
+  mask-image: linear-gradient(to bottom, transparent, black 48px);
+}
+
+.transcript > * {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.msg {
+  max-width: 85%;
+  padding: 9px 13px;
+  border-radius: var(--radius-lg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--color-surface-glass);
+  border: 1px solid var(--color-border);
+  backdrop-filter: blur(12px);
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: var(--color-bg-2);
+}
+
+.msg .mark,
+.notice {
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+
+.chip {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-1);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-glass);
+}
+
+.chip.bad {
+  color: var(--color-amber);
+}
+
+/* ── Confirmation card ───────────────────────────────────────────────── */
+
+.card {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-1);
+  border: 1px solid var(--color-amber);
+}
+
+.card:not(.waiting) {
+  border-color: var(--color-border);
+  opacity: 0.85;
+}
+
+.card.done {
+  border-color: var(--color-accent);
+}
+
+.card-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-amber);
+}
+
+.card:not(.waiting) .card-title {
+  color: var(--color-text-1);
+}
+
+.card-summary {
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+
+.card-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+
+/* ── Ask bar ─────────────────────────────────────────────────────────── */
+
+.banner {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-1);
+  border: 1px solid var(--color-amber);
+  font-size: 13px;
+}
+
+.ask {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-glass);
+  border: 1px solid var(--color-border);
+  backdrop-filter: blur(12px);
+}
+
+.ask textarea {
+  flex: 1;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 6px 8px;
+  max-height: 160px;
+}
+
+.ask textarea::placeholder {
+  color: var(--color-text-2);
+}
+
+.ask:focus-within {
+  border-color: var(--color-accent);
+}
+
+.foot {
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-2);
+  min-height: 1.4em;
+}
+
+/* ── Model settings ──────────────────────────────────────────────────── */
+
+button.model {
+  background: var(--color-surface-glass);
+  backdrop-filter: blur(12px);
+}
+
+dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+  color: var(--color-text-0);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+}
+
+.settings h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.settings p {
+  margin: 0;
+}
+
+.settings-note,
+.settings-hint,
+.settings-kind small {
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+.settings-warn {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-amber);
+  font-size: 13px;
+}
+
+.settings-kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-kind {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+}
+
+.settings-kind:has(input:checked) {
+  border-color: var(--color-accent);
+}
+
+.settings-kind span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-row label {
+  flex: 0 0 100%;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-row input,
+.settings-row select {
+  flex: 1 1 240px;
+  min-width: 0;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-0);
+  color: inherit;
+}
+
+.settings-row .settings-hint {
+  flex: 0 0 100%;
+}
+
+.settings-row a {
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+.settings-row [hidden],
+.settings [hidden] {
+  display: none;
+}
+
+.settings-status {
+  min-height: 1.4em;
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+
+button.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-1);
+}

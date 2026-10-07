@@ -8,26 +8,30 @@ This is the map: one process, what each package does, how a tool call moves thro
 
 ## 2. Module map
 
-The `§8.1` tree from the PRD is the target layout. Today, `trillion/cli`, `trillion/spine`, `trillion/storage` and `trillion/tools` have working code (see the design doc below); everything else is a placeholder package waiting for its track.
+The `§8.1` tree from the PRD is the target layout. The packages marked "exists" have working code; everything else is a placeholder waiting for its track.
 
 | Package | Status |
 |---|---|
-| `trillion/cli` | exists — the `trillion` command |
+| `trillion/cli` | exists — `trillion run` starts the server and opens the app |
 | `trillion/spine` | exists — the router, the confirmation state machine, the deny floor, untrusted wrapping, the loop guard; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
-| `trillion/storage` | exists — SQLite, checksummed migrations, the spine store; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
-| `trillion/tools` | exists — the file tools; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
-| `trillion/api` | placeholder |
-| `trillion/brain` | placeholder |
-| `trillion/persona` | placeholder |
+| `trillion/storage` | exists — SQLite, checksummed migrations, the spine store, conversations and usage |
+| `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`. Still to build from CON-3: `file_search`, `web_fetch`, `weather`, `memory_*`, `describe_self` |
+| `trillion/api` | exists — the loopback server, the session token, and the text half of the realtime protocol; see `docs/specs/2026-10-07-first-conversation-design.md` |
+| `trillion/brain` | exists — the provider interface, the Anthropic and OpenAI-compatible adapters, the tool loop. Compaction and spend ceilings are not built yet |
+| `trillion/persona` | exists — loads the soul and the identity files, assembles the prompt. Overlays beyond text, and the tonal checkpoint, are not built yet |
 | `trillion/voice` | placeholder |
 | `trillion/memory` | placeholder |
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |
-| `trillion/secrets` | not yet created (SEC-*, next cycle) |
+| `trillion/secrets` | exists — the OS keychain behind one interface, and the log filter that scrubs keys. The encrypted-file fallback for machines with no keychain (SEC-2) and `doctor --secrets` (SEC-9) are not built yet |
 | `trillion/connectors` | placeholder |
 | `trillion/channels` | placeholder |
 
-## 3. The life of a tool call
+## 3. The life of a turn
+
+A typed message arrives on the WebSocket as `turn.text`. The session saves it, advances the turn counter, and starts the agent loop (`brain/loop.py`). The loop streams the model's reply to the page as it arrives. When the model asks for tools, the loop hands each call to `Router.dispatch` and gives the model back exactly what the router recorded; it never calls a tool itself. A tap on a confirmation card goes straight from the session to `Router.resolve`, and the session then tells the model what the tap did. Every message is saved as it completes, so an interrupt or a crash leaves a history that is still true.
+
+## 4. The life of a tool call
 
 Every tool call — from the model, a sub-agent, a skill, an MCP server or a channel — goes through the same pipeline. There is no second door.
 
@@ -50,7 +54,7 @@ Every tool call — from the model, a sub-agent, a skill, an MCP server or a cha
 4. An atomic claim ensures exactly one caller executes the action, even if the same "yes" arrives twice.
 5. The tool executes, and the outcome — succeeded, failed, or unknown, never guessed — is written to an immutable decision record.
 
-## 4. Where each guarantee lives
+## 5. Where each guarantee lives
 
 The status column keeps this table honest: a row says "enforced" only when the test beside it proves it. The `tests/spine/` suite runs in CI with 95% branch coverage on `trillion.spine` required.
 
@@ -67,8 +71,16 @@ The status column keeps this table honest: a row says "enforced" only when the t
 | The decision record is immutable | `storage/migrations/001_spine.sql` — triggers on the `decisions`, `decision_deliveries` and `tool_audit` tables | `tests/spine/test_structure.py` | enforced |
 | Only the router ever calls `Tool.execute` | `spine/router.py` | `tests/spine/test_structure.py` | enforced |
 | There are no hard-delete tools | `spine/registry.py`, `storage/` | `tests/spine/test_structure.py` | enforced |
+| A key entered in the app goes to the OS keychain and nowhere else: not the database, a file, a log or any response | `api/settings.py`, `secrets/store.py`, `secrets/redact.py` | `tests/api/test_server.py`, `tests/unit/test_secrets.py` | enforced |
+| A key is sent only over HTTPS or to this machine | `brain/config.py` — `endpoint()` | `tests/unit/test_brain_config.py` | enforced |
+| Conversation history is only appended to, so the model's signed reasoning stays valid | `api/session.py`, `brain/providers/anthropic.py` | `tests/api/test_server.py`, `tests/brain/test_providers.py` | enforced |
+| An unauthenticated client gets the static UI shell and a refusal, nothing else | `api/app.py` | `tests/api/test_server.py` | enforced |
+| The model cannot confirm in the turn it proposed; a tap can approve at once | `api/session.py` — a tap advances the turn; `spine/confirm.py` | `tests/brain/test_loop.py`, `tests/api/test_server.py` | enforced |
+| Conversation text never reaches a log | `api/session.py`, `brain/loop.py`, `brain/sse.py` | `tests/api/test_server.py`, `tests/brain/test_providers.py` | enforced |
 | The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py` | enforced |
 
-## 5. Frontend
+## 6. Frontend
 
-`packages/galaxy` is a standalone TypeScript package with no dependency on the backend — it can be dropped into any page that wants the orb. `apps/web` will consume it as a dependency once the web app exists; that hasn't started yet.
+`packages/galaxy` is a standalone TypeScript package with no dependency on the backend — it can be dropped into any page that wants the orb.
+
+`apps/web` is the app you talk to. `src/view.ts` turns the messages the core sends into what the screen shows, as a pure function with its own tests; `src/main.ts` owns the socket and the DOM. It writes text with `textContent` only, so nothing the model or a tool produced is ever parsed as markup. The core serves the built app; in development, run Vite beside it with `trillion run --dev`.

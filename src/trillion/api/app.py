@@ -1,0 +1,211 @@
+"""The local server: the web UI's files and one authenticated WebSocket (SPN-11, SPN-11a).
+
+What an unauthenticated client can do is exactly this: fetch the static UI
+shell, which holds no user data, and open a socket that will tell it that it
+is unauthenticated and close. No model call, no tool and no stored data is
+reachable before a valid `hello`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import json
+import logging
+import os
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+
+from trillion import paths
+from trillion.api.runtime import Runtime
+from trillion.api.session import PROTOCOL, Session
+from trillion.api.settings import create_router
+
+logger = logging.getLogger(__name__)
+
+HOST = "127.0.0.1"  # loopback only; there is deliberately no option to change it
+DEFAULT_PORT = 7777
+HELLO_TIMEOUT_S = 10.0
+MAX_FRAME_BYTES = 1 << 20
+CLOSE_UNAUTHENTICATED = 4401
+CLOSE_FORBIDDEN = 4403
+ENV_WEB_DIR = "TRILLION_WEB_DIR"
+
+_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; connect-src 'self'; img-src 'self' data:;"
+        " style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+_NOT_BUILT = (
+    "Trillion is running, but the web UI has not been built.\n\n"
+    "From a source checkout:\n"
+    "    pnpm install\n"
+    "    pnpm --filter @hellotrillion/web build\n"
+    "then reload this page.\n"
+)
+
+
+def local_hosts(port: int) -> frozenset[str]:
+    return frozenset({f"127.0.0.1:{port}", f"localhost:{port}"})
+
+
+def web_dir() -> Path | None:
+    """Where the built UI is: an override, the installed package, or a source checkout."""
+    override = os.environ.get(ENV_WEB_DIR)
+    candidates = [
+        Path(override) if override else None,
+        paths.package_root() / "api" / "static",
+        paths.package_root().parents[1] / "apps" / "web" / "dist",
+    ]
+    return next((c for c in candidates if c is not None and (c / "index.html").is_file()), None)
+
+
+def create_app(
+    rt: Runtime,
+    *,
+    hosts: frozenset[str],
+    extra_origins: frozenset[str] = frozenset(),
+    static: Path | None = None,
+) -> FastAPI:
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    origins = frozenset(f"http://{h}" for h in hosts) | extra_origins
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Any:
+        # A page on another site can point a hostname at 127.0.0.1 (DNS rebinding);
+        # it cannot make the browser send our Host header.
+        if request.headers.get("host") not in hosts:
+            return PlainTextResponse("forbidden", status_code=403)
+        if request.url.path.startswith("/api/") and request.method != "OPTIONS":
+            refusal = _api_refusal(request, rt.token, origins)
+            if refusal is not None:
+                return refusal
+        response = await call_next(request)
+        response.headers.update(_HEADERS)
+        return response
+
+    @app.websocket("/ws")
+    async def ws(socket: WebSocket) -> None:
+        origin = socket.headers.get("origin")
+        # Browsers always send Origin on a WebSocket; a local CLI client sends none.
+        if socket.headers.get("host") not in hosts or (
+            origin is not None and origin not in origins
+        ):
+            await socket.close(code=CLOSE_FORBIDDEN)
+            return
+        await socket.accept()
+
+        async def send(body: dict[str, Any]) -> None:
+            await socket.send_text(json.dumps(body, ensure_ascii=False))
+
+        try:
+            hello = await asyncio.wait_for(_receive(socket), HELLO_TIMEOUT_S)
+        except (TimeoutError, WebSocketDisconnect):
+            hello = None
+        if not _authenticated(hello, rt.token):
+            await _refuse(socket, send)
+            return
+
+        resume = hello.get("resume") if hello else None
+        session = await Session.start(rt, send, resume if isinstance(resume, str) else None)
+        try:
+            while True:
+                msg = await _receive(socket)
+                if msg is None:
+                    await send({"type": "error", "code": "bad_message"})
+                elif msg.get("type") == "session.end":
+                    break
+                else:
+                    await session.handle(msg)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await session.close()
+            with _quiet():
+                await socket.close()
+
+    app.include_router(create_router(rt))
+    if extra_origins:
+        # Development only: the page is served by Vite on another port.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=sorted(extra_origins),
+            allow_methods=["GET", "POST", "PUT"],
+            allow_headers=["authorization", "content-type"],
+        )
+
+    if static is not None:
+        app.mount("/", StaticFiles(directory=static, html=True), name="web")
+    else:
+
+        @app.get("/")
+        async def not_built() -> PlainTextResponse:
+            return PlainTextResponse(_NOT_BUILT)
+
+    return app
+
+
+def _api_refusal(request: Request, token: str, origins: frozenset[str]) -> Response | None:
+    """Every API request needs the session token, and a write must be ours (SPN-11).
+
+    A page on another site cannot read the token, cannot set this header without a
+    preflight we refuse, and cannot send JSON as a simple request."""
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in origins:
+        return PlainTextResponse("forbidden", status_code=403)
+    scheme, _, offered = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(offered.encode(), token.encode()):
+        return PlainTextResponse("unauthenticated", status_code=401)
+    if request.method != "GET":
+        kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if kind != "application/json":
+            return PlainTextResponse("unsupported media type", status_code=415)
+    return None
+
+
+async def _receive(socket: WebSocket) -> dict[str, Any] | None:
+    """One JSON object, or None when the frame is something else."""
+    try:
+        raw = await socket.receive_text()
+    except KeyError:  # a binary frame; audio arrives with the voice track
+        return None
+    if len(raw) > MAX_FRAME_BYTES:
+        return None
+    try:
+        value = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _authenticated(hello: dict[str, Any] | None, token: str) -> bool:
+    if hello is None or hello.get("type") != "hello" or hello.get("protocol", PROTOCOL) != PROTOCOL:
+        return False
+    offered = hello.get("token")
+    return isinstance(offered, str) and hmac.compare_digest(offered.encode(), token.encode())
+
+
+async def _refuse(socket: WebSocket, send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+    with _quiet():
+        await send({"type": "error", "code": "unauthenticated"})
+        await socket.close(code=CLOSE_UNAUTHENTICATED)
+
+
+class _quiet:
+    """Closing a socket the other side already closed is not an error worth raising."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, kind: object, exc: BaseException | None, tb: object) -> bool:
+        return isinstance(exc, (RuntimeError, WebSocketDisconnect, OSError))

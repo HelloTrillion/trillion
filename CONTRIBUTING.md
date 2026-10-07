@@ -60,6 +60,8 @@ pnpm install            # JS workspace (Node 22+)
 pnpm --filter @hellotrillion/galaxy dev   # the orb, in your browser
 ```
 
+To run the app itself, see "Try it" in the [README](README.md). While working on the web app, run `uv run trillion run --dev` in one terminal and `pnpm --filter @hellotrillion/web dev` in another, and open the link the first one prints.
+
 Before you push, the same checks CI runs:
 
 ```bash
