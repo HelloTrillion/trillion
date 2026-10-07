@@ -216,6 +216,15 @@ class Router:
 
     # ── The normal path ──────────────────────────────────────────────────
 
+    async def dispatch(
+        self, call: ToolCall, ctx: ToolContext, guard: LoopGuard | None = None
+    ) -> RouterResponse:
+        """The door for callers outside the spine: the agent loop, and later sub-agents.
+
+        It is `execute` under a name of its own, so the structural test can keep its
+        simplest form: outside this file, nothing in the source says `.execute` at all."""
+        return await self.execute(call, ctx, guard)
+
     async def execute(
         self, call: ToolCall, ctx: ToolContext, guard: LoopGuard | None = None
     ) -> RouterResponse:

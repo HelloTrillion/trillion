@@ -7,7 +7,13 @@ license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "aiosqlite>=0.22.1",
+    "anthropic>=1.0",
+    "fastapi>=0.115",
+    "httpx>=0.27",
     "jsonschema>=4.26.0",
+    "keyring>=25",
+    "uvicorn>=0.30",
+    "websockets>=13",
 ]
 
 [project.scripts]
@@ -31,6 +37,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trillion"]
+
+# The authored default soul ships inside the wheel: an installed user has no checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"persona/SOUL.md" = "trillion/persona/default/SOUL.md"
 
 [dependency-groups]
 dev = [
@@ -65,7 +75,7 @@ packages = ["trillion"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*"]
+module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*"]
 strict = true
 
 [tool.pytest.ini_options]
