@@ -326,7 +326,7 @@ Deferring the voiceprint work is a deliberate scoping call, not an oversight: it
 |---|---|---|
 | CON-1 | `ConnectorSpec(id, name, purpose, fields, runtime, impl)` validated at import time. Liveness probes only alert on "broken", never on "unknown" — **and they report per capability, not per connector**, so "speech-to-text is healthy, text-to-speech is down" is a distinguishable, alertable state rather than an average that reads as fine. VOI-14 needs this to know which leg failed. Unknown is never treated as alive. | P0 |
 | CON-2 | **Credentials live on the user's machine and nowhere else.** See the secrets requirements in §6.5a. | P0 |
-| CON-3 | Built-in tools for the Shell: `web_fetch`, `weather`, file tools in user-granted directories: `file_list`, `file_read` and `file_search` (read), and `file_create`, `file_overwrite` and `file_append` — **every write is `irreversible` and asks first**, and overwrite is unrecoverable, so it needs a tap (SPN-14), `memory_*`, `describe_self`, `confirm/cancel_pending_action`. | P0 |
+| CON-3 | Built-in tools for the Shell: `web_fetch`, `weather`, file tools in user-granted directories: `file_list`, `file_read` and `file_search` (read), and `file_create`, `file_append`, `file_edit` and `file_overwrite` — **every write is `irreversible` and asks first**, and edit and overwrite are unrecoverable, so they need a tap (SPN-14), `memory_*`, `describe_self`, `confirm/cancel_pending_action`. | P0 |
 | CON-4 | Google (Gmail and Calendar) via OAuth PKCE on a loopback redirect, with multiple accounts. `send_email` and calendar create/modify are **irreversible**. | P1 |
 | CON-5 | **MCP client**: mount stdio and HTTP MCP servers. Each MCP tool needs a `risk` mapping supplied by the user or the manifest, **defaulting to `irreversible`**. All output is untrusted. | P1 |
 | CON-6a | **Say plainly what gating does and does not do.** Routing every tool call through the spine controls what an extension can *ask the host to do*. It does **not** sandbox code: an in-process Python extension runs with the application's own privileges and could bypass the spine entirely. Phase 0 policy follows from that — first-party and curated extensions only, no arbitrary install path, and this limitation stated in `SECURITY.md` rather than implied away. Out-of-process isolation is the real answer and is Phase 2 work. | P0 |
@@ -360,7 +360,7 @@ The private build kept every key in a hosted secrets manager. **That is exactly 
 | SUR-2 | **Desktop app (Tauri v2)** for macOS: bundles or launches the core; grants mic permission (`NSMicrophoneUsageDescription`); sends OAuth and pop-ups to the system browser; shows a splash orb until the core is healthy; menu-bar item; global push-to-talk hotkey. Signed and notarized. | P0 (unsigned dev build) / P1 (signed) |
 | SUR-3a | **Linux is a Phase 0 platform**, in the form self-hosters actually use: `trillion run` serves the web UI, which they open in a browser. No desktop shell required. CI runs the full suite on Ubuntu from the first commit, `trillion doctor` covers Linux audio (PipeWire/PulseAudio) and the Secret Service keychain, and the encrypted-file secret store (SEC-2) covers headless machines. | P0 |
 | SUR-3b | **Linux desktop build** (Tauri AppImage + `.deb`). | P1 |
-| SUR-3c | **Windows**: core plus browser UI first, then the signed Tauri build. Windows Credential Manager for secrets, WASAPI device enumeration in `doctor`. | P1 |
+| SUR-3c | **Windows.** The core and the browser UI run on Windows and are tested there in CI from Phase 0, the same way Linux is (`trillion run` plus a browser). What waits for Phase 1 is the Windows-specific work: Credential Manager for secrets, ACL hardening of the database, WASAPI device enumeration in `doctor`, and the signed Tauri build. | P0 (core, CI) / P1 (the rest) |
 | SUR-4 | **Phone PWA: deferred, not planned.** It needs a hosted database and an internet-facing server. It stays out of scope until we decide to build hosting. The shell must not include phone routes, MP3 playback paths or phone auth. | — |
 | SUR-5 | **Channels**: a `ChannelAdapter` interface. Slack (Socket Mode) and Telegram. **Answers-only by default**: the allow-list gate fails closed, the bot must be @mentioned, there are no tools unless the user explicitly grants them per channel, and the channel's transcript is used as memory ("what was said, not what is true"). | P2 |
 | SUR-7 | **A Confirmations view** over SPN-17's decision record: every pending and decided action with `delivered_at`, `decided_at`, `decided_by`, `channel` and `outcome`, filterable by date. "Did that ever reach me?" is answered by citing this view, not by reconstructing it from the conversation. | P1 |
@@ -397,7 +397,7 @@ The private build kept every key in a hosted secrets manager. **That is exactly 
 | **Privacy** | **Conversation text is never written to application logs at any level.** (An earlier draft said "never at INFO or above", which is not the same promise; the stricter rule is the one that holds.) Transcripts live only in the local database the user owns. |
 | **Data flow** | Stated plainly, because "local-first" is not the same as "nothing leaves": with cloud providers configured, **audio goes to the speech-to-text provider, and prompt text — including recalled memory and tool results — goes to the model provider, and reply text goes to the text-to-speech provider.** `trillion doctor --egress` lists every destination the current configuration can reach. Each provider's retention policy is linked in Settings, local alternatives remove the egress entirely (VOI-11b), and nothing is ever sent to the project's own servers, because there are none. |
 | **Security** | See SPN-11. `gitleaks` plus dependency audit in CI. `SECURITY.md` with a disclosure process. No listener that can be reached from outside without pairing. |
-| **Portability** | macOS 13+ and Ubuntu 22.04+ (P0, SUR-3a). Windows 11 (P1, SUR-3c). Python 3.13. Node 22 LTS for the front-end build only. |
+| **Portability** | macOS 13+ and Ubuntu 22.04+ (P0, SUR-3a). Windows 11: the core and browser UI at P0, tested in CI; Windows-specific hardening and the desktop build at P1 (SUR-3c). Python 3.13. Node 22 LTS for the front-end build only. |
 | **Quality** | Typed Python (mypy strict on `spine/`, `voice/` and `brain/`). ruff. The TypeScript front end in strict mode. Tests required for every requirement tagged P0. |
 
 ---
@@ -478,21 +478,23 @@ Every `Tool.execute` is reachable **only** through `spine.router.execute(call, c
 - **Binary frames** from client to server carry PCM16 audio. Binary frames from server to client carry TTS audio chunks with a 1-byte kind header.
 - **JSON control frames** use the shape `{type, id?, ...}`. Types:
 
-**Client → server:** `hello{token, client, caps}`, `listen.start`, `listen.stop`, `turn.text{text}`, `interrupt`, `playback.ended{turn_id, played_ms}` (closes the loop that `audio.end` opens, and starts the follow-up window), `cancel.task{task_id}` (distinct from `interrupt`, which only silences playback), `confirm{pending_id}`, `cancel{pending_id}`, `session.end`, `diag.mic{…}`
+**Client → server:** `hello{token, client, caps, resume?}`, `listen.start`, `listen.stop`, `turn.text{text}`, `interrupt`, `playback.ended{turn_id, played_ms}` (closes the loop that `audio.end` opens, and starts the follow-up window), `cancel.task{task_id}` (distinct from `interrupt`, which only silences playback), `confirm{pending_id}`, `cancel{pending_id}`, `confirm.shown{pending_id}` (the card is on screen: this is what writes `delivered_at`, SPN-17), `session.end`, `diag.mic{…}`
 
 **Server → client:**
 
 | Group | Messages |
 |---|---|
-| Session and state | `session{id}`, `state{orb: idle\|arming\|listening\|processing\|speaking\|error, label}`, `mic.start`, `mic.stop` |
+| Session and state | `session{id}`, `model{model}` (changed in settings), `history{messages}` (on resume), `error{code, kind?}`, `notice{code, reason}`, `state{orb: idle\|arming\|listening\|processing\|speaking\|error, label}`, `mic.start`, `mic.stop` |
 | Transcript | `transcript.partial{text}`, `transcript.final{text}` |
 | Reply | `reply.delta{text}` (chat), `reply.sentence{text}` (voice subtitle), `audio.end`, `interrupted`, `turn.complete{usage}` |
 | Tools | `tool.start{call_id, name, risk}`, `tool.end{call_id, ok, summary}` |
-| Confirmation | `confirm.request{pending_id, tool, summary, expires_at}` |
+| Confirmation | `confirm.request{pending_id, tool, summary, expires_at, tap_only}`, `confirm.resolved{pending_id, status, reason?}` |
 | Agents | `agent.dispatched{slug}`, `agent.done{slug, stop_reason}` |
 | Attention | `alert{…}`, `win{tier, label}` |
 
 `/ws/observe` is a read-only event stream for the Living Mind and for plugins.
+
+A `confirm` or `cancel` from the client is a tap on the card. A tap is a committed user input, so it advances the turn counter (VOI-15a): the user can approve a card the moment it appears, while the model still cannot confirm in the turn it proposed (SPN-2e).
 
 Versioning: `hello` negotiates `protocol: 1`.
 
@@ -556,7 +558,7 @@ Versioning: `hello` negotiates `protocol: 1`.
 15. **The airplane test passes.** With the network off, Trillion starts, renders, opens settings, reads and writes memory, and says clearly why voice is unavailable.
 16. `README`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `docs/architecture.md` and this PRD are all in place.
 
-**Out of scope for Phase 0:** Google, MCP, skills, routines, Living Mind, channels, the wake word (VOI-10a), phone, Windows, signed builds. Linux is in scope (SUR-3a).
+**Out of scope for Phase 0:** Google, MCP, skills, routines, Living Mind, channels, the wake word (VOI-10a), phone, signed builds, and the Windows-specific work in SUR-3c (Credential Manager, ACL hardening, WASAPI, the desktop build). Linux is in scope (SUR-3a), and the core runs and is tested on Windows.
 
 **Suggested work breakdown** (parallel tracks for collaborators):
 
@@ -577,7 +579,7 @@ Every track needs a named owner and a target date before Phase 0 is called done 
 
 - **Phase 1: Private alpha** (50–100 waitlist members):
   - **the free voice path** (VOI-11b): local speech-to-text and text-to-speech, so voice works with no paid provider
-  - Linux desktop build, Windows core and signed build (SUR-3b, SUR-3c)
+  - Linux desktop build; Windows hardening and signed build (SUR-3b, SUR-3c)
   - Google, MCP client, AgentSkills loading
   - **speaker identity** (§5.3a): enrollment, SPN-14a voice-verified confirmation with replay and clone fixtures, SPN-15a borderline re-score, SPN-18 speaker-scoped gate, PER-13 default-private to an unrecognized voice
   - user agents and routines (AGT-3…9) with the recovery contract and its five scenarios (see `docs/TESTING.md`), constellation, arcs
@@ -637,7 +639,7 @@ Every track needs a named owner and a target date before Phase 0 is called done 
 - **Repository:** `hellotrillion/trillion`.
 
 - **License: Apache-2.0**, settled 2026-09-22 and already shipped in `LICENSE`. It adds a patent grant and, in section 6, withholds trademark rights — the code is open, the name stays with the project. Contributions come in under the DCO, so there is nothing to renegotiate as pull requests stack up.
-- **Platforms:** macOS and Linux are both Phase 0 (SUR-3a). Windows is Phase 1.
+- **Platforms:** macOS and Linux are both Phase 0 (SUR-3a). The core also runs and is tested on Windows from Phase 0 (updated 2026-09-26); Windows-specific hardening and the desktop build are Phase 1 (SUR-3c).
 - **The capability ladder** replaces the old "three keys or nothing" assumption (§4).
 - **Peer review applied 2026-09-23** (Appendix E): the delivery rules, the decision record, memory staleness, compaction of standing rules, spend ceilings and honest-failure testing are in. Speaker verification is scoped to Phase 1 with an interface seam at Phase 0. Graduated trust is cut.
 

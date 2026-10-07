@@ -11,7 +11,7 @@ Talk to her. Watch her think. Trust that she never acts without your "yes."
 
 ---
 
-> **Status: pre-alpha. Nothing works yet.**
+> **Status: pre-alpha.** You can type to her in a browser, with the Galaxy behind, and approve a file write on a card. Voice, memory and onboarding are not built yet.
 > This repository is the foundation being extracted from a private build that has run every day for six months. The first milestone is **the Shell** — see [the roadmap](#roadmap) and [`docs/PRD.md`](docs/PRD.md) for exactly what that means. Watch or star the repo if you want to know when it's usable.
 
 ## What this is
@@ -40,9 +40,9 @@ Other agents have deleted inboxes while an instruction to "confirm first" scroll
 
 | Phase | What | Status |
 |---|---|---|
-| **0 · The Shell** | Galaxy engine, voice loop, agent core, spine, memory, persona, onboarding, CI | 🔨 in progress |
-| **1 · Private alpha** | Waitlist cohort, macOS, Google + MCP + skills, signed build | planned |
-| **2 · Public beta** | Windows + Linux, local no-key voice tier, Slack + Telegram, docs site | planned |
+| **0 · The Shell** | Galaxy engine, voice loop, agent core, spine, memory, persona, onboarding, CI. macOS and Linux; the core also runs on Windows | 🔨 in progress |
+| **1 · Private alpha** | Waitlist cohort, Google + MCP + skills, local no-key voice, signed builds, Windows hardening | planned |
+| **2 · Public beta** | The repo goes public, Slack + Telegram, docs site | planned |
 | **3 · 1.0** | Signed skill registry, semantic turn detection | planned |
 
 The full specification, including every requirement ID that Phase 0 must satisfy, is in [`docs/PRD.md`](docs/PRD.md). How each one gets proven is in [`docs/TESTING.md`](docs/TESTING.md).
@@ -65,7 +65,29 @@ src/trillion/    Python core
 
 Everything runs on your machine, in one process, against a local SQLite file. There is no server to expose, no account to create, and no infrastructure of ours involved at any point — your API keys live in your operating system's keychain, and the only outbound traffic goes to providers you connected yourself. With the network off, Trillion still starts. Model, speech-to-text and text-to-speech providers all sit behind interfaces: the first release uses Anthropic, Deepgram and your own ElevenLabs account, with cheaper and fully local options to follow.
 
-Try the orb: `pnpm install && pnpm --filter @hellotrillion/galaxy dev`
+## Try it
+
+You need [uv](https://docs.astral.sh/uv/), Node 22+ and pnpm.
+
+```bash
+uv sync
+pnpm install
+pnpm --filter @hellotrillion/web build
+```
+
+Then start it:
+
+```bash
+uv run trillion run --grant ~/Desktop
+```
+
+The app opens in your browser and asks who should answer: Anthropic (Claude), OpenAI, a free local model through [Ollama](https://ollama.com) or LM Studio, or any OpenAI-compatible service. Paste your key there. It is checked, then stored in your operating system's keychain: never in a file, the database or a log, and it is sent only to the provider you chose. Change it any time from the model button in the top right.
+
+Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
+
+`--grant` shares one folder with the file tools; without it they are off. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
+
+Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 
 ## Contributing
 

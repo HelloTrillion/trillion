@@ -10,6 +10,8 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 |---|---|
 | `tests/unit/` | Pure logic. Fast, no I/O. |
 | `tests/spine/` | The safety guarantees. Protected by CODEOWNERS; a failure here blocks the merge. |
+| `tests/brain/` | The agent loop against the real spine, and both provider adapters against recorded wire formats. No network. |
+| `tests/api/` | The local server end to end: who may connect, a conversation, the confirmation card, and that no conversation text reaches a log. |
 | `tests/integration/` | Cross-component behaviour: degradation, compaction, recovery, offline. |
 | `evals/` | Model-judged behaviour: persona, honest failure, injection. |
 | `tests/e2e/` | The full loop, with providers faked at the interface. |
