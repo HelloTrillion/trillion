@@ -1,0 +1,25 @@
+{
+  "name": "@hellotrillion/web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Trillion's web app: the Galaxy, the conversation, and the confirmation card.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hellotrillion/galaxy": "workspace:*",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/three": "^0.186.0",
+    "typescript": "~5.9",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}
