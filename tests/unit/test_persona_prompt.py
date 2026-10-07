@@ -47,13 +47,14 @@ def test_the_users_soul_wins_over_the_shipped_one(tmp_path: Path) -> None:
 
 def test_the_stable_block_uses_the_chosen_names_and_no_placeholders(tmp_path: Path) -> None:
     identity = Identity(agent_name="Nova", user_name="Sam")
-    (block,) = system_blocks(identity, load_soul(tmp_path), (Path("/shared/notes"),))
+    shared = Path("/shared/notes")
+    (block,) = system_blocks(identity, load_soul(tmp_path), (shared,))
     assert block.cache
     assert "You are Nova" in block.text and "Sam" in block.text
     assert "{agent_name}" not in block.text and "{user_name}" not in block.text
     assert "<!--" not in block.text  # maintainer comments never reach the model
     assert "confirmation_required" in block.text  # the rules
-    assert "/shared/notes" in block.text
+    assert str(shared) in block.text  # in this platform's own spelling
     # PER-1a: a user who named her Nova never hears the brand as her name.
     assert "Trillion" not in block.text
 
@@ -65,8 +66,9 @@ def test_the_stable_block_is_identical_between_turns(tmp_path: Path) -> None:
 
 
 def test_a_folder_name_is_never_treated_as_a_placeholder() -> None:
-    (block,) = system_blocks(Identity(agent_name="Nova"), "soul", (Path("/x/{agent_name}"),))
-    assert "/x/{agent_name}" in block.text
+    folder = Path("/x/{agent_name}")
+    (block,) = system_blocks(Identity(agent_name="Nova"), "soul", (folder,))
+    assert str(folder) in block.text
 
 
 def test_volatile_context_carries_the_time_and_what_is_waiting() -> None:
