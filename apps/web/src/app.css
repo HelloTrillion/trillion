@@ -132,6 +132,7 @@ button:disabled {
   gap: 8px;
   padding: 4px 2px;
   scrollbar-width: thin;
+  scrollbar-color: var(--color-text-2) transparent;
   /* Older lines fade into the galaxy instead of ending at a hard edge. */
   mask-image: linear-gradient(to bottom, transparent, black 48px);
 }
