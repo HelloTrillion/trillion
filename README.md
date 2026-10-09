@@ -85,7 +85,7 @@ The app opens in your browser and asks who should answer: Anthropic (Claude), Op
 
 Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
 
-`--grant` shares one folder with the file tools; without it they are off. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
+`--grant` shares one folder with the file tools; without it they are off. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 

@@ -259,7 +259,7 @@ function render(): void {
     ? ''
     : view.grantedRoots.length
       ? `Files: ${view.grantedRoots.join(', ')}. Every change asks first.`
-      : 'No folders are shared, so file tools are off. Start with: trillion run --grant ~/Desktop';
+      : 'No folders are shared, so file tools are off. Start with: trillion run --grant <a folder>';
 }
 
 function apply(next: View): void {
