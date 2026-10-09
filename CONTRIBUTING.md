@@ -73,7 +73,7 @@ done
 pnpm typecheck && pnpm test && pnpm -r --if-present run build
 ```
 
-On Windows, run the loop in Git Bash, or run the six `uv run python scripts/…` commands one by one in PowerShell.
+On Windows, run the loop in Git Bash, or run the six `uv run python scripts/…` commands one by one in PowerShell. In PowerShell, type `pnpm.cmd` wherever these steps say `pnpm`: the default execution policy refuses to run the `pnpm.ps1` shim.
 
 [`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs. [`docs/TESTING.md`](docs/TESTING.md) says how each one is proven. [`docs/architecture.md`](docs/architecture.md) is the map.
 
