@@ -90,18 +90,49 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+# Addresses that only exist on the user's own network: home and office ranges, and
+# the range private overlay networks hand out. Written as numbers on purpose. A name
+# can be made to resolve anywhere, so a name on another machine still needs HTTPS.
+_PRIVATE = tuple(
+    ipaddress.ip_network(n)
+    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7")
+)
+
+
+def _is_private(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in net for net in _PRIVATE)
+
+
+def keyless(url: str) -> bool:
+    """True for plain HTTP to another machine. Allowed on the user's own network
+    only, and a key is never sent there: anyone on that network could read it."""
+    parts = urlsplit(url)
+    return parts.scheme == "http" and not _is_loopback(parts.hostname or "")
+
+
 def endpoint(kind: Kind, base_url: str | None) -> str | None:
     """The URL a kind talks to, checked. Anthropic has none: the SDK knows it.
 
     A key is only ever sent over HTTPS, or to this machine. A "local" model must
-    actually be local."""
+    actually be local. Plain HTTP to another machine is accepted only for a numeric
+    address on the user's own network, and `keyless` then keeps the key at home."""
     if kind == "anthropic":
         return None
     if kind == "openai":
         return OPENAI_URL
     url = (base_url or (LOCAL_URL if kind == "local" else "")).strip().rstrip("/")
-    parts = urlsplit(url)
-    host = parts.hostname or ""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        _ = parts.port  # raises on a port that is not a number
+    except ValueError as e:
+        raise ConfigError("bad_url", "the address is not a valid URL") from e
+    if not url.isascii() or any(ch.isspace() for ch in url):
+        raise ConfigError("bad_url", "the address has characters a URL cannot contain")
     if parts.scheme not in ("http", "https") or not host or parts.username or parts.password:
         raise ConfigError("bad_url", "the address must be an http or https URL")
     if parts.query or parts.fragment:
@@ -109,7 +140,7 @@ def endpoint(kind: Kind, base_url: str | None) -> str | None:
     local = _is_loopback(host)
     if kind == "local" and not local:
         raise ConfigError("not_local", "a local model must be on this machine")
-    if parts.scheme == "http" and not local:
+    if parts.scheme == "http" and not local and not (kind == "custom" and _is_private(host)):
         raise ConfigError("insecure_url", "an address on another machine must use https")
     return url
 
@@ -128,8 +159,11 @@ def build(settings: ModelSettings, secrets: SecretStore) -> ModelProvider:
     return OpenAICompatProvider(
         base_url=url,
         model=settings.model,
-        api_key=(lambda: secrets.get(name)) if settings.kind in TAKES_KEY else (lambda: None),
+        api_key=(lambda: secrets.get(name))
+        if settings.kind in TAKES_KEY and not keyless(url)
+        else (lambda: None),
         cap_field="max_completion_tokens" if settings.kind == "openai" else "max_tokens",
+        max_output=settings.max_output,
     )
 
 
@@ -146,8 +180,14 @@ def provider_from_env(env: Mapping[str, str] | None = None) -> ModelProvider | N
             raise ConfigError(
                 "no_model", f"{OPENAI_BASE_URL} is set; {MODEL} must name the model to use"
             )
+        # The same rule as a saved setting: a key goes over HTTPS or stays on this machine.
+        checked = endpoint("custom", base_url)
+        if checked is None:  # pragma: no cover - only Anthropic has no endpoint
+            raise ConfigError("bad_url")
+        if keyless(checked) and env.get(OPENAI_KEY, "").strip():
+            raise ConfigError("key_needs_https", f"{OPENAI_KEY} is only sent over https")
         return OpenAICompatProvider(
-            base_url=base_url, model=model, api_key=lambda: env.get(OPENAI_KEY) or None
+            base_url=checked, model=model, api_key=lambda: env.get(OPENAI_KEY) or None
         )
     if env.get(ANTHROPIC_KEY, "").strip():
         return AnthropicProvider(
@@ -182,4 +222,5 @@ async def list_models(kind: Kind, base_url: str | None, api_key: str | None) -> 
     url = endpoint(kind, base_url)
     if url is None:  # pragma: no cover - only Anthropic has no endpoint
         raise ConfigError("bad_url")
-    return await openai_compat.list_models(url, api_key if kind in TAKES_KEY else None)
+    sends_key = kind in TAKES_KEY and not keyless(url)
+    return await openai_compat.list_models(url, api_key if sends_key else None)

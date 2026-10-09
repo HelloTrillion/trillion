@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
@@ -84,18 +85,29 @@ def prefix_key(model: str, system: Sequence[SystemBlock], tools: Sequence[ToolSc
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _tool_id(raw: str) -> str:
+    """A tool-call id another provider issued, in the characters this API accepts.
+    The same mapping is applied to the call and to its result, so they still pair."""
+    return _ID_UNSAFE.sub("_", raw) or "call"
+
+
 def _neutral(m: Msg) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for b in m.blocks:
         if isinstance(b, TextBlock | ContextBlock):
             out.append({"type": "text", "text": b.text})
         elif isinstance(b, ToolUseBlock):
-            out.append({"type": "tool_use", "id": b.id, "name": b.name, "input": dict(b.args)})
+            out.append(
+                {"type": "tool_use", "id": _tool_id(b.id), "name": b.name, "input": dict(b.args)}
+            )
         elif isinstance(b, ToolResultBlock):
             out.append(
                 {
                     "type": "tool_result",
-                    "tool_use_id": b.tool_use_id,
+                    "tool_use_id": _tool_id(b.tool_use_id),
                     "content": b.content,
                     "is_error": b.is_error,
                 }

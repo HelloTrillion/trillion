@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from trillion.api.runtime import OWNER, Runtime
+from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
 from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.persona.prompt import PendingNote, system_blocks, volatile_context
@@ -33,9 +34,14 @@ Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class Session:
-    def __init__(self, rt: Runtime, send: Send, conversation_id: str) -> None:
+    def __init__(
+        self, rt: Runtime, send: Send, conversation_id: str, send_bytes: SendBytes | None = None
+    ) -> None:
         self._rt = rt
         self._raw_send = send
+        self._raw_send_bytes = send_bytes
+        # The page can silence her; then nothing is synthesized, so nothing is paid for.
+        self._muted = False
         self.id = conversation_id
         self._history: list[Msg] = []
         self._turn = 0
@@ -44,13 +50,24 @@ class Session:
         self._queued: list[str] = []
         self._closed = False
         self._orb = ""
+        # The orb's state between turns: idle, or error after a failure.
+        self._rest = "idle"
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     @classmethod
-    async def start(cls, rt: Runtime, send: Send, resume: str | None) -> Session:
+    async def start(
+        cls, rt: Runtime, send: Send, resume: str | None, send_bytes: SendBytes | None = None
+    ) -> Session:
         resumed = bool(resume) and await rt.conversations.exists(str(resume), OWNER)
-        session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex)
+        if resumed:
+            # One conversation, one live session. Two would each keep their own copy of
+            # the history and interleave what they save. The older one lets its turn
+            # finish recording, and only then is the history read.
+            other = rt.by_conversation.get(str(resume))
+            if other is not None:
+                await other.replaced()
+        session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
         shown: list[dict[str, str]] = []
         if resumed:
             for kind, msg in await rt.conversations.history(session.id, OWNER):
@@ -67,9 +84,11 @@ class Session:
             protocol=PROTOCOL,
             agent_name=rt.identity.agent_name,
             model=session._model(),
+            speech=session._speech(),
             granted_roots=[str(r) for r in rt.granted_roots],
         )
         rt.sessions.add(session)
+        rt.by_conversation[session.id] = session
         await session._send("history", messages=shown)
         for a in await session._open_actions():
             await session._send_card(a.id)
@@ -80,12 +99,25 @@ class Session:
         p = self._rt.provider
         return {"provider": p.name, "model": p.model} if p is not None else None
 
-    async def model_changed(self) -> None:
-        """Settings changed. The next turn uses the new model; this one finishes as it was."""
+    def _speech(self) -> dict[str, Any] | None:
+        rt = self._rt
+        s = rt.speech
+        return describe(rt.tts, s.kind if s else None, s.voice if s else None)
+
+    async def settings_changed(self) -> None:
+        """Settings changed. The next turn uses them; one in flight finishes as it was."""
         await self._send("model", model=self._model())
+        await self._send("speech", speech=self._speech())
+
+    async def replaced(self) -> None:
+        """This conversation was opened somewhere else. Say so, then stop for good."""
+        await self._send("error", code="replaced")
+        await self.close()
 
     async def close(self) -> None:
         self._rt.sessions.discard(self)
+        if self._rt.by_conversation.get(self.id) is self:
+            del self._rt.by_conversation[self.id]
         self._closed = True
         task = self._task
         if task is not None:
@@ -96,6 +128,8 @@ class Session:
     # ── Incoming messages ────────────────────────────────────────────────
 
     async def handle(self, msg: Mapping[str, Any]) -> None:
+        if self._closed:
+            return
         kind = msg.get("type")
         if kind == "turn.text":
             await self._on_text(msg.get("text"))
@@ -104,6 +138,10 @@ class Session:
                 self._task.cancel()
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
+        elif kind == "speech.mute":
+            self._muted = msg.get("muted") is True
+        elif kind == "playback.ended":
+            pass  # the follow-up listening window starts here once she can hear (VOI-15b)
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
@@ -127,12 +165,14 @@ class Session:
         if not isinstance(pending_id, str) or not pending_id:
             await self._error("bad_message")
             return
-        # A tap is the user committing an input, so it is its own turn. That is what
-        # lets a card be approved straight away while the model still cannot confirm
-        # anything in the turn it proposed it (SPN-2e).
-        self._turn += 1
+        # A tap is the user's own act on one card, so it is allowed at once: it is judged
+        # as the turn after the newest thing said. It does not advance the turn the model
+        # acts in. If it did, tapping one card mid-turn would let the model confirm
+        # another in the very turn it proposed it (SPN-2e).
         response = await self._rt.router.resolve(
-            pending_id, decision, self._ctx(f"tap-{uuid.uuid4().hex}", via="tap")
+            pending_id,
+            decision,
+            self._ctx(f"tap-{uuid.uuid4().hex}", via="tap", turn=self._turn + 1),
         )
         await self._send(
             "confirm.resolved",
@@ -145,28 +185,46 @@ class Session:
         note = f"[host] The user tapped {action} on the card for {pending_id}. Result: "
         self._queued.append(note + response.to_model())
         if self._task is None:
-            await self._flush()
+            self._begin()
 
     # ── A turn ───────────────────────────────────────────────────────────
 
     def _begin(self) -> None:
         self._task = asyncio.create_task(self._run())
 
-    async def _flush(self) -> None:
-        """Tell the model what the taps did, in one message, and let it answer."""
-        if not self._queued or self._closed:
-            return
-        note, self._queued = "\n".join(self._queued), []
-        await self._save_input("tap", note)
-        if self._rt.provider is not None:
-            self._begin()
-
     async def _run(self) -> None:
+        """Turns, one after another, until nothing is waiting.
+
+        `_task` stays set for the whole of it, so a second turn can never start beside
+        this one: a message that arrives meanwhile is refused as busy, and a tap's note
+        is picked up by the loop."""
+        try:
+            while not self._closed:
+                if self._queued:
+                    # What the taps did, in one message, for her to answer.
+                    note, self._queued = "\n".join(self._queued), []
+                    await self._save_input("tap", note)
+                if self._rt.provider is None:
+                    break
+                await self._one_turn()
+                if not self._queued:
+                    break
+        finally:
+            self._task = None
+        await self._state(self._rest)
+
+    async def _one_turn(self) -> None:
         rt = self._rt
+        # The turn she acts in is fixed when it starts. Nothing that happens while she
+        # works, a tap least of all, can move her into a later one.
+        turn = self._turn
         provider = rt.provider
         if provider is None:  # pragma: no cover - callers check before starting a turn
             return
         speaking = False
+        speaker: Speaker | None = None
+        if rt.tts is not None and rt.speech is not None and not self._muted:
+            speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
 
         async def emit(ev: LoopEvent) -> None:
             nonlocal speaking
@@ -175,7 +233,11 @@ class Session:
                     speaking = True
                     await self._state("speaking")
                 await self._send("reply.delta", text=ev.text)
+                if speaker is not None:
+                    await speaker.feed(ev.text)
             elif isinstance(ev, ToolStarted):
+                if speaker is not None:
+                    await speaker.pause()
                 speaking = False
                 await self._state("processing")
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
@@ -199,10 +261,12 @@ class Session:
                 registry=rt.registry,
                 system=system_blocks(rt.identity, rt.soul, rt.granted_roots),
                 history=self._history,
-                ctx=self._ctx,
+                ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
                 save=self._save_from_loop,
             )
+            if speaker is not None:
+                await speaker.finish()
             await rt.conversations.record_usage(
                 owner_id=OWNER,
                 conversation_id=self.id,
@@ -230,26 +294,29 @@ class Session:
                 },
             )
         except asyncio.CancelledError:
+            if speaker is not None:
+                await speaker.stop()
             await self._send("interrupted")
         except Exception as e:
             # The class name only: an exception message can carry conversation text.
             logger.error("turn failed in session %s: %s", self.id, type(e).__name__)
             final = "error"
             await self._error("internal")
-        finally:
-            self._task = None
-            await self._state(final)
-            await self._flush()
+        self._rest = final
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
     def _ctx(
-        self, call_id: str, via: Literal["voice", "text", "tap", "channel"] = "text"
+        self,
+        call_id: str,
+        via: Literal["voice", "text", "tap", "channel"] = "text",
+        *,
+        turn: int | None = None,
     ) -> ToolContext:
         return ToolContext(
             owner_id=OWNER,
             session_id=self.id,
-            turn=self._turn,
+            turn=self._turn if turn is None else turn,
             call_id=call_id,
             via=via,
             granted_roots=self._rt.granted_roots,
@@ -301,6 +368,14 @@ class Session:
 
     async def _error(self, code: str, **extra: Any) -> None:
         await self._send("error", code=code, **extra)
+
+    async def _send_bytes(self, data: bytes) -> None:
+        if self._closed or self._raw_send_bytes is None:
+            return
+        try:
+            await self._raw_send_bytes(data)
+        except Exception as e:
+            logger.debug("send of audio failed: %s", type(e).__name__)
 
     async def _send(self, kind: str, /, **body: Any) -> None:
         """Never raises: a closed socket must not break a turn that is still recording."""

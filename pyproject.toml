@@ -27,6 +27,7 @@ file_create = "trillion.tools.files:FileCreate"
 file_overwrite = "trillion.tools.files:FileOverwrite"
 file_append = "trillion.tools.files:FileAppend"
 file_edit = "trillion.tools.files:FileEdit"
+describe_self = "trillion.tools.describe:DescribeSelf"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]

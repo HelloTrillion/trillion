@@ -1,8 +1,11 @@
 import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
+import { type Inline, parse } from './format';
 import { type Api, createSettings } from './settings';
-import { type Entry, INITIAL, STATE_TEXT, type ServerMsg, type View, expire, reduce, sent } from './view';
+import { createSpeechSettings } from './speech';
+import { createVoice } from './voice';
+import { type Entry, INITIAL, STATE_TEXT, type ServerMsg, type View, expire, reduce, sent, waiting } from './view';
 
 const PROTOCOL = 1;
 const TOKEN_KEY = 'trillion-token';
@@ -50,6 +53,8 @@ const input = $<HTMLTextAreaElement>('input');
 const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
 const footEl = $('foot');
+const newBtn = $<HTMLButtonElement>('new');
+const speechBtn = $<HTMLButtonElement>('speech');
 
 function savedTheme(): Theme {
   try {
@@ -83,6 +88,11 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('[data-theme-choice
 applyTheme(theme);
 
 let view: View = INITIAL;
+const voice = createVoice({
+  onActive: () => render(),
+  onEnded: (turn, playedMs) => send({ type: 'playback.ended', turn_id: turn, played_ms: playedMs }),
+  attach: (node) => galaxy.attachAnalyser(node, 'playback'),
+});
 let socket: WebSocket | null = null;
 let retryMs = 1000;
 const shown = new Set<string>();
@@ -93,12 +103,39 @@ function send(body: Record<string, unknown>): void {
 
 // ── Rendering ────────────────────────────────────────────────────────────
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] {
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
-  node.className = cls;
+  if (cls) node.className = cls;
   // Always textContent: nothing the model or a tool wrote is ever parsed as markup.
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+const INLINE_TAG = { bold: 'strong', italic: 'em', code: 'code' } as const;
+
+function spans(parts: readonly Inline[]): Node[] {
+  return parts.map((part) =>
+    part.kind === 'text' ? document.createTextNode(part.text) : el(INLINE_TAG[part.kind], '', part.text),
+  );
+}
+
+/** Her reply as elements. The formatter yields plain values; text is only ever set as text. */
+function formatted(text: string): HTMLElement[] {
+  return parse(text).map((block) => {
+    if (block.kind === 'code') return el('pre', '', block.text);
+    if (block.kind === 'paragraph') {
+      const p = el('p');
+      p.append(...spans(block.inline));
+      return p;
+    }
+    const list = el(block.ordered ? 'ol' : 'ul');
+    for (const item of block.items) {
+      const li = el('li');
+      li.append(...spans(item));
+      list.append(li);
+    }
+    return list;
+  });
 }
 
 function minutesLeft(expiresAt: number): string {
@@ -111,9 +148,10 @@ function renderEntry(e: Entry): HTMLElement {
     case 'user':
       return el('p', 'msg user', e.text);
     case 'assistant': {
-      const p = el('p', 'msg assistant', e.text);
-      if (e.interrupted) p.append(el('span', 'mark', ' (stopped)'));
-      return p;
+      const box = el('div', 'msg assistant');
+      box.append(...formatted(e.text));
+      if (e.interrupted) box.append(el('span', 'mark', '(stopped)'));
+      return box;
     }
     case 'tool': {
       const label = e.outcome === null ? `${e.name} …` : `${e.name}: ${e.outcome.replaceAll('_', ' ')}`;
@@ -151,15 +189,22 @@ const LINK_TEXT: Readonly<Record<View['link'], string>> = {
   ready: '',
   offline: 'Trillion is not running. Start it with: trillion run',
   unauthenticated: 'This page is not signed in. Open the link that "trillion run" printed.',
+  replaced: 'This conversation is now open in another tab. Close this one, or start a new conversation.',
 };
 
 let rendered: readonly Entry[] = [];
+
+// Shown under the conversation while she works and no text is arriving. The status
+// in the top bar already announces it to screen readers, so this one stays silent.
+const thinkingEl = el('p', 'thinking', 'Thinking');
+thinkingEl.setAttribute('aria-hidden', 'true');
 
 function render(): void {
   const nearBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 80;
   // Streaming text touches only the last node; anything else rebuilds the list.
   const last = view.entries[view.entries.length - 1];
   const prev = rendered[rendered.length - 1];
+  thinkingEl.remove();
   const onlyTextGrew =
     view.entries.length === rendered.length &&
     last?.kind === 'assistant' &&
@@ -167,11 +212,12 @@ function render(): void {
     last.interrupted === prev.interrupted &&
     view.entries.slice(0, -1).every((e, i) => e === rendered[i]);
   if (onlyTextGrew && transcriptEl.lastElementChild) {
-    transcriptEl.lastElementChild.textContent = last.text;
+    transcriptEl.lastElementChild.replaceChildren(...formatted(last.text));
   } else if (view.entries !== rendered) {
     transcriptEl.replaceChildren(...view.entries.map(renderEntry));
   }
   rendered = view.entries;
+  if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
   // The core records a card as delivered only once it is really on screen (SPN-17).
@@ -186,9 +232,14 @@ function render(): void {
   const linkText = LINK_TEXT[view.link];
   statusEl.textContent = ready ? STATE_TEXT[view.orb] : view.link === 'connecting' ? 'Connecting' : 'Offline';
   modelEl.hidden = !ready;
+  speechBtn.hidden = !ready;
+  speechBtn.textContent = view.speech ? 'Voice: on' : 'Voice: off';
+  speechBtn.title = 'Voice settings';
+  newBtn.hidden = !ready || view.entries.length === 0;
   modelEl.textContent = view.model ?? 'Choose a model';
   modelEl.title = 'Model settings';
-  galaxy.setState(ready ? view.orb : view.link === 'connecting' ? 'idle' : 'error');
+  // While her voice is sounding she is speaking, whatever the core has moved on to.
+  galaxy.setState(!ready ? (view.link === 'connecting' ? 'idle' : 'error') : voice.active ? 'speaking' : view.orb);
 
   const noModel = ready && view.model === null;
   const banner =
@@ -203,7 +254,7 @@ function render(): void {
   input.placeholder = canType ? `Message ${view.agentName}` : '';
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
-  stopBtn.hidden = !view.busy;
+  stopBtn.hidden = !(view.busy || voice.active);
   footEl.textContent = !ready
     ? ''
     : view.grantedRoots.length
@@ -234,7 +285,21 @@ const api: Api = (method, path, body) =>
   });
 const settings = createSettings($<HTMLDialogElement>('settings'), api);
 modelEl.addEventListener('click', () => void settings.open());
+const speechSettings = createSpeechSettings($<HTMLDialogElement>('speech-settings'), api);
+speechBtn.addEventListener('click', () => void speechSettings.open());
 let offered = false;
+
+newBtn.addEventListener('click', () => {
+  // Forget which conversation this tab was in; the core starts a fresh one on reconnect.
+  store(CONVERSATION_KEY, null);
+  shown.clear();
+  apply({ ...INITIAL, link: 'connecting' });
+  const old = socket;
+  socket = null;
+  old?.close();
+  connect();
+  input.focus();
+});
 
 // ── Connection ───────────────────────────────────────────────────────────
 
@@ -250,7 +315,12 @@ function connect(): void {
     retryMs = 1000;
     send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY) });
   });
+  ws.binaryType = 'arraybuffer';
   ws.addEventListener('message', (ev) => {
+    if (ev.data instanceof ArrayBuffer) {
+      voice.audio(ev.data);
+      return;
+    }
     let msg: ServerMsg;
     try {
       msg = JSON.parse(String(ev.data)) as ServerMsg;
@@ -260,7 +330,11 @@ function connect(): void {
     if (typeof msg?.type !== 'string') return;
     if (msg.type === 'error' && msg['code'] === 'unauthenticated') store(TOKEN_KEY, null);
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
+    if (msg.type === 'reply.sentence') voice.sentence(Number(msg['turn']), String(msg['text'] ?? ''));
+    if (msg.type === 'audio.end') voice.end(Number(msg['turn']));
+    if (msg.type === 'audio.stop' || msg.type === 'interrupted') voice.stop();
     apply(reduce(view, msg));
+    if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
     // First run: with nobody to answer, the way to fix that opens by itself, once.
     if (msg.type === 'session' && view.model === null && !offered) {
       offered = true;
@@ -270,7 +344,8 @@ function connect(): void {
   ws.addEventListener('close', () => {
     if (socket !== ws) return;
     socket = null;
-    if (view.link === 'unauthenticated') return;
+    voice.stop();
+    if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10_000);
@@ -282,6 +357,8 @@ function connect(): void {
 function submit(): void {
   const text = input.value.trim();
   if (!text || view.busy || view.link !== 'ready') return;
+  voice.unlock(); // sending is a click or a key press, which is what lets a browser play sound
+  voice.stop();
   send({ type: 'turn.text', text });
   input.value = '';
   input.style.height = '';
@@ -302,9 +379,13 @@ input.addEventListener('input', () => {
   input.style.height = '';
   input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 });
-stopBtn.addEventListener('click', () => send({ type: 'interrupt' }));
+const interrupt = (): void => {
+  voice.stop();
+  send({ type: 'interrupt' });
+};
+stopBtn.addEventListener('click', interrupt);
 addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && view.busy) send({ type: 'interrupt' });
+  if (ev.key === 'Escape' && (view.busy || voice.active)) interrupt();
   if (ev.key === 'k' && (ev.metaKey || ev.ctrlKey)) {
     ev.preventDefault();
     input.focus();

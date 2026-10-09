@@ -7,6 +7,7 @@ the capability ladder free: a local model and no key at all.
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
@@ -78,16 +79,17 @@ def request_body(
     system: Sequence[SystemBlock],
     messages: Sequence[Msg],
     tools: Sequence[ToolSchema],
-    max_tokens: int,
+    max_tokens: int | None = None,
     cap_field: str = "max_tokens",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
-        cap_field: max_tokens,
         "stream": True,
         "stream_options": {"include_usage": True},
         "messages": _messages(system, messages),
     }
+    if max_tokens is not None:
+        body[cap_field] = max_tokens
     if tools:
         body["tools"] = [
             {
@@ -113,10 +115,16 @@ class OpenAICompatProvider:
         model: str,
         api_key: Callable[[], str | None] = lambda: None,
         cap_field: str = "max_tokens",
+        max_output: int | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
         self.model = model
+        # No cap unless one is known for this model. On these services the cap also
+        # counts a reasoning model's thinking, so a small fixed number can be spent
+        # before the first word of the reply; and a number above a model's own limit
+        # is refused outright. Left out, each server applies the model's own limit.
+        self._max_output = max_output
         # OpenAI's own API renamed the output cap; local servers still use the old name.
         self._cap_field = cap_field
         self._url = base_url.rstrip("/") + "/chat/completions"
@@ -142,7 +150,7 @@ class OpenAICompatProvider:
             system=system,
             messages=messages,
             tools=tools,
-            max_tokens=max_tokens,
+            max_tokens=self._max_output,
             cap_field=self._cap_field,
         )
         usage = Usage()
@@ -176,13 +184,16 @@ class OpenAICompatProvider:
             call_id, name, raw = calls[index]
             args = sse.parse_object(raw)
             yield ToolUse(
-                # Some local servers omit ids; the pairing only has to be unique per reply.
-                id=call_id or f"call_{index}",
+                # Some local servers omit ids. A made-up one must still be unique across
+                # the whole conversation: ids are saved and replayed on later turns.
+                id=call_id or f"call_{uuid.uuid4().hex[:16]}",
                 name=name,
                 args=args or {},
                 invalid=None if args is not None else "arguments were not a JSON object",
             )
-        if calls:
+        # A reply cut off at the length limit stays "max_tokens" even with tool calls
+        # in it: the last one may be half-written, and the loop runs none of them.
+        if calls and stop != "max_tokens":
             stop = "tool_use"
         yield Done(stop_reason=stop, usage=usage)
 
@@ -214,6 +225,8 @@ async def list_models(
         raise ProviderError("timeout", type(e).__name__) from e
     except httpx.HTTPError as e:
         raise ProviderError("unreachable", type(e).__name__) from e
+    except httpx.InvalidURL as e:
+        raise ProviderError("bad_url", type(e).__name__) from e
     finally:
         if client is None:
             await http.aclose()

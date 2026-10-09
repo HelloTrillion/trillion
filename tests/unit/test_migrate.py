@@ -75,3 +75,26 @@ async def test_the_database_is_private_to_the_user(tmp_path):
         assert stat.S_IMODE(home.stat().st_mode) == 0o700
     finally:
         await conn.close()
+
+
+# Migrations that have shipped. A database that applied one refuses to open if the
+# file later changes by a single byte, comments included, so these are frozen: to
+# change the schema, add a new numbered file. A new migration adds a line here.
+SHIPPED = {
+    "001_spine.sql": "74e5901760ef1de981c06f0a94cc2a0dd3cd9aa9800e87028886520b8ff671f1",
+    "002_args_retention.sql": "d226e1823fa839252e5d984fd14a7fd1d402fa54d795a4419bfa817711889bec",
+    "003_conversations.sql": "7b495ef2389ec7513caf9ca71be306adfcf03f0e765847dbe003087836ad6ba8",
+    "004_preferences.sql": "70d48ef6ba5422c4bb15b894697ad7c320e509880ce12ab7b789abfd6302c2c5",
+}
+
+
+def test_shipped_migrations_never_change():
+    import hashlib
+    from importlib.resources import files
+
+    found = {
+        entry.name: hashlib.sha256(entry.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+        for entry in (files("trillion.storage") / "migrations").iterdir()
+        if entry.name.endswith(".sql")
+    }
+    assert found == SHIPPED, "a shipped migration changed, or a new one is not listed here"

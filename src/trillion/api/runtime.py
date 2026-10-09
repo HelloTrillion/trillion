@@ -23,8 +23,36 @@ from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
+from trillion.tools.describe import NAME as DESCRIBE_SELF
+from trillion.tools.describe import DescribeSelf
+from trillion.voice.catalog import speech_option
+from trillion.voice.types import TTSProvider
 
 OWNER = "local"
+SPEECH_PREF = "speech"
+
+
+@dataclass(frozen=True, kw_only=True)
+class SpeechSettings:
+    kind: str
+    voice: str = ""
+
+    def to_json(self) -> dict[str, str]:
+        return {"kind": self.kind, "voice": self.voice}
+
+    @classmethod
+    def from_json(cls, raw: Any) -> SpeechSettings | None:
+        if not isinstance(raw, dict) or speech_option(str(raw.get("kind"))) is None:
+            return None
+        return cls(kind=str(raw["kind"]), voice=str(raw.get("voice") or ""))
+
+
+def build_speech(settings: SpeechSettings | None, secrets: SecretStore) -> TTSProvider | None:
+    """The chosen voice, or None when speech is off or its key has been removed."""
+    option = speech_option(settings.kind) if settings is not None else None
+    if option is None or (option.needs_key and not secrets.get(option.secret)):
+        return None
+    return option.build(secrets)
 
 
 def _now_ms() -> int:
@@ -43,6 +71,8 @@ class Runtime:
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
     settings: ModelSettings | None
+    speech: SpeechSettings | None
+    tts: TTSProvider | None
     identity: Identity
     soul: str
     granted_roots: tuple[Path, ...]
@@ -52,14 +82,35 @@ class Runtime:
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)
+    by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
+
+    def facts(self) -> dict[str, Any]:
+        """What is true of this running process, for `describe_self` (BRN-6)."""
+        p = self.provider
+        return {
+            "model": {"provider": p.name, "model": p.model} if p is not None else None,
+            "speech": (
+                f"your replies are spoken aloud ({self.tts.name}); you cannot hear, the user types"
+                if self.tts is not None
+                else "none: your replies are read, not heard, and you cannot hear"
+            ),
+            "memory": "none between conversations: you remember only this conversation",
+            "internet": "none: you have no tool that reaches the web",
+        }
 
     async def use_model(self, settings: ModelSettings | None) -> None:
         """Adopt saved settings (or none) and tell every open session."""
         self.settings = settings
         self.provider, self.source = resolve(settings, self.secrets, self.env)
         for session in list(self.sessions):
-            await session.model_changed()
+            await session.settings_changed()
+
+    async def use_speech(self, settings: SpeechSettings | None) -> None:
+        self.speech = settings
+        self.tts = build_speech(settings, self.secrets)
+        for session in list(self.sessions):
+            await session.settings_changed()
 
     async def close(self) -> None:
         for conn in self._connections:
@@ -95,7 +146,8 @@ async def open_runtime(
     keychain = secrets if secrets is not None else KeychainStore()
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
     provider, source = resolve(settings, keychain, env)
-    return Runtime(
+    speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
+    rt = Runtime(
         router=router,
         registry=registry,
         spine_store=store,
@@ -105,9 +157,15 @@ async def open_runtime(
         provider=provider,
         source=source,
         settings=settings,
+        speech=speech,
+        tts=build_speech(speech, keychain),
         identity=load_identity(persona),
         soul=load_soul(persona),
         granted_roots=roots,
         env=env,
         _connections=[spine_conn, chat_conn],
     )
+    describe = registry.get(DESCRIBE_SELF)
+    if isinstance(describe, DescribeSelf):
+        describe.bind(registry.definitions, rt.facts)
+    return rt

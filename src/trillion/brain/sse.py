@@ -57,6 +57,8 @@ async def events(
         raise ProviderError("timeout", type(e).__name__) from e
     except httpx.HTTPError as e:
         raise ProviderError("unreachable", type(e).__name__) from e
+    except httpx.InvalidURL as e:
+        raise ProviderError("bad_url", type(e).__name__) from e
 
 
 def parse_object(raw: str) -> dict[str, Any] | None:

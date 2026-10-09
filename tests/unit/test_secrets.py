@@ -115,3 +115,42 @@ def test_the_filter_catches_a_key_passed_as_a_log_argument(
         log.info("key=%s other=%s", SAMPLE, "known-value-123456")
     assert SAMPLE not in caplog.text and "known-value-123456" not in caplog.text
     assert caplog.text.count(redact.REDACTED) == 2
+
+
+def test_installed_redaction_covers_every_logger_and_handlers_added_later() -> None:
+    """A filter on the root logger alone sees none of this; the review caught that."""
+    import io
+
+    undo = redact.install(lambda: ["known-value-123456"])
+    try:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)  # added after install, like a server's
+        child = logging.getLogger("trillion.some.module")
+        other = logging.getLogger("uvicorn.error.test")
+        for log in (child, other):
+            log.addHandler(handler)
+            log.setLevel(logging.INFO)
+            log.propagate = False
+        child.warning("key=%s", SAMPLE)
+        other.info("token known-value-123456 seen")
+        written = stream.getvalue()
+        assert SAMPLE not in written and "known-value-123456" not in written
+        assert written.count(redact.REDACTED) == 2
+    finally:
+        undo()
+        for log in (child, other):
+            log.removeHandler(handler)
+
+
+def test_a_failing_lookup_of_known_values_does_not_break_or_recurse() -> None:
+    log = logging.getLogger("trillion.test.redact.failing")
+
+    def known() -> list[str]:
+        log.warning("keychain read failed")  # logs from inside the lookup
+        raise RuntimeError("keychain down")
+
+    undo = redact.install(known)
+    try:
+        log.warning("still logs: %s", SAMPLE)  # shape-scrubbed, no recursion error
+    finally:
+        undo()

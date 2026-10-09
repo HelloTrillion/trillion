@@ -11,7 +11,7 @@ Talk to her. Watch her think. Trust that she never acts without your "yes."
 
 ---
 
-> **Status: pre-alpha.** You can type to her in a browser, with the Galaxy behind, and approve a file write on a card. Voice, memory and onboarding are not built yet.
+> **Status: pre-alpha.** You can type to her in a browser, with the Galaxy behind, hear her answer aloud (a free system voice, or your ElevenLabs account), and approve a file write on a card. She cannot hear you yet; memory and onboarding are not built.
 > This repository is the foundation being extracted from a private build that has run every day for six months. The first milestone is **the Shell** — see [the roadmap](#roadmap) and [`docs/PRD.md`](docs/PRD.md) for exactly what that means. Watch or star the repo if you want to know when it's usable.
 
 ## What this is
@@ -63,7 +63,7 @@ src/trillion/    Python core
   storage/       SQLite (no hosted database required)
 ```
 
-Everything runs on your machine, in one process, against a local SQLite file. There is no server to expose, no account to create, and no infrastructure of ours involved at any point — your API keys live in your operating system's keychain, and the only outbound traffic goes to providers you connected yourself. With the network off, Trillion still starts. Model, speech-to-text and text-to-speech providers all sit behind interfaces: the first release uses Anthropic, Deepgram and your own ElevenLabs account, with cheaper and fully local options to follow.
+Everything runs on your machine, in one process, against a local SQLite file. There is no server to expose, no account to create, and no infrastructure of ours involved at any point — your API keys live in your operating system's keychain, and the only outbound traffic goes to providers you connected yourself. With the network off, Trillion still starts. Model, speech-to-text and text-to-speech providers all sit behind interfaces: you choose each one, and each has a free, fully local option beside the paid ones (Anthropic, OpenAI, ElevenLabs, Deepgram).
 
 ## Try it
 

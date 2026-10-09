@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import struct
 from collections.abc import AsyncIterator, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -626,3 +627,147 @@ def test_without_a_keychain_a_key_is_refused_rather_than_written_to_disk(
     r = save(app, kind="anthropic", model="model-a", api_key=SAMPLE_KEY)
     assert (r.status_code, r.json()) == (409, {"error": "no_keychain"})
     assert save(app, kind="local", model="model-a").status_code == 200  # no key, no problem
+
+
+def test_a_rejected_request_never_echoes_the_key_it_carried(make: Any) -> None:
+    app = make(model=False)
+    for body in (
+        {"kind": "anthropic", "api_key": SAMPLE_KEY},  # no model
+        {"kind": "anthropic", "model": "m", "api_key": SAMPLE_KEY, "extra": 1},
+        {"kind": "anthropic", "model": "m", "api_key": SAMPLE_KEY * 40},  # too long
+    ):
+        r = app.client.put("/api/settings/model", json=body, headers=app.auth)
+        assert r.status_code == 422 and r.json()["error"] == "bad_request"
+        assert SAMPLE_KEY not in r.text
+
+
+@pytest.mark.parametrize("url", ["http://[::1", "http://localhost:11434:evil.example/v1"])
+def test_a_malformed_address_is_a_plain_refusal(make: Any, url: str) -> None:
+    app = make(model=False)
+    body = {"kind": "custom", "base_url": url}
+    r = app.client.post("/api/settings/model/models", json=body, headers=app.auth)
+    assert (r.status_code, r.json()) == (400, {"error": "bad_url"})
+
+
+def test_a_key_for_a_plain_http_address_is_refused_before_anything_is_sent(make: Any) -> None:
+    app = make(model=False)
+    body = {"kind": "custom", "base_url": "http://192.168.1.20:8090/v1", "api_key": SAMPLE_KEY}
+    r = app.client.post("/api/settings/model/models", json=body, headers=app.auth)
+    assert (r.status_code, r.json()) == (400, {"error": "key_needs_https"})
+
+
+# ── Voice: chosen in the app, generated from the catalog (VOI-11, VOI-11a) ──
+
+
+def speech(app: App, **body: Any) -> Any:
+    return app.client.put("/api/settings/speech", json=body, headers=app.auth)
+
+
+def test_speech_settings_need_the_token_and_list_the_catalog(make: Any) -> None:
+    app = make(model=False)
+    assert app.client.get("/api/settings/speech").status_code == 401
+    state = app.client.get("/api/settings/speech", headers=app.auth).json()
+    kinds = {o["kind"]: o for o in state["options"]}
+    assert state["saved"] is None and state["active"] is False
+    assert kinds["system"]["free"] and not kinds["system"]["needs_key"]
+    assert kinds["elevenlabs"]["needs_key"] and kinds["elevenlabs"]["key"] is None
+    assert any(o["free"] for o in state["options"])  # nobody needs a paid account
+
+
+def test_the_free_voice_needs_no_key_and_is_spoken_by_the_page(make: Any) -> None:
+    app = make(say("**Done.** The file is there. Check `hello.txt` now."))
+    with app.connect() as chat:
+        assert chat.session["speech"] is None
+        assert speech(app, kind="system", voice="uri:Alex").status_code == 200
+        told = chat.until("speech")[-1]["speech"]
+        assert told == {
+            "kind": "system",
+            "where": "client",
+            "voice": "uri:Alex",
+            "sample_rate": None,
+        }
+        msgs = chat.say("is it done?")
+        said = [m["text"] for m in msgs if m["type"] == "reply.sentence"]
+        assert said == ["Done. The file is there.", "Check hello.txt now."]  # no markup aloud
+        assert only(msgs, "audio.end")["sentences"] == 2
+        assert reply(msgs) == "**Done.** The file is there. Check `hello.txt` now."  # text intact
+    assert app.secrets.values() == []
+
+
+def test_a_muted_page_is_sent_no_speech(make: Any) -> None:
+    app = make(say("Short answer: yes."))
+    speech(app, kind="system")
+    with app.connect() as chat:
+        chat.ws.send_json({"type": "speech.mute", "muted": True})
+        assert not [m for m in chat.say("well?") if m["type"] == "reply.sentence"]
+
+
+def test_a_paid_voice_needs_a_key_that_works_and_a_voice_it_offers(
+    make: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from trillion.voice.providers.elevenlabs import ElevenLabs
+    from trillion.voice.types import Voice, VoiceError
+
+    caplog.set_level(logging.DEBUG)
+    used: list[str] = []
+
+    async def voices(self: ElevenLabs) -> list[Voice]:
+        used.append(self._api_key())
+        if used[-1] != SAMPLE_KEY:
+            raise VoiceError("unauthorized", f"echo {used[-1]}")
+        return [Voice(id="v1", name="Ada")]
+
+    monkeypatch.setattr(ElevenLabs, "voices", voices)
+    app = make(model=False)
+
+    assert speech(app, kind="elevenlabs", voice="v1").json() == {"error": "key_required"}
+    bad = speech(app, kind="elevenlabs", voice="v1", api_key="wrong-key-0000")
+    assert (bad.status_code, bad.json()) == (502, {"error": "unauthorized"})
+    assert app.secrets.values() == []  # a rejected key is never stored
+
+    assert speech(app, kind="elevenlabs", voice="nope", api_key=SAMPLE_KEY).json() == {
+        "error": "unknown_voice"
+    }
+    ok = speech(app, kind="elevenlabs", voice="v1", api_key=SAMPLE_KEY)
+    assert ok.status_code == 200 and ok.json()["active"] is True
+    assert app.secrets.get("elevenlabs/api_key") == SAMPLE_KEY
+    assert SAMPLE_KEY not in ok.text and SAMPLE_KEY not in caplog.text
+    option = next(o for o in ok.json()["options"] if o["kind"] == "elevenlabs")
+    assert option["key"] == {"saved": True, "ends": "abcd"}
+    assert app.rows("SELECT value_json FROM preferences WHERE key = 'speech'") == [
+        ('{"kind": "elevenlabs", "voice": "v1"}',)
+    ]
+
+    body = {"kind": "elevenlabs"}
+    gone = app.client.post("/api/settings/speech/forget-key", json=body, headers=app.auth)
+    assert gone.json()["active"] is False and app.secrets.values() == []
+
+
+def test_speech_can_be_turned_off_and_unknown_providers_are_refused(make: Any) -> None:
+    app = make(model=False)
+    speech(app, kind="system")
+    assert speech(app, kind=None).json()["saved"] is None and app.rt.tts is None
+    assert speech(app, kind="made-up").json() == {"error": "unknown_provider"}
+
+
+def test_audio_from_a_core_voice_reaches_the_page_in_order(make: Any) -> None:
+    from tests.voice.test_speaker import FakeVoice
+    from trillion.api.runtime import SpeechSettings
+
+    app = make(say("The first sentence is here. The second one follows."))
+    app.rt.tts, app.rt.speech = FakeVoice(), SpeechSettings(kind="elevenlabs", voice="v1")
+    with app.connect() as chat:
+        chat.ws.send_json({"type": "turn.text", "text": "speak"})
+        frames: list[tuple[int, int]] = []
+        while True:
+            message = chat.ws.receive()
+            if message.get("bytes") is not None:
+                kind, turn, seq = struct.unpack_from("<BII", message["bytes"])
+                assert kind == 1
+                frames.append((turn, seq))
+            elif '"audio.end"' in (message.get("text") or ""):
+                break
+    assert {t for t, _ in frames} == {1}
+    assert [s for _, s in frames] == sorted(s for _, s in frames) and {1, 2} == {
+        s for _, s in frames
+    }

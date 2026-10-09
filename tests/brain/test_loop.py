@@ -260,3 +260,55 @@ async def test_the_providers_own_turn_is_saved_with_the_reply(run: Run) -> None:
     assert done.stop == "end" and run.saved[0].raw == raw
     # A reply cut short is not what the provider returned, so nothing is kept to replay.
     assert Msg(role="assistant", blocks=(TextBlock(text="x"),)).raw is None
+
+
+def _pairs(saved: list[Msg]) -> tuple[int, int]:
+    uses = [b for m in saved for b in m.blocks if isinstance(b, ToolUseBlock)]
+    results = [b for m in saved for b in m.blocks if isinstance(b, ToolResultBlock)]
+    return len(uses), len(results)
+
+
+async def test_two_interrupts_during_a_tool_still_leave_the_call_answered(run: Run) -> None:
+    """Esc pressed twice, or an interrupt and then the tab closing."""
+    target = run.spine.granted / "a.txt"
+    target.write_text("a", encoding="utf-8")
+    provider = ScriptedProvider(use("file_read", {"path": str(target)}), say("unreached"))
+    started = asyncio.Event()
+    emit = run.emit
+
+    async def emit_and_signal(ev: LoopEvent) -> None:
+        await emit(ev)
+        if isinstance(ev, ToolStarted):
+            started.set()
+            await asyncio.sleep(0.05)  # hold the tool open across both interrupts
+
+    run.emit = emit_and_signal  # type: ignore[method-assign]
+    task = asyncio.create_task(run.go(provider))
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _pairs(run.saved) == (1, 1)
+
+
+async def test_an_interrupt_while_the_tool_call_is_being_saved_still_answers_it(run: Run) -> None:
+    target = run.spine.granted / "a.txt"
+    target.write_text("a", encoding="utf-8")
+    provider = ScriptedProvider(use("file_read", {"path": str(target)}), say("unreached"))
+    saving = asyncio.Event()
+    history: list[Msg] = []
+
+    async def slow_save(msg: Msg) -> None:
+        history.append(msg)  # as the session does: in memory first, then the database
+        saving.set()
+        await asyncio.sleep(0.02)
+
+    run.save = slow_save  # type: ignore[method-assign]
+    task = asyncio.create_task(run.go(provider))
+    await saving.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _pairs(history) == (1, 1)

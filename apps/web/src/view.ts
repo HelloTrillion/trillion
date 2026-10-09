@@ -22,13 +22,21 @@ export type Entry =
     }
   | { readonly kind: 'notice'; readonly text: string };
 
-export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline';
+export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
+
+export interface Speech {
+  readonly kind: string;
+  readonly where: 'core' | 'client';
+  readonly voice: string | null;
+  readonly sample_rate: number | null;
+}
 
 export interface View {
   readonly link: Link;
   readonly conversationId: string | null;
   readonly agentName: string;
   readonly model: string | null;
+  readonly speech: Speech | null;
   readonly grantedRoots: readonly string[];
   readonly orb: Orb;
   readonly busy: boolean;
@@ -43,6 +51,7 @@ export const INITIAL: View = {
   conversationId: null,
   agentName: 'Trillion',
   model: null,
+  speech: null,
   grantedRoots: [],
   orb: 'idle',
   busy: false,
@@ -88,6 +97,18 @@ const STOPS: Readonly<Record<string, string>> = {
   wall_clock: 'Stopped: the turn ran too long.',
   cost: 'Stopped: the turn reached its cost ceiling.',
 };
+
+function speechOf(raw: unknown): Speech | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r['kind'] !== 'string' || (r['where'] !== 'core' && r['where'] !== 'client')) return null;
+  return {
+    kind: r['kind'],
+    where: r['where'],
+    voice: typeof r['voice'] === 'string' ? r['voice'] : null,
+    sample_rate: typeof r['sample_rate'] === 'number' ? r['sample_rate'] : null,
+  };
+}
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 
@@ -135,6 +156,7 @@ export function reduce(view: View, msg: ServerMsg): View {
         conversationId: str(msg['id']) || null,
         agentName: str(msg['agent_name'], view.agentName),
         model: model ? str(model.model) : null,
+        speech: speechOf(msg['speech']),
         grantedRoots: Array.isArray(msg['granted_roots']) ? msg['granted_roots'].map((r) => String(r)) : [],
         busy: false,
         banner: null,
@@ -144,6 +166,8 @@ export function reduce(view: View, msg: ServerMsg): View {
       const model = msg['model'] as { model?: unknown } | null;
       return { ...view, model: model ? str(model.model) : null, banner: null };
     }
+    case 'speech':
+      return { ...view, speech: speechOf(msg['speech']) };
     case 'history': {
       const rows = Array.isArray(msg['messages']) ? (msg['messages'] as Record<string, unknown>[]) : [];
       const entries: Entry[] = rows.map((r) =>
@@ -166,7 +190,7 @@ export function reduce(view: View, msg: ServerMsg): View {
       return { ...view, replyOpen: true, entries: [...view.entries, { kind: 'assistant', text, interrupted: false }] };
     }
     case 'turn.complete':
-      return view.replyOpen ? { ...view, replyOpen: false } : view;
+      return { ...view, replyOpen: false, busy: false };
     case 'tool.start':
       return {
         ...view,
@@ -219,6 +243,7 @@ export function reduce(view: View, msg: ServerMsg): View {
       return {
         ...view,
         replyOpen: false,
+        busy: false,
         entries: replaceLast(
           view.entries,
           (e) => e.kind === 'assistant',
@@ -233,6 +258,12 @@ export function reduce(view: View, msg: ServerMsg): View {
     case 'error': {
       const code = str(msg['code']);
       if (code === 'unauthenticated') return { ...view, link: 'unauthenticated', busy: false };
+      if (code === 'replaced') return { ...view, link: 'replaced', busy: false };
+      if (code === 'speech') {
+        // Her voice failed; the reply itself carries on as text (VOI-14).
+        const why = PROVIDER_ERRORS[str(msg['kind'])]?.replace('The model provider', 'The voice provider');
+        return { ...view, banner: `${why ?? 'The voice provider failed.'} She is answering in text.` };
+      }
       const text =
         code === 'provider'
           ? (PROVIDER_ERRORS[str(msg['kind'])] ?? 'The model provider failed.')
@@ -242,6 +273,15 @@ export function reduce(view: View, msg: ServerMsg): View {
     default:
       return view;
   }
+}
+
+/**
+ * True while she is working and nothing is arriving on screen: before the first
+ * word, between tool calls, and for as long as a reasoning model thinks. The page
+ * shows a line in the conversation so a long silence does not look like a hang.
+ */
+export function waiting(view: View): boolean {
+  return view.link === 'ready' && view.busy && !view.replyOpen;
 }
 
 /** A card whose time ran out while it sat on screen. The core would refuse it anyway. */

@@ -178,6 +178,30 @@ button:disabled {
   color: var(--color-amber);
 }
 
+.thinking {
+  align-self: flex-start;
+  padding: 2px 13px;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+.thinking::after {
+  content: '…';
+  animation: thinking 1.4s ease-in-out infinite;
+}
+
+@keyframes thinking {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking::after {
+    animation: none;
+  }
+}
+
 /* ── Confirmation card ───────────────────────────────────────────────── */
 
 .card {
@@ -426,4 +450,41 @@ button.quiet {
   border-color: transparent;
   background: transparent;
   color: var(--color-text-1);
+}
+
+/* ── Formatted replies ───────────────────────────────────────────────── */
+
+.msg.assistant > * {
+  margin: 0;
+}
+
+.msg.assistant > * + * {
+  margin-top: 8px;
+}
+
+.msg.assistant ul,
+.msg.assistant ol {
+  padding-left: 20px;
+}
+
+.msg.assistant code,
+.msg.assistant pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-2);
+}
+
+.msg.assistant code {
+  padding: 1px 5px;
+}
+
+.msg.assistant pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.msg .mark {
+  display: block;
 }
