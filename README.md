@@ -11,7 +11,7 @@ Talk to her. Watch her think. Trust that she never acts without your "yes."
 
 ---
 
-> **Status: pre-alpha.** You can type to her in a browser, with the Galaxy behind, hear her answer aloud (a free system voice, or your ElevenLabs account), and approve a file write on a card. She cannot hear you yet; memory and onboarding are not built.
+> **Status: pre-alpha.** You can talk or type to her in a browser, with the Galaxy behind, hear her answer aloud (a free system voice, or your ElevenLabs account), and approve a file write on a card. She hears through Whisper on your own machine (free) or your Deepgram account. Memory and onboarding are not built.
 > This repository is the foundation being extracted from a private build that has run every day for six months. The first milestone is **the Shell** — see [the roadmap](#roadmap) and [`docs/PRD.md`](docs/PRD.md) for exactly what that means. Watch or star the repo if you want to know when it's usable.
 
 ## What this is
@@ -86,6 +86,8 @@ The app opens in your browser and asks who should answer: Anthropic (Claude), Op
 Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
 
 `--grant` shares one folder with the file tools; without it they are off. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
+
+**Talking to her.** Open **Mic** (top right) and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, talk, and stop: she answers when you go quiet. The microphone is on only while you are speaking to her.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 

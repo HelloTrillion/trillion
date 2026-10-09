@@ -12,7 +12,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | `tests/spine/` | The safety guarantees. Protected by CODEOWNERS; a failure here blocks the merge. |
 | `tests/brain/` | The agent loop against the real spine, and both provider adapters against recorded wire formats. No network. |
 | `tests/api/` | The local server end to end: who may connect, a conversation, the confirmation card, and that no conversation text reaches a log. |
-| `tests/voice/` | The sentence splitter, the speech cleaner, the per-turn speaker, and the contract every speech provider must pass. No network. |
+| `tests/voice/` | The sentence splitter, the speech cleaner, the per-turn speaker, the end-of-speech rules, the listener that assembles one utterance, the model-file downloader, and the two contracts every speech provider and every recognizer must pass. No network, and no real model: local Whisper is exercised through a stand-in transcriber. |
 | `tests/integration/` | Cross-component behaviour: degradation, compaction, recovery, offline. |
 | `evals/` | Model-judged behaviour: persona, honest failure, injection. |
 | `tests/e2e/` | The full loop, with providers faked at the interface. |

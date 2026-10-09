@@ -119,6 +119,8 @@ def create_app(
             hello = await asyncio.wait_for(_receive(socket), HELLO_TIMEOUT_S)
         except (TimeoutError, WebSocketDisconnect):
             hello = None
+        if isinstance(hello, bytes):
+            hello = None
         if not _authenticated(hello, rt.token):
             await _refuse(socket, send)
             return
@@ -130,7 +132,9 @@ def create_app(
         try:
             while True:
                 msg = await _receive(socket)
-                if msg is None:
+                if isinstance(msg, bytes):
+                    await session.audio(msg)
+                elif msg is None:
                     await send({"type": "error", "code": "bad_message"})
                 elif msg.get("type") == "session.end":
                     break
@@ -182,13 +186,16 @@ def _api_refusal(request: Request, token: str, origins: frozenset[str]) -> Respo
     return None
 
 
-async def _receive(socket: WebSocket) -> dict[str, Any] | None:
-    """One JSON object, or None when the frame is something else."""
-    try:
-        raw = await socket.receive_text()
-    except KeyError:  # a binary frame; audio arrives with the voice track
-        return None
-    if len(raw) > MAX_FRAME_BYTES:
+async def _receive(socket: WebSocket) -> dict[str, Any] | bytes | None:
+    """One JSON object, a binary frame of microphone audio, or None for anything else."""
+    frame = await socket.receive()
+    if frame["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(frame.get("code", 1000))
+    data = frame.get("bytes")
+    if data is not None:
+        return bytes(data)
+    raw = frame.get("text")
+    if not isinstance(raw, str) or len(raw) > MAX_FRAME_BYTES:
         return None
     try:
         value = json.loads(raw)

@@ -19,7 +19,7 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 | `trillion/api` | exists — the loopback server, the session token, and the text half of the realtime protocol; see `docs/specs/2026-10-07-first-conversation-design.md` |
 | `trillion/brain` | exists — the provider interface, the Anthropic and OpenAI-compatible adapters, the tool loop. Compaction and spend ceilings are not built yet |
 | `trillion/persona` | exists — loads the soul and the identity files, assembles the prompt. Overlays beyond text, and the tonal checkpoint, are not built yet |
-| `trillion/voice` | exists (speaking only) — the provider interface, the catalog, the system voice and ElevenLabs, the sentence splitter and the speech cleaner; see `docs/specs/2026-10-07-voice-providers-and-hardening.md`. Listening is not built yet |
+| `trillion/voice` | exists — speaking: the provider interface, the catalog, the system voice and ElevenLabs, the sentence splitter and the speech cleaner (`docs/specs/2026-10-07-voice-providers-and-hardening.md`). Listening: the recognizer interface and catalog, local Whisper and Deepgram, the end-of-speech rules, verified model downloads (`docs/specs/2026-10-09-listening.md`). Capture guards, sign-off detection, barge-in and the wake word are not built yet |
 | `trillion/memory` | placeholder |
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |

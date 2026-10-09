@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from typing import Any, Literal
 
+from trillion.api import listening
+from trillion.api.listening import FOLLOW_UP_S, Listener
 from trillion.api.runtime import OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
@@ -24,11 +26,17 @@ from trillion.persona.prompt import PendingNote, system_blocks, volatile_context
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
+from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
+from trillion.voice.types import VoiceError
 
 logger = logging.getLogger(__name__)
 
 PROTOCOL = 1
 MAX_TEXT = 32_000
+# A microphone that sends nothing at all for this long is treated as not working.
+NO_AUDIO_S = 3.0
+# One frame of audio from the page is small; anything much larger is not audio.
+MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -52,6 +60,11 @@ class Session:
         self._orb = ""
         # The orb's state between turns: idle, or error after a failure.
         self._rest = "idle"
+        self._listener: Listener | None = None
+        self._watchdog: asyncio.Task[None] | None = None
+        self._last_audio = 0.0
+        # How the current turn was said. A spoken yes is recorded as spoken (SPN-14).
+        self._via: Literal["voice", "text"] = "text"
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -85,6 +98,7 @@ class Session:
             agent_name=rt.identity.agent_name,
             model=session._model(),
             speech=session._speech(),
+            listening=session._listening(),
             granted_roots=[str(r) for r in rt.granted_roots],
         )
         rt.sessions.add(session)
@@ -104,10 +118,16 @@ class Session:
         s = rt.speech
         return describe(rt.tts, s.kind if s else None, s.voice if s else None)
 
+    def _listening(self) -> dict[str, Any] | None:
+        rt = self._rt
+        s = rt.listening
+        return listening.describe(rt.stt, s.kind if s else None, s.choice if s else None)
+
     async def settings_changed(self) -> None:
         """Settings changed. The next turn uses them; one in flight finishes as it was."""
         await self._send("model", model=self._model())
         await self._send("speech", speech=self._speech())
+        await self._send("listening", listening=self._listening())
 
     async def replaced(self) -> None:
         """This conversation was opened somewhere else. Say so, then stop for good."""
@@ -118,6 +138,7 @@ class Session:
         self._rt.sessions.discard(self)
         if self._rt.by_conversation.get(self.id) is self:
             del self._rt.by_conversation[self.id]
+        await self._stop_listening()
         self._closed = True
         task = self._task
         if task is not None:
@@ -134,14 +155,28 @@ class Session:
         if kind == "turn.text":
             await self._on_text(msg.get("text"))
         elif kind == "interrupt":
+            if self._listener is not None:
+                # Stopping while she listens throws the words away: nothing is sent.
+                await self._stop_listening()
+                await self._send("mic.stop", reason="cancelled")
+                await self._state(self._rest)
             if self._task is not None:
                 self._task.cancel()
+        elif kind == "listen.start":
+            await self._on_listen(NOTHING_AFTER_S)
+        elif kind == "listen.stop":
+            # The user says they are done: what was heard so far is the message.
+            if self._listener is not None:
+                await self._conclude("end")
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
         elif kind == "playback.ended":
-            pass  # the follow-up listening window starts here once she can hear (VOI-15b)
+            # She has finished being heard, which is what reopens the microphone (VOI-8,
+            # VOI-15b): only after a spoken turn, and never over a turn still running.
+            if self._via == "voice" and self._task is None and self._listener is None:
+                await self._on_listen(FOLLOW_UP_S, follow_up=True)
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
@@ -157,9 +192,138 @@ class Session:
         elif self._task is not None:
             await self._error("busy")
         else:
+            await self._stop_listening()
+            self._via = "text"
             self._turn += 1
             await self._save_input("user", text)
             self._begin()
+
+    # ── Listening ────────────────────────────────────────────────────────
+
+    async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
+        rt = self._rt
+        if self._listener is not None:
+            return
+        if rt.stt is None or rt.listening is None:
+            if not follow_up:
+                await self._error("no_listening")
+        elif rt.provider is None:
+            await self._error("no_model")
+        elif self._task is not None:
+            await self._error("busy")
+        else:
+            listener = Listener(
+                rt.stt, rt.listening.choice, on_partial=self._partial, patience_s=patience_s
+            )
+            self._listener = listener
+            self._last_audio = asyncio.get_running_loop().time()
+            await self._state("arming")
+            # The page opens the microphone now; what it sends while the recognizer is
+            # still connecting is held, so the first word is not lost.
+            await self._send("mic.start", follow_up=follow_up)
+            try:
+                await listener.start()
+            except VoiceError as e:
+                await self._listening_failed(e.kind)
+                return
+            if self._listener is listener:
+                self._watchdog = asyncio.create_task(self._watch(listener))
+                await self._state("listening")
+
+    async def audio(self, pcm: bytes) -> None:
+        """A binary frame from the page: microphone audio, 16 kHz mono PCM16 (VOI-1)."""
+        listener = self._listener
+        if self._closed or listener is None or len(pcm) > MAX_AUDIO_FRAME:
+            return
+        self._last_audio = asyncio.get_running_loop().time()
+        try:
+            verdict = await listener.audio(pcm)
+        except VoiceError as e:
+            await self._listening_failed(e.kind)
+            return
+        if verdict is not None and self._listener is listener:
+            await self._conclude(verdict)
+
+    async def _watch(self, listener: Listener) -> None:
+        """A microphone that goes silent on the wire never reaches a verdict by itself."""
+        loop = asyncio.get_running_loop()
+        while self._listener is listener:
+            await asyncio.sleep(0.5)
+            if self._listener is listener and loop.time() - self._last_audio > NO_AUDIO_S:
+                self._watchdog = None
+                await self._conclude("inaudible")
+                return
+
+    async def _partial(self, text: str) -> None:
+        await self._send("transcript.partial", text=text)
+
+    async def _stop_listening(self) -> Listener | None:
+        listener, self._listener = self._listener, None
+        watchdog, self._watchdog = self._watchdog, None
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+        if listener is not None:
+            await listener.abandon()
+        return listener
+
+    async def _listening_failed(self, kind: str) -> None:
+        logger.warning("listening failed in session %s: %s", self.id, kind)
+        await self._stop_listening()
+        await self._send("mic.stop", reason="failed")
+        # Typing still works: one leg down never takes the conversation with it (VOI-14).
+        await self._error("listening", kind=kind)
+        await self._state(self._rest)
+
+    async def _conclude(self, verdict: Verdict) -> None:
+        """Listening is over. Either there is something to answer, or the reason is said."""
+        listener, self._listener = self._listener, None
+        watchdog, self._watchdog = self._watchdog, None
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+        if listener is None:
+            return
+        await self._send("mic.stop", reason=verdict)
+        if verdict == "inaudible":
+            # Said out loud rather than failing silently (VOI-4).
+            await listener.abandon()
+            await self._error("listening", kind="inaudible")
+            await self._state(self._rest)
+        elif verdict == "nothing":
+            await listener.abandon()
+            await self._state(self._rest)
+        else:
+            await self._state("processing")
+            self._task = asyncio.create_task(self._heard(listener))
+
+    async def _heard(self, listener: Listener) -> None:
+        """Collect the words, then answer them. Runs as the session's one task."""
+        answer = False
+        try:
+            said = await listener.end()
+            text = said.text[:MAX_TEXT].strip()
+            if text:
+                await self._send("transcript.final", text=text)
+                self._via = "voice"
+                self._turn += 1
+                await self._save_input("user", text)
+                answer = True
+            else:
+                # Sound, but no words in it. Said, so the silence is not a mystery.
+                await self._send("notice", code="listening", reason="unheard")
+        except VoiceError as e:
+            logger.warning("listening failed in session %s: %s", self.id, e.kind)
+            await self._error("listening", kind=e.kind)
+        except asyncio.CancelledError:
+            await listener.abandon()
+            await self._send("interrupted")
+        except Exception as e:
+            logger.error("listening failed in session %s: %s", self.id, type(e).__name__)
+            await self._error("internal")
+        if answer:
+            await self._run()
+        else:
+            self._task = None
+            await self._state(self._rest)
 
     async def _on_tap(self, pending_id: object, decision: Literal["confirm", "cancel"]) -> None:
         if not isinstance(pending_id, str) or not pending_id:
@@ -309,7 +473,7 @@ class Session:
     def _ctx(
         self,
         call_id: str,
-        via: Literal["voice", "text", "tap", "channel"] = "text",
+        via: Literal["voice", "text", "tap", "channel"] | None = None,
         *,
         turn: int | None = None,
     ) -> ToolContext:
@@ -318,7 +482,7 @@ class Session:
             session_id=self.id,
             turn=self._turn if turn is None else turn,
             call_id=call_id,
-            via=via,
+            via=via or self._via,
             granted_roots=self._rt.granted_roots,
         )
 
