@@ -575,6 +575,22 @@ Every track needs a named owner and a target date before Phase 0 is called done 
 
 ---
 
+## 9a. Field lessons (hardening, phased)
+
+Seven lessons from running a personal assistant every day for months, each of which cost real time to learn. They are written down here so Trillion does not hit the same walls. Each requirement says what must be true, why, and how it is proven. The priority says which phase it lands in: P0 is part of the Shell, P1 the private alpha, P2 the public beta.
+
+| ID | Requirement | Pri |
+|---|---|---|
+| OPS-1 | **No double-send.** Any action with an outside effect (sending an email now, spending money later) is recorded as `sending` *before* the outside call, and as `sent` after the provider accepts it. On restart, an action left in `sending` is never retried blind: she first checks what actually happened (the Sent folder, the provider's record) and then marks it sent, retries it, or reports it as unknown. If `sent` is recorded only after the provider accepts, a crash in between rolls back to `pending` and the retry sends it twice. This extends SPN-17b from the approval to the outside call. *Proven by* a test that kills the process between the provider accepting and the record being written, restarts, and finds exactly one send. | P1 |
+| OPS-2 | **Synced folders lose appends.** Files under `~/.trillion/` are written whole (write a temporary file, then rename it into place) and read back to confirm, never appended in place. `trillion doctor` warns when the data folder sits inside a OneDrive, iCloud Drive, Dropbox or Google Drive folder. Sync clients can silently cut off an append, and the loss shows up much later as a missing memory or a corrupt line. *Proven by* a unit test that the writers use whole-file writes, and a `doctor` test that flags a data folder inside a synced one. | P0 |
+| OPS-3 | **Scheduled work starts hidden on Windows.** A routine or background task on Windows launches through a windowless launcher (`pythonw.exe`, or a small shim), never `python.exe` or `node.exe` directly. Launching a console program directly flashes a window at every run, which looks like a fault and steals focus. *Proven by* a Windows CI check that every scheduled launch command it generates uses a windowless launcher. | P1 |
+| OPS-4 | **Line endings stay LF.** The persona, prompt and soul files (and every file that is edited by anchor) are stored and checked out with LF line endings. The repository's `.gitattributes` (`eol=lf`) stays in place, and a CI check refuses a CRLF in those files. A file re-saved on Windows with CRLF stops matching anything that edits it by anchor, and the edit fails or lands in the wrong place. *Proven by* the CI check failing on a fixture with a CRLF. | P0 |
+| OPS-5 | **A safe way for her to improve herself.** Each night, one area at a time researches new tools or methods in its own field and writes one proposal: what it found, the evidence, the cost and the risk. Once a week the best two or three reach the owner as cards. Nothing installs from a proposal: a Yes starts a time-boxed trial, and nothing becomes permanent until the owner says so after the trial. Self-improvement without that line is self-modification nobody approved. *Proven by* a test that a proposal can only create a trial, and that a trial is not made permanent without a second, recorded approval. | P2 |
+| OPS-6 | **Fix the writer, not the mess.** When the same clean-up keeps being needed, the fix goes into the code that writes the data, together with a check that refuses the wrong form, never into a recurring clean-up job. Clean-up jobs run forever and nothing improves; a refusing check fixes it once. In a contributor project, a check in CI teaches every new contributor at once. *Proven by* each such rule having a CI check that fails on a bad fixture, in the same way as the never-list in `CONTRIBUTING.md`. | P0 |
+| OPS-7 | **Agents search inside fences.** Any agent search, whether her own `file_search` or a coding agent working on this repository, is limited to named folders, with a timeout on every search. A search wider than that (a drive root, a whole home folder) stops and asks first. Unfenced searches burn tokens and sometimes hang. *Proven by* a test that `file_search` refuses a root or home-folder path and stops at its timeout. | P0 |
+
+---
+
 ## 10. Later phases (direction, not yet spec)
 
 - **Phase 1: Private alpha** (50–100 waitlist members):
