@@ -90,6 +90,13 @@ const ERRORS: Readonly<Record<string, string>> = {
   no_keychain: 'This computer has no system keychain, so a key cannot be saved here.',
   keychain_refused: 'The system keychain refused. Unlock it and try again.',
   unknown_voice: 'That voice is not offered. Check again and pick from the list.',
+  unknown_choice: 'That choice is not offered. Check again and pick from the list.',
+  needs_download: 'That one needs its download first. Press Download.',
+  not_installed: 'This part of Trillion is not installed yet.',
+  download_failed: 'The download could not be fetched. Check the connection and try again.',
+  download_mismatch: 'The downloaded file did not match what was expected, so it was thrown away. Try again.',
+  disk: 'The file could not be written. Is the disk full?',
+  payment_required: 'The provider says this account is out of credit.',
   unknown_provider: 'That provider is not available in this version.',
   set_by_environment: 'The model is set by environment variables, so it cannot be changed here.',
 };

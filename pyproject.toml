@@ -16,6 +16,11 @@ dependencies = [
     "websockets>=13",
 ]
 
+# Local speech recognition (VOI-11b). Optional because it is large: the free way to
+# be heard, for anyone who wants nothing to leave the machine.
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.1"]
+
 [project.scripts]
 trillion = "trillion.cli.main:entrypoint"
 
@@ -83,3 +88,10 @@ strict = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+# Optional installs: typed as Any whether or not they are present.
+[[tool.mypy.overrides]]
+module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false
+follow_imports = "skip"

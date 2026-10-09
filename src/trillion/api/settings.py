@@ -16,12 +16,27 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from trillion.api.runtime import MODEL_PREF, OWNER, SPEECH_PREF, Runtime, SpeechSettings
+from trillion.api.runtime import (
+    LISTEN_PREF,
+    MODEL_PREF,
+    OWNER,
+    SPEECH_PREF,
+    ListenSettings,
+    Runtime,
+    SpeechSettings,
+)
 from trillion.brain import config
 from trillion.brain.config import NEEDS_KEY, TAKES_KEY, ConfigError, Kind, ModelSettings
 from trillion.brain.types import ProviderError
 from trillion.secrets.store import SecretStoreError
-from trillion.voice.catalog import SPEECH, SpeechOption, speech_option
+from trillion.voice.catalog import (
+    LISTENING,
+    SPEECH,
+    ListenOption,
+    SpeechOption,
+    listen_option,
+    speech_option,
+)
 from trillion.voice.types import VoiceError
 
 logger = logging.getLogger(__name__)
@@ -72,6 +87,29 @@ class SpeechForget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: str = Field(max_length=40)
+
+
+class ListenProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: str = Field(max_length=40)
+    api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
+
+
+class ListenSave(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    # None turns listening off.
+    kind: str | None = Field(default=None, max_length=40)
+    choice: str = Field(default="", max_length=200)
+    api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
+
+
+class ListenPrepare(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: str = Field(max_length=40)
+    choice: str = Field(max_length=200)
 
 
 def _fail(status: int, code: str) -> JSONResponse:
@@ -269,6 +307,117 @@ def create_router(rt: Runtime) -> APIRouter:
         await rt.use_speech(rt.speech)
         logger.info("key removed: %s", option.kind)
         return describe_speech()
+
+    # ── Listening: the same shape again, from its own catalog (VOI-11a) ──
+
+    def describe_listening() -> dict[str, Any]:
+        options = []
+        for o in LISTENING:
+            value = rt.secrets.get(o.secret) if o.needs_key else None
+            options.append(
+                {
+                    "kind": o.kind,
+                    "title": o.title,
+                    "note": o.note,
+                    "needs_key": o.needs_key,
+                    "free": o.free,
+                    "key_link": o.key_link,
+                    "install_hint": o.install_hint,
+                    "key": {"saved": True, "ends": value[-4:] if len(value) >= 20 else ""}
+                    if value
+                    else None,
+                }
+            )
+        s = rt.listening
+        return {
+            "options": options,
+            "saved": {"kind": s.kind, "choice": s.choice} if s else None,
+            "active": rt.stt is not None,
+            "keychain": rt.secrets.available(),
+        }
+
+    async def listen_choices(
+        option: ListenOption, api_key: str | None
+    ) -> list[dict[str, Any]] | JSONResponse:
+        if option.needs_key and not (api_key or rt.secrets.get(option.secret)):
+            return _fail(400, "key_required")
+        store = _Overlay(rt.secrets, {option.secret: api_key} if api_key else {})
+        try:
+            found = await option.build(store).choices()
+        except VoiceError as e:
+            logger.info("listening check for %s failed: %s", option.kind, e.kind)
+            return _fail(400 if e.kind == "not_installed" else 502, e.kind)
+        return [{"id": c.id, "name": c.name, "download": c.download} for c in found]
+
+    @router.get("/listening")
+    async def read_listening() -> dict[str, Any]:
+        return describe_listening()
+
+    @router.post("/listening/choices")
+    async def listening_choices(body: ListenProbe) -> Any:
+        option = listen_option(body.kind)
+        if option is None:
+            return _fail(400, "unknown_provider")
+        found = await listen_choices(option, body.api_key)
+        return found if isinstance(found, JSONResponse) else {"choices": found}
+
+    @router.post("/listening/prepare")
+    async def prepare_listening(body: ListenPrepare) -> Any:
+        """The one-time download a local recognizer needs. Only ever started from here,
+        by the user, and every file is checked before it is kept (ONB-7)."""
+        option = listen_option(body.kind)
+        if option is None:
+            return _fail(400, "unknown_provider")
+        try:
+            await option.build(rt.secrets).prepare(body.choice)
+        except VoiceError as e:
+            logger.info("listening setup for %s failed: %s", option.kind, e.kind)
+            return _fail(400 if e.kind in ("not_installed", "unknown_choice") else 502, e.kind)
+        found = await listen_choices(option, None)
+        return found if isinstance(found, JSONResponse) else {"choices": found}
+
+    @router.put("/listening")
+    async def save_listening(body: ListenSave) -> Any:
+        if body.kind is None:
+            await rt.preferences.put(OWNER, LISTEN_PREF, None, rt.clock())
+            await rt.use_listening(None)
+            return describe_listening()
+        option = listen_option(body.kind)
+        if option is None:
+            return _fail(400, "unknown_provider")
+        if body.api_key and not rt.secrets.available():
+            return _fail(409, "no_keychain")
+        found = await listen_choices(option, body.api_key)
+        if isinstance(found, JSONResponse):
+            return found
+        chosen = next((c for c in found if c["id"] == body.choice), None)
+        if chosen is None:
+            return _fail(400, "unknown_choice")
+        if chosen["download"] is not None:
+            return _fail(400, "needs_download")
+        try:
+            if body.api_key:
+                rt.secrets.set(option.secret, body.api_key)
+        except SecretStoreError:
+            return _fail(500, "keychain_refused")
+        settings = ListenSettings(kind=option.kind, choice=body.choice)
+        await rt.preferences.put(OWNER, LISTEN_PREF, settings.to_json(), rt.clock())
+        await rt.use_listening(settings)
+        logger.info("listening settings saved: %s", option.kind)
+        return describe_listening()
+
+    @router.post("/listening/forget-key")
+    async def forget_listening(body: SpeechForget) -> Any:
+        option = listen_option(body.kind)
+        if option is None or not option.needs_key:
+            return _fail(400, "unknown_provider")
+        try:
+            rt.secrets.delete(option.secret)
+        except SecretStoreError:
+            return _fail(500, "keychain_refused")
+        await rt.use_listening(rt.listening)
+        logger.info("key removed: %s", option.kind)
+        return describe_listening()
 
     return router
 

@@ -25,11 +25,12 @@ from trillion.storage.sqlite.conversation_store import SqliteConversationStore, 
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
-from trillion.voice.catalog import speech_option
-from trillion.voice.types import TTSProvider
+from trillion.voice.catalog import listen_option, speech_option
+from trillion.voice.types import STTProvider, TTSProvider
 
 OWNER = "local"
 SPEECH_PREF = "speech"
+LISTEN_PREF = "listening"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -55,6 +56,30 @@ def build_speech(settings: SpeechSettings | None, secrets: SecretStore) -> TTSPr
     return option.build(secrets)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ListenSettings:
+    kind: str
+    # What the user picked from the provider: a recognition model, or a language.
+    choice: str = ""
+
+    def to_json(self) -> dict[str, str]:
+        return {"kind": self.kind, "choice": self.choice}
+
+    @classmethod
+    def from_json(cls, raw: Any) -> ListenSettings | None:
+        if not isinstance(raw, dict) or listen_option(str(raw.get("kind"))) is None:
+            return None
+        return cls(kind=str(raw["kind"]), choice=str(raw.get("choice") or ""))
+
+
+def build_listening(settings: ListenSettings | None, secrets: SecretStore) -> STTProvider | None:
+    """The chosen recognizer, or None when listening is off or its key has been removed."""
+    option = listen_option(settings.kind) if settings is not None else None
+    if option is None or (option.needs_key and not secrets.get(option.secret)):
+        return None
+    return option.build(secrets)
+
+
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
@@ -73,6 +98,8 @@ class Runtime:
     settings: ModelSettings | None
     speech: SpeechSettings | None
     tts: TTSProvider | None
+    listening: ListenSettings | None = None
+    stt: STTProvider | None = None
     identity: Identity
     soul: str
     granted_roots: tuple[Path, ...]
@@ -91,9 +118,15 @@ class Runtime:
         return {
             "model": {"provider": p.name, "model": p.model} if p is not None else None,
             "speech": (
-                f"your replies are spoken aloud ({self.tts.name}); you cannot hear, the user types"
+                f"your replies are spoken aloud ({self.tts.name})"
                 if self.tts is not None
-                else "none: your replies are read, not heard, and you cannot hear"
+                else "none: your replies are read, not heard"
+            ),
+            "hearing": (
+                f"the user can talk to you through the microphone ({self.stt.name}); what you "
+                "receive is a transcript, which can mishear a word"
+                if self.stt is not None
+                else "none: you cannot hear, the user types"
             ),
             "memory": "none between conversations: you remember only this conversation",
             "internet": "none: you have no tool that reaches the web",
@@ -109,6 +142,12 @@ class Runtime:
     async def use_speech(self, settings: SpeechSettings | None) -> None:
         self.speech = settings
         self.tts = build_speech(settings, self.secrets)
+        for session in list(self.sessions):
+            await session.settings_changed()
+
+    async def use_listening(self, settings: ListenSettings | None) -> None:
+        self.listening = settings
+        self.stt = build_listening(settings, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -147,6 +186,7 @@ async def open_runtime(
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
     provider, source = resolve(settings, keychain, env)
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
+    listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
     rt = Runtime(
         router=router,
         registry=registry,
@@ -159,6 +199,8 @@ async def open_runtime(
         settings=settings,
         speech=speech,
         tts=build_speech(speech, keychain),
+        listening=listening,
+        stt=build_listening(listening, keychain),
         identity=load_identity(persona),
         soul=load_soul(persona),
         granted_roots=roots,

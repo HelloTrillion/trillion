@@ -771,3 +771,116 @@ def test_audio_from_a_core_voice_reaches_the_page_in_order(make: Any) -> None:
     assert [s for _, s in frames] == sorted(s for _, s in frames) and {1, 2} == {
         s for _, s in frames
     }
+
+
+# ── Listening: chosen in the app, generated from its catalog (VOI-11a, VOI-11b) ──
+
+
+def listening(app: App, **body: Any) -> Any:
+    return app.client.put("/api/settings/listening", json=body, headers=app.auth)
+
+
+def test_listening_settings_need_the_token_and_list_the_catalog(make: Any) -> None:
+    app = make(model=False)
+    assert app.client.get("/api/settings/listening").status_code == 401
+    body = app.client.get("/api/settings/listening", headers=app.auth).json()
+    assert [o["kind"] for o in body["options"]] == ["whisper", "deepgram"]
+    assert body["saved"] is None and body["active"] is False
+    free = body["options"][0]
+    assert free["free"] and not free["needs_key"] and free["install_hint"]
+    assert listening(app, kind="nope", choice="x").json() == {"error": "unknown_provider"}
+
+
+def test_a_hosted_recognizer_needs_a_key_that_works(
+    make: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from trillion.voice.providers.deepgram import CHOICES, Deepgram
+    from trillion.voice.types import Choice, VoiceError
+
+    caplog.set_level(logging.DEBUG)
+
+    async def choices(self: Deepgram) -> list[Choice]:
+        if self._api_key() != SAMPLE_KEY:
+            raise VoiceError("unauthorized", f"echo {self._api_key()}")
+        return list(CHOICES)
+
+    monkeypatch.setattr(Deepgram, "choices", choices)
+    app = make(model=False)
+    assert listening(app, kind="deepgram", choice="en").json() == {"error": "key_required"}
+    bad = listening(app, kind="deepgram", choice="en", api_key="wrong-key-0000")
+    assert (bad.status_code, bad.json()) == (502, {"error": "unauthorized"})
+    assert app.secrets.values() == []  # a rejected key is never stored
+    assert listening(app, kind="deepgram", choice="xx", api_key=SAMPLE_KEY).json() == {
+        "error": "unknown_choice"
+    }
+
+    probe = {"kind": "deepgram", "api_key": SAMPLE_KEY}
+    found = app.client.post("/api/settings/listening/choices", json=probe, headers=app.auth)
+    assert [c["id"] for c in found.json()["choices"]] == ["en", "multi"]
+    assert app.secrets.values() == []  # checking a key does not save it
+
+    ok = listening(app, kind="deepgram", choice="multi", api_key=SAMPLE_KEY)
+    assert ok.status_code == 200 and ok.json()["active"] is True
+    assert ok.json()["saved"] == {"kind": "deepgram", "choice": "multi"}
+    assert app.secrets.get("deepgram/api_key") == SAMPLE_KEY
+    assert SAMPLE_KEY not in ok.text and SAMPLE_KEY not in caplog.text
+    assert app.rows("SELECT value_json FROM preferences WHERE key = 'listening'") == [
+        ('{"kind": "deepgram", "choice": "multi"}',)
+    ]
+    with app.connect() as chat:
+        assert chat.session["listening"] == {
+            "kind": "deepgram",
+            "choice": "multi",
+            "streaming": True,
+        }
+    assert app.rt.stt is not None and app.rt.stt.name == "deepgram"
+
+    body = {"kind": "deepgram"}
+    gone = app.client.post("/api/settings/listening/forget-key", json=body, headers=app.auth)
+    assert gone.json()["active"] is False and app.secrets.values() == []
+    assert listening(app).json()["saved"] is None  # and it can be turned off
+
+
+def test_the_free_recognizer_says_what_it_needs_before_it_can_be_chosen(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.voice.providers.whisper import LocalWhisper
+    from trillion.voice.types import Choice, VoiceError
+
+    state = {"installed": False, "downloaded": False, "prepared": []}
+
+    async def choices(self: LocalWhisper) -> list[Choice]:
+        if not state["installed"]:
+            raise VoiceError("not_installed")
+        size = None if state["downloaded"] else 1000
+        return [Choice(id="base.en", name="English, fast", download=size)]
+
+    async def prepare(self: LocalWhisper, choice: str) -> None:
+        state["prepared"].append(choice)  # type: ignore[union-attr]
+        state["downloaded"] = True
+
+    monkeypatch.setattr(LocalWhisper, "choices", choices)
+    monkeypatch.setattr(LocalWhisper, "prepare", prepare)
+    app = make(model=False)
+
+    missing = listening(app, kind="whisper", choice="base.en")
+    assert (missing.status_code, missing.json()) == (400, {"error": "not_installed"})
+    state["installed"] = True
+    assert listening(app, kind="whisper", choice="base.en").json() == {"error": "needs_download"}
+
+    body = {"kind": "whisper", "choice": "base.en"}
+    done = app.client.post("/api/settings/listening/prepare", json=body, headers=app.auth)
+    assert done.json() == {
+        "choices": [{"id": "base.en", "name": "English, fast", "download": None}]
+    }
+    assert state["prepared"] == ["base.en"]
+    ok = listening(app, kind="whisper", choice="base.en")
+    assert ok.json()["active"] is True and app.secrets.values() == []  # no key involved
+
+
+def test_microphone_audio_arrives_as_binary_frames_and_never_breaks_the_socket(make: Any) -> None:
+    app = make(say("hi"))
+    with app.connect() as chat:
+        chat.ws.send_bytes(b"\x00\x01" * 480)  # audio nobody asked for is dropped
+        chat.ws.send_bytes(b"\x00" * 200_000)
+        assert reply(chat.say("still there?")) == "hi"

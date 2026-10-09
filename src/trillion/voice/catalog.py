@@ -1,4 +1,4 @@
-"""Every way she can speak, in one list (VOI-11).
+"""Every way she can speak, and every way she can hear, in two lists (VOI-11).
 
 The settings panel is generated from this list and the core builds providers
 through it, so adding a provider is one adapter file and one entry here. Each
@@ -11,9 +11,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from trillion.secrets.store import SecretStore
+from trillion.voice.providers.deepgram import Deepgram
 from trillion.voice.providers.elevenlabs import ElevenLabs
 from trillion.voice.providers.system import SystemVoice
-from trillion.voice.types import TTSProvider, Where
+from trillion.voice.providers.whisper import LocalWhisper
+from trillion.voice.types import STTProvider, TTSProvider, Where
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -66,3 +68,64 @@ SPEECH: tuple[SpeechOption, ...] = (
 
 def speech_option(kind: str) -> SpeechOption | None:
     return next((o for o in SPEECH if o.kind == kind), None)
+
+
+# ── Listening ────────────────────────────────────────────────────────────
+#
+# The browser's own speech recognition is deliberately absent (VOI-11b): in some
+# browsers it sends audio to a third party the user never chose.
+
+
+@dataclass(frozen=True, kw_only=True)
+class ListenOption:
+    kind: str
+    title: str
+    note: str
+    needs_key: bool
+    free: bool
+    key_link: str | None
+    # What to tell someone whose install lacks this provider's optional part.
+    install_hint: str | None
+    build: Callable[[SecretStore], STTProvider]
+
+    @property
+    def secret(self) -> str:
+        return f"{self.kind}/api_key"
+
+
+def _deepgram(secrets: SecretStore) -> STTProvider:
+    return Deepgram(api_key=lambda: secrets.get("deepgram/api_key") or "")
+
+
+LISTENING: tuple[ListenOption, ...] = (
+    ListenOption(
+        kind="whisper",
+        title="On this computer (Whisper)",
+        note=(
+            "Free, and nothing you say leaves this machine. A one-time download. Slower: "
+            "your words appear after you stop speaking, not while."
+        ),
+        needs_key=False,
+        free=True,
+        key_link=None,
+        install_hint="uv sync --extra whisper",
+        build=lambda _secrets: LocalWhisper(),
+    ),
+    ListenOption(
+        kind="deepgram",
+        title="Deepgram",
+        note=(
+            "Fast and accurate; your words appear as you speak. Needs your Deepgram key; you "
+            "pay Deepgram for what you use, and what the microphone hears is sent to them."
+        ),
+        needs_key=True,
+        free=False,
+        key_link="https://console.deepgram.com/",
+        install_hint=None,
+        build=_deepgram,
+    ),
+)
+
+
+def listen_option(kind: str) -> ListenOption | None:
+    return next((o for o in LISTENING if o.kind == kind), None)

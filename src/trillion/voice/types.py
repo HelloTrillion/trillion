@@ -48,3 +48,66 @@ class TTSProvider(Protocol):
     async def voices(self) -> list[Voice]:
         """The voices this account or machine offers. Free to call; it proves a key works."""
         ...
+
+
+# ── Listening ────────────────────────────────────────────────────────────
+
+# What the page sends and every recognizer accepts: 16 kHz mono PCM16 (VOI-1).
+CAPTURE = AudioFormat(sample_rate=16_000)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Heard:
+    """Words a recognizer made out of the audio so far.
+
+    `final` means this stretch will not change; it does not mean the user has
+    finished the thought (VOI-15a). A message can span several final segments,
+    and deciding that it is over is the listener's job, not the recognizer's."""
+
+    text: str
+    final: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class Choice:
+    """One thing a provider lets the user pick, such as a recognition model."""
+
+    id: str
+    name: str
+    # Set when choosing it needs a one-time download, in bytes.
+    download: int | None = None
+
+
+class STTStream(Protocol):
+    async def send(self, pcm: bytes) -> None:
+        """More audio, in whole samples."""
+        ...
+
+    async def finish(self) -> None:
+        """No more audio is coming. What was said is delivered, then `events` ends."""
+        ...
+
+    async def close(self) -> None:
+        """Abandon the stream. Safe to call twice, and after `finish`."""
+        ...
+
+    def events(self) -> AsyncIterator[Heard]: ...
+
+
+class STTProvider(Protocol):
+    name: str
+    # True when words arrive while the user is still speaking. False when the whole
+    # utterance is transcribed after it ends, so there is nothing to show meanwhile.
+    streaming: bool
+
+    async def open(self, *, choice: str) -> STTStream:
+        """Start listening. Raises VoiceError if it cannot."""
+        ...
+
+    async def choices(self) -> list[Choice]:
+        """What can be picked. Free to call; for a hosted provider it proves the key works."""
+        ...
+
+    async def prepare(self, choice: str) -> None:
+        """One-time setup for a choice, such as a download. Most providers need none."""
+        ...

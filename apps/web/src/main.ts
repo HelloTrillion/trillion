@@ -2,10 +2,23 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
+import { createListeningSettings } from './listening';
+import { createMic } from './mic';
 import { type Api, createSettings } from './settings';
 import { createSpeechSettings } from './speech';
 import { createVoice } from './voice';
-import { type Entry, INITIAL, STATE_TEXT, type ServerMsg, type View, expire, reduce, sent, waiting } from './view';
+import {
+  type Entry,
+  INITIAL,
+  STATE_TEXT,
+  type ServerMsg,
+  type View,
+  expire,
+  micFailed,
+  reduce,
+  sent,
+  waiting,
+} from './view';
 
 const PROTOCOL = 1;
 const TOKEN_KEY = 'trillion-token';
@@ -55,6 +68,8 @@ const stopBtn = $<HTMLButtonElement>('stop');
 const footEl = $('foot');
 const newBtn = $<HTMLButtonElement>('new');
 const speechBtn = $<HTMLButtonElement>('speech');
+const listeningBtn = $<HTMLButtonElement>('listening');
+const micBtn = $<HTMLButtonElement>('mic');
 
 function savedTheme(): Theme {
   try {
@@ -94,6 +109,17 @@ const voice = createVoice({
   attach: (node) => galaxy.attachAnalyser(node, 'playback'),
 });
 let socket: WebSocket | null = null;
+// Her ears. Frames go to the core as they are captured, as binary (VOI-1).
+const mic = createMic({
+  onFrame: (pcm) => {
+    if (socket?.readyState === WebSocket.OPEN) socket.send(pcm);
+  },
+  onProblem: (problem) => {
+    send({ type: 'interrupt' });
+    apply(micFailed(view, problem));
+  },
+  attach: (node) => galaxy.attachAnalyser(node, 'mic'),
+});
 let retryMs = 1000;
 const shown = new Set<string>();
 
@@ -198,6 +224,8 @@ let rendered: readonly Entry[] = [];
 // in the top bar already announces it to screen readers, so this one stays silent.
 const thinkingEl = el('p', 'thinking', 'Thinking');
 thinkingEl.setAttribute('aria-hidden', 'true');
+// The words she has made out so far, while the user is still speaking.
+const hearingEl = el('p', 'msg user hearing');
 
 function render(): void {
   const nearBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 80;
@@ -205,6 +233,7 @@ function render(): void {
   const last = view.entries[view.entries.length - 1];
   const prev = rendered[rendered.length - 1];
   thinkingEl.remove();
+  hearingEl.remove();
   const onlyTextGrew =
     view.entries.length === rendered.length &&
     last?.kind === 'assistant' &&
@@ -217,6 +246,10 @@ function render(): void {
     transcriptEl.replaceChildren(...view.entries.map(renderEntry));
   }
   rendered = view.entries;
+  if (view.hearing) {
+    hearingEl.textContent = view.hearing;
+    transcriptEl.append(hearingEl);
+  }
   if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
@@ -235,6 +268,9 @@ function render(): void {
   speechBtn.hidden = !ready;
   speechBtn.textContent = view.speech ? 'Voice: on' : 'Voice: off';
   speechBtn.title = 'Voice settings';
+  listeningBtn.hidden = !ready;
+  listeningBtn.textContent = view.listening ? 'Mic: on' : 'Mic: off';
+  listeningBtn.title = 'Mic settings';
   newBtn.hidden = !ready || view.entries.length === 0;
   modelEl.textContent = view.model ?? 'Choose a model';
   modelEl.title = 'Model settings';
@@ -254,7 +290,16 @@ function render(): void {
   input.placeholder = canType ? `Message ${view.agentName}` : '';
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
-  stopBtn.hidden = !(view.busy || voice.active);
+  stopBtn.hidden = !(view.busy || voice.active || view.mic);
+  micBtn.hidden = !canType || view.busy;
+  micBtn.textContent = view.mic ? 'Done' : 'Speak';
+  micBtn.title = !view.listening
+    ? 'Choose how she hears you'
+    : view.mic
+      ? 'Send what you said'
+      : 'Speak to her';
+  micBtn.setAttribute('aria-pressed', String(view.mic));
+  micBtn.classList.toggle('live', view.mic);
   footEl.textContent = !ready
     ? ''
     : view.grantedRoots.length
@@ -287,6 +332,8 @@ const settings = createSettings($<HTMLDialogElement>('settings'), api);
 modelEl.addEventListener('click', () => void settings.open());
 const speechSettings = createSpeechSettings($<HTMLDialogElement>('speech-settings'), api);
 speechBtn.addEventListener('click', () => void speechSettings.open());
+const listeningSettings = createListeningSettings($<HTMLDialogElement>('listening-settings'), api);
+listeningBtn.addEventListener('click', () => void listeningSettings.open());
 let offered = false;
 
 newBtn.addEventListener('click', () => {
@@ -333,6 +380,9 @@ function connect(): void {
     if (msg.type === 'reply.sentence') voice.sentence(Number(msg['turn']), String(msg['text'] ?? ''));
     if (msg.type === 'audio.end') voice.end(Number(msg['turn']));
     if (msg.type === 'audio.stop' || msg.type === 'interrupted') voice.stop();
+    // The core opens and closes the microphone; the page only ever follows (VOI-15d).
+    if (msg.type === 'mic.start' && !mic.on) void mic.start();
+    if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening')) mic.stop();
     apply(reduce(view, msg));
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
     // First run: with nobody to answer, the way to fix that opens by itself, once.
@@ -345,6 +395,7 @@ function connect(): void {
     if (socket !== ws) return;
     socket = null;
     voice.stop();
+    mic.stop();
     if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
     setTimeout(connect, retryMs);
@@ -381,11 +432,26 @@ input.addEventListener('input', () => {
 });
 const interrupt = (): void => {
   voice.stop();
+  mic.stop();
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);
+micBtn.addEventListener('click', () => {
+  if (!view.listening) {
+    void listeningSettings.open();
+  } else if (view.mic) {
+    // Done speaking: what she heard so far is the message.
+    send({ type: 'listen.stop' });
+  } else if (!view.busy && view.link === 'ready') {
+    voice.unlock(); // a click is what lets a browser play her answer
+    voice.stop();
+    send({ type: 'listen.start' });
+    // Opened here, inside the click, so the browser's permission prompt belongs to it.
+    void mic.start();
+  }
+});
 addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && (view.busy || voice.active)) interrupt();
+  if (ev.key === 'Escape' && (view.busy || voice.active || view.mic)) interrupt();
   if (ev.key === 'k' && (ev.metaKey || ev.ctrlKey)) {
     ev.preventDefault();
     input.focus();

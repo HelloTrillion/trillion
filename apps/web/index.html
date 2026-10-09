@@ -14,6 +14,7 @@
       </div>
       <div class="top-right">
         <button type="button" class="model" id="new" hidden>New conversation</button>
+        <button type="button" class="model" id="listening" aria-haspopup="dialog" hidden></button>
         <button type="button" class="model" id="speech" aria-haspopup="dialog" hidden></button>
         <button type="button" class="model" id="model" aria-haspopup="dialog" hidden></button>
         <div class="theme-switch" role="radiogroup" aria-label="Theme">
@@ -28,6 +29,7 @@
       <form class="ask" id="ask">
         <label class="visually-hidden" for="input">Message</label>
         <textarea id="input" rows="1" placeholder="Say something" autocomplete="off" disabled></textarea>
+        <button type="button" id="mic" aria-pressed="false" hidden>Speak</button>
         <button type="submit" id="send" disabled>Send</button>
         <button type="button" id="stop" hidden>Stop</button>
       </form>
@@ -35,6 +37,7 @@
     </main>
     <dialog id="settings"></dialog>
     <dialog id="speech-settings"></dialog>
+    <dialog id="listening-settings"></dialog>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

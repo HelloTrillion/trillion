@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, expire, reduce, sent, waiting } from '../src/view';
+import { INITIAL, type View, expire, micFailed, reduce, sent, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -144,5 +144,60 @@ describe('voice in the view', () => {
     expect(waiting(v)).toBe(false);
     expect(waiting(feed([{ type: 'interrupted' }], sent(ready, 'hi')))).toBe(false);
     expect(waiting({ ...sent(ready, 'hi'), link: 'offline' })).toBe(false);
+  });
+
+  describe('listening', () => {
+    const ears = { kind: 'deepgram', choice: 'en', streaming: true };
+    const ready = feed([{ type: 'session', id: 'c1', model: { model: 'm' }, listening: ears }]);
+
+    it('knows whether she can hear, and follows a change in settings', () => {
+      expect(ready.listening).toEqual({ kind: 'deepgram', streaming: true });
+      expect(feed([{ type: 'session', id: 'c1', model: null }]).listening).toBeNull();
+      expect(feed([{ type: 'listening', listening: null }], ready).listening).toBeNull();
+      expect(feed([{ type: 'listening', listening: { kind: 'whisper', streaming: false } }]).listening?.streaming).toBe(false);
+    });
+
+    it('shows the words as they are made out, then makes them the user message', () => {
+      let v = feed([{ type: 'mic.start' }, { type: 'state', orb: 'listening' }], ready);
+      expect(v).toMatchObject({ mic: true, busy: false, hearing: '' });
+      v = feed([{ type: 'transcript.partial', text: 'good' }, { type: 'transcript.partial', text: 'good morning' }], v);
+      expect(v.hearing).toBe('good morning');
+      v = feed([{ type: 'mic.stop', reason: 'end' }, { type: 'state', orb: 'processing' }], v);
+      expect(v).toMatchObject({ mic: false, hearing: 'good morning', busy: true });
+      v = feed([{ type: 'transcript.final', text: 'Good morning.' }], v);
+      expect(v.hearing).toBe('');
+      expect(v.entries).toEqual([{ kind: 'user', text: 'Good morning.' }]);
+      expect(waiting(v)).toBe(true);
+    });
+
+    it('throws the words away when listening is cancelled or nothing was said', () => {
+      const heard = feed([{ type: 'mic.start' }, { type: 'transcript.partial', text: 'delete every' }], ready);
+      for (const reason of ['cancelled', 'nothing', 'failed', 'inaudible']) {
+        const v = feed([{ type: 'mic.stop', reason }], heard);
+        expect(v).toMatchObject({ mic: false, hearing: '', entries: [] });
+      }
+      // Words that arrive after the microphone closed are not shown.
+      expect(feed([{ type: 'mic.stop', reason: 'cancelled' }, { type: 'transcript.partial', text: 'late' }], heard).hearing).toBe('');
+    });
+
+    it('says why she cannot hear, and that typing still works', () => {
+      const open = feed([{ type: 'mic.start' }], ready);
+      const dead = feed([{ type: 'error', code: 'listening', kind: 'inaudible' }], open);
+      expect(dead.mic).toBe(false);
+      expect(dead.banner).toMatch(/can't hear your microphone.*still type/);
+      expect(feed([{ type: 'error', code: 'listening', kind: 'unauthorized' }], open).banner).toMatch(/rejected the key/);
+      expect(feed([{ type: 'error', code: 'listening', kind: 'mystery' }], open).banner).toMatch(/Listening failed/);
+      expect(feed([{ type: 'error', code: 'no_listening' }], ready).banner).toMatch(/Mic settings/);
+      expect(micFailed(open, 'denied')).toMatchObject({ mic: false });
+      expect(micFailed(open, 'denied').banner).toMatch(/did not allow the microphone/);
+      expect(micFailed(open, 'no_device').banner).toMatch(/No microphone/);
+      // Opening the microphone again clears the old complaint.
+      expect(feed([{ type: 'mic.start' }], dead).banner).toBeNull();
+    });
+
+    it('explains sound with no words in it', () => {
+      const v = feed([{ type: 'notice', code: 'listening', reason: 'unheard' }], ready);
+      expect(v.entries).toEqual([{ kind: 'notice', text: 'I heard something, but could not make out any words.' }]);
+    });
   });
 });

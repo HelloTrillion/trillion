@@ -478,13 +478,13 @@ Every `Tool.execute` is reachable **only** through `spine.router.execute(call, c
 - **Binary frames** from client to server carry PCM16 audio. Binary frames from server to client carry TTS audio: a 1-byte kind, the turn (u32) and the sentence (u32), little-endian, then PCM16 in whole samples.
 - **JSON control frames** use the shape `{type, id?, ...}`. Types:
 
-**Client → server:** `hello{token, client, caps, resume?}`, `listen.start`, `listen.stop`, `turn.text{text}`, `interrupt`, `playback.ended{turn_id, played_ms}` (closes the loop that `audio.end` opens, and starts the follow-up window), `cancel.task{task_id}` (distinct from `interrupt`, which only silences playback), `confirm{pending_id}`, `cancel{pending_id}`, `speech.mute{muted}` (nothing is synthesized while muted), `confirm.shown{pending_id}` (the card is on screen: this is what writes `delivered_at`, SPN-17), `session.end`, `diag.mic{…}`
+**Client → server:** `hello{token, client, caps, resume?}`, `listen.start`, `listen.stop`, `turn.text{text}`, `interrupt` (while she listens: closes the microphone and discards what was heard), `playback.ended{turn_id, played_ms}` (closes the loop that `audio.end` opens, and starts the follow-up window), `cancel.task{task_id}` (distinct from `interrupt`, which only silences playback), `confirm{pending_id}`, `cancel{pending_id}`, `speech.mute{muted}` (nothing is synthesized while muted), `confirm.shown{pending_id}` (the card is on screen: this is what writes `delivered_at`, SPN-17), `session.end`, `diag.mic{…}`
 
 **Server → client:**
 
 | Group | Messages |
 |---|---|
-| Session and state | `session{id}`, `model{model}` and `speech{speech}` (changed in settings), `history{messages}` (on resume), `error{code, kind?}`, `notice{code, reason}`, `state{orb: idle\|arming\|listening\|processing\|speaking\|error, label}`, `mic.start`, `mic.stop` |
+| Session and state | `session{id}`, `model{model}`, `speech{speech}` and `listening{listening}` (changed in settings), `history{messages}` (on resume), `error{code, kind?}`, `notice{code, reason}`, `state{orb: idle\|arming\|listening\|processing\|speaking\|error, label}`, `mic.start{follow_up}` (the page opens the microphone; `follow_up` marks the window after she speaks), `mic.stop{reason: end\|nothing\|inaudible\|cancelled\|failed\|too_long}` (the page closes it) |
 | Transcript | `transcript.partial{text}`, `transcript.final{text}` |
 | Reply | `reply.delta{text}` (chat), `reply.sentence{turn, seq, text}` (one speakable sentence; the page speaks it when the voice is the system's), `audio.end{turn, sentences}`, `audio.stop{turn}`, `interrupted`, `turn.complete{usage}` |
 | Tools | `tool.start{call_id, name, risk}`, `tool.end{call_id, ok, summary}` |
