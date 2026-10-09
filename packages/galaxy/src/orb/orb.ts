@@ -1,6 +1,6 @@
 import {
   AdditiveBlending, BackSide, NormalBlending, Group, IcosahedronGeometry, Mesh, MeshBasicMaterial,
-  ShaderMaterial, TorusGeometry, Vector3,
+  ShaderMaterial, SphereGeometry, TorusGeometry, Vector3,
 } from 'three';
 import type { Levels } from '../audio/levels';
 import { NOISE_GLSL } from '../shaders/noise';
@@ -83,7 +83,11 @@ void main() {
 
 interface Ring {
   readonly mesh: Mesh<TorusGeometry, MeshBasicMaterial>;
+  readonly comet: Mesh<SphereGeometry, MeshBasicMaterial>;
   readonly spin: number;
+  readonly orbit: number;
+  readonly radius: number;
+  angle: number;
 }
 
 /** Per-frame inputs, already eased and smoothed by the caller. */
@@ -96,10 +100,12 @@ export interface OrbFrame {
   readonly motion: number;
 }
 
+// A plain ring spinning in its own plane looks still, so each carries a small
+// light that orbits it (`orbit`, rad/s) while processing: that is what shows work.
 const RING_SPECS = [
-  { radius: 1.55, tilt: [1.2, 0.3], spin: 0.21 },
-  { radius: 1.65, tilt: [1.45, -0.5], spin: -0.14 },
-  { radius: 1.75, tilt: [1.05, 0.9], spin: 0.09 },
+  { radius: 1.55, tilt: [1.2, 0.3], spin: 0.21, orbit: 0.7 },
+  { radius: 1.65, tilt: [1.45, -0.5], spin: -0.14, orbit: -0.5 },
+  { radius: 1.75, tilt: [1.05, 0.9], spin: 0.09, orbit: 0.4 },
 ] as const;
 
 export class Orb {
@@ -163,7 +169,17 @@ export class Orb {
         }),
       );
       mesh.rotation.set(spec.tilt[0], spec.tilt[1], 0);
-      this.rings.push({ mesh, spin: spec.spin });
+      const comet = new Mesh(
+        new SphereGeometry(0.02, 12, 8),
+        new MeshBasicMaterial({
+          transparent: true,
+          opacity: 0,
+          blending: AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
+      mesh.add(comet);
+      this.rings.push({ mesh, comet, spin: spec.spin, orbit: spec.orbit, radius: spec.radius, angle: 0 });
       this.group.add(mesh);
     }
   }
@@ -219,6 +235,10 @@ export class Orb {
       ring.mesh.material.color.setRGB(p.colorSecondary[0], p.colorSecondary[1], p.colorSecondary[2]);
       ring.mesh.rotation.z += dt * motion * ring.spin;
       ring.mesh.visible = p.ringOpacity > 0.01;
+      ring.angle += dt * motion * ring.orbit;
+      ring.comet.position.set(ring.radius * Math.cos(ring.angle), ring.radius * Math.sin(ring.angle), 0);
+      ring.comet.material.opacity = Math.min(1, p.ringOpacity * 1.6);
+      ring.comet.material.color.copy(ring.mesh.material.color);
     }
   }
 
@@ -230,6 +250,8 @@ export class Orb {
     for (const r of this.rings) {
       r.mesh.geometry.dispose();
       r.mesh.material.dispose();
+      r.comet.geometry.dispose();
+      r.comet.material.dispose();
     }
   }
 }
