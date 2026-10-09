@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
@@ -80,6 +81,12 @@ def create_app(
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     origins = frozenset(f"http://{h}" for h in hosts) | extra_origins
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # The default reply quotes the rejected input back, and that input can be a key.
+        fields = sorted({str(e["loc"][-1]) for e in exc.errors() if e.get("loc")})
+        return JSONResponse({"error": "bad_request", "fields": fields}, status_code=422)
+
     @app.middleware("http")
     async def guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Any:
         # A page on another site can point a hostname at 127.0.0.1 (DNS rebinding);
@@ -117,7 +124,9 @@ def create_app(
             return
 
         resume = hello.get("resume") if hello else None
-        session = await Session.start(rt, send, resume if isinstance(resume, str) else None)
+        session = await Session.start(
+            rt, send, resume if isinstance(resume, str) else None, socket.send_bytes
+        )
         try:
             while True:
                 msg = await _receive(socket)

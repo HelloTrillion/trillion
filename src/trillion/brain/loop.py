@@ -197,24 +197,43 @@ async def run_turn(
             # Nothing came back. That is said plainly rather than shown as a silent
             # success: a small model can spend its whole reply thinking.
             return done("max_tokens" if stop == "max_tokens" else "empty")
-        await add(_assistant("".join(text), uses, raw))
         if not uses:
+            await add(_assistant("".join(text), uses, raw))
             return done("max_tokens" if stop == "max_tokens" else "end")
 
-        # Every tool call gets an answer, even when the loop is about to stop: a call
-        # left unanswered makes the saved history unusable on the next turn.
-        work = asyncio.ensure_future(run_all(uses, Refusal.LOOP_GUARD if over_budget else None))
-        try:
-            results = await asyncio.shield(work)
-        except asyncio.CancelledError:
-            # Stopping the reply is not cancelling the work (VOI-15c): calls already
-            # handed to the spine finish and are recorded before the turn ends.
-            results = await work
-            await asyncio.shield(add(Msg(role="user", blocks=tuple(results))))
-            raise
-        await add(Msg(role="user", blocks=tuple(results)))
+        # A tool call and its answer are saved as a pair, and nothing can come between
+        # them: not one interrupt, not several, not the tab closing. A call left
+        # unanswered makes the saved history unusable on every later turn. Stopping the
+        # reply is also not cancelling the work (VOI-15c): calls handed to the spine
+        # finish and are recorded before the turn ends.
+        refuse = Refusal.LOOP_GUARD if over_budget else None
+
+        async def round_trip() -> None:
+            await add(_assistant("".join(text), uses, raw))  # noqa: B023
+            results = await run_all(uses, refuse)  # noqa: B023
+            await add(Msg(role="user", blocks=tuple(results)))
+
+        if await _finish(round_trip()):
+            raise asyncio.CancelledError
         if over_budget:
             return done("cost")
+
+
+async def _finish(work: Awaitable[None]) -> bool:
+    """Run `work` to the end even if this task is cancelled meanwhile, however often.
+
+    Returns whether a cancellation arrived, so the caller can honour it afterwards."""
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():  # the work itself was cancelled from outside
+                raise
+            cancelled = True
+    task.result()
+    return cancelled
 
 
 def _assistant(text: str, uses: Sequence[ToolUse], raw: ProviderRaw | None) -> Msg:

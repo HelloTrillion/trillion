@@ -16,11 +16,13 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from trillion.api.runtime import MODEL_PREF, OWNER, Runtime
+from trillion.api.runtime import MODEL_PREF, OWNER, SPEECH_PREF, Runtime, SpeechSettings
 from trillion.brain import config
 from trillion.brain.config import NEEDS_KEY, TAKES_KEY, ConfigError, Kind, ModelSettings
 from trillion.brain.types import ProviderError
 from trillion.secrets.store import SecretStoreError
+from trillion.voice.catalog import SPEECH, SpeechOption, speech_option
+from trillion.voice.types import VoiceError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,28 @@ class Forget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Kind
+
+
+class SpeechProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: str = Field(max_length=40)
+    api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
+
+
+class SpeechSave(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    # None turns speech off.
+    kind: str | None = Field(default=None, max_length=40)
+    voice: str = Field(default="", max_length=200)
+    api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
+
+
+class SpeechForget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(max_length=40)
 
 
 def _fail(status: int, code: str) -> JSONResponse:
@@ -87,6 +111,10 @@ def create_router(rt: Runtime) -> APIRouter:
         if body.kind in NEEDS_KEY and not key:
             return _fail(400, "key_required")
         try:
+            url = config.endpoint(body.kind, body.base_url)
+            if body.api_key and url is not None and config.keyless(url):
+                # Said out loud rather than quietly dropped: the user believes it is in use.
+                return _fail(400, "key_needs_https")
             found = await config.list_models(body.kind, body.base_url, key)
         except ConfigError as e:
             return _fail(400, e.code)
@@ -147,4 +175,119 @@ def create_router(rt: Runtime) -> APIRouter:
         logger.info("key removed: %s", body.kind)
         return _describe(rt)
 
+    # ── Speech: the same rules as the model, generated from the catalog (VOI-11a) ──
+
+    def describe_speech() -> dict[str, Any]:
+        options = []
+        for o in SPEECH:
+            value = rt.secrets.get(o.secret) if o.needs_key else None
+            options.append(
+                {
+                    "kind": o.kind,
+                    "title": o.title,
+                    "note": o.note,
+                    "where": o.where,
+                    "needs_key": o.needs_key,
+                    "free": o.free,
+                    "key_link": o.key_link,
+                    "key": {"saved": True, "ends": value[-4:] if len(value) >= 20 else ""}
+                    if value
+                    else None,
+                }
+            )
+        s = rt.speech
+        return {
+            "options": options,
+            "saved": {"kind": s.kind, "voice": s.voice} if s else None,
+            "active": rt.tts is not None,
+            "keychain": rt.secrets.available(),
+        }
+
+    async def voices(
+        option: SpeechOption, api_key: str | None
+    ) -> list[dict[str, Any]] | JSONResponse:
+        if option.needs_key and not (api_key or rt.secrets.get(option.secret)):
+            return _fail(400, "key_required")
+        # A new key is tried from memory, so a rejected one is never stored.
+        store = _Overlay(rt.secrets, {option.secret: api_key} if api_key else {})
+        try:
+            found = await option.build(store).voices()
+        except VoiceError as e:
+            logger.info("voice list for %s failed: %s", option.kind, e.kind)
+            return _fail(502, e.kind)
+        return [{"id": v.id, "name": v.name} for v in found]
+
+    @router.get("/speech")
+    async def read_speech() -> dict[str, Any]:
+        return describe_speech()
+
+    @router.post("/speech/voices")
+    async def speech_voices(body: SpeechProbe) -> Any:
+        option = speech_option(body.kind)
+        if option is None:
+            return _fail(400, "unknown_provider")
+        found = await voices(option, body.api_key)
+        return found if isinstance(found, JSONResponse) else {"voices": found}
+
+    @router.put("/speech")
+    async def save_speech(body: SpeechSave) -> Any:
+        if body.kind is None:
+            await rt.preferences.put(OWNER, SPEECH_PREF, None, rt.clock())
+            await rt.use_speech(None)
+            return describe_speech()
+        option = speech_option(body.kind)
+        if option is None:
+            return _fail(400, "unknown_provider")
+        if body.api_key and not rt.secrets.available():
+            return _fail(409, "no_keychain")
+        if option.where == "core":
+            found = await voices(option, body.api_key)
+            if isinstance(found, JSONResponse):
+                return found
+            if body.voice not in {v["id"] for v in found}:
+                return _fail(400, "unknown_voice")
+        try:
+            if body.api_key:
+                rt.secrets.set(option.secret, body.api_key)
+        except SecretStoreError:
+            return _fail(500, "keychain_refused")
+        chosen = SpeechSettings(kind=option.kind, voice=body.voice)
+        await rt.preferences.put(OWNER, SPEECH_PREF, chosen.to_json(), rt.clock())
+        await rt.use_speech(chosen)
+        logger.info("speech settings saved: %s", option.kind)
+        return describe_speech()
+
+    @router.post("/speech/forget-key")
+    async def forget_speech(body: SpeechForget) -> Any:
+        option = speech_option(body.kind)
+        if option is None or not option.needs_key:
+            return _fail(400, "unknown_provider")
+        try:
+            rt.secrets.delete(option.secret)
+        except SecretStoreError:
+            return _fail(500, "keychain_refused")
+        await rt.use_speech(rt.speech)
+        logger.info("key removed: %s", option.kind)
+        return describe_speech()
+
     return router
+
+
+class _Overlay:
+    """A keychain with a not-yet-saved key laid over it, for checking that key."""
+
+    def __init__(self, base: Any, extra: dict[str, str]) -> None:
+        self._base = base
+        self._extra = extra
+
+    def available(self) -> bool:
+        return bool(self._base.available())
+
+    def get(self, name: str) -> str | None:
+        return self._extra.get(name) or self._base.get(name)
+
+    def set(self, name: str, value: str) -> None:
+        raise SecretStoreError("read-only")
+
+    def delete(self, name: str) -> None:
+        raise SecretStoreError("read-only")

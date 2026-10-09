@@ -13,6 +13,8 @@
         <span class="status" id="status" role="status" aria-live="polite">Connecting</span>
       </div>
       <div class="top-right">
+        <button type="button" class="model" id="new" hidden>New conversation</button>
+        <button type="button" class="model" id="speech" aria-haspopup="dialog" hidden></button>
         <button type="button" class="model" id="model" aria-haspopup="dialog" hidden></button>
         <div class="theme-switch" role="radiogroup" aria-label="Theme">
           <button type="button" role="radio" data-theme-choice="dark" aria-checked="true">Dark</button>
@@ -32,6 +34,7 @@
       <p class="foot" id="foot"></p>
     </main>
     <dialog id="settings"></dialog>
+    <dialog id="speech-settings"></dialog>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

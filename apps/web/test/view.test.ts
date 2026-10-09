@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, expire, reduce, sent } from '../src/view';
+import { INITIAL, type View, expire, reduce, sent, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -107,5 +107,42 @@ describe('view', () => {
 
   it('ignores messages it does not know', () => {
     expect(reduce(INITIAL, { type: 'win' })).toBe(INITIAL);
+  });
+});
+
+describe('voice in the view', () => {
+  const speech = { kind: 'system', where: 'client', voice: 'v', sample_rate: null };
+
+  it('learns how she speaks from the session and from a change in settings', () => {
+    expect(feed([{ type: 'session', id: 'c', model: null, speech }]).speech).toEqual(speech);
+    expect(feed([{ type: 'speech', speech: null }]).speech).toBeNull();
+    expect(feed([{ type: 'speech', speech: { kind: 'x', where: 'elsewhere' } }]).speech).toBeNull();
+  });
+
+  it('says her voice failed and that the reply goes on as text', () => {
+    const v = feed([{ type: 'reply.delta', text: 'Still here.' }, { type: 'error', code: 'speech', kind: 'rate_limited' }]);
+    expect(v.banner).toMatch(/voice provider is rate-limiting.*answering in text/i);
+    expect(v.entries).toHaveLength(1);
+  });
+
+  it('stops for good when the conversation moves to another tab', () => {
+    expect(feed([{ type: 'error', code: 'replaced' }]).link).toBe('replaced');
+  });
+
+  it('says she is thinking for as long as nothing is arriving', () => {
+    const ready = feed([{ type: 'session', id: 'c1', model: { model: 'm' } }]);
+    expect(waiting(ready)).toBe(false);
+    // A reasoning model can be silent for a long time after the message is sent.
+    let v = feed([{ type: 'state', orb: 'processing' }], sent(ready, 'hi'));
+    expect(waiting(v)).toBe(true);
+    v = feed([{ type: 'state', orb: 'speaking' }, { type: 'reply.delta', text: 'Hel' }], v);
+    expect(waiting(v)).toBe(false);
+    // Between a tool call and what she says next.
+    v = feed([{ type: 'state', orb: 'processing' }, { type: 'tool.start', call_id: 't1', name: 'file_read' }], v);
+    expect(waiting(v)).toBe(true);
+    v = feed([{ type: 'reply.delta', text: 'Done.' }, { type: 'turn.complete' }], v);
+    expect(waiting(v)).toBe(false);
+    expect(waiting(feed([{ type: 'interrupted' }], sent(ready, 'hi')))).toBe(false);
+    expect(waiting({ ...sent(ready, 'hi'), link: 'offline' })).toBe(false);
   });
 });

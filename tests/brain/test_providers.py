@@ -363,11 +363,20 @@ async def test_openai_compatible_sends_context_as_text_and_names_the_cap_as_aske
         role="user", blocks=(ContextBlock(text="<context>now</context>"), TextBlock(text="hi"))
     )
     p = OpenAICompatProvider(
-        base_url="http://x/v1", model="m", cap_field="max_completion_tokens", client=client(handler)
+        base_url="http://x/v1",
+        model="m",
+        cap_field="max_completion_tokens",
+        max_output=900,
+        client=client(handler),
     )
     await collect(p, [said])
     assert seen["body"]["messages"][-1]["content"] == "<context>now</context>\n\nhi"
-    assert seen["body"]["max_completion_tokens"] == 64 and "max_tokens" not in seen["body"]
+    assert seen["body"]["max_completion_tokens"] == 900 and "max_tokens" not in seen["body"]
+
+    # With no limit known for the model, none is sent: a fixed one would be spent by a
+    # reasoning model's thinking, or refused by a model whose own limit is lower.
+    await collect(OpenAICompatProvider(base_url="http://x/v1", model="m", client=client(handler)))
+    assert not {"max_tokens", "max_completion_tokens"} & seen["body"].keys()
 
 
 async def test_openai_compatible_lists_models_and_reports_a_bad_key() -> None:
@@ -384,3 +393,52 @@ async def test_openai_compatible_lists_models_and_reports_a_bad_key() -> None:
     with pytest.raises(ProviderError) as e:
         await openai_list_models("http://x/v1", "wrong", http)
     assert e.value.kind == "unauthorized"
+
+
+async def test_a_reply_cut_off_at_the_length_limit_says_so_even_with_tool_calls() -> None:
+    """Otherwise the loop's "cut off mid tool call, run nothing" rule could never fire here."""
+    stream = sse(
+        ("", {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "x1",
+             "function": {"name": "file_read", "arguments": '{"path": "a"}'}},
+            {"index": 1, "id": "x2",
+             "function": {"name": "file_create", "arguments": '{"path": "b", "con'}},
+        ]}}]}),
+        ("", {"choices": [{"delta": {}, "finish_reason": "length"}]}),
+        ("", "[DONE]"),
+    )  # fmt: skip
+    p = OpenAICompatProvider(
+        base_url="http://x/v1",
+        model="m",
+        client=client(lambda r: httpx.Response(200, content=stream)),
+    )
+    done = (await collect(p))[-1]
+    assert isinstance(done, Done) and done.stop_reason == "max_tokens"
+
+
+async def test_made_up_tool_call_ids_are_unique_across_replies() -> None:
+    stream = sse(
+        ("", {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"name": "file_read", "arguments": "{}"}}]}}]}),
+        ("", "[DONE]"),
+    )  # fmt: skip
+    p = OpenAICompatProvider(
+        base_url="http://x/v1",
+        model="m",
+        client=client(lambda r: httpx.Response(200, content=stream)),
+    )
+    first, second = (await collect(p))[0], (await collect(p))[0]
+    assert isinstance(first, ToolUse) and isinstance(second, ToolUse)
+    assert first.id and second.id and first.id != second.id
+
+
+def test_another_providers_tool_ids_are_made_acceptable_and_still_pair() -> None:
+    odd = "call:0/abc def"
+    history = [
+        Msg(role="user", blocks=(TextBlock(text="go"),)),
+        Msg(role="assistant", blocks=(ToolUseBlock(id=odd, name="file_read", args={}),)),
+        Msg(role="user", blocks=(ToolResultBlock(tool_use_id=odd, content="{}"),)),
+    ]
+    wire = wire_messages(history, "k")
+    sent_id = wire[1]["content"][0]["id"]
+    assert sent_id == wire[2]["content"][0]["tool_use_id"] == "call_0_abc_def"

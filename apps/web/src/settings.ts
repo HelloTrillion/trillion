@@ -64,7 +64,7 @@ export const OPTIONS: readonly Option[] = [
   {
     kind: 'custom',
     title: 'Another compatible service',
-    note: 'Any service that speaks the OpenAI chat format, such as OpenRouter.',
+    note: 'Any service that speaks the OpenAI chat format, such as OpenRouter, or a model server on another computer on your network.',
     takesKey: true,
     needsKey: false,
     takesAddress: true,
@@ -83,10 +83,14 @@ const ERRORS: Readonly<Record<string, string>> = {
   bad_response: 'Something answered, but not with a list of models.',
   bad_url: 'That address is not a web address.',
   not_local: 'That address is not on this computer. Choose "Another compatible service" instead.',
-  insecure_url: 'An address on another machine must start with https.',
+  insecure_url:
+    'An address on another machine must start with https. The one exception is a numeric address on your own network, such as http://192.168.1.20:8080/v1.',
+  key_needs_https: 'A key is only sent over https. Clear the key, or use an https address.',
   unknown_model: 'That model is not offered. Check again and pick from the list.',
   no_keychain: 'This computer has no system keychain, so a key cannot be saved here.',
   keychain_refused: 'The system keychain refused. Unlock it and try again.',
+  unknown_voice: 'That voice is not offered. Check again and pick from the list.',
+  unknown_provider: 'That provider is not available in this version.',
   set_by_environment: 'The model is set by environment variables, so it cannot be changed here.',
 };
 

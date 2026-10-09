@@ -3,7 +3,14 @@ from __future__ import annotations
 import pytest
 
 from trillion.brain import config
-from trillion.brain.config import ConfigError, ModelSettings, endpoint, provider_from_env, resolve
+from trillion.brain.config import (
+    ConfigError,
+    ModelSettings,
+    build,
+    endpoint,
+    provider_from_env,
+    resolve,
+)
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.providers.openai_compat import OpenAICompatProvider
 from trillion.secrets.store import MemoryStore
@@ -87,6 +94,9 @@ def test_endpoints() -> None:
         ("local", "http://192.168.1.5:11434/v1", "not_local"),
         ("local", "https://example.com/v1", "not_local"),
         ("custom", "http://example.com/v1", "insecure_url"),  # a key over plain http
+        ("custom", "http://8.8.8.8/v1", "insecure_url"),
+        ("custom", "http://gpu-box.local:8090/v1", "insecure_url"),  # a name can point anywhere
+        ("custom", "http://192.168.1.5.example.com/v1", "insecure_url"),
         ("custom", "", "bad_url"),
         ("custom", "ftp://example.com", "bad_url"),
         ("custom", "https://user:pw@example.com/v1", "bad_url"),
@@ -98,3 +108,51 @@ def test_addresses_that_could_leak_a_key_are_refused(kind: str, url: str, code: 
     with pytest.raises(ConfigError) as e:
         endpoint(kind, url)  # type: ignore[arg-type]
     assert e.value.code == code
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://[::1", "http://local\uff0fhost/v1", "http://localhost:11434:evil.example/v1",
+     "http://localhost:port/v1", "https://exa mple.com/v1"],
+)  # fmt: skip
+def test_malformed_addresses_are_refused_not_crashed_on(url: str) -> None:
+    with pytest.raises(ConfigError) as e:
+        endpoint("custom", url)
+    assert e.value.code in ("bad_url", "insecure_url")
+
+
+def test_the_environment_obeys_the_same_address_rule() -> None:
+    env = {"TRILLION_OPENAI_BASE_URL": "http://example.com/v1", "TRILLION_MODEL": "m",
+           "TRILLION_OPENAI_API_KEY": "k"}  # fmt: skip
+    with pytest.raises(ConfigError) as e:
+        provider_from_env(env)
+    assert e.value.code == "insecure_url"  # a key over plain HTTP to another machine
+    assert provider_from_env(env | {"TRILLION_OPENAI_BASE_URL": "https://example.com/v1"})
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://192.168.1.20:8090/v1", "http://10.0.0.7/v1", "http://172.20.1.1:8080/v1",
+     "http://100.101.102.103:11434/v1", "http://[fd12:3456::1]:8090/v1"],
+)  # fmt: skip
+def test_a_model_server_on_the_users_own_network_needs_no_tunnel(url: str) -> None:
+    assert endpoint("custom", url) == url
+    assert config.keyless(url)
+    with pytest.raises(ConfigError):
+        endpoint("local", url)  # "on this computer" still means this computer
+
+
+def test_a_key_never_travels_over_plain_http() -> None:
+    secrets = MemoryStore()
+    secrets.set("custom/api_key", "k")
+    lan = ModelSettings(kind="custom", model="m", base_url="http://192.168.1.20:8090/v1")
+    assert build(lan, secrets)._api_key() is None  # type: ignore[attr-defined]
+    tls = ModelSettings(kind="custom", model="m", base_url="https://x.example/v1")
+    assert build(tls, secrets)._api_key() == "k"  # type: ignore[attr-defined]
+    assert not config.keyless("http://localhost:11434/v1")
+
+    env = {"TRILLION_OPENAI_BASE_URL": "http://192.168.1.20:8090/v1", "TRILLION_MODEL": "m"}
+    assert provider_from_env(env) is not None
+    with pytest.raises(ConfigError) as e:
+        provider_from_env(env | {"TRILLION_OPENAI_API_KEY": "k"})
+    assert e.value.code == "key_needs_https"

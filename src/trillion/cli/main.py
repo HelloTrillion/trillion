@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import socket
 import sys
 import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from trillion import __version__
 
@@ -49,7 +51,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     from trillion.api.app import HOST, MAX_FRAME_BYTES, create_app, local_hosts, web_dir
     from trillion.api.runtime import open_runtime
-    from trillion.brain.config import KINDS, ConfigError, provider_from_env, secret_name
+    from trillion.brain.config import ConfigError, provider_from_env
     from trillion.secrets import redact
 
     for folder in args.grant:
@@ -70,7 +72,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     rt = await open_runtime(granted_roots=tuple(args.grant))
-    redact.install(lambda: [v for n in KINDS if (v := rt.secrets.get(secret_name(n)))])
+    redact.install(lambda: _secrets_in_use(rt))
     provider = rt.provider
     try:
         app = create_app(
@@ -113,6 +115,17 @@ async def _run(args: argparse.Namespace) -> int:
     finally:
         await rt.close()
     return 0
+
+
+def _secrets_in_use(rt: Any) -> list[str]:
+    """Every credential this process can currently send, for the log scrubber."""
+    from trillion.brain.config import ANTHROPIC_KEY, KINDS, OPENAI_KEY, secret_name
+    from trillion.voice.catalog import SPEECH
+
+    names = [secret_name(k) for k in KINDS] + [o.secret for o in SPEECH if o.needs_key]
+    stored = [rt.secrets.get(n) for n in names]
+    from_env = [os.environ.get(ANTHROPIC_KEY), os.environ.get(OPENAI_KEY)]
+    return [v for v in (*stored, *from_env, rt.token) if v]
 
 
 def _port_is_free(host: str, port: int) -> bool:

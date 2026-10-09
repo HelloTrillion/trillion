@@ -19,8 +19,10 @@ from trillion.brain.types import (
 )
 
 Kind = Literal["user", "tap", "assistant", "tool_results"]
-# Kinds that are the user committing an input. Only these advance the turn (VOI-15a).
-USER_INPUTS: tuple[Kind, ...] = ("user", "tap")
+# Only something the user said advances the turn the model acts in (VOI-15a). A tap
+# does not: it carries its own authority for the one card tapped, and must never give
+# the model a later turn in which to confirm some other card.
+USER_INPUTS: tuple[Kind, ...] = ("user",)
 
 
 def _dump(b: Block) -> dict[str, Any]:

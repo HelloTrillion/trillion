@@ -15,11 +15,11 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 | `trillion/cli` | exists — `trillion run` starts the server and opens the app |
 | `trillion/spine` | exists — the router, the confirmation state machine, the deny floor, untrusted wrapping, the loop guard; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
 | `trillion/storage` | exists — SQLite, checksummed migrations, the spine store, conversations and usage |
-| `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`. Still to build from CON-3: `file_search`, `web_fetch`, `weather`, `memory_*`, `describe_self` |
+| `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`, and `describe_self`. Still to build from CON-3: `file_search`, `web_fetch`, `weather`, `memory_*` |
 | `trillion/api` | exists — the loopback server, the session token, and the text half of the realtime protocol; see `docs/specs/2026-10-07-first-conversation-design.md` |
 | `trillion/brain` | exists — the provider interface, the Anthropic and OpenAI-compatible adapters, the tool loop. Compaction and spend ceilings are not built yet |
 | `trillion/persona` | exists — loads the soul and the identity files, assembles the prompt. Overlays beyond text, and the tonal checkpoint, are not built yet |
-| `trillion/voice` | placeholder |
+| `trillion/voice` | exists (speaking only) — the provider interface, the catalog, the system voice and ElevenLabs, the sentence splitter and the speech cleaner; see `docs/specs/2026-10-07-voice-providers-and-hardening.md`. Listening is not built yet |
 | `trillion/memory` | placeholder |
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |
@@ -74,8 +74,12 @@ The status column keeps this table honest: a row says "enforced" only when the t
 | A key entered in the app goes to the OS keychain and nowhere else: not the database, a file, a log or any response | `api/settings.py`, `secrets/store.py`, `secrets/redact.py` | `tests/api/test_server.py`, `tests/unit/test_secrets.py` | enforced |
 | A key is sent only over HTTPS or to this machine | `brain/config.py` — `endpoint()` | `tests/unit/test_brain_config.py` | enforced |
 | Conversation history is only appended to, so the model's signed reasoning stays valid | `api/session.py`, `brain/providers/anthropic.py` | `tests/api/test_server.py`, `tests/brain/test_providers.py` | enforced |
+| The model cannot confirm in the turn it proposed, whatever the user taps meanwhile | `api/session.py` — the turn is fixed when the model's turn starts | `tests/api/test_session.py` | enforced |
+| A tool call and its result are saved together, whatever interrupts | `brain/loop.py` — `_finish()` | `tests/brain/test_loop.py` | enforced |
+| One conversation has one live session | `api/session.py`, `api/runtime.py` | `tests/api/test_session.py` | enforced |
+| Every speech provider behaves the same to the core | `voice/catalog.py`, `voice/types.py` | `tests/voice/test_tts_contract.py` | enforced |
+| A shipped migration never changes | `storage/migrations/` | `tests/unit/test_migrate.py` | enforced |
 | An unauthenticated client gets the static UI shell and a refusal, nothing else | `api/app.py` | `tests/api/test_server.py` | enforced |
-| The model cannot confirm in the turn it proposed; a tap can approve at once | `api/session.py` — a tap advances the turn; `spine/confirm.py` | `tests/brain/test_loop.py`, `tests/api/test_server.py` | enforced |
 | Conversation text never reaches a log | `api/session.py`, `brain/loop.py`, `brain/sse.py` | `tests/api/test_server.py`, `tests/brain/test_providers.py` | enforced |
 | The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py` | enforced |
 
