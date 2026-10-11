@@ -88,6 +88,8 @@ strict = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# A test stuck this long prints where every thread is, so a hang in CI can be read.
+faulthandler_timeout = 120
 
 # Optional installs: typed as Any whether or not they are present.
 [[tool.mypy.overrides]]
