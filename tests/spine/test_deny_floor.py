@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.links import symlink_or_skip
 from tests.spine.conftest import Spine
 from trillion import paths
 from trillion.spine.confirm import Refusal
@@ -30,13 +31,13 @@ async def test_reads_of_the_secret_store_are_refused(spine: Spine) -> None:
 async def test_the_floor_applies_again_on_the_confirmed_path(spine: Spine) -> None:
     target = spine.granted / "link" / "x.txt"
     (spine.granted / "real").mkdir()
-    (spine.granted / "link").symlink_to(spine.granted / "real")
+    symlink_or_skip(spine.granted / "link", spine.granted / "real")
     r = await spine.call("file_create", {"path": str(target), "content": "x"})
     assert r.status == "confirmation_required"
     # Between proposal and yes, the link is repointed into a protected directory.
     (spine.granted / "link").unlink()
     (spine.granted / ".ssh").mkdir()
-    (spine.granted / "link").symlink_to(spine.granted / ".ssh")
+    symlink_or_skip(spine.granted / "link", spine.granted / ".ssh")
     res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
     assert res.reason is Refusal.DENIED_BY_FLOOR
     assert not (spine.granted / ".ssh" / "x.txt").exists()

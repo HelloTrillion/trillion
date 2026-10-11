@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.links import symlink_or_skip
 from trillion.spine import deny_floor
 from trillion.spine.contract import Risk, ToolDefinition
 from trillion.spine.deny_floor import DenyPolicy, check
@@ -81,7 +82,7 @@ def test_symlink_into_protected_directory_is_refused(setup, tmp_path):
     policy, roots, granted = setup
     ssh = granted / ".ssh"
     ssh.mkdir()
-    (granted / "innocent").symlink_to(ssh)
+    symlink_or_skip(granted / "innocent", ssh)
     denial = check(DEF, {"path": str(granted / "innocent" / "config")}, policy, roots)
     assert denial is not None
 
