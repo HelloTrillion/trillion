@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from trillion import __version__
-from trillion.cli.main import main
+from trillion.cli.main import _port_is_free, main
 
 
 def test_version_flag_prints_version(capsys):
@@ -34,6 +34,21 @@ def test_run_refuses_a_port_that_is_taken(
         assert main(["run", "--no-open", "--port", str(port)]) == 2
     assert f"port {port} is already in use" in capsys.readouterr().err
     assert not (tmp_path / "trillion.db").exists()  # refused before anything was opened
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SO_REUSEADDR can take a live port on Windows")
+def test_a_port_left_in_time_wait_by_a_stopped_server_counts_as_free() -> None:
+    # The server closes first, as Trillion does on Ctrl+C with a page still open: its
+    # end of the connection waits about a minute in TIME_WAIT with nothing listening.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+        server.listen()
+        with socket.create_connection(("127.0.0.1", port)):
+            conn, _ = server.accept()
+            conn.close()
+    assert _port_is_free("127.0.0.1", port)
 
 
 def test_run_refuses_a_grant_that_is_not_a_folder(
