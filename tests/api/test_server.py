@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 import struct
@@ -11,6 +12,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
@@ -35,6 +37,9 @@ from trillion.secrets.store import MemoryStore
 HOSTS = frozenset({"testserver"})
 ORIGIN = {"origin": "http://testserver"}
 MARKER = "zebra-marker-7731"
+# Far longer than any reply takes. A message that never comes fails the test here
+# instead of holding the whole run.
+RECEIVE_TIMEOUT_S = 20.0
 
 
 class App:
@@ -62,6 +67,11 @@ class App:
         if provider is not None:
             self.rt.provider = provider
         self.client = TestClient(create_app(self.rt, hosts=HOSTS))
+        # Entered, the client runs every socket on one event loop, as the real server
+        # does. Left to itself it gives each socket its own loop and closes it when the
+        # socket goes; a database call still in flight then has no loop to answer to,
+        # which kills the connection's worker thread and hangs the next call forever.
+        self.client.__enter__()
         self.auth = {"authorization": f"Bearer {self.rt.token}"}
 
     @contextmanager
@@ -75,10 +85,29 @@ class App:
             chat.session = chat.until("state")[0]
             yield chat
 
+    def close(self) -> None:
+        portal = self.client.portal
+        assert portal is not None
+        try:
+            # On the sockets' loop, so calls still in flight finish before the close.
+            portal.call(self.rt.close)
+        finally:
+            self.client.__exit__(None, None, None)
+
     def rows(self, sql: str) -> list[tuple[Any, ...]]:
         # closing(): sqlite3's own context manager commits but leaves the file open.
         with closing(sqlite3.connect(paths.db_path())) as db:
             return db.execute(sql).fetchall()
+
+
+async def _within(ws: WebSocketTestSession) -> Any:
+    with anyio.fail_after(RECEIVE_TIMEOUT_S):
+        return await ws._send_rx.receive()
+
+
+def receive(ws: WebSocketTestSession) -> Any:
+    """The next frame from the server, or a TimeoutError if none comes."""
+    return ws.portal.call(_within, ws)
 
 
 class Chat:
@@ -89,7 +118,9 @@ class Chat:
     def until(self, *kinds: str) -> list[dict[str, Any]]:
         seen = []
         while True:
-            seen.append(self.ws.receive_json())
+            message = receive(self.ws)
+            self.ws._raise_on_close(message)
+            seen.append(json.loads(message["text"]))
             if seen[-1]["type"] in kinds:
                 return seen
 
@@ -127,7 +158,7 @@ def make(home: Path) -> Iterator[Any]:
 
     yield build
     for app in apps:
-        asyncio.run(app.rt.close())
+        app.close()
 
 
 # ── Who may connect (SPN-11, SPN-11a) ────────────────────────────────────
@@ -801,7 +832,7 @@ def test_audio_from_a_core_voice_reaches_the_page_in_order(make: Any) -> None:
         chat.ws.send_json({"type": "turn.text", "text": "speak"})
         frames: list[tuple[int, int]] = []
         while True:
-            message = chat.ws.receive()
+            message = receive(chat.ws)
             if message.get("bytes") is not None:
                 kind, turn, seq = struct.unpack_from("<BII", message["bytes"])
                 assert kind == 1
