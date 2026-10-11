@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.links import symlink_or_skip
 from tests.spine.conftest import Spine
 from trillion.spine.confirm import Refusal, Status
 from trillion.tools.files import FileOverwrite
@@ -29,7 +30,7 @@ async def test_append_refuses_a_symlink_swapped_in_after_approval(spine: Spine) 
     assert r.status == "confirmation_required"
     # Between proposal and yes, the approved file is swapped for a link to a different file.
     log.unlink()
-    log.symlink_to(other)
+    symlink_or_skip(log, other)
     res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
     assert res.status == "failed", res  # nothing was opened, so nothing may have landed
     assert other.read_text() == "a\n"
