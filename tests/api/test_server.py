@@ -750,6 +750,47 @@ def test_speech_can_be_turned_off_and_unknown_providers_are_refused(make: Any) -
     assert speech(app, kind="made-up").json() == {"error": "unknown_provider"}
 
 
+def test_a_compatible_voice_needs_an_address_on_this_network_or_https(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.voice.providers.openai_compat import CompatibleSpeech
+    from trillion.voice.types import Voice
+
+    asked: list[str] = []
+
+    async def voices(self: CompatibleSpeech) -> list[Voice]:
+        asked.append(self._base)
+        return [Voice(id="af_heart", name="Heart")]
+
+    monkeypatch.setattr(CompatibleSpeech, "voices", voices)
+    app = make(model=False)
+    option = next(
+        o
+        for o in app.client.get("/api/settings/speech", headers=app.auth).json()["options"]
+        if o["kind"] == "custom"
+    )
+    assert option["takes_url"] and not option["needs_key"]
+
+    assert speech(app, kind="custom", voice="af_heart").json() == {"error": "bad_url"}
+    public = speech(app, kind="custom", voice="af_heart", base_url="http://203.0.113.5/v1")
+    assert public.json() == {"error": "insecure_url"}
+    named = speech(app, kind="custom", voice="af_heart", base_url="http://voices.example:8880/v1")
+    assert named.json() == {"error": "insecure_url"}  # a name can resolve anywhere
+    assert asked == []  # nothing is sent to an address that fails the check
+
+    url = "http://192.168.1.20:8880/v1/"
+    assert speech(app, kind="custom", voice="nope", base_url=url).json() == {
+        "error": "unknown_voice"
+    }
+    ok = speech(app, kind="custom", voice="af_heart", base_url=url)
+    assert ok.status_code == 200 and ok.json()["active"] is True
+    assert ok.json()["saved"]["base_url"] == "http://192.168.1.20:8880/v1"
+    assert app.rows("SELECT value_json FROM preferences WHERE key = 'speech'") == [
+        ('{"kind": "custom", "voice": "af_heart", "base_url": "http://192.168.1.20:8880/v1"}',)
+    ]
+    assert app.secrets.values() == []
+
+
 def test_audio_from_a_core_voice_reaches_the_page_in_order(make: Any) -> None:
     from tests.voice.test_speaker import FakeVoice
     from trillion.api.runtime import SpeechSettings

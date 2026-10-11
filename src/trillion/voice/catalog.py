@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from trillion.secrets.store import SecretStore
 from trillion.voice.providers.deepgram import Deepgram
 from trillion.voice.providers.elevenlabs import ElevenLabs
+from trillion.voice.providers.openai_compat import CompatibleSpeech
 from trillion.voice.providers.system import SystemVoice
 from trillion.voice.providers.whisper import LocalWhisper
 from trillion.voice.types import STTProvider, TTSProvider, Where
@@ -28,15 +29,22 @@ class SpeechOption:
     needs_key: bool
     free: bool
     key_link: str | None
-    build: Callable[[SecretStore], TTSProvider]
+    # The user gives the address, checked like a compatible model's.
+    takes_url: bool = False
+    # The keychain, and the checked address for an option that takes one.
+    build: Callable[[SecretStore, str | None], TTSProvider]
 
     @property
     def secret(self) -> str:
         return f"{self.kind}/api_key"
 
 
-def _elevenlabs(secrets: SecretStore) -> TTSProvider:
+def _elevenlabs(secrets: SecretStore, _url: str | None) -> TTSProvider:
     return ElevenLabs(api_key=lambda: secrets.get("elevenlabs/api_key") or "")
+
+
+def _compatible(_secrets: SecretStore, url: str | None) -> TTSProvider:
+    return CompatibleSpeech(base_url=url or "")
 
 
 SPEECH: tuple[SpeechOption, ...] = (
@@ -48,7 +56,7 @@ SPEECH: tuple[SpeechOption, ...] = (
         needs_key=False,
         free=True,
         key_link=None,
-        build=lambda _secrets: SystemVoice(),
+        build=lambda _secrets, _url: SystemVoice(),
     ),
     SpeechOption(
         kind="elevenlabs",
@@ -62,6 +70,20 @@ SPEECH: tuple[SpeechOption, ...] = (
         free=False,
         key_link="https://elevenlabs.io/app/settings/api-keys",
         build=_elevenlabs,
+    ),
+    SpeechOption(
+        kind="custom",
+        title="Another compatible service",
+        note=(
+            "A voice server that speaks OpenAI's speech API, such as Kokoro on a machine of "
+            "your own. Free if you run it yourself; each sentence she speaks is sent there."
+        ),
+        where="core",
+        needs_key=False,
+        free=True,
+        key_link=None,
+        takes_url=True,
+        build=_compatible,
     ),
 )
 

@@ -16,12 +16,13 @@ interface Option {
   readonly needs_key: boolean;
   readonly free: boolean;
   readonly key_link: string | null;
+  readonly takes_url: boolean;
   readonly key: { readonly saved: boolean; readonly ends: string } | null;
 }
 
 interface State {
   readonly options: readonly Option[];
-  readonly saved: { readonly kind: string; readonly voice: string } | null;
+  readonly saved: { readonly kind: string; readonly voice: string; readonly base_url: string | null } | null;
   readonly keychain: boolean;
 }
 
@@ -88,6 +89,21 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
   forget.type = 'button';
   keyRow.append(keyLabel, keyInput, keyHint, keyLink, forget);
 
+  const urlRow = el('div', 'settings-row');
+  const urlLabel = el('label', '', 'Address');
+  const urlInput = el('input');
+  urlInput.type = 'url';
+  urlInput.id = 'speech-url';
+  urlInput.placeholder = 'http://192.168.1.20:8880/v1';
+  urlInput.spellcheck = false;
+  urlLabel.htmlFor = urlInput.id;
+  const urlHint = el(
+    'p',
+    'settings-hint',
+    'Plain http works only for a numeric address on your own network. Anything else needs https.',
+  );
+  urlRow.append(urlLabel, urlInput, urlHint);
+
   const voiceRow = el('div', 'settings-row');
   const voiceLabel = el('label', '', 'Voice');
   const voiceSelect = el('select');
@@ -108,7 +124,7 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
   const close = el('button', '', 'Close');
   close.type = 'button';
   actions.append(save, close);
-  form.append(title, intro, choices, keyRow, voiceRow, status, actions);
+  form.append(title, intro, choices, keyRow, urlRow, voiceRow, status, actions);
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
@@ -133,6 +149,8 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
       input.disabled = busy;
     }
     keyRow.hidden = !o?.needs_key;
+    urlRow.hidden = !o?.takes_url;
+    urlInput.disabled = busy;
     voiceRow.hidden = !o;
     keyInput.disabled = busy || !state?.keychain;
     keyInput.placeholder = o?.key ? 'Leave empty to keep the saved key' : 'Paste your key';
@@ -153,6 +171,7 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
   function choose(next: string): void {
     kind = next;
     keyInput.value = '';
+    urlInput.value = state?.saved?.kind === next ? (state.saved.base_url ?? '') : '';
     status.textContent = '';
     const o = option();
     if (o?.where === 'client') {
@@ -205,7 +224,10 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
     }
   }
 
-  const keyBody = (): Record<string, unknown> => (keyInput.value.trim() ? { api_key: keyInput.value.trim() } : {});
+  const keyBody = (): Record<string, unknown> => ({
+    ...(keyInput.value.trim() ? { api_key: keyInput.value.trim() } : {}),
+    ...(option()?.takes_url ? { base_url: urlInput.value.trim() } : {}),
+  });
 
   check.addEventListener('click', () =>
     void run(async () => {
@@ -257,6 +279,8 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
     }),
   );
   close.addEventListener('click', () => dialog.close());
+  // A voice list belongs to the address it came from.
+  urlInput.addEventListener('input', () => setVoices([]));
   dialog.addEventListener('close', () => {
     keyInput.value = '';
     if ('speechSynthesis' in window) speechSynthesis.cancel();
