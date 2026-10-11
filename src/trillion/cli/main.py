@@ -132,6 +132,11 @@ def _secrets_in_use(rt: Any) -> list[str]:
 
 def _port_is_free(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        if os.name == "posix":
+            # Lets the probe past connections a stopped server left in TIME_WAIT, as
+            # the server's own socket gets past them; a live listener still refuses.
+            # Not on Windows, where the same option binds over a port in use.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
         except OSError:
