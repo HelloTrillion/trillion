@@ -71,6 +71,7 @@ class SpeechProbe(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     kind: str = Field(max_length=40)
+    base_url: str | None = Field(default=None, max_length=2048)
     api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
 
 
@@ -80,6 +81,7 @@ class SpeechSave(BaseModel):
     # None turns speech off.
     kind: str | None = Field(default=None, max_length=40)
     voice: str = Field(default="", max_length=200)
+    base_url: str | None = Field(default=None, max_length=2048)
     api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
 
 
@@ -228,6 +230,7 @@ def create_router(rt: Runtime) -> APIRouter:
                     "needs_key": o.needs_key,
                     "free": o.free,
                     "key_link": o.key_link,
+                    "takes_url": o.takes_url,
                     "key": {"saved": True, "ends": value[-4:] if len(value) >= 20 else ""}
                     if value
                     else None,
@@ -236,20 +239,30 @@ def create_router(rt: Runtime) -> APIRouter:
         s = rt.speech
         return {
             "options": options,
-            "saved": {"kind": s.kind, "voice": s.voice} if s else None,
+            "saved": {"kind": s.kind, "voice": s.voice, "base_url": s.base_url} if s else None,
             "active": rt.tts is not None,
             "keychain": rt.secrets.available(),
         }
 
+    def speech_url(option: SpeechOption, base_url: str | None) -> str | None:
+        """The checked address, by the rule a compatible model's follows (#33)."""
+        if not option.takes_url:
+            return None
+        if not base_url:
+            raise ConfigError("bad_url", "this voice needs an address")
+        return config.endpoint("custom", base_url)
+
     async def voices(
-        option: SpeechOption, api_key: str | None
+        option: SpeechOption, api_key: str | None, base_url: str | None
     ) -> list[dict[str, Any]] | JSONResponse:
         if option.needs_key and not (api_key or rt.secrets.get(option.secret)):
             return _fail(400, "key_required")
         # A new key is tried from memory, so a rejected one is never stored.
         store = _Overlay(rt.secrets, {option.secret: api_key} if api_key else {})
         try:
-            found = await option.build(store).voices()
+            found = await option.build(store, speech_url(option, base_url)).voices()
+        except ConfigError as e:
+            return _fail(400, e.code)
         except VoiceError as e:
             logger.info("voice list for %s failed: %s", option.kind, e.kind)
             return _fail(502, e.kind)
@@ -264,7 +277,7 @@ def create_router(rt: Runtime) -> APIRouter:
         option = speech_option(body.kind)
         if option is None:
             return _fail(400, "unknown_provider")
-        found = await voices(option, body.api_key)
+        found = await voices(option, body.api_key, body.base_url)
         return found if isinstance(found, JSONResponse) else {"voices": found}
 
     @router.put("/speech")
@@ -279,7 +292,7 @@ def create_router(rt: Runtime) -> APIRouter:
         if body.api_key and not rt.secrets.available():
             return _fail(409, "no_keychain")
         if option.where == "core":
-            found = await voices(option, body.api_key)
+            found = await voices(option, body.api_key, body.base_url)
             if isinstance(found, JSONResponse):
                 return found
             if body.voice not in {v["id"] for v in found}:
@@ -289,7 +302,10 @@ def create_router(rt: Runtime) -> APIRouter:
                 rt.secrets.set(option.secret, body.api_key)
         except SecretStoreError:
             return _fail(500, "keychain_refused")
-        chosen = SpeechSettings(kind=option.kind, voice=body.voice)
+        # Already checked by the voice list above, so this cannot raise here.
+        chosen = SpeechSettings(
+            kind=option.kind, voice=body.voice, base_url=speech_url(option, body.base_url)
+        )
         await rt.preferences.put(OWNER, SPEECH_PREF, chosen.to_json(), rt.clock())
         await rt.use_speech(chosen)
         logger.info("speech settings saved: %s", option.kind)

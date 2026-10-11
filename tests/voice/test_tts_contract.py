@@ -6,6 +6,7 @@ without knowing anything about it.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
@@ -15,6 +16,7 @@ import pytest
 from trillion.secrets.store import MemoryStore
 from trillion.voice.catalog import SPEECH, speech_option
 from trillion.voice.providers.elevenlabs import ElevenLabs
+from trillion.voice.providers.openai_compat import CompatibleSpeech
 from trillion.voice.providers.system import SystemVoice
 from trillion.voice.types import TTSProvider, Voice, VoiceError
 
@@ -57,6 +59,9 @@ async def _chunks(data: bytes, size: int) -> AsyncIterator[bytes]:
 PROVIDERS: dict[str, Callable[[Fake], TTSProvider]] = {
     "system": lambda fake: SystemVoice(),
     "elevenlabs": lambda fake: ElevenLabs(api_key=lambda: SAMPLE_KEY, client=fake.client()),
+    "custom": lambda fake: CompatibleSpeech(
+        base_url="http://192.168.1.20:8880/v1/", client=fake.client()
+    ),
 }
 
 
@@ -138,7 +143,7 @@ def test_each_option_says_what_it_costs_and_free_ones_need_no_key() -> None:
         assert not (o.free and o.needs_key)
         assert (o.key_link is not None) == o.needs_key
         # Catalog entries build against the keychain, never a literal key.
-        assert o.build(MemoryStore()).name == o.kind
+        assert o.build(MemoryStore(), "http://127.0.0.1:8880/v1").name == o.kind
 
 
 async def test_elevenlabs_request_shape() -> None:
@@ -152,3 +157,32 @@ async def test_elevenlabs_request_shape() -> None:
     assert speak.url.params["output_format"] == "pcm_16000"
     assert speak.headers["xi-api-key"] == SAMPLE_KEY
     assert listing.url.path == "/v2/voices" and listing.headers["xi-api-key"] == SAMPLE_KEY
+
+
+async def test_compatible_request_shape() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "GET":
+            voices = ["af_heart", {"id": "bm_lewis", "name": "Lewis"}, {"name": "no id"}, 7]
+            return httpx.Response(200, json={"voices": voices})
+        return httpx.Response(200, content=PCM)
+
+    seen: list[httpx.Request] = []
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    p = CompatibleSpeech(base_url="http://192.168.1.20:8880/v1/", client=client)
+    assert await said(p) == PCM
+    assert await p.voices() == [
+        Voice(id="af_heart", name="af_heart"),
+        Voice(id="bm_lewis", name="Lewis"),
+    ]
+    speak, listing = seen
+    assert speak.method == "POST" and str(speak.url) == "http://192.168.1.20:8880/v1/audio/speech"
+    assert json.loads(speak.content) == {
+        "model": "tts-1",
+        "input": "Short answer: yes.",
+        "voice": "v1",
+        "response_format": "pcm",
+    }
+    assert str(listing.url) == "http://192.168.1.20:8880/v1/audio/voices"
+    # No key is ever sent: this provider is for services that need none.
+    assert all("authorization" not in r.headers for r in seen)

@@ -37,23 +37,36 @@ LISTEN_PREF = "listening"
 class SpeechSettings:
     kind: str
     voice: str = ""
+    # Checked when saved; only for an option that takes an address.
+    base_url: str | None = None
 
     def to_json(self) -> dict[str, str]:
-        return {"kind": self.kind, "voice": self.voice}
+        out = {"kind": self.kind, "voice": self.voice}
+        if self.base_url:
+            out["base_url"] = self.base_url
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> SpeechSettings | None:
         if not isinstance(raw, dict) or speech_option(str(raw.get("kind"))) is None:
             return None
-        return cls(kind=str(raw["kind"]), voice=str(raw.get("voice") or ""))
+        return cls(
+            kind=str(raw["kind"]),
+            voice=str(raw.get("voice") or ""),
+            base_url=str(raw["base_url"]) if raw.get("base_url") else None,
+        )
 
 
 def build_speech(settings: SpeechSettings | None, secrets: SecretStore) -> TTSProvider | None:
     """The chosen voice, or None when speech is off or its key has been removed."""
-    option = speech_option(settings.kind) if settings is not None else None
+    if settings is None:
+        return None
+    option = speech_option(settings.kind)
     if option is None or (option.needs_key and not secrets.get(option.secret)):
         return None
-    return option.build(secrets)
+    if option.takes_url and not settings.base_url:
+        return None
+    return option.build(secrets, settings.base_url)
 
 
 @dataclass(frozen=True, kw_only=True)
