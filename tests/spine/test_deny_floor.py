@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from tests.links import symlink_or_skip
+import sys
+
+import pytest
+
+from tests.links import junction, symlink_or_skip
 from tests.spine.conftest import Spine
 from trillion import paths
 from trillion.spine.confirm import Refusal
@@ -38,6 +42,22 @@ async def test_the_floor_applies_again_on_the_confirmed_path(spine: Spine) -> No
     (spine.granted / "link").unlink()
     (spine.granted / ".ssh").mkdir()
     symlink_or_skip(spine.granted / "link", spine.granted / ".ssh")
+    res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    assert res.reason is Refusal.DENIED_BY_FLOOR
+    assert not (spine.granted / ".ssh" / "x.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions exist only on Windows")
+async def test_the_floor_applies_again_when_a_junction_is_repointed(spine: Spine) -> None:
+    target = spine.granted / "link" / "x.txt"
+    (spine.granted / "real").mkdir()
+    junction(spine.granted / "link", spine.granted / "real")
+    r = await spine.call("file_create", {"path": str(target), "content": "x"})
+    assert r.status == "confirmation_required"
+    # Between proposal and yes, the junction is repointed into a protected directory.
+    (spine.granted / "link").rmdir()
+    (spine.granted / ".ssh").mkdir()
+    junction(spine.granted / "link", spine.granted / ".ssh")
     res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
     assert res.reason is Refusal.DENIED_BY_FLOOR
     assert not (spine.granted / ".ssh" / "x.txt").exists()

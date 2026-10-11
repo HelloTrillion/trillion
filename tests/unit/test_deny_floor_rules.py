@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.links import symlink_or_skip
+from tests.links import junction, symlink_or_skip
 from trillion.spine import deny_floor
 from trillion.spine.contract import Risk, ToolDefinition
 from trillion.spine.deny_floor import DenyPolicy, check
@@ -185,3 +185,13 @@ def test_canonical_falls_back_when_the_lookup_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(deny_floor, "_F_GETPATH", 50)
     monkeypatch.setattr(deny_floor.fcntl, "fcntl", boom)
     assert deny_floor.canonical(tmp_path) == tmp_path
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions exist only on Windows")
+def test_junction_into_protected_directory_is_refused(setup):
+    policy, roots, granted = setup
+    ssh = granted / ".ssh"
+    ssh.mkdir()
+    junction(granted / "innocent", ssh)
+    denial = check(DEF, {"path": str(granted / "innocent" / "config")}, policy, roots)
+    assert denial is not None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,3 +22,15 @@ def symlink_or_skip(link: Path, target: Path) -> None:
         if getattr(error, "winerror", None) != _ERROR_PRIVILEGE_NOT_HELD:
             raise
         pytest.skip("this account may not create symlinks (Windows needs Developer Mode)")
+
+
+def junction(link: Path, target: Path) -> None:
+    """Make `link` a Windows junction (a folder link) to `target`.
+
+    Unlike a symlink, a junction needs no special privilege, so these tests run on any
+    Windows account. Remove one with `link.rmdir()`, which leaves the target alone."""
+    if sys.platform != "win32":
+        raise RuntimeError("junctions exist only on Windows")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))
