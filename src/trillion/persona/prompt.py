@@ -110,9 +110,14 @@ def system_blocks(
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
 
 
-def volatile_context(now: datetime, pending: Sequence[PendingNote]) -> str:
+def volatile_context(now: datetime, pending: Sequence[PendingNote], recalled: str = "") -> str:
     """What changes between turns. It is prepended to the newest user message only,
-    so the cached prefix and every earlier message stay byte-identical."""
+    so the cached prefix and every earlier message stay byte-identical.
+
+    `recalled` is memory that matches the message, already wrapped as untrusted
+    text by the caller. It stays outside the identity block and outside `<context>`:
+    what was once said is never promoted to something the host asserts (MEM-6b)."""
     lines = [f"now: {now.strftime('%A %Y-%m-%d %H:%M %Z').strip()}"]
     lines.extend(f"waiting for an answer: {p.pending_id}: {p.summary}" for p in pending)
-    return "<context>\n" + "\n".join(lines) + "\n</context>"
+    context = "<context>\n" + "\n".join(lines) + "\n</context>"
+    return f"{context}\n{recalled}" if recalled else context

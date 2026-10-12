@@ -11,7 +11,7 @@ Talk to her. Watch her think. Trust that she never acts without your "yes."
 
 ---
 
-> **Status: pre-alpha.** You can talk or type to her in a browser, with the Galaxy behind, hear her answer aloud (a free system voice, or your ElevenLabs account), and approve a file write on a card. She hears through Whisper on your own machine (free) or your Deepgram account. Memory and onboarding are not built.
+> **Status: pre-alpha.** You can talk or type to her in a browser, with the Galaxy behind, hear her answer aloud (a free system voice, or your ElevenLabs account), and approve a file write on a card. She hears through Whisper on your own machine (free) or your Deepgram account. She remembers what you tell her between conversations, in plain files you can open. Onboarding is not built.
 > This repository is the foundation being extracted from a private build that has run every day for six months. The first milestone is **the Shell** — see [the roadmap](#roadmap) and [`docs/PRD.md`](docs/PRD.md) for exactly what that means. Watch or star the repo if you want to know when it's usable.
 
 ## What this is

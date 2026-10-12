@@ -25,6 +25,10 @@ def secrets_path() -> Path:
     return home() / "secrets.age"
 
 
+def memory_dir() -> Path:
+    return home() / "memory"
+
+
 def models_dir() -> Path:
     return home() / "models"
 

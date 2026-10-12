@@ -14,6 +14,7 @@ import aiosqlite
 from trillion import paths
 from trillion.brain.config import ModelSettings, Source, resolve
 from trillion.brain.types import ModelProvider
+from trillion.memory.book import MemoryBook
 from trillion.persona.prompt import Identity, load_identity, load_soul
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.spine.deny_floor import DenyPolicy
@@ -22,9 +23,11 @@ from trillion.spine.router import Router
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
+from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
+from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 
@@ -105,6 +108,7 @@ class Runtime:
     conversations: SqliteConversationStore
     preferences: SqlitePreferences
     secrets: SecretStore
+    memory: MemoryBook
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -141,7 +145,11 @@ class Runtime:
                 if self.stt is not None
                 else "none: you cannot hear, the user types"
             ),
-            "memory": "none between conversations: you remember only this conversation",
+            "memory": (
+                f"you remember across conversations: {self.memory.count()} saved so far. "
+                "memory_write saves a fact, memory_recall looks one up, memory_forget asks "
+                "the user first. The user can read the files in their Trillion data folder"
+            ),
             "internet": "none: you have no tool that reaches the web",
         }
 
@@ -178,6 +186,7 @@ async def open_runtime(
     granted_roots: tuple[Path, ...] = (),
     db: Path | None = None,
     persona: Path | None = None,
+    memory: Path | None = None,
     secrets: SecretStore | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Runtime:
@@ -199,6 +208,10 @@ async def open_runtime(
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
     provider, source = resolve(settings, keychain, env)
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
+    book = MemoryBook(SqliteMemoryStore(chat_conn), memory or paths.memory_dir(), OWNER)
+    # The files are the truth: whatever changed on disk since last time is adopted
+    # now, and anything that does not add up is logged, never silently repaired.
+    await book.sync(_now_ms())
     listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
     rt = Runtime(
         router=router,
@@ -207,6 +220,7 @@ async def open_runtime(
         conversations=SqliteConversationStore(chat_conn),
         preferences=preferences,
         secrets=keychain,
+        memory=book,
         provider=provider,
         source=source,
         settings=settings,
@@ -223,4 +237,8 @@ async def open_runtime(
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(registry.definitions, rt.facts)
+    for name in (WRITE, RECALL, FORGET):
+        tool = registry.get(name)
+        if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):
+            tool.bind(book)
     return rt

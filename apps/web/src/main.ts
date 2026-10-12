@@ -17,6 +17,7 @@ import {
   micFailed,
   reduce,
   sent,
+  toolLabel,
   waiting,
 } from './view';
 
@@ -180,8 +181,7 @@ function renderEntry(e: Entry): HTMLElement {
       return box;
     }
     case 'tool': {
-      const label = e.outcome === null ? `${e.name} …` : `${e.name}: ${e.outcome.replaceAll('_', ' ')}`;
-      return el('p', `chip${e.ok ? '' : ' bad'}`, label);
+      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok));
     }
     case 'notice':
       return el('p', 'notice', e.text);

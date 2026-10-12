@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, expire, micFailed, reduce, sent, waiting } from '../src/view';
+import { INITIAL, type View, expire, micFailed, reduce, sent, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -199,5 +199,16 @@ describe('voice in the view', () => {
       const v = feed([{ type: 'notice', code: 'listening', reason: 'unheard' }], ready);
       expect(v.entries).toEqual([{ kind: 'notice', text: 'I heard something, but could not make out any words.' }]);
     });
+  });
+
+  it('labels memory in plain words and everything else by its name', () => {
+    expect(toolLabel('memory_write', null, true)).toBe('Remembering …');
+    expect(toolLabel('memory_write', 'succeeded', true)).toBe('Remembered');
+    expect(toolLabel('memory_recall', 'succeeded', true)).toBe('Checked what she remembers');
+    // A refusal keeps the tool's name, so what failed is never hidden behind a friendly word.
+    expect(toolLabel('memory_write', 'invalid_args', false)).toBe('memory_write: invalid args');
+    expect(toolLabel('memory_forget', 'confirmation_required', true)).toBe('memory_forget: confirmation required');
+    expect(toolLabel('file_read', null, true)).toBe('file_read …');
+    expect(toolLabel('file_read', 'succeeded', true)).toBe('file_read: succeeded');
   });
 });
