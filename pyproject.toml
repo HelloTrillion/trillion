@@ -33,6 +33,9 @@ file_overwrite = "trillion.tools.files:FileOverwrite"
 file_append = "trillion.tools.files:FileAppend"
 file_edit = "trillion.tools.files:FileEdit"
 describe_self = "trillion.tools.describe:DescribeSelf"
+memory_write = "trillion.tools.memory:MemoryWrite"
+memory_recall = "trillion.tools.memory:MemoryRecall"
+memory_forget = "trillion.tools.memory:MemoryForget"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]
@@ -81,7 +84,7 @@ packages = ["trillion"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*"]
+module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*"]
 strict = true
 
 [tool.pytest.ini_options]

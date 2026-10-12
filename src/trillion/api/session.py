@@ -22,9 +22,11 @@ from trillion.api.runtime import OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
 from trillion.brain.types import ContextBlock, Msg, TextBlock
+from trillion.memory import present
 from trillion.persona.prompt import PendingNote, system_blocks, volatile_context
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
+from trillion.spine.untrusted import wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.types import VoiceError
@@ -60,6 +62,9 @@ class Session:
         self._orb = ""
         # The orb's state between turns: idle, or error after a failure.
         self._rest = "idle"
+        # Memories already brought along in this conversation: each rides once, with
+        # the message that first called for it, and is never repeated.
+        self._brought: set[str] = set()
         self._listener: Listener | None = None
         self._watchdog: asyncio.Task[None] | None = None
         self._last_audio = 0.0
@@ -496,9 +501,23 @@ class Session:
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
-        context = volatile_context(datetime.now().astimezone(), pending)
+        context = volatile_context(
+            datetime.now().astimezone(), pending, self._remembered(text) if kind == "user" else ""
+        )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
         await self._save(kind, Msg(role="user", blocks=blocks))
+
+    def _remembered(self, said: str) -> str:
+        """What she has saved that bears on this message, as untrusted text (MEM-5).
+
+        It is saved with the message like the rest of its context, so the history
+        replays byte for byte. A correction or a forgetting therefore shows from the
+        next message on, not in messages already sent (MEM-6b)."""
+        rt = self._rt
+        fresh = [m for m in rt.memory.recall(said) if m.id not in self._brought]
+        text, used = present.alongside(fresh, rt.clock())
+        self._brought.update(m.id for m in used)
+        return wrap("memory_recall", text) if used else ""
 
     async def _save_from_loop(self, msg: Msg) -> None:
         await self._save("assistant" if msg.role == "assistant" else "tool_results", msg)

@@ -15,12 +15,12 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 | `trillion/cli` | exists — `trillion run` starts the server and opens the app |
 | `trillion/spine` | exists — the router, the confirmation state machine, the deny floor, untrusted wrapping, the loop guard; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
 | `trillion/storage` | exists — SQLite, checksummed migrations, the spine store, conversations and usage |
-| `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`, and `describe_self`. Still to build from CON-3: `file_search`, `web_fetch`, `weather`, `memory_*` |
+| `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`, `describe_self`, and `memory_write`, `memory_recall`, `memory_forget`. Still to build from CON-3: `file_search`, `web_fetch`, `weather` |
 | `trillion/api` | exists — the loopback server, the session token, and the text half of the realtime protocol; see `docs/specs/2026-10-07-first-conversation-design.md` |
 | `trillion/brain` | exists — the provider interface, the Anthropic and OpenAI-compatible adapters, the tool loop. Compaction and spend ceilings are not built yet |
 | `trillion/persona` | exists — loads the soul and the identity files, assembles the prompt. Overlays beyond text, and the tonal checkpoint, are not built yet |
 | `trillion/voice` | exists — speaking: the provider interface, the catalog, the system voice and ElevenLabs, the sentence splitter and the speech cleaner (`docs/specs/2026-10-07-voice-providers-and-hardening.md`). Listening: the recognizer interface and catalog, local Whisper and Deepgram, the end-of-speech rules, verified model downloads (`docs/specs/2026-10-09-listening.md`). Capture guards, sign-off detection, barge-in and the wake word are not built yet |
-| `trillion/memory` | placeholder |
+| `trillion/memory` | exists — memories as Markdown files with an SQLite index, keyword recall, corrections and forgetting that keep history, and the reconcile step that makes the files win; see `docs/specs/2026-10-10-memory.md`. Embedding search (MEM-2), the session-close summarizer (MEM-4) and the memory browser (MEM-6) are not built yet |
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |
 | `trillion/secrets` | exists — the OS keychain behind one interface, and the log filter that scrubs keys. The encrypted-file fallback for machines with no keychain (SEC-2) and `doctor --secrets` (SEC-9) are not built yet |

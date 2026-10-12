@@ -184,6 +184,20 @@ function cardOutcome(status: string, reason: string, detail: string): { status: 
   }
 }
 
+// What a memory tool did, in the user's words rather than the tool's name.
+const TOOL_LABELS: Readonly<Record<string, readonly [working: string, done: string]>> = {
+  memory_write: ['Remembering', 'Remembered'],
+  memory_recall: ['Checking what she remembers', 'Checked what she remembers'],
+};
+
+/** The chip for one tool call: what it is doing, then how it ended. */
+export function toolLabel(name: string, outcome: string | null, ok: boolean): string {
+  const words = TOOL_LABELS[name];
+  if (outcome === null) return words ? `${words[0]} …` : `${name} …`;
+  if (words && ok && outcome === 'succeeded') return words[1];
+  return `${name}: ${outcome.replaceAll('_', ' ')}`;
+}
+
 /** A user message the page is about to send: shown at once, before the core echoes anything. */
 export function sent(view: View, text: string): View {
   return { ...view, busy: true, replyOpen: false, banner: null, entries: [...view.entries, { kind: 'user', text }] };
