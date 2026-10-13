@@ -4,6 +4,17 @@ import './app.css';
 import { type Inline, parse } from './format';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
+import {
+  type Onboarding,
+  type Profile,
+  active,
+  answer,
+  begin,
+  choices,
+  failed,
+  placeholder,
+  saved,
+} from './onboarding';
 import { type Api, createSettings } from './settings';
 import { createSpeechSettings } from './speech';
 import { createVoice } from './voice';
@@ -71,6 +82,8 @@ const newBtn = $<HTMLButtonElement>('new');
 const speechBtn = $<HTMLButtonElement>('speech');
 const listeningBtn = $<HTMLButtonElement>('listening');
 const micBtn = $<HTMLButtonElement>('mic');
+const namesBtn = $<HTMLButtonElement>('names');
+const choicesEl = $('choices');
 
 function savedTheme(): Theme {
   try {
@@ -123,6 +136,24 @@ const mic = createMic({
 });
 let retryMs = 1000;
 const shown = new Set<string>();
+
+// The first conversation, or a later change of names (ONB-3). Its lines are the
+// page's own, so they sit in the transcript where it began and survive a reconnect.
+let ob: Onboarding | null = null;
+let obAt = 0;
+let obDue = false;
+let merged: { from: readonly Entry[]; ob: Onboarding | null; entries: readonly Entry[] } | null = null;
+
+function entries(): readonly Entry[] {
+  if (!ob) return view.entries;
+  if (merged?.from === view.entries && merged.ob === ob) return merged.entries;
+  const at = Math.min(obAt, view.entries.length);
+  const lines: Entry[] = ob.lines.map((l) =>
+    l.who === 'you' ? { kind: 'user', text: l.text } : { kind: 'assistant', text: l.text, interrupted: false },
+  );
+  merged = { from: view.entries, ob, entries: [...view.entries.slice(0, at), ...lines, ...view.entries.slice(at)] };
+  return merged.entries;
+}
 
 function send(body: Record<string, unknown>): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(body));
@@ -230,22 +261,23 @@ const hearingEl = el('p', 'msg user hearing');
 function render(): void {
   const nearBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 80;
   // Streaming text touches only the last node; anything else rebuilds the list.
-  const last = view.entries[view.entries.length - 1];
+  const all = entries();
+  const last = all[all.length - 1];
   const prev = rendered[rendered.length - 1];
   thinkingEl.remove();
   hearingEl.remove();
   const onlyTextGrew =
-    view.entries.length === rendered.length &&
+    all.length === rendered.length &&
     last?.kind === 'assistant' &&
     prev?.kind === 'assistant' &&
     last.interrupted === prev.interrupted &&
-    view.entries.slice(0, -1).every((e, i) => e === rendered[i]);
+    all.slice(0, -1).every((e, i) => e === rendered[i]);
   if (onlyTextGrew && transcriptEl.lastElementChild) {
     transcriptEl.lastElementChild.replaceChildren(...formatted(last.text));
-  } else if (view.entries !== rendered) {
-    transcriptEl.replaceChildren(...view.entries.map(renderEntry));
+  } else if (all !== rendered) {
+    transcriptEl.replaceChildren(...all.map(renderEntry));
   }
-  rendered = view.entries;
+  rendered = all;
   if (view.hearing) {
     hearingEl.textContent = view.hearing;
     transcriptEl.append(hearingEl);
@@ -272,6 +304,23 @@ function render(): void {
   listeningBtn.textContent = view.listening ? 'Mic: on' : 'Mic: off';
   listeningBtn.title = 'Mic settings';
   newBtn.hidden = !ready || view.entries.length === 0;
+  const introducing = ready && active(ob);
+  namesBtn.hidden = !ready || introducing;
+  namesBtn.title = 'Your name, her name, and how blunt she is';
+  const quick = introducing && ob ? choices(ob) : [];
+  const quickKey = introducing && ob ? ob.step + quick.map((c) => c.label).join('|') : '';
+  choicesEl.hidden = quick.length === 0;
+  if (choicesEl.dataset['for'] !== quickKey) {
+    choicesEl.dataset['for'] = quickKey;
+    choicesEl.replaceChildren(
+      ...quick.map((c) => {
+        const b = el('button', 'choice', c.label);
+        b.type = 'button';
+        b.addEventListener('click', () => reply(c.value));
+        return b;
+      }),
+    );
+  }
   modelEl.textContent = view.model ?? 'Choose a model';
   modelEl.title = 'Model settings';
   // While her voice is sounding she is speaking, whatever the core has moved on to.
@@ -281,17 +330,18 @@ function render(): void {
   const banner =
     linkText ||
     view.banner ||
-    (noModel ? 'Nobody is here to answer yet. Choose a model to get started (top right).' : '');
+    (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model to get started (top right).' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
 
-  const canType = ready && !noModel;
+  // Introductions need no model: the app writes the names, not her.
+  const canType = ready && (!noModel || introducing);
   input.disabled = !canType;
-  input.placeholder = canType ? `Message ${view.agentName}` : '';
+  input.placeholder = introducing && ob ? placeholder(ob) : canType ? `Message ${view.agentName}` : '';
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
   stopBtn.hidden = !(view.busy || voice.active || view.mic);
-  micBtn.hidden = !canType || view.busy;
+  micBtn.hidden = !canType || view.busy || introducing;
   micBtn.textContent = view.mic ? 'Done' : 'Speak';
   micBtn.title = !view.listening
     ? 'Choose how she hears you'
@@ -336,10 +386,94 @@ const listeningSettings = createListeningSettings($<HTMLDialogElement>('listenin
 listeningBtn.addEventListener('click', () => void listeningSettings.open());
 let offered = false;
 
+// ── Introductions ────────────────────────────────────────────────────────
+
+function zone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function introduce(current: Profile): void {
+  ob = begin({ ...current, timezone: current.timezone || zone() });
+  obAt = view.entries.length;
+  render();
+  input.focus();
+}
+
+async function finish(): Promise<void> {
+  if (!ob) return;
+  const { userName, agentName, timezone, directness } = ob.draft;
+  let code = '';
+  try {
+    const r = await api('PUT', '/api/settings/persona', {
+      user_name: userName,
+      agent_name: agentName,
+      timezone,
+      directness,
+    });
+    if (!r.ok) code = String(((await r.json().catch(() => ({}))) as { error?: unknown }).error ?? 'unreachable');
+  } catch {
+    code = 'unreachable';
+  }
+  if (!ob) return;
+  ob = code ? failed(ob, code) : saved(ob, view.model !== null);
+  render();
+  after();
+}
+
+/** Once introductions are over, a first run still needs a model. */
+function after(): void {
+  if (!ob || active(ob) || ob.step === 'saving') return;
+  if (view.model === null && !offered) {
+    offered = true;
+    void settings.open();
+  }
+}
+
+function reply(text: string): void {
+  if (!ob || !active(ob)) return;
+  ob = answer(ob, text);
+  input.value = '';
+  input.style.height = '';
+  render();
+  if (ob.step === 'saving') void finish();
+  else if (ob.step === 'skipped') {
+    void api('POST', '/api/settings/persona/skip', {}).catch(() => undefined);
+    after();
+  }
+  if (active(ob)) input.focus();
+}
+
+namesBtn.addEventListener('click', () => {
+  void (async () => {
+    let current: Profile = { userName: '', agentName: view.agentName, timezone: '', directness: 'balanced' };
+    try {
+      const r = await api('GET', '/api/settings/persona');
+      if (r.ok) {
+        const p = (await r.json()) as Record<string, unknown>;
+        current = {
+          userName: typeof p['user_name'] === 'string' ? p['user_name'] : '',
+          agentName: typeof p['agent_name'] === 'string' ? p['agent_name'] : view.agentName,
+          timezone: typeof p['timezone'] === 'string' ? p['timezone'] : '',
+          directness: (['blunt', 'balanced', 'gentle'] as const).find((d) => d === p['directness']) ?? 'balanced',
+        };
+      }
+    } catch {
+      // Offline: start from what the page knows. Saving will say if it cannot.
+    }
+    introduce(current);
+  })();
+});
+
 newBtn.addEventListener('click', () => {
   // Forget which conversation this tab was in; the core starts a fresh one on reconnect.
   store(CONVERSATION_KEY, null);
   shown.clear();
+  if (!active(ob)) ob = null;
+  obAt = 0;
   apply({ ...INITIAL, link: 'connecting' });
   const old = socket;
   socket = null;
@@ -385,8 +519,15 @@ function connect(): void {
     if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening')) mic.stop();
     apply(reduce(view, msg));
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
-    // First run: with nobody to answer, the way to fix that opens by itself, once.
-    if (msg.type === 'session' && view.model === null && !offered) {
+    if (msg.type === 'session') obDue = msg['onboarding'] === 'due';
+    // First run: she introduces herself before anything else, in an empty conversation.
+    if (msg.type === 'state' && obDue && !ob && view.entries.length === 0) {
+      obDue = false;
+      introduce({ userName: '', agentName: view.agentName, timezone: '', directness: 'balanced' });
+    }
+    // With nobody to answer, the way to fix that opens by itself, once. Not over an
+    // introduction: that comes first and needs no model.
+    if (msg.type === 'state' && view.model === null && !offered && !obDue && !active(ob)) {
       offered = true;
       void settings.open();
     }
@@ -407,6 +548,10 @@ function connect(): void {
 
 function submit(): void {
   const text = input.value.trim();
+  if (ob && active(ob)) {
+    if (text && view.link === 'ready') reply(text);
+    return;
+  }
   if (!text || view.busy || view.link !== 'ready') return;
   voice.unlock(); // sending is a click or a key press, which is what lets a browser play sound
   voice.stop();

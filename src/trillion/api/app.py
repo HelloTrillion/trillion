@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
+from trillion.api.persona import create_persona_router
 from trillion.api.runtime import Runtime
 from trillion.api.session import PROTOCOL, Session
 from trillion.api.settings import create_router
@@ -148,6 +149,7 @@ def create_app(
                 await socket.close()
 
     app.include_router(create_router(rt))
+    app.include_router(create_persona_router(rt))
     if extra_origins:
         # Development only: the page is served by Vite on another port.
         app.add_middleware(

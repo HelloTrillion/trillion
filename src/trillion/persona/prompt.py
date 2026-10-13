@@ -1,7 +1,8 @@
 """Assemble the prompt: a stable, cacheable block and volatile context for the user turn (PER-5).
 
 The identity files live in the user data directory and are written only by the
-privileged setup path. Nothing here writes, and no tool can reach them (PER-2).
+privileged setup path (`persona.setup`). Nothing here writes, and no tool can reach
+them (PER-2).
 """
 
 from __future__ import annotations
@@ -19,14 +20,18 @@ from trillion.brain.types import SystemBlock
 DEFAULT_AGENT_NAME = "Trillion"  # the brand is the default name (PER-1a)
 DEFAULT_USER_NAME = "the user"
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# Directness settings that add an authored overlay. "balanced" is the soul as written.
+_TONES = ("blunt", "gentle")
 _FIELD = re.compile(r"^([a-z_]+):\s*(.+?)\s*$")
-_NAME_LIMIT = 40
+NAME_LIMIT = 40
 
 
 @dataclass(frozen=True, kw_only=True)
 class Identity:
     agent_name: str = DEFAULT_AGENT_NAME
     user_name: str = DEFAULT_USER_NAME
+    # How direct the user asked her to be. An overlay adjusts her; it never replaces her.
+    directness: str = "balanced"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,7 +40,7 @@ class PendingNote:
     summary: str
 
 
-def _fields(path: Path) -> dict[str, str]:
+def fields(path: Path) -> dict[str, str]:
     """`key: value` lines from a file's front matter. A missing file has none."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -58,14 +63,17 @@ def _name(raw: str | None, default: str) -> str:
     if raw is None:
         return default
     cleaned = "".join(ch for ch in raw.strip().strip("\"'") if ch.isprintable() and ch not in "{}")
-    return cleaned[:_NAME_LIMIT].strip() or default
+    return cleaned[:NAME_LIMIT].strip() or default
 
 
 def load_identity(directory: Path | None = None) -> Identity:
     d = directory or paths.persona_dir()
+    user = fields(d / "USER.md")
+    directness = user.get("directness", "")
     return Identity(
-        agent_name=_name(_fields(d / "IDENTITY.md").get("agent_name"), DEFAULT_AGENT_NAME),
-        user_name=_name(_fields(d / "USER.md").get("user_name"), DEFAULT_USER_NAME),
+        agent_name=_name(fields(d / "IDENTITY.md").get("agent_name"), DEFAULT_AGENT_NAME),
+        user_name=_name(user.get("user_name"), DEFAULT_USER_NAME),
+        directness=directness if directness in _TONES else "balanced",
     )
 
 
@@ -101,12 +109,14 @@ def system_blocks(
     """Soul, then rules, then the modality overlay: one block, identical every turn."""
     shared = "\n".join(f"- {r}" for r in granted_roots) or "(none: file tools cannot be used)"
     # Names are filled into the authored text only, never into a folder path.
-    parts = (
+    parts = [
         _fill(_HTML_COMMENT.sub("", soul).strip(), identity),
         _fill(_prompt("rules.md"), identity),
         f"Shared folders:\n{shared}",
         _fill(_prompt("text.md"), identity),
-    )
+    ]
+    if identity.directness in _TONES:
+        parts.insert(1, _fill(_prompt(f"tone_{identity.directness}.md"), identity))
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
 
 

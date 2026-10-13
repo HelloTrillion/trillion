@@ -226,6 +226,9 @@ export function reduce(view: View, msg: ServerMsg): View {
       const model = msg['model'] as { model?: unknown } | null;
       return { ...view, model: model ? str(model.model) : null, banner: null };
     }
+    case 'identity':
+      // The user renamed her. Every open page follows at once.
+      return { ...view, agentName: str(msg['agent_name'], view.agentName) };
     case 'speech':
       return { ...view, speech: speechOf(msg['speech']) };
     case 'listening':

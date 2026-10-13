@@ -23,6 +23,8 @@ interface Option {
 interface State {
   readonly options: readonly Option[];
   readonly saved: { readonly kind: string; readonly choice: string } | null;
+  /** The choice made before listening was switched off, offered again when it comes back on. */
+  readonly last?: { readonly kind: string; readonly choice: string } | null;
   readonly keychain: boolean;
 }
 
@@ -127,7 +129,8 @@ export function createListeningSettings(dialog: HTMLDialogElement, api: Api): Li
         return o;
       }),
     );
-    const saved = state?.saved?.kind === kind ? state.saved.choice : '';
+    const was = state?.saved ?? state?.last ?? null;
+    const saved = was?.kind === kind ? was.choice : '';
     const want = [keep, saved].find((id) => id && list.some((c) => c.id === id));
     if (want) pick.value = want;
     refresh();

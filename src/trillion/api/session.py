@@ -101,6 +101,7 @@ class Session:
             id=session.id,
             protocol=PROTOCOL,
             agent_name=rt.identity.agent_name,
+            onboarding=rt.onboarding(),
             model=session._model(),
             speech=session._speech(),
             listening=session._listening(),
@@ -133,6 +134,10 @@ class Session:
         await self._send("model", model=self._model())
         await self._send("speech", speech=self._speech())
         await self._send("listening", listening=self._listening())
+
+    async def identity_changed(self) -> None:
+        """The user renamed her or themselves. The page follows; the next turn uses it."""
+        await self._send("identity", agent_name=self._rt.identity.agent_name)
 
     async def replaced(self) -> None:
         """This conversation was opened somewhere else. Say so, then stop for good."""

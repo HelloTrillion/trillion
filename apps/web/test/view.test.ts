@@ -12,6 +12,11 @@ describe('view', () => {
     expect(v).toMatchObject({ link: 'ready', conversationId: 'c1', agentName: 'Nova', model: 'm', grantedRoots: ['/a'] });
   });
 
+  it('follows a rename on every open page', () => {
+    const v = feed([{ type: 'session', id: 'c1', agent_name: 'Nova', model: null }, { type: 'identity', agent_name: 'Vega' }]);
+    expect(v.agentName).toBe('Vega');
+  });
+
   it('has no model at rung 0', () => {
     expect(feed([{ type: 'session', id: 'c1', model: null }]).model).toBeNull();
   });

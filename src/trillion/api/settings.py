@@ -236,10 +236,16 @@ def create_router(rt: Runtime) -> APIRouter:
                     else None,
                 }
             )
-        s = rt.speech
+        s, last = rt.speech, rt.speech_last
         return {
             "options": options,
             "saved": {"kind": s.kind, "voice": s.voice, "base_url": s.base_url} if s else None,
+            # What was chosen before speech was switched off, to offer again.
+            "last": (
+                {"kind": last.kind, "voice": last.voice, "base_url": last.base_url}
+                if last
+                else None
+            ),
             "active": rt.tts is not None,
             "keychain": rt.secrets.available(),
         }
@@ -344,10 +350,11 @@ def create_router(rt: Runtime) -> APIRouter:
                     else None,
                 }
             )
-        s = rt.listening
+        s, last = rt.listening, rt.listening_last
         return {
             "options": options,
             "saved": {"kind": s.kind, "choice": s.choice} if s else None,
+            "last": {"kind": last.kind, "choice": last.choice} if last else None,
             "active": rt.stt is not None,
             "keychain": rt.secrets.available(),
         }
