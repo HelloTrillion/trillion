@@ -12,7 +12,7 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 
 | Package | Status |
 |---|---|
-| `trillion/cli` | exists — `trillion run` starts the server and opens the app |
+| `trillion/cli` | exists — `trillion run` starts the server and opens the app; `trillion setup` prepares the data folder and database, checks the machine, then starts it; `trillion doctor` checks and reports without changing anything (`--secrets`, `--offline`). `doctor --trace` (ONB-11) and `doctor --egress` are not built yet; see `docs/specs/2026-10-13-setup-and-doctor.md` |
 | `trillion/spine` | exists — the router, the confirmation state machine, the deny floor, untrusted wrapping, the loop guard; see `docs/specs/2026-09-25-foundation-and-spine-design.md` |
 | `trillion/storage` | exists — SQLite, checksummed migrations, the spine store, conversations and usage |
 | `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`, `describe_self`, and `memory_write`, `memory_recall`, `memory_forget`. Still to build from CON-3: `file_search`, `web_fetch`, `weather` |
@@ -23,7 +23,7 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 | `trillion/memory` | exists — memories as Markdown files with an SQLite index, keyword recall, corrections and forgetting that keep history, and the reconcile step that makes the files win; see `docs/specs/2026-10-10-memory.md`. Embedding search (MEM-2), the session-close summarizer (MEM-4) and the memory browser (MEM-6) are not built yet |
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |
-| `trillion/secrets` | exists — the OS keychain behind one interface, and the log filter that scrubs keys. The encrypted-file fallback for machines with no keychain (SEC-2) and `doctor --secrets` (SEC-9) are not built yet |
+| `trillion/secrets` | exists — the OS keychain behind one interface, and the log filter that scrubs keys. `trillion doctor --secrets` shows which store is in use and whether each saved key works, without printing one (SEC-9). The encrypted-file fallback for machines with no keychain (SEC-2) is not built yet |
 | `trillion/connectors` | placeholder |
 | `trillion/channels` | placeholder |
 
