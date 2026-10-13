@@ -23,7 +23,7 @@ from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
 from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.memory import present
-from trillion.persona.prompt import PendingNote, system_blocks, volatile_context
+from trillion.persona.prompt import PendingNote, greeting, system_blocks, volatile_context
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
 from trillion.spine.untrusted import wrap
@@ -59,6 +59,7 @@ class Session:
         # Notes about taps that arrived mid-turn, delivered to the model afterwards.
         self._queued: list[str] = []
         self._closed = False
+        self._greeted = False
         self._orb = ""
         # The orb's state between turns: idle, or error after a failure.
         self._rest = "idle"
@@ -180,6 +181,8 @@ class Session:
                 await self._conclude("end")
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
+        elif kind == "greet":
+            await self._on_greet()
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
         elif kind == "playback.ended":
@@ -207,6 +210,23 @@ class Session:
             self._turn += 1
             await self._save_input("user", text)
             self._begin()
+
+    async def _on_greet(self) -> None:
+        """The introduction is over: she says hello in her own words, once (ONB-3).
+
+        The page only asks. What she is told is authored here and carries nothing
+        the page sent, and it is refused anywhere but the start of a conversation
+        with someone who has introduced themselves."""
+        rt = self._rt
+        if rt.provider is None or rt.profile is None:
+            return
+        if self._task is not None or self._history or self._greeted:
+            return
+        self._greeted = True
+        await self._stop_listening()
+        self._via = "text"
+        self._queued.append(greeting(rt.identity))
+        self._begin()
 
     # ── Listening ────────────────────────────────────────────────────────
 

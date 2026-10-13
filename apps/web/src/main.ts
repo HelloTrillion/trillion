@@ -5,12 +5,18 @@ import { type Inline, parse } from './format';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
 import {
+  APPROVE,
+  DECLINE,
+  OPEN,
   type Onboarding,
   type Profile,
+  type Ready,
   active,
   answer,
   begin,
   choices,
+  configured,
+  decide,
   failed,
   placeholder,
   saved,
@@ -139,7 +145,10 @@ const shown = new Set<string>();
 
 // The first conversation, or a later change of names (ONB-3). Its lines are the
 // page's own, so they sit in the transcript where it began and survive a reconnect.
+// The card she shows as an example. It never reaches the core: nothing is pending.
+const EXAMPLE_CARD = 'example';
 let ob: Onboarding | null = null;
+let greeted = false;
 let obAt = 0;
 let obDue = false;
 let merged: { from: readonly Entry[]; ob: Onboarding | null; entries: readonly Entry[] } | null = null;
@@ -149,7 +158,19 @@ function entries(): readonly Entry[] {
   if (merged?.from === view.entries && merged.ob === ob) return merged.entries;
   const at = Math.min(obAt, view.entries.length);
   const lines: Entry[] = ob.lines.map((l) =>
-    l.who === 'you' ? { kind: 'user', text: l.text } : { kind: 'assistant', text: l.text, interrupted: false },
+    l.who === 'card'
+      ? {
+          kind: 'card',
+          pendingId: EXAMPLE_CARD,
+          summary: l.text,
+          expiresAt: 0,
+          tapOnly: false,
+          status: l.status,
+          note: l.status === 'done' ? 'Approved. Nothing happened: this was an example.' : 'Declined. Nothing happened.',
+        }
+      : l.who === 'you'
+        ? { kind: 'user', text: l.text }
+        : { kind: 'assistant', text: l.text, interrupted: false },
   );
   merged = { from: view.entries, ob, entries: [...view.entries.slice(0, at), ...lines, ...view.entries.slice(at)] };
   return merged.entries;
@@ -217,9 +238,10 @@ function renderEntry(e: Entry): HTMLElement {
     case 'notice':
       return el('p', 'notice', e.text);
     case 'card': {
+      const example = e.pendingId === EXAMPLE_CARD;
       const card = el('section', `card ${e.status}`);
-      card.setAttribute('aria-label', 'Needs your approval');
-      card.append(el('h2', 'card-title', e.status === 'waiting' ? 'Needs your yes' : 'Request'));
+      card.setAttribute('aria-label', example ? 'An example of an approval card' : 'Needs your approval');
+      card.append(el('h2', 'card-title', example ? 'Example' : e.status === 'waiting' ? 'Needs your yes' : 'Request'));
       card.append(el('p', 'card-summary', e.summary));
       if (e.status !== 'waiting') {
         card.append(el('p', 'card-note', e.note));
@@ -228,14 +250,20 @@ function renderEntry(e: Entry): HTMLElement {
       const row = el('div', 'card-actions');
       const approve = el('button', 'approve', 'Approve');
       approve.type = 'button';
-      approve.addEventListener('click', () => send({ type: 'confirm', pending_id: e.pendingId }));
+      approve.addEventListener('click', () =>
+        example ? reply(APPROVE) : send({ type: 'confirm', pending_id: e.pendingId }),
+      );
       const decline = el('button', 'decline', 'Decline');
       decline.type = 'button';
-      decline.addEventListener('click', () => send({ type: 'cancel', pending_id: e.pendingId }));
+      decline.addEventListener('click', () =>
+        example ? reply(DECLINE) : send({ type: 'cancel', pending_id: e.pendingId }),
+      );
       row.append(approve, decline);
       card.append(row);
       const hint = e.tapOnly ? 'This one can only be approved here. ' : 'Or just answer in the chat. ';
-      card.append(el('p', 'card-note', hint + minutesLeft(e.expiresAt) + '.'));
+      card.append(
+        el('p', 'card-note', example ? 'Or just answer in the chat. Nothing happens either way.' : hint + minutesLeft(e.expiresAt) + '.'),
+      );
       return card;
     }
   }
@@ -287,7 +315,7 @@ function render(): void {
 
   // The core records a card as delivered only once it is really on screen (SPN-17).
   for (const e of view.entries) {
-    if (e.kind === 'card' && e.status === 'waiting' && !shown.has(e.pendingId)) {
+    if (e.kind === 'card' && e.status === 'waiting' && !shown.has(e.pendingId) && e.pendingId !== EXAMPLE_CARD) {
       shown.add(e.pendingId);
       send({ type: 'confirm.shown', pending_id: e.pendingId });
     }
@@ -419,25 +447,50 @@ async function finish(): Promise<void> {
     code = 'unreachable';
   }
   if (!ob) return;
-  ob = code ? failed(ob, code) : saved(ob, view.model !== null);
+  ob = code ? failed(ob, code) : saved(ob, ready());
   render();
   after();
 }
 
-/** Once introductions are over, a first run still needs a model. */
+const ready = (): Ready => ({ model: view.model, speech: view.speech !== null, listening: view.listening !== null });
+
+/** What follows a step: the model dialog if she never got to ask, or her first real words. */
 function after(): void {
-  if (!ob || active(ob) || ob.step === 'saving') return;
+  if (!ob || ob.step === 'saving') return;
+  // She asks about a model herself on the ladder, so the dialog does not open over her.
+  if (ob.step === 'model') offered = true;
+  if (active(ob)) return;
+  if (ob.step === 'done' && ob.greet && !greeted) {
+    greeted = true;
+    send({ type: 'greet' });
+  }
   if (view.model === null && !offered) {
     offered = true;
     void settings.open();
   }
 }
 
+function openFor(step: Onboarding['step']): void {
+  if (step === 'model') void settings.open();
+  else if (step === 'voice') void speechSettings.open();
+  else if (step === 'listening') void listeningSettings.open();
+}
+
 function reply(text: string): void {
   if (!ob || !active(ob)) return;
-  ob = answer(ob, text);
   input.value = '';
   input.style.height = '';
+  if (ob.step === 'model' || ob.step === 'voice' || ob.step === 'listening' || ob.step === 'demo') {
+    const next = text === OPEN ? ob : decide(ob, text, ready());
+    // Anything that is not "skip" means "show me": the settings for this step open.
+    if (next === ob) openFor(ob.step);
+    ob = next;
+    render();
+    after();
+    if (active(ob)) input.focus();
+    return;
+  }
+  ob = answer(ob, text);
   render();
   if (ob.step === 'saving') void finish();
   else if (ob.step === 'skipped') {
@@ -520,6 +573,15 @@ function connect(): void {
     apply(reduce(view, msg));
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
     if (msg.type === 'session') obDue = msg['onboarding'] === 'due';
+    // Something was chosen in a dialog while she was asking about it: she moves on.
+    if (ob && active(ob) && (msg.type === 'model' || msg.type === 'speech' || msg.type === 'listening')) {
+      const next = configured(ob, ready());
+      if (next !== ob) {
+        ob = next;
+        render();
+        after();
+      }
+    }
     // First run: she introduces herself before anything else, in an empty conversation.
     if (msg.type === 'state' && obDue && !ob && view.entries.length === 0) {
       obDue = false;

@@ -66,9 +66,26 @@ A name goes into every prompt and into a `key: value` line, so it is one line of
 - **The soul is not copied into the data folder.** The PRD says onboarding copies `SOUL.md` there; this slice leaves her on the shipped one, so testers keep getting updates to it. That needs a decision before Phase 0 is done.
 - An introduction is offered only in an empty conversation. If a tab resumes a conversation with history, the Names button is the way in.
 
-## Left for later slices
+## The second slice: the ladder, the card and her first words
 
-- The ladder walk: a model, then a voice, then a way to listen, with costs and the free choice named at each step (ONB-3, ONB-10).
-- Demonstrating the confirmation rule.
-- A first composed greeting once a model exists.
+Added the same day, on a first run only. A rename still ends when the names are saved.
+
+**The ladder (ONB-3, ONB-4, ONB-9).** After the names she asks about a model, then a voice, then a way to listen. At each step she names the free choice and the paid ones in a sentence, and the quick replies either open the existing settings dialog for that step or leave it for later. Anything typed that is not a skip opens the dialog too. A step that is already set up is not asked about. When the dialog saves, the core's `model`, `speech` or `listening` message moves her on. Skipping the model ends the ladder, because a voice and a microphone are no use without one.
+
+**The example card.** She states the rule (anything that changes something shows a card first) and shows one. It is drawn by the page with the same markup as a real card, titled "Example", and it never reaches the core: nothing is pending, nothing is delivered, and both buttons do nothing but move the script on. Typing yes or no works, as it does for a real card. Her next line says outright that nothing happened.
+
+**Her first real words.** When the script ends with a model in place, the page sends `greet`. The session answers once, only at the start of a conversation, and only for someone who has introduced themselves. What the model is told is authored in `persona/prompts/greeting.md` and filled with the two names. Nothing the page sent is passed on, so the message cannot carry an instruction. It is recorded as a host note, the same way a tapped card is.
+
+Checked: `apps/web/test/onboarding.test.ts` covers every rung, skipping, what is already set up, and both answers to the card. `tests/api/test_onboarding.py` covers the greeting: it happens, it happens once, it is refused mid-conversation and before an introduction, and extra fields from the page never reach the model. By hand on macOS in a brand-new data folder: names, the model dialog, a model saved, voice and mic left for later, the card approved, and a composed greeting from `gemma4:e4b` ("Sam. Glad to finally be out of the script.").
+
+Limits of this slice:
+
+- **No prices (ONB-10).** She says who bills you and never how much. A per-hour estimate needs figures we can stand behind, and the spend caps it should be offered beside (BRN-7) are not built.
+- **The free and paid names are written into her lines**, not read from the provider catalogs. A new provider needs a line edited here.
+- **A reload mid-ladder does not resume it.** The names are saved by then, so the rest is reached from the buttons at the top.
+- The example card is not a real pending action, so it does not exercise the spine. It shows the surface only.
+
+## Left for later slices
+- Prices and spend caps at the point a key is entered (ONB-10, BRN-7).
+- Her scripted lines spoken aloud once a voice is chosen.
 - `trillion setup` and `trillion doctor` (ONB-2, ONB-5).

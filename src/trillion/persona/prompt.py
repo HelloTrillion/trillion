@@ -120,6 +120,11 @@ def system_blocks(
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
 
 
+def greeting(identity: Identity) -> str:
+    """What the app tells her when onboarding ends, so her first real line is her own."""
+    return _fill(_prompt("greeting.md"), identity)
+
+
 def volatile_context(now: datetime, pending: Sequence[PendingNote], recalled: str = "") -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.

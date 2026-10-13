@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  APPROVE,
+  DECLINE,
+  EXAMPLE,
+  LATER,
   type Onboarding,
+  OPEN,
   type Profile,
+  type Ready,
   SKIP,
   active,
   answer,
   begin,
   choices,
+  configured,
+  decide,
   directnessFrom,
   failed,
   nameFrom,
@@ -19,6 +27,10 @@ const FRESH: Profile = { userName: '', agentName: 'Trillion', timezone: 'America
 const said = (o: Onboarding): string => o.lines[o.lines.length - 1]?.text ?? '';
 const run = (answers: string[], from: Profile = FRESH): Onboarding => answers.reduce(answer, begin(from));
 const keep = (o: Onboarding): string => choices(o)[0]?.value ?? '';
+const NOTHING: Ready = { model: null, speech: false, listening: false };
+const EVERYTHING: Ready = { model: 'model-a', speech: true, listening: true };
+const named = (ready: Ready): Onboarding => saved(run(['Sam', 'Nova', 'blunt']), ready);
+const texts = (o: Onboarding): string[] => o.lines.map((l) => l.text);
 
 describe('onboarding', () => {
   it('opens by saying who she is and asking who the user is', () => {
@@ -82,17 +94,101 @@ describe('onboarding', () => {
     expect(nameProblem('<b>')).not.toBeNull();
   });
 
-  it('says what was saved and what comes next', () => {
-    const ready = run(['Sam', 'Nova', 'blunt']);
-    const withModel = saved(ready, true);
-    expect(withModel.step).toBe('done');
-    expect(withModel.lines.at(-2)?.text).toBe(
+  it('says what was saved, then asks about a model first', () => {
+    const o = named(NOTHING);
+    expect(texts(o)).toContain(
       "Done. I'm Nova, you're Sam, and I have you in America/Chicago. Change any of it from Names, at the top.",
     );
-    expect(said(withModel)).toContain('last scripted line');
-    expect(said(saved(ready, false))).toContain('I need a model to think with');
-    const nowhere = saved(run(['Sam', 'Nova', 'blunt'], { ...FRESH, timezone: '' }), true);
-    expect(nowhere.lines.at(-2)?.text).toContain("you're Sam. Change");
+    expect(o.step).toBe('model');
+    expect(said(o)).toContain('Free: a model running on this computer');
+    expect(said(o)).toContain('Paid: your own Anthropic or OpenAI key');
+    expect(choices(o)).toEqual([
+      { label: 'Choose a model', value: OPEN },
+      { label: 'Skip for now', value: LATER },
+    ]);
+    const nowhere = saved(run(['Sam', 'Nova', 'blunt'], { ...FRESH, timezone: '' }), NOTHING);
+    expect(texts(nowhere).some((t) => t.includes("you're Sam. Change"))).toBe(true);
+  });
+
+  it('names the free choice and the paid one at every rung', () => {
+    let o = configured(named(NOTHING), { ...NOTHING, model: 'model-a' });
+    expect(o.step).toBe('voice');
+    expect(texts(o)).toContain("model-a. That'll do.");
+    expect(said(o)).toMatch(/Free: this computer's own.*Paid: ElevenLabs/);
+    o = configured(o, { model: 'model-a', speech: true, listening: false });
+    expect(o.step).toBe('listening');
+    expect(said(o)).toMatch(/Free: Whisper on this computer.*Paid: Deepgram/);
+    o = configured(o, EVERYTHING);
+    expect(o.step).toBe('demo');
+  });
+
+  it('does not ask about what is already set up', () => {
+    expect(named({ model: 'model-a', speech: false, listening: true }).step).toBe('voice');
+    const all = named(EVERYTHING);
+    expect(all.step).toBe('demo');
+    expect(texts(all).some((t) => t.includes('Ollama') || t.includes('ElevenLabs') || t.includes('Whisper'))).toBe(false);
+  });
+
+  it('ignores a setting that is not the one she asked about', () => {
+    const o = named(NOTHING);
+    expect(configured(o, { model: null, speech: true, listening: true })).toBe(o);
+  });
+
+  it('lets a voice and a mic be left for later, one at a time', () => {
+    const ready: Ready = { model: 'model-a', speech: false, listening: false };
+    let o = named(ready);
+    o = decide(o, LATER, ready);
+    expect(o.step).toBe('listening');
+    expect(texts(o)).toContain('Text it is.');
+    o = decide(o, 'keep typing', ready);
+    expect(o.step).toBe('demo');
+    expect(texts(o)).toContain('Typing it is.');
+  });
+
+  it('stops the ladder when the model is skipped, because nothing else works without one', () => {
+    const o = decide(named(NOTHING), 'skip', NOTHING);
+    expect(o.step).toBe('done');
+    expect(o.greet).toBeUndefined();
+    expect(said(o)).toContain("Pick a model when you're ready");
+    expect(texts(o).some((t) => t.includes('ElevenLabs'))).toBe(false);
+  });
+
+  it('leaves the step alone for anything that is not a skip, so the page can open its settings', () => {
+    for (const ready of [NOTHING, { ...NOTHING, model: 'model-a' }]) {
+      const o = named(ready);
+      expect(decide(o, 'what does it cost?', ready)).toBe(o);
+    }
+  });
+
+  it('shows the confirmation rule with a card that does nothing', () => {
+    const o = named(EVERYTHING);
+    expect(said(o)).toBe(EXAMPLE);
+    expect(o.lines.at(-1)).toEqual({ who: 'card', text: EXAMPLE, status: 'waiting' });
+    expect(o.lines.at(-2)?.text).toContain('shows you a card first');
+    expect(choices(o)).toEqual([]);
+    expect(placeholder(o)).toContain('yes or no');
+
+    const yes = decide(o, APPROVE, EVERYTHING);
+    expect(yes.lines.find((l) => l.who === 'card')).toMatchObject({ status: 'done' });
+    expect(texts(yes).some((t) => t.includes('that one was a drill'))).toBe(true);
+    expect(yes.step).toBe('done');
+    expect(yes.greet).toBe(true);
+    expect(said(yes)).toBe('That was the last scripted line.');
+
+    const no = decide(o, 'nope', EVERYTHING);
+    expect(no.lines.find((l) => l.who === 'card')).toMatchObject({ status: 'declined' });
+    expect(texts(no).some((t) => t.includes("that's how you say no"))).toBe(true);
+    expect(no.greet).toBe(true);
+
+    const unclear = decide(o, 'purple', EVERYTHING);
+    expect(unclear.step).toBe('demo');
+    expect(said(unclear)).toBe('Yes or no will do. Or tap the card.');
+  });
+
+  it('never claims the example did anything', () => {
+    const lines = texts(decide(named(EVERYTHING), APPROVE, EVERYTHING)).join(' ');
+    expect(lines).toContain('Nothing happened');
+    expect(lines).not.toMatch(/created|written|saved the file/i);
   });
 
   it('can be put off at any step, and says where to find it again', () => {
@@ -124,11 +220,19 @@ describe('onboarding', () => {
     const renamed = answer(kept, 'Vega');
     expect(said(renamed)).toContain('Vega. I can work with that. Tone is set to blunt.');
     expect(choices(renamed).map((c) => c.label)).toEqual(['Blunt', 'Balanced', 'Gentler']);
-    expect(answer(renamed, 'balanced').draft).toEqual({ ...now, agentName: 'Vega', directness: 'balanced' });
+    const ready = answer(renamed, 'balanced');
+    expect(ready.draft).toEqual({ ...now, agentName: 'Vega', directness: 'balanced' });
+    // A rename ends there: no ladder, no example card, no second hello.
+    const done = saved(ready, NOTHING);
+    expect(done.step).toBe('done');
+    expect(done.greet).toBeUndefined();
+    expect(said(done)).toContain("Done. I'm Vega, you're Sam");
   });
 
   it('ignores answers once it is over', () => {
-    const done = saved(run(['Sam', 'Nova', 'blunt']), true);
+    const done = decide(named(EVERYTHING), APPROVE, EVERYTHING);
+    expect(active(done)).toBe(false);
     expect(answer(done, 'hello')).toBe(done);
+    expect(decide(done, 'yes', EVERYTHING)).toBe(done);
   });
 });
