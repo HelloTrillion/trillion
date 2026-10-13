@@ -499,3 +499,28 @@ button.quiet {
 .msg .mark {
   display: block;
 }
+
+/* ── Quick replies (introductions) ───────────────────────────────────── */
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice {
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-glass);
+  backdrop-filter: blur(12px);
+  color: var(--color-text-0);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.choice:hover,
+.choice:focus-visible {
+  border-color: var(--color-accent);
+}

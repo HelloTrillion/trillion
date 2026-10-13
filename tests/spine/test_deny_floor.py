@@ -18,6 +18,9 @@ async def test_protected_paths_are_refused_before_any_proposal(spine: Spine) -> 
         spine.granted / ".ssh" / "authorized_keys",
         spine.granted / ".env",
         paths.home() / "persona" / "SOUL.md",
+        # What onboarding writes. Only the privileged setup path may (PER-2).
+        paths.persona_dir() / "USER.md",
+        paths.persona_dir() / "IDENTITY.md",
         paths.secrets_path(),
         spine.granted.parent / "outside.txt",
     ]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -15,6 +16,7 @@ from trillion import paths
 from trillion.brain.config import ModelSettings, Source, resolve
 from trillion.brain.types import ModelProvider
 from trillion.memory.book import MemoryBook
+from trillion.persona import setup
 from trillion.persona.prompt import Identity, load_identity, load_soul
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.spine.deny_floor import DenyPolicy
@@ -34,6 +36,10 @@ from trillion.voice.types import STTProvider, TTSProvider
 OWNER = "local"
 SPEECH_PREF = "speech"
 LISTEN_PREF = "listening"
+# The last choice made, kept when the feature is switched off so that switching it
+# back on does not mean choosing everything again.
+SPEECH_LAST_PREF = "speech_last"
+LISTEN_LAST_PREF = "listening_last"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -117,8 +123,15 @@ class Runtime:
     tts: TTSProvider | None
     listening: ListenSettings | None = None
     stt: STTProvider | None = None
+    speech_last: SpeechSettings | None = None
+    listening_last: ListenSettings | None = None
     identity: Identity
     soul: str
+    # Where the identity files live, and what onboarding last wrote there (PER-6).
+    persona_dir: Path
+    profile: setup.Profile | None = None
+    # The user put onboarding off. It is offered again only when they ask.
+    onboarding_skipped: bool = False
     granted_roots: tuple[Path, ...]
     env: Mapping[str, str] | None = None
     # Issued fresh at every launch and held only in memory (SPN-11a).
@@ -161,16 +174,44 @@ class Runtime:
             await session.settings_changed()
 
     async def use_speech(self, settings: SpeechSettings | None) -> None:
+        # Remember the choice being made, or the one being switched off.
+        last = settings or self.speech
+        if last is not None and last != self.speech_last:
+            self.speech_last = last
+            await self.preferences.put(OWNER, SPEECH_LAST_PREF, last.to_json(), self.clock())
         self.speech = settings
         self.tts = build_speech(settings, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
     async def use_listening(self, settings: ListenSettings | None) -> None:
+        last = settings or self.listening
+        if last is not None and last != self.listening_last:
+            self.listening_last = last
+            await self.preferences.put(OWNER, LISTEN_LAST_PREF, last.to_json(), self.clock())
         self.listening = settings
         self.stt = build_listening(settings, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
+
+    def onboarding(self) -> str:
+        """`done` once the user has introduced themselves, `skipped` if they put it off."""
+        if self.profile is not None:
+            return "done"
+        return "skipped" if self.onboarding_skipped else "due"
+
+    async def use_profile(self, profile: setup.Profile) -> None:
+        """Write the identity files and adopt them. The next turn is hers by that name."""
+        self.profile = await asyncio.to_thread(setup.save, profile, self.persona_dir)
+        self.identity = load_identity(self.persona_dir)
+        await self.preferences.put(OWNER, ONBOARDING_PREF, None, self.clock())
+        self.onboarding_skipped = False
+        for session in list(self.sessions):
+            await session.identity_changed()
+
+    async def skip_onboarding(self) -> None:
+        self.onboarding_skipped = True
+        await self.preferences.put(OWNER, ONBOARDING_PREF, "skipped", self.clock())
 
     async def close(self) -> None:
         for conn in self._connections:
@@ -179,6 +220,7 @@ class Runtime:
 
 
 MODEL_PREF = "model"
+ONBOARDING_PREF = "onboarding"
 
 
 async def open_runtime(
@@ -228,8 +270,15 @@ async def open_runtime(
         tts=build_speech(speech, keychain),
         listening=listening,
         stt=build_listening(listening, keychain),
+        speech_last=SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_LAST_PREF))
+        or speech,
+        listening_last=ListenSettings.from_json(await preferences.get(OWNER, LISTEN_LAST_PREF))
+        or listening,
         identity=load_identity(persona),
         soul=load_soul(persona),
+        persona_dir=persona or paths.persona_dir(),
+        profile=setup.load(persona),
+        onboarding_skipped=await preferences.get(OWNER, ONBOARDING_PREF) == "skipped",
         granted_roots=roots,
         env=env,
         _connections=[spine_conn, chat_conn],

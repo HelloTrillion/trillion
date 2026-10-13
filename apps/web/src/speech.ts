@@ -23,6 +23,8 @@ interface Option {
 interface State {
   readonly options: readonly Option[];
   readonly saved: { readonly kind: string; readonly voice: string; readonly base_url: string | null } | null;
+  /** The choice made before speech was switched off, offered again when it comes back on. */
+  readonly last?: { readonly kind: string; readonly voice: string; readonly base_url: string | null } | null;
   readonly keychain: boolean;
 }
 
@@ -128,6 +130,7 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
+  const remembered = (): State['saved'] => state?.saved ?? state?.last ?? null;
 
   function setVoices(list: readonly Choice[]): void {
     voiceSelect.replaceChildren(
@@ -137,7 +140,8 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
         return o;
       }),
     );
-    const saved = state?.saved?.kind === kind ? state.saved.voice : '';
+    const was = remembered();
+    const saved = was?.kind === kind ? was.voice : '';
     if (list.some((c) => c.id === saved)) voiceSelect.value = saved;
     refresh();
   }
@@ -171,7 +175,8 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
   function choose(next: string): void {
     kind = next;
     keyInput.value = '';
-    urlInput.value = state?.saved?.kind === next ? (state.saved.base_url ?? '') : '';
+    const was = remembered();
+    urlInput.value = was?.kind === next ? (was.base_url ?? '') : '';
     status.textContent = '';
     const o = option();
     if (o?.where === 'client') {
@@ -179,8 +184,7 @@ export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): Speec
       setVoices(list);
       if (!list.length) status.textContent = 'This browser has no voices of its own.';
     } else {
-      const saved = state?.saved;
-      setVoices(o && saved?.kind === next && saved.voice ? [{ id: saved.voice, name: 'Saved voice' }] : []);
+      setVoices(o && was?.kind === next && was.voice ? [{ id: was.voice, name: 'Saved voice' }] : []);
     }
   }
 

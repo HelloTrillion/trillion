@@ -14,6 +14,7 @@
       </div>
       <div class="top-right">
         <button type="button" class="model" id="new" hidden>New conversation</button>
+        <button type="button" class="model" id="names" hidden>Names</button>
         <button type="button" class="model" id="listening" aria-haspopup="dialog" hidden></button>
         <button type="button" class="model" id="speech" aria-haspopup="dialog" hidden></button>
         <button type="button" class="model" id="model" aria-haspopup="dialog" hidden></button>
@@ -26,6 +27,7 @@
     <main class="stage">
       <div class="banner" id="banner" role="alert" hidden></div>
       <section class="transcript" id="transcript" role="log" aria-label="Conversation" aria-live="polite" tabindex="0"></section>
+      <div class="choices" id="choices" role="group" aria-label="Quick replies" hidden></div>
       <form class="ask" id="ask">
         <label class="visually-hidden" for="input">Message</label>
         <textarea id="input" rows="1" placeholder="Say something" autocomplete="off" disabled></textarea>
