@@ -85,6 +85,14 @@ The app opens in your browser and asks who should answer: Anthropic (Claude), Op
 
 Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
 
+**If something isn't working**, ask it:
+
+```bash
+uv run trillion doctor
+```
+
+It checks the data folder, the database, the port, the keychain, your model, voice and mic choices, and says how to fix whatever is wrong. It only looks; it changes nothing. `--secrets` also tests every saved key without printing one, and `--offline` skips the checks that need the network. `uv run trillion setup` does the first-run preparation, runs the same checks, and then starts the app; it is safe to run again.
+
 `--grant` shares one folder with the file tools; without it they are off. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
 **Talking to her.** Open **Mic** (top right) and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, talk, and stop: she answers when you go quiet. The microphone is on only while you are speaking to her.

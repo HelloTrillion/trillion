@@ -1,0 +1,314 @@
+"""`trillion doctor` and `trillion setup`: what they check, and that doctor only looks."""
+
+from __future__ import annotations
+
+import asyncio
+import socket
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from trillion import paths
+from trillion.brain import config
+from trillion.brain.types import ModelChoice, ProviderError
+from trillion.cli import doctor
+from trillion.cli.doctor import Check, Options
+from trillion.cli.main import main
+from trillion.persona import setup
+from trillion.secrets.store import MemoryStore
+from trillion.voice.providers.deepgram import Deepgram
+from trillion.voice.types import Choice, VoiceError
+
+KEY = "sk-" + "test-" * 6 + "9f3e"  # built from pieces: never a real credential
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    for name in (config.OPENAI_BASE_URL, config.MODEL, config.ANTHROPIC_KEY, config.OPENAI_KEY):
+        monkeypatch.delenv(name, raising=False)
+    return tmp_path / "home"
+
+
+@pytest.fixture
+def offers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None, str | None]]:
+    asked: list[tuple[str, str | None, str | None]] = []
+
+    async def fake(kind: str, base_url: str | None, api_key: str | None) -> list[ModelChoice]:
+        asked.append((kind, base_url, api_key))
+        if api_key == "wrong":
+            raise ProviderError("unauthorized", f"echo {api_key}")
+        if base_url and "down" in base_url:
+            raise ProviderError("unreachable")
+        return [ModelChoice(id="model-a", label="Model A", max_output=8000)]
+
+    monkeypatch.setattr(config, "list_models", fake)
+    return asked
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def examine(store: MemoryStore | None = None, **options: Any) -> dict[str, Check]:
+    found = asyncio.run(
+        doctor.examine(
+            Options(port=free_port(), **options),
+            secrets=store or MemoryStore(),
+            env={},
+            page=Path("/built"),
+        )
+    )
+    return {c.name: c for c in found}
+
+
+def prepared(home: Path) -> None:
+    assert main(["setup", "--no-run", "--offline", "--port", str(free_port())]) == 0
+
+
+# ── A machine with nothing on it ─────────────────────────────────────────
+
+
+def test_a_fresh_machine_is_healthy_and_nothing_is_created(home: Path, offers: list) -> None:
+    checks = examine()
+    assert doctor.healthy(list(checks.values()))
+    assert {c.status for c in checks.values()} <= {"ok", "info"}
+    assert checks["Model"].detail.startswith("none chosen yet")
+    assert not home.exists()  # it looked, and made nothing
+    assert offers == []  # and called nobody
+
+
+def test_the_report_says_what_to_do_about_each_problem() -> None:
+    text = doctor.render(
+        [
+            Check(name="Port", status="warn", detail="7777 is in use", fix="Use another."),
+            Check(name="Model", status="fail", detail="refused", fix="Enter the key again."),
+            Check(name="Voice", status="ok", detail="fine"),
+        ]
+    )
+    assert "warn  Port   7777 is in use\n             -> Use another.\n" in text
+    assert "fail  Model  refused\n             -> Enter the key again.\n" in text
+    assert text.endswith("1 thing to fix before Trillion will work.\n")
+    assert doctor.render([Check(name="Voice", status="ok", detail="fine")]).endswith(
+        "Everything checks out.\n"
+    )
+    assert "Ready, with 1 thing worth a look." in doctor.render(
+        [Check(name="Port", status="warn", detail="busy")]
+    )
+
+
+# ── The data folder and the database ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("folder", ["OneDrive", "Dropbox", "Google Drive", "iCloud Drive"])
+def test_a_data_folder_inside_a_synced_folder_is_warned_about(tmp_path: Path, folder: str) -> None:
+    check = doctor.check_home(tmp_path / folder / "trillion")
+    assert check.status == "warn" and "synced folder" in check.detail and "lose" in check.fix
+
+
+def test_setup_prepares_the_machine_and_can_be_run_again(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prepared(home)
+    first = capsys.readouterr().out
+    assert "database ready (5 updates applied)" in first and "Start it with: trillion run" in first
+    assert (home / "trillion.db").exists() and (home / "persona").is_dir()
+    prepared(home)  # a second run finishes what is there and changes nothing
+    assert "already prepared: nothing to do" in capsys.readouterr().out
+    assert examine()["Database"] == Check(
+        name="Database", status="ok", detail="up to date (5 migrations)"
+    )
+
+
+def test_a_database_from_a_newer_trillion_is_not_touched(home: Path) -> None:
+    prepared(home)
+    with sqlite3.connect(home / "trillion.db") as db:
+        db.execute("INSERT INTO schema_migrations VALUES ('999', 'future', 'x', 0)")
+    db.close()
+    check = examine()["Database"]
+    assert check.status == "fail" and "newer Trillion" in check.detail
+    assert "upgrade" in check.fix
+
+
+def test_a_file_that_is_not_a_database_is_reported_not_repaired(home: Path) -> None:
+    home.mkdir()
+    (home / "trillion.db").write_bytes(b"this is not sqlite" * 100)
+    check = examine()["Database"]
+    assert check.status == "fail" and "keep a copy" in check.fix.lower()
+    assert (home / "trillion.db").read_bytes().startswith(b"this is not sqlite")
+
+
+def test_doctor_never_writes_to_the_database(home: Path) -> None:
+    prepared(home)
+    before = (home / "trillion.db").stat().st_mtime_ns
+    examine()
+    assert (home / "trillion.db").stat().st_mtime_ns == before
+
+
+# ── The port ─────────────────────────────────────────────────────────────
+
+
+def test_a_port_held_by_something_else_is_named_with_the_way_round_it() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        check = doctor.check_port("127.0.0.1", port)
+    assert check.status == "warn" and "in use by something else" in check.detail
+    assert f"trillion run --port {port + 1}" in check.fix
+
+
+# ── What the user chose ──────────────────────────────────────────────────
+
+
+def chosen(home: Path, **prefs: Any) -> None:
+    """Save settings the way the app does, straight into the prepared database."""
+    import json
+
+    prepared(home)
+    with sqlite3.connect(home / "trillion.db") as db:
+        for key, value in prefs.items():
+            db.execute(
+                "INSERT OR REPLACE INTO preferences VALUES ('local', ?, ?, 0)",
+                (key, json.dumps(value)),
+            )
+    db.close()
+
+
+def test_a_model_that_answers_is_ok_and_one_that_does_not_says_why(
+    home: Path, offers: list
+) -> None:
+    chosen(home, model={"kind": "local", "model": "model-a", "base_url": None})
+    assert examine()["Model"].detail == "model-a (chosen in the app) answers"
+
+    chosen(home, model={"kind": "local", "model": "model-a", "base_url": "http://localhost:1/down"})
+    down = examine()["Model"]
+    assert down.status == "fail" and "could not be reached" in down.detail
+    assert "ollama serve" in down.fix
+
+    chosen(home, model={"kind": "local", "model": "gone", "base_url": None})
+    missing = examine()["Model"]
+    assert missing.status == "warn" and "does not list that model" in missing.detail
+
+
+def test_a_key_that_is_refused_is_a_failure_and_is_never_printed(home: Path, offers: list) -> None:
+    chosen(home, model={"kind": "anthropic", "model": "model-a"})
+    secrets = MemoryStore()
+    secrets.set(config.secret_name("anthropic"), "wrong")
+    check = examine(secrets)["Model"]
+    assert check.status == "fail" and "the key was refused" in check.detail
+    assert "wrong" not in doctor.render([check])
+
+
+def test_a_chosen_model_whose_key_is_gone_is_a_failure(home: Path, offers: list) -> None:
+    chosen(home, model={"kind": "anthropic", "model": "model-a"})
+    check = examine()["Model"]
+    assert check.status == "fail" and "key is gone from the keychain" in check.detail
+    assert offers == []
+
+
+def test_offline_tests_nothing_over_the_network(home: Path, offers: list) -> None:
+    chosen(
+        home,
+        model={"kind": "local", "model": "model-a", "base_url": None},
+        speech={"kind": "elevenlabs", "voice": "v1"},
+    )
+    secrets = MemoryStore()
+    secrets.set("elevenlabs/api_key", KEY)
+    checks = examine(secrets, offline=True, secrets=True)
+    assert checks["Model"].detail.endswith("not tested: offline")
+    assert checks["Voice"].detail.endswith("not tested: offline")
+    assert checks["Key: elevenlabs"].detail.endswith("not tested")
+    assert offers == [] and doctor.healthy(list(checks.values()))
+
+
+def test_hearing_says_when_its_optional_part_is_missing(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.voice.providers import whisper
+
+    async def choices(self: Any) -> list[Choice]:
+        raise VoiceError("not_installed")
+
+    monkeypatch.setattr(whisper.LocalWhisper, "choices", choices)
+    chosen(home, listening={"kind": "whisper", "choice": "base.en"})
+    check = examine()["Hearing"]
+    assert check.status == "fail" and "not installed" in check.detail
+    assert "uv sync --extra whisper" in check.fix
+
+
+def test_names_and_memory_are_reported(home: Path) -> None:
+    prepared(home)
+    assert examine()["Names"].status == "info"
+    setup.save(setup.Profile(user_name="Sam", agent_name="Nova"), paths.persona_dir())
+    assert examine()["Names"].detail == "you are Sam, she is Nova"
+    (paths.memory_dir() / "user").mkdir(parents=True)
+    (paths.memory_dir() / "user" / "mem_0123456789ab.md").write_text("not a memory", "utf-8")
+    memory = examine()["Memory"]
+    assert memory.status == "warn" and "1 file could not be read" in memory.detail
+
+
+# ── Every saved key (SEC-9) ──────────────────────────────────────────────
+
+
+def test_secrets_shows_each_key_works_without_printing_one(
+    home: Path, offers: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def choices(self: Deepgram) -> list[Choice]:
+        raise VoiceError("unauthorized", f"echo {self._api_key()}")
+
+    monkeypatch.setattr(Deepgram, "choices", choices)
+    secrets = MemoryStore()
+    secrets.set(config.secret_name("anthropic"), KEY)
+    secrets.set("deepgram/api_key", KEY[::-1])
+    checks = examine(secrets, secrets=True)
+    assert checks["Key: anthropic"].status == "ok"
+    assert checks["Key: anthropic"].detail == f"{len(KEY)} characters, ending in 9f3e, works"
+    assert checks["Key: deepgram"].status == "fail"
+    assert "the key was refused" in checks["Key: deepgram"].detail
+    assert checks["Key: openai"].detail == "not set"
+    report = doctor.render(list(checks.values()))
+    assert KEY not in report and KEY[::-1] not in report and KEY[:12] not in report
+
+
+def test_a_short_key_shows_its_length_and_nothing_else() -> None:
+    assert doctor.shown("abcd1234") == "8 characters"
+    assert doctor.shown("x" * 16 + "9f3e") == "20 characters, ending in 9f3e"
+
+
+# ── The commands ─────────────────────────────────────────────────────────
+
+
+def test_the_doctor_command_exits_clean_when_healthy_and_not_when_broken(
+    home: Path, offers: list, capsys: pytest.CaptureFixture[str]
+) -> None:
+    port = str(free_port())
+    assert main(["doctor", "--offline", "--port", port]) == 0
+    assert "Everything checks out." in capsys.readouterr().out
+    home.mkdir()
+    (home / "trillion.db").write_bytes(b"junk" * 200)
+    assert main(["doctor", "--offline", "--port", port]) == 1
+    assert "1 thing to fix" in capsys.readouterr().out
+
+
+def test_setup_stops_before_starting_when_something_is_broken(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRILLION_WEB_DIR", str(home / "nowhere"))
+    monkeypatch.setattr("trillion.api.app.web_dir", lambda: None)
+    assert main(["setup", "--offline", "--port", str(free_port())]) == 1
+    out = capsys.readouterr().out
+    assert "fail  App page" in out and "Fix the lines marked fail, then run: trillion setup" in out
+    assert "Trillion is running" not in out  # it never started
+
+
+def test_setup_refuses_a_grant_that_is_not_a_folder(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["setup", "--no-run", "--grant", str(home / "missing")]) == 2
+    assert "not a folder" in capsys.readouterr().err
+    assert not home.exists()

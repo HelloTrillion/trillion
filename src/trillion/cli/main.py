@@ -1,4 +1,4 @@
-"""Entry point for the `trillion` command. Subcommands arrive with their tracks."""
+"""Entry point for the `trillion` command: `run`, `setup` and `doctor`."""
 
 from __future__ import annotations
 
@@ -22,27 +22,125 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     sub = parser.add_subparsers(dest="command")
     run = sub.add_parser("run", help="start Trillion on this machine and open the app")
-    run.add_argument("--port", type=int, default=7777)
-    run.add_argument(
-        "--grant",
-        action="append",
-        default=[],
-        type=Path,
-        metavar="DIR",
-        help="a folder the file tools may use; repeat for more. None by default.",
+    setup = sub.add_parser(
+        "setup", help="prepare this machine, check it, then start Trillion (safe to run again)"
     )
-    run.add_argument("--no-open", action="store_true", help="do not open a browser")
-    run.add_argument(
-        "--dev", action="store_true", help=f"also accept the Vite dev server at {DEV_ORIGIN}"
+    for starts in (run, setup):
+        starts.add_argument("--port", type=int, default=7777)
+        starts.add_argument(
+            "--grant",
+            action="append",
+            default=[],
+            type=Path,
+            metavar="DIR",
+            help="a folder the file tools may use; repeat for more. None by default.",
+        )
+        starts.add_argument("--no-open", action="store_true", help="do not open a browser")
+        starts.add_argument(
+            "--dev", action="store_true", help=f"also accept the Vite dev server at {DEV_ORIGIN}"
+        )
+    setup.add_argument(
+        "--no-run", action="store_true", help="prepare and check, but do not start the app"
     )
+    doctor = sub.add_parser("doctor", help="check this machine and say how to fix what is wrong")
+    doctor.add_argument("--port", type=int, default=7777, help="the port you start Trillion on")
+    doctor.add_argument(
+        "--secrets",
+        action="store_true",
+        help="also test every saved key, without ever printing one",
+    )
+    for checks in (doctor, setup):
+        checks.add_argument(
+            "--offline", action="store_true", help="skip the checks that need the network"
+        )
     args = parser.parse_args(argv)
     if args.version:
         sys.stdout.write(f"trillion {__version__}\n")
         return 0
     if args.command == "run":
         return asyncio.run(_run(args))
+    if args.command == "doctor":
+        return asyncio.run(_doctor(args))
+    if args.command == "setup":
+        return asyncio.run(_setup(args))
     parser.print_help()
     return 0
+
+
+async def _examine(args: argparse.Namespace, *, secrets: bool) -> tuple[str, bool]:
+    """Run the checks and return what to print and whether nothing is broken."""
+    import keyring
+
+    from trillion.api.app import HOST, web_dir
+    from trillion.cli import doctor
+    from trillion.secrets.store import KeychainStore
+
+    store = KeychainStore()
+    checks = await doctor.examine(
+        doctor.Options(port=args.port, host=HOST, offline=args.offline, secrets=secrets),
+        secrets=store,
+        page=web_dir(),
+        backend=keyring.get_keyring().name if store.available() else "",
+    )
+    return doctor.render(checks), doctor.healthy(checks)
+
+
+async def _doctor(args: argparse.Namespace) -> int:
+    report, healthy = await _examine(args, secrets=args.secrets)
+    sys.stdout.write(report)
+    return 0 if healthy else 1
+
+
+async def _prepare() -> list[str]:
+    """Everything local and deterministic that a first start needs (ONB-2a).
+
+    No credential and no network. Each step is safe to repeat, so a setup that was
+    interrupted is finished by running it again."""
+    from trillion import paths
+    from trillion.storage.db import connect
+    from trillion.storage.migrate import migrate
+
+    done: list[str] = []
+    home = paths.home()
+    for folder in (home, paths.persona_dir(), paths.memory_dir(), paths.models_dir()):
+        if not folder.is_dir():
+            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            done.append(f"made {folder}")
+    conn = await connect(paths.db_path())
+    try:
+        applied = await migrate(conn)
+    finally:
+        await conn.close()
+    if applied:
+        s = "" if len(applied) == 1 else "s"
+        done.append(f"database ready ({len(applied)} update{s} applied)")
+    return done
+
+
+async def _setup(args: argparse.Namespace) -> int:
+    for folder in args.grant:
+        if not folder.expanduser().is_dir():
+            sys.stderr.write(f"trillion: --grant {folder}: not a folder\n")
+            return 2
+    try:
+        done = await _prepare()
+    except OSError as e:
+        sys.stderr.write(f"trillion: the data folder could not be prepared: {e.strerror}\n")
+        return 1
+    for line in done or ["already prepared: nothing to do"]:
+        sys.stdout.write(f"setup  {line}\n")
+    sys.stdout.write("\n")
+    report, healthy = await _examine(args, secrets=False)
+    sys.stdout.write(report)
+    if not healthy:
+        sys.stdout.write("Fix the lines marked fail, then run: trillion setup\n")
+        return 1
+    if args.no_run:
+        sys.stdout.write("Start it with: trillion run\n")
+        return 0
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return await _run(args)
 
 
 async def _run(args: argparse.Namespace) -> int:
