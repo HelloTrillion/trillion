@@ -51,9 +51,11 @@ def _unstamp(raw: str) -> int:
 
 def clean(text: str) -> str:
     """The text as it is stored: trimmed, and with no line that could end the header."""
-    lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-    body = "\n".join(lines).strip()
-    return "".join(ch for ch in body if ch == "\n" or ch == "\t" or ch.isprintable())
+    # Invisible characters go first. Dropped after trimming, one at the end of a line
+    # would leave the space before it behind, and the text would change again on reload.
+    seen = "".join(ch for ch in text if ch in "\r\n\t" or ch.isprintable())
+    lines = [line.rstrip() for line in seen.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(lines).strip()
 
 
 def render(m: Memory) -> str:

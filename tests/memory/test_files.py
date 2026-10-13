@@ -57,6 +57,14 @@ _text = (
 )
 
 
+def test_cleaning_twice_changes_nothing() -> None:
+    # A zero-width space after a real one: trimming first left the real space behind.
+    for raw in ("0 \u200b", "a \u00a0\nb", " \u200b x \u200b "):
+        once = files.clean(raw)
+        assert files.clean(once) == once, repr(raw)
+        assert not once.endswith(" ") and "\u200b" not in once
+
+
 @given(
     kind=st.sampled_from(TYPES),
     source=st.sampled_from(SOURCES),
