@@ -94,8 +94,9 @@ class SqliteConversationStore:
 
     async def append(
         self, conversation_id: str, owner_id: str, kind: Kind, msg: Msg, now_ms: int
-    ) -> None:
-        await self._conn.execute(
+    ) -> int:
+        """Save one message and return its id, which a later summary can point to."""
+        cur = await self._conn.execute(
             "INSERT INTO messages"
             " (owner_id, conversation_id, role, kind, blocks_json, raw_json, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -109,6 +110,7 @@ class SqliteConversationStore:
                 now_ms,
             ),
         )
+        return int(cur.lastrowid or 0)
 
     async def history(self, conversation_id: str, owner_id: str) -> list[tuple[Kind, Msg]]:
         async with self._conn.execute(
@@ -128,6 +130,52 @@ class SqliteConversationStore:
             )
             for r in rows
         ]
+
+    async def context(
+        self, conversation_id: str, owner_id: str
+    ) -> tuple[str | None, list[tuple[int, Kind, Msg]]]:
+        """What the model is sent: the latest summary, if any, and every message after it.
+
+        `history` is still the whole conversation, for the page and the turn count."""
+        async with self._conn.execute(
+            "SELECT upto_message_id, summary FROM compactions"
+            " WHERE conversation_id = ? AND owner_id = ? ORDER BY id DESC LIMIT 1",
+            (conversation_id, owner_id),
+        ) as cur:
+            latest = await cur.fetchone()
+        upto = int(latest["upto_message_id"]) if latest is not None else 0
+        async with self._conn.execute(
+            "SELECT id, role, kind, blocks_json, raw_json FROM messages"
+            " WHERE conversation_id = ? AND owner_id = ? AND id > ? ORDER BY id",
+            (conversation_id, owner_id, upto),
+        ) as cur:
+            rows = await cur.fetchall()
+        return (
+            str(latest["summary"]) if latest is not None else None,
+            [
+                (
+                    int(r["id"]),
+                    r["kind"],
+                    Msg(
+                        role=r["role"],
+                        blocks=tuple(_load(b) for b in json.loads(r["blocks_json"])),
+                        raw=_load_raw(r["raw_json"]),
+                    ),
+                )
+                for r in rows
+            ],
+        )
+
+    async def compact(
+        self, conversation_id: str, owner_id: str, upto_message_id: int, summary: str, now_ms: int
+    ) -> None:
+        """Record that everything up to one message is now sent as a summary."""
+        await self._conn.execute(
+            "INSERT INTO compactions"
+            " (owner_id, conversation_id, upto_message_id, summary, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (owner_id, conversation_id, upto_message_id, summary, now_ms),
+        )
 
     async def record_usage(
         self,

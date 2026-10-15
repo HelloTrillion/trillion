@@ -104,9 +104,16 @@ def _fill(text: str, identity: Identity) -> str:
 
 
 def system_blocks(
-    identity: Identity, soul: str, granted_roots: Sequence[Path] = ()
+    identity: Identity,
+    soul: str,
+    granted_roots: Sequence[Path] = (),
+    standing: Sequence[tuple[str, str]] = (),
 ) -> list[SystemBlock]:
-    """Soul, then rules, then the modality overlay: one block, identical every turn."""
+    """Soul, then rules, then the modality overlay: one block, identical every turn.
+
+    `standing` is the user's standing rules as (id, text). They sit here, outside the
+    conversation, so summarizing old turns can never drop one (BRN-5). Their text
+    is the user's own and is not filled in, so a brace in it stays a brace."""
     shared = "\n".join(f"- {r}" for r in granted_roots) or "(none: file tools cannot be used)"
     # Names are filled into the authored text only, never into a folder path.
     parts = [
@@ -115,9 +122,17 @@ def system_blocks(
         f"Shared folders:\n{shared}",
         _fill(_prompt("text.md"), identity),
     ]
+    if standing:
+        listed = "\n".join(f"- [{rid}] {text}" for rid, text in standing)
+        parts.append(f"{_fill(_prompt('standing.md'), identity)}\n{listed}")
     if identity.directness in _TONES:
         parts.insert(1, _fill(_prompt(f"tone_{identity.directness}.md"), identity))
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
+
+
+def compaction(identity: Identity) -> str:
+    """What the summarizer is told (BRN-5). Authored, like every other instruction."""
+    return _fill(_prompt("compact.md"), identity)
 
 
 def greeting(identity: Identity) -> str:

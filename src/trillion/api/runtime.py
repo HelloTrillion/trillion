@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -13,7 +14,9 @@ from typing import Any
 import aiosqlite
 
 from trillion import paths
+from trillion.brain import compact
 from trillion.brain.config import ModelSettings, Source, resolve
+from trillion.brain.standing import StandingRules
 from trillion.brain.types import ModelProvider
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
@@ -30,6 +33,7 @@ from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
+from trillion.tools.rules import DROP, KEEP, RuleDrop, RuleKeep
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 
@@ -115,6 +119,12 @@ class Runtime:
     preferences: SqlitePreferences
     secrets: SecretStore
     memory: MemoryBook
+    # What the user told her to always or never do, outside every conversation (BRN-5).
+    rules: StandingRules
+    # Rough tokens of history before the oldest turns are summarized, and how much of
+    # the newest is kept word for word (BRN-5).
+    compact_at: int = compact.COMPACT_AT
+    compact_keep: int = compact.KEEP
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -162,6 +172,10 @@ class Runtime:
                 f"you remember across conversations: {self.memory.count()} saved so far. "
                 "memory_write saves a fact, memory_recall looks one up, memory_forget asks "
                 "the user first. The user can read the files in their Trillion data folder"
+            ),
+            "standing rules": (
+                f"{len(self.rules.all())} kept. They are in your instructions on every turn; "
+                "rule_keep and rule_drop change them, and both ask the user first"
             ),
             "internet": "none: you have no tool that reaches the web",
         }
@@ -220,6 +234,15 @@ class Runtime:
 
 
 MODEL_PREF = "model"
+# For trying compaction without a long conversation: a smaller budget, in tokens.
+COMPACT_AT_ENV = "TRILLION_COMPACT_AT"
+
+
+def _compact_at(env: Mapping[str, str] | None) -> int:
+    raw = (os.environ if env is None else env).get(COMPACT_AT_ENV, "").strip()
+    return max(int(raw), 500) if raw.isdigit() else compact.COMPACT_AT
+
+
 ONBOARDING_PREF = "onboarding"
 
 
@@ -229,6 +252,7 @@ async def open_runtime(
     db: Path | None = None,
     persona: Path | None = None,
     memory: Path | None = None,
+    rules: Path | None = None,
     secrets: SecretStore | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Runtime:
@@ -255,6 +279,7 @@ async def open_runtime(
     # now, and anything that does not add up is logged, never silently repaired.
     await book.sync(_now_ms())
     listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
+    standing = StandingRules(rules or paths.rules_path())
     rt = Runtime(
         router=router,
         registry=registry,
@@ -263,6 +288,9 @@ async def open_runtime(
         preferences=preferences,
         secrets=keychain,
         memory=book,
+        rules=standing,
+        compact_at=(budget := _compact_at(env)),
+        compact_keep=min(compact.KEEP, budget // 4),
         provider=provider,
         source=source,
         settings=settings,
@@ -286,6 +314,10 @@ async def open_runtime(
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(registry.definitions, rt.facts)
+    for name in (KEEP, DROP):
+        rule_tool = registry.get(name)
+        if isinstance(rule_tool, RuleKeep | RuleDrop):
+            rule_tool.bind(standing, OWNER)
     for name in (WRITE, RECALL, FORGET):
         tool = registry.get(name)
         if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):

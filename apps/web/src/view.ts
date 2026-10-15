@@ -326,11 +326,14 @@ export function reduce(view: View, msg: ServerMsg): View {
           (e) => ({ ...e, interrupted: true }) as Entry,
         ),
       };
-    case 'notice':
-      return {
-        ...view,
-        entries: [...view.entries, { kind: 'notice', text: STOPS[str(msg['reason'])] ?? 'Stopped early: a limit was reached.' }],
-      };
+    case 'notice': {
+      // A long conversation was summarized for her. Nothing on screen goes away.
+      const text =
+        msg['code'] === 'compacted'
+          ? 'She summarized the earlier messages to make room. They are still here, and her standing rules are kept whole.'
+          : (STOPS[str(msg['reason'])] ?? 'Stopped early: a limit was reached.');
+      return { ...view, entries: [...view.entries, { kind: 'notice', text }] };
+    }
     case 'error': {
       const code = str(msg['code']);
       if (code === 'unauthenticated') return { ...view, link: 'unauthenticated', busy: false };
