@@ -112,7 +112,7 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
 
-Plant a standing instruction early ("never email my ex without asking twice"), run the conversation past the summarization point, and prove it is still enforced. **This test can run at P0 by removing or replacing context directly** — it does not have to wait for the full compaction feature. Also: a pending action survives compaction, and so does the identity block.
+Plant a standing instruction early ("never email my ex without asking twice"), run the conversation past the summarization point, and prove it is still enforced. — [test](../tests/integration/test_compaction_protects_standing_rules.py), with the cut rules in [tests/brain/test_compact.py](../tests/brain/test_compact.py). **This test can run at P0 by removing or replacing context directly** — it does not have to wait for the full compaction feature. Also: a pending action survives compaction, and so does the identity block.
 
 ### 3.2 Persona (EVL-1, EVL-4, EVL-5)
 

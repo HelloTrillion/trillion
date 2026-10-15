@@ -17,6 +17,13 @@ describe('view', () => {
     expect(v.agentName).toBe('Vega');
   });
 
+  it('says plainly when earlier messages were summarized, and keeps them on screen', () => {
+    const v = feed([{ type: 'reply.delta', text: 'Earlier' }, { type: 'notice', code: 'compacted' }]);
+    expect(v.entries[0]).toEqual({ kind: 'assistant', text: 'Earlier', interrupted: false });
+    expect(v.entries[1]).toMatchObject({ kind: 'notice' });
+    expect((v.entries[1] as { text: string }).text).toContain('summarized the earlier messages');
+  });
+
   it('has no model at rung 0', () => {
     expect(feed([{ type: 'session', id: 'c1', model: null }]).model).toBeNull();
   });

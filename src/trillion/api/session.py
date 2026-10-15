@@ -20,10 +20,17 @@ from trillion.api import listening
 from trillion.api.listening import FOLLOW_UP_S, Listener
 from trillion.api.runtime import OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
+from trillion.brain import compact
 from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
-from trillion.brain.types import ContextBlock, Msg, TextBlock
+from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock
 from trillion.memory import present
-from trillion.persona.prompt import PendingNote, greeting, system_blocks, volatile_context
+from trillion.persona.prompt import (
+    PendingNote,
+    compaction,
+    greeting,
+    system_blocks,
+    volatile_context,
+)
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
 from trillion.spine.untrusted import wrap
@@ -53,7 +60,12 @@ class Session:
         # The page can silence her; then nothing is synthesized, so nothing is paid for.
         self._muted = False
         self.id = conversation_id
+        # The messages the model is sent, after the latest summary, each with its kind
+        # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
+        self._kinds: list[Kind] = []
+        self._ids: list[int] = []
+        self._summary: str | None = None
         self._turn = 0
         self._task: asyncio.Task[None] | None = None
         # Notes about taps that arrived mid-turn, delivered to the model afterwards.
@@ -89,12 +101,19 @@ class Session:
         session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
         shown: list[dict[str, str]] = []
         if resumed:
+            # The page and the turn count get every message; the model gets the latest
+            # summary and what came after it (BRN-5).
             for kind, msg in await rt.conversations.history(session.id, OWNER):
-                session._history.append(msg)
                 session._turn += kind in USER_INPUTS
                 text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
                 if kind in ("user", "assistant") and text:
                     shown.append({"role": msg.role, "text": text})
+            summary, rows = await rt.conversations.context(session.id, OWNER)
+            session._summary = summary
+            for message_id, kind, msg in rows:
+                session._ids.append(message_id)
+                session._kinds.append(kind)
+                session._history.append(msg)
         else:
             await rt.conversations.create(session.id, OWNER, rt.clock())
         await session._send(
@@ -400,6 +419,7 @@ class Session:
                     await self._save_input("tap", note)
                 if self._rt.provider is None:
                     break
+                await self._compact_if_long()
                 await self._one_turn()
                 if not self._queued:
                     break
@@ -453,8 +473,13 @@ class Session:
                 provider=provider,
                 router=rt.router,
                 registry=rt.registry,
-                system=system_blocks(rt.identity, rt.soul, rt.granted_roots),
-                history=self._history,
+                system=system_blocks(
+                    rt.identity,
+                    rt.soul,
+                    rt.granted_roots,
+                    [(r.id, r.text) for r in rt.rules.all()],
+                ),
+                history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
                 save=self._save_from_loop,
@@ -518,7 +543,47 @@ class Session:
 
     async def _save(self, kind: Kind, msg: Msg) -> None:
         self._history.append(msg)
-        await self._rt.conversations.append(self.id, OWNER, kind, msg, self._rt.clock())
+        self._kinds.append(kind)
+        message_id = await self._rt.conversations.append(
+            self.id, OWNER, kind, msg, self._rt.clock()
+        )
+        self._ids.append(message_id)
+
+    async def _compact_if_long(self) -> None:
+        """Summarize the oldest turns once the history outgrows the model (BRN-5).
+
+        Before a turn, never during one. If the summary cannot be written, the turn
+        goes ahead on the full history: a long prompt is better than a lost one."""
+        rt = self._rt
+        provider = rt.provider
+        if provider is None or compact.estimate(self._history) <= rt.compact_at:
+            return
+        cut = compact.cut_point(self._kinds, self._history, rt.compact_keep)
+        if cut is None:
+            return
+        try:
+            summary = await asyncio.wait_for(
+                compact.summarize(
+                    provider, compaction(rt.identity), self._summary, self._history[:cut]
+                ),
+                compact.TIMEOUT_S,
+            )
+        except (ProviderError, compact.CompactionFailed, TimeoutError) as e:
+            logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
+            return
+        await rt.conversations.compact(self.id, OWNER, self._ids[cut - 1], summary.text, rt.clock())
+        await rt.conversations.record_usage(
+            owner_id=OWNER,
+            conversation_id=self.id,
+            provider=provider.name,
+            model=provider.model,
+            usage=summary.usage,
+            cost_usd=pricing.cost(summary.usage) if (pricing := provider.pricing()) else None,
+            now_ms=rt.clock(),
+        )
+        self._summary = summary.text
+        del self._history[:cut], self._kinds[:cut], self._ids[:cut]
+        await self._send("notice", code="compacted")
 
     async def _save_input(self, kind: Kind, text: str) -> None:
         """A user input, with the context it was said in. Both are saved together and

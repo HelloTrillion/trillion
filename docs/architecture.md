@@ -17,7 +17,7 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 | `trillion/storage` | exists — SQLite, checksummed migrations, the spine store, conversations and usage |
 | `trillion/tools` | exists — the file tools `file_list`, `file_read`, `file_create`, `file_append`, `file_edit`, `file_overwrite`, `describe_self`, and `memory_write`, `memory_recall`, `memory_forget`. Still to build from CON-3: `file_search`, `web_fetch`, `weather` |
 | `trillion/api` | exists — the loopback server, the session token, and the text half of the realtime protocol; see `docs/specs/2026-10-07-first-conversation-design.md` |
-| `trillion/brain` | exists — the provider interface, the Anthropic and OpenAI-compatible adapters, the tool loop. Compaction and spend ceilings are not built yet |
+| `trillion/brain` | exists — the provider interface, the Anthropic and OpenAI-compatible adapters, the tool loop, compaction (`compact.py`) and the user's standing rules (`standing.py`); see `docs/specs/2026-10-15-compaction.md`. Spend ceilings are not built yet |
 | `trillion/persona` | exists — loads the soul and the identity files, assembles the prompt, and holds the privileged setup path (`persona/setup.py`) that is the only writer of `USER.md` and `IDENTITY.md`; see `docs/specs/2026-10-13-onboarding.md`. Overlays beyond text and directness, and the tonal checkpoint, are not built yet |
 | `trillion/voice` | exists — speaking: the provider interface, the catalog, the system voice and ElevenLabs, the sentence splitter and the speech cleaner (`docs/specs/2026-10-07-voice-providers-and-hardening.md`). Listening: the recognizer interface and catalog, local Whisper and Deepgram, the end-of-speech rules, verified model downloads (`docs/specs/2026-10-09-listening.md`). Capture guards, sign-off detection, barge-in and the wake word are not built yet |
 | `trillion/memory` | exists — memories as Markdown files with an SQLite index, keyword recall, corrections and forgetting that keep history, and the reconcile step that makes the files win; see `docs/specs/2026-10-10-memory.md`. Embedding search (MEM-2), the session-close summarizer (MEM-4) and the memory browser (MEM-6) are not built yet |
@@ -81,7 +81,8 @@ The status column keeps this table honest: a row says "enforced" only when the t
 | A shipped migration never changes | `storage/migrations/` | `tests/unit/test_migrate.py` | enforced |
 | An unauthenticated client gets the static UI shell and a refusal, nothing else | `api/app.py` | `tests/api/test_server.py` | enforced |
 | Conversation text never reaches a log | `api/session.py`, `brain/loop.py`, `brain/sse.py` | `tests/api/test_server.py`, `tests/brain/test_providers.py` | enforced |
-| The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py` | enforced |
+| The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py`, `tests/integration/test_compaction_protects_standing_rules.py` | enforced |
+| A standing rule the user gave survives compaction (BRN-5) | `brain/standing.py`, `persona/prompt.py` — rules are in the system block, never in the history | `tests/integration/test_compaction_protects_standing_rules.py` | enforced |
 
 ## 6. Frontend
 

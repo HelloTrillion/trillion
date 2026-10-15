@@ -36,6 +36,8 @@ describe_self = "trillion.tools.describe:DescribeSelf"
 memory_write = "trillion.tools.memory:MemoryWrite"
 memory_recall = "trillion.tools.memory:MemoryRecall"
 memory_forget = "trillion.tools.memory:MemoryForget"
+rule_keep = "trillion.tools.rules:RuleKeep"
+rule_drop = "trillion.tools.rules:RuleDrop"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]

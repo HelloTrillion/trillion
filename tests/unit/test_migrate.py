@@ -15,6 +15,7 @@ async def test_applies_once_and_records_checksum(tmp_path):
         "003_conversations",
         "004_preferences",
         "005_memory",
+        "006_compactions",
     ]
     assert await migrate(conn) == []
     async with conn.execute("SELECT id FROM owners") as cur:
@@ -87,6 +88,7 @@ SHIPPED = {
     "003_conversations.sql": "7b495ef2389ec7513caf9ca71be306adfcf03f0e765847dbe003087836ad6ba8",
     "004_preferences.sql": "70d48ef6ba5422c4bb15b894697ad7c320e509880ce12ab7b789abfd6302c2c5",
     "005_memory.sql": "e710a7ddf4f2a545866466441160e9f8a2c43bc9fc4a03580cd96badf64374e1",
+    "006_compactions.sql": "ba00340cbba9ea010e9bce8f36e053b65b126620af234aeab07ee6a7e8ee2210",
 }
 
 
