@@ -369,3 +369,9 @@ def test_the_microphone_line_checks_the_sound_server_and_a_mic(
     monkeypatch.setattr(doctor, "_answers", lambda *command: answers.get(command[1]))
     check = doctor.check_microphone()
     assert check.status == status and said in check.detail
+
+
+def test_secrets_reports_the_keychain_once(home: Path, offers: list) -> None:
+    checks = examine(MemoryStore(), secrets=True, offline=True)
+    assert checks["Keychain"].status == "ok"
+    assert "Secret store" not in checks
