@@ -506,16 +506,12 @@ def check_memory(directory: Path) -> Check:
 
 
 async def check_credentials(
-    secrets: SecretStore, env: Mapping[str, str], *, offline: bool, backend: str = ""
+    secrets: SecretStore, env: Mapping[str, str], *, offline: bool
 ) -> list[Check]:
-    """One line per place a key can live: whether it is there and whether it works."""
-    out = [
-        Check(
-            name="Secret store",
-            status="ok" if secrets.available() else "warn",
-            detail=(backend or "the system keychain") if secrets.available() else "none",
-        )
-    ]
+    """One line per place a key can live: whether it is there and whether it works.
+
+    Whether the keychain itself is there is already the Keychain line."""
+    out: list[Check] = []
 
     async def report(
         name: str, value: str | None, test: Callable[[], Awaitable[Any]] | None
@@ -596,7 +592,7 @@ async def examine(
         check_memory(paths.memory_dir()),
     ]
     if options.secrets:
-        checks += await check_credentials(secrets, env, offline=options.offline, backend=backend)
+        checks += await check_credentials(secrets, env, offline=options.offline)
     return checks
 
 
