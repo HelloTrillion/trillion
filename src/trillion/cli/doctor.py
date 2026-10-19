@@ -16,6 +16,7 @@ import os
 import platform
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -235,14 +236,58 @@ def check_keychain(secrets: SecretStore, backend: str = "") -> Check:
     return Check(name=name, status="warn", detail="this machine has no system keychain", fix=fix)
 
 
+def _answers(*command: str) -> str | None:
+    """A sound tool's output, or None if it is missing, fails or hangs."""
+    if shutil.which(command[0]) is None:
+        return None
+    try:
+        # Only the fixed sound-tool commands above, never anything the user typed.
+        done = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)  # noqa: S603
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _linux_sound() -> tuple[bool, bool]:
+    """Whether a sound server answers, and whether it has a microphone.
+
+    pactl speaks for both PulseAudio and PipeWire's Pulse layer, which is what the
+    browser itself talks to. A monitor source is speaker output, not a microphone."""
+    if shutil.which("pactl"):
+        if _answers("pactl", "info") is None:
+            return False, False
+        sources = _answers("pactl", "list", "short", "sources") or ""
+        names = [line.split("\t")[1] for line in sources.splitlines() if "\t" in line]
+        return True, any(not n.endswith(".monitor") for n in names)
+    if _answers("wpctl", "status") is None:
+        return False, False
+    return True, _answers("wpctl", "inspect", "@DEFAULT_AUDIO_SOURCE@") is not None
+
+
 def check_microphone() -> Check:
     name = "Microphone"
     told = "your browser opens it and asks permission the first time you press Speak"
     if sys.platform.startswith("linux"):
-        if shutil.which("wpctl") or shutil.which("pw-cli"):
-            return Check(name=name, status="ok", detail=f"PipeWire found; {told}")
-        if shutil.which("pactl"):
-            return Check(name=name, status="ok", detail=f"PulseAudio found; {told}")
+        server = "PipeWire" if shutil.which("wpctl") or shutil.which("pw-cli") else None
+        server = server or ("PulseAudio" if shutil.which("pactl") else None)
+        if server is not None:
+            running, mic = _linux_sound()
+            if not running:
+                return Check(
+                    name=name,
+                    status="warn",
+                    detail=f"{server} is installed but not running",
+                    fix=f"Start {server} (or log out and back in) so the browser has a "
+                    "microphone to open.",
+                )
+            if not mic:
+                return Check(
+                    name=name,
+                    status="warn",
+                    detail=f"{server} is running, but no microphone is connected",
+                    fix="Plug in or turn on a microphone. You can still type to her.",
+                )
+            return Check(name=name, status="ok", detail=f"{server} has a microphone; {told}")
         return Check(
             name=name,
             status="warn",
