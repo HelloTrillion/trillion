@@ -506,7 +506,11 @@ def check_memory(directory: Path) -> Check:
 
 
 async def check_credentials(
-    secrets: SecretStore, env: Mapping[str, str], *, offline: bool
+    secrets: SecretStore,
+    env: Mapping[str, str],
+    *,
+    offline: bool,
+    model: ModelSettings | None = None,
 ) -> list[Check]:
     """One line per place a key can live: whether it is there and whether it works.
 
@@ -514,13 +518,18 @@ async def check_credentials(
     out: list[Check] = []
 
     async def report(
-        name: str, value: str | None, test: Callable[[], Awaitable[Any]] | None
+        name: str,
+        value: str | None,
+        test: Callable[[], Awaitable[Any]] | None,
+        untested: str = "",
     ) -> None:
         if not value:
             out.append(Check(name=name, status="info", detail="not set"))
             return
         if offline or test is None:
-            out.append(Check(name=name, status="info", detail=f"{shown(value)}, not tested"))
+            why = "offline" if offline else untested
+            said = f"not tested: {why}" if why else "not tested"
+            out.append(Check(name=name, status="info", detail=f"{shown(value)}, {said}"))
             return
         problem = await _try(test)
         if problem is None:
@@ -540,7 +549,14 @@ async def check_credentials(
         value = secrets.get(config.secret_name(kind))
         await report(f"Key: {kind}", value, partial(config.list_models, kind, None, value))
     # A compatible service's key belongs to an address only the saved settings know.
-    await report("Key: custom", secrets.get(config.secret_name("custom")), None)
+    custom = secrets.get(config.secret_name("custom"))
+    url = model.base_url if model is not None and model.kind == "custom" else None
+    if url is None:
+        await report("Key: custom", custom, None, "no compatible service is chosen")
+    elif config.keyless(url):
+        await report("Key: custom", custom, None, "the chosen service is sent no key")
+    else:
+        await report("Key: custom", custom, partial(config.list_models, "custom", url, custom))
     for speech in SPEECH:
         if speech.needs_key:
             await report(
@@ -575,6 +591,7 @@ async def examine(
 ) -> list[Check]:
     env = os.environ if env is None else env
     prefs = inspect.preferences(paths.db_path(), OWNER)
+    model = ModelSettings.from_json(prefs.get("model"))
     checks = [
         check_build(),
         check_home(paths.home()),
@@ -582,9 +599,7 @@ async def examine(
         check_page(page),
         check_port(options.host, options.port),
         check_keychain(secrets, backend),
-        await check_model(
-            ModelSettings.from_json(prefs.get("model")), secrets, env, offline=options.offline
-        ),
+        await check_model(model, secrets, env, offline=options.offline),
         await check_speech(prefs.get("speech"), secrets, offline=options.offline),
         await check_listening(prefs.get("listening"), secrets, offline=options.offline),
         check_microphone(),
@@ -592,7 +607,7 @@ async def examine(
         check_memory(paths.memory_dir()),
     ]
     if options.secrets:
-        checks += await check_credentials(secrets, env, offline=options.offline)
+        checks += await check_credentials(secrets, env, offline=options.offline, model=model)
     return checks
 
 
