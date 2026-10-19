@@ -76,19 +76,29 @@ is a known limit of this phase.
 
 ## What is true today
 
-- **There is no shell tool.** The only tools are the file tools, confined to
-  folders the user granted.
+- **There is no shell tool.** The tools are the file tools (confined to
+  folders the user granted), memory (`memory_write`, `memory_recall`,
+  `memory_forget`), standing rules (`rule_keep`, `rule_drop`) and
+  `describe_self`.
 - **Every file write asks first.** The file-writing tools — `file_create`,
   `file_overwrite`, `file_append` and `file_edit` — are all declared
   `irreversible`, so they are gated: the arguments are frozen when proposed,
   the confirmation carries no arguments of its own, and the target is
   re-checked before anything runs. (The spine lets a tool declared `write`
-  run without asking. The only shipped `write` tools are the spine's own
-  `confirm_pending_action` and `cancel_pending_action`.)
+  run without asking. The shipped `write` tools are the spine's own
+  `confirm_pending_action` and `cancel_pending_action`, and `memory_write`:
+  she can save a memory without asking. Forgetting a memory and keeping or
+  dropping a standing rule are `irreversible`, so they ask.)
 - **The deny floor** refuses Trillion's own data folder (its database,
   secrets file and identity files), its source code, the macOS keychains,
   and `.git`, `.ssh`, `.aws`, `.gnupg` and `.env` files — on the normal path
   and again on the approved path.
+- **The local server listens on `127.0.0.1` only**, with no option to change
+  it. Every request and socket needs the session token, which is issued
+  fresh at each launch; another origin is refused even with the token, and
+  an unauthenticated socket is told so and can do nothing else.
+- **API keys live in the OS keychain.** On a machine with no keychain, a key
+  is refused rather than written to disk.
 - **Tool output is untrusted data.** Every result is wrapped and marked as
   data, not instructions; only first-party tools may opt out.
 - **The database is owner-only** (folder `0700`, files `0600`) on macOS and
@@ -100,10 +110,14 @@ is a known limit of this phase.
 These are in the specification and are not built. Until they are, do not
 rely on them:
 
-- **A network listener bound to `127.0.0.1`, with a session token on every
-  request** (SPN-11, SPN-11a). There is no listener yet.
-- **Secrets in the OS keychain** (SEC-1). There is no secret store yet; the
-  encrypted-file fallback (SEC-2) is where the path points.
+- **The rest of the session-token lifecycle** (SPN-11, SPN-11a). The token
+  is held in memory for one launch, not in the keychain, and there is no
+  way to revoke it early. There is no remote access, and so no pairing
+  tunnel.
+- **An encrypted-file fallback for keys** (SEC-2), for machines with no
+  keychain.
+- **The deny floor on Linux and Windows credential stores** (SPN-4). It names
+  the macOS keychains only.
 - **Database hardening on Windows** (SUR-3c). Windows relies on the home
   folder's own permissions for now.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.

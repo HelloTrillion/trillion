@@ -33,7 +33,7 @@ A pull request will be rejected, however good the rest of it is, if it:
 5. **Makes the identity files writable by the agent.** The agent may never edit its own soul.
    *Enforced:* the deny floor protects Trillion's data folder, including `persona/`, on both the normal and the approved path — `tests/spine/test_deny_floor.py`, `tests/unit/test_deny_floor_rules.py`.
 6. **Binds a listener to anything but `127.0.0.1` by default,** or accepts a request without a session token.
-   *Not enforced yet:* there is no listener yet. The check lands with the first one (SPN-11, SPN-11a in the PRD).
+   *Enforced for the token:* `tests/api/test_server.py` (no token, wrong origin, rebound hostname). The address is a constant with no option to change it (`HOST` in `src/trillion/api/app.py`); no test pins it yet.
 7. **Logs conversation text, prompts, or any secret value.** Key names and lengths only.
    *Enforced for the spine:* every spine test fails if an argument or output value reaches a log — the `no_values_in_logs` fixture in `tests/spine/conftest.py`, plus `tests/spine/test_structure.py`. Other packages need the same fixture as they land.
 8. **Adds a runtime dependency on a service the user did not connect.** No CDN, no secrets manager, no hosted database, no licence check, no update ping, no analytics. Vendor it, bundle it, or make it a provider the user chooses. Trillion has to start and run with the network off ("the airplane test").
@@ -45,7 +45,7 @@ A pull request will be rejected, however good the rest of it is, if it:
 11. **Leaves two implementations live past a decision.** Exactly one code path decides any routing, classification or status. A flag or a shadow run is temporary; when the decision is made, the loser is deleted, not left behind a flag.
    *Not enforced yet:* the CI check that no two paths write the same decision field is #6. Until it lands this rule is held in review.
 
-The goal is that every rule has a structural enforcement — the credential doesn't exist, the tool has no argument field, the lint fails — and a test, because a rule that is only prose is a rule that goes missing under pressure. Each rule above says which it is today. The three marked *not enforced yet* are commitments, held in review until their check lands; a new rule arrives with its check or is marked the same way.
+The goal is that every rule has a structural enforcement — the credential doesn't exist, the tool has no argument field, the lint fails — and a test, because a rule that is only prose is a rule that goes missing under pressure. Each rule above says which it is today. The two marked *not enforced yet* are commitments, held in review until their check lands; a new rule arrives with its check or is marked the same way.
 
 If you think one of these rules is wrong, open an issue and argue the case. Don't route around it in a pull request.
 
