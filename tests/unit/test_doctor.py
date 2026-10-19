@@ -230,7 +230,7 @@ def test_offline_tests_nothing_over_the_network(home: Path, offers: list) -> Non
     checks = examine(secrets, offline=True, secrets=True)
     assert checks["Model"].detail.endswith("not tested: offline")
     assert checks["Voice"].detail.endswith("not tested: offline")
-    assert checks["Key: elevenlabs"].detail.endswith("not tested")
+    assert checks["Key: elevenlabs"].detail.endswith("not tested: offline")
     assert offers == [] and doctor.healthy(list(checks.values()))
 
 
@@ -375,3 +375,24 @@ def test_secrets_reports_the_keychain_once(home: Path, offers: list) -> None:
     checks = examine(MemoryStore(), secrets=True, offline=True)
     assert checks["Keychain"].status == "ok"
     assert "Secret store" not in checks
+
+
+def _keys(model: config.ModelSettings | None) -> dict[str, Check]:
+    secrets = MemoryStore()
+    secrets.set(config.secret_name("custom"), KEY)
+    found = asyncio.run(doctor.check_credentials(secrets, {}, offline=False, model=model))
+    return {c.name: c for c in found}
+
+
+def test_a_custom_key_is_tested_against_the_chosen_service(offers: list) -> None:
+    chosen = config.ModelSettings(kind="custom", model="m", base_url="https://api.example.com/v1")
+    checks = _keys(chosen)
+    assert checks["Key: custom"].status == "ok"
+    assert ("custom", "https://api.example.com/v1", KEY) in offers
+
+
+def test_an_untested_custom_key_says_why(offers: list) -> None:
+    lan = config.ModelSettings(kind="custom", model="m", base_url="http://192.168.1.9:8080/v1")
+    assert _keys(lan)["Key: custom"].detail.endswith("the chosen service is sent no key")
+    assert _keys(None)["Key: custom"].detail.endswith("no compatible service is chosen")
+    assert offers == []
