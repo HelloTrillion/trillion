@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import sqlite3
 from pathlib import Path
@@ -312,3 +313,34 @@ def test_setup_refuses_a_grant_that_is_not_a_folder(
     assert main(["setup", "--no-run", "--grant", str(home / "missing")]) == 2
     assert "not a folder" in capsys.readouterr().err
     assert not home.exists()
+
+
+def _checkout(tmp_path: Path) -> Path:
+    dist = tmp_path / "apps" / "web" / "dist"
+    (tmp_path / "apps" / "web" / "src").mkdir(parents=True)
+    (tmp_path / "packages" / "galaxy" / "src").mkdir(parents=True)
+    dist.mkdir()
+    (dist / "index.html").write_text("built")
+    return dist
+
+
+def _touch(path: Path, when: float) -> None:
+    path.write_text("x")
+    os.utime(path, (when, when))
+
+
+def test_a_page_built_before_its_source_changed_is_warned_about(tmp_path: Path) -> None:
+    dist = _checkout(tmp_path)
+    built = (dist / "index.html").stat().st_mtime
+    _touch(tmp_path / "apps" / "web" / "src" / "main.ts", built - 60)
+    assert doctor.check_page(dist).status == "ok"
+    _touch(tmp_path / "packages" / "galaxy" / "src" / "orb.ts", built + 60)
+    stale = doctor.check_page(dist)
+    assert stale.status == "warn" and "pnpm -r build" in stale.fix
+
+
+def test_an_installed_page_has_no_source_to_be_older_than(tmp_path: Path) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("built")
+    assert doctor.check_page(static).status == "ok"

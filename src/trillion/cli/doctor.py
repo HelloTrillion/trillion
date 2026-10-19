@@ -188,13 +188,36 @@ def check_port(host: str, port: int) -> Check:
     return Check(name=name, status="ok", detail=f"{port} is free")
 
 
+def _newest_source(found: Path) -> float:
+    """In a source checkout, when the page's sources last changed. 0 for an installed build."""
+    root = found.parents[2] if found.name == "dist" and len(found.parents) > 2 else None
+    if root is None or not (found.parent / "src").is_dir():
+        return 0.0
+    sources = [found.parent / "src", found.parent / "index.html"]
+    sources += [pkg / "src" for pkg in (root / "packages").glob("*")]
+    newest = 0.0
+    for source in sources:
+        files = source.rglob("*") if source.is_dir() else [source]
+        newest = max([newest, *(f.stat().st_mtime for f in files if f.is_file())])
+    return newest
+
+
 def check_page(found: Path | None) -> Check:
+    fix = "In a source checkout: pnpm install && pnpm -r build"
     if found is None:
         return Check(
             name="App page",
             status="fail",
             detail="the page the browser opens has not been built",
-            fix="In a source checkout: pnpm install && pnpm -r build",
+            fix=fix,
+        )
+    built = found / "index.html"
+    if built.is_file() and _newest_source(found) > built.stat().st_mtime:
+        return Check(
+            name="App page",
+            status="warn",
+            detail=f"{found} is older than its source, so the browser gets the old app",
+            fix=fix,
         )
     return Check(name="App page", status="ok", detail=str(found))
 
