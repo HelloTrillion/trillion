@@ -33,6 +33,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "home"
 
 
+@pytest.fixture(autouse=True)
+def sound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A running sound server with a microphone, whatever the machine running the tests has."""
+    fake = {"info": "", "list": "2\talsa_input.usb\tx\n", "status": "", "inspect": ""}
+    monkeypatch.setattr(doctor, "_answers", lambda *command: fake.get(command[1]))
+
+
 @pytest.fixture
 def offers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None, str | None]]:
     asked: list[tuple[str, str | None, str | None]] = []
@@ -344,3 +351,21 @@ def test_an_installed_page_has_no_source_to_be_older_than(tmp_path: Path) -> Non
     static.mkdir()
     (static / "index.html").write_text("built")
     assert doctor.check_page(static).status == "ok"
+
+
+@pytest.mark.parametrize(
+    ("answers", "status", "said"),
+    [
+        ({}, "warn", "not running"),
+        ({"info": "", "list": "1\tspeakers.monitor\tPipeWire\n"}, "warn", "no microphone"),
+        ({"info": "", "list": "1\tspeakers.monitor\tx\n2\talsa_input.usb\tx\n"}, "ok", "has a"),
+    ],
+)
+def test_the_microphone_line_checks_the_sound_server_and_a_mic(
+    monkeypatch: pytest.MonkeyPatch, answers: dict[str, str], status: str, said: str
+) -> None:
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    monkeypatch.setattr(doctor.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(doctor, "_answers", lambda *command: answers.get(command[1]))
+    check = doctor.check_microphone()
+    assert check.status == status and said in check.detail
