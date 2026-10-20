@@ -46,6 +46,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | 1.2.3 | A tool exits zero but its effect never happened | `effect_status` is not derived from process exit; the outcome is failed or unknown, and she says so. — [test](../tests/spine/test_outcomes.py) |
 | 1.2.4 | Five confirmation cards load, one is displayed | `delivered_at` is stamped on **one** — written on render, never on fetch. — [test](../tests/spine/test_outcomes.py) |
 | 1.2.5 | Approve an action, clear the conversation entirely, then ask "did that ever reach me?" | Answered correctly from the decision record, which is queryable without conversation history. — [test](../tests/spine/test_compaction.py), [the tool she asks with](../tests/spine/test_decision_record.py), [end to end](../tests/api/test_decision_record.py) |
+| 1.2.6 | The task that approved an action is cancelled mid-run (a barge-in, a closed tab), or the tool's disk does not answer | The action still finishes and its outcome is recorded before the cancellation is honoured; a later confirm returns that outcome, never `in_progress`. A stuck disk call is timed out and recorded as unknown, and the rest of the app keeps running (#3). — [test](../tests/spine/test_cancellation.py) |
 
 ### 1.3 Boundaries (SPN-4, SPN-5, SPN-11a, SPN-11b, SEC-1–11)
 

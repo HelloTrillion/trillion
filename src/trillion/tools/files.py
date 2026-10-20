@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import hashlib
 import os
@@ -169,7 +170,21 @@ def _matches(p: Path, data: bytes, done: str, ctx: ToolContext | None = None) ->
     return ToolResult(ok=False, content="the file does not match", effect="unknown")
 
 
-class FileList(BaseTool):
+class _OffLoop(BaseTool):
+    """A file tool's disk work runs on a worker thread, never on the event loop (#3).
+
+    Blocking the loop would hold every other conversation still, and the router's
+    timeout could not bite: it waits on the loop. On a thread the timeout stops the
+    waiting, and the outcome is recorded as unknown, which it honestly is."""
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        return await asyncio.to_thread(self._execute, args, ctx)
+
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:  # pragma: no cover
+        raise NotImplementedError
+
+
+class FileList(_OffLoop):
     definition = ToolDefinition(
         name="file_list",
         description="List the entries of a folder the user granted.",
@@ -185,7 +200,7 @@ class FileList(BaseTool):
             return Precondition.passed()
         return Precondition.failed("not a folder")
 
-    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         try:
             found = beneath.entries(_path(args), ctx.granted_roots)
         except OSError as e:
@@ -197,7 +212,7 @@ class FileList(BaseTool):
         return ToolResult(ok=True, content="\n".join(lines), effect="none")
 
 
-class FileRead(BaseTool):
+class FileRead(_OffLoop):
     definition = ToolDefinition(
         name="file_read",
         description="Read a text file in a folder the user granted.",
@@ -218,7 +233,7 @@ class FileRead(BaseTool):
             return Precondition.failed(f"larger than {human_size(MAX_READ_BYTES)}")
         return Precondition.passed()
 
-    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         # The precheck saw the size; the file can grow before we read. Never read more
         # than the limit plus one byte, and refuse if that byte is there.
         try:
@@ -248,7 +263,7 @@ class FileRead(BaseTool):
         return ToolResult(ok=True, content=text, effect="none")
 
 
-class FileCreate(BaseTool):
+class FileCreate(_OffLoop):
     definition = ToolDefinition(
         name="file_create",
         description="Create a new file. Asks the user first; never replaces an existing file.",
@@ -278,7 +293,7 @@ class FileCreate(BaseTool):
             return Precondition.failed("the folder does not exist")
         return Precondition.passed()
 
-    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         data = _bytes(args)
         try:
             p = _target(self, args, ctx)
@@ -302,7 +317,7 @@ class FileCreate(BaseTool):
         return _matches(p, data, "created")
 
 
-class FileOverwrite(BaseTool):
+class FileOverwrite(_OffLoop):
     definition = ToolDefinition(
         name="file_overwrite",
         description="Replace the whole contents of an existing file. Needs a tap to confirm.",
@@ -335,7 +350,7 @@ class FileOverwrite(BaseTool):
             return Precondition.passed()
         return Precondition.failed("no such file")
 
-    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         data = _bytes(args)
         try:
             p = _target(self, args, ctx)
@@ -348,7 +363,7 @@ class FileOverwrite(BaseTool):
         return _matches(_path(args), _bytes(args), "replaced")
 
 
-class FileAppend(BaseTool):
+class FileAppend(_OffLoop):
     definition = ToolDefinition(
         name="file_append",
         description="Add text to the end of an existing file. Asks the user first.",
@@ -377,7 +392,7 @@ class FileAppend(BaseTool):
             return Precondition.passed()
         return Precondition.failed("no such file")
 
-    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         data = _bytes(args)
         # Walked to from the granted folder with no link followed on the way or at the
         # end, and refused if the file has a second name elsewhere: an append changes
@@ -398,7 +413,7 @@ class FileAppend(BaseTool):
         return ToolResult(ok=False, content="the end of the file does not match", effect="unknown")
 
 
-class FileEdit(BaseTool):
+class FileEdit(_OffLoop):
     """Replace one exact piece of a file. Whole-file rewrites become the exception.
 
     `old` must appear exactly once, so the edit can only land where the user was shown."""
@@ -451,7 +466,7 @@ class FileEdit(BaseTool):
             )
         return Precondition.passed()
 
-    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+    def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         old, new = _text(args, "old"), _text(args, "new")
         try:
             # Read from the same file it will write: walked to from the granted folder.
