@@ -189,6 +189,7 @@ const TOOL_LABELS: Readonly<Record<string, readonly [working: string, done: stri
   memory_write: ['Remembering', 'Remembered'],
   memory_recall: ['Checking what she remembers', 'Checked what she remembers'],
   decision_record: ['Checking the record', 'Checked the record'],
+  web_fetch: ['Reading the page', 'Read the page'],
 };
 
 /** The chip for one tool call: what it is doing, then how it ended. */

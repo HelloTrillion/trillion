@@ -15,7 +15,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | `tests/memory/` | The memory file format (round-trip by property test), keyword ranking, and the book: corrections, forgetting, bounds, and every way the files and the index can disagree. No network, no model. |
 | `tests/voice/` | The sentence splitter, the speech cleaner, the per-turn speaker, the end-of-speech rules, the listener that assembles one utterance, the model-file downloader, and the two contracts every speech provider and every recognizer must pass. No network, and no real model: local Whisper is exercised through a stand-in transcriber. |
 | `tests/integration/` | Cross-component behaviour: degradation, compaction, recovery, offline. |
-| `evals/` | Model-judged behaviour: persona, honest failure, injection. |
+| `evals/` | Model-judged behaviour: persona, honest failure, injection. Run by hand against a real model, not in CI: `uv run python -m evals.injection.run`. |
 | `tests/e2e/` | The full loop, with providers faked at the interface. |
 
 ---
@@ -56,7 +56,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | 1.3.3 | An unauthenticated socket connects | It may complete a handshake and be told it is unauthenticated. No model call, no tool, no paid work. |
 | 1.3.4 | A token is revoked mid-session | The next request fails closed; reconnecting requires a new token. |
 | 1.3.5 | A request arrives from an unrelated origin | Refused. |
-| 1.3.6 | A fetched page instructs the agent to send private context to a URL | Nothing is sent. Redirects are re-checked; local and private network addresses are refused (SPN-11b). Counted as an EVL-2 failure. |
+| 1.3.6 | A fetched page instructs the agent to send private context to a URL | Nothing is sent. Redirects are re-checked; local and private network addresses are refused (SPN-11b). Counted as an EVL-2 failure. — [test](../tests/integration/test_injection_web.py), [the fence](../tests/unit/test_web.py) |
 | 1.3.7 | A contributor logs a whole request object containing a key | The redaction filter scrubs it by shape **and** by known value (SEC-5). |
 | 1.3.8 | The secret file's permissions are widened to 0644 | The app refuses to read it. |
 
