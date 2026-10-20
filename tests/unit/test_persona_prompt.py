@@ -77,3 +77,13 @@ def test_volatile_context_carries_the_time_and_what_is_waiting() -> None:
     assert text.startswith("<context>") and text.endswith("</context>")
     assert "Wednesday 2026-10-07 09:30 UTC" in text
     assert "p1: Create a.txt" in text
+
+
+def test_a_spoken_message_says_so_and_a_typed_one_does_not() -> None:
+    now = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+    who = Identity(agent_name="Nova", user_name="Sam")
+    spoken = volatile_context(now, [], spoken=who)
+    assert "THIS MESSAGE WAS SPOKEN" in spoken and "transcript of Sam's voice" in spoken
+    assert "may be misheard" in spoken and "No markdown" in spoken
+    assert spoken.startswith("<context>") and spoken.endswith("</context>")
+    assert "SPOKEN" not in volatile_context(now, [])
