@@ -11,8 +11,10 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
 from importlib.resources import files
 from pathlib import Path
+from typing import Literal
 
 from trillion import paths
 from trillion.brain.types import SystemBlock
@@ -128,6 +130,25 @@ def system_blocks(
     if identity.directness in _TONES:
         parts.insert(1, _fill(_prompt(f"tone_{identity.directness}.md"), identity))
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
+
+
+Leg = Literal["model", "hearing", "voice"]
+
+
+@cache
+def _degraded() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in _HTML_COMMENT.sub("", _prompt("degraded.md")).splitlines():
+        key, sep, said = line.partition(":")
+        if sep and key.strip():
+            out[key.strip()] = said.strip()
+    return out
+
+
+def degraded(leg: Leg, kind: str) -> str:
+    """Her one sentence for one leg being down (VOI-14): what broke, and what happens next."""
+    lines = _degraded()
+    return lines.get(f"{leg}.{kind}") or lines[f"{leg}.other"]
 
 
 def compaction(identity: Identity) -> str:

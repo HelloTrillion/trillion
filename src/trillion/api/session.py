@@ -27,6 +27,7 @@ from trillion.memory import present
 from trillion.persona.prompt import (
     PendingNote,
     compaction,
+    degraded,
     greeting,
     system_blocks,
     volatile_context,
@@ -320,8 +321,22 @@ class Session:
         await self._stop_listening()
         await self._send("mic.stop", reason="failed")
         # Typing still works: one leg down never takes the conversation with it (VOI-14).
-        await self._error("listening", kind=kind)
+        await self._hearing_down(kind)
         await self._state(self._rest)
+
+    async def _hearing_down(self, kind: str) -> None:
+        """She cannot hear: say so in one sentence, aloud if her voice works (VOI-14)."""
+        said = degraded("hearing", kind)
+        await self._error("listening", kind=kind, sentence=said)
+        rt = self._rt
+        if rt.tts is None or rt.speech is None or self._muted:
+            return
+        # Not a spoken turn any more: the end of this sentence must not reopen the
+        # microphone that just failed, or one fault would repeat itself forever.
+        self._via = "text"
+        speaker = Speaker(rt.tts, rt.speech.voice, self._turn, self._send, self._send_bytes)
+        await speaker.feed(said)
+        await speaker.finish()
 
     async def _conclude(self, verdict: Verdict) -> None:
         """Listening is over. Either there is something to answer, or the reason is said."""
@@ -335,7 +350,7 @@ class Session:
         if verdict == "inaudible":
             # Said out loud rather than failing silently (VOI-4).
             await listener.abandon()
-            await self._error("listening", kind="inaudible")
+            await self._hearing_down("inaudible")
             await self._state(self._rest)
         elif verdict == "nothing":
             await listener.abandon()
@@ -361,7 +376,7 @@ class Session:
                 await self._send("notice", code="listening", reason="unheard")
         except VoiceError as e:
             logger.warning("listening failed in session %s: %s", self.id, e.kind)
-            await self._error("listening", kind=e.kind)
+            await self._hearing_down(e.kind)
         except asyncio.CancelledError:
             await listener.abandon()
             await self._send("interrupted")
@@ -484,7 +499,17 @@ class Session:
                 emit=emit,
                 save=self._save_from_loop,
             )
+            # The model failed: her one sentence for it, spoken if her voice still works
+            # and shown either way (VOI-14). Authored, since there is nobody to compose it.
+            down = (
+                degraded("model", done.error_kind or "other")
+                if done.stop == "provider_error"
+                else None
+            )
             if speaker is not None:
+                if down is not None:
+                    await speaker.pause()
+                    await speaker.feed(down)
                 await speaker.finish()
             await rt.conversations.record_usage(
                 owner_id=OWNER,
@@ -495,9 +520,9 @@ class Session:
                 cost_usd=done.cost_usd,
                 now_ms=rt.clock(),
             )
-            if done.stop == "provider_error":
+            if down is not None:
                 final = "error"
-                await self._error("provider", kind=done.error_kind)
+                await self._error("provider", kind=done.error_kind, sentence=down)
             elif done.stop != "end":
                 await self._send("notice", code="stopped", reason=done.stop)
             u = done.usage

@@ -7,7 +7,11 @@ import struct
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
+
+from trillion.api import speech
 from trillion.api.speech import FRAME_AUDIO, Speaker
+from trillion.persona.prompt import degraded
 from trillion.voice.providers.system import SystemVoice
 from trillion.voice.types import AudioFormat, Voice, VoiceError, Where
 
@@ -99,13 +103,25 @@ async def test_a_reply_that_is_only_code_or_markup_is_not_spoken() -> None:
     assert voice.asked == [] and wire.kinds() == ["audio.end"]
 
 
-async def test_a_failing_voice_is_reported_once_and_the_turn_goes_on_as_text() -> None:
+async def test_a_failing_voice_is_reported_once_and_the_turn_goes_on_as_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(speech, "RETRY_S", 0)
     wire, voice = Wire(), FakeVoice(fail_on="second")
     s = speaker(voice, wire)
     await s.feed("The first sentence is fine. The second one fails. The third is skipped. ")
     await s.finish()
     errors = [e for e in wire.events if isinstance(e, dict) and e["type"] == "error"]
-    assert errors == [{"type": "error", "code": "speech", "kind": "rate_limited"}]
+    assert errors == [
+        {
+            "type": "error",
+            "code": "speech",
+            "kind": "rate_limited",
+            "sentence": degraded("voice", "rate_limited"),
+        }
+    ]
+    # A passing fault is tried once more before she gives up on her voice.
+    assert sum("second" in t for t in voice.asked) == 2
     assert wire.audio(1) and not wire.audio(2) and not wire.audio(3)
     assert "echo" not in str(wire.events)  # the provider's own words are never passed on
 
