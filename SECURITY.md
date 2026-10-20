@@ -78,7 +78,9 @@ is a known limit of this phase.
 
 - **There is no shell tool.** The tools are the file tools (confined to
   folders the user granted), memory (`memory_write`, `memory_recall`,
-  `memory_forget`), standing rules (`rule_keep`, `rule_drop`), the decision
+  `memory_forget`; a memory written in a turn that read a page or a file is
+  kept as something she read, not as the user's words, and cannot replace
+  one), standing rules (`rule_keep`, `rule_drop`), the decision
   record (`decision_record`, read-only), `web_fetch` and `describe_self`.
 - **`web_fetch` only opens an address the user gave, or a link on a page
   already read**, in the same conversation. She cannot compose an address,

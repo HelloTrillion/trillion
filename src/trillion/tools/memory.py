@@ -41,6 +41,10 @@ _REFUSALS = {
     "full": "memory is full; something must be forgotten first",
     "disk": "the memory could not be written to disk",
     "bad_request": "that is not a kind of memory",
+    "from_reading": (
+        "a memory written after reading a page or a file cannot replace one; save it "
+        "without replaces, and ask the user which is right"
+    ),
 }
 
 
@@ -154,12 +158,20 @@ class MemoryWrite(_MemoryTool):
         replaces = args.get("replaces")
         if replaces is not None and not valid_id(replaces):
             return _refused("not_found")
+        if ctx.read_outside and replaces is not None:
+            # Something she read cannot overwrite what the user told her. It can be kept
+            # beside it, as a claim, and she can ask the user which is right.
+            return _refused("from_reading")
         try:
             done = await book.write(
                 type=_KINDS[str(args.get("kind") or "personal")],
                 text=str(args["text"]),
-                # Unsaid, it is treated as her own inference: the weaker claim.
-                source=_SAID_BY[str(args.get("said_by") or "assistant")],
+                # Unsaid, it is treated as her own inference: the weaker claim. After she
+                # has read a page or a file this turn it is a claim from there, whoever
+                # she says it came from: a page can tell her the user said anything.
+                source="imported_claim"
+                if ctx.read_outside
+                else _SAID_BY[str(args.get("said_by") or "assistant")],
                 moves=args["moves"] is True,
                 replaces=replaces,
                 now_ms=_now_ms(),
@@ -174,6 +186,8 @@ class MemoryWrite(_MemoryTool):
             return ToolResult(ok=True, content=note, effect="confirmed")
         self._written += 1
         note = f"remembered as {done.memory.id}"
+        if ctx.read_outside:
+            note += ", kept as something you read this turn, not as something the user said"
         if replaces:
             note += f", replacing {replaces}"
         else:

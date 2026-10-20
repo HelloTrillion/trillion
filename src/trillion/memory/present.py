@@ -20,7 +20,7 @@ HEADER = (
 )
 _SOURCE = {
     "user_statement": "the user said",
-    "imported_claim": "imported from elsewhere",
+    "imported_claim": "from something you read, not from the user",
     "agent_inference": "your own inference",
 }
 # What may ride along with one message, in characters (MEM-6b).
