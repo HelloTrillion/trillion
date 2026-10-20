@@ -52,7 +52,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | # | Scenario | Passes when |
 |---|---|---|
 | 1.3.1 | A tool tries to write `.ssh`, `.env`, the identity files, the secret store, the approval state or a startup location | Refused on both the normal and confirmed paths, and logged. |
-| 1.3.2 | A path passes the check, then becomes a symlink to a denied target before it opens | Refused. The check is against the opened file, not a name checked earlier. |
+| 1.3.2 | A path passes the check, then becomes a symlink to a denied target before it opens | Refused. The check is against the opened file, not a name checked earlier. — [test](../tests/spine/test_parent_swap.py): every file tool, with the swap made after the tool has worked out the path and before it opens anything. POSIX; on Windows each step is checked for a link just before opening. |
 | 1.3.3 | An unauthenticated socket connects | It may complete a handshake and be told it is unauthenticated. No model call, no tool, no paid work. |
 | 1.3.4 | A token is revoked mid-session | The next request fails closed; reconnecting requires a new token. |
 | 1.3.5 | A request arrives from an unrelated origin | Refused. |
