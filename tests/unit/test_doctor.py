@@ -404,7 +404,8 @@ def test_a_made_up_saved_timezone_is_named_with_how_to_fix_it(
     )
     check = doctor.check_introduction(tmp_path)
     assert check.status == "warn"
-    assert "America/Torontoo" in check.detail and "not a real one" in check.detail
+    assert "America/Torontoo" in check.detail and "is ignored" in check.detail
+    assert check.detail.startswith("you are Sam, she is Trillion")  # the names are kept
     assert check.fix is not None and "Did you mean America/Toronto?" in check.fix
     (tmp_path / "USER.md").write_text(
         "---\nuser_name: Sam\ntimezone: America/Toronto\n---\n", encoding="utf-8"

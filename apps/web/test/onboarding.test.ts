@@ -210,6 +210,19 @@ describe('onboarding', () => {
     expect(said(failed(ready, 'unreachable'))).toContain("the app didn't answer");
   });
 
+  it('saves again without a timezone the machine does not know, rather than looping', () => {
+    const ready = run(['Sam', 'Nova', 'blunt']); // the browser reported America/Chicago
+    const dropped = failed(ready, 'timezone_unknown');
+    expect(dropped.step).toBe('saving'); // straight back to saving: nothing to ask the user
+    expect(dropped.draft.timezone).toBe('');
+    expect(said(dropped)).toBe("Your browser says America/Chicago, which isn't a timezone I know, so I've left the timezone out.");
+    const nearest = failed(ready, 'timezone_unknown', 'America/Chicago_Real');
+    expect(nearest.draft.timezone).toBe('America/Chicago_Real');
+    expect(said(nearest)).toContain("so I've used America/Chicago Real instead.");
+    // With no timezone left to drop, a refusal goes back to the tone like any other.
+    expect(failed(dropped, 'timezone_unknown').step).toBe('directness');
+  });
+
   it('changes names later without offering to skip', () => {
     const now: Profile = { userName: 'Sam', agentName: 'Nova', timezone: 'Europe/Paris', directness: 'blunt' };
     const o = begin(now);

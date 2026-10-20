@@ -13,7 +13,7 @@ import os
 import re
 import tempfile
 import zoneinfo
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -97,22 +97,30 @@ def clean(profile: Profile) -> Profile:
 
 def load(directory: Path | None = None) -> Profile | None:
     """What onboarding wrote, or None if it has not happened. A hand edit that no
-    longer passes the rules is treated as not done rather than half trusted."""
+    longer passes the rules is treated as not done rather than half trusted.
+
+    A timezone this machine does not know is the exception: whether it is known
+    depends on the machine's zone data, not on the file, so the names are kept and
+    only the timezone is set aside. `trillion doctor` says so."""
     d = directory or paths.persona_dir()
     user, identity = fields(d / "USER.md"), fields(d / "IDENTITY.md")
     if "user_name" not in user:
         return None
     raw = user.get("directness", "")
     directness = next((d for d in DIRECTNESS if d == raw), DEFAULT_DIRECTNESS)
+    profile = Profile(
+        user_name=user["user_name"].strip("\"'"),
+        agent_name=identity.get("agent_name", DEFAULT_AGENT_NAME).strip("\"'"),
+        timezone=user.get("timezone", ""),
+        directness=directness,
+    )
     try:
-        return clean(
-            Profile(
-                user_name=user["user_name"].strip("\"'"),
-                agent_name=identity.get("agent_name", DEFAULT_AGENT_NAME).strip("\"'"),
-                timezone=user.get("timezone", ""),
-                directness=directness,
-            )
-        )
+        return clean(profile)
+    except SetupError as e:
+        if not e.code.startswith("timezone_"):
+            return None
+    try:
+        return clean(replace(profile, timezone=""))
     except SetupError:
         return None
 

@@ -151,12 +151,22 @@ def test_a_made_up_timezone_is_refused_with_the_nearest_real_one(
 
 
 @pytest.mark.usefixtures("zones")
-def test_a_real_timezone_is_accepted_and_a_hand_edit_with_a_made_up_one_reads_as_not_set_up(
+def test_a_timezone_the_machine_does_not_know_is_set_aside_and_the_names_are_kept(
     tmp_path: Path,
 ) -> None:
     assert setup.save(Profile(user_name="Sam", timezone="America/Toronto"), tmp_path).timezone
     (tmp_path / "USER.md").write_text(
         "---\nuser_name: Sam\ntimezone: Not/AZone\n---\n", encoding="utf-8"
+    )
+    (tmp_path / "IDENTITY.md").write_text("---\nagent_name: Nova\n---\n", encoding="utf-8")
+    # Whether a zone is known depends on this machine, not the file: losing her names
+    # over it would be out of all proportion. Only the timezone is set aside.
+    loaded = setup.load(tmp_path)
+    assert loaded is not None
+    assert (loaded.user_name, loaded.agent_name, loaded.timezone) == ("Sam", "Nova", "")
+    # A name that breaks the rules still reads as not set up.
+    (tmp_path / "USER.md").write_text(
+        "---\nuser_name: {agent_name}\ntimezone: Not/AZone\n---\n", encoding="utf-8"
     )
     assert setup.load(tmp_path) is None
 

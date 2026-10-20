@@ -318,8 +318,18 @@ const SAVE_PROBLEMS: Readonly<Record<string, string>> = {
 };
 
 /** The core refused or could not be reached. Nothing changed; she says why and asks again. */
-export function failed(o: Onboarding, code: string): Onboarding {
+export function failed(o: Onboarding, code: string, suggestion = ''): Onboarding {
   const why = SAVE_PROBLEMS[code] ?? "the app didn't answer";
+  if (code.startsWith('timezone_') && o.draft.timezone) {
+    // The page read the timezone from the browser; the user never typed it and has no
+    // step to change it. So it is not asked about: the save goes again without it, or
+    // with the nearest real one, and she says which.
+    const was = o.draft.timezone.replace(/_/g, ' ');
+    const line = suggestion
+      ? `Your browser says ${was}, which isn't a timezone I know, so I've used ${suggestion.replace(/_/g, ' ')} instead.`
+      : `Your browser says ${was}, which isn't a timezone I know, so I've left the timezone out.`;
+    return add(o, { step: 'saving', draft: { ...o.draft, timezone: suggestion } }, her(line));
+  }
   if (code.startsWith('name_')) {
     return add(o, { step: 'user_name' }, her(`That didn't save: ${why}. Nothing changed. Let's go again: what should I call you?`));
   }
