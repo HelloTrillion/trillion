@@ -38,6 +38,7 @@ memory_recall = "trillion.tools.memory:MemoryRecall"
 memory_forget = "trillion.tools.memory:MemoryForget"
 rule_keep = "trillion.tools.rules:RuleKeep"
 rule_drop = "trillion.tools.rules:RuleDrop"
+decision_record = "trillion.tools.record:DecisionRecord"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]

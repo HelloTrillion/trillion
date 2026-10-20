@@ -33,6 +33,7 @@ from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
+from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.rules import DROP, KEEP, RuleDrop, RuleKeep
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
@@ -177,6 +178,11 @@ class Runtime:
                 f"{len(self.rules.all())} kept. They are in your instructions on every turn; "
                 "rule_keep and rule_drop change them, and both ask the user first"
             ),
+            "decision record": (
+                "every action that asked for the user's yes is recorded permanently: when it "
+                "was asked, whether its card was shown, who answered and how, and the outcome. "
+                "decision_record reads it, whatever this conversation says or has forgotten"
+            ),
             "internet": "none: you have no tool that reaches the web",
         }
 
@@ -314,6 +320,9 @@ async def open_runtime(
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(registry.definitions, rt.facts)
+    record = registry.get(RECORD)
+    if isinstance(record, DecisionRecord):
+        record.bind(store, OWNER, rt.clock)
     for name in (KEEP, DROP):
         rule_tool = registry.get(name)
         if isinstance(rule_tool, RuleKeep | RuleDrop):
