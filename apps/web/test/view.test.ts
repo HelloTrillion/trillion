@@ -34,6 +34,10 @@ describe('view', () => {
     );
   });
 
+  it('labels a confirm of an already-settled card as such, not as a second success', () => {
+    expect(toolLabel('confirm_pending_action', 'already_resolved', true)).toBe('Already settled');
+  });
+
   it('has no model at rung 0', () => {
     expect(feed([{ type: 'session', id: 'c1', model: null }]).model).toBeNull();
   });

@@ -354,5 +354,5 @@ async def test_she_can_say_truthfully_that_she_remembers(home: Path) -> None:
     body = report.split("---\n", 1)[1].rsplit("\n</untrusted_tool_result>", 1)[0]
     names = {t["name"]: t["confirmation"] for t in json.loads(body)["tools"]}
     assert names["memory_write"] == "runs at once" and names["memory_recall"] == "runs at once"
-    assert names["memory_forget"] == "asks first; a yes or a tap approves it"
+    assert names["memory_forget"] == "calling it shows an approval card; a yes or a tap approves it"
     await rt.close()

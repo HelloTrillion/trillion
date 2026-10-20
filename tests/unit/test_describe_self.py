@@ -31,7 +31,9 @@ async def test_the_report_is_generated_from_the_live_registry(tmp_path: Path) ->
     # Every registered tool, and nothing else: nothing invented, nothing forgotten.
     assert set(listed) == {d.name for d in registry.definitions()}
     assert listed["file_read"]["confirmation"] == "runs at once"
-    assert listed["file_create"]["confirmation"].startswith("asks first; a yes or a tap")
+    assert listed["file_create"]["confirmation"].startswith(
+        "calling it shows an approval card; a yes or a tap"
+    )
     assert "only a tap" in listed["file_overwrite"]["confirmation"]
     assert "cannot do" in report["note"]
 

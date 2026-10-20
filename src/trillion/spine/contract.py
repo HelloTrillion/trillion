@@ -57,6 +57,15 @@ class ToolCall:
     args: JSON
 
 
+# Said in the description of every tool that shows a card (#32). "Asks the user first"
+# read to a small model as an instruction to ask in chat before calling, so the user
+# answered twice. Calling the tool is the asking.
+ASKS_BY_CARD = (
+    "Calling it puts an approval card on the user's screen, so call it directly; "
+    "never ask in chat first."
+)
+
+
 @dataclass(frozen=True, kw_only=True)
 class ToolResult:
     ok: bool

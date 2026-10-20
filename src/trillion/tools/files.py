@@ -10,6 +10,7 @@ from pathlib import Path
 
 from trillion.spine import deny_floor
 from trillion.spine.contract import (
+    ASKS_BY_CARD,
     JSON,
     ActionSummary,
     BaseTool,
@@ -266,7 +267,7 @@ class FileRead(_OffLoop):
 class FileCreate(_OffLoop):
     definition = ToolDefinition(
         name="file_create",
-        description="Create a new file. Asks the user first; never replaces an existing file.",
+        description=("Create a new file; never replaces an existing one. " + ASKS_BY_CARD),
         input_schema=_PATH_AND_CONTENT,
         risk=Risk.IRREVERSIBLE,
         category="files",
@@ -320,7 +321,11 @@ class FileCreate(_OffLoop):
 class FileOverwrite(_OffLoop):
     definition = ToolDefinition(
         name="file_overwrite",
-        description="Replace the whole contents of an existing file. Needs a tap to confirm.",
+        description=(
+            "Replace the whole contents of an existing file. "
+            + ASKS_BY_CARD
+            + " Only a tap approves it."
+        ),
         input_schema=_PATH_AND_CONTENT,
         risk=Risk.IRREVERSIBLE,
         category="files",
@@ -366,7 +371,7 @@ class FileOverwrite(_OffLoop):
 class FileAppend(_OffLoop):
     definition = ToolDefinition(
         name="file_append",
-        description="Add text to the end of an existing file. Asks the user first.",
+        description=("Add text to the end of an existing file. " + ASKS_BY_CARD),
         input_schema=_PATH_AND_CONTENT,
         risk=Risk.IRREVERSIBLE,
         category="files",
@@ -422,7 +427,8 @@ class FileEdit(_OffLoop):
         name="file_edit",
         description=(
             "Replace one exact piece of text in an existing file. `old` must appear exactly "
-            "once; include surrounding text to make it unique. Needs a tap to confirm."
+            "once; include surrounding text to make it unique. " + ASKS_BY_CARD + " Only a tap "
+            "approves it."
         ),
         input_schema=_PATH_OLD_NEW,
         risk=Risk.IRREVERSIBLE,

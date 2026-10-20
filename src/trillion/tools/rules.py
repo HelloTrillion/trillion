@@ -12,6 +12,7 @@ import asyncio
 
 from trillion.brain.standing import MAX_RULE_CHARS, Rule, RuleError, StandingRules, clean
 from trillion.spine.contract import (
+    ASKS_BY_CARD,
     JSON,
     ActionSummary,
     BaseTool,
@@ -64,7 +65,7 @@ class RuleKeep(_RuleTool):
             "Keep a standing rule: something the user told you to always or never do, such "
             "as 'never send an email without reading it to me first'. It stays in front of "
             "you on every turn of every conversation until the user drops it. One rule per "
-            "call, in their words, as one sentence. Asks the user first. Not for facts or "
+            "call, in their words, as one sentence. " + ASKS_BY_CARD + " Not for facts or "
             "preferences: those go to memory_write."
         ),
         input_schema={
@@ -120,7 +121,7 @@ class RuleDrop(_RuleTool):
         name=DROP,
         description=(
             "Drop a standing rule the user no longer wants, by its id from your standing "
-            "rules. Asks the user first."
+            "rules. " + ASKS_BY_CARD
         ),
         input_schema={
             "type": "object",

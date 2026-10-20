@@ -35,15 +35,15 @@ def _asks(d: ToolDefinition) -> str:
     if d.risk not in GATED:
         return "runs at once"
     if d.risk is Risk.SPEND or not d.recoverable:
-        return "asks first; only a tap on the card approves it"
-    return "asks first; a yes or a tap approves it"
+        return "calling it shows an approval card; only a tap on the card approves it"
+    return "calling it shows an approval card; a yes or a tap approves it"
 
 
 class DescribeSelf(BaseTool):
     definition = ToolDefinition(
         name=NAME,
         description=(
-            "List what you can really do right now: your tools and whether each asks first, "
+            "List what you can really do right now: your tools and which show an approval card, "
             "the folders shared with you, the model you are running on, and the version. "
             "Call this before answering what you can or cannot do."
         ),
