@@ -462,6 +462,27 @@ class Router:
         if not claimed:
             return self._from_record(await self._reload(a))
 
+        # From the claim on, the action is seen through to a recorded outcome even if
+        # whoever asked goes away mid-run (#3): a barge-in or a closed tab stops her
+        # speaking, never the record (VOI-15c). The tool's own timeout still bounds it.
+        # A cancellation is honoured once the outcome is written, not before.
+        work = asyncio.ensure_future(self._execute_claimed(tool, a, ctx))
+        cancelled = False
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                if work.cancelled():  # the loop itself is shutting down: recover() finishes it
+                    raise
+                cancelled = True
+        response = work.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return response
+
+    async def _execute_claimed(
+        self, tool: _Registered, a: PendingAction, ctx: ToolContext
+    ) -> RouterResponse:
         result = await self._run(tool, a.args, ctx)
         status = final_status(result)
         await self._move(
