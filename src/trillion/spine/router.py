@@ -404,7 +404,14 @@ class Router:
         verdict = decide(a, decision, ctx, start)
         if isinstance(verdict, Rejection):
             if verdict.reason is Refusal.ALREADY_RESOLVED:
-                return await self._audit_resolution(a, ctx, start, self._from_record(a))
+                # The settled outcome, said to be one: a second "confirm" after a tap ran
+                # nothing, and must not read as a second success (#32).
+                settled = dataclasses.replace(
+                    self._from_record(a),
+                    reason=Refusal.ALREADY_RESOLVED,
+                    detail="already settled earlier; nothing ran again",
+                )
+                return await self._audit_resolution(a, ctx, start, settled)
             response = _refused(verdict.reason, verdict.detail)
             return await self._audit_resolution(a, ctx, start, response)
         if (

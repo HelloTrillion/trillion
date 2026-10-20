@@ -196,6 +196,8 @@ const TOOL_LABELS: Readonly<Record<string, readonly [working: string, done: stri
 
 /** The chip for one tool call: what it is doing, then how it ended. */
 export function toolLabel(name: string, outcome: string | null, ok: boolean): string {
+  // She confirmed a card that was already settled: nothing ran, so no second success.
+  if (outcome === 'already_resolved') return 'Already settled';
   const words = TOOL_LABELS[name];
   if (outcome === null) return words ? `${words[0]} …` : `${name} …`;
   if (words && ok && outcome === 'succeeded') return words[1];

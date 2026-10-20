@@ -15,6 +15,7 @@ from trillion.memory.book import RECALL_LIMIT, MemoryBook, recalled_tokens
 from trillion.memory.files import valid_id
 from trillion.memory.types import MAX_TEXT, TYPES, Memory, MemoryError_, MemoryType, Source
 from trillion.spine.contract import (
+    ASKS_BY_CARD,
     JSON,
     ActionSummary,
     BaseTool,
@@ -235,7 +236,7 @@ class MemoryForget(_MemoryTool):
     definition = ToolDefinition(
         name=FORGET,
         description=(
-            "Forget one memory, by its id. Asks the user first. Use memory_write with "
+            "Forget one memory, by its id. " + ASKS_BY_CARD + " Use memory_write with "
             "replaces instead when a fact has changed rather than gone."
         ),
         input_schema={
