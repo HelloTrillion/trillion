@@ -68,7 +68,14 @@ def create_persona_router(rt: Runtime) -> APIRouter:
                 )
             )
         except SetupError as e:
-            return JSONResponse({"error": e.code}, status_code=400)
+            body_out = {"error": e.code}
+            if e.code == "timezone_unknown":
+                body_out["message"] = (
+                    "That is not a timezone I know. Use an IANA name such as America/Toronto."
+                )
+                if e.suggestion:
+                    body_out["suggestion"] = e.suggestion
+            return JSONResponse(body_out, status_code=400)
         except OSError:
             # The folder could not be written. Nothing was adopted.
             return JSONResponse({"error": "not_saved"}, status_code=500)

@@ -40,7 +40,7 @@ directness: blunt
 
 ## What a name may be
 
-A name goes into every prompt and into a `key: value` line, so it is one line of at most 40 characters, with no braces or angle brackets and no leading quote, dash or `#`. Runs of whitespace, including line breaks, collapse to one space before anything else, so a pasted second line cannot add a field. A refusal returns a code (`name_empty`, `name_too_long`, `name_not_allowed`, `timezone_not_allowed`) and writes nothing. A hand-edited file that breaks these rules reads as not set up.
+A name goes into every prompt and into a `key: value` line, so it is one line of at most 40 characters, with no braces or angle brackets and no leading quote, dash or `#`. Runs of whitespace, including line breaks, collapse to one space before anything else, so a pasted second line cannot add a field. A refusal returns a code (`name_empty`, `name_too_long`, `name_not_allowed`, `timezone_not_allowed`, `timezone_unknown`) and writes nothing. A timezone must be a name in the IANA list (`zoneinfo`; on Windows the `tzdata` package supplies it); an unknown one is refused with a plain message and, when one is close, the nearest real name. A machine with no zone data at all skips this check, and `trillion doctor` says when the saved timezone is not a real one. A hand-edited file that breaks these rules reads as not set up.
 
 ## Directness
 

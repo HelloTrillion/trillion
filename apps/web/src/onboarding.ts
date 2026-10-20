@@ -313,6 +313,7 @@ const SAVE_PROBLEMS: Readonly<Record<string, string>> = {
   name_too_long: 'one of the names is over forty characters',
   name_not_allowed: "one of the names has a character I can't store",
   timezone_not_allowed: "your timezone didn't look like one",
+  timezone_unknown: "your timezone isn't one I know (it should look like America/Toronto)",
   not_saved: "the data folder couldn't be written",
 };
 

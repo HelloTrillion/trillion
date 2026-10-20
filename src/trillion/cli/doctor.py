@@ -484,9 +484,19 @@ async def check_listening(raw: Any, secrets: SecretStore, *, offline: bool) -> C
 
 def check_introduction(directory: Path) -> Check:
     from trillion.persona import setup
+    from trillion.persona.prompt import fields
 
     profile = setup.load(directory)
     if profile is None:
+        saved = fields(directory / "USER.md").get("timezone", "")
+        if saved and (bad := setup.unknown_zone(saved)):
+            hint = f" Did you mean {bad.suggestion}?" if bad.suggestion else ""
+            return Check(
+                name="Names",
+                status="warn",
+                detail=f"the saved timezone ({saved}) is not a real one, so she asks again",
+                fix=f"Change the timezone line in USER.md to a name like America/Toronto.{hint}",
+            )
         return Check(
             name="Names", status="info", detail="not introduced yet: she asks on the first run"
         )
