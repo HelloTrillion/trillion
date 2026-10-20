@@ -337,21 +337,23 @@ export function reduce(view: View, msg: ServerMsg): View {
     }
     case 'error': {
       const code = str(msg['code']);
+      // Her own sentence for a leg that is down (VOI-14, SUR-8), when the core sends one.
+      const sentence = str(msg['sentence']);
       if (code === 'unauthenticated') return { ...view, link: 'unauthenticated', busy: false };
       if (code === 'replaced') return { ...view, link: 'replaced', busy: false };
       if (code === 'listening') {
         // One leg down: she cannot hear right now, and typing still works (VOI-14).
         const why = LISTEN_ERRORS[str(msg['kind'])] ?? 'Listening failed.';
-        return { ...view, mic: false, hearing: '', busy: false, banner: `${why} You can still type.` };
+        return { ...view, mic: false, hearing: '', busy: false, banner: sentence || `${why} You can still type.` };
       }
       if (code === 'speech') {
         // Her voice failed; the reply itself carries on as text (VOI-14).
         const why = PROVIDER_ERRORS[str(msg['kind'])]?.replace('The model provider', 'The voice provider');
-        return { ...view, banner: `${why ?? 'The voice provider failed.'} She is answering in text.` };
+        return { ...view, banner: sentence || `${why ?? 'The voice provider failed.'} She is answering in text.` };
       }
       const text =
         code === 'provider'
-          ? (PROVIDER_ERRORS[str(msg['kind'])] ?? 'The model provider failed.')
+          ? sentence || (PROVIDER_ERRORS[str(msg['kind'])] ?? 'The model provider failed.')
           : (ERRORS[code] ?? 'Something went wrong.');
       return { ...view, banner: text, busy: code === 'busy' ? view.busy : false };
     }

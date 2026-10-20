@@ -24,6 +24,16 @@ describe('view', () => {
     expect((v.entries[1] as { text: string }).text).toContain('summarized the earlier messages');
   });
 
+  it('puts her one sentence for a failed leg in the banner', () => {
+    for (const code of ['provider', 'listening', 'speech']) {
+      const v = feed([{ type: 'error', code, kind: 'unreachable', sentence: 'I cannot reach it, so here is what next.' }]);
+      expect(v.banner).toBe('I cannot reach it, so here is what next.');
+    }
+    expect(feed([{ type: 'error', code: 'provider', kind: 'unreachable' }]).banner).toBe(
+      'The model provider could not be reached.',
+    );
+  });
+
   it('has no model at rung 0', () => {
     expect(feed([{ type: 'session', id: 'c1', model: null }]).model).toBeNull();
   });

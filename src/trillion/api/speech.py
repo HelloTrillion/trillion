@@ -20,6 +20,7 @@ import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trillion.persona.prompt import degraded
 from trillion.voice.sentences import SentenceSplitter
 from trillion.voice.speakable import speakable
 from trillion.voice.types import TTSProvider, VoiceError
@@ -31,6 +32,10 @@ FRAME_AUDIO = 0x01
 _HEADER = struct.Struct("<BII")
 # Small enough to start playing quickly, large enough not to flood the socket.
 _FRAME_BYTES = 8192
+# Failures worth one more try: a voice service having a bad second (VOI-14). A refused
+# key or an empty account will say the same thing again.
+_PASSING = frozenset({"unreachable", "timeout", "provider_unavailable", "rate_limited"})
+RETRY_S = 0.5
 
 SendJson = Callable[..., Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
@@ -109,23 +114,35 @@ class Speaker:
             seq, text = item
             if self._failed:
                 continue
-            try:
-                pending = b""
-                async for chunk in self._provider.synthesize(text, voice=self._voice):
-                    pending += chunk
-                    while len(pending) >= _FRAME_BYTES:
-                        await self._send_bytes(frame(self._turn, seq, pending[:_FRAME_BYTES]))
-                        pending = pending[_FRAME_BYTES:]
-                if pending:
-                    await self._send_bytes(frame(self._turn, seq, pending))
-            except VoiceError as e:
-                await self._fail(e.kind)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # The class name only: an exception message can carry what she was saying.
-                logger.error("speech failed in turn %d: %s", self._turn, type(e).__name__)
-                await self._fail("internal")
+            for attempt in (1, 2):
+                sent = False
+                try:
+                    pending = b""
+                    async for chunk in self._provider.synthesize(text, voice=self._voice):
+                        pending += chunk
+                        while len(pending) >= _FRAME_BYTES:
+                            await self._send_bytes(frame(self._turn, seq, pending[:_FRAME_BYTES]))
+                            pending = pending[_FRAME_BYTES:]
+                            sent = True
+                    if pending:
+                        await self._send_bytes(frame(self._turn, seq, pending))
+                    break
+                except VoiceError as e:
+                    # Speaking again is only ever speaking again: nothing the reply did is
+                    # repeated, because the speaker holds text and never a tool call. A
+                    # sentence already partly heard is not started over.
+                    if attempt == 1 and not sent and e.kind in _PASSING:
+                        await asyncio.sleep(RETRY_S)
+                        continue
+                    await self._fail(e.kind)
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # The class name only: an exception message can carry what she was saying.
+                    logger.error("speech failed in turn %d: %s", self._turn, type(e).__name__)
+                    await self._fail("internal")
+                    break
 
     async def _fail(self, kind: str) -> None:
         if self._failed:
@@ -133,7 +150,7 @@ class Speaker:
         self._failed = True
         logger.warning("speech provider %s failed: %s", self._provider.name, kind)
         # The reply itself is unaffected: it keeps arriving as text.
-        await self._send("error", code="speech", kind=kind)
+        await self._send("error", code="speech", kind=kind, sentence=degraded("voice", kind))
 
 
 def describe(

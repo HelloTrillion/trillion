@@ -292,8 +292,11 @@ def test_a_short_key_shows_its_length_and_nothing_else() -> None:
 
 
 def test_the_doctor_command_exits_clean_when_healthy_and_not_when_broken(
-    home: Path, offers: list, capsys: pytest.CaptureFixture[str]
+    home: Path, offers: list, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The real built page is used here; whether this checkout's build is fresh is not
+    # what this test is about, and a pull without a rebuild would otherwise fail it.
+    monkeypatch.setattr(doctor, "_newest_source", lambda found: 0.0)
     port = str(free_port())
     assert main(["doctor", "--offline", "--port", port]) == 0
     assert "Everything checks out." in capsys.readouterr().out

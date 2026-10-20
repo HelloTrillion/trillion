@@ -32,6 +32,7 @@ from trillion.brain.types import (
     TextBlock,
     TextDelta,
 )
+from trillion.persona.prompt import degraded
 from trillion.secrets.store import MemoryStore
 
 HOSTS = frozenset({"testserver"})
@@ -316,7 +317,12 @@ def test_a_provider_failure_is_named_and_the_orb_shows_it(make: Any) -> None:
     app = make(ProviderError("unauthorized", MARKER))
     with app.connect() as chat:
         msgs = chat.say("hi")
-        assert msgs[-1] == {"type": "error", "code": "provider", "kind": "unauthorized"}
+        assert msgs[-1] == {
+            "type": "error",
+            "code": "provider",
+            "kind": "unauthorized",
+            "sentence": degraded("model", "unauthorized"),
+        }
         assert chat.until("state")[-1]["orb"] == "error"
 
 

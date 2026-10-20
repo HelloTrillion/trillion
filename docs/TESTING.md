@@ -100,7 +100,7 @@ Each provider down, one at a time, with the others healthy:
 | Model | Both other legs healthy; she says she cannot think right now, in one sentence. |
 | Text-to-speech, **after the action succeeded** | The result is preserved and shown; speech is retried; **the action never re-runs**. |
 
-Plus the all-down airplane test (§4 of the PRD) and per-capability liveness: one provider offering two capabilities reports them separately, and "unknown" is never treated as alive.
+Plus the all-down airplane test (§4 of the PRD) and per-capability liveness: one provider offering two capabilities reports them separately, and "unknown" is never treated as alive. — [the matrix](../tests/integration/test_degraded_provider_matrix.py); per-capability liveness waits for connectors (CON-1).
 
 ### 2.5 Latency (EVL-3, G1)
 
@@ -157,7 +157,7 @@ Then: nothing arrives during a live reply; the same content never arrives twice;
 
 ## 6. The airplane test (§4 of the PRD)
 
-With the network off: Trillion starts, the Galaxy renders and reacts to the microphone, settings open, memory reads and writes, `doctor` runs, and she explains in one plain sentence why voice is unavailable. Only calls to the user's chosen providers fail, and they fail with a clear message rather than a crash or a hang.
+With the network off: Trillion starts, the Galaxy renders and reacts to the microphone, settings open, memory reads and writes, `doctor` runs, and she explains in one plain sentence why voice is unavailable. Only calls to the user's chosen providers fail, and they fail with a clear message rather than a crash or a hang. — [test](../tests/integration/test_airplane.py), for everything but the Galaxy and the microphone, which run in the browser.
 
 ---
 

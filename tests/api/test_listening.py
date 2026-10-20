@@ -20,6 +20,7 @@ from trillion import paths
 from trillion.api import session as session_module
 from trillion.api.runtime import ListenSettings, Runtime, open_runtime
 from trillion.api.session import Session
+from trillion.persona.prompt import degraded
 from trillion.secrets.store import MemoryStore
 
 
@@ -137,7 +138,12 @@ async def test_a_dead_microphone_is_said_out_loud(rt: Runtime) -> None:
     await session.handle({"type": "listen.start"})
     await speak(session, dead(3.0))
     assert page.all("mic.stop")[-1]["reason"] == "inaudible"
-    assert page.all("error")[-1] == {"type": "error", "code": "listening", "kind": "inaudible"}
+    assert page.all("error")[-1] == {
+        "type": "error",
+        "code": "listening",
+        "kind": "inaudible",
+        "sentence": degraded("hearing", "inaudible"),
+    }
     assert orbs(page)[-1] == "idle" and session._task is None and session._turn == 0
     assert rt.provider.calls == []  # type: ignore[union-attr]
     await session.close()
@@ -230,7 +236,12 @@ async def test_a_recognizer_that_fails_leaves_typing_working(rt: Runtime) -> Non
     page = Page()
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
-    assert page.all("error")[-1] == {"type": "error", "code": "listening", "kind": "unauthorized"}
+    assert page.all("error")[-1] == {
+        "type": "error",
+        "code": "listening",
+        "kind": "unauthorized",
+        "sentence": degraded("hearing", "unauthorized"),
+    }
     assert page.all("mic.stop")[-1]["reason"] == "failed" and orbs(page)[-1] == "idle"
     await session.handle({"type": "turn.text", "text": "hello"})
     await idle(session)
