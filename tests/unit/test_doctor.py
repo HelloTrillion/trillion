@@ -377,6 +377,21 @@ def test_secrets_reports_the_keychain_once(home: Path, offers: list) -> None:
     assert "Secret store" not in checks
 
 
+@pytest.mark.parametrize(
+    ("backend", "said"),
+    [
+        ("Windows WinVaultKeyring", "Windows Credential Manager"),
+        ("macOS Keyring", "macOS Keychain"),
+        ("SecretService Keyring", "Secret Service"),
+        ("something else Keyring", "something else Keyring"),
+        ("", "available"),
+    ],
+)
+def test_the_keychain_line_names_the_store_in_plain_words(backend: str, said: str) -> None:
+    check = doctor.check_keychain(MemoryStore(), backend)
+    assert check.status == "ok" and check.detail == said
+
+
 def _keys(model: config.ModelSettings | None) -> dict[str, Check]:
     secrets = MemoryStore()
     secrets.set(config.secret_name("custom"), KEY)
