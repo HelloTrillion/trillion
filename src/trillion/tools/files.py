@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import hashlib
 import os
-import shutil
-import tempfile
 from pathlib import Path
 
+from trillion.spine import deny_floor
 from trillion.spine.contract import (
     JSON,
     ActionSummary,
@@ -21,6 +19,8 @@ from trillion.spine.contract import (
     ToolResult,
 )
 from trillion.spine.lossless import decode
+from trillion.tools import beneath
+from trillion.tools.beneath import Escaped
 
 MAX_READ_BYTES = 1_000_000
 MAX_LIST_ENTRIES = 500
@@ -130,23 +130,41 @@ def _line_changes(old: str, new: str) -> str:
     return f"{changed} of {len(a)} lines change, first at line {first}"
 
 
-def _replace_atomically(p: Path, data: bytes) -> None:
-    """Write beside the file, keep its mode, then swap it in: never a half-written file."""
-    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.")
+def _target(tool: BaseTool, args: JSON, ctx: ToolContext) -> Path:
+    """The path a tool may act on now, or Escaped (#2).
+
+    The router checked the floor when the action was approved; the folders on the way
+    could have changed since. The path is taken again, and the floor applied to it
+    again, here. Everything after this opens by walking down from the granted folder
+    (`beneath`), so a link that appears after this moment is refused, not followed."""
+    raw = Path(str(args["path"])).expanduser()
+    target = raw.parent.resolve(strict=False) / raw.name
+    denial = deny_floor.check(
+        tool.definition, {"path": str(target)}, deny_floor.DenyPolicy.default(), ctx.granted_roots
+    )
+    if denial is not None:
+        raise Escaped(denial.reason)
+    return target
+
+
+def _unsafe(e: OSError) -> ToolResult:
+    """The file could not be opened inside its folder: nothing was read or written."""
+    said = str(e) if isinstance(e, Escaped) else "the file could not be opened safely"
+    return ToolResult(ok=False, content=said, effect="none", error_kind=type(e).__name__)
+
+
+def _matches(p: Path, data: bytes, done: str, ctx: ToolContext | None = None) -> ToolResult:
+    """Read the file back: success needs evidence (SPN-17a). With `ctx`, it is read
+    back the same way it was written: walked to from its granted folder."""
     try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        shutil.copymode(p, tmp)  # mkstemp creates 0600; keep the file's own mode
-        os.replace(tmp, p)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-
-
-def _matches(p: Path, data: bytes, done: str) -> ToolResult:
-    """Read the file back: success needs evidence (SPN-17a)."""
-    if p.is_file() and _sha(p.read_bytes()) == _sha(data):
+        found = (
+            beneath.read_bytes(p, ctx.granted_roots, len(data) + 1)
+            if ctx is not None
+            else (p.read_bytes() if p.is_file() else None)
+        )
+    except OSError:
+        found = None
+    if found is not None and _sha(found) == _sha(data):
         return ToolResult(ok=True, content=f"{done} {p.name}", effect="confirmed")
     return ToolResult(ok=False, content="the file does not match", effect="unknown")
 
@@ -168,8 +186,12 @@ class FileList(BaseTool):
         return Precondition.failed("not a folder")
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        entries = sorted(_path(args).iterdir(), key=lambda e: e.name.lower())
-        lines = [e.name + ("/" if e.is_dir() else "") for e in entries[:MAX_LIST_ENTRIES]]
+        try:
+            found = beneath.entries(_path(args), ctx.granted_roots)
+        except OSError as e:
+            return _unsafe(e)
+        entries = sorted(found, key=lambda e: e[0].lower())
+        lines = [name + ("/" if is_dir else "") for name, is_dir in entries[:MAX_LIST_ENTRIES]]
         if len(entries) > MAX_LIST_ENTRIES:
             lines.append(f"… and {len(entries) - MAX_LIST_ENTRIES} more")
         return ToolResult(ok=True, content="\n".join(lines), effect="none")
@@ -199,8 +221,12 @@ class FileRead(BaseTool):
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         # The precheck saw the size; the file can grow before we read. Never read more
         # than the limit plus one byte, and refuse if that byte is there.
-        with _path(args).open("rb") as f:
-            data = f.read(MAX_READ_BYTES + 1)
+        try:
+            data = beneath.read_bytes(
+                _target(self, args, ctx), ctx.granted_roots, MAX_READ_BYTES + 1
+            )
+        except OSError as e:
+            return _unsafe(e)
         if len(data) > MAX_READ_BYTES:
             return ToolResult(
                 ok=False,
@@ -253,10 +279,21 @@ class FileCreate(BaseTool):
         return Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        p, data = _path(args), _bytes(args)
-        with p.open("xb") as f:  # exclusive: never overwrites, even in a race
+        data = _bytes(args)
+        try:
+            p = _target(self, args, ctx)
+            # Exclusive: never overwrites, even in a race.
+            fd = beneath.open_file(p, ctx.granted_roots, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            return ToolResult(
+                ok=False, content="a file with that name already exists", effect="none",
+                error_kind="FileExistsError",
+            )  # fmt: skip
+        except OSError as e:
+            return _unsafe(e)
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
-        return _matches(p, data, "created")
+        return _matches(p, data, "created", ctx)
 
     async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
         p, data = _path(args), _bytes(args)
@@ -299,26 +336,16 @@ class FileOverwrite(BaseTool):
         return Precondition.failed("no such file")
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        p, data = _path(args), _bytes(args)
-        _replace_atomically(p, data)
-        return _matches(p, data, "replaced")
+        data = _bytes(args)
+        try:
+            p = _target(self, args, ctx)
+            beneath.replace(p, ctx.granted_roots, data, must_exist=True)
+        except OSError as e:
+            return _unsafe(e)
+        return _matches(p, data, "replaced", ctx)
 
     async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
         return _matches(_path(args), _bytes(args), "replaced")
-
-
-def _open_for_append(raw: Path) -> int:
-    """Open `raw` for append without following a final symlink.
-
-    POSIX refuses the link atomically with O_NOFOLLOW. Windows has no such flag, so
-    it refuses links and junctions just before opening instead; the tiny window
-    left there is tracked with the parent-directory case in issue #2.
-    """
-    flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_BINARY", 0)
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if not nofollow and (raw.is_symlink() or raw.is_junction()):
-        raise OSError(f"refusing to follow a link: {raw.name}")
-    return os.open(raw, flags | nofollow)
 
 
 class FileAppend(BaseTool):
@@ -352,18 +379,14 @@ class FileAppend(BaseTool):
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         data = _bytes(args)
-        # The floor checked where the path resolves. Open the path as given and refuse a
-        # final symlink, so a link swapped in after that check is never followed.
-        raw = Path(str(args["path"])).expanduser()
+        # Walked to from the granted folder with no link followed on the way or at the
+        # end, and refused if the file has a second name elsewhere: an append changes
+        # the file itself, so a hard link would carry the write out of the folder.
         try:
-            fd = _open_for_append(raw)
+            raw = _target(self, args, ctx)
+            fd = beneath.open_file(raw, ctx.granted_roots, os.O_RDWR | os.O_APPEND)
         except OSError as e:
-            return ToolResult(
-                ok=False,
-                content="the file could not be opened safely for appending",
-                effect="none",
-                error_kind=type(e).__name__,
-            )
+            return _unsafe(e)
         with os.fdopen(fd, "ab+") as f:
             f.write(data)
             f.flush()
@@ -429,8 +452,17 @@ class FileEdit(BaseTool):
         return Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        p, old, new = _path(args), _text(args, "old"), _text(args, "new")
-        text = _read_text(p)
+        old, new = _text(args, "old"), _text(args, "new")
+        try:
+            # Read from the same file it will write: walked to from the granted folder.
+            p = _target(self, args, ctx)
+            raw = beneath.read_bytes(p, ctx.granted_roots, MAX_READ_BYTES + 1)
+        except OSError as e:
+            return _unsafe(e)
+        try:
+            text: str | None = raw.decode("utf-8") if len(raw) <= MAX_READ_BYTES else None
+        except UnicodeDecodeError:
+            text = None
         if text is None or text.count(old) != 1:
             return ToolResult(
                 ok=False,
@@ -438,8 +470,11 @@ class FileEdit(BaseTool):
                 effect="none",
             )
         data = text.replace(old, new, 1).encode("utf-8")
-        _replace_atomically(p, data)
-        return _matches(p, data, "edited")
+        try:
+            beneath.replace(p, ctx.granted_roots, data, must_exist=True)
+        except OSError as e:
+            return _unsafe(e)
+        return _matches(p, data, "edited", ctx)
 
     async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
         text = _read_text(_path(args))

@@ -101,6 +101,13 @@ is a known limit of this phase.
   secrets file and identity files), its source code, the macOS keychains,
   and `.git`, `.ssh`, `.aws`, `.gnupg` and `.env` files — on the normal path
   and again on the approved path.
+- **A file tool never opens a path by name.** It applies the floor once more,
+  then walks down from the granted folder one name at a time, each step opened
+  relative to the last and refused if it is a link, so a folder swapped for a
+  link after the check cannot carry a read or a write outside the grant. A
+  file with a second hard link is not read or appended to. On Windows, which
+  has no `dir_fd`, each step is checked for a link or a junction just before
+  the file opens instead. Proven by `tests/spine/test_parent_swap.py`.
 - **The local server listens on `127.0.0.1` only**, with no option to change
   it. Every request and socket needs the session token, which is issued
   fresh at each launch; another origin is refused even with the token, and
