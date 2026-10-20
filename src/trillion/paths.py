@@ -29,6 +29,11 @@ def memory_dir() -> Path:
     return home() / "memory"
 
 
+def audit_key_path() -> Path:
+    """The key that makes audit hashes unguessable (#4). Owner-only, never sent anywhere."""
+    return home() / "audit.key"
+
+
 def rules_path() -> Path:
     """The user's standing rules (BRN-5): one plain file they can read and edit."""
     return home() / "rules.md"

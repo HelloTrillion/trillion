@@ -52,6 +52,10 @@ class Refusal(StrEnum):
     LOOP_GUARD = "loop_guard"
     PRECONDITION_FAILED = "precondition_failed"
     PRECONDITION_CHANGED = "precondition_changed"
+    # The card was never shown on a screen, so the user cannot have seen what it says.
+    NOT_SHOWN = "not_shown"
+    # Nobody by that owner id exists here. Refused before anything else happens (#4).
+    UNKNOWN_OWNER = "unknown_owner"
 
 
 @dataclass(frozen=True)

@@ -49,6 +49,8 @@ def collect(chat: Chat, *until: str) -> tuple[list[dict[str, Any]], list[int]]:
             frames.append(struct.unpack_from("<BII", raw["bytes"])[1])
             continue
         msgs.append(json.loads(raw["text"]))
+        if msgs[-1]["type"] == "confirm.request":  # shown, as the page reports it
+            chat.ws.send_json({"type": "confirm.shown", "pending_id": msgs[-1]["pending_id"]})
         if msgs[-1]["type"] in until:
             return msgs, frames
 

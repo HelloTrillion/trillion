@@ -57,7 +57,7 @@ def orbs(page: Page) -> list[str]:
 async def test_she_is_told_which_messages_were_spoken(rt: Runtime) -> None:
     """#40: a transcript is marked as one, per message, and a typed message is not."""
     stt = hearing(rt, say("Heard you."), say("Read you."))
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await speak(session, room(0.2) + tone(0.6))
@@ -80,7 +80,7 @@ async def test_she_is_told_which_messages_were_spoken(rt: Runtime) -> None:
 
 async def test_a_spoken_message_becomes_a_turn(rt: Runtime) -> None:
     stt = hearing(rt, say("Good morning."))
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     assert page.all("session")[0]["listening"] == {
         "kind": "deepgram",
@@ -117,7 +117,7 @@ async def test_a_spoken_yes_confirms_and_is_recorded_as_spoken(rt: Runtime) -> N
     stt = hearing(
         rt, use("file_create", {"path": str(target), "content": "hi"}, "c1"), say("Shall I?")
     )
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "turn.text", "text": "write a"})
     await idle(session)
@@ -144,7 +144,7 @@ async def test_a_spoken_yes_confirms_and_is_recorded_as_spoken(rt: Runtime) -> N
 async def test_a_batch_recognizer_shows_she_is_working_while_it_transcribes(rt: Runtime) -> None:
     stt = hearing(rt, say("Sure."), streaming=False)
     stt.on_finish = ["turn it off"]
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await speak(session, tone(0.5) + room(1.2))
@@ -157,7 +157,7 @@ async def test_a_batch_recognizer_shows_she_is_working_while_it_transcribes(rt: 
 
 async def test_a_dead_microphone_is_said_out_loud(rt: Runtime) -> None:
     hearing(rt)
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await speak(session, dead(3.0))
@@ -178,7 +178,7 @@ async def test_a_microphone_that_sends_nothing_at_all_is_noticed(
 ) -> None:
     monkeypatch.setattr(session_module, "NO_AUDIO_S", 0.05)
     hearing(rt)
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await page.until("error")
@@ -191,7 +191,7 @@ async def test_nobody_speaking_ends_quietly_and_sound_without_words_is_explained
     rt: Runtime,
 ) -> None:
     stt = hearing(rt)
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await speak(session, room(8.2))
@@ -209,7 +209,7 @@ async def test_nobody_speaking_ends_quietly_and_sound_without_words_is_explained
 
 async def test_stopping_while_she_listens_throws_the_words_away(rt: Runtime) -> None:
     stt = hearing(rt)
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await speak(session, tone(0.5))
@@ -226,7 +226,7 @@ async def test_stopping_while_she_listens_throws_the_words_away(rt: Runtime) -> 
 
 async def test_the_user_can_end_their_own_message(rt: Runtime) -> None:
     stt = hearing(rt, say("Okay."))
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.stop"})  # nothing to stop: ignored
     await session.handle({"type": "listen.start"})
@@ -243,7 +243,7 @@ async def test_the_user_can_end_their_own_message(rt: Runtime) -> None:
 
 async def test_typing_wins_over_a_microphone_left_open(rt: Runtime) -> None:
     stt = hearing(rt, say("Typed it is."))
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     await session.handle({"type": "turn.text", "text": "never mind, typing"})
@@ -257,7 +257,7 @@ async def test_typing_wins_over_a_microphone_left_open(rt: Runtime) -> None:
 async def test_a_recognizer_that_fails_leaves_typing_working(rt: Runtime) -> None:
     stt = hearing(rt, say("Still here."))
     stt.fail = "unauthorized"
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
     assert page.all("error")[-1] == {
@@ -274,7 +274,7 @@ async def test_a_recognizer_that_fails_leaves_typing_working(rt: Runtime) -> Non
 
 
 async def test_listening_needs_a_recognizer_a_model_and_a_free_moment(rt: Runtime) -> None:
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     assert page.all("session")[0]["listening"] is None
     await session.handle({"type": "listen.start"})
@@ -290,7 +290,7 @@ async def test_listening_needs_a_recognizer_a_model_and_a_free_moment(rt: Runtim
 
 async def test_the_microphone_reopens_after_she_is_heard_and_only_then(rt: Runtime) -> None:
     stt = hearing(rt, say("Morning."), say("Typed."))
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
 
     # After a typed turn nothing reopens: she was not being spoken to.
@@ -319,7 +319,7 @@ async def test_the_microphone_reopens_after_she_is_heard_and_only_then(rt: Runti
 
 async def test_closing_the_tab_closes_the_microphone(rt: Runtime) -> None:
     stt = hearing(rt)
-    session = await Session.start(rt, Page().send, None)
+    session = await Session.start(rt, Page(rt).send, None)
     await session.handle({"type": "listen.start"})
     await session.close()
     assert stt.stream.closed and session._listener is None

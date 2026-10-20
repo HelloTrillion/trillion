@@ -22,6 +22,7 @@ from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.prompt import Identity, load_identity, load_soul
 from trillion.secrets.store import KeychainStore, SecretStore
+from trillion.spine.audit import audit_key
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.registry import ToolRegistry
 from trillion.spine.router import Router
@@ -279,7 +280,14 @@ async def open_runtime(
     chat_conn = await connect(path)
     registry = ToolRegistry.discover()
     store = SqliteSpineStore(spine_conn)
-    router = Router(registry, store, policy=DenyPolicy.default())
+    router = Router(
+        registry,
+        store,
+        policy=DenyPolicy.default(),
+        audit_key=audit_key(paths.audit_key_path()),
+        # The page reports a card once it is really on screen; only then can it be approved.
+        require_delivery=True,
+    )
     roots = tuple(r.expanduser().resolve() for r in granted_roots)
     # Finish what a crash interrupted before anything new can be proposed (SPN-17a).
     await router.recover(roots)

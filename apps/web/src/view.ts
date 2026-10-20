@@ -180,6 +180,8 @@ function cardOutcome(status: string, reason: string, detail: string): { status: 
     case 'in_progress':
       return { status: 'working', note: 'Working.' };
     default:
+      // Never on screen, so not approved, and still open: it waits for a tap like any card.
+      if (reason === 'not_shown') return { status: 'waiting', note: '' };
       return { status: 'closed', note: REFUSALS[reason] ?? (detail || 'This could not be approved.') };
   }
 }

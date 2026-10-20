@@ -47,7 +47,7 @@ async def boot(home: Path, *replies: Any) -> Runtime:
 
 
 async def talk(rt: Runtime, *said: str, resume: str | None = None) -> tuple[Session, Page]:
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, resume)
     for text in said:
         await session.handle({"type": "turn.text", "text": text})
@@ -140,7 +140,7 @@ async def test_a_hostile_memory_cannot_break_out_or_grant_anything(home: Path) -
     )
     provider = rt.provider
     assert isinstance(provider, ScriptedProvider)
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
 
     async def confirm_the_real_card(msg: dict[str, Any]) -> None:
