@@ -223,10 +223,21 @@ def check_page(found: Path | None) -> Check:
     return Check(name="App page", status="ok", detail=str(found))
 
 
+# What the `keyring` library calls each backend, in the words people know it by.
+KEYCHAIN_NAMES = {
+    "macOS Keyring": "macOS Keychain",
+    "Windows WinVaultKeyring": "Windows Credential Manager",
+    "SecretService Keyring": "Secret Service",
+    "libsecret Keyring": "Secret Service",
+    "kwallet DBusKeyring": "KDE Wallet",
+}
+
+
 def check_keychain(secrets: SecretStore, backend: str = "") -> Check:
     name = "Keychain"
     if secrets.available():
-        return Check(name=name, status="ok", detail=backend or "available")
+        shown = KEYCHAIN_NAMES.get(backend, backend or "available")
+        return Check(name=name, status="ok", detail=shown)
     fix = "Without one, a key cannot be saved in the app. A local model still works."
     if sys.platform.startswith("linux"):
         fix = (
