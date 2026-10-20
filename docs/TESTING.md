@@ -45,7 +45,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | 1.2.2 | The same confirmation arrives twice (double tap, reconnect, retried speech recognition) | Exactly one execution claim (SPN-17b's idempotency key). — [test](../tests/spine/test_outcomes.py) |
 | 1.2.3 | A tool exits zero but its effect never happened | `effect_status` is not derived from process exit; the outcome is failed or unknown, and she says so. — [test](../tests/spine/test_outcomes.py) |
 | 1.2.4 | Five confirmation cards load, one is displayed | `delivered_at` is stamped on **one** — written on render, never on fetch. — [test](../tests/spine/test_outcomes.py) |
-| 1.2.5 | Approve an action, clear the conversation entirely, then ask "did that ever reach me?" | Answered correctly from the decision record, which is queryable without conversation history. — [test](../tests/spine/test_compaction.py) |
+| 1.2.5 | Approve an action, clear the conversation entirely, then ask "did that ever reach me?" | Answered correctly from the decision record, which is queryable without conversation history. — [test](../tests/spine/test_compaction.py), [the tool she asks with](../tests/spine/test_decision_record.py), [end to end](../tests/api/test_decision_record.py) |
 
 ### 1.3 Boundaries (SPN-4, SPN-5, SPN-11a, SPN-11b, SEC-1–11)
 

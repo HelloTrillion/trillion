@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -196,6 +196,26 @@ class SqliteSpineStore:
                 (now_ms, *statuses, settled_before_ms),
             )
             return int(cur.rowcount or 0)
+
+    async def recent(
+        self, owner_id: str, *, since_ms: int, limit: int, words: Sequence[str] = ()
+    ) -> list[PendingAction]:
+        """The owner's actions proposed since a moment, newest first (SPN-17).
+
+        `words` narrows them to those whose summary contains any one of the words,
+        ignoring case. Each is matched as plain text: no character is a wildcard."""
+        marks = " OR ".join("p.summary LIKE ? ESCAPE '\\'" for _ in words)
+        patterns = [
+            "%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            for w in words
+        ]
+        async with self._conn.execute(
+            f"{_SELECT_PENDING} WHERE p.owner_id = ? AND p.created_at >= ?"
+            + (f" AND ({marks})" if words else "")
+            + " ORDER BY p.created_at DESC, p.id LIMIT ?",
+            (owner_id, since_ms, *patterns, limit),
+        ) as cur:
+            return [_row_to_pending(r) for r in await cur.fetchall()]
 
     async def list_decisions(self, pending_id: str) -> list[DecisionRow]:
         async with self._conn.execute(
