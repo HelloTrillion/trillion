@@ -111,6 +111,13 @@ class Session:
                     shown.append({"role": msg.role, "text": text})
             summary, rows = await rt.conversations.context(session.id, OWNER)
             session._summary = summary
+            if rt.web is not None:
+                # The addresses the user gave earlier in this conversation stay openable.
+                for kind, msg in await rt.conversations.history(session.id, OWNER):
+                    if kind == "user":
+                        for b in msg.blocks:
+                            if isinstance(b, TextBlock):
+                                rt.web.ledger.said(session.id, b.text)
             for message_id, kind, msg in rows:
                 session._ids.append(message_id)
                 session._kinds.append(kind)
@@ -620,6 +627,9 @@ class Session:
             datetime.now().astimezone(), pending, self._remembered(text) if kind == "user" else ""
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
+        if kind == "user" and self._rt.web is not None:
+            # Only what the user said themselves: never a tap's note, never a page.
+            self._rt.web.ledger.said(self.id, text)
         await self._save(kind, Msg(role="user", blocks=blocks))
 
     def _remembered(self, said: str) -> str:

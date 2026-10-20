@@ -35,6 +35,7 @@ from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.rules import DROP, KEEP, RuleDrop, RuleKeep
+from trillion.tools.web import FETCH, WebFetch
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 
@@ -126,6 +127,8 @@ class Runtime:
     # the newest is kept word for word (BRN-5).
     compact_at: int = compact.COMPACT_AT
     compact_keep: int = compact.KEEP
+    # The web tool, told what the user says so it knows which addresses they gave.
+    web: WebFetch | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -183,7 +186,13 @@ class Runtime:
                 "was asked, whether its card was shown, who answered and how, and the outcome. "
                 "decision_record reads it, whatever this conversation says or has forgotten"
             ),
-            "internet": "none: you have no tool that reaches the web",
+            "internet": (
+                "web_fetch reads one page, only at an address the user gave in this "
+                "conversation or a link on a page you already read there; it refuses this "
+                "computer and its local network"
+                if self.web is not None
+                else "none: you have no tool that reaches the web"
+            ),
         }
 
     async def use_model(self, settings: ModelSettings | None) -> None:
@@ -320,6 +329,9 @@ async def open_runtime(
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(registry.definitions, rt.facts)
+    web = registry.get(FETCH)
+    if isinstance(web, WebFetch):
+        rt.web = web
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):
         record.bind(store, OWNER, rt.clock)

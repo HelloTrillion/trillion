@@ -78,8 +78,16 @@ is a known limit of this phase.
 
 - **There is no shell tool.** The tools are the file tools (confined to
   folders the user granted), memory (`memory_write`, `memory_recall`,
-  `memory_forget`), standing rules (`rule_keep`, `rule_drop`) and
-  `describe_self`.
+  `memory_forget`), standing rules (`rule_keep`, `rule_drop`), the decision
+  record (`decision_record`, read-only), `web_fetch` and `describe_self`.
+- **`web_fetch` only opens an address the user gave, or a link on a page
+  already read**, in the same conversation. She cannot compose an address,
+  so nothing private can be sent out inside one. Every address a host
+  resolves to must be public: this machine, its local network and other
+  private, shared or reserved ranges are refused, checked when the connection
+  opens and pinned for it, and again on every redirect. Only ports 80 and 443,
+  no credentials in addresses, no cookies. Proven by `tests/unit/test_web.py`
+  and `tests/integration/test_injection_web.py`.
 - **Every file write asks first.** The file-writing tools — `file_create`,
   `file_overwrite`, `file_append` and `file_edit` — are all declared
   `irreversible`, so they are gated: the arguments are frozen when proposed,
