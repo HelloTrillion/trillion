@@ -623,8 +623,13 @@ class Session:
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
+        spoken = kind == "user" and self._via == "voice"
         context = volatile_context(
-            datetime.now().astimezone(), pending, self._remembered(text) if kind == "user" else ""
+            datetime.now().astimezone(),
+            pending,
+            self._remembered(text) if kind == "user" else "",
+            # Said aloud: she is told it is a transcript, and that she will be heard (#40).
+            spoken=self._rt.identity if spoken else None,
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
         if kind == "user" and self._rt.web is not None:

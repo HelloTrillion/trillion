@@ -54,6 +54,30 @@ def orbs(page: Page) -> list[str]:
     return [m["orb"] for m in page.all("state")]
 
 
+async def test_she_is_told_which_messages_were_spoken(rt: Runtime) -> None:
+    """#40: a transcript is marked as one, per message, and a typed message is not."""
+    stt = hearing(rt, say("Heard you."), say("Read you."))
+    page = Page()
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("can you hear me at all", final=True)
+    await speak(session, room(0.6))
+    await idle(session)
+    await session.handle({"type": "turn.text", "text": "and now I am typing"})
+    await idle(session)
+
+    def context_of(call: int) -> str:
+        message = rt.provider.calls[call][1][-1]  # type: ignore[union-attr]
+        return str(message.blocks[0].text)
+
+    assert "THIS MESSAGE WAS SPOKEN" in context_of(0)
+    assert "SPOKEN" not in context_of(1)
+    # The spoken one keeps its mark when replayed: history is never rewritten.
+    replayed = rt.provider.calls[1][1][0]  # type: ignore[union-attr]
+    assert "THIS MESSAGE WAS SPOKEN" in str(replayed.blocks[0].text)
+
+
 async def test_a_spoken_message_becomes_a_turn(rt: Runtime) -> None:
     stt = hearing(rt, say("Good morning."))
     page = Page()

@@ -161,7 +161,12 @@ def greeting(identity: Identity) -> str:
     return _fill(_prompt("greeting.md"), identity)
 
 
-def volatile_context(now: datetime, pending: Sequence[PendingNote], recalled: str = "") -> str:
+def volatile_context(
+    now: datetime,
+    pending: Sequence[PendingNote],
+    recalled: str = "",
+    spoken: Identity | None = None,
+) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
 
@@ -170,5 +175,9 @@ def volatile_context(now: datetime, pending: Sequence[PendingNote], recalled: st
     what was once said is never promoted to something the host asserts (MEM-6b)."""
     lines = [f"now: {now.strftime('%A %Y-%m-%d %H:%M %Z').strip()}"]
     lines.extend(f"waiting for an answer: {p.pending_id}: {p.summary}" for p in pending)
+    if spoken is not None:
+        # How this one message arrived (PER-3, #40). It rides here, with the message,
+        # so the cached block stays the same whether the user types or talks.
+        lines.append(_fill(_prompt("voice.md"), spoken))
     context = "<context>\n" + "\n".join(lines) + "\n</context>"
     return f"{context}\n{recalled}" if recalled else context
