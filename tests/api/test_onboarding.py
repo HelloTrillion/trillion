@@ -8,9 +8,12 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tests.api.test_server import App, home, make, reply  # noqa: F401
 from tests.brain.fakes import say
 from trillion.api.runtime import Runtime, open_runtime
+from trillion.persona import setup
 
 PATH = "/api/settings/persona"
 SAM = {
@@ -23,6 +26,22 @@ SAM = {
 
 def introduce(app: App, **body: Any) -> Any:
     return app.client.put(PATH, json=body, headers=app.auth)
+
+
+def test_a_made_up_timezone_is_refused_with_a_plain_message_and_a_suggestion(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup, "_zones", lambda: {"america/toronto": "America/Toronto"})
+    app = make()
+    refused = introduce(app, **(SAM | {"timezone": "America/Torontoo"}))
+    assert refused.status_code == 400
+    assert refused.json() == {
+        "error": "timezone_unknown",
+        "message": "That is not a timezone I know. Use an IANA name such as America/Toronto.",
+        "suggestion": "America/Toronto",
+    }
+    assert introduce(app, **(SAM | {"timezone": "America/Toronto"})).status_code == 200
+    assert introduce(app, **(SAM | {"timezone": "Not/AZone"})).json().get("suggestion") is None
 
 
 def test_a_fresh_install_is_due_an_introduction(make: Any) -> None:

@@ -395,6 +395,24 @@ def test_the_keychain_line_names_the_store_in_plain_words(backend: str, said: st
     assert check.status == "ok" and check.detail == said
 
 
+def test_a_made_up_saved_timezone_is_named_with_how_to_fix_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup, "_zones", lambda: {"america/toronto": "America/Toronto"})
+    (tmp_path / "USER.md").write_text(
+        "---\nuser_name: Sam\ntimezone: America/Torontoo\n---\n", encoding="utf-8"
+    )
+    check = doctor.check_introduction(tmp_path)
+    assert check.status == "warn"
+    assert "America/Torontoo" in check.detail and "is ignored" in check.detail
+    assert check.detail.startswith("you are Sam, she is Trillion")  # the names are kept
+    assert check.fix is not None and "Did you mean America/Toronto?" in check.fix
+    (tmp_path / "USER.md").write_text(
+        "---\nuser_name: Sam\ntimezone: America/Toronto\n---\n", encoding="utf-8"
+    )
+    assert doctor.check_introduction(tmp_path).status == "ok"
+
+
 def _keys(model: config.ModelSettings | None) -> dict[str, Check]:
     secrets = MemoryStore()
     secrets.set(config.secret_name("custom"), KEY)

@@ -124,3 +124,61 @@ def test_no_tool_can_write_who_she_is() -> None:
     """PER-2: the setup path is not model-facing. No registered tool names it."""
     names = {d.name for d in ToolRegistry.discover().definitions()}
     assert not {n for n in names if "persona" in n or "identity" in n or "onboard" in n}
+
+
+@pytest.fixture
+def zones(monkeypatch: pytest.MonkeyPatch) -> None:
+    known = ("America/Toronto", "Europe/Paris", "UTC")
+    monkeypatch.setattr(setup, "_zones", lambda: {z.lower(): z for z in known})
+
+
+@pytest.mark.usefixtures("zones")
+@pytest.mark.parametrize(
+    ("zone", "suggestion"),
+    [
+        ("Not/AZone", None),
+        ("America/Torontoo", "America/Toronto"),
+        ("europe/paris", "Europe/Paris"),
+    ],
+)
+def test_a_made_up_timezone_is_refused_with_the_nearest_real_one(
+    tmp_path: Path, zone: str, suggestion: str | None
+) -> None:
+    with pytest.raises(SetupError) as refused:
+        setup.save(Profile(user_name="Sam", timezone=zone), tmp_path)
+    assert (refused.value.code, refused.value.suggestion) == ("timezone_unknown", suggestion)
+    assert not (tmp_path / "USER.md").exists()
+
+
+@pytest.mark.usefixtures("zones")
+def test_a_timezone_the_machine_does_not_know_is_set_aside_and_the_names_are_kept(
+    tmp_path: Path,
+) -> None:
+    assert setup.save(Profile(user_name="Sam", timezone="America/Toronto"), tmp_path).timezone
+    (tmp_path / "USER.md").write_text(
+        "---\nuser_name: Sam\ntimezone: Not/AZone\n---\n", encoding="utf-8"
+    )
+    (tmp_path / "IDENTITY.md").write_text("---\nagent_name: Nova\n---\n", encoding="utf-8")
+    # Whether a zone is known depends on this machine, not the file: losing her names
+    # over it would be out of all proportion. Only the timezone is set aside.
+    loaded = setup.load(tmp_path)
+    assert loaded is not None
+    assert (loaded.user_name, loaded.agent_name, loaded.timezone) == ("Sam", "Nova", "")
+    # A name that breaks the rules still reads as not set up.
+    (tmp_path / "USER.md").write_text(
+        "---\nuser_name: {agent_name}\ntimezone: Not/AZone\n---\n", encoding="utf-8"
+    )
+    assert setup.load(tmp_path) is None
+
+
+def test_with_no_zone_data_on_the_machine_the_name_cannot_be_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup, "_zones", dict)
+    assert setup.save(Profile(user_name="Sam", timezone="Not/AZone"), tmp_path).timezone
+
+
+@pytest.mark.skipif(not setup._zones(), reason="this machine has no zone data")
+def test_the_machines_own_zone_data_knows_toronto_and_not_azone() -> None:
+    assert setup.unknown_zone("America/Toronto") is None
+    assert setup.unknown_zone("Not/AZone") is not None

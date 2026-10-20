@@ -435,6 +435,7 @@ async function finish(): Promise<void> {
   if (!ob) return;
   const { userName, agentName, timezone, directness } = ob.draft;
   let code = '';
+  let suggestion = '';
   try {
     const r = await api('PUT', '/api/settings/persona', {
       user_name: userName,
@@ -442,14 +443,21 @@ async function finish(): Promise<void> {
       timezone,
       directness,
     });
-    if (!r.ok) code = String(((await r.json().catch(() => ({}))) as { error?: unknown }).error ?? 'unreachable');
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: unknown; suggestion?: unknown };
+      code = String(body.error ?? 'unreachable');
+      suggestion = typeof body.suggestion === 'string' ? body.suggestion : '';
+    }
   } catch {
     code = 'unreachable';
   }
   if (!ob) return;
-  ob = code ? failed(ob, code) : saved(ob, ready());
+  ob = code ? failed(ob, code, suggestion) : saved(ob, ready());
   render();
-  after();
+  // A timezone the browser reported but this machine does not know is not the user's
+  // to fix: it is saved again without it (or with the nearest real one), at once.
+  if (ob.step === 'saving') void finish();
+  else after();
 }
 
 const ready = (): Ready => ({ model: view.model, speech: view.speech !== null, listening: view.listening !== null });

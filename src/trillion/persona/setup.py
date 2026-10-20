@@ -8,10 +8,13 @@ the tool registry, and the model never sees these functions.
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+import zoneinfo
+from dataclasses import dataclass, replace
+from functools import cache
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -27,11 +30,32 @@ _ZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]{0,31}(/[A-Za-z0-9_+-]{1,32}){0,2}$"
 
 
 class SetupError(ValueError):
-    """What was offered cannot be written. `code` is safe to show; it carries no input."""
+    """What was offered cannot be written. `code` is safe to show; it carries no input.
+    `suggestion`, when there is one, is a name taken from the zone list, never the input."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, suggestion: str | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.suggestion = suggestion
+
+
+@cache
+def _zones() -> dict[str, str]:
+    """Every IANA zone this machine knows, by lower-case name. Empty when the machine has
+    no zone data at all (Windows needs the `tzdata` package): then nothing can be checked."""
+    return {z.lower(): z for z in zoneinfo.available_timezones()}
+
+
+def unknown_zone(zone: str) -> SetupError | None:
+    """None if `zone` is a real IANA zone (or cannot be checked), else the refusal, with
+    the closest real zone as its suggestion when one is near enough to be useful."""
+    known = _zones()
+    if not known or zone in known.values():
+        return None
+    close = difflib.get_close_matches(zone.lower(), known, n=1, cutoff=0.7)
+    return SetupError(
+        "timezone_unknown", known.get(zone.lower()) or (known[close[0]] if close else None)
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -59,6 +83,8 @@ def clean(profile: Profile) -> Profile:
     zone = profile.timezone.strip()
     if zone and not _ZONE.match(zone):
         raise SetupError("timezone_not_allowed")
+    if zone and (unknown := unknown_zone(zone)):
+        raise unknown
     if profile.directness not in DIRECTNESS:
         raise SetupError("directness_not_allowed")
     return Profile(
@@ -71,22 +97,30 @@ def clean(profile: Profile) -> Profile:
 
 def load(directory: Path | None = None) -> Profile | None:
     """What onboarding wrote, or None if it has not happened. A hand edit that no
-    longer passes the rules is treated as not done rather than half trusted."""
+    longer passes the rules is treated as not done rather than half trusted.
+
+    A timezone this machine does not know is the exception: whether it is known
+    depends on the machine's zone data, not on the file, so the names are kept and
+    only the timezone is set aside. `trillion doctor` says so."""
     d = directory or paths.persona_dir()
     user, identity = fields(d / "USER.md"), fields(d / "IDENTITY.md")
     if "user_name" not in user:
         return None
     raw = user.get("directness", "")
     directness = next((d for d in DIRECTNESS if d == raw), DEFAULT_DIRECTNESS)
+    profile = Profile(
+        user_name=user["user_name"].strip("\"'"),
+        agent_name=identity.get("agent_name", DEFAULT_AGENT_NAME).strip("\"'"),
+        timezone=user.get("timezone", ""),
+        directness=directness,
+    )
     try:
-        return clean(
-            Profile(
-                user_name=user["user_name"].strip("\"'"),
-                agent_name=identity.get("agent_name", DEFAULT_AGENT_NAME).strip("\"'"),
-                timezone=user.get("timezone", ""),
-                directness=directness,
-            )
-        )
+        return clean(profile)
+    except SetupError as e:
+        if not e.code.startswith("timezone_"):
+            return None
+    try:
+        return clean(replace(profile, timezone=""))
     except SetupError:
         return None
 
