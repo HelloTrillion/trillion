@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
+import hmac
 import json
 import logging
+import os
 import unicodedata
 import uuid
 from collections.abc import Callable
@@ -207,12 +210,21 @@ class Router:
         policy: deny_floor.DenyPolicy,
         clock: Clock = system_clock,
         new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
+        audit_key: bytes | None = None,
+        require_delivery: bool = False,
     ) -> None:
         self._registry = registry
         self._store = store
         self._policy = policy
         self._clock = clock
         self._new_id = new_id
+        # Audit rows keep a keyed hash of each call's arguments, never a bare one: an
+        # unsalted hash of a short value such as a path can be guessed back (#4).
+        self._audit_key = audit_key or os.urandom(32)
+        # When set, a card must have been shown on a screen before it can be approved,
+        # so nobody approves what they never saw (#4). The running app sets it.
+        self._require_delivery = require_delivery
+        self._owners: set[str] = set()
 
     # ── The normal path ──────────────────────────────────────────────────
 
@@ -228,6 +240,8 @@ class Router:
     async def execute(
         self, call: ToolCall, ctx: ToolContext, guard: LoopGuard | None = None
     ) -> RouterResponse:
+        if not await self._known(ctx.owner_id):
+            return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
         h = _safe_hash(call.args)
 
@@ -337,8 +351,6 @@ class Router:
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)
             return _refused(Refusal.PRECONDITION_FAILED, "the action could not be described")
-        for old in await self._store.open_for_target(ctx.owner_id, ctx.session_id, name, target):
-            await self._move(old.id, Status.PROPOSED, Status.SUPERSEDED, _by(ctx, "superseded"))
         action = PendingAction(
             id=self._new_id(),
             owner_id=ctx.owner_id,
@@ -357,7 +369,10 @@ class Router:
             represented_from=represented_from,
             precondition_token=token,
         )
-        await self._store.insert_pending(action, _by(ctx, "proposed"))
+        # Any open proposal for the same target is retired in the same transaction.
+        await self._store.insert_pending(
+            action, _by(ctx, "proposed"), supersede=_by(ctx, "superseded")
+        )
         logger.info("pending action %s proposed for %s", action.id, name)
         return RouterResponse(
             status="confirmation_required", pending_id=action.id, summary=action.summary
@@ -374,6 +389,8 @@ class Router:
         downgrades any `via="tap"` to `"text"` before it reaches this method, so a tap
         on card A can never close the gate on card B.
         """
+        if not await self._known(ctx.owner_id):
+            return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
         a = await self._store.get_pending(pending_id)
         if a is None or a.owner_id != ctx.owner_id:
@@ -389,6 +406,15 @@ class Router:
             if verdict.reason is Refusal.ALREADY_RESOLVED:
                 return await self._audit_resolution(a, ctx, start, self._from_record(a))
             response = _refused(verdict.reason, verdict.detail)
+            return await self._audit_resolution(a, ctx, start, response)
+        if (
+            verdict is Status.APPROVED
+            and self._require_delivery
+            and await self._store.get_delivery(a.id) is None
+        ):
+            # Whatever she said about it, the card is what the user approves (SPN-2a), and
+            # it has not been on a screen. Declining needs no such proof.
+            response = _refused(Refusal.NOT_SHOWN, "its card has not been shown yet")
             return await self._audit_resolution(a, ctx, start, response)
 
         event = "rejected" if verdict is Status.REJECTED else "approved"
@@ -498,6 +524,8 @@ class Router:
 
     async def represent(self, pending_id: str, ctx: ToolContext) -> RouterResponse:
         """Ask again for an expired or invalidated proposal (SPN-2b). Never automatic."""
+        if not await self._known(ctx.owner_id):
+            return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
         a = await self._store.get_pending(pending_id)
         if a is None or a.owner_id != ctx.owner_id:
@@ -591,6 +619,17 @@ class Router:
         return touched
 
     # ── Helpers ──────────────────────────────────────────────────────────
+
+    async def _known(self, owner_id: str) -> bool:
+        """Whether this owner exists. An unknown one is refused before anything is done or
+        recorded: the audit row could not name them, and must not fail in its place (#4)."""
+        if owner_id in self._owners:
+            return True
+        if await self._store.owner_known(owner_id):
+            self._owners.add(owner_id)
+            return True
+        logger.warning("refused a call from an owner that does not exist")
+        return False
 
     def _get(self, name: str) -> _Registered | None:
         tool, definition = self._registry.get(name), self._registry.definition(name)
@@ -722,12 +761,17 @@ class Router:
         response: RouterResponse,
     ) -> RouterResponse:
         now = self._clock()
+        keyed = (
+            h
+            if h == _UNHASHABLE
+            else "hmac:" + hmac.new(self._audit_key, h.encode(), hashlib.sha256).hexdigest()
+        )
         await self._store.append_audit(
             AuditRecord(
                 owner_id=ctx.owner_id,
                 call_id=ctx.call_id,
                 tool=tool,
-                args_hash=h,
+                args_hash=keyed,
                 risk=risk,
                 decision=decision,
                 outcome=response.reason.value if response.reason else response.status,

@@ -122,6 +122,9 @@ class Chat:
             message = receive(self.ws)
             self.ws._raise_on_close(message)
             seen.append(json.loads(message["text"]))
+            if seen[-1]["type"] == "confirm.request":
+                # As the page does once a card is on screen: only then can it be approved.
+                self.ws.send_json({"type": "confirm.shown", "pending_id": seen[-1]["pending_id"]})
             if seen[-1]["type"] in kinds:
                 return seen
 

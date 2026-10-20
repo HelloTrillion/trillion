@@ -13,6 +13,7 @@ import aiosqlite
 from trillion.spine.audit import AuditRecord
 from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.contract import Risk
+from trillion.spine.deny_floor import fold
 from trillion.spine.hashing import canonical_json
 from trillion.spine.retention import SETTLED, slim
 from trillion.spine.store import DecisionIn, DecisionRow, DeliveryRow
@@ -90,8 +91,33 @@ class SqliteSpineStore:
             (owner_id, pending_id, d.event, d.decided_by, d.via, at),
         )
 
-    async def insert_pending(self, a: PendingAction, decision: DecisionIn) -> None:
+    async def insert_pending(
+        self, a: PendingAction, decision: DecisionIn, *, supersede: DecisionIn | None = None
+    ) -> list[str]:
+        """Save a new proposal. With `supersede`, first retire every open proposal from the
+        same session for the same tool and target, in the same transaction (#4): two
+        proposals racing for one file can never both stay open. Targets are compared
+        folded, as the file system compares them, so `Notes.txt` and `notes.txt` are one.
+        Returns the ids retired."""
+        retired: list[str] = []
         async with self._tx() as conn:
+            if supersede is not None:
+                async with conn.execute(
+                    "SELECT id, target FROM pending_actions WHERE owner_id = ?"
+                    " AND session_id = ? AND tool = ? AND status = ?",
+                    (a.owner_id, a.session_id, a.tool, Status.PROPOSED.value),
+                ) as cur:
+                    rows = await cur.fetchall()
+                for r in rows:
+                    if fold(str(r["target"])) != fold(a.target):
+                        continue
+                    await conn.execute(
+                        "UPDATE pending_actions SET status = ?, updated_at = ?"
+                        " WHERE id = ? AND status = ?",
+                        (Status.SUPERSEDED.value, a.created_at, r["id"], Status.PROPOSED.value),
+                    )
+                    await self._decision(conn, a.owner_id, str(r["id"]), supersede, a.created_at)
+                    retired.append(str(r["id"]))
             await conn.execute(
                 f"INSERT INTO pending_actions ({_PENDING_COLUMNS})"  # noqa: S608
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -123,6 +149,11 @@ class SqliteSpineStore:
                 (a.id, a.owner_id, canonical_json(a.args)),
             )
             await self._decision(conn, a.owner_id, a.id, decision, a.created_at)
+        return retired
+
+    async def owner_known(self, owner_id: str) -> bool:
+        async with self._conn.execute("SELECT 1 FROM owners WHERE id = ?", (owner_id,)) as cur:
+            return await cur.fetchone() is not None
 
     async def get_pending(self, pending_id: str) -> PendingAction | None:
         async with self._conn.execute(

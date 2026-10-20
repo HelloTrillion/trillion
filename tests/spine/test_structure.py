@@ -87,7 +87,8 @@ async def test_audit_records_hashes_never_values(spine: Spine) -> None:
     assert len(records) == 2
     for rec in records:
         assert secret not in repr(rec)
-        assert re.fullmatch(r"[0-9a-f]{64}", rec.args_hash)
+        # Keyed (#4): a bare hash of a short value such as a path could be guessed back.
+        assert re.fullmatch(r"hmac:[0-9a-f]{64}", rec.args_hash)
 
 
 def test_the_log_check_sees_the_call_phase(caplog: pytest.LogCaptureFixture) -> None:

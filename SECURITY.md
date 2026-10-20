@@ -108,6 +108,16 @@ is a known limit of this phase.
   file with a second hard link is not read or appended to. On Windows, which
   has no `dir_fd`, each step is checked for a link or a junction just before
   the file opens instead. Proven by `tests/spine/test_parent_swap.py`.
+- **A card must have been on screen to be approved.** The page reports each
+  card once it is really displayed; until then a tap or a spoken yes is
+  refused, and the card stays open. Declining needs no such proof.
+- **Two requests for the same file never both stay open.** A new one retires
+  the old in the same transaction, and `Notes.txt` and `notes.txt` count as
+  the same target.
+- **The audit log keeps keyed hashes**, made with a key created for this
+  install and kept owner-only, so a short argument such as a path cannot be
+  guessed back from a row. A call for an owner that does not exist is refused
+  before anything is done or recorded. Proven by `tests/spine/test_hardening.py`.
 - **The local server listens on `127.0.0.1` only**, with no option to change
   it. Every request and socket needs the session token, which is issued
   fresh at each launch; another origin is refused even with the token, and

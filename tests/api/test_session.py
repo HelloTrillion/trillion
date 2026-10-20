@@ -45,11 +45,17 @@ class Gated(ScriptedProvider):
 
 
 class Page:
-    def __init__(self) -> None:
+    """What the browser would receive. Like the real page, it reports each card as shown
+    once it arrives, which is what lets the card be approved (#4)."""
+
+    def __init__(self, rt: Runtime | None = None) -> None:
         self.got: list[dict[str, Any]] = []
+        self._rt = rt
 
     async def send(self, body: dict[str, Any]) -> None:
         self.got.append(body)
+        if body.get("type") == "confirm.request" and self._rt is not None:
+            await self._rt.router.mark_delivered(str(body["pending_id"]), "local", "web")
 
     def all(self, kind: str) -> list[dict[str, Any]]:
         return [m for m in self.got if m["type"] == kind]
@@ -94,7 +100,7 @@ async def test_a_tap_mid_turn_cannot_unlock_a_self_confirmation(rt: Runtime) -> 
     a, b = rt.granted_roots[0] / "a.txt", rt.granted_roots[0] / "b.txt"
     provider = Gated(create(rt, "a.txt", "c1"), create(rt, "b.txt", "c2"))
     rt.provider = provider
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     held = provider.hold(2)
 
@@ -131,7 +137,7 @@ async def test_a_tap_mid_turn_cannot_unlock_a_self_confirmation(rt: Runtime) -> 
 async def test_a_tap_still_approves_its_own_card_at_once(rt: Runtime) -> None:
     provider = Gated(create(rt, "a.txt", "c1"), say("Shall I?"), say("Done."))
     rt.provider = provider
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "turn.text", "text": "write a"})
     await idle(session)
@@ -147,7 +153,7 @@ async def test_a_tap_still_approves_its_own_card_at_once(rt: Runtime) -> None:
 async def test_the_turn_is_the_same_after_a_reload(rt: Runtime) -> None:
     provider = Gated(create(rt, "a.txt", "c1"), say("Shall I?"), say("Declined."))
     rt.provider = provider
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "turn.text", "text": "write a"})
     await idle(session)
@@ -157,7 +163,7 @@ async def test_the_turn_is_the_same_after_a_reload(rt: Runtime) -> None:
     await idle(session)
     before = session._turn
     await session.close()
-    again = await Session.start(rt, Page().send, session.id)
+    again = await Session.start(rt, Page(rt).send, session.id)
     assert again._turn == before == 1  # taps are not counted, live or reloaded
     await again.close()
 
@@ -166,7 +172,7 @@ async def test_two_turns_never_run_at_once(rt: Runtime) -> None:
     """A tap's note is queued mid-turn; a message arrives just as the turn ends."""
     provider = Gated(create(rt, "a.txt", "c1"), say("Shall I?"), say("Declined."), say("Hello."))
     rt.provider = provider
-    page = Page()
+    page = Page(rt)
     session = await Session.start(rt, page.send, None)
     held = provider.hold(1)
     await session.handle({"type": "turn.text", "text": "write a"})
@@ -191,7 +197,7 @@ async def test_two_turns_never_run_at_once(rt: Runtime) -> None:
 async def test_opening_a_conversation_elsewhere_ends_the_first_session(rt: Runtime) -> None:
     provider = Gated(create(rt, "a.txt", "c1"), say("Shall I?"), say("unreached"))
     rt.provider = provider
-    first_page, second_page = Page(), Page()
+    first_page, second_page = Page(rt), Page(rt)
     first = await Session.start(rt, first_page.send, None)
     held = provider.hold(1)
     await first.handle({"type": "turn.text", "text": "write a"})
