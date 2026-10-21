@@ -61,7 +61,8 @@ class Speaker:
         self._turn = turn
         self._send = send
         self._send_bytes = send_bytes
-        self._splitter = SentenceSplitter()
+        # Her voice starts at the first natural pause, not the first full stop.
+        self._splitter = SentenceSplitter(clause_first=True)
         self._count = 0
         self._failed = False
         self._queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()

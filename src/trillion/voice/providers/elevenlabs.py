@@ -6,11 +6,14 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 
+from trillion import net
 from trillion.voice.types import AudioFormat, Voice, VoiceError, Where
 
 NAME = "elevenlabs"
 BASE_URL = "https://api.elevenlabs.io"
-DEFAULT_MODEL = "eleven_turbo_v2_5"
+# Flash: ElevenLabs' low-latency model. Measured from here, its first audio arrives
+# about 0.1s sooner than Turbo's, with less silence before the first word.
+DEFAULT_MODEL = "eleven_flash_v2_5"
 # 16 kHz PCM is available on every plan; higher PCM rates need a paid tier.
 FORMAT = AudioFormat(sample_rate=16_000)
 _OUTPUT = "pcm_16000"
@@ -45,7 +48,11 @@ class ElevenLabs:
         # The key is fetched for each request and never held (SEC-6).
         self._api_key = api_key
         self._model = model
-        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
+        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT, limits=net.KEEP_ALIVE)
+
+    async def warm(self) -> None:
+        """Open the connection before the first sentence needs it. Sends nothing."""
+        await net.warm(self._client, BASE_URL)
 
     async def synthesize(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
         if not text.strip():

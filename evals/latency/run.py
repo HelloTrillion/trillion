@@ -173,7 +173,7 @@ class Bench:
         return run
 
 
-async def bench(url: str, runs: int, question: bytes) -> int:
+async def bench(url: str, runs: int, question: bytes, gap_s: float = 8.0) -> int:
     from websockets.asyncio.client import connect
 
     parts = urlsplit(url)
@@ -200,7 +200,7 @@ async def bench(url: str, runs: int, question: bytes) -> int:
         say(
             f"{platform.system()} {platform.machine()}, Python {platform.python_version()}\n"
             f"model {model['provider']} {model['model']} · ears {ears['kind']} · voice "
-            f"{speech['kind']}\n{runs} timed turns after one to warm up, one at a time\n"
+            f"{speech['kind']}\n{runs} timed turns after one to warm up, {gap_s:g}s apart\n"
         )
         results: list[Run] = []
         for i in range(runs + 1):
@@ -215,7 +215,8 @@ async def bench(url: str, runs: int, question: bytes) -> int:
             )
             if i:
                 results.append(result)
-            await asyncio.sleep(0.5)
+            # People pause between turns, and an idle connection may be gone by then.
+            await asyncio.sleep(gap_s)
         reader.cancel()
     heard = [r.audible_s for r in results if r.audible_s is not None]
     if not heard:
@@ -247,12 +248,15 @@ def main() -> int:
     args.add_argument("--runs", type=int, default=10)
     args.add_argument("--wav", type=Path, help="the question, 16 kHz mono 16-bit")
     args.add_argument("--say", default=QUESTION, help="what `say` records, with no --wav")
+    args.add_argument(
+        "--gap", type=float, default=8.0, help="seconds between turns, as a person pauses (8)"
+    )
     opts = args.parse_args()
     question = read_wav(opts.wav) if opts.wav else record_question(opts.say)
     if not loud_samples(question):
         raise SystemExit("The recording is silent.")
     try:
-        return asyncio.run(bench(opts.url, max(1, opts.runs), question))
+        return asyncio.run(bench(opts.url, max(1, opts.runs), question, opts.gap))
     except KeyboardInterrupt:
         return 130
     except OSError as e:

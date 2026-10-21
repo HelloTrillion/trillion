@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from trillion import net
 from trillion.voice.types import AudioFormat, Voice, VoiceError, Where
 
 NAME = "custom"
@@ -40,7 +41,11 @@ class CompatibleSpeech:
 
     def __init__(self, *, base_url: str, client: httpx.AsyncClient | None = None) -> None:
         self._base = base_url.rstrip("/")
-        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT)
+        self._client = client or httpx.AsyncClient(timeout=_TIMEOUT, limits=net.KEEP_ALIVE)
+
+    async def warm(self) -> None:
+        """Open the connection before the first sentence needs it. Sends nothing."""
+        await net.warm(self._client, self._base)
 
     async def synthesize(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
         if not text.strip():

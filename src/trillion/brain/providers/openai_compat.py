@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from trillion import net
 from trillion.brain import sse
 from trillion.brain.types import (
     ContextBlock,
@@ -128,7 +129,11 @@ class OpenAICompatProvider:
         # OpenAI's own API renamed the output cap; local servers still use the old name.
         self._cap_field = cap_field
         self._url = base_url.rstrip("/") + "/chat/completions"
-        self._client = client or httpx.AsyncClient(timeout=sse.TIMEOUT)
+        self._client = client or httpx.AsyncClient(timeout=sse.TIMEOUT, limits=net.KEEP_ALIVE)
+
+    async def warm(self) -> None:
+        """Open the connection before the next request needs it. Sends nothing."""
+        await net.warm(self._client, self._url)
 
     def pricing(self) -> Pricing | None:
         return None
