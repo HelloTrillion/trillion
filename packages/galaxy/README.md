@@ -69,4 +69,7 @@ galaxy.destroy();         // stops the loop and frees GPU resources
 pnpm --filter @hellotrillion/galaxy typecheck
 pnpm --filter @hellotrillion/galaxy test
 pnpm --filter @hellotrillion/galaxy build
+pnpm --filter @hellotrillion/galaxy test:visual
 ```
+
+`test:visual` photographs every state in dark and light at a fixed seed and compares each with its reference in `visual/snapshots/` (GAL-12). It draws in software, so it needs no graphics card; the first run may need `pnpm --filter @hellotrillion/galaxy exec playwright install chromium`. After changing the look on purpose, run it with `--update-snapshots` and look at the new pictures before committing them.
