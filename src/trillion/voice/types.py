@@ -66,6 +66,9 @@ class Heard:
 
     text: str
     final: bool
+    # The recognizer itself heard the speaker stop here (Deepgram's speech_final).
+    # A hint for the listener, never the decision.
+    pause: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)

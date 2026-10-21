@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from tests.voice.audio import dead, frames, room, tone
-from trillion.voice.endpoint import DEAD_AFTER_S, FAST_S, SLOW_S, EndOfSpeech, level
+from trillion.voice.endpoint import (
+    DEAD_AFTER_S,
+    DONE_S,
+    FAST_S,
+    SLOW_S,
+    EndOfSpeech,
+    level,
+    sounds_finished,
+)
 
 
 def run(rules: EndOfSpeech, pcm: bytes) -> str | None:
@@ -122,3 +130,56 @@ def test_a_voice_too_quiet_to_measure_falls_back_to_the_words() -> None:
     rules.heard(final=True, has_text=True)
     run(rules, room(0.2))
     assert 0.15 <= rules.quiet_s <= 0.25
+
+
+def test_a_finished_question_ends_as_soon_as_the_recognizer_hears_the_pause() -> None:
+    """Latency: when the words read as finished and the recognizer heard the pause,
+    the turn ends then, not 0.4s after the late final words arrive."""
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.3) + tone(1.0))  # the voice stops at 1.3s
+    rules.heard(final=False, has_text=True)
+    assert run(rules, room(0.5)) is None
+    rules.heard(final=True, has_text=True, done=True)  # Deepgram's final, ~0.5s late
+    assert run(rules, room(0.04)) == "end"
+    assert rules.now < 1.3 + 0.6
+
+
+def test_a_thought_that_does_not_sound_finished_waits_as_before() -> None:
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.3) + tone(1.0))
+    run(rules, room(0.5))
+    rules.heard(final=True, has_text=True, done=False)  # "...and I was thinking"
+    assert run(rules, room(FAST_S - 0.1)) is None
+    assert run(rules, room(0.2)) == "end"
+
+
+def test_done_is_never_believed_over_a_voice_that_is_still_going() -> None:
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.3) + tone(1.0))
+    rules.heard(final=True, has_text=True, done=True)
+    assert run(rules, tone(0.5)) is None  # they kept talking
+    assert run(rules, room(DONE_S - 0.1)) is None
+
+
+def test_new_words_after_a_finished_sentence_undo_it() -> None:
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.3) + tone(1.0) + room(0.3))
+    rules.heard(final=True, has_text=True, done=True)
+    rules.heard(final=False, has_text=True)  # "...and another thing"
+    assert run(rules, room(0.3)) is None
+
+
+def test_an_empty_final_does_not_undo_a_finished_sentence() -> None:
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.3) + tone(1.0))
+    run(rules, room(0.3))
+    rules.heard(final=True, has_text=True, done=True)
+    rules.heard(final=True, has_text=False)  # the recognizer reporting silence
+    assert run(rules, room(0.04)) == "end"
+
+
+def test_what_sounds_finished() -> None:
+    finished = ["What is the tallest mountain in the world?", "Okay.", "Thanks!", 'In "Nepal."']
+    unfinished = ["set a timer for", "I want to go and.", "So um.", "Hmm...", "Hmm…", "", "and."]
+    assert all(sounds_finished(t) for t in finished)
+    assert not any(sounds_finished(t) for t in unfinished)

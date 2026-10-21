@@ -346,3 +346,24 @@ async def test_a_file_that_is_not_the_pinned_one_is_never_kept(
         await models.download(PACK, tmp_path, client=client)
     assert e.value.kind == kind
     assert list(tmp_path.iterdir()) == [] and not models.installed(PACK, tmp_path)
+
+
+def test_deepgram_says_when_it_heard_the_speaker_pause() -> None:
+    def said(text: str, *, final: bool, pause: bool) -> str:
+        return json.dumps(
+            {
+                "type": "Results",
+                "is_final": final,
+                "speech_final": pause,
+                "channel": {"alternatives": [{"transcript": text}]},
+            }
+        )
+
+    assert deepgram.parse(said("Hi there.", final=True, pause=True)) == Heard(
+        text="Hi there.", final=True, pause=True
+    )
+    assert deepgram.parse(said("Hi there", final=True, pause=False)) == Heard(
+        text="Hi there", final=True
+    )
+    # A pause on words that are not final yet is not one.
+    assert deepgram.parse(said("Hi", final=False, pause=True)) == Heard(text="Hi", final=False)

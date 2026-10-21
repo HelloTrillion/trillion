@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from trillion.voice.endpoint import NOTHING_AFTER_S, EndOfSpeech, Verdict
+from trillion.voice.endpoint import NOTHING_AFTER_S, EndOfSpeech, Verdict, sounds_finished
 from trillion.voice.types import STTProvider, STTStream, VoiceError
 
 logger = logging.getLogger(__name__)
@@ -111,13 +111,16 @@ class Listener:
     async def _read(self, stream: STTStream) -> None:
         try:
             async for heard in stream.events():
-                self._rules.heard(final=heard.final, has_text=bool(heard.text))
                 if heard.final:
                     if heard.text:
                         self._finals.append(heard.text)
                     self._interim = ""
                 else:
                     self._interim = heard.text
+                # Ended quickly only when the recognizer heard a pause and the whole
+                # message so far reads as finished; otherwise the patient rules apply.
+                done = heard.pause and sounds_finished(self.text())
+                self._rules.heard(final=heard.final, has_text=bool(heard.text), done=done)
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:
