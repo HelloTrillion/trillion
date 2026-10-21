@@ -2,8 +2,12 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
+import { createAbout, createAppearance, createFolders, createShortcuts } from './browser';
+import { TalkKeys, type TalkPrefs } from './hotkey';
+import { icon } from './icons';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
+import { createNamesSettings } from './names';
 import {
   APPROVE,
   DECLINE,
@@ -21,6 +25,8 @@ import {
   placeholder,
   saved,
 } from './onboarding';
+import { createPanel } from './panel';
+import { saveTalk, saveTheme, savedTalk, savedTheme } from './prefs';
 import { type Api, createSettings } from './settings';
 import { createSpeechSettings } from './speech';
 import { createVoice } from './voice';
@@ -41,7 +47,6 @@ import {
 const PROTOCOL = 1;
 const TOKEN_KEY = 'trillion-token';
 const CONVERSATION_KEY = 'trillion-conversation';
-const THEME_KEY = 'trillion-theme';
 // In development the page comes from Vite and the core runs beside it.
 const CORE = import.meta.env.DEV ? '127.0.0.1:7777' : location.host;
 const WS_URL = `ws://${CORE}/ws`;
@@ -76,7 +81,6 @@ function takeToken(): string | null {
 
 const canvas = $<HTMLCanvasElement>('galaxy');
 const statusEl = $('status');
-const modelEl = $<HTMLButtonElement>('model');
 const bannerEl = $('banner');
 const transcriptEl = $('transcript');
 const form = $<HTMLFormElement>('ask');
@@ -85,40 +89,22 @@ const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
 const footEl = $('foot');
 const newBtn = $<HTMLButtonElement>('new');
-const speechBtn = $<HTMLButtonElement>('speech');
-const listeningBtn = $<HTMLButtonElement>('listening');
 const micBtn = $<HTMLButtonElement>('mic');
-const namesBtn = $<HTMLButtonElement>('names');
+const settingsBtn = $<HTMLButtonElement>('open-settings');
+settingsBtn.replaceChildren(icon('menu', 20));
 const choicesEl = $('choices');
 
-function savedTheme(): Theme {
-  try {
-    const saved = localStorage.getItem(THEME_KEY);
-    if (saved === 'light' || saved === 'dark') return saved;
-  } catch {
-    // fall through to the system preference
-  }
-  return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-}
-
-let theme = savedTheme();
+let theme: Theme = savedTheme(matchMedia('(prefers-color-scheme: light)').matches);
+let talkPrefs: TalkPrefs = savedTalk();
+const talkKeys = new TalkKeys(talkPrefs);
+let version = '';
 const galaxy = createGalaxy(canvas, { theme });
 
 function applyTheme(next: Theme): void {
   theme = next;
   document.documentElement.dataset['theme'] = next;
   galaxy.setTheme(next);
-  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]')) {
-    b.setAttribute('aria-checked', String(b.dataset['themeChoice'] === next));
-  }
-  try {
-    localStorage.setItem(THEME_KEY, next);
-  } catch {
-    // not remembered, still applied
-  }
-}
-for (const b of document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]')) {
-  b.addEventListener('click', () => applyTheme(b.dataset['themeChoice'] === 'light' ? 'light' : 'dark'));
+  saveTheme(next);
 }
 applyTheme(theme);
 
@@ -324,17 +310,11 @@ function render(): void {
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
   statusEl.textContent = ready ? STATE_TEXT[view.orb] : view.link === 'connecting' ? 'Connecting' : 'Offline';
-  modelEl.hidden = !ready;
-  speechBtn.hidden = !ready;
-  speechBtn.textContent = view.speech ? 'Voice: on' : 'Voice: off';
-  speechBtn.title = 'Voice settings';
-  listeningBtn.hidden = !ready;
-  listeningBtn.textContent = view.listening ? 'Mic: on' : 'Mic: off';
-  listeningBtn.title = 'Mic settings';
   newBtn.hidden = !ready || view.entries.length === 0;
   const introducing = ready && active(ob);
-  namesBtn.hidden = !ready || introducing;
-  namesBtn.title = 'Your name, her name, and how blunt she is';
+  settingsBtn.hidden = !ready || introducing;
+  settingsBtn.title = `Settings (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'},)`;
+  if (panel.isOpen) panel.refresh();
   const quick = introducing && ob ? choices(ob) : [];
   const quickKey = introducing && ob ? ob.step + quick.map((c) => c.label).join('|') : '';
   choicesEl.hidden = quick.length === 0;
@@ -349,8 +329,6 @@ function render(): void {
       }),
     );
   }
-  modelEl.textContent = view.model ?? 'Choose a model';
-  modelEl.title = 'Model settings';
   // While her voice is sounding she is speaking, whatever the core has moved on to.
   galaxy.setState(!ready ? (view.link === 'connecting' ? 'idle' : 'error') : voice.active ? 'speaking' : view.orb);
 
@@ -406,12 +384,53 @@ const api: Api = (method, path, body) =>
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-const settings = createSettings($<HTMLDialogElement>('settings'), api);
-modelEl.addEventListener('click', () => void settings.open());
-const speechSettings = createSpeechSettings($<HTMLDialogElement>('speech-settings'), api);
-speechBtn.addEventListener('click', () => void speechSettings.open());
-const listeningSettings = createListeningSettings($<HTMLDialogElement>('listening-settings'), api);
-listeningBtn.addEventListener('click', () => void listeningSettings.open());
+// One panel for every setting (Settings, top right). The model, voice and microphone
+// sections are the same modules that used to be separate dialogs.
+const panel = createPanel($<HTMLDialogElement>('settings-panel'));
+const settings = createSettings(panel.host('model'), api);
+const speechSettings = createSpeechSettings(panel.host('voice'), api);
+const listeningSettings = createListeningSettings(panel.host('mic'), api);
+const namesSettings = createNamesSettings(panel.host('names'), api, {
+  talk: () => talkNames(),
+  // The core tells every open page the new name itself; only the summary here changes.
+  saved: () => panel.refresh(),
+});
+const shortcuts = createShortcuts(
+  panel.host('shortcuts'),
+  () => talkPrefs,
+  (prefs) => {
+    talkPrefs = prefs;
+    talkKeys.use(prefs);
+    saveTalk(prefs);
+    panel.refresh();
+  },
+);
+const appearance = createAppearance(
+  panel.host('appearance'),
+  () => theme,
+  (t) => {
+    applyTheme(t);
+    panel.refresh();
+  },
+);
+const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
+const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
+const HER = 'Her';
+const YOU = 'You';
+const COMPUTER = 'This computer';
+panel.add({ id: 'model', label: 'Model', group: HER, icon: 'model', keywords: 'brain provider key anthropic openai ollama', summary: () => view.model ?? 'None chosen', open: () => settings.open() });
+panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 'speech speak elevenlabs sound', summary: () => (view.speech ? 'On' : 'Off'), open: () => speechSettings.open() });
+panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
+panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
+panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
+panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light', summary: () => (theme === 'dark' ? 'Dark' : 'Light'), open: () => appearance.open() });
+panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder', summary: () => (view.grantedRoots.length ? `${view.grantedRoots.length} shared` : 'None'), open: () => folders.open() });
+panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
+function openSettings(at?: string): void {
+  void namesSettings.peek().then(() => panel.refresh());
+  panel.open(at);
+}
+settingsBtn.addEventListener('click', () => openSettings());
 let offered = false;
 
 // ── Introductions ────────────────────────────────────────────────────────
@@ -508,7 +527,8 @@ function reply(text: string): void {
   if (active(ob)) input.focus();
 }
 
-namesBtn.addEventListener('click', () => {
+/** Change names by talking: the same conversation as onboarding, from current answers. */
+function talkNames(): void {
   void (async () => {
     let current: Profile = { userName: '', agentName: view.agentName, timezone: '', directness: 'balanced' };
     try {
@@ -527,7 +547,7 @@ namesBtn.addEventListener('click', () => {
     }
     introduce(current);
   })();
-});
+}
 
 newBtn.addEventListener('click', () => {
   // Forget which conversation this tab was in; the core starts a fresh one on reconnect.
@@ -580,7 +600,10 @@ function connect(): void {
     if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening')) mic.stop();
     apply(reduce(view, msg));
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
-    if (msg.type === 'session') obDue = msg['onboarding'] === 'due';
+    if (msg.type === 'session') {
+      obDue = msg['onboarding'] === 'due';
+      version = typeof msg['version'] === 'string' ? msg['version'] : version;
+    }
     // Something was chosen in a dialog while she was asking about it: she moves on.
     if (ob && active(ob) && (msg.type === 'model' || msg.type === 'speech' || msg.type === 'listening')) {
       const next = configured(ob, ready());
@@ -651,7 +674,8 @@ const interrupt = (): void => {
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);
-micBtn.addEventListener('click', () => {
+/** Start listening, or, while listening, send what she heard. The Speak button and Space. */
+function talk(): void {
   if (!view.listening) {
     void listeningSettings.open();
   } else if (view.mic) {
@@ -661,17 +685,57 @@ micBtn.addEventListener('click', () => {
     voice.unlock(); // a click is what lets a browser play her answer
     voice.stop();
     send({ type: 'listen.start' });
-    // Opened here, inside the click, so the browser's permission prompt belongs to it.
+    // Opened here, inside the click or key press, so the permission prompt belongs to it.
     void mic.start();
   }
-});
+}
+micBtn.addEventListener('click', talk);
+/** What the talk shortcut can see of one key event. */
+function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
+  const target = ev.target instanceof HTMLElement ? ev.target : null;
+  return {
+    code: ev.code,
+    ctrl: ev.ctrlKey,
+    alt: ev.altKey,
+    shift: ev.shiftKey,
+    meta: ev.metaKey,
+    repeat: ev.repeat,
+    inMessageBox: target === input,
+    messageEmpty: input.value.trim() === '',
+    // Another field, a button, or anything in Settings takes keys itself.
+    inOtherControl:
+      panel.isOpen ||
+      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], dialog') !== null),
+  };
+}
+
+/** Do what the talk shortcut asked. */
+function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
+  if (action === null || view.link !== 'ready' || active(ob)) return;
+  ev.preventDefault();
+  if (action === 'toggle') talk();
+  else if (action === 'start' && !view.mic) talk();
+  else if (action === 'stop' && view.mic) send({ type: 'listen.stop' });
+  else if (action === 'cancel' && view.mic) interrupt();
+}
+
 addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && (view.busy || voice.active || view.mic)) interrupt();
+  // The usual way to Settings on any desktop: Command or Control with a comma.
+  if (ev.key === ',' && (ev.metaKey || ev.ctrlKey) && !panel.isOpen) {
+    ev.preventDefault();
+    openSettings();
+    return;
+  }
+  onTalk(talkKeys.down(keyOf(ev)), ev);
   if (ev.key === 'k' && (ev.metaKey || ev.ctrlKey)) {
     ev.preventDefault();
     input.focus();
   }
 });
+addEventListener('keyup', (ev) => onTalk(talkKeys.up({ code: ev.code }), ev));
+// A key let go in another window never arrives; start fresh when the tab comes back.
+addEventListener('blur', () => talkKeys.use(talkPrefs));
 setInterval(() => apply(expire(view, Date.now())), 15_000);
 
 // Pasting the launch link into a tab that is already open changes only the fragment.

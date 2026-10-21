@@ -7,6 +7,7 @@
  */
 
 import { type Api, errorText } from './settings';
+import type { Host } from './panel';
 
 interface Option {
   readonly kind: string;
@@ -56,7 +57,7 @@ export interface SpeechSettings {
   open(): Promise<void>;
 }
 
-export function createSpeechSettings(dialog: HTMLDialogElement, api: Api): SpeechSettings {
+export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   let state: State | null = null;
   let kind = OFF;
   let busy = false;

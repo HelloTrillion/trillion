@@ -12,7 +12,7 @@ It happens in the transcript, typed, in three questions:
 2. **Her name.** Keep the one she has (one click, or "keep it") or type a new one.
 3. **Tone.** Blunt, balanced or gentler, as buttons or typed.
 
-Then the app saves, and she says what was saved, the timezone the browser reported, and what comes next. **Skip for now** is offered at every step (ONB-9). The **Names** button in the header runs the same three questions again later, starting from the current answers.
+Then the app saves, and she says what was saved, the timezone the browser reported, and what comes next. **Skip for now** is offered at every step (ONB-9). **Names** in Settings changes them later, as a form or, with "Change them by talking", as the same three questions starting from the current answers.
 
 **Her lines here are authored, not composed.** On a first run there may be no model to compose anything, and the names must not be written by her in any case. The script lives in `apps/web/src/onboarding.ts` as a pure state machine. It uses the name she currently has and never a hardcoded one, and her last line says the script is over.
 
@@ -64,7 +64,7 @@ A name goes into every prompt and into a `key: value` line, so it is one line of
 - **The timezone is stored and not yet used.** The core runs on the user's machine, so `now` already comes from the local clock. Using the stored zone needs time zone data that Windows does not ship.
 - **Her scripted lines are never spoken**, even with a voice chosen. Onboarding runs as text.
 - **The soul is not copied into the data folder.** The PRD says onboarding copies `SOUL.md` there; this slice leaves her on the shipped one, so testers keep getting updates to it. That needs a decision before Phase 0 is done.
-- An introduction is offered only in an empty conversation. If a tab resumes a conversation with history, the Names button is the way in.
+- An introduction is offered only in an empty conversation. If a tab resumes a conversation with history, Names in Settings is the way in.
 
 ## The second slice: the ladder, the card and her first words
 

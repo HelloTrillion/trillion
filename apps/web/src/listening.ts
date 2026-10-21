@@ -8,6 +8,7 @@
  */
 
 import { type Api, errorText } from './settings';
+import type { Host } from './panel';
 
 interface Option {
   readonly kind: string;
@@ -57,7 +58,7 @@ export interface ListeningSettings {
   open(): Promise<void>;
 }
 
-export function createListeningSettings(dialog: HTMLDialogElement, api: Api): ListeningSettings {
+export function createListeningSettings(dialog: Host, api: Api): ListeningSettings {
   let state: State | null = null;
   let kind = OFF;
   let found: readonly Choice[] = [];

@@ -81,7 +81,7 @@ Then start it:
 uv run trillion run --grant ~/Desktop
 ```
 
-The app opens in your browser and asks who should answer: Anthropic (Claude), OpenAI, a free local model through [Ollama](https://ollama.com) or LM Studio, or any OpenAI-compatible service. Paste your key there. It is checked, then stored in your operating system's keychain: never in a file, the database or a log, and it is sent only to the provider you chose. Change it any time from the model button in the top right.
+The app opens in your browser and asks who should answer: Anthropic (Claude), OpenAI, a free local model through [Ollama](https://ollama.com) or LM Studio, or any OpenAI-compatible service. Paste your key there. It is checked, then stored in your operating system's keychain: never in a file, the database or a log, and it is sent only to the provider you chose. Change it any time in **Settings** (top right), under Model.
 
 Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
 
@@ -95,7 +95,7 @@ It checks the data folder, the database, the port, the keychain, your model, voi
 
 `--grant` shares one folder with the file tools; without it they are off. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
-**Talking to her.** Open **Mic** (top right) and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, talk, and stop: she answers when you go quiet. The microphone is on only while you are speaking to her.
+**Talking to her.** Open **Settings** (top right), then **Microphone**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Space can be turned off in Settings, under Shortcuts. The microphone is on only while you are speaking to her.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 
