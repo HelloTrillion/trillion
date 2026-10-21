@@ -8,7 +8,7 @@ import os
 import socket
 import sys
 import webbrowser
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -66,13 +66,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(f"trillion {__version__}\n")
         return 0
     if args.command == "run":
-        return asyncio.run(_run(args))
+        return _until_stopped(_run(args))
     if args.command == "doctor":
         return asyncio.run(_doctor(args))
     if args.command == "setup":
-        return asyncio.run(_setup(args))
+        return _until_stopped(_setup(args))
     parser.print_help()
     return 0
+
+
+def _until_stopped(work: Coroutine[Any, Any, int]) -> int:
+    """Run until done. Ctrl+C before the server is up stops it without a traceback."""
+    try:
+        return asyncio.run(work)
+    except KeyboardInterrupt:
+        sys.stdout.write("\nStopped.\n")
+        return 130
 
 
 async def _examine(args: argparse.Namespace, *, secrets: bool) -> tuple[str, bool]:
@@ -178,6 +187,7 @@ async def _run(args: argparse.Namespace) -> int:
     from trillion.api.app import HOST, MAX_FRAME_BYTES, create_app, local_hosts, web_dir
     from trillion.api.runtime import open_runtime
     from trillion.brain.config import ConfigError, provider_from_env
+    from trillion.cli.server import Server
     from trillion.secrets import redact
 
     for folder in args.grant:
@@ -209,7 +219,7 @@ async def _run(args: argparse.Namespace) -> int:
             extra_origins=frozenset({DEV_ORIGIN}) if args.dev else frozenset(),
             static=web_dir(),
         )
-        server = uvicorn.Server(
+        server = Server(
             uvicorn.Config(
                 app,
                 host=HOST,
@@ -248,6 +258,7 @@ async def _run(args: argparse.Namespace) -> int:
     finally:
         build.withdraw()
         await rt.close()
+    sys.stdout.write("Trillion stopped.\n")
     return 0
 
 
