@@ -26,7 +26,8 @@ import {
   saved,
 } from './onboarding';
 import { createPanel } from './panel';
-import { saveTalk, saveTheme, savedTalk, savedTheme } from './prefs';
+import { primary, shortcut } from './platform';
+import { type Theme as ThemeChoice, saveTalk, saveTheme, savedTalk, savedTheme, shownTheme } from './prefs';
 import { type Api, createSettings } from './settings';
 import { createSpeechSettings } from './speech';
 import { createVoice } from './voice';
@@ -94,19 +95,25 @@ const settingsBtn = $<HTMLButtonElement>('open-settings');
 settingsBtn.replaceChildren(icon('menu', 20));
 const choicesEl = $('choices');
 
-let theme: Theme = savedTheme(matchMedia('(prefers-color-scheme: light)').matches);
+const systemLight = matchMedia('(prefers-color-scheme: light)');
+let themeChoice: ThemeChoice = savedTheme();
 let talkPrefs: TalkPrefs = savedTalk();
 const talkKeys = new TalkKeys(talkPrefs);
 let version = '';
-const galaxy = createGalaxy(canvas, { theme });
+const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight.matches) });
 
-function applyTheme(next: Theme): void {
-  theme = next;
-  document.documentElement.dataset['theme'] = next;
-  galaxy.setTheme(next);
-  saveTheme(next);
+function applyTheme(choice: ThemeChoice): void {
+  themeChoice = choice;
+  const shown: Theme = shownTheme(choice, systemLight.matches);
+  document.documentElement.dataset['theme'] = shown;
+  galaxy.setTheme(shown);
+  saveTheme(choice);
 }
-applyTheme(theme);
+applyTheme(themeChoice);
+// Following the computer means following it when it changes, at sunset for instance.
+systemLight.addEventListener('change', () => {
+  if (themeChoice === 'system') applyTheme('system');
+});
 
 let view: View = INITIAL;
 const voice = createVoice({
@@ -314,7 +321,7 @@ function render(): void {
   newBtn.hidden = !ready || view.entries.length === 0;
   const introducing = ready && active(ob);
   settingsBtn.hidden = !ready || introducing;
-  settingsBtn.title = `Settings (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'},)`;
+  settingsBtn.title = `Settings (${shortcut(',')})`;
   if (panel.isOpen) panel.refresh();
   const quick = introducing && ob ? choices(ob) : [];
   const quickKey = introducing && ob ? ob.step + quick.map((c) => c.label).join('|') : '';
@@ -408,7 +415,7 @@ const shortcuts = createShortcuts(
 );
 const appearance = createAppearance(
   panel.host('appearance'),
-  () => theme,
+  () => themeChoice,
   (t) => {
     applyTheme(t);
     panel.refresh();
@@ -424,7 +431,7 @@ panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 's
 panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
-panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light', summary: () => (theme === 'dark' ? 'Dark' : 'Light'), open: () => appearance.open() });
+panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder', summary: () => (view.grantedRoots.length ? `${view.grantedRoots.length} shared` : 'None'), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
@@ -722,14 +729,14 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
 
 addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && (view.busy || voice.active || view.mic)) interrupt();
-  // The usual way to Settings on any desktop: Command or Control with a comma.
-  if (ev.key === ',' && (ev.metaKey || ev.ctrlKey) && !panel.isOpen) {
+  // The usual way to Settings: ⌘, on a Mac, Ctrl+, elsewhere. Not the other one.
+  if (ev.key === ',' && primary(ev) && !panel.isOpen) {
     ev.preventDefault();
     openSettings();
     return;
   }
   onTalk(talkKeys.down(keyOf(ev)), ev);
-  if (ev.key === 'k' && (ev.metaKey || ev.ctrlKey)) {
+  if (ev.key.toLowerCase() === 'k' && primary(ev)) {
     ev.preventDefault();
     input.focus();
   }

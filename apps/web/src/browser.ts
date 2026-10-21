@@ -6,6 +6,7 @@
 
 import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifierRelease, isModifier, keycaps, refused } from './hotkey';
 import type { Host } from './panel';
+import { MAC, shortcut } from './platform';
 import type { Theme } from './prefs';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
@@ -67,7 +68,6 @@ function radios<T extends string>(
   };
 }
 
-const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 // ── Shortcuts ────────────────────────────────────────────────────────────
 
@@ -122,7 +122,23 @@ export function createShortcuts(
   howHead.append(el('strong', '', 'How it works'));
   howCard.append(howHead, how.element);
 
-  finish(card, howCard);
+  // The ones every window has, written the way this computer writes them.
+  const builtIn = el('div', 'settings-card');
+  const builtInHead = el('div', 'settings-card-head');
+  builtInHead.append(el('strong', '', 'Built in'));
+  const list = el('dl', 'settings-shortcuts');
+  for (const [keys, what] of [
+    [shortcut(','), 'Open Settings'],
+    [shortcut('K'), 'Go to the message box'],
+    ['Esc', 'Stop her, or close Settings'],
+  ] as const) {
+    const dt = el('dt');
+    dt.append(el('kbd', '', keys));
+    list.append(dt, el('dd', '', what));
+  }
+  builtIn.append(builtInHead, list);
+
+  finish(card, howCard, builtIn);
 
   function draw(): void {
     const prefs = current();
@@ -237,6 +253,7 @@ export function createAppearance(host: Host, current: () => Theme, choose: (t: T
     'appearance',
     'Theme',
     [
+      { value: 'system', title: 'Match system', note: 'Light or dark, as this computer is set.' },
       { value: 'dark', title: 'Dark', note: 'The galaxy at night.' },
       { value: 'light', title: 'Light', note: 'The same, on a pale sky.' },
     ],

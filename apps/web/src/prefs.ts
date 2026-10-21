@@ -5,7 +5,8 @@
 
 import { DEFAULT_TALK, type Hotkey, type Mode, type TalkPrefs } from './hotkey';
 
-export type Theme = 'dark' | 'light';
+/** What the user chose: a theme, or whatever the computer is set to. */
+export type Theme = 'system' | 'dark' | 'light';
 
 const THEME_KEY = 'trillion-theme';
 const TALK_KEY = 'trillion-talk';
@@ -28,9 +29,15 @@ function set(key: string, value: string): void {
   }
 }
 
-export function savedTheme(prefersLight: boolean): Theme {
+/** The saved choice. Nothing saved means following the computer, as a native app does. */
+export function savedTheme(): Theme {
   const saved = get(THEME_KEY);
-  if (saved === 'light' || saved === 'dark') return saved;
+  return saved === 'light' || saved === 'dark' ? saved : 'system';
+}
+
+/** The theme to draw: the choice, or the computer's when the choice is to follow it. */
+export function shownTheme(choice: Theme, prefersLight: boolean): 'dark' | 'light' {
+  if (choice !== 'system') return choice;
   return prefersLight ? 'light' : 'dark';
 }
 
