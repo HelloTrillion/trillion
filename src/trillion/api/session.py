@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from typing import Any, Literal
 
+from trillion import __version__
 from trillion.api import listening
 from trillion.api.listening import FOLLOW_UP_S, Listener
 from trillion.api.runtime import OWNER, Runtime
@@ -134,6 +135,7 @@ class Session:
             protocol=PROTOCOL,
             agent_name=rt.identity.agent_name,
             onboarding=rt.onboarding(),
+            version=__version__,
             model=session._model(),
             speech=session._speech(),
             listening=session._listening(),

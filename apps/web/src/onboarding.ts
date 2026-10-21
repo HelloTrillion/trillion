@@ -183,7 +183,7 @@ export function answer(o: Onboarding, text: string): Onboarding {
       o,
       { step: 'skipped' },
       you('Skip for now'),
-      her(`Fine. I stay ${o.was} and you stay "you" until you say otherwise. The Names button is at the top.`),
+      her(`Fine. I stay ${o.was} and you stay "you" until you say otherwise. Names are in Settings, at the top.`),
     );
   }
   const kept = text === KEEP;
@@ -227,7 +227,7 @@ export function answer(o: Onboarding, text: string): Onboarding {
 export function saved(o: Onboarding, ready: Ready): Onboarding {
   const { userName, agentName, timezone } = o.draft;
   const where = timezone ? `, and I have you in ${timezone.replace(/_/g, ' ')}` : '';
-  const done = add(o, {}, her(`Done. I'm ${agentName}, you're ${userName}${where}. Change any of it from Names, at the top.`));
+  const done = add(o, {}, her(`Done. I'm ${agentName}, you're ${userName}${where}. Change any of it in Settings, at the top.`));
   return o.returning ? { ...done, step: 'done' } : climb(done, ready, 'model');
 }
 

@@ -6,6 +6,8 @@
  * how it ends. Everything is written with textContent, never as markup.
  */
 
+import type { Host } from './panel';
+
 export type Kind = 'anthropic' | 'openai' | 'local' | 'custom';
 
 export interface ModelState {
@@ -133,7 +135,7 @@ export interface Settings {
   open(): Promise<void>;
 }
 
-export function createSettings(dialog: HTMLDialogElement, api: Api): Settings {
+export function createSettings(dialog: Host, api: Api): Settings {
   let state: ModelState | null = null;
   let kind: Kind = 'anthropic';
   let busy = false;

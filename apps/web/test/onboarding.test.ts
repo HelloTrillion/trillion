@@ -97,7 +97,7 @@ describe('onboarding', () => {
   it('says what was saved, then asks about a model first', () => {
     const o = named(NOTHING);
     expect(texts(o)).toContain(
-      "Done. I'm Nova, you're Sam, and I have you in America/Chicago. Change any of it from Names, at the top.",
+      "Done. I'm Nova, you're Sam, and I have you in America/Chicago. Change any of it in Settings, at the top.",
     );
     expect(o.step).toBe('model');
     expect(said(o)).toContain('Free: a model running on this computer');
@@ -195,7 +195,7 @@ describe('onboarding', () => {
     for (const answers of [[], ['Sam'], ['Sam', 'Nova']]) {
       const o = answer(run(answers), SKIP);
       expect(o.step).toBe('skipped');
-      expect(said(o)).toContain('The Names button is at the top');
+      expect(said(o)).toContain('Names are in Settings, at the top');
       expect(choices(o)).toEqual([]);
     }
   });
