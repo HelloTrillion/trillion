@@ -37,15 +37,15 @@ A pull request will be rejected, however good the rest of it is, if it:
 7. **Logs conversation text, prompts, or any secret value.** Key names and lengths only.
    *Enforced for the spine:* every spine test fails if an argument or output value reaches a log — the `no_values_in_logs` fixture in `tests/spine/conftest.py`, plus `tests/spine/test_structure.py`. Other packages need the same fixture as they land.
 8. **Adds a runtime dependency on a service the user did not connect.** No CDN, no secrets manager, no hosted database, no licence check, no update ping, no analytics. Vendor it, bundle it, or make it a provider the user chooses. Trillion has to start and run with the network off ("the airplane test").
-   *Not enforced yet:* the airplane test (`tests/integration/test_offline_start.py`, PRD §4) needs an app to start. Until then this rule is held in review.
+   *Enforced by* the airplane test, `tests/integration/test_airplane.py` (PRD §4): every connection off the machine is refused, and Trillion still starts, serves its page, opens settings, keeps memory and holds a conversation with a local model.
 9. **Hardcodes the agent's name.** Use `{agent_name}`; the brand is Trillion, but the user's agent may be called anything.
    *Enforced:* `scripts/check_agent_name.py` in CI, with its own `--selftest`.
 10. **Ships personal data** — a real person's name, path, email, key or account — in code, prompts or fixtures.
    *Enforced:* `scripts/containment_check.py` (with `--selftest`) and gitleaks in CI.
 11. **Leaves two implementations live past a decision.** Exactly one code path decides any routing, classification or status. A flag or a shadow run is temporary; when the decision is made, the loser is deleted, not left behind a flag.
-   *Not enforced yet:* the CI check that no two paths write the same decision field is #6. Until it lands this rule is held in review.
+   *Enforced by* `scripts/check_one_writer.py` in CI: each decision field (where an action stands, its effect, its outcome) is changed by exactly one function, reached only through the router's one path; the decision record and the audit log are only ever appended to, by one writer each; and any column a statement changes that the check does not know fails until it is classified as a decision or not. Its self-test proves each way of breaking the rule is caught.
 
-The goal is that every rule has a structural enforcement — the credential doesn't exist, the tool has no argument field, the lint fails — and a test, because a rule that is only prose is a rule that goes missing under pressure. Each rule above says which it is today. The two marked *not enforced yet* are commitments, held in review until their check lands; a new rule arrives with its check or is marked the same way.
+The goal is that every rule has a structural enforcement — the credential doesn't exist, the tool has no argument field, the lint fails — and a test, because a rule that is only prose is a rule that goes missing under pressure. Each rule above says which it is today. A new rule arrives with its check, or is marked *not enforced yet* and held in review until its check lands.
 
 If you think one of these rules is wrong, open an issue and argue the case. Don't route around it in a pull request.
 

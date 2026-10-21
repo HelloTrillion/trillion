@@ -148,3 +148,18 @@ async def test_what_the_user_approves_cannot_be_edited_in_the_database(spine: Sp
     # The lifecycle still moves.
     res = await spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
     assert res.status == "succeeded"
+
+
+def test_one_writer_per_decision_field() -> None:
+    """Never-list #11, also run here so it fails locally, not only in CI."""
+    import importlib.util
+    import sys
+
+    path = SRC.parents[1] / "scripts" / "check_one_writer.py"
+    spec = importlib.util.spec_from_file_location("check_one_writer", path)
+    assert spec is not None and spec.loader is not None
+    check = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = check  # its dataclasses look themselves up there
+    spec.loader.exec_module(check)
+    assert check.selftest() == 0
+    assert check.scan(SRC) == []
