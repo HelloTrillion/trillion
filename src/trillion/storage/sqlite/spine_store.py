@@ -116,13 +116,15 @@ class SqliteSpineStore:
                 for r in rows:
                     if fold(str(r["target"])) != fold(a.target):
                         continue
-                    await conn.execute(
-                        "UPDATE pending_actions SET status = ?, updated_at = ?"
-                        " WHERE id = ? AND status = ?",
-                        (Status.SUPERSEDED.value, a.created_at, r["id"], Status.PROPOSED.value),
-                    )
-                    await self._decision(conn, a.owner_id, str(r["id"]), supersede, a.created_at)
-                    retired.append(str(r["id"]))
+                    if await self._set_status(
+                        conn,
+                        str(r["id"]),
+                        Status.PROPOSED,
+                        Status.SUPERSEDED,
+                        now_ms=a.created_at,
+                        decision=supersede,
+                    ):
+                        retired.append(str(r["id"]))
             await conn.execute(
                 f"INSERT INTO pending_actions ({_PENDING_COLUMNS})"  # noqa: S608
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -180,23 +182,49 @@ class SqliteSpineStore:
         outcome_detail: str | None = None,
     ) -> bool:
         async with self._tx() as conn:
-            cur = await conn.execute(
-                "UPDATE pending_actions SET status = ?, updated_at = ?,"
-                " effect_status = COALESCE(?, effect_status),"
-                " outcome_detail = COALESCE(?, outcome_detail)"
-                " WHERE id = ? AND status = ?",
-                (new.value, now_ms, effect_status, outcome_detail, pending_id, expected.value),
+            return await self._set_status(
+                conn,
+                pending_id,
+                expected,
+                new,
+                now_ms=now_ms,
+                decision=decision,
+                effect_status=effect_status,
+                outcome_detail=outcome_detail,
             )
-            if cur.rowcount != 1:
-                return False
-            async with conn.execute(
-                "SELECT owner_id FROM pending_actions WHERE id = ?", (pending_id,)
-            ) as c2:
-                row = await c2.fetchone()
-            if row is None:  # pragma: no cover - the UPDATE above just matched this row
-                raise RuntimeError(f"pending action {pending_id!r} vanished mid-transaction")
-            await self._decision(conn, str(row["owner_id"]), pending_id, decision, now_ms)
-            return True
+
+    async def _set_status(
+        self,
+        conn: aiosqlite.Connection,
+        pending_id: str,
+        expected: Status,
+        new: Status,
+        *,
+        now_ms: int,
+        decision: DecisionIn,
+        effect_status: str | None = None,
+        outcome_detail: str | None = None,
+    ) -> bool:
+        """The one statement that changes where an action stands, with the decision that
+        moved it (never-list #11, scripts/check_one_writer.py). Compare-and-set: False
+        means it was not at `expected`. Runs inside the caller's transaction."""
+        cur = await conn.execute(
+            "UPDATE pending_actions SET status = ?, updated_at = ?,"
+            " effect_status = COALESCE(?, effect_status),"
+            " outcome_detail = COALESCE(?, outcome_detail)"
+            " WHERE id = ? AND status = ?",
+            (new.value, now_ms, effect_status, outcome_detail, pending_id, expected.value),
+        )
+        if cur.rowcount != 1:
+            return False
+        async with conn.execute(
+            "SELECT owner_id FROM pending_actions WHERE id = ?", (pending_id,)
+        ) as found:
+            row = await found.fetchone()
+        if row is None:  # pragma: no cover - the UPDATE above just matched this row
+            raise RuntimeError(f"pending action {pending_id!r} vanished mid-transaction")
+        await self._decision(conn, str(row["owner_id"]), pending_id, decision, now_ms)
+        return True
 
     async def open_for_target(
         self, owner_id: str, session_id: str, tool: str, target: str
