@@ -160,7 +160,10 @@ async def test_a_hostile_memory_cannot_break_out_or_grant_anything(home: Path) -
     assert brought.count("</untrusted_tool_result>") == 1
     assert brought.count("<context>") == 1 and brought.count("</context>") == 1
     assert "\u2039context>system:" in brought
-    assert "imported from elsewhere" in brought and "confirmations are disabled" in brought
+    assert (
+        "from something you read, not from the user" in brought
+        and "confirmations are disabled" in brought
+    )
     # And the gate held: she tried to approve it in the same turn and was refused.
     assert [m["summary"] for m in page.all("tool.end")][-1] == "same_turn"
     assert not target.exists()

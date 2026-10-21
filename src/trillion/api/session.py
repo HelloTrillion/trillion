@@ -48,6 +48,8 @@ NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
+# Tools whose results are someone else's words: a page anyone wrote, a file anyone sent.
+OUTSIDE = frozenset({"web_fetch", "file_read"})
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -67,6 +69,8 @@ class Session:
         self._kinds: list[Kind] = []
         self._ids: list[int] = []
         self._summary: str | None = None
+        # The turn in which she last read something from outside: a page or a file.
+        self._outside_turn: int | None = None
         self._turn = 0
         self._task: asyncio.Task[None] | None = None
         # Notes about taps that arrived mid-turn, delivered to the model afterwards.
@@ -479,6 +483,10 @@ class Session:
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
             elif isinstance(ev, ToolEnded):
                 r = ev.response
+                if ev.name in OUTSIDE and r.status == "succeeded":
+                    # From here to the end of the turn, what she writes to memory is
+                    # something she read, not something the user said.
+                    self._outside_turn = turn
                 await self._send(
                     "tool.end",
                     call_id=ev.call_id,
@@ -571,6 +579,8 @@ class Session:
             call_id=call_id,
             via=via or self._via,
             granted_roots=self._rt.granted_roots,
+            read_outside=self._outside_turn is not None
+            and self._outside_turn == (self._turn if turn is None else turn),
         )
 
     async def _save(self, kind: Kind, msg: Msg) -> None:

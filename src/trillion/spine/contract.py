@@ -49,6 +49,9 @@ class ToolContext:
     call_id: str
     via: Via
     granted_roots: tuple[Path, ...] = ()
+    # True once this turn has read something from outside (a web page, a file). What
+    # she does with it after that is not something the user said (MEM-5, EVL-2).
+    read_outside: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
