@@ -127,3 +127,26 @@ def test_describe_tells_the_page_how_words_arrive() -> None:
         "choice": "base",
         "streaming": False,
     }
+
+
+async def test_a_finished_question_ends_the_moment_the_recognizer_hears_the_pause() -> None:
+    stt = FakeSTT()
+    listener = Listener(stt, "one", on_partial=nothing)
+    await listener.start()
+    assert await feed(listener, room(0.2) + tone(0.8)) is None
+    assert await feed(listener, room(0.3)) is None
+    stt.stream.say("What is the tallest mountain?", final=True, pause=True)
+    await asyncio.sleep(0.01)
+    assert await feed(listener, room(0.04)) == "end"
+
+
+async def test_a_pause_after_an_unfinished_thought_waits_as_before() -> None:
+    """It is the whole message that must sound finished, not the latest piece."""
+    stt = FakeSTT()
+    listener = Listener(stt, "one", on_partial=nothing)
+    await listener.start()
+    assert await feed(listener, room(0.2) + tone(0.8)) is None
+    assert await feed(listener, room(0.3)) is None
+    stt.stream.say("I was thinking that maybe we could and", final=True, pause=True)
+    await asyncio.sleep(0.01)
+    assert await feed(listener, room(0.2)) is None  # not cut off on "and"

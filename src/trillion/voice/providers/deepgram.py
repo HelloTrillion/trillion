@@ -75,7 +75,8 @@ def parse(raw: bytes | str) -> Heard | None:
     alternatives = (msg.get("channel") or {}).get("alternatives") or [{}]
     text = str(alternatives[0].get("transcript") or "").strip()
     final = msg.get("is_final") is True
-    return Heard(text=text, final=final) if text or final else None
+    pause = final and msg.get("speech_final") is True
+    return Heard(text=text, final=final, pause=pause) if text or final else None
 
 
 class _Stream:

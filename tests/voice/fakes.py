@@ -16,8 +16,8 @@ class FakeStream:
         self.finished = False
         self.closed = False
 
-    def say(self, text: str, *, final: bool = True) -> None:
-        self._events.put_nowait(Heard(text=text, final=final))
+    def say(self, text: str, *, final: bool = True, pause: bool = False) -> None:
+        self._events.put_nowait(Heard(text=text, final=final, pause=pause))
 
     async def send(self, pcm: bytes) -> None:
         self.audio.extend(pcm)

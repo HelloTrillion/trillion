@@ -22,6 +22,15 @@ FAST_S = 0.4
 SLOW_S = 1.0
 # Quiet is not believed while the recognizer was hearing words this recently.
 RECENT_WORDS_S = 0.5
+# When the words sound finished and the recognizer heard the pause too, this much
+# quiet in the voice ends the turn: the recognizer's own pause (300 ms) is already
+# behind it by the time its final words arrive, so in practice the turn ends then.
+DONE_S = 0.25
+# Words a thought does not end on, whatever punctuation the recognizer gave them.
+_GOING_ON = frozenset(
+    "and but or so because if then than that which who to of for with the a an my "
+    "your um uh er erm like".split()
+)
 # A microphone that delivers nothing louder than this is not delivering sound at
 # all: muted, unplugged, or the wrong device. A real threshold, not "above zero".
 DEAD_LEVEL = 0.0006
@@ -35,6 +44,16 @@ _OVER_NOISE = 3.0
 _MIN_SPEECH = 0.008
 # A cough is not a sentence: speech starts after this much of it.
 _ONSET_S = 0.06
+
+
+def sounds_finished(text: str) -> bool:
+    """Whether words read as a finished thought: they end a sentence, and not on a
+    word that leads somewhere ("and.", "um."). A trailing ellipsis is not an end."""
+    t = text.strip().rstrip("\"')\u201d\u2019")  # closing quotes and brackets
+    if not t or t.endswith(("...", "\u2026")) or t[-1] not in ".?!":
+        return False
+    last = t.rstrip(".?!").rsplit(maxsplit=1)[-1:] or [""]
+    return last[0].lower().strip("\"'(\u201c\u2018,;:") not in _GOING_ON
 
 
 def level(pcm: bytes) -> float:
@@ -60,6 +79,7 @@ class EndOfSpeech:
         self._last_words = -1.0
         self._last_final = -1.0
         self._pending_words = False
+        self._done = False
 
     @property
     def now(self) -> float:
@@ -86,8 +106,13 @@ class EndOfSpeech:
         last = self._last_voice if self._last_voice > 0 else self._last_words
         return max(0.0, self.now - last)
 
-    def heard(self, *, final: bool, has_text: bool) -> None:
-        """The recognizer reported something, at this point in the audio."""
+    def heard(self, *, final: bool, has_text: bool, done: bool = False) -> None:
+        """The recognizer reported something, at this point in the audio. `done`: it
+        heard the speaker pause, and everything said so far sounds finished."""
+        if has_text:
+            # New words undo an earlier "done": the speaker went on. An empty final, the
+            # recognizer's report of silence, changes nothing.
+            self._done = done and final
         if has_text:
             self._spoke = True
             self._last_words = self.now
@@ -128,6 +153,8 @@ class EndOfSpeech:
             return "nothing" if now >= self._patience else None
 
         quiet = now - self._last_voice
+        if self._streaming and self._done and not self._pending_words and quiet >= DONE_S:
+            return "end"
         if self._streaming:
             # Words are still arriving: the voice the meter lost is not finished.
             if now - self._last_words < RECENT_WORDS_S and self._pending_words:
