@@ -72,3 +72,29 @@ def preferences(path: Path, owner_id: str) -> dict[str, Any]:
         with contextlib.suppress(ValueError):
             out[str(key)] = json.loads(raw)
     return out
+
+
+def timings(path: Path, owner_id: str, limit: int) -> list[dict[str, Any]]:
+    """The newest turns' timings, oldest first (ONB-11). Empty if there are none yet,
+    or the database is older than the table."""
+    if not path.exists():
+        return []
+    try:
+        with contextlib.closing(_read_only(path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM turn_timings WHERE owner_id = ? ORDER BY id DESC LIMIT ?",
+                (owner_id, max(limit, 0)),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        item = dict(row)
+        try:
+            calls = json.loads(item.pop("calls_json") or "[]")
+        except ValueError:
+            calls = []
+        item["calls"] = calls if isinstance(calls, list) else []
+        out.append(item)
+    return out

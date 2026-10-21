@@ -73,6 +73,16 @@ class EndOfSpeech:
     def peak(self) -> float:
         return self._peak
 
+    @property
+    def quiet_s(self) -> float:
+        """How long since the voice was last heard, by the audio's own clock. 0 before
+        anyone spoke. Taken from the verdict's time, this is when they stopped talking."""
+        if not self._spoke:
+            return 0.0
+        # Words from the recognizer count as voice too: a quiet speaker may never
+        # clear the loudness bar.
+        return max(0.0, self.now - max(self._last_voice, self._last_words))
+
     def heard(self, *, final: bool, has_text: bool) -> None:
         """The recognizer reported something, at this point in the audio."""
         if has_text:

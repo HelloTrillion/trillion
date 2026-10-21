@@ -27,7 +27,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
-from trillion import __version__, paths
+from trillion import __version__, build, paths
 from trillion.brain import config
 from trillion.brain.config import ConfigError, ModelSettings
 from trillion.brain.types import ProviderError
@@ -221,6 +221,30 @@ def check_page(found: Path | None) -> Check:
             fix=fix,
         )
     return Check(name="App page", status="ok", detail=str(found))
+
+
+def check_running(host: str, page: Path | None, home: Path | None = None) -> Check | None:
+    """Whether the Trillion running is the one on disk (ONB-11). None when none is."""
+    note = build.read(home)
+    if note is None or not build.alive(note.pid) or not _is_trillion(host, note.port):
+        return None
+    name = "Running build"
+    where = f"on port {note.port} since {_clock(note.started_at)}"
+    if note.fingerprint != build.fingerprint(page):
+        return Check(
+            name=name,
+            status="warn",
+            detail=f"Trillion {where} is not running the files on disk: they changed after "
+            "it started",
+            fix="Stop it (Ctrl+C) and start it again, so what runs is what is installed.",
+        )
+    return Check(name=name, status="ok", detail=f"Trillion {where} runs the files on disk")
+
+
+def _clock(ms: int) -> str:
+    from datetime import datetime
+
+    return datetime.fromtimestamp(ms / 1000).strftime("%H:%M on %b %d")
 
 
 # What the `keyring` library calls each backend, in the words people know it by.
@@ -623,6 +647,7 @@ async def examine(
         check_database(paths.db_path()),
         check_page(page),
         check_port(options.host, options.port),
+        *([running] if (running := check_running(options.host, page)) else []),
         check_keychain(secrets, backend),
         await check_model(model, secrets, env, offline=options.offline),
         await check_speech(prefs.get("speech"), secrets, offline=options.offline),

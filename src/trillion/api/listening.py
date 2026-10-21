@@ -73,6 +73,11 @@ class Listener:
     def verdict(self) -> Verdict | None:
         return self._verdict
 
+    @property
+    def quiet_s(self) -> float:
+        """How long the user has been quiet, in the audio received so far."""
+        return self._rules.quiet_s
+
     def text(self) -> str:
         return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 

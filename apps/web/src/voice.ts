@@ -21,6 +21,15 @@ const HEADER = 9; // kind (1 byte), turn (u32), sentence (u32)
 const FRAME_AUDIO = 0x01;
 // A little lead before the first sound, so the first buffers never underrun.
 const LEAD_S = 0.06;
+// Quieter than this is the silence a voice service puts before its first word.
+const AUDIBLE = 0.01;
+
+/** The first sample loud enough to hear, or -1 if there is none. */
+export function firstAudible(pcm: Int16Array, level = AUDIBLE): number {
+  const bar = level * 32768;
+  for (let i = 0; i < pcm.length; i++) if (Math.abs(pcm[i] ?? 0) >= bar) return i;
+  return -1;
+}
 
 /** A binary frame from the core, or null if it is not audio we understand. */
 export function parseFrame(data: ArrayBuffer): Frame | null {
@@ -42,6 +51,8 @@ export interface VoiceHooks {
   onActive(active: boolean): void;
   /** Everything for a turn has been heard, after `played_ms` of sound. */
   onEnded(turn: number, playedMs: number): void;
+  /** The turn's first sound is scheduled, to be heard `inMs` from now (ONB-11). */
+  onAudible(turn: number, inMs: number): void;
   /** Lets the Galaxy listen to her voice. Returns a function that detaches. */
   attach(node: AudioNode): () => void;
 }
@@ -71,6 +82,7 @@ export function createVoice(hooks: VoiceHooks): Voice {
   let ended = false; // the core said this turn is complete
   let playedMs = 0;
   let stopped = -1; // a turn whose late audio must be ignored
+  let heard = -1; // the turn whose first sound has been reported
   const sources = new Set<AudioBufferSourceNode>();
 
   const settle = (): void => {
@@ -125,6 +137,13 @@ export function createVoice(hooks: VoiceHooks): Voice {
       if (chosen) utterance.voice = chosen;
       const started = performance.now();
       let done = false;
+      utterance.onstart = () => {
+        // The computer's own voice says when it starts, and no more precisely.
+        if (heard !== t) {
+          heard = t;
+          hooks.onAudible(t, 0);
+        }
+      };
       const finish = (): void => {
         if (done) return;
         done = true;
@@ -151,6 +170,17 @@ export function createVoice(hooks: VoiceHooks): Voice {
       // Each buffer starts exactly where the last one ends: no gap, no overlap.
       nextAt = Math.max(nextAt, audio.currentTime + LEAD_S);
       source.start(nextAt);
+      if (heard !== frame.turn) {
+        const at = firstAudible(frame.pcm);
+        if (at >= 0) {
+          heard = frame.turn;
+          // When the sound leaves the speaker: the schedule, the silence before the
+          // first word, and the time the device itself takes to play.
+          const latency = audio.outputLatency || audio.baseLatency || 0;
+          const ahead = nextAt + at / buffer.sampleRate - audio.currentTime + latency;
+          hooks.onAudible(frame.turn, Math.max(0, Math.round(ahead * 1000)));
+        }
+      }
       nextAt += buffer.duration;
       sources.add(source);
       sounding++;

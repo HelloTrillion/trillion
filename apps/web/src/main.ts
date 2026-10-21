@@ -112,6 +112,7 @@ let view: View = INITIAL;
 const voice = createVoice({
   onActive: () => render(),
   onEnded: (turn, playedMs) => send({ type: 'playback.ended', turn_id: turn, played_ms: playedMs }),
+  onAudible: (turn, inMs) => send({ type: 'playback.started', turn_id: turn, in_ms: inMs }),
   attach: (node) => galaxy.attachAnalyser(node, 'playback'),
 });
 let socket: WebSocket | null = null;

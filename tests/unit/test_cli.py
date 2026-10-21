@@ -65,3 +65,15 @@ def test_run_explains_a_half_configured_local_model(
     monkeypatch.delenv("TRILLION_MODEL", raising=False)
     assert main(["run", "--no-open"]) == 2
     assert "TRILLION_MODEL" in capsys.readouterr().err
+
+
+def test_doctor_trace_reads_the_timings_and_changes_nothing(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("TRILLION_HOME", str(home))
+    assert main(["doctor", "--trace"]) == 0
+    assert "No turns recorded yet" in capsys.readouterr().out
+    assert not home.exists()  # measuring made nothing
+    assert main(["doctor", "--trace", "0"]) == 2
+    assert "1 or more" in capsys.readouterr().err

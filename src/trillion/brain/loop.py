@@ -59,7 +59,18 @@ class ToolEnded:
     response: RouterResponse
 
 
-LoopEvent = ReplyDelta | ToolStarted | ToolEnded
+@dataclass(frozen=True, kw_only=True)
+class CallTimed:
+    """One model call is over: when it started, its first token and its end, in the
+    event loop's clock, and what it spent (ONB-11)."""
+
+    started: float
+    first_token: float | None
+    ended: float
+    usage: Usage
+
+
+LoopEvent = ReplyDelta | ToolStarted | ToolEnded | CallTimed
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -149,10 +160,15 @@ async def run_turn(
         stop = "other"
         spent = Usage()
         raw: ProviderRaw | None = None
+        clock = asyncio.get_running_loop().time
+        started = clock()
+        first: float | None = None
         try:
             async for ev in provider.stream(
                 system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS
             ):
+                if first is None and isinstance(ev, TextDelta | ToolUse):
+                    first = clock()
                 if isinstance(ev, TextDelta):
                     text.append(ev.text)
                     await emit(ReplyDelta(text=ev.text))
@@ -174,6 +190,7 @@ async def run_turn(
                 await add(_assistant("".join(text), [], None))
             return done("provider_error", e.kind)
 
+        await emit(CallTimed(started=started, first_token=first, ended=clock(), usage=spent))
         usage = usage + spent
         over_budget = False
         if pricing is not None and cost is not None:

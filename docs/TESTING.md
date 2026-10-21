@@ -15,7 +15,7 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | `tests/memory/` | The memory file format (round-trip by property test), keyword ranking, and the book: corrections, forgetting, bounds, and every way the files and the index can disagree. No network, no model. |
 | `tests/voice/` | The sentence splitter, the speech cleaner, the per-turn speaker, the end-of-speech rules, the listener that assembles one utterance, the model-file downloader, and the two contracts every speech provider and every recognizer must pass. No network, and no real model: local Whisper is exercised through a stand-in transcriber. |
 | `tests/integration/` | Cross-component behaviour: degradation, compaction, recovery, offline. |
-| `evals/` | Model-judged behaviour: persona, honest failure, injection. Run by hand against a real model, not in CI: `uv run python -m evals.injection.run`. |
+| `evals/` | Model-judged behaviour: persona, honest failure, injection. Run by hand against a real model, not in CI: `uv run python -m evals.injection.run`. The latency bench (EVL-3), against a running Trillion with listening and a voice on: `uv run python -m evals.latency.run --url <the address it printed>`. |
 | `tests/e2e/` | The full loop, with providers faked at the interface. |
 
 ---

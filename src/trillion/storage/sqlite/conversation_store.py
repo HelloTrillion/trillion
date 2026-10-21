@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Literal
 
 import aiosqlite
@@ -205,6 +206,46 @@ class SqliteConversationStore:
                 now_ms,
             ),
         )
+
+    async def record_timing(self, owner_id: str, row: Mapping[str, Any], now_ms: int) -> int:
+        """Keep one turn's timings (ONB-11). Returns its id, for a late `played_ms`."""
+        names = ("conversation_id", *TIMING_FIELDS)
+        async with self._conn.execute(
+            f"INSERT INTO turn_timings (owner_id, {', '.join(names)}, created_at)"  # noqa: S608 - fixed names
+            f" VALUES (?, {', '.join('?' for _ in names)}, ?)",
+            (owner_id, *(row.get(n) for n in names), now_ms),
+        ) as cur:
+            return int(cur.lastrowid or 0)
+
+    async def timing_played(self, owner_id: str, timing_id: int, played_ms: int) -> None:
+        """The page heard the turn's first audio after the turn was saved. Set once."""
+        await self._conn.execute(
+            "UPDATE turn_timings SET played_ms = ?"
+            " WHERE id = ? AND owner_id = ? AND played_ms IS NULL",
+            (played_ms, timing_id, owner_id),
+        )
+
+
+# What a turn's timing row holds, beside its owner, conversation and time (migration 007).
+TIMING_FIELDS = (
+    "turn",
+    "via",
+    "first_in_session",
+    "provider",
+    "model",
+    "voice",
+    "ears",
+    "stop",
+    "tools",
+    "endpoint_ms",
+    "heard_ms",
+    "first_text_ms",
+    "first_sentence_ms",
+    "first_audio_ms",
+    "played_ms",
+    "saved_ms",
+    "calls_json",
+)
 
 
 class SqlitePreferences:
