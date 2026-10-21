@@ -81,3 +81,59 @@ def test_the_result_does_not_depend_on_how_the_text_arrived(chunk: int) -> None:
 def test_nothing_is_lost_or_invented(text: str, chunk: int) -> None:
     spoken = "".join("".join(p.split()) for p in split(text, chunk))
     assert spoken == "".join(text.split())
+
+
+def _clauses(text: str, step: int = 3) -> list[str]:
+    s = SentenceSplitter(clause_first=True)
+    out: list[str] = []
+    for i in range(0, len(text), step):
+        out += s.feed(text[i : i + step])
+    return out + s.flush()
+
+
+def test_her_voice_can_start_at_the_first_natural_pause() -> None:
+    """Latency: the first piece goes to the voice at a comma, not the full stop."""
+    assert _clauses(
+        "Mount Everest is the tallest mountain in the world, at about 8,849 metres. "
+        "It sits on the border of Nepal and China, which share it."
+    ) == [
+        "Mount Everest is the tallest mountain in the world,",
+        "at about 8,849 metres.",
+        # Only the first: after it, sentences are kept whole for the voice's sake.
+        "It sits on the border of Nepal and China, which share it.",
+    ]
+
+
+def test_a_short_opener_is_not_a_phrase_of_its_own() -> None:
+    assert _clauses("Sure, I can help. The answer is 42.") == [
+        "Sure, I can help.",
+        "The answer is 42.",
+    ]
+
+
+def test_a_comma_inside_a_number_is_not_a_pause() -> None:
+    text = "It is 8,849 metres tall and that is the answer you wanted today."
+    assert _clauses(text, step=1) == [text]
+
+
+def test_dashes_colons_and_semicolons_are_pauses_too() -> None:
+    assert _clauses("Well — the tallest one, by height above sea level, is Everest.")[0] == (
+        "Well — the tallest one, by height above sea level,"
+    )
+    assert _clauses("Here is what I found about it: three peaks.")[0] == (
+        "Here is what I found about it:"
+    )
+
+
+def test_without_clause_first_nothing_changes() -> None:
+    s = SentenceSplitter()
+    assert s.feed("Mount Everest is the tallest mountain in the world, at 8,849 metres. And ") == [
+        "Mount Everest is the tallest mountain in the world, at 8,849 metres."
+    ]
+
+
+def test_a_sentence_already_whole_is_not_cut_at_a_pause() -> None:
+    """Her authored one-sentence notices arrive whole: nothing is gained by a pause."""
+    s = SentenceSplitter(clause_first=True)
+    said = "I can't hear you: I can't reach the listening provider, but you can still type."
+    assert s.feed(said) + s.flush() == [said]

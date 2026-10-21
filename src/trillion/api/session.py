@@ -103,6 +103,7 @@ class Session:
         self._trace: Trace | None = None
         self._last_trace: Trace | None = None
         self._timed = 0
+        self._warming: asyncio.Future[Any] | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -298,6 +299,7 @@ class Session:
             )
             self._listener = listener
             self._last_audio = asyncio.get_running_loop().time()
+            self._warm()
             await self._state("arming")
             # The page opens the microphone now; what it sends while the recognizer is
             # still connecting is held, so the first word is not lost.
@@ -602,6 +604,21 @@ class Session:
         self._rest = final
 
     # ── Timing (ONB-11) ──────────────────────────────────────────────────
+
+    def _warm(self) -> None:
+        """While they talk, open the connections her answer will need: the model's and
+        the voice's. Nothing is sent; a provider with nothing to open is skipped."""
+        rt = self._rt
+        calls = [
+            warm()
+            for p in (rt.provider, None if self._muted else rt.tts)
+            if p is not None and callable(warm := getattr(p, "warm", None))
+        ]
+        if calls and (self._warming is None or self._warming.done()):
+            self._warming = asyncio.ensure_future(asyncio.gather(*calls))
+        else:
+            for call in calls:
+                call.close()
 
     def _now(self) -> float:
         return asyncio.get_running_loop().time()

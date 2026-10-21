@@ -29,8 +29,10 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 import anthropic
+import httpx2
 from anthropic import AsyncAnthropic
 
+from trillion import net
 from trillion.brain.types import (
     ContextBlock,
     Done,
@@ -202,11 +204,20 @@ class AnthropicProvider:
         max_output: int | None = None,
         http_client: Any = None,
     ) -> None:
-        # The key is fetched for each request and never held (SEC-6).
+        # The key is fetched for each request and never held (SEC-6). The connections
+        # are kept: a new one for every request cost a TLS handshake every turn.
         self._api_key = api_key
         self.model = model
         self._max_output = min(MAX_OUTPUT, max_output or MAX_OUTPUT)
-        self._http_client = http_client
+        self._http_client = http_client or anthropic.DefaultAsyncHttpxClient(
+            limits=httpx2.Limits(
+                max_connections=20, max_keepalive_connections=10, keepalive_expiry=net.IDLE_S
+            )
+        )
+
+    async def warm(self) -> None:
+        """Open the connection before the next request needs it. Sends nothing."""
+        await net.warm(self._http_client, str(_client("", self._http_client).base_url))
 
     def pricing(self) -> Pricing | None:
         rates = _PRICES.get(self.model)
