@@ -13,6 +13,11 @@ Three rules of the current API shape this adapter:
   at its own default.
 - **A refusal is a normal response.** It is reported as a stop reason, never
   read as an empty success.
+
+The conversation is cached as well as the instructions (PER-5). History is only
+ever appended to and replays byte for byte, so each request begins with the one
+before it: marking the end of the newest message lets the next request read all of
+it from the cache instead of paying for it again.
 """
 
 from __future__ import annotations
@@ -138,6 +143,29 @@ def wire_messages(messages: Sequence[Msg], key: str) -> list[dict[str, Any]]:
     ]
 
 
+# The API allows four cache breakpoints in all; the instructions take one.
+HISTORY_BREAKPOINTS = 2
+
+
+def cache_history(wire: list[dict[str, Any]]) -> None:
+    """Mark the end of the newest user messages as cacheable, in place.
+
+    The newest is what the next request will start with. The one before it is where
+    the last request wrote, so a turn that added many blocks since (a run of tool
+    calls) still finds it: the cache only looks a short way back from a breakpoint.
+    Only user messages are marked. They are built here, never replayed from the
+    provider, so her signed reasoning is never touched."""
+    marked = 0
+    for message in reversed(wire):
+        if marked == HISTORY_BREAKPOINTS:
+            return
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, list) or not content:
+            continue
+        content[-1] = {**content[-1], "cache_control": _CACHED}
+        marked += 1
+
+
 def _fail(e: anthropic.APIError) -> ProviderError:
     """A kind that is safe to show. Never the message: it can echo the request."""
     if isinstance(e, anthropic.APITimeoutError):
@@ -206,6 +234,7 @@ class AnthropicProvider:
             ],
             "messages": wire_messages(messages, key),
         }
+        cache_history(request["messages"])
         if tools:
             request["tools"] = [
                 {"name": t.name, "description": t.description, "input_schema": dict(t.input_schema)}

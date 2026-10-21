@@ -11,7 +11,12 @@ import httpx
 import httpx2
 import pytest
 
-from trillion.brain.providers.anthropic import AnthropicProvider, prefix_key, wire_messages
+from trillion.brain.providers.anthropic import (
+    AnthropicProvider,
+    cache_history,
+    prefix_key,
+    wire_messages,
+)
 from trillion.brain.providers.anthropic import list_models as anthropic_list_models
 from trillion.brain.providers.openai_compat import OpenAICompatProvider
 from trillion.brain.providers.openai_compat import list_models as openai_list_models
@@ -193,6 +198,65 @@ def test_reasoning_is_replayed_only_while_what_it_was_bound_to_is_unchanged() ->
         "text", "text", "thinking",
     ]  # fmt: skip
     assert kinds([user, turn(key, "other")]) == ["text", "text"]
+
+
+CACHED = {"type": "ephemeral"}
+
+
+def marks(wire: list[dict[str, Any]]) -> list[list[bool]]:
+    return [["cache_control" in b for b in m["content"]] for m in wire]
+
+
+async def test_the_conversation_is_cached_up_to_its_newest_message() -> None:
+    """PER-5: the next request starts with this one, so this one's end is marked."""
+    seen: list[Any] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(json.loads(request.content))
+        return stream_of(ANTHROPIC_STREAM)
+
+    await collect(anthropic_provider(handler))
+    body = seen[0]
+    # The newest user message, and the one before it, each end on a breakpoint.
+    assert marks(body["messages"]) == [[True], [False], [True]]
+    assert body["messages"][2]["content"][0]["cache_control"] == CACHED
+    # With the instructions, that is three of the four the API allows.
+    assert sum(sum(m) for m in marks(body["messages"])) + len(body["system"]) <= 4
+
+
+def test_only_the_last_block_of_the_newest_two_user_messages_is_marked() -> None:
+    user = Msg(role="user", blocks=(ContextBlock(text="now"), TextBlock(text="hi")))
+    reply = Msg(role="assistant", blocks=(TextBlock(text="hello"),))
+    wire = wire_messages([user, reply, user, reply, user], "k")
+    cache_history(wire)
+    assert marks(wire) == [[False, False], [False], [False, True], [False], [False, True]]
+
+
+def test_her_replayed_reasoning_is_never_marked() -> None:
+    key = prefix_key("m1", SYSTEM, TOOLS)
+    raw = ProviderRaw(
+        provider="anthropic",
+        prefix_key=key,
+        content=(
+            {"type": "thinking", "thinking": "", "signature": "s"},
+            {"type": "text", "text": "t"},
+        ),
+    )
+    turn = Msg(role="assistant", blocks=(TextBlock(text="t"),), raw=raw)
+    user = Msg(role="user", blocks=(TextBlock(text="u"),))
+    wire = wire_messages([user, turn, user], key)
+    cache_history(wire)
+    assert wire[1]["content"] == [dict(b) for b in raw.content]
+    assert raw.content[1] == {"type": "text", "text": "t"}  # the kept turn is unchanged too
+
+
+def test_marking_a_short_or_empty_history_is_harmless() -> None:
+    wire: list[dict[str, Any]] = []
+    cache_history(wire)
+    assert wire == []
+    lone = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    cache_history(lone)
+    assert lone[0]["content"][0]["cache_control"] == CACHED
 
 
 async def test_anthropic_reads_its_key_on_every_request() -> None:
