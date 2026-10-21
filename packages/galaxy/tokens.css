@@ -48,9 +48,13 @@
   --motion-base: 200ms;
   --motion-slow: 300ms;
 
-  /* Inter and JetBrains Mono are self-hosted by the app (no CDN); these stacks fall back cleanly. */
-  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  /* The computer's own typefaces, so Trillion reads like an app made for it: San
+     Francisco on a Mac, Segoe UI on Windows, the desktop's own on Linux. Nothing to
+     download, and nothing fetched from a font service. */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI',
+    system-ui, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Cascadia Code', Consolas,
+    'Ubuntu Mono', Menlo, monospace;
 }
 
 @media (prefers-reduced-motion: reduce) {
