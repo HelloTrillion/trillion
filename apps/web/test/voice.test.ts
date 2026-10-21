@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseFrame, toFloat } from '../src/voice';
+import { firstAudible, parseFrame, toFloat } from '../src/voice';
 
 function frame(turn: number, seq: number, samples: number[], kind = 1): ArrayBuffer {
   const buf = new ArrayBuffer(9 + samples.length * 2);
@@ -30,5 +30,20 @@ describe('voice frames', () => {
 
   it('scales samples into the range a speaker takes', () => {
     expect(Array.from(toFloat(new Int16Array([0, 16384, -32768])))).toEqual([0, 0.5, -1]);
+  });
+});
+
+describe('the first sound', () => {
+  it('skips the silence a voice service puts before the first word', () => {
+    expect(firstAudible(new Int16Array([0, 3, -40, 200, 9000, 0]))).toBe(4);
+  });
+
+  it('counts a loud negative sample as sound', () => {
+    expect(firstAudible(new Int16Array([0, -5000]))).toBe(1);
+  });
+
+  it('says when a frame is silence throughout', () => {
+    expect(firstAudible(new Int16Array([0, 1, -2, 100]))).toBe(-1);
+    expect(firstAudible(new Int16Array([]))).toBe(-1);
   });
 });

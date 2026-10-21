@@ -21,8 +21,16 @@ from trillion.api import listening
 from trillion.api.listening import FOLLOW_UP_S, Listener
 from trillion.api.runtime import OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
+from trillion.api.trace import Trace, Via, ahead_ms
 from trillion.brain import compact
-from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
+from trillion.brain.loop import (
+    CallTimed,
+    LoopEvent,
+    ReplyDelta,
+    ToolEnded,
+    ToolStarted,
+    run_turn,
+)
 from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock
 from trillion.memory import present
 from trillion.persona.prompt import (
@@ -89,6 +97,12 @@ class Session:
         self._last_audio = 0.0
         # How the current turn was said. A spoken yes is recorded as spoken (SPN-14).
         self._via: Literal["voice", "text"] = "text"
+        # How long turns take (ONB-11): the next turn's start, the running turn's
+        # trace, and the last one saved, which the page's "audible" may still reach.
+        self._arrived: Trace | None = None
+        self._trace: Trace | None = None
+        self._last_trace: Trace | None = None
+        self._timed = 0
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -218,6 +232,8 @@ class Session:
             await self._on_greet()
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
+        elif kind == "playback.started":
+            await self._audible(msg.get("turn_id"), msg.get("in_ms"))
         elif kind == "playback.ended":
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
@@ -241,6 +257,7 @@ class Session:
             await self._stop_listening()
             self._via = "text"
             self._turn += 1
+            self._arrived = self._starting("text")
             await self._save_input("user", text)
             self._begin()
 
@@ -258,6 +275,7 @@ class Session:
         self._greeted = True
         await self._stop_listening()
         self._via = "text"
+        self._arrived = self._starting("greet")
         self._queued.append(greeting(rt.identity))
         self._begin()
 
@@ -370,15 +388,21 @@ class Session:
             await self._state(self._rest)
         else:
             await self._state("processing")
-            self._task = asyncio.create_task(self._heard(listener))
+            # The turn starts when they stopped talking, not when that was noticed.
+            quiet = listener.quiet_s
+            trace = self._starting("voice", ago=quiet)
+            trace.endpoint_s = quiet
+            self._task = asyncio.create_task(self._heard(listener, trace))
 
-    async def _heard(self, listener: Listener) -> None:
+    async def _heard(self, listener: Listener, trace: Trace) -> None:
         """Collect the words, then answer them. Runs as the session's one task."""
         answer = False
         try:
             said = await listener.end()
             text = said.text[:MAX_TEXT].strip()
             if text:
+                trace.mark("heard", self._now())
+                self._arrived = trace
                 await self._send("transcript.final", text=text)
                 self._via = "voice"
                 self._turn += 1
@@ -467,10 +491,17 @@ class Session:
         speaker: Speaker | None = None
         if rt.tts is not None and rt.speech is not None and not self._muted:
             speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
+        # A turn nobody started (a tap's answer) starts now.
+        trace, self._arrived = self._arrived or self._starting("tap"), None
+        trace.turn = turn
+        self._trace = trace
 
         async def emit(ev: LoopEvent) -> None:
             nonlocal speaking
-            if isinstance(ev, ReplyDelta):
+            if isinstance(ev, CallTimed):
+                trace.call(ev)
+            elif isinstance(ev, ReplyDelta):
+                trace.mark("first_text", self._now())
                 if not speaking:
                     speaking = True
                     await self._state("speaking")
@@ -478,6 +509,7 @@ class Session:
                 if speaker is not None:
                     await speaker.feed(ev.text)
             elif isinstance(ev, ToolStarted):
+                trace.tools += 1
                 if speaker is not None:
                     await speaker.pause()
                 speaking = False
@@ -542,6 +574,8 @@ class Session:
                 await self._error("provider", kind=done.error_kind, sentence=down)
             elif done.stop != "end":
                 await self._send("notice", code="stopped", reason=done.stop)
+            # Kept before the page hears the turn is over, so the next one never waits on it.
+            await self._keep_trace(trace, done.stop, voiced=speaker is not None)
             u = done.usage
             await self._send(
                 "turn.complete",
@@ -557,13 +591,61 @@ class Session:
         except asyncio.CancelledError:
             if speaker is not None:
                 await speaker.stop()
+            await self._keep_trace(trace, "interrupted", voiced=speaker is not None)
             await self._send("interrupted")
         except Exception as e:
             # The class name only: an exception message can carry conversation text.
             logger.error("turn failed in session %s: %s", self.id, type(e).__name__)
             final = "error"
+            await self._keep_trace(trace, "error", voiced=speaker is not None)
             await self._error("internal")
         self._rest = final
+
+    # ── Timing (ONB-11) ──────────────────────────────────────────────────
+
+    def _now(self) -> float:
+        return asyncio.get_running_loop().time()
+
+    def _starting(self, via: Via, *, ago: float = 0.0) -> Trace:
+        return Trace(via=via, t0=self._now() - ago)
+
+    async def _keep_trace(self, trace: Trace, stop: str, *, voiced: bool) -> None:
+        """Save how the turn went, once. A timing that cannot be saved costs nothing else."""
+        if self._trace is not trace:
+            return
+        trace.mark("saved", self._now())
+        self._trace = None
+        self._last_trace = trace
+        rt = self._rt
+        provider = rt.provider
+        row = trace.row(
+            conversation_id=self.id,
+            first_in_session=self._timed == 0,
+            provider=provider.name if provider is not None else "",
+            model=provider.model if provider is not None else "",
+            voice=rt.speech.kind if voiced and rt.speech is not None else None,
+            ears=rt.listening.kind if trace.via == "voice" and rt.listening is not None else None,
+            stop=stop,
+        )
+        self._timed += 1
+        try:
+            trace.row_id = await rt.conversations.record_timing(OWNER, row, rt.clock())
+        except Exception as e:
+            logger.warning("timing not saved in session %s: %s", self.id, type(e).__name__)
+
+    async def _audible(self, turn_id: object, in_ms: object) -> None:
+        """The page scheduled the first sound of a turn's reply, to be heard this far ahead."""
+        if isinstance(turn_id, bool) or not isinstance(turn_id, int):
+            return
+        at = self._now() + ahead_ms(in_ms) / 1000
+        running, last = self._trace, self._last_trace
+        if running is not None and running.turn == turn_id:
+            running.mark("played", at)
+        elif last is not None and last.turn == turn_id and last.mark("played", at):
+            # Heard after the turn was saved: a long first sentence, or a slow page.
+            if last.row_id is not None:
+                with contextlib.suppress(Exception):
+                    await self._rt.conversations.timing_played(OWNER, last.row_id, last.ms(at))
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -697,6 +779,8 @@ class Session:
     async def _send_bytes(self, data: bytes) -> None:
         if self._closed or self._raw_send_bytes is None:
             return
+        if self._trace is not None:
+            self._trace.mark("first_audio", self._now())
         try:
             await self._raw_send_bytes(data)
         except Exception as e:
@@ -706,6 +790,8 @@ class Session:
         """Never raises: a closed socket must not break a turn that is still recording."""
         if self._closed:
             return
+        if kind == "reply.sentence" and self._trace is not None:
+            self._trace.mark("first_sentence", self._now())
         try:
             await self._raw_send({"type": kind, **body})
         except Exception as e:

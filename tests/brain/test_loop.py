@@ -11,6 +11,7 @@ from tests.brain.fakes import USAGE, ScriptedProvider, say, use
 from tests.spine.conftest import Spine
 from trillion.brain.loop import (
     INTERRUPTED,
+    CallTimed,
     LoopEvent,
     ReplyDelta,
     ToolEnded,
@@ -85,7 +86,12 @@ def run(spine: Spine) -> Run:
 async def test_a_plain_reply_is_streamed_and_saved(run: Run) -> None:
     done = await run.go(ScriptedProvider(say("Hi.")))
     assert done.stop == "end" and done.usage == USAGE and done.cost_usd is None
-    assert run.events == [ReplyDelta(text="Hi.")]
+    reply, timed = run.events
+    assert reply == ReplyDelta(text="Hi.")
+    # Each model call says when it started, its first token and its end (ONB-11).
+    assert isinstance(timed, CallTimed) and timed.usage == USAGE
+    assert timed.first_token is not None
+    assert timed.started <= timed.first_token <= timed.ended
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Hi."),))]
 
 
@@ -95,7 +101,13 @@ async def test_a_read_runs_and_its_wrapped_result_goes_back_to_the_model(run: Ru
     provider = ScriptedProvider(use("file_read", {"path": str(target)}), say("It says hi."))
     done = await run.go(provider)
     assert done.stop == "end"
-    assert [type(e) for e in run.events] == [ToolStarted, ToolEnded, ReplyDelta]
+    assert [type(e) for e in run.events] == [
+        CallTimed,
+        ToolStarted,
+        ToolEnded,
+        ReplyDelta,
+        CallTimed,
+    ]
     (result,) = run.results()
     assert "untrusted_tool_result" in result.content and not result.is_error
     # The second model call saw the call and its result, in order.

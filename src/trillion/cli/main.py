@@ -49,6 +49,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="also test every saved key, without ever printing one",
     )
+    doctor.add_argument(
+        "--trace",
+        nargs="?",
+        const=10,
+        type=int,
+        metavar="N",
+        help="show how long her last N turns took, and where the time went (10 if no N)",
+    )
     for checks in (doctor, setup):
         checks.add_argument(
             "--offline", action="store_true", help="skip the checks that need the network"
@@ -86,9 +94,29 @@ async def _examine(args: argparse.Namespace, *, secrets: bool) -> tuple[str, boo
 
 
 async def _doctor(args: argparse.Namespace) -> int:
+    if args.trace is not None:
+        return _trace(args)
     report, healthy = await _examine(args, secrets=args.secrets)
     sys.stdout.write(report)
     return 0 if healthy else 1
+
+
+def _trace(args: argparse.Namespace) -> int:
+    """How long the last turns took (ONB-11). Nothing contacted, nothing changed."""
+    from trillion import paths
+    from trillion.api.app import HOST, web_dir
+    from trillion.cli import doctor, trace
+    from trillion.storage import inspect
+
+    if args.trace < 1:
+        sys.stderr.write("trillion: --trace needs a number of turns, 1 or more\n")
+        return 2
+    running = doctor.check_running(HOST, web_dir())
+    if running is not None:
+        sys.stdout.write(doctor.render([running]).rsplit("\n\n", 1)[0] + "\n\n")
+    rows = inspect.timings(paths.db_path(), doctor.OWNER, args.trace)
+    sys.stdout.write(trace.report(rows))
+    return 0
 
 
 async def _prepare() -> list[str]:
@@ -169,6 +197,8 @@ async def _run(args: argparse.Namespace) -> int:
         )
         return 2
 
+    from trillion import build
+
     rt = await open_runtime(granted_roots=tuple(args.grant))
     redact.install(lambda: _secrets_in_use(rt))
     provider = rt.provider
@@ -209,8 +239,14 @@ async def _run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
         if not args.no_open:
             webbrowser.open(url)
+        try:
+            # So `trillion doctor` can tell whether this is the build on disk (ONB-11).
+            build.announce(args.port, web_dir())
+        except OSError as e:
+            sys.stderr.write(f"trillion: could not note the running build: {e.strerror}\n")
         await server.serve()
     finally:
+        build.withdraw()
         await rt.close()
     return 0
 
