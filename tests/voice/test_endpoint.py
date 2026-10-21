@@ -103,3 +103,22 @@ def test_an_empty_final_is_not_speech() -> None:
     rules.heard(final=True, has_text=False)
     assert not rules.spoke
     assert run(rules, room(1.2)) == "nothing"
+
+
+def test_the_end_of_speech_is_when_the_voice_stopped_not_when_words_arrived() -> None:
+    """ONB-11: a streaming recognizer reports words after they were said. The turn's
+    clock starts when the voice went quiet, or the trace would flatter every turn."""
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.2) + tone(0.6))  # speaking ends 0.8s in
+    run(rules, room(0.3))
+    rules.heard(final=True, has_text=True)  # the words arrive, late, at 1.1s
+    run(rules, room(0.1))
+    assert 0.35 <= rules.quiet_s <= 0.45  # quiet since 0.8s, not since 1.1s
+
+
+def test_a_voice_too_quiet_to_measure_falls_back_to_the_words() -> None:
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.5))
+    rules.heard(final=True, has_text=True)
+    run(rules, room(0.2))
+    assert 0.15 <= rules.quiet_s <= 0.25

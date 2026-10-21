@@ -79,9 +79,12 @@ class EndOfSpeech:
         anyone spoke. Taken from the verdict's time, this is when they stopped talking."""
         if not self._spoke:
             return 0.0
-        # Words from the recognizer count as voice too: a quiet speaker may never
-        # clear the loudness bar.
-        return max(0.0, self.now - max(self._last_voice, self._last_words))
+        # The voice itself, when it was loud enough to hear. A recognizer reports words
+        # after they were said (half a second late is common), so its timing would
+        # start the turn too late. Only for a speaker too quiet to clear the bar is
+        # it the best there is.
+        last = self._last_voice if self._last_voice > 0 else self._last_words
+        return max(0.0, self.now - last)
 
     def heard(self, *, final: bool, has_text: bool) -> None:
         """The recognizer reported something, at this point in the audio."""
