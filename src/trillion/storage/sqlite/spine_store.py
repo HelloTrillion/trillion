@@ -74,11 +74,16 @@ class SqliteSpineStore:
     @asynccontextmanager
     async def _tx(self) -> AsyncIterator[aiosqlite.Connection]:
         async with self._lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
             try:
+                await self._conn.execute("BEGIN IMMEDIATE")
                 yield self._conn
             except BaseException:
-                await self._conn.execute("ROLLBACK")
+                # Also when cancelled while BEGIN was still on its way: the database
+                # thread runs it regardless, after the caller has gone. The rollback is
+                # queued behind it, and shielded so a second cancellation cannot skip
+                # it, so a transaction is never left open on the connection. Rolling
+                # back when none began does nothing.
+                await asyncio.shield(self._conn.rollback())
                 raise
             await self._conn.execute("COMMIT")
 

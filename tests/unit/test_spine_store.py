@@ -55,3 +55,30 @@ async def test_transition_is_compare_and_set(tmp_path):
     assert [d.event for d in decisions] == ["proposed", "approved"]
 
     await conn.close()
+
+
+async def test_a_transaction_cancelled_while_it_begins_is_never_left_open(tmp_path):
+    """A page that closes mid-request cancels the store call, sometimes while BEGIN is
+    still on its way to the database thread. BEGIN then runs anyway, after the caller
+    has gone; if nothing rolls it back, the connection stays inside a transaction and
+    every later one fails with "cannot start a transaction within a transaction"."""
+    import asyncio
+
+    conn = await connect(tmp_path / "t.db")
+    await migrate(conn)
+    store = SqliteSpineStore(conn)
+    await store.insert_pending(
+        _pending(), DecisionIn(event="proposed", decided_by="s1", via="text")
+    )
+    for _ in range(20):
+        task = asyncio.ensure_future(store.mark_delivered("p1", "local", "web", NOW))
+        await asyncio.sleep(0)  # into the lock, with BEGIN queued for the thread
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    # Whatever the cancellations interrupted, the next transaction starts cleanly.
+    assert await store.mark_delivered("p1", "local", "web", NOW) in (True, False)
+    assert not conn.in_transaction
+    await conn.close()
