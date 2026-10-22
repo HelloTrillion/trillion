@@ -52,6 +52,9 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL = 1
 MAX_TEXT = 32_000
+# How long a barge-in waits for her reply to stop before listening. An action she was
+# carrying out runs to its end first; this bounds the wait, not the action.
+BARGE_WAIT_S = 3.0
 # A microphone that sends nothing at all for this long is treated as not working.
 NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
@@ -224,6 +227,8 @@ class Session:
                 self._task.cancel()
         elif kind == "listen.start":
             await self._on_listen(NOTHING_AFTER_S)
+        elif kind == "barge":
+            await self._on_barge()
         elif kind == "listen.stop":
             # The user says they are done: what was heard so far is the message.
             if self._listener is not None:
@@ -291,6 +296,20 @@ class Session:
         self._begin()
 
     # ── Listening ────────────────────────────────────────────────────────
+
+    async def _on_barge(self) -> None:
+        """The user talked over her (VOI-9): her reply stops, what she had said is kept
+        and marked interrupted, and she listens. The page heard them start and holds
+        their first words until listening opens, so nothing they said is lost.
+
+        Stopping her is not cancelling work (VOI-15c): an action already approved
+        finishes and is recorded before she listens."""
+        task = self._task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
+                await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
+        await self._on_listen(NOTHING_AFTER_S)
 
     async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
         rt = self._rt

@@ -91,7 +91,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
 
 const ERRORS: Readonly<Record<string, string>> = {
   no_model: 'No model is set up yet, so there is nobody to answer. Open Model settings.',
-  no_listening: 'She cannot hear yet. Open Mic settings (top right) and choose how.',
+  no_listening: 'She cannot hear yet. Open Settings, under Hearing, and choose how.',
   busy: 'Still answering the last message.',
   bad_message: 'That message could not be sent.',
   internal: 'Something failed inside Trillion. The log has the details.',
@@ -114,8 +114,8 @@ const LISTEN_ERRORS: Readonly<Record<string, string>> = {
   unreachable: 'The listening provider could not be reached.',
   timeout: 'The listening provider took too long to answer.',
   provider_unavailable: 'The listening provider is having trouble.',
-  not_installed: 'Listening on this computer is not installed. Open Mic settings.',
-  needs_download: 'The listening model has not been downloaded. Open Mic settings.',
+  not_installed: 'Listening on this computer is not installed. Open Settings, under Hearing.',
+  needs_download: 'The listening model has not been downloaded. Open Settings, under Hearing.',
 };
 
 const MIC_PROBLEMS: Readonly<Record<MicProblem, string>> = {

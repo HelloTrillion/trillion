@@ -73,7 +73,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   const intro = el(
     'p',
     'settings-note',
-    'Choose how she hears you. The microphone is only on while you are speaking to her: after you press Speak, and for a few seconds after she answers out loud.',
+    'Choose how she hears you. The microphone is only on while you are talking with her: after you press Speak, while she answers you out loud (so you can cut in, unless you turn that off below), and for a few seconds after.',
   );
   const choices = el('div', 'settings-kinds');
   choices.setAttribute('role', 'radiogroup');

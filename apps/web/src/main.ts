@@ -7,6 +7,7 @@ import { TalkKeys, type TalkPrefs } from './hotkey';
 import { icon } from './icons';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
+import { BargeDetector, Preroll, frameLevel } from './barge';
 import { createMicrophones } from './microphone';
 import { createNamesSettings } from './names';
 import {
@@ -30,9 +31,11 @@ import { createPanel } from './panel';
 import { primary, shortcut } from './platform';
 import {
   type Theme as ThemeChoice,
+  saveBarge,
   saveMic,
   saveTalk,
   saveTheme,
+  savedBarge,
   savedMic,
   savedTalk,
   savedTheme,
@@ -129,9 +132,71 @@ systemLight.addEventListener('change', () => {
 });
 
 let view: View = INITIAL;
+// Voice barge-in (VOI-9). While she answers a spoken question, the microphone is open
+// here and "watching": frames stay on this page, measured against her own level, and
+// nothing is sent. When the user talks over her she stops at once, the core is told,
+// and the frames from just before are held until it is listening, then sent first.
+let spokeLast = false;
+let bargeOn = savedBarge();
+let micMode: 'send' | 'watch' = 'send';
+let bargeHeld: ArrayBuffer[] | null = null;
+const detector = new BargeDetector();
+const preroll = new Preroll();
+
+function canWatch(): boolean {
+  return (
+    bargeOn &&
+    spokeLast &&
+    view.link === 'ready' &&
+    view.listening !== null &&
+    view.speech?.where === 'core' &&
+    !view.mic &&
+    !active(ob)
+  );
+}
+
+function startWatching(): void {
+  if (mic.on || !canWatch()) return;
+  micMode = 'watch';
+  bargeHeld = null;
+  detector.reset();
+  preroll.drain();
+  void mic.start();
+}
+
+/** Close a watching microphone, unless the user has just cut in. */
+function stopWatching(): void {
+  if (micMode !== 'watch' || bargeHeld) return;
+  mic.stop();
+  micMode = 'send';
+}
+
+function watchFrame(pcm: ArrayBuffer): void {
+  if (bargeHeld) {
+    bargeHeld.push(pcm); // the user is talking: keep every word until she listens
+    return;
+  }
+  preroll.push(pcm);
+  if (detector.push(frameLevel(pcm), voice.level() ?? 0)) {
+    bargeHeld = preroll.drain();
+    voice.stop();
+    send({ type: 'barge' });
+  }
+}
+
 const voice = createVoice({
-  onActive: () => render(),
-  onEnded: (turn, playedMs) => send({ type: 'playback.ended', turn_id: turn, played_ms: playedMs }),
+  onActive: (on) => {
+    if (on) startWatching();
+    render();
+  },
+  onEnded: (turn, playedMs) => {
+    send({ type: 'playback.ended', turn_id: turn, played_ms: playedMs });
+    // After a spoken turn the core opens the microphone for a follow-up, and the
+    // watching one simply carries on as it. Otherwise it closes.
+    setTimeout(() => {
+      if (micMode === 'watch' && !view.mic) stopWatching();
+    }, 1500);
+  },
   onAudible: (turn, inMs) => send({ type: 'playback.started', turn_id: turn, in_ms: inMs }),
   attach: (node) => galaxy.attachAnalyser(node, 'playback'),
 });
@@ -139,11 +204,19 @@ let socket: WebSocket | null = null;
 // Her ears. Frames go to the core as they are captured, as binary (VOI-1).
 const mic = createMic({
   onFrame: (pcm) => {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(pcm);
+    if (micMode === 'watch') watchFrame(pcm);
+    else if (socket?.readyState === WebSocket.OPEN) socket.send(pcm);
   },
   onSetup: (setup) => send({ type: 'mic.opened', ...setup }),
   device: savedMic,
   onProblem: (problem) => {
+    if (micMode === 'watch' && !bargeHeld) {
+      // Only watching for a barge-in: she carries on, and nothing needs saying.
+      micMode = 'send';
+      return;
+    }
+    micMode = 'send';
+    bargeHeld = null;
     send({ type: 'interrupt' });
     apply(micFailed(view, problem));
   },
@@ -415,10 +488,21 @@ const speechSettings = createSpeechSettings(panel.host('voice'), api);
 const listeningSettings = createListeningSettings(
   panel.host('mic'),
   api,
-  createMicrophones(savedMic, (id) => {
-    saveMic(id);
-    panel.refresh();
-  }),
+  createMicrophones(
+    savedMic,
+    (id) => {
+      saveMic(id);
+      panel.refresh();
+    },
+    {
+      on: () => bargeOn,
+      set: (on) => {
+        bargeOn = on;
+        saveBarge(on);
+        if (!on) stopWatching();
+      },
+    },
+  ),
 );
 const namesSettings = createNamesSettings(panel.host('names'), api, {
   talk: () => talkNames(),
@@ -637,10 +721,30 @@ function connect(): void {
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') voice.sentence(Number(msg['turn']), String(msg['text'] ?? ''));
     if (msg.type === 'audio.end') voice.end(Number(msg['turn']));
-    if (msg.type === 'audio.stop' || msg.type === 'interrupted') voice.stop();
+    if (msg.type === 'audio.stop' || msg.type === 'interrupted') {
+      voice.stop();
+      stopWatching();
+    }
+    if (msg.type === 'transcript.final') spokeLast = true;
     // The core opens and closes the microphone; the page only ever follows (VOI-15d).
-    if (msg.type === 'mic.start' && !mic.on) void mic.start();
-    if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening')) mic.stop();
+    if (msg.type === 'mic.start') {
+      if (micMode === 'watch' && mic.on) {
+        // Already open: what was held goes first, then the microphone carries on.
+        const held = bargeHeld ?? [];
+        bargeHeld = null;
+        micMode = 'send';
+        for (const frame of held) if (socket?.readyState === WebSocket.OPEN) socket.send(frame);
+      } else if (!mic.on) {
+        micMode = 'send';
+        void mic.start();
+      }
+    }
+    const busyBarge = msg.type === 'error' && msg['code'] === 'busy' && bargeHeld !== null;
+    if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening') || busyBarge) {
+      mic.stop();
+      micMode = 'send';
+      bargeHeld = null;
+    }
     apply(reduce(view, msg));
     if (msg.type === 'session' || msg.type === 'turn.complete') void refreshUsage();
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
@@ -674,6 +778,8 @@ function connect(): void {
     socket = null;
     voice.stop();
     mic.stop();
+    micMode = 'send';
+    bargeHeld = null;
     if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
     setTimeout(connect, retryMs);
@@ -692,6 +798,8 @@ function submit(): void {
   if (!text || view.busy || view.link !== 'ready') return;
   voice.unlock(); // sending is a click or a key press, which is what lets a browser play sound
   voice.stop();
+  spokeLast = false; // a typed conversation: the microphone stays closed while she answers
+  stopWatching();
   send({ type: 'turn.text', text });
   input.value = '';
   input.style.height = '';
@@ -715,6 +823,8 @@ input.addEventListener('input', () => {
 const interrupt = (): void => {
   voice.stop();
   mic.stop();
+  micMode = 'send';
+  bargeHeld = null;
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);

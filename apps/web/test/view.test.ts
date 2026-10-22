@@ -213,7 +213,7 @@ describe('voice in the view', () => {
       expect(dead.banner).toMatch(/can't hear your microphone.*still type/);
       expect(feed([{ type: 'error', code: 'listening', kind: 'unauthorized' }], open).banner).toMatch(/rejected the key/);
       expect(feed([{ type: 'error', code: 'listening', kind: 'mystery' }], open).banner).toMatch(/Listening failed/);
-      expect(feed([{ type: 'error', code: 'no_listening' }], ready).banner).toMatch(/Mic settings/);
+      expect(feed([{ type: 'error', code: 'no_listening' }], ready).banner).toMatch(/Settings, under Hearing/);
       expect(micFailed(open, 'denied')).toMatchObject({ mic: false });
       expect(micFailed(open, 'denied').banner).toMatch(/did not allow the microphone/);
       // A microphone sending pure silence says where to choose another (Safari and an audio interface).

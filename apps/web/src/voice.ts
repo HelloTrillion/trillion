@@ -68,12 +68,17 @@ export interface Voice {
   /** Silence now, and drop whatever is queued. */
   stop(): void;
   readonly active: boolean;
+  /** How loud she is right now, 0 to 1; null when the computer's own voice speaks,
+   * which the page cannot measure. Used to tell her echo from the user (VOI-9). */
+  level(): number | null;
 }
 
 export function createVoice(hooks: VoiceHooks): Voice {
   let config: SpeechConfig | null = null;
   let ctx: AudioContext | null = null;
   let gain: GainNode | null = null;
+  let meter: AnalyserNode | null = null;
+  let samples: Float32Array<ArrayBuffer> | null = null;
   let detach: (() => void) | null = null;
   let nextAt = 0;
   let sounding = 0; // buffers or utterances not yet finished
@@ -114,6 +119,9 @@ export function createVoice(hooks: VoiceHooks): Voice {
       ctx = new AudioContext();
       gain = ctx.createGain();
       gain.connect(ctx.destination);
+      meter = ctx.createAnalyser();
+      meter.fftSize = 1024;
+      gain.connect(meter);
       detach = hooks.attach(gain);
     }
     return ctx;
@@ -122,6 +130,15 @@ export function createVoice(hooks: VoiceHooks): Voice {
   return {
     get active() {
       return active;
+    },
+    level() {
+      if (config?.where !== 'core') return null;
+      if (!meter || !active) return 0;
+      samples ??= new Float32Array(meter.fftSize);
+      meter.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) sum += (samples[i] ?? 0) ** 2;
+      return Math.sqrt(sum / samples.length);
     },
     configure(next) {
       if (next?.kind !== config?.kind || next?.voice !== config?.voice) this.stop();
