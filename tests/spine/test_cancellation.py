@@ -143,22 +143,26 @@ async def test_a_cancelled_action_that_never_finishes_is_recorded_as_unknown(
 async def test_a_stuck_disk_is_timed_out_and_the_loop_keeps_running(spine: Spine) -> None:
     spine.registry.register(StuckDisk())
     pid = await proposed(spine, "stuck_disk")
-    beats = 0
+    beats: list[float] = []
 
     async def heartbeat() -> None:
-        nonlocal beats
         while True:
+            beats.append(time.monotonic())
             await asyncio.sleep(0.02)
-            beats += 1
 
     pulse = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0)  # the first beat
     start = time.monotonic()
     done = await spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
     took = time.monotonic() - start
     pulse.cancel()
     assert done.status == "unknown" and "timed out" in done.content  # not a guessed success
     assert took < 0.6  # the timeout stopped the waiting; the disk call did not hold it
-    assert beats >= 5  # and nothing else stood still meanwhile
+    # And nothing else stood still meanwhile: the loop never froze for the disk call's
+    # full second. Measured as the longest gap, not a count of beats, because Windows
+    # timers are coarse and a busy CI machine beats far less often than 50 times a second.
+    gaps = [b - a for a, b in zip(beats, [*beats[1:], time.monotonic()], strict=True)]
+    assert len(beats) >= 2 and max(gaps) < 0.5, gaps
 
 
 async def test_the_real_file_tools_do_their_disk_work_off_the_loop(
