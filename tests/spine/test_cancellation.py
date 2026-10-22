@@ -10,6 +10,7 @@ timed out at all, because the timeout itself waits on the loop.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import pytest
@@ -20,6 +21,7 @@ from trillion.spine.contract import (
     JSON,
     ActionSummary,
     BaseTool,
+    Precondition,
     Risk,
     ToolContext,
     ToolDefinition,
@@ -186,3 +188,107 @@ async def test_the_real_file_tools_do_their_disk_work_off_the_loop(
     pulse.cancel()
     assert done.status == "succeeded" and target.read_text() == "hi"
     assert beats >= 5  # the loop kept running while the disk was slow
+
+
+class SlowCheck(BaseTool):
+    """An irreversible action whose check before running takes a moment (#83)."""
+
+    definition = ToolDefinition(
+        name="slow_check",
+        description="Check slowly, then do something irreversible (test).",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        risk=Risk.IRREVERSIBLE,
+        category="test",
+        timeout_s=1.0,
+    )
+
+    def __init__(self) -> None:
+        self.checking = asyncio.Event()
+        self.checked = asyncio.Event()
+        self.checks = 0
+        self.executions = 0
+
+    def describe(self, args: JSON) -> ActionSummary:
+        return ActionSummary(text="Do the slowly checked thing")
+
+    async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
+        # Checked once when proposed, and again after the yes: only the second is slow.
+        self.checks += 1
+        if self.checks > 1:
+            self.checking.set()
+            await self.checked.wait()
+        return Precondition.passed()
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        self.executions += 1
+        return ToolResult(ok=True, content="done", effect="confirmed")
+
+
+@pytest.fixture
+def slow(spine: Spine) -> SlowCheck:
+    tool = SlowCheck()
+    spine.registry.register(tool)
+    return tool
+
+
+async def test_an_interruption_between_yes_and_running_still_runs_it(
+    spine: Spine, slow: SlowCheck
+) -> None:
+    """#83: the user said yes, then barged in while the action was being checked.
+    It used to stay `approved` forever, never run, and answer a repeat confirm with
+    "already settled earlier; nothing ran again". A yes is seen through."""
+    pid = await proposed(spine, "slow_check")
+    asked = asyncio.create_task(spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap")))
+    await asyncio.wait_for(slow.checking.wait(), 2)
+    assert await status_of(spine, pid) is Status.APPROVED
+    asked.cancel()  # the barge-in lands during the check
+    await asyncio.sleep(0.01)
+    slow.checked.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(asked, 2)  # honoured, once the outcome is written
+    assert await status_of(spine, pid) is Status.SUCCEEDED and slow.executions == 1
+    again = await spine.router.resolve(pid, "confirm", spine.ctx(turn=3, via="tap"))
+    assert again.status == "succeeded" and slow.executions == 1
+
+
+async def test_an_interrupted_yes_is_never_left_half_done(spine: Spine, slow: SlowCheck) -> None:
+    """#83, at every moment an interruption can land: while the yes is read, while it
+    is saved, while the action is checked, while it runs. Either the yes was never
+    taken (the action still waits for an answer) or it is carried out in full: never
+    stuck on `approved`, and never run twice."""
+    slow.checked.set()  # no waiting in the check: the interruption is what varies
+    outcomes = set()
+    for moment in range(40):
+        pid = await proposed(spine, "slow_check")
+        before = slow.executions
+        asked = asyncio.create_task(
+            spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
+        )
+        for _ in range(moment):
+            await asyncio.sleep(0)
+        asked.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(asked, 2)
+        status = await status_of(spine, pid)
+        assert status in (Status.PROPOSED, Status.SUCCEEDED), (moment, status)
+        assert slow.executions - before == (1 if status is Status.SUCCEEDED else 0)
+        outcomes.add(status)
+    # Both outcomes were reached, so the moments really did span the yes being taken.
+    assert outcomes == {Status.PROPOSED, Status.SUCCEEDED}
+
+
+async def test_an_action_run_under_an_interruption_is_in_the_audit_log(
+    spine: Spine, gated: Gated
+) -> None:
+    """#84: it ran and its outcome was recorded, but the audit log had only its
+    proposal (SPN-12: every tool call records the decision and the outcome)."""
+    pid = await proposed(spine, "gated")
+    asked = asyncio.create_task(spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap")))
+    await asyncio.wait_for(gated.started.wait(), 2)
+    asked.cancel()
+    gated.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(asked, 2)
+    audit = [r for r in await spine.store.list_audit() if r.tool == "gated"]
+    assert [r.decision for r in audit] == ["proposed", "resolve"]
+    assert audit[-1].outcome == "succeeded"

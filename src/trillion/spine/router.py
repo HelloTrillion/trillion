@@ -16,7 +16,7 @@ import logging
 import os
 import unicodedata
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -199,6 +199,25 @@ def final_status(result: ToolResult) -> Status:
             return Status.UNKNOWN
         return Status.FAILED
     return Status.UNKNOWN if result.effect == "unknown" else Status.FAILED
+
+
+async def _see_through[T](work: Awaitable[T]) -> T:
+    """Run `work` to the end even if the caller is cancelled meanwhile, however often,
+    then honour the cancellation. If the work itself is cancelled (the event loop is
+    shutting down), that is raised at once: `recover()` settles what was left."""
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 class Router:
@@ -424,6 +443,15 @@ class Router:
             response = _refused(Refusal.NOT_SHOWN, "its card has not been shown yet")
             return await self._audit_resolution(a, ctx, start, response)
 
+        # From the user's answer to the recorded outcome and its audit entry, nothing
+        # that stops her stops the work: a barge-in or a closed tab ends her reply,
+        # never a "yes" half-carried-out (#83, #84, VOI-15c). The tool's own timeout
+        # still bounds it, and the cancellation is honoured once all of it is written.
+        return await _see_through(self._decide_and_run(a, verdict, ctx, start))
+
+    async def _decide_and_run(
+        self, a: PendingAction, verdict: Status, ctx: ToolContext, start: int
+    ) -> RouterResponse:
         event = "rejected" if verdict is Status.REJECTED else "approved"
         won = await self._move(a.id, Status.PROPOSED, verdict, _by(ctx, event), now=start)
         if not won or verdict is Status.REJECTED:
@@ -494,24 +522,8 @@ class Router:
         claimed = await self._move(a.id, approved, Status.EXECUTING, _by(ctx, "executing"))
         if not claimed:
             return self._from_record(await self._reload(a))
-
-        # From the claim on, the action is seen through to a recorded outcome even if
-        # whoever asked goes away mid-run (#3): a barge-in or a closed tab stops her
-        # speaking, never the record (VOI-15c). The tool's own timeout still bounds it.
-        # A cancellation is honoured once the outcome is written, not before.
-        work = asyncio.ensure_future(self._execute_claimed(tool, a, ctx))
-        cancelled = False
-        while not work.done():
-            try:
-                await asyncio.shield(work)
-            except asyncio.CancelledError:
-                if work.cancelled():  # the loop itself is shutting down: recover() finishes it
-                    raise
-                cancelled = True
-        response = work.result()
-        if cancelled:
-            raise asyncio.CancelledError
-        return response
+        # The caller sees this through (#3): see `resolve`.
+        return await self._execute_claimed(tool, a, ctx)
 
     async def _execute_claimed(
         self, tool: _Registered, a: PendingAction, ctx: ToolContext
