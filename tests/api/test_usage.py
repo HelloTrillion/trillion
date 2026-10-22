@@ -99,10 +99,11 @@ def test_only_this_month_in_the_users_timezone_is_counted(make: Any) -> None:
     app = make()
     in_chicago(app)
     spend(app, CHICAGO_OCT_1 - MINUTE, cost=9.0)  # still September in Chicago
+    spend(app, CHICAGO_OCT_1, cost=0.5)  # the first moment of the month counts
     spend(app, CHICAGO_OCT_1 + MINUTE, cost=0.25)
     usage = read(app)
-    assert usage["total_cost_usd"] == 0.25
-    assert [r["cost_usd"] for r in usage["rows"]] == [0.25]
+    assert usage["total_cost_usd"] == 0.75
+    assert [r["cost_usd"] for r in usage["rows"]] == [0.75]
 
 
 def test_rows_are_grouped_by_provider_and_model_with_tokens_summed(make: Any) -> None:

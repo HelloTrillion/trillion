@@ -432,7 +432,7 @@ async function refreshUsage(): Promise<Usage | null> {
   if (usage) {
     usageBtn.textContent = pill(usage);
     usageBtn.title = sentence(usage);
-    usageBtn.setAttribute('aria-label', sentence(usage));
+    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${sentence(usage)}`);
   }
   return usage;
 }
