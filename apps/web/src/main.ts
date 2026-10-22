@@ -7,6 +7,7 @@ import { TalkKeys, type TalkPrefs } from './hotkey';
 import { icon } from './icons';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
+import { createMicrophones } from './microphone';
 import { createNamesSettings } from './names';
 import {
   APPROVE,
@@ -27,7 +28,16 @@ import {
 } from './onboarding';
 import { createPanel } from './panel';
 import { primary, shortcut } from './platform';
-import { type Theme as ThemeChoice, saveTalk, saveTheme, savedTalk, savedTheme, shownTheme } from './prefs';
+import {
+  type Theme as ThemeChoice,
+  saveMic,
+  saveTalk,
+  saveTheme,
+  savedMic,
+  savedTalk,
+  savedTheme,
+  shownTheme,
+} from './prefs';
 import { type Api, createSettings } from './settings';
 import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
@@ -131,6 +141,8 @@ const mic = createMic({
   onFrame: (pcm) => {
     if (socket?.readyState === WebSocket.OPEN) socket.send(pcm);
   },
+  onSetup: (setup) => send({ type: 'mic.opened', ...setup }),
+  device: savedMic,
   onProblem: (problem) => {
     send({ type: 'interrupt' });
     apply(micFailed(view, problem));
@@ -400,7 +412,14 @@ const api: Api = (method, path, body) =>
 const panel = createPanel($<HTMLDialogElement>('settings-panel'));
 const settings = createSettings(panel.host('model'), api);
 const speechSettings = createSpeechSettings(panel.host('voice'), api);
-const listeningSettings = createListeningSettings(panel.host('mic'), api);
+const listeningSettings = createListeningSettings(
+  panel.host('mic'),
+  api,
+  createMicrophones(savedMic, (id) => {
+    saveMic(id);
+    panel.refresh();
+  }),
+);
 const namesSettings = createNamesSettings(panel.host('names'), api, {
   talk: () => talkNames(),
   // The core tells every open page the new name itself; only the summary here changes.

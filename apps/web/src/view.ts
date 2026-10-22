@@ -37,7 +37,7 @@ export interface Listening {
   readonly streaming: boolean;
 }
 
-export type MicProblem = 'denied' | 'no_device' | 'unsupported' | 'failed';
+export type MicProblem = 'denied' | 'no_device' | 'unsupported' | 'failed' | 'silent';
 
 export interface View {
   readonly link: Link;
@@ -123,6 +123,7 @@ const MIC_PROBLEMS: Readonly<Record<MicProblem, string>> = {
   no_device: 'No microphone was found.',
   unsupported: 'This browser cannot capture a microphone here.',
   failed: 'The microphone could not be opened.',
+  silent: 'Your microphone is sending silence. Choose another in Settings, under Hearing, or check its input and gain.',
 };
 
 const STOPS: Readonly<Record<string, string>> = {

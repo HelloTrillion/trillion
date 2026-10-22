@@ -103,6 +103,7 @@ class Session:
         self._trace: Trace | None = None
         self._last_trace: Trace | None = None
         self._timed = 0
+        self._mic_setup: dict[str, Any] = {}
         self._warming: asyncio.Future[Any] | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
@@ -233,6 +234,15 @@ class Session:
             await self._on_greet()
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
+        elif kind == "mic.opened":
+            # What the page's audio setup reports: numbers and a state, nothing heard.
+            if msg.get("silent") is True:
+                logger.warning("the page's microphone gave exact silence: %s", dict(msg))
+            self._mic_setup = {
+                k: msg.get(k)
+                for k in ("rate", "device_rate", "state", "channels", "device", "track", "silent")
+                if isinstance(msg.get(k), int | float | str | bool)
+            }
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
         elif kind == "playback.ended":
@@ -380,6 +390,16 @@ class Session:
         if listener is None:
             return
         await self._send("mic.stop", reason=verdict)
+        if verdict == "inaudible":
+            # Enough to tell a paused page from a muted microphone, and nothing heard.
+            logger.warning(
+                "listening ended (%s): %d frames, %.1fs of audio, loudest %.4f, page audio %s",
+                verdict,
+                listener.frames,
+                listener.heard_s,
+                listener.peak,
+                self._mic_setup or "not reported",
+            )
         if verdict == "inaudible":
             # Said out loud rather than failing silently (VOI-4).
             await listener.abandon()

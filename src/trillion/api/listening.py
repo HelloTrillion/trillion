@@ -64,6 +64,7 @@ class Listener:
         self._interim = ""
         self._error: VoiceError | None = None
         self._verdict: Verdict | None = None
+        self.frames = 0
 
     @property
     def open(self) -> bool:
@@ -72,6 +73,16 @@ class Listener:
     @property
     def verdict(self) -> Verdict | None:
         return self._verdict
+
+    @property
+    def heard_s(self) -> float:
+        """Seconds of audio received."""
+        return self._rules.now
+
+    @property
+    def peak(self) -> float:
+        """The loudest the audio has been, 0 to 1."""
+        return self._rules.peak
 
     @property
     def quiet_s(self) -> float:
@@ -94,6 +105,7 @@ class Listener:
         """More from the microphone. Returns a verdict once, when listening should end."""
         if self._verdict is not None:
             return None
+        self.frames += 1
         if self._error is not None:
             raise self._error
         if self._stream is None:

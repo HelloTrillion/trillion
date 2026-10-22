@@ -70,3 +70,21 @@ export function savedTalk(): TalkPrefs {
 }
 
 export const saveTalk = (prefs: TalkPrefs): void => set(TALK_KEY, JSON.stringify(prefs));
+
+const MIC_KEY = 'trillion-mic';
+
+/** The microphone she listens with, by the browser's id for it; null for the default. */
+export function savedMic(): string | null {
+  const saved = get(MIC_KEY);
+  return saved && saved.length <= 200 ? saved : null;
+}
+
+export function saveMic(device: string | null): void {
+  if (device) set(MIC_KEY, device);
+  else
+    try {
+      localStorage.removeItem(MIC_KEY);
+    } catch {
+      // nothing was remembered
+    }
+}
