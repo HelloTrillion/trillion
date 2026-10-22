@@ -299,6 +299,48 @@ def test_known_models_have_a_price_and_unknown_ones_do_not() -> None:
     assert AnthropicProvider(api_key=lambda: KEY, model="something-new").pricing() is None
 
 
+_PRICED = [
+    "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8",
+    "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5-5",
+    "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5", "claude-haiku-4-5",
+]  # fmt: skip
+
+
+def _price(model: str) -> Pricing | None:
+    return AnthropicProvider(api_key=lambda: KEY, model=model).pricing()
+
+
+@pytest.mark.parametrize("model", _PRICED)
+def test_every_listed_model_has_a_price(model: str) -> None:
+    assert _price(model) is not None
+
+
+def test_sonnet_5_5_cache_read_is_a_tenth() -> None:
+    p = _price("claude-sonnet-5-5")
+    assert p is not None and p.cache_read == 0.10
+
+
+def test_dated_ids_price_like_their_undated_ids() -> None:
+    assert _price("claude-haiku-4-5-20251001") == _price("claude-haiku-4-5") is not None
+    assert _price("claude-opus-4-5-20251101") == _price("claude-opus-4-5") is not None
+    assert _price("something-new-20260101") is None
+
+
+def test_haiku_5_5_long_prompt_tier() -> None:
+    p = _price("claude-haiku-5-5")
+    assert p is not None
+    at_line = Usage(input_tokens=100_000, output_tokens=1_000)
+    assert p.cost(at_line) == pytest.approx(0.0105)
+    # Cache reads count toward the prompt, and then every rate is the higher one.
+    over = Usage(input_tokens=90_000, cache_read_tokens=10_001, output_tokens=1_000)
+    assert p.cost(over) == pytest.approx(0.04800005)
+
+
+def test_pricing_without_a_tier_ignores_prompt_length() -> None:
+    flat = Pricing(input=1.0, output=1.0)
+    assert flat.cost(Usage(input_tokens=1_000_000, output_tokens=0)) == pytest.approx(1.0)
+
+
 async def test_anthropic_lists_models() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.url.path == "/v1/models" and request.headers["x-api-key"] == KEY

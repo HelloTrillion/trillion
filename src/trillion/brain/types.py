@@ -108,8 +108,15 @@ class Pricing:
     output: float
     cache_read: float = 0.0
     cache_write: float = 0.0
+    long_prompt_over: int = 0
+    long_prompt: Pricing | None = None
 
     def cost(self, u: Usage) -> float:
+        # Haiku 5.5 bills the whole request at the higher rate once its prompt passes the line.
+        if self.long_prompt and (
+            u.input_tokens + u.cache_read_tokens + u.cache_write_tokens > self.long_prompt_over
+        ):
+            return self.long_prompt.cost(u)
         return (
             u.input_tokens * self.input
             + u.output_tokens * self.output
