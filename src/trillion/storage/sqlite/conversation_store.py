@@ -207,6 +207,39 @@ class SqliteConversationStore:
             ),
         )
 
+    async def usage_since(self, owner_id: str, since_ms: int) -> list[dict[str, Any]]:
+        """Usage per provider and model since a moment (BRN-4). A NULL cost is unknown,
+        not free: it is left out of `cost_usd` and counted in `unpriced_*` instead."""
+        async with self._conn.execute(
+            "SELECT provider, model, SUM(input_tokens), SUM(output_tokens),"
+            " SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(cost_usd),"
+            " SUM(cost_usd IS NULL),"
+            " SUM(CASE WHEN cost_usd IS NULL THEN input_tokens + output_tokens"
+            " + cache_read_tokens + cache_write_tokens ELSE 0 END)"
+            " FROM usage WHERE owner_id = ? AND created_at >= ?"
+            " GROUP BY provider, model"
+            " ORDER BY SUM(cost_usd) IS NULL, SUM(cost_usd) DESC,"
+            " SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) DESC",
+            (owner_id, since_ms),
+        ) as cur:
+            names = (
+                "provider",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_usd",
+                "unpriced_turns",
+                "unpriced_tokens",
+            )
+            rows = [dict(zip(names, row, strict=True)) for row in await cur.fetchall()]
+        for r in rows:
+            # Float sums drift (0.5 + 0.7 = 1.2000000000000002); a micro-dollar is plenty.
+            if r["cost_usd"] is not None:
+                r["cost_usd"] = round(r["cost_usd"], 6)
+        return rows
+
     async def record_timing(self, owner_id: str, row: Mapping[str, Any], now_ms: int) -> int:
         """Keep one turn's timings (ONB-11). Returns its id, for a late `played_ms`."""
         names = ("conversation_id", *TIMING_FIELDS)

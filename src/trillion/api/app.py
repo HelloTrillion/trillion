@@ -28,6 +28,7 @@ from trillion.api.persona import create_persona_router
 from trillion.api.runtime import Runtime
 from trillion.api.session import PROTOCOL, Session
 from trillion.api.settings import create_router
+from trillion.api.usage import create_usage_router
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,7 @@ def create_app(
 
     app.include_router(create_router(rt))
     app.include_router(create_persona_router(rt))
+    app.include_router(create_usage_router(rt))
     if extra_origins:
         # Development only: the page is served by Vite on another port.
         app.add_middleware(
