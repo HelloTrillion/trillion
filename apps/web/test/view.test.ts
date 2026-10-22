@@ -216,6 +216,8 @@ describe('voice in the view', () => {
       expect(feed([{ type: 'error', code: 'no_listening' }], ready).banner).toMatch(/Mic settings/);
       expect(micFailed(open, 'denied')).toMatchObject({ mic: false });
       expect(micFailed(open, 'denied').banner).toMatch(/did not allow the microphone/);
+      // A microphone sending pure silence says where to choose another (Safari and an audio interface).
+      expect(micFailed(open, 'silent').banner).toMatch(/sending silence.*Settings, under Hearing/);
       expect(micFailed(open, 'no_device').banner).toMatch(/No microphone/);
       // Opening the microphone again clears the old complaint.
       expect(feed([{ type: 'mic.start' }], dead).banner).toBeNull();

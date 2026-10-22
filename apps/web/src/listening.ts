@@ -8,6 +8,7 @@
  */
 
 import { type Api, errorText } from './settings';
+import type { Microphones } from './microphone';
 import type { Host } from './panel';
 
 interface Option {
@@ -58,7 +59,7 @@ export interface ListeningSettings {
   open(): Promise<void>;
 }
 
-export function createListeningSettings(dialog: Host, api: Api): ListeningSettings {
+export function createListeningSettings(dialog: Host, api: Api, microphones?: Microphones): ListeningSettings {
   let state: State | null = null;
   let kind = OFF;
   let found: readonly Choice[] = [];
@@ -114,7 +115,7 @@ export function createListeningSettings(dialog: Host, api: Api): ListeningSettin
   const close = el('button', '', 'Close');
   close.type = 'button';
   actions.append(save, close);
-  form.append(title, intro, choices, keyRow, pickRow, status, actions);
+  form.append(title, intro, choices, keyRow, pickRow, status, ...(microphones ? [microphones.element] : []), actions);
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
@@ -279,6 +280,7 @@ export function createListeningSettings(dialog: Host, api: Api): ListeningSettin
   close.addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
     keyInput.value = '';
+    microphones?.stopTest();
   });
 
   return {
@@ -286,6 +288,7 @@ export function createListeningSettings(dialog: Host, api: Api): ListeningSettin
       if (dialog.open) return;
       status.textContent = '';
       dialog.showModal();
+      void microphones?.refresh();
       let loaded = false;
       await run(async () => {
         const r = await api('GET', '/api/settings/listening');
