@@ -24,8 +24,8 @@ The `§8.1` tree from the PRD is the target layout. The packages marked "exists"
 | `trillion/agents` | placeholder |
 | `trillion/scheduler` | placeholder |
 | `trillion/secrets` | exists — the OS keychain behind one interface, and the log filter that scrubs keys. `trillion doctor --secrets` shows which store is in use and whether each saved key works, without printing one (SEC-9). The encrypted-file fallback for machines with no keychain (SEC-2) is not built yet |
-| `trillion/connectors` | placeholder |
-| `trillion/channels` | placeholder |
+| `trillion/connectors` | exists — `connectors/mcp`: MCP servers the user connects (stdio or HTTP), kept in `mcp.json`, each connected and disconnected while Trillion runs, each tool registered as a spine tool that asks first unless the user said otherwise (CON-5). Keys come from the keychain by name; remote servers sign in with OAuth and PKCE through the browser (`signin.py`). `catalog.py` lists the featured services, `paste.py` reads a pasted address, command or config. Settings → Connected tools uses `/api/mcp`; `trillion doctor` checks the file without starting anything. `connectors/google`: Gmail, Calendar and Drive as spine tools, OAuth with PKCE (CON-4), `/api/google`. `connectors/slack`: Slack tools with the user token, `/api/slack` |
+| `trillion/channels` | exists — talking to her from Slack (Socket Mode) and Telegram (long polling), answers only (SUR-5): an allow-list that fails closed, @mention in groups, a model call with no tools (SPN-16), each chat kept as its own conversation |
 
 ## 3. The life of a turn
 

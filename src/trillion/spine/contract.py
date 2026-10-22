@@ -32,6 +32,10 @@ class ToolDefinition:
     category: str
     timeout_s: float
     path_args: tuple[str, ...] = ()
+    # Arguments that may name a path, but not one confined to the granted folders: a
+    # connected server's own files, or an id that only looks like a path. Any value
+    # that reads as a path is still refused if it touches anything protected (SEC-10).
+    outside_path_args: tuple[str, ...] = ()
     recoverable: bool = True
     trusted_output: bool = False
     # Wrapped as untrusted like any result, but escaped reversibly instead of neutralized

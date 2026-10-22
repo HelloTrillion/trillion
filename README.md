@@ -101,6 +101,16 @@ It checks the data folder, the database, the port, the keychain, your model, voi
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 
+**Connecting your apps (MCP).** Open Settings → **Connected tools** and pick an app: Notion, Linear, Todoist, Canva, Stripe, Zapier, GitHub and more. Most connect by signing in with the app in your browser; a few take a key, which goes straight to your system keychain. **Add your own** connects any other MCP server: paste its address, the command from its instructions, or its settings for Claude Desktop, Cursor or VS Code. Connections start and stop without restarting Trillion.
+
+Every tool asks you first until you switch it to run on its own, and what an app sends back is treated as information, never as instructions. Only connect servers you trust: a local server is a program running on your computer.
+
+**Gmail, Google Calendar and Google Drive** are built in: choose one and sign in with Google. Sending email and changing your calendar always ask. Google requires every app that signs people in to be registered, so the first time, Settings walks you through making your own free OAuth client in Google Cloud (about five minutes); a distribution ships its own registered Google app instead, so its users just sign in: `google_client.json` next to `connectors/google/config.py` (the file Google gives you for a Desktop client, plus `"picker_key"` for Drive), or `TRILLION_GOOGLE_CLIENT_ID`, `TRILLION_GOOGLE_CLIENT_SECRET` and `TRILLION_GOOGLE_PICKER_KEY`. The file is git-ignored and included in the wheel when present, so official builds write it from a CI secret before `uv build`.
+
+**Slack and Telegram.** With Slack connected she can search, read and post in your workspace (posting always asks), and you can talk to her there. Telegram lets you talk to her from your phone through a bot you make with @BotFather. In both she only answers: no tools, nothing approved from a chat, and only people you allow (the list starts empty). Both connect outbound, so nothing on your computer is reachable from the internet.
+
+Connections are kept in `mcp.json` in Trillion's data folder (`~/.trillion/mcp.json`), in the format Claude Desktop and Cursor use, so you can also edit it by hand. A key is never written there, only its keychain name (`keychain:NAME`). `"risk": "read"` under `tools` lets a tool run without asking. `trillion doctor` checks the file.
+
 ## Contributing
 
 We want help, and the fastest way in is [`CONTRIBUTING.md`](CONTRIBUTING.md). It explains the three-pillar test every feature has to pass, the **never list** (things a pull request may never do), and the sign-off we require on commits.

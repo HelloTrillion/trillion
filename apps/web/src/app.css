@@ -1160,3 +1160,542 @@ dialog.panel[open] {
   font-size: 12px;
   line-height: 1.4;
 }
+
+/* Settings → Connected tools: a gallery of apps, a setup sheet, and your connections. */
+.panel-pane .settings.connected {
+  max-width: 880px;
+}
+.connected-heading {
+  margin: 12px 0 -4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text-1);
+}
+.connected-foot {
+  margin-top: 4px;
+}
+.connected-link {
+  font-size: 13px;
+  color: var(--color-accent);
+}
+.connected-warn {
+  color: var(--color-amber);
+}
+.connected-ok {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+/* A service's tile: its colour and a letter or two. */
+.connected-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink-on-dark) 14%, transparent);
+}
+/* The service's own icon covers its letters once it has loaded. */
+.connected-mark {
+  position: relative;
+  overflow: hidden;
+}
+.connected-icon {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+.connected-mark.has-icon .connected-icon {
+  opacity: 1;
+}
+.connected-mark.has-icon {
+  color: transparent;
+}
+.connected-mark-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  font-size: 16px;
+}
+.connected-mark-lg {
+  width: 64px;
+  height: 64px;
+  border-radius: 17px;
+  font-size: 26px;
+}
+.connected-mark-plain {
+  background: color-mix(in srgb, var(--color-text-0) 8%, transparent);
+  color: var(--color-text-1);
+  font-weight: 400;
+  font-size: 22px;
+}
+
+/* The gallery. */
+.connected-gallery {
+  display: grid;
+  gap: 14px;
+}
+.connected-filter {
+  display: grid;
+  gap: 10px;
+}
+.connected-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  color: var(--color-text-2);
+}
+.connected-search:focus-within {
+  background: color-mix(in srgb, var(--color-text-0) 8%, transparent);
+  color: var(--color-text-1);
+}
+.connected-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text-0);
+  font: inherit;
+  font-size: 14px;
+}
+.connected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.connected-chip {
+  padding: 5px 12px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--color-text-1);
+}
+.connected-chip[aria-pressed='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.connected-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.connected-tile {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 14px;
+  text-align: left;
+  border-radius: var(--radius-lg);
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    transform var(--motion-fast);
+}
+.connected-tile:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text-0) 7%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  transform: translateY(-1px);
+}
+.connected-tile-words {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.connected-tile-words strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connected-tile-words small {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--color-text-1);
+}
+.connected-badge {
+  grid-column: 1 / -1;
+  justify-self: start;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-text-0) 7%, transparent);
+  color: var(--color-text-1);
+}
+.connected-badge-sign_in,
+.connected-badge-google {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+}
+.connected-badge-on {
+  background: var(--color-accent);
+  color: var(--color-bg-0);
+}
+.connected-soon .connected-mark {
+  filter: saturate(0.55);
+  opacity: 0.75;
+}
+.connected-own {
+  border: 1px dashed var(--color-border);
+  background: transparent;
+}
+
+/* Your connections. */
+.connected-list {
+  display: grid;
+  gap: 10px;
+}
+.connected-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+}
+.connected-card.is-open {
+  padding-bottom: 18px;
+}
+.connected-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.connected-card-words {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.connected-card-side {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.connected-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.connected-state-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.connected-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-2);
+}
+.connected-dot-on {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent);
+}
+.connected-dot-bad {
+  background: var(--color-amber);
+}
+.connected-dot-wait {
+  background: var(--color-accent);
+  animation: connected-pulse 1.2s ease-in-out infinite;
+}
+@keyframes connected-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .connected-dot-wait {
+    animation: none;
+  }
+  .connected-tile:hover:not(:disabled) {
+    transform: none;
+  }
+}
+.connected-manage {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--color-text-0) 8%, transparent);
+}
+.connected-actions,
+.connected-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.connected-confirm span {
+  flex: 1 1 240px;
+  font-size: 13px;
+}
+button.connected-danger {
+  color: var(--color-amber);
+}
+.connected-danger-solid {
+  background: var(--color-amber);
+  border-color: var(--color-amber);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.connected-log {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.connected-fields {
+  display: grid;
+  gap: 10px;
+}
+
+/* What it may do on its own. */
+.connected-tools-wrap {
+  display: grid;
+  gap: 4px;
+}
+.connected-tools-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.connected-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.connected-tools li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-text-0) 7%, transparent);
+}
+.connected-tools li span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.connected-tools li span strong {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.connected-tools li span small {
+  color: var(--color-text-1);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.connected-switch {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.connected-switch input {
+  position: absolute;
+  right: 0;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  opacity: 0;
+}
+.connected-switch-track {
+  width: 34px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-text-0) 16%, transparent);
+  position: relative;
+  transition: background var(--motion-fast);
+}
+.connected-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text-0);
+  transition: transform var(--motion-fast);
+}
+.connected-switch input:checked + .connected-switch-track {
+  background: var(--color-accent);
+}
+.connected-switch input:checked + .connected-switch-track::after {
+  transform: translateX(14px);
+  background: var(--color-bg-0);
+}
+.connected-switch input:focus-visible + .connected-switch-track {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Google: its accounts, and the one-time setup. */
+.connected-accounts {
+  display: grid;
+  gap: 6px;
+}
+.connected-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.connected-always {
+  flex: none;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.connected-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 10px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+.connected-steps strong {
+  color: var(--color-text-0);
+}
+.connected-manage > button.quiet {
+  justify-self: start;
+}
+
+.connected-people {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.connected-knock {
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+.connected-box > button {
+  justify-self: start;
+}
+
+/* The setup sheet. */
+.connected-back {
+  align-self: flex-start;
+  padding-left: 0;
+}
+.connected-hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.connected-hero > div {
+  display: grid;
+  gap: 2px;
+}
+.connected-box {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+}
+.connected-box-local {
+  box-shadow: inset 3px 0 0 var(--color-amber);
+}
+.connected-box .settings-path {
+  background: transparent !important;
+  padding: 0;
+  word-break: break-all;
+}
+.connected-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+}
+.connected-promises {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+.connected-progress:empty {
+  display: none;
+}
+.connected-progress,
+.connected-done,
+.connected-waiting,
+.connected-failed-box {
+  display: grid;
+  gap: 10px;
+}
+.connected-waiting {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.connected-waiting button,
+.connected-tools-top button {
+  justify-self: start;
+}
+.connected-paste {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--color-text-0) 6%, transparent);
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.connected-paste:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+}
+
+@media (max-width: 560px) {
+  .connected-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .connected-card-head {
+    flex-wrap: wrap;
+  }
+}

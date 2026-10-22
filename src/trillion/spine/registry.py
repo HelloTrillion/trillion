@@ -49,11 +49,12 @@ def validate(tool: Tool, module: str) -> None:
         if key in schema:
             raise RegistryError(f"{d.name}: input_schema may not use top-level {key!r}")
     props = schema.get("properties", {})
-    for name in d.path_args:
-        if name not in props:
-            raise RegistryError(f"{d.name}: path_args entry {name!r} is not in the schema")
+    for field, names in (("path_args", d.path_args), ("outside_path_args", d.outside_path_args)):
+        for name in names:
+            if name not in props:
+                raise RegistryError(f"{d.name}: {field} entry {name!r} is not in the schema")
     for prop in props:
-        if _PATHY.search(prop) and prop not in d.path_args:
+        if _PATHY.search(prop) and prop not in (*d.path_args, *d.outside_path_args):
             raise RegistryError(f"{d.name}: {prop!r} looks like a path; declare it in path_args")
     first_party = module == FIRST_PARTY_PACKAGE or module.startswith(FIRST_PARTY_PACKAGE + ".")
     if d.trusted_output and not first_party:
@@ -80,6 +81,12 @@ class ToolRegistry:
         snapshot = dataclasses.replace(d, input_schema=copy.deepcopy(dict(d.input_schema)))
         self._tools[name] = tool
         self._definitions[name] = snapshot
+
+    def unregister(self, name: str) -> None:
+        """Take a tool away, as when the user disconnects the server it came from. A
+        card already waiting for it can no longer run: the router finds no tool."""
+        self._tools.pop(name, None)
+        self._definitions.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)

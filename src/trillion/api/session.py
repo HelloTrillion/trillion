@@ -62,6 +62,9 @@ MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
 # Tools whose results are someone else's words: a page anyone wrote, a file anyone sent.
 OUTSIDE = frozenset({"web_fetch", "file_read"})
+# Whole families of tools whose results are someone else's words: a connected
+# server's, and mail, events and documents from a connected account.
+OUTSIDE_CATEGORIES = frozenset({"mcp", "google", "slack"})
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -558,7 +561,11 @@ class Session:
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
             elif isinstance(ev, ToolEnded):
                 r = ev.response
-                if ev.name in OUTSIDE and r.status == "succeeded":
+                outside = ev.name in OUTSIDE or (
+                    (d := rt.registry.definition(ev.name)) is not None
+                    and d.category in OUTSIDE_CATEGORIES
+                )
+                if outside and r.status == "succeeded":
                     # From here to the end of the turn, what she writes to memory is
                     # something she read, not something the user said.
                     self._outside_turn = turn

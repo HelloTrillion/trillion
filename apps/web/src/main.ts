@@ -5,6 +5,7 @@ import { type Inline, parse } from './format';
 import { createAbout, createAppearance, createFolders, createShortcuts, createUsageSettings } from './browser';
 import { TalkKeys, type TalkPrefs } from './hotkey';
 import { icon } from './icons';
+import { createConnected } from './connected';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
 import { BargeDetector, Preroll, frameLevel } from './barge';
@@ -83,6 +84,20 @@ function store(key: string, value?: string | null): string | null {
   }
   return value ?? null;
 }
+
+/** A link back from signing in names the connection to show: #show=google:gmail.
+ * Taken once, and the address bar cleaned, like the token. */
+function takeShow(): string | null {
+  const match = /(?:^#|&)show=([\w:.%-]+)/.exec(location.hash);
+  if (!match?.[1]) return null;
+  history.replaceState(null, '', location.pathname);
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+const showOnStart = takeShow();
 
 /** The token arrives in the URL fragment, which is never sent anywhere. Take it and hide it. */
 function takeToken(): string | null {
@@ -528,6 +543,7 @@ const appearance = createAppearance(
   },
 );
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
+const connected = createConnected(panel.host('connected'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
@@ -550,6 +566,7 @@ panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', key
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
+panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder', summary: () => (view.grantedRoots.length ? `${view.grantedRoots.length} shared` : 'None'), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
@@ -557,6 +574,11 @@ function openSettings(at?: string): void {
   panel.open(at);
 }
 settingsBtn.addEventListener('click', () => openSettings());
+// Back from signing in to a service: Settings, at that connection, to confirm it.
+if (showOnStart) {
+  connected.reveal(showOnStart);
+  openSettings('connected');
+}
 usageBtn.addEventListener('click', () => openSettings('usage'));
 let offered = false;
 

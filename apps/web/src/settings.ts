@@ -24,7 +24,7 @@ interface Choice {
   readonly label: string;
 }
 
-export type Api = (method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown) => Promise<Response>;
+export type Api = (method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<Response>;
 
 interface Option {
   readonly kind: Kind;

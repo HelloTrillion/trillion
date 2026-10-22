@@ -81,7 +81,52 @@ is a known limit of this phase.
   `memory_forget`; a memory written in a turn that read a page or a file is
   kept as something she read, not as the user's words, and cannot replace
   one), standing rules (`rule_keep`, `rule_drop`), the decision
-  record (`decision_record`, read-only), `web_fetch` and `describe_self`.
+  record (`decision_record`, read-only), `web_fetch` and `describe_self`,
+  plus the tools of any MCP server the user connected (below).
+- **MCP servers run only if the user connected them**, in Settings →
+  Connected tools or by editing `mcp.json` in Trillion's own folder, which no
+  tool can edit. The routes that add, change or remove a server need the
+  page's session token and are not tools: nothing she can do adds a server or
+  lets one run without asking. A local server's exact command, or a remote
+  server's address, is shown before it is connected. The featured list in
+  Settings points only at each service's own server, and a package it runs is
+  pinned to a version.
+  Every MCP tool asks first unless the user marked it to run without asking;
+  a server's own claim that a tool only reads is shown, never trusted. What an
+  MCP tool returns is wrapped as untrusted, and a turn that read it is treated
+  like one that read a web page. An argument that may hold a path is checked
+  by the deny floor wherever it points: keys, the keychain, `.ssh`, `.git`,
+  `.env` files and Trillion's own folder are refused (SEC-10). Keys a server
+  needs are read from the keychain by name (`keychain:NAME`), so none has to
+  sit in the file; a key pasted into Settings goes straight to the keychain.
+  Signing in to a remote server (OAuth with PKCE) happens in the user's
+  browser, and the sign-in is kept in the keychain. The browser comes back to
+  `/mcp/callback`, the one route that needs no session token: it only hands a
+  code to a sign-in already waiting for that exact random state, which the MCP
+  library checks again before using it. Removing a server deletes its keys and
+  its sign-in. **The limit:** a local MCP server is a program running on
+  your machine with your privileges. The spine controls what Trillion asks it
+  to do, not what it does on its own (CON-6a). Connect only servers you trust,
+  as you would install only apps you trust.
+- **Google (Gmail, Calendar, Drive) and Slack are built-in tools under the same
+  rules.** Sign-in to Google is OAuth with PKCE through the user's browser to
+  Trillion's loopback address (`/google/callback`, which only completes a
+  sign-in already waiting for its random state); the refresh token is kept in
+  the keychain and revoked with Google when the account is removed. Each
+  service asks only for the access its tools need. Reading asks first until the
+  user lets it run; sending email, changing or deleting events and posting in
+  Slack are `irreversible` and always ask, and the user cannot change that.
+  Changing or deleting an event must name its title, checked against Google
+  before the card is shown. Mail, events, documents and Slack messages are
+  wrapped as untrusted, and a turn that read them is treated like one that read
+  a web page.
+- **Slack and Telegram channels only answer (SUR-5, SPN-16).** A message is
+  answered only if its sender is on the user's allow-list for that platform,
+  which starts empty, and in a group only when it @mentions her. A channel turn
+  calls the model with no tools at all, not even the spine's own, so nothing said
+  in a channel can act, read anything private, or approve anything waiting for
+  the user. Both connections are outbound (Slack Socket Mode, Telegram long
+  polling): nothing on the user's machine is reachable from the internet.
 - **`web_fetch` only opens an address the user gave, or a link on a page
   already read**, in the same conversation. She cannot compose an address,
   so nothing private can be sent out inside one. Every address a host
