@@ -60,7 +60,7 @@ export function sentence(u: Usage): string {
 export function breakdown(u: Usage): { name: string; detail: string }[] {
   return u.rows.map((r) => ({
     name: `${r.provider} · ${r.model}`,
-    detail: `${r.cost_usd === null ? 'No price' : dollars(r.cost_usd)} · ${tokens(r.input_tokens + r.cache_read_tokens + r.cache_write_tokens)} in, ${tokens(r.output_tokens)} out`,
+    detail: `${r.cost_usd === null ? 'No price' : dollars(r.cost_usd)} · ${tokens(r.input_tokens + r.cache_read_tokens + r.cache_write_tokens)} in, ${tokens(r.output_tokens)} out${r.cost_usd !== null && r.unpriced_tokens > 0 ? `, ${tokens(r.unpriced_tokens)} unpriced` : ''}`,
   }));
 }
 
@@ -68,7 +68,9 @@ export function breakdown(u: Usage): { name: string; detail: string }[] {
 export async function fetchUsage(api: Api): Promise<Usage | null> {
   try {
     const response = await api('GET', '/api/usage');
-    return response.ok ? ((await response.json()) as Usage) : null;
+    if (!response.ok) return null;
+    const body = (await response.json()) as Usage;
+    return Array.isArray(body?.rows) ? body : null;
   } catch {
     return null;
   }

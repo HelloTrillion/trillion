@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { type Usage, type UsageRow, breakdown, dollars, pill, sentence, tokens } from '../src/usage';
+import { type Usage, type UsageRow, breakdown, dollars, fetchUsage, pill, sentence, tokens } from '../src/usage';
+import type { Api } from '../src/settings';
 
 const row = (over: Partial<UsageRow>): UsageRow => ({
   provider: 'anthropic',
@@ -79,5 +80,36 @@ describe('the breakdown', () => {
       { name: 'anthropic · claude-test', detail: '$1.20 · 43k in, 9k out' },
       { name: 'custom · deepseek-chat', detail: 'No price · 300k in, 40k out' },
     ]);
+  });
+
+  it('shows a priced model\'s unpriced tokens too, so the bill is not understated', () => {
+    const mixed = row({ unpriced_turns: 3, unpriced_tokens: 12_000 });
+    expect(breakdown(month([mixed], 1.2, 12_000))).toEqual([
+      { name: 'anthropic · claude-test', detail: '$1.20 · 43k in, 9k out, 12k unpriced' },
+    ]);
+  });
+});
+
+describe('fetching usage', () => {
+  const reply = (body: unknown, status = 200): Api => async () => new Response(JSON.stringify(body), { status });
+
+  it('is null when the request is refused', async () => {
+    expect(await fetchUsage(reply({ error: 'nope' }, 401))).toBeNull();
+  });
+
+  it('is null when the request fails', async () => {
+    const down: Api = async () => {
+      throw new TypeError('network down');
+    };
+    expect(await fetchUsage(down)).toBeNull();
+  });
+
+  it('is null when the reply has no rows', async () => {
+    expect(await fetchUsage(reply({}))).toBeNull();
+  });
+
+  it('is the usage when the reply is valid', async () => {
+    const valid = month([priced], 1.2, 0);
+    expect(await fetchUsage(reply(valid))).toEqual(valid);
   });
 });
