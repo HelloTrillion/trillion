@@ -28,6 +28,8 @@ for (const theme of ['dark', 'light'] as const) {
 test('the same state at the same seed draws the same picture', async ({ page }) => {
   // The tolerance above is for software drawing between machines. On one machine
   // two runs must agree, or the snapshots would flicker for no reason.
+  // It draws twice, and software drawing on a CI machine is slow: three times the time.
+  test.slow();
   const shots: Buffer[] = [];
   for (let i = 0; i < 2; i++) {
     await page.goto('/');
