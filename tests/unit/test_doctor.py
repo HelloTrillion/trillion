@@ -38,6 +38,21 @@ def sound(monkeypatch: pytest.MonkeyPatch) -> None:
     """A running sound server with a microphone, whatever the machine running the tests has."""
     fake = {"info": "", "list": "2\talsa_input.usb\tx\n", "status": "", "inspect": ""}
     monkeypatch.setattr(doctor, "_answers", lambda *command: fake.get(command[1]))
+    which = doctor.shutil.which
+    monkeypatch.setattr(
+        doctor.shutil,
+        "which",
+        lambda name, *a, **k: f"/usr/bin/{name}" if name == "pactl" else which(name, *a, **k),
+    )
+
+
+@pytest.fixture(autouse=True)
+def built_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A built app page, whether or not this checkout has run the web build (CI has not)."""
+    page = tmp_path / "web"
+    page.mkdir()
+    (page / "index.html").write_text("<!doctype html>")
+    monkeypatch.setattr("trillion.api.app.web_dir", lambda: page)
 
 
 @pytest.fixture

@@ -258,14 +258,22 @@ async def test_an_interrupted_yes_is_never_left_half_done(spine: Spine, slow: Sl
     stuck on `approved`, and never run twice."""
     slow.checked.set()  # no waiting in the check: the interruption is what varies
     outcomes = set()
-    for moment in range(40):
+    # Moments counted in event-loop turns, then in real time: on a slow machine the
+    # saves take longer than any number of turns, and the yes must still get through.
+    moments: list[int | float] = [*range(40), *(0.001 * 2**k for k in range(12))]
+    for moment in moments:
+        if isinstance(moment, float) and outcomes == {Status.PROPOSED, Status.SUCCEEDED}:
+            break
         pid = await proposed(spine, "slow_check")
         before = slow.executions
         asked = asyncio.create_task(
             spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
         )
-        for _ in range(moment):
-            await asyncio.sleep(0)
+        if isinstance(moment, float):
+            await asyncio.sleep(moment)
+        else:
+            for _ in range(moment):
+                await asyncio.sleep(0)
         asked.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(asked, 2)
