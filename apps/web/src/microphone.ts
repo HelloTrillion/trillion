@@ -44,7 +44,17 @@ export function meterLevel(samples: Float32Array): number {
   return Math.min(1, Math.sqrt(rms * 8));
 }
 
-export function createMicrophones(current: () => string | null, choose: (id: string | null) => void): Microphones {
+/** The switch for interrupting her by talking. */
+export interface BargeSwitch {
+  on(): boolean;
+  set(on: boolean): void;
+}
+
+export function createMicrophones(
+  current: () => string | null,
+  choose: (id: string | null) => void,
+  barge?: BargeSwitch,
+): Microphones {
   const card = el('div', 'settings-card');
   const head = el('div', 'settings-card-head');
   head.append(
@@ -70,6 +80,25 @@ export function createMicrophones(current: () => string | null, choose: (id: str
   const note = el('p', 'settings-hint');
   note.setAttribute('role', 'status');
   card.append(head, row, meter, note);
+  if (barge) {
+    // Talking over her stops her (VOI-9). The page listens for it on this computer only.
+    const label = el('label', 'settings-check');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.checked = barge.on();
+    box.addEventListener('change', () => barge.set(box.checked));
+    const words = el('span');
+    words.append(
+      el('strong', '', 'Interrupt her by talking'),
+      el(
+        'small',
+        '',
+        'While she answers a spoken question, the microphone stays open on this computer to notice you cut in. Nothing is sent until you do. Turn it off if she stops herself when using speakers.',
+      ),
+    );
+    label.append(box, words);
+    card.append(label);
+  }
 
   let testing: { stop(): void } | null = null;
 

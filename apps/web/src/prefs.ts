@@ -88,3 +88,10 @@ export function saveMic(device: string | null): void {
       // nothing was remembered
     }
 }
+
+const BARGE_KEY = 'trillion-barge';
+
+/** Whether talking over her stops her (VOI-9). On unless turned off. */
+export const savedBarge = (): boolean => get(BARGE_KEY) !== 'off';
+
+export const saveBarge = (on: boolean): void => set(BARGE_KEY, on ? 'on' : 'off');
