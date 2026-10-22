@@ -8,6 +8,7 @@ import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifie
 import type { Host } from './panel';
 import { MAC, shortcut } from './platform';
 import type { Theme } from './prefs';
+import { type Usage, breakdown, sentence } from './usage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -288,6 +289,37 @@ export function createFolders(host: Host, roots: () => readonly string[]): { ope
       );
       how.textContent =
         'Folders are shared when Trillion starts. To share one, start it with: trillion run --grant <folder>. Repeat --grant for more.';
+      host.showModal();
+    },
+  };
+}
+
+// ── API usage ────────────────────────────────────────────────────────────
+
+export function createUsageSettings(host: Host, load: () => Promise<Usage | null>): { open(): Promise<void> } {
+  const { finish } = section(
+    host,
+    'usage',
+    'API usage',
+    'What the model providers report for this month so far. A model without prices counts tokens only. Voice services are not counted yet.',
+  );
+  const list = el('ul', 'settings-list');
+  const total = el('p', 'settings-hint');
+  finish(list, total);
+  return {
+    async open() {
+      const u = await load();
+      const rows = u ? breakdown(u) : [];
+      list.replaceChildren(
+        ...(rows.length
+          ? rows.map((r) => {
+              const item = el('li', 'settings-path', r.name);
+              item.append(el('br'), el('span', 'settings-hint', r.detail));
+              return item;
+            })
+          : [el('li', 'settings-empty', u ? 'Nothing yet this month.' : 'Usage could not be read right now.')]),
+      );
+      total.textContent = u ? sentence(u) : '';
       host.showModal();
     },
   };

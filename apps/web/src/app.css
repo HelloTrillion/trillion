@@ -137,6 +137,14 @@ button:disabled {
   color: var(--color-text-1);
 }
 
+/* The first pill on the page. BRN-8 adds its warning state as a class here. */
+.usage-pill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  color: var(--color-text-1);
+}
+
 /* ── Conversation ────────────────────────────────────────────────────── */
 
 .stage {

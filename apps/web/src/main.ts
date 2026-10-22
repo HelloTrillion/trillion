@@ -2,7 +2,7 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
-import { createAbout, createAppearance, createFolders, createShortcuts } from './browser';
+import { createAbout, createAppearance, createFolders, createShortcuts, createUsageSettings } from './browser';
 import { TalkKeys, type TalkPrefs } from './hotkey';
 import { icon } from './icons';
 import { createListeningSettings } from './listening';
@@ -30,6 +30,7 @@ import { primary, shortcut } from './platform';
 import { type Theme as ThemeChoice, saveTalk, saveTheme, savedTalk, savedTheme, shownTheme } from './prefs';
 import { type Api, createSettings } from './settings';
 import { createSpeechSettings } from './speech';
+import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import {
   type Entry,
@@ -90,6 +91,8 @@ const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
 const footEl = $('foot');
 const newBtn = $<HTMLButtonElement>('new');
+const usageBtn = $<HTMLButtonElement>('usage');
+let usage: Usage | null = null;
 const micBtn = $<HTMLButtonElement>('mic');
 const settingsBtn = $<HTMLButtonElement>('open-settings');
 settingsBtn.replaceChildren(icon('menu', 20));
@@ -423,6 +426,17 @@ const appearance = createAppearance(
 );
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
+async function refreshUsage(): Promise<Usage | null> {
+  usage = await fetchUsage(api);
+  usageBtn.hidden = usage === null;
+  if (usage) {
+    usageBtn.textContent = pill(usage);
+    usageBtn.title = sentence(usage);
+    usageBtn.setAttribute('aria-label', sentence(usage));
+  }
+  return usage;
+}
+const usageSettings = createUsageSettings(panel.host('usage'), refreshUsage);
 const HER = 'Her';
 const YOU = 'You';
 const COMPUTER = 'This computer';
@@ -432,6 +446,7 @@ panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'mic
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
+panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder', summary: () => (view.grantedRoots.length ? `${view.grantedRoots.length} shared` : 'None'), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
@@ -439,6 +454,7 @@ function openSettings(at?: string): void {
   panel.open(at);
 }
 settingsBtn.addEventListener('click', () => openSettings());
+usageBtn.addEventListener('click', () => openSettings('usage'));
 let offered = false;
 
 // ── Introductions ────────────────────────────────────────────────────────
@@ -607,6 +623,7 @@ function connect(): void {
     if (msg.type === 'mic.start' && !mic.on) void mic.start();
     if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening')) mic.stop();
     apply(reduce(view, msg));
+    if (msg.type === 'session' || msg.type === 'turn.complete') void refreshUsage();
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
     if (msg.type === 'session') {
       obDue = msg['onboarding'] === 'due';
