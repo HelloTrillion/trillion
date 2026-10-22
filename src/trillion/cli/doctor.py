@@ -627,6 +627,66 @@ async def check_credentials(
     return out
 
 
+# ── Connected tools (MCP) ────────────────────────────────────────────────
+
+
+def check_mcp(path: Path, secrets: SecretStore) -> list[Check]:
+    """The MCP servers in mcp.json (CON-5): only read, never started from here."""
+    from trillion.connectors.mcp.config import load, plain_secrets
+
+    loaded = load(path)
+    out: list[Check] = []
+    for name, why in loaded.problems.items():
+        out.append(
+            Check(
+                name=f"MCP: {name}",
+                status="warn",
+                detail=f"skipped: {why}",
+                fix=f"Fix it in {path}",
+            )
+        )
+    for server in loaded.servers:
+        label = f"MCP: {server.name}"
+        if server.disabled:
+            out.append(Check(name=label, status="info", detail="turned off in mcp.json"))
+            continue
+        missing = [k for k in server.key_names() if not secrets.get(k)]
+        in_file = plain_secrets(server)
+        if missing:
+            out.append(
+                Check(
+                    name=label,
+                    status="fail",
+                    detail=f"needs a key that is not saved: {', '.join(missing)}",
+                    fix="Save it in the keychain under that name (Settings will do this soon).",
+                )
+            )
+        elif server.transport == "stdio" and shutil.which(server.command) is None:
+            out.append(
+                Check(
+                    name=label,
+                    status="warn",
+                    detail=f"its program {server.command!r} was not found",
+                    fix="Install it, or give its full path as the command in mcp.json.",
+                )
+            )
+        else:
+            free = sum(r.value == "read" for r in server.risks.values())
+            asks = f"{free} tools run without asking" if free else "every tool asks first"
+            where = server.command if server.transport == "stdio" else server.url
+            out.append(Check(name=label, status="ok", detail=f"{where}; {asks}"))
+        if in_file:
+            out.append(
+                Check(
+                    name=label,
+                    status="warn",
+                    detail=f"a key is written into mcp.json ({', '.join(in_file)})",
+                    fix='Save it in the keychain and write "keychain:NAME" in its place.',
+                )
+            )
+    return out
+
+
 # ── The whole examination ────────────────────────────────────────────────
 
 
@@ -655,6 +715,7 @@ async def examine(
         check_microphone(),
         check_introduction(paths.persona_dir()),
         check_memory(paths.memory_dir()),
+        *check_mcp(paths.mcp_config_path(), secrets),
     ]
     if options.secrets:
         checks += await check_credentials(secrets, env, offline=options.offline, model=model)

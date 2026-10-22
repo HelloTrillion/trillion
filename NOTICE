@@ -11,3 +11,13 @@ Version 2.0 does not grant permission to use these marks.
 This product includes 3D simplex noise from webgl-noise
 (https://github.com/ashima/webgl-noise), Copyright (C) 2011 Ashima Arts
 and Stefan Gustavson, distributed under the MIT License.
+
+The app icons in apps/web/public/apps/ are the logos and trademarks of
+their owners (Google, Notion, Dropbox, Atlassian, Miro, Doist, Linear,
+ClickUp, monday.com, Airtable, Canva, Webflow, Wix, Stripe, PayPal, Block,
+Intercom, Zapier, Brave, GitHub, Sentry, Vercel, Supabase, Slack,
+Telegram, Clerk, Resend, Nitrosend and HubSpot). They are used
+only to show which service a connection is for, imply no endorsement, and
+are not licensed under Apache-2.0. The shapes of the Airtable, Clerk,
+Intercom, Sentry and Square icons come from Simple Icons (https://simpleicons.org),
+CC0 1.0.

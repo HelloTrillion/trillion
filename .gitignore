@@ -44,3 +44,6 @@ htmlcov/
 # Playwright: what a run of the Galaxy snapshots leaves behind
 test-results/
 playwright-report/
+
+# A distribution's own Google OAuth client (connectors/google/config.py). Never committed.
+src/trillion/connectors/google/google_client.json

@@ -24,10 +24,13 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
+from trillion.api.google import create_google_router
+from trillion.api.mcp import create_callback_router, create_mcp_router
 from trillion.api.persona import create_persona_router
 from trillion.api.runtime import Runtime
 from trillion.api.session import PROTOCOL, Session
 from trillion.api.settings import create_router
+from trillion.api.slack import create_slack_router
 from trillion.api.usage import create_usage_router
 
 logger = logging.getLogger(__name__)
@@ -100,7 +103,10 @@ def create_app(
             if refusal is not None:
                 return refusal
         response = await call_next(request)
-        response.headers.update(_HEADERS)
+        # A page that needs its own policy (Google's file picker) sets it; every
+        # other response gets the strict one.
+        for name, value in _HEADERS.items():
+            response.headers.setdefault(name, value)
         return response
 
     @app.websocket("/ws")
@@ -152,6 +158,19 @@ def create_app(
     app.include_router(create_router(rt))
     app.include_router(create_persona_router(rt))
     app.include_router(create_usage_router(rt))
+    app.include_router(create_mcp_router(rt))
+    app.include_router(create_callback_router(rt))
+    if rt.mcp is not None:
+        # A browser comes back here after signing in to a service.
+        loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
+        if loopback:
+            rt.mcp.callback_url = f"http://{loopback[0]}/mcp/callback"
+    app.include_router(create_google_router(rt))
+    app.include_router(create_slack_router(rt))
+    if rt.google is not None:
+        loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
+        if loopback:
+            rt.google.callback_url = f"http://{loopback[0]}/google/callback"
     if extra_origins:
         # Development only: the page is served by Vite on another port.
         app.add_middleware(

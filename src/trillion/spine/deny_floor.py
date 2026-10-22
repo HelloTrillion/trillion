@@ -10,6 +10,7 @@ string fails closed.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import unicodedata
 from dataclasses import dataclass
@@ -128,9 +129,39 @@ def _check_one(
     return None
 
 
+def reads_as_path(raw: str) -> bool:
+    """Whether a value names a place on a disk, rather than an id or an address."""
+    s = raw.strip()
+    if "://" in s:
+        return False
+    return (
+        s.startswith(("/", "~", "./", "../", "\\\\"))
+        or bool(re.match(r"^[A-Za-z]:[\\/]", s))
+        or "/" in s
+        or "\\" in s
+    )
+
+
 def check(
     defn: ToolDefinition, args: JSON, policy: DenyPolicy, granted_roots: tuple[Path, ...]
 ) -> Denial | None:
+    for name in defn.outside_path_args:
+        raw = args.get(name)
+        if not isinstance(raw, str) or not reads_as_path(raw):
+            continue
+        if "\x00" in raw:
+            return Denial(name, "the path could not be resolved")
+        try:
+            forms = _spellings(_resolve(raw))
+        except (OSError, RuntimeError, ValueError):
+            return Denial(name, "the path could not be resolved")
+        # Protected wherever it is, granted folder or not (SEC-10): every form is
+        # "granted" its own drive, so only the protected rules can refuse it.
+        everywhere = tuple({Path(f.anchor) for f in forms if f.anchor})
+        for form in forms:
+            denial = _check_one(name, form, policy, everywhere)
+            if denial is not None:
+                return denial
     for name in defn.path_args:
         if name not in args:
             continue

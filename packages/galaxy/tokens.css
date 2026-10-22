@@ -39,6 +39,10 @@
 }
 
 :root {
+  /* Letters on a service's own colour (Settings → Connected tools): the same in
+     both themes, because the tile's colour is the service's, not the theme's. */
+  --color-ink-on-light: #111111;
+  --color-ink-on-dark: #ffffff;
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;

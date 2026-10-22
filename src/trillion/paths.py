@@ -46,3 +46,25 @@ def models_dir() -> Path:
 def package_root() -> Path:
     """The installed `trillion` package: tools may never write here."""
     return Path(__file__).resolve().parent
+
+
+def mcp_config_path() -> Path:
+    """The MCP servers the user connected (CON-5). Inside Trillion's own folder, so no
+    tool can edit it: what runs without asking is the user's say alone."""
+    return home() / "mcp.json"
+
+
+def google_config_path() -> Path:
+    """The Google accounts the user connected and their choices (CON-4). Email
+    addresses only: each sign-in is in the keychain."""
+    return home() / "google.json"
+
+
+def slack_config_path() -> Path:
+    """Which Slack tools may run without asking. Tokens are in the keychain."""
+    return home() / "slack.json"
+
+
+def channels_config_path() -> Path:
+    """Who may talk to her on Slack and Telegram (SUR-5). Tokens are in the keychain."""
+    return home() / "channels.json"

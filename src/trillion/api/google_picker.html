@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Choose files for Trillion</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:90vh;
+margin:0;background:#0b0d12;color:#e8eaf0}main{text-align:center;padding:24px;max-width:460px}
+h1{font-size:22px;font-weight:600;margin:0 0 8px}p{margin:0 0 16px;color:#9aa1b2}
+@media (prefers-color-scheme: light){body{background:#f6f7f9;color:#14161c}p{color:#5b6170}}
+</style></head><body><main><h1 id="t">Choose files she can read</h1>
+<p id="m">Pick the Google Drive files for {email} that she may read. She sees only these,
+never the rest of your Drive.</p></main>
+<script nonce="{nonce}">
+const cfg = {data};
+const say = (t, m) => { document.getElementById('t').textContent = t; document.getElementById('m').textContent = m; };
+function open() {
+  const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+    .setIncludeFolders(true).setSelectFolderEnabled(false);
+  new google.picker.PickerBuilder()
+    .addView(view)
+    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+    .setOAuthToken(cfg.token).setDeveloperKey(cfg.key).setAppId(cfg.app)
+    .setOrigin(window.location.origin)
+    .setTitle('Files Trillion may read')
+    .setCallback(async (d) => {
+      if (d.action === google.picker.Action.PICKED) {
+        const files = (d.docs || []).map((f) => ({ id: f.id, name: f.name || '' }));
+        const r = await fetch('/google/picked', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: cfg.ticket, files }) });
+        if (r.ok) say('Shared ' + files.length + (files.length === 1 ? ' file' : ' files'), 'You can close this tab and return to Trillion.');
+        else say('That did not work', 'Close this tab and choose Choose files again in Trillion.');
+      } else if (d.action === google.picker.Action.CANCEL) {
+        say('Nothing was shared', 'You can close this tab.');
+      }
+    })
+    .build().setVisible(true);
+}
+const s = document.createElement('script');
+s.src = 'https://apis.google.com/js/api.js';
+s.nonce = '{nonce}';
+s.onload = () => gapi.load('picker', open);
+s.onerror = () => say('Google could not be reached', 'Check the connection and try again.');
+document.head.appendChild(s);
+</script></body></html>

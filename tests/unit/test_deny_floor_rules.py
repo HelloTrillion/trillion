@@ -195,3 +195,49 @@ def test_junction_into_protected_directory_is_refused(setup):
     junction(granted / "innocent", ssh)
     denial = check(DEF, {"path": str(granted / "innocent" / "config")}, policy, roots)
     assert denial is not None
+
+
+# ── Arguments that are not confined to the granted folders (CON-5, SEC-10) ──
+
+OUTSIDE = ToolDefinition(
+    name="connected_tool",
+    description="A connected server's tool (test).",
+    input_schema={
+        "type": "object",
+        "properties": {"file_path": {"type": "string"}, "file_id": {"type": "string"}},
+        "additionalProperties": False,
+    },
+    risk=Risk.IRREVERSIBLE,
+    category="mcp",
+    timeout_s=1.0,
+    outside_path_args=("file_path", "file_id"),
+)
+
+
+def test_an_outside_path_may_be_anywhere_but_somewhere_protected(
+    tmp_path: Path, setup: tuple[DenyPolicy, tuple[Path, ...], Path]
+) -> None:
+    policy, roots, _ = setup
+    home = policy.protected_roots[0]  # Trillion's own folder
+    elsewhere = tmp_path / "not-granted" / "notes.md"
+    assert check(OUTSIDE, {"file_path": str(elsewhere)}, policy, roots) is None
+    for protected in (
+        "~/.ssh/authorized_keys",
+        str(tmp_path / "proj" / ".git" / "config"),
+        str(tmp_path / "proj" / ".env"),
+        str(home / "secrets.age"),
+    ):
+        denial = check(OUTSIDE, {"file_path": protected}, policy, roots)
+        assert denial is not None, protected
+
+
+def test_an_id_or_an_address_is_not_a_path() -> None:
+    policy = DenyPolicy(protected_roots=())
+    for value in ("1aBcD-xyz_09", "https://example.com/a/b.env", "report.pdf"):
+        assert check(OUTSIDE, {"file_id": value}, policy, ()) is None, value
+
+
+def test_what_reads_as_a_path() -> None:
+    assert deny_floor.reads_as_path("/etc/hosts") and deny_floor.reads_as_path("~/x")
+    assert deny_floor.reads_as_path("notes/today.md") and deny_floor.reads_as_path("C:\\x")
+    assert not deny_floor.reads_as_path("1aBcD") and not deny_floor.reads_as_path("https://x/y")

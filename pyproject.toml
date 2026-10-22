@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.27",
     "jsonschema>=4.26.0",
     "keyring>=25",
+    "mcp>=1.20",
     "tzdata>=2025.2; sys_platform == 'win32'",
     "uvicorn>=0.30",
     "websockets>=13",
@@ -51,6 +52,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trillion"]
+# A distribution's own Google app (connectors/google/config.py) ships in its wheel
+# when the file is there at build time. It is git-ignored, so it never reaches the
+# public repo: official builds write it from a CI secret before building.
+artifacts = ["src/trillion/connectors/google/google_client.json"]
 
 # The authored default soul ships inside the wheel: an installed user has no checkout.
 [tool.hatch.build.targets.wheel.force-include]
