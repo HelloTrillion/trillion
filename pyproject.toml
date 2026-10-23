@@ -13,6 +13,7 @@ dependencies = [
     "jsonschema>=4.26.0",
     "keyring>=25",
     "mcp>=1.20",
+    "pyyaml>=6.0",
     "tzdata>=2025.2; sys_platform == 'win32'",
     "uvicorn>=0.30",
     "websockets>=13",
@@ -74,6 +75,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.9",
     "types-jsonschema>=4.26.0.20260518",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.ruff]
