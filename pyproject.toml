@@ -55,7 +55,11 @@ packages = ["src/trillion"]
 # A distribution's own Google app (connectors/google/config.py) ships in its wheel
 # when the file is there at build time. It is git-ignored, so it never reaches the
 # public repo: official builds write it from a CI secret before building.
-artifacts = ["src/trillion/connectors/google/google_client.json"]
+# The built page goes in the same way (scripts/build_release.py copies it there).
+artifacts = [
+    "src/trillion/connectors/google/google_client.json",
+    "src/trillion/api/static/**",
+]
 
 # The authored default soul ships inside the wheel: an installed user has no checkout.
 [tool.hatch.build.targets.wheel.force-include]

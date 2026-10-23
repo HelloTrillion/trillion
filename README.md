@@ -67,7 +67,16 @@ Everything runs on your machine, in one process, against a local SQLite file. Th
 
 ## Try it
 
-You need [uv](https://docs.astral.sh/uv/), Node 22+ and pnpm.
+**From a release** (the easy way, and the only way Google sign-in works out of the box). You need [uv](https://docs.astral.sh/uv/). Download the `.whl` file from the latest [release](https://github.com/HelloTrillion/trillion/releases), then:
+
+```bash
+uv tool install ./trillion-0.0.1-py3-none-any.whl
+trillion run
+```
+
+To upgrade later, download the newer file and run `uv tool install --force` with it.
+
+**From source**, to work on it: you need uv, Node 22+ and pnpm.
 
 ```bash
 uv sync
