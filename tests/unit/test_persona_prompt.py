@@ -87,3 +87,30 @@ def test_a_spoken_message_says_so_and_a_typed_one_does_not() -> None:
     assert "may be misheard" in spoken and "No markdown" in spoken
     assert spoken.startswith("<context>") and spoken.endswith("</context>")
     assert "SPOKEN" not in volatile_context(now, [])
+
+
+def test_skills_that_are_on_are_listed_and_capped() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    none = system_blocks(ident, "soul")[0].text
+    assert "skill_open" not in none
+    one = system_blocks(ident, "soul", skills=[("email-replies", "Draft replies.")])[0].text
+    assert "- email-replies: Draft replies." in one and "skill_open" in one
+    many = [(f"s{i}", "d" * 200) for i in range(80)]
+    text = system_blocks(ident, "soul", skills=many)[0].text
+    listed = [line for line in text.splitlines() if line.startswith("- s")]
+    assert len(listed) <= 50 and sum(len(line) for line in listed) <= 6000
+    assert f"{80 - len(listed)} more skills are turned on" in text
+
+
+def test_the_skills_list_is_identical_between_turns() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    skills = [("a", "first"), ("b", "second")]
+    assert system_blocks(ident, "soul", skills=skills) == system_blocks(
+        ident, "soul", skills=skills
+    )
+
+
+def test_a_skill_description_is_never_treated_as_a_placeholder() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    text = system_blocks(ident, "soul", skills=[("x", "Write as {user_name}.")])[0].text
+    assert "- x: Write as {user_name}." in text

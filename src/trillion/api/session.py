@@ -581,6 +581,8 @@ class Session:
         final = "idle"
         try:
             await self._state("processing")
+            # The skills that are on, read once for this turn and off the event loop.
+            skills = await asyncio.to_thread(_skill_lines, rt)
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
@@ -590,6 +592,7 @@ class Session:
                     rt.soul,
                     rt.granted_roots,
                     [(r.id, r.text) for r in rt.rules.all()],
+                    skills=skills,
                 ),
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
@@ -859,3 +862,10 @@ class Session:
             await self._raw_send({"type": kind, **body})
         except Exception as e:
             logger.debug("send of %s failed: %s", kind, type(e).__name__)
+
+
+def _skill_lines(rt: Runtime) -> list[tuple[str, str]]:
+    """(label, description) of each skill that is on and unchanged (CON-6)."""
+    if rt.skills is None:
+        return []
+    return rt.skills.prompt_lines(entries=rt.skills.enabled())
