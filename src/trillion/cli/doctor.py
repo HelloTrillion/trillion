@@ -687,6 +687,34 @@ def check_mcp(path: Path, secrets: SecretStore) -> list[Check]:
     return out
 
 
+def check_skills(path: Path) -> Check:
+    """Skills (CON-6): how many are on, and any that changed, broke or went missing.
+    The library is built as the running app builds it; nothing here writes."""
+    from trillion.skills.library import Library
+
+    lib = Library(path)
+    entries = lib.scan()
+    on = [e for e in entries if e.state == "on"]
+    changed = [e.name for e in entries if e.state == "changed"]
+    broken = [e.name for e in entries if e.state == "invalid"]
+    missing = [str(f.path) for f in lib.folders() if not f.found]
+    problems = [
+        *([f"changed: {', '.join(changed)}"] if changed else []),
+        *([f"can't be used: {', '.join(broken)}"] if broken else []),
+        *([f"folder not found: {', '.join(missing)}"] if missing else []),
+    ]
+    if problems:
+        return Check(
+            name="Skills",
+            status="warn",
+            detail=f"{len(on)} on; " + "; ".join(problems),
+            fix="Open Settings → Skills to look at them again.",
+        )
+    if not on:
+        return Check(name="Skills", status="info", detail="none turned on")
+    return Check(name="Skills", status="ok", detail=f"{len(on)} on")
+
+
 # ── The whole examination ────────────────────────────────────────────────
 
 
@@ -716,6 +744,7 @@ async def examine(
         check_introduction(paths.persona_dir()),
         check_memory(paths.memory_dir()),
         *check_mcp(paths.mcp_config_path(), secrets),
+        check_skills(paths.skills_config_path()),
     ]
     if options.secrets:
         checks += await check_credentials(secrets, env, offline=options.offline, model=model)

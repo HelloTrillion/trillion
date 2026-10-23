@@ -447,3 +447,42 @@ def test_an_untested_custom_key_says_why(offers: list) -> None:
     assert _keys(lan)["Key: custom"].detail.endswith("the chosen service is sent no key")
     assert _keys(None)["Key: custom"].detail.endswith("no compatible service is chosen")
     assert offers == []
+
+
+def test_skills_say_how_many_are_on_and_which_need_a_look(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    fresh = doctor.check_skills(paths.skills_config_path())
+    assert fresh.status == "info" and fresh.detail == "none turned on"
+    mine = tmp_path / "mine" / "alpha"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: d\n---\nx", "utf-8")
+    lib = Library(paths.skills_config_path())
+    lib.add_folder(str(mine.parent))
+    lib.turn_on(f"folder:{mine.resolve()}")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "ok" and check.detail == "1 on"
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: e\n---\nx", "utf-8")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "warn" and "changed: alpha" in check.detail and check.fix
+    broken = mine.parent / "beta"
+    broken.mkdir()
+    (broken / "SKILL.md").write_text("no header", "utf-8")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert "can't be used: beta" in check.detail
+
+
+def test_a_skill_folder_that_went_missing_is_reported(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    Library(paths.skills_config_path()).add_folder(str(mine))
+    mine.rmdir()
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "warn" and f"folder not found: {mine.resolve()}" in check.detail
+
+
+def test_the_examination_includes_skills(home: Path, offers: list) -> None:
+    checks = examine()
+    assert checks["Skills"].status == "info"
