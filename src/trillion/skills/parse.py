@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BufferedReader
 from pathlib import Path
 
@@ -45,6 +45,8 @@ class Skill:
     allowed_tools: tuple[str, ...]
     license: str
     files: tuple[SkillFile, ...]  # every file but SKILL.md
+    # The exact bytes of SKILL.md this was parsed from, for the fingerprint to cover.
+    source: bytes = field(default=b"", repr=False, compare=False)
 
     @property
     def has_scripts(self) -> bool:
@@ -266,4 +268,5 @@ def parse(folder: Path) -> Skill | Invalid:
         # An odd license (a number, a list) is only a label: ignore it, don't refuse.
         license=lic.strip() if isinstance(lic := fields.get("license"), str) else "",
         files=tuple(found),
+        source=data,
     )

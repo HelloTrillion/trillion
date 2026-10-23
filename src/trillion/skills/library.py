@@ -192,9 +192,10 @@ class Library:
     def _entry(
         self, sid: str, source: Source, folder: Path, root: Path | None, approved: str | None
     ) -> Entry:
-        """Read one skill. The parse sits between two fingerprints, so what is read is
-        what the fingerprint covers: files changing meanwhile never count as on. An
-        invalid skill is never hashed."""
+        """Read one skill. The parse sits between two fingerprints, the second over the
+        SKILL.md bytes the parse read, so the instructions are the bytes the fingerprint
+        covers: files changing meanwhile never count as on. An invalid skill is never
+        hashed."""
 
         def invalid(reason: str) -> Entry:
             return Entry(
@@ -217,7 +218,8 @@ class Library:
             if isinstance(found, Invalid):
                 return invalid(found.reason)
             skill = found
-            mark = fingerprint(folder)
+            # The SKILL.md bytes that were parsed, not whatever is on disk by now.
+            mark = fingerprint(folder, override={SKILL_MD: skill.source})
             if mark == before:
                 break
         stable = mark == before  # else it kept changing: never "on"

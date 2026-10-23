@@ -3,12 +3,19 @@
 Both only read, so they run at once. What they return is text the user approved
 byte for byte when they turned the skill on, so it is not wrapped as untrusted; it
 still cannot change a gate, because the gates are code. Every call checks the
-fingerprint again: a skill whose files changed is refused until the user looks at it.
+fingerprint again, over the very bytes returned: a skill whose files changed is
+refused until the user looks at it. Nothing else from the skill's folder reaches the
+model: not why a skill is invalid, nor a file name the approved listing lacks.
+
+The <skill> wrapper is a convenience for the model, not a boundary: approved text
+may itself contain "</skill>". Its trust comes from the user approving those bytes.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import unicodedata
 from pathlib import PurePosixPath
 
 from trillion.skills.fingerprint import fingerprint
@@ -57,8 +64,9 @@ class _SkillTool(BaseTool):
         except LibraryError as e:
             return _refused(f"{e}. Only skills the user turned on in Settings → Skills can be read")
         if entry.state == "invalid" or entry.skill is None:
+            # Not entry.reason: it can name a file, and names are not approved text.
             return _refused(
-                f"the skill {entry.name!r} can't be used: {entry.reason or 'it is not valid'}",
+                "that skill can't be used right now; the user can see why in Settings → Skills",
                 "invalid",
             )
         if entry.state != "on":
@@ -131,7 +139,10 @@ class SkillFile(_SkillTool):
         risk=Risk.READ,
         category="skills",
         timeout_s=10,
-        # Inside the skill's own folder, never the granted folders: checked here.
+        # Inside the skill's own folder, never the granted folders: checked here, by the
+        # skill's own listing. The spine's deny floor still reads `path` against the
+        # process's working folder, so it can only refuse more (x/.git/...), never let
+        # a bad path through.
         outside_path_args=("path",),
         trusted_output=True,
     )
@@ -145,14 +156,15 @@ class SkillFile(_SkillTool):
         rel = PurePosixPath(raw.replace("\\", "/"))
         if not raw or rel.is_absolute() or _DRIVE.match(raw) or ".." in rel.parts:
             return _refused("give the file's path inside the skill, as skill_open listed it")
-        name = rel.as_posix()
+        name = unicodedata.normalize("NFC", rel.as_posix())
         if name == SKILL_MD:
             return _refused("use skill_open to read SKILL.md")
-        listed = {f.path: f for f in skill.files}.get(name)
+        listed = {unicodedata.normalize("NFC", f.path): f for f in skill.files}.get(name)
         if listed is None:
             return _refused("that file is not in this skill", "not_found")
+        # From here on, the path as listed: the one the fingerprint covers.
         here = entry.folder
-        for part in rel.parts:
+        for part in PurePosixPath(listed.path).parts:
             here = here / part
             if is_link(here):
                 return _refused("that file is a link; links in skills are never followed")
@@ -160,13 +172,19 @@ class SkillFile(_SkillTool):
             return _refused("that file is not text Trillion can read")
         try:
             with open_regular(here) as f:  # never a link, a pipe or a device
+                opened = os.fstat(f.fileno())
                 data = f.read(MAX_FILE + 1)
+            now = os.lstat(here)
         except OSError:
             return _refused("that file could not be read", "unreadable")
         if len(data) > MAX_FILE:
             return _refused(f"that file is too large (over {MAX_FILE // 1024} KB)")
-        # Swapped between the lookup and the read: what was read is not what was approved.
-        if fingerprint(entry.folder) != entry.fingerprint:
+        # O_NOFOLLOW covers only the last part: a middle folder swapped for a link and
+        # back opened another file. And the fingerprint is over the bytes read, so a
+        # swap and a swap back between the read and the check is still caught.
+        moved = (opened.st_dev, opened.st_ino) != (now.st_dev, now.st_ino)
+        mark = fingerprint(entry.folder, override={listed.path: data})
+        if moved or mark != entry.fingerprint:
             return _refused(
                 "that skill changed while it was being read, so it is off until the user "
                 "looks at it again in Settings → Skills",

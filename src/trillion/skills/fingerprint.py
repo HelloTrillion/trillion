@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from trillion.skills.parse import MAX_FILE, TooBig, is_link, open_regular, walk
@@ -32,15 +33,22 @@ def _entry(path: Path) -> tuple[bytes, bytes]:
         return b"unreadable", b""
 
 
-def fingerprint(folder: Path) -> str:
+def fingerprint(folder: Path, override: Mapping[str, bytes] | None = None) -> str:
     """SHA-256 over every entry's kind, relative path and content digest, in sorted
     order, each length-prefixed. Retargeting a symlink changes it. A folder too big
     to be a skill, or with a file over MAX_FILE, has none: "" matches no fingerprint
-    the user approved."""
+    the user approved.
+
+    `override` gives the bytes of listed files by relative path, hashed as a plain
+    file in place of what is on disk. It binds a check to the bytes a caller already
+    read: equal to the approved fingerprint only if those bytes are approved."""
+    given = override or {}
     try:
         entries = walk(folder)
         # A file over the limit makes the skill invalid: don't read a byte of it.
-        for _, path, _ in entries:
+        for rel, path, _ in entries:
+            if rel in given:
+                continue
             info = path.lstat()
             if stat.S_ISREG(info.st_mode) and info.st_size > MAX_FILE:
                 return ""
@@ -48,7 +56,10 @@ def fingerprint(folder: Path) -> str:
         return ""
     digest = hashlib.sha256()
     for rel, path, _ in entries:
-        kind, content = _entry(path)
+        if rel in given:
+            kind, content = b"file", hashlib.sha256(given[rel]).digest()
+        else:
+            kind, content = _entry(path)
         _field(digest, kind)
         _field(digest, os.fsencode(rel))  # names that aren't UTF-8 still hash
         _field(digest, content)

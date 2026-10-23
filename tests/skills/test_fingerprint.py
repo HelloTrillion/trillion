@@ -121,3 +121,11 @@ def test_a_file_too_large_for_a_skill_is_not_hashed(
     monkeypatch.setattr(fp, "open_regular", lambda p: (opened.append(p), real(p))[1])
     assert fingerprint(folder) == ""
     assert opened == []  # not even the small files before it
+
+
+def test_bytes_given_for_a_file_are_hashed_in_its_place(folder: Path) -> None:
+    mark = fingerprint(folder)
+    assert fingerprint(folder, override={"notes.md": b"a"}) == mark
+    assert fingerprint(folder, override={"notes.md": b"b"}) != mark
+    (folder / "notes.md").write_text("b", encoding="utf-8")
+    assert fingerprint(folder, override={"notes.md": b"a"}) == mark
