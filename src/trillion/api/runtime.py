@@ -28,7 +28,7 @@ from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.secrets.store import KeychainStore, SecretStore
-from trillion.skills.library import Library
+from trillion.skills.library import Entry, Library
 from trillion.spine.audit import audit_key
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.registry import ToolRegistry
@@ -149,6 +149,9 @@ class Runtime:
     channels: Channels | None = None
     # The skills the user added and turned on (CON-6), read again every turn.
     skills: Library | None = None
+    # The skills on as this process's latest turn read them, so describe_self tells
+    # her what her instructions list without reading the disk on the event loop.
+    skills_on: list[Entry] | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -216,7 +219,7 @@ class Runtime:
             "connected tools": self._mcp_fact(),
             "google": self.google.facts() if self.google is not None else "none",
             "slack": self.slack.facts() if self.slack is not None else "none",
-            "skills": self.skills.fact() if self.skills is not None else "none",
+            "skills": self.skills.fact(self.skills_on) if self.skills is not None else "none",
             "talking on slack or telegram": (
                 "the user can let people message you on Slack or Telegram; there you only"
                 " answer, with no tools, and only people the user allowed"

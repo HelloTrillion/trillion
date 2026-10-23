@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -122,6 +123,8 @@ class Library:
         self._path = settings_path
         self._curated = curated_root
         self._data = (data_root or paths.home()).expanduser().resolve()
+        # Every change reads, edits and writes the whole file: one at a time.
+        self._lock = threading.Lock()
 
     # ── The settings file ─────────────────────────────────────────────
 
@@ -290,7 +293,8 @@ class Library:
             same = [o for o in on if o.name == e.name]
             if len(same) > 1 and e.root is not None:
                 shared = sum(1 for o in same if o.root == e.root) > 1
-                label = f"{e.name} (from {_show(e.folder if shared else e.root)})"
+                where = " ".join(_show(e.folder if shared else e.root).split())  # one line
+                label = f"{e.name} (from {where})"
             out.append((label, e.skill.description if e.skill else ""))
         return out
 
@@ -299,6 +303,10 @@ class Library:
     def turn_on(self, sid: str, expected: str | None = None) -> Entry:
         """Record the skill's fingerprint. `expected` is the fingerprint the user was
         shown: if the files changed since, they haven't seen what they'd approve."""
+        with self._lock:
+            return self._turn_on(sid, expected)
+
+    def _turn_on(self, sid: str, expected: str | None) -> Entry:
         data = self._read(strict=True)
         match = [c for c in self._candidates() if c[0] == sid]
         if not match:
@@ -315,6 +323,10 @@ class Library:
         return self._entry(*match[0], entry.fingerprint)
 
     def turn_off(self, sid: str) -> None:
+        with self._lock:
+            self._turn_off(sid)
+
+    def _turn_off(self, sid: str) -> None:
         data = self._read(strict=True)
         if data["enabled"].pop(sid, None) is not None:
             self._write(data)
@@ -327,6 +339,10 @@ class Library:
             raise LibraryError("that is not a folder on this computer") from None
 
     def add_folder(self, raw: str) -> Path:
+        with self._lock:
+            return self._add_folder(raw)
+
+    def _add_folder(self, raw: str) -> Path:
         # A link (~/.claude/skills often is one) is stored as the folder it points to.
         path = self._resolve(raw)
         if not _is_folder(path):
@@ -346,6 +362,10 @@ class Library:
         """Forget a folder and its skills' choices: the folder itself, or its direct
         subfolders, as the library only offers those. A skill another folder still
         offers keeps its choice."""
+        with self._lock:
+            self._remove_folder(raw)
+
+    def _remove_folder(self, raw: str) -> None:
         path = self._resolve(raw)
         data = self._read(strict=True)
         gone = [f for f in data["folders"] if _same(Path(f), path)]
@@ -364,6 +384,21 @@ class Library:
             if not any(under(k, g) for g in gone) or any(under(k, f) for f in kept)
         }
         self._write(data)
+
+    def problems(self) -> list[str]:
+        """What keeps skills the user turned on from being used, in plain words: a
+        settings file that can't be read, and skills turned on that are no longer found
+        (a folder gone, moved or unreadable). For doctor and Settings."""
+        try:
+            data = self._read(strict=True)
+        except LibraryError as e:
+            return [str(e)]
+        found = {c[0] for c in self._candidates()}
+        return [
+            f"turned on but not found: {' '.join(sid.partition(':')[2].split())}"
+            for sid in sorted(data["enabled"])
+            if sid not in found
+        ]
 
     def fact(self, entries: list[Entry] | None = None) -> str:
         """For describe_self (BRN-6). `entries` is enabled() if the caller has it."""

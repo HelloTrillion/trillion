@@ -6,12 +6,11 @@ carries its fingerprint, a hash of the user's own files, so turning a skill on
 can refuse files that changed since the page showed them.
 
 The routes are plain functions, so FastAPI runs them off the event loop: reading
-every skill touches the disk. A lock keeps two changes from racing on the file.
+every skill touches the disk. The library takes one change at a time.
 """
 
 from __future__ import annotations
 
-import threading
 from typing import Any
 
 from fastapi import APIRouter
@@ -35,13 +34,26 @@ class Switch(BaseModel):
     fingerprint: str | None = Field(default=None, max_length=100)
 
 
+UNSAVED = "skills.json could not be saved"
+_GOOGLE = frozenset(t.name() for tools in GOOGLE_TOOLS.values() for t in tools)
+
+
 def _fail(detail: str) -> JSONResponse:
     return JSONResponse({"error": "refused", "detail": detail}, status_code=400)
 
 
+def _tool(name: str, have: set[str]) -> dict[str, Any]:
+    """Whether she has a tool the skill mentions. Google's are registered only for a
+    connected account, so until then the card says what they need."""
+    if name in have:
+        return {"name": name, "available": True}
+    if name in _GOOGLE:
+        return {"name": name, "available": False, "needs": "google"}
+    return {"name": name, "available": False}
+
+
 def create_skills_router(rt: Runtime) -> APIRouter:
     router = APIRouter()
-    lock = threading.Lock()
 
     def library() -> Library:
         if rt.skills is None:
@@ -57,7 +69,7 @@ def create_skills_router(rt: Runtime) -> APIRouter:
             "name": e.name,
             "description": s.description if s else "",
             "license": s.license if s else "",
-            "tools": [{"name": t, "available": t in have} for t in (s.allowed_tools if s else ())],
+            "tools": [_tool(t, have) for t in (s.allowed_tools if s else ())],
             "has_scripts": bool(s and s.has_scripts),
             "state": e.state,
             "reason": e.reason,
@@ -66,10 +78,7 @@ def create_skills_router(rt: Runtime) -> APIRouter:
 
     def state() -> dict[str, Any]:
         lib = library()
-        # Google's tools count while Google is not connected: Trillion has them.
-        have = {d.name for d in rt.registry.definitions()} | {
-            t.name() for tools in GOOGLE_TOOLS.values() for t in tools
-        }
+        have = {d.name for d in rt.registry.definitions()}
         entries = lib.scan()
         on = sorted((e for e in entries if e.state == "on"), key=lambda e: (e.name, e.id))
         _, unlisted = skill_index(lib.prompt_lines(entries=on))
@@ -78,6 +87,8 @@ def create_skills_router(rt: Runtime) -> APIRouter:
             "skills": [row(e, have) for e in entries],
             # Turned on, but past what her instructions list.
             "unlisted": unlisted,
+            # What leaves skills the user turned on unused: a damaged file, a lost folder.
+            "problems": lib.problems(),
         }
 
     @router.get("/api/skills")
@@ -87,31 +98,34 @@ def create_skills_router(rt: Runtime) -> APIRouter:
     @router.post("/api/skills/folders")
     def add(body: FolderBody) -> Any:
         try:
-            with lock:
-                library().add_folder(body.path)
+            library().add_folder(body.path)
         except LibraryError as e:
             return _fail(str(e))
+        except OSError:
+            return _fail(UNSAVED)
         return state()
 
     @router.delete("/api/skills/folders")
     def remove(body: FolderBody) -> Any:
         try:
-            with lock:
-                library().remove_folder(body.path)
+            library().remove_folder(body.path)
         except LibraryError as e:
             return _fail(str(e))
+        except OSError:
+            return _fail(UNSAVED)
         return state()
 
     @router.patch("/api/skills")
     def switch(body: Switch) -> Any:
         try:
-            with lock:
-                if body.on:
-                    library().turn_on(body.id, expected=body.fingerprint)
-                else:
-                    library().turn_off(body.id)
+            if body.on:
+                library().turn_on(body.id, expected=body.fingerprint)
+            else:
+                library().turn_off(body.id)
         except LibraryError as e:
             return _fail(str(e))
+        except OSError:
+            return _fail(UNSAVED)
         return state()
 
     return router

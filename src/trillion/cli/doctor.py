@@ -688,7 +688,8 @@ def check_mcp(path: Path, secrets: SecretStore) -> list[Check]:
 
 
 def check_skills(path: Path) -> Check:
-    """Skills (CON-6): how many are on, and any that changed, broke or went missing.
+    """Skills (CON-6): how many are on, and any that changed, broke or went missing,
+    and a settings file that can't be read, which leaves every skill off.
     The library is built as the running app builds it; nothing here writes."""
     from trillion.skills.library import Library
 
@@ -702,6 +703,7 @@ def check_skills(path: Path) -> Check:
         *([f"changed: {', '.join(changed)}"] if changed else []),
         *([f"can't be used: {', '.join(broken)}"] if broken else []),
         *([f"folder not found: {', '.join(missing)}"] if missing else []),
+        *lib.problems(),
     ]
     if problems:
         return Check(

@@ -865,7 +865,17 @@ class Session:
 
 
 def _skill_lines(rt: Runtime) -> list[tuple[str, str]]:
-    """(label, description) of each skill that is on and unchanged (CON-6)."""
+    """(label, description) of each skill that is on and unchanged (CON-6). Read once
+    a turn and kept for describe_self. Anything unexpected leaves this turn without
+    skills, logged by its kind only: the message could name the user's files."""
     if rt.skills is None:
         return []
-    return rt.skills.prompt_lines(entries=rt.skills.enabled())
+    try:
+        entries = rt.skills.enabled()
+        lines = rt.skills.prompt_lines(entries=entries)
+    except Exception as e:
+        logger.warning("skills could not be read this turn: %s", type(e).__name__)
+        rt.skills_on = []
+        return []
+    rt.skills_on = entries
+    return lines

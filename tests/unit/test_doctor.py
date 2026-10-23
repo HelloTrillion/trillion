@@ -486,3 +486,26 @@ def test_a_skill_folder_that_went_missing_is_reported(home: Path, tmp_path: Path
 def test_the_examination_includes_skills(home: Path, offers: list) -> None:
     checks = examine()
     assert checks["Skills"].status == "info"
+
+
+def test_skills_warn_when_their_settings_cannot_be_read(home: Path) -> None:
+    path = paths.skills_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    check = doctor.check_skills(path)
+    assert check.status == "warn" and "skills.json could not be read" in check.detail
+
+
+def test_skills_warn_when_one_turned_on_is_gone(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    mine = tmp_path / "mine" / "alpha"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: d\n---\nx", "utf-8")
+    lib = Library(paths.skills_config_path())
+    lib.add_folder(str(mine.parent))
+    lib.turn_on(f"folder:{mine.resolve()}")
+    (mine / "SKILL.md").unlink()
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "warn"
+    assert f"turned on but not found: {mine.resolve()}" in check.detail

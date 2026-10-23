@@ -42,8 +42,50 @@ def test_curated_skills_are_listed_off(make: Any) -> None:
     assert {s["name"] for s in curated} == {"email-replies", "meeting-prep", "weekly-review"}
     assert {s["state"] for s in curated} == {"off"}
     assert all(s["folder"] == "" and s["license"] == "Apache-2.0" for s in curated)
-    # Every tool they mention is Trillion's, Google's included before it is connected.
-    assert all(t["available"] for s in curated for t in s["tools"])
+    tools = {t["name"]: t for s in curated for t in s["tools"]}
+    assert tools["memory_recall"] == {"name": "memory_recall", "available": True}
+    # Google's tools are Trillion's, but she can't use them until Google is connected.
+    assert tools["gmail_draft"] == {"name": "gmail_draft", "available": False, "needs": "google"}
+
+
+def test_google_tools_are_available_once_google_is_connected(make: Any) -> None:
+    from trillion.connectors.google.config import Account
+
+    app: App = make()
+    assert app.rt.google is not None
+    app.rt.google.saved.accounts.append(Account(email="sam@example.com", services=["gmail"]))
+    app.rt.google.refresh_tools()
+    body = app.client.get(PATH, headers=app.auth).json()
+    tools = {t["name"]: t for s in body["skills"] for t in s["tools"]}
+    assert tools["gmail_draft"] == {"name": "gmail_draft", "available": True}
+    # Calendar was not connected.
+    assert tools["calendar_events"]["available"] is False
+    assert tools["calendar_events"]["needs"] == "google"
+
+
+def test_a_damaged_settings_file_is_a_problem_on_the_page(make: Any) -> None:
+    from trillion import paths
+
+    app: App = make()
+    assert app.client.get(PATH, headers=app.auth).json()["problems"] == []
+    path = paths.skills_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    body = app.client.get(PATH, headers=app.auth).json()
+    assert body["problems"] == ["skills.json could not be read; fix or remove it first"]
+
+
+def test_a_save_that_fails_is_refused_in_words(make: Any, monkeypatch: Any) -> None:
+    from trillion.skills.library import Library
+
+    def broken(self: Library, data: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Library, "_write", broken)
+    app: App = make()
+    r = app.client.patch(PATH, json={"id": "curated:weekly-review", "on": True}, headers=app.auth)
+    assert r.status_code == 400
+    assert r.json() == {"error": "refused", "detail": "skills.json could not be saved"}
 
 
 def test_a_fresh_install_has_no_folders_and_nothing_on(make: Any) -> None:
