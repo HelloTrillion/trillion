@@ -59,8 +59,11 @@ def version() -> str:
     return str(data["project"]["version"])
 
 
-def google_file(text: str) -> str:
-    """The file to ship, from what Google gave us: only the fields sign-in needs."""
+def google_file(text: str, *, require_picker: bool = False) -> str:
+    """The file to ship, from what Google gave us: only the fields sign-in needs.
+
+    A release needs the Drive picker's key too: without it Gmail and Calendar work
+    but choosing Drive files does not, and nothing else would say so."""
     try:
         data = json.loads(text)
     except ValueError:
@@ -76,6 +79,10 @@ def google_file(text: str) -> str:
         raise ReleaseError(f"{ENV} has no valid client_secret")
     shipped: dict[str, object] = {"installed": {"client_id": client_id, "client_secret": secret}}
     picker = str(data.get("picker_key", ""))
+    if require_picker and not picker:
+        raise ReleaseError(
+            f"{ENV} has no picker_key (the Drive picker's API key, added at the top level)"
+        )
     if picker:
         if not PICKER_KEY.match(picker):
             raise ReleaseError(f"{ENV} has a picker_key that is not a Google API key")
@@ -98,10 +105,13 @@ def staged(*, require_google: bool) -> Iterator[bool]:
     wrote = False
     try:
         if from_env:
-            GOOGLE.write_text(google_file(from_env), encoding="utf-8")
+            GOOGLE.write_text(
+                google_file(from_env, require_picker=require_google), encoding="utf-8"
+            )
             wrote = True
         elif GOOGLE.exists():
-            google_file(GOOGLE.read_text(encoding="utf-8"))  # check it, same rules
+            # Check it, by the same rules.
+            google_file(GOOGLE.read_text(encoding="utf-8"), require_picker=require_google)
         yield GOOGLE.exists()
     finally:
         shutil.rmtree(STATIC, ignore_errors=True)
