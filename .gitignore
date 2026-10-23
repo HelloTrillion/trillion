@@ -47,3 +47,7 @@ playwright-report/
 
 # A distribution's own Google OAuth client (connectors/google/config.py). Never committed.
 src/trillion/connectors/google/google_client.json
+
+# What scripts/build_release.py stages and builds. Never committed.
+src/trillion/api/static/
+/dist-release/
