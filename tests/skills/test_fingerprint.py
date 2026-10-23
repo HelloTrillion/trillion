@@ -129,3 +129,9 @@ def test_bytes_given_for_a_file_are_hashed_in_its_place(folder: Path) -> None:
     assert fingerprint(folder, override={"notes.md": b"b"}) != mark
     (folder / "notes.md").write_text("b", encoding="utf-8")
     assert fingerprint(folder, override={"notes.md": b"a"}) == mark
+
+
+def test_bytes_given_for_a_file_that_is_not_there_give_no_fingerprint(folder: Path) -> None:
+    # Fail closed: an override that matches nothing would otherwise be ignored.
+    assert fingerprint(folder, override={"missing.md": b"x"}) == ""
+    assert fingerprint(folder, override={"NOTES.md": b"a"}) == ""

@@ -45,6 +45,10 @@ def fingerprint(folder: Path, override: Mapping[str, bytes] | None = None) -> st
     given = override or {}
     try:
         entries = walk(folder)
+        # Fail closed: bytes for a path the walk doesn't list (another case of its
+        # name, on a disk that ignores case) would otherwise be silently unchecked.
+        if not set(given) <= {rel for rel, _, _ in entries}:
+            return ""
         # A file over the limit makes the skill invalid: don't read a byte of it.
         for rel, path, _ in entries:
             if rel in given:

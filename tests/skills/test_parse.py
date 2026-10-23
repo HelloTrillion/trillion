@@ -329,3 +329,13 @@ def test_a_junction_is_listed_as_a_link_and_not_entered(tmp_path: Path) -> None:
     assert isinstance(found, Skill)
     (more,) = found.files
     assert more.path == "more" and not more.text and not more.script
+
+
+def test_the_instructions_file_must_be_named_in_capitals(tmp_path: Path) -> None:
+    folder = tmp_path / "pdf-forms"
+    folder.mkdir()
+    (folder / "skill.md").write_text(GOOD, encoding="utf-8")
+    if not (folder / "SKILL.md").exists():
+        pytest.skip("the disk tells names apart by case: SKILL.md is simply missing")
+    found = parse(folder)
+    assert isinstance(found, Invalid) and "in capitals" in found.reason

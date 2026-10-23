@@ -230,6 +230,10 @@ def parse(folder: Path) -> Skill | Invalid:
         return Invalid(e.reason)
     except OSError:
         return Invalid("its files could not be listed")
+    # On a disk that ignores case, skill.md opens as SKILL.md but is listed as itself,
+    # and the fingerprint would not cover the bytes read under the other name.
+    if not any(rel == SKILL_MD for rel, _, _ in entries):
+        return Invalid("its instructions file must be named SKILL.md, in capitals")
     found: list[SkillFile] = []
     for rel, path, depth in entries:
         try:

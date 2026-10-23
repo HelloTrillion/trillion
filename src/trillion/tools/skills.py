@@ -182,7 +182,10 @@ class SkillFile(_SkillTool):
         # O_NOFOLLOW covers only the last part: a middle folder swapped for a link and
         # back opened another file. And the fingerprint is over the bytes read, so a
         # swap and a swap back between the read and the check is still caught.
-        moved = (opened.st_dev, opened.st_ino) != (now.st_dev, now.st_ino)
+        # An st_ino of 0 means the file system gives no inode numbers (some Windows and
+        # network ones): nothing to compare, and the fingerprint still covers the bytes.
+        known = opened.st_ino != 0 and now.st_ino != 0
+        moved = known and (opened.st_dev, opened.st_ino) != (now.st_dev, now.st_ino)
         mark = fingerprint(entry.folder, override={listed.path: data})
         if moved or mark != entry.fingerprint:
             return _refused(

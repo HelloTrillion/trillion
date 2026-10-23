@@ -221,10 +221,10 @@ def test_why_a_skill_is_invalid_never_reaches_the_model(setup: Setup) -> None:
 
 def test_paths_match_as_listed(setup: Setup, tmp_path: Path) -> None:
     lib, folder, _, reader = setup
-    (folder / "café.md").write_text("Coffee.", encoding="utf-8")  # composed
+    (folder / "cafe\u0301.md").write_text("Coffee.", encoding="utf-8")  # decomposed
     lib.turn_on("curated:pdf-forms")
     assert run(reader, skill="pdf-forms", path="./reference/fields.md") == (True, "Name, date.")
-    assert run(reader, skill="pdf-forms", path="café.md") == (True, "Coffee.")
+    assert run(reader, skill="pdf-forms", path="caf\u00e9.md") == (True, "Coffee.")  # composed
     assert not run(reader, skill="pdf-forms", path="reference\\..\\..\\x")[0]
 
 
