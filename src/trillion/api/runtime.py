@@ -28,6 +28,7 @@ from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.secrets.store import KeychainStore, SecretStore
+from trillion.skills.library import Entry, Library
 from trillion.spine.audit import audit_key
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.registry import ToolRegistry
@@ -42,6 +43,9 @@ from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.rules import DROP, KEEP, RuleDrop, RuleKeep
+from trillion.tools.skills import FILE as SKILL_FILE
+from trillion.tools.skills import OPEN as SKILL_OPEN
+from trillion.tools.skills import SkillFile, SkillOpen
 from trillion.tools.web import FETCH, WebFetch
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
@@ -143,6 +147,11 @@ class Runtime:
     google: GoogleConnection | None = None
     slack: SlackConnection | None = None
     channels: Channels | None = None
+    # The skills the user added and turned on (CON-6), read again every turn.
+    skills: Library | None = None
+    # The skills on as this process's latest turn read them, so describe_self tells
+    # her what her instructions list without reading the disk on the event loop.
+    skills_on: list[Entry] | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -210,6 +219,7 @@ class Runtime:
             "connected tools": self._mcp_fact(),
             "google": self.google.facts() if self.google is not None else "none",
             "slack": self.slack.facts() if self.slack is not None else "none",
+            "skills": self.skills.fact(self.skills_on) if self.skills is not None else "none",
             "talking on slack or telegram": (
                 "the user can let people message you on Slack or Telegram; there you only"
                 " answer, with no tools, and only people the user allowed"
@@ -313,6 +323,7 @@ async def open_runtime(
     secrets: SecretStore | None = None,
     mcp_config: Path | None = None,
     google_config: Path | None = None,
+    skills_config: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Runtime:
     path = db or paths.db_path()
@@ -406,6 +417,11 @@ async def open_runtime(
         slack=rt.slack.slack,
     )
     rt.channels.start()
+    rt.skills = Library(skills_config or paths.skills_config_path())
+    for name in (SKILL_OPEN, SKILL_FILE):
+        skill_tool = registry.get(name)
+        if isinstance(skill_tool, SkillOpen | SkillFile):
+            skill_tool.bind(rt.skills)
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):

@@ -581,6 +581,8 @@ class Session:
         final = "idle"
         try:
             await self._state("processing")
+            # The skills that are on, read once for this turn and off the event loop.
+            skills = await asyncio.to_thread(_skill_lines, rt)
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
@@ -590,6 +592,7 @@ class Session:
                     rt.soul,
                     rt.granted_roots,
                     [(r.id, r.text) for r in rt.rules.all()],
+                    skills=skills,
                 ),
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
@@ -681,6 +684,9 @@ class Session:
         self._last_trace = trace
         rt = self._rt
         provider = rt.provider
+        # A playback report can come while the row is being saved: it marks the trace,
+        # but there is no row to update yet. It is written once the row exists.
+        had_played = "played" in trace.marks
         row = trace.row(
             conversation_id=self.id,
             first_in_session=self._timed == 0,
@@ -693,6 +699,9 @@ class Session:
         self._timed += 1
         try:
             trace.row_id = await rt.conversations.record_timing(OWNER, row, rt.clock())
+            if not had_played and "played" in trace.marks:
+                played = trace.ms(trace.marks["played"])
+                await rt.conversations.timing_played(OWNER, trace.row_id, played)
         except Exception as e:
             logger.warning("timing not saved in session %s: %s", self.id, type(e).__name__)
 
@@ -859,3 +868,20 @@ class Session:
             await self._raw_send({"type": kind, **body})
         except Exception as e:
             logger.debug("send of %s failed: %s", kind, type(e).__name__)
+
+
+def _skill_lines(rt: Runtime) -> list[tuple[str, str]]:
+    """(label, description) of each skill that is on and unchanged (CON-6). Read once
+    a turn and kept for describe_self. Anything unexpected leaves this turn without
+    skills, logged by its kind only: the message could name the user's files."""
+    if rt.skills is None:
+        return []
+    try:
+        entries = rt.skills.enabled()
+        lines = rt.skills.prompt_lines(entries=entries)
+    except Exception as e:
+        logger.warning("skills could not be read this turn: %s", type(e).__name__)
+        rt.skills_on = []
+        return []
+    rt.skills_on = entries
+    return lines

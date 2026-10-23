@@ -1,0 +1,80 @@
+"""One hash over a skill's files: what the user approved when they turned it on."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+from collections.abc import Mapping
+from pathlib import Path
+
+from trillion.skills.parse import MAX_FILE, TooBig, is_link, open_regular, walk
+
+
+def _field(digest: hashlib._Hash, data: bytes) -> None:
+    # Length first, so no file's bytes can pose as the next entry's fields.
+    digest.update(len(data).to_bytes(8, "big") + data)
+
+
+def _entry(path: Path) -> tuple[bytes, bytes]:
+    """(kind, digest of the content) for one entry. Links are hashed by where they
+    point and never followed; pipes and devices are never opened."""
+    if is_link(path):
+        try:  # readlink also reads a junction's target
+            return b"link", hashlib.sha256(os.fsencode(os.readlink(path))).digest()
+        except OSError:
+            return b"link?", b""
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return b"special", b""
+        with open_regular(path) as f:
+            return b"file", hashlib.file_digest(f, "sha256").digest()
+    except OSError:
+        return b"unreadable", b""
+
+
+def fingerprint(
+    folder: Path,
+    override: Mapping[str, bytes] | None = None,
+    *,
+    walked: set[str] | None = None,
+) -> str:
+    """SHA-256 over every entry's kind, relative path and content digest, in sorted
+    order, each length-prefixed. Retargeting a symlink changes it. A folder too big
+    to be a skill, or with a file over MAX_FILE, has none: "" matches no fingerprint
+    the user approved.
+
+    `override` gives the bytes of listed files by relative path, hashed as a plain
+    file in place of what is on disk. It binds a check to the bytes a caller already
+    read: equal to the approved fingerprint only if those bytes are approved.
+
+    `walked`, if given, is filled with the relative paths this hash covered, so a
+    caller can check a listing it got elsewhere is the one hashed."""
+    given = override or {}
+    try:
+        entries = walk(folder)
+        # Fail closed: bytes for a path the walk doesn't list (another case of its
+        # name, on a disk that ignores case) would otherwise be silently unchecked.
+        if not set(given) <= {rel for rel, _, _ in entries}:
+            return ""
+        # A file over the limit makes the skill invalid: don't read a byte of it.
+        for rel, path, _ in entries:
+            if rel in given:
+                continue
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_size > MAX_FILE:
+                return ""
+    except (TooBig, OSError):
+        return ""
+    if walked is not None:
+        walked.update(rel for rel, _, _ in entries)
+    digest = hashlib.sha256()
+    for rel, path, _ in entries:
+        if rel in given:
+            kind, content = b"file", hashlib.sha256(given[rel]).digest()
+        else:
+            kind, content = _entry(path)
+        _field(digest, kind)
+        _field(digest, os.fsencode(rel))  # names that aren't UTF-8 still hash
+        _field(digest, content)
+    return "sha256:" + digest.hexdigest()

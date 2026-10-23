@@ -82,7 +82,18 @@ is a known limit of this phase.
   kept as something she read, not as the user's words, and cannot replace
   one), standing rules (`rule_keep`, `rule_drop`), the decision
   record (`decision_record`, read-only), `web_fetch` and `describe_self`,
-  plus the tools of any MCP server the user connected (below).
+  plus the tools of any MCP server the user connected (below), and
+  `skill_open` and `skill_file`, which read skills the user turned on.
+- **Skills add instructions, never power.** A skill is a `SKILL.md` folder
+  from the curated set or a folder the user added. Every skill starts off; the
+  user turns one on after seeing what it says it does, and what they approve
+  is a fingerprint of every file in it, so any change turns it off again. Each
+  read checks that the bytes returned are the approved ones. Skill text is not
+  marked untrusted, because the user approved it byte for byte, but it cannot
+  change a gate: the gates are code. There is no tool that runs code, so a
+  skill's scripts are only ever read. `skill_file` returns only files listed
+  in the approved skill and refuses links, `..` and absolute paths. A skill
+  that can't be used is reported to her without any of its file names.
 - **MCP servers run only if the user connected them**, in Settings →
   Connected tools or by editing `mcp.json` in Trillion's own folder, which no
   tool can edit. The routes that add, change or remove a server need the

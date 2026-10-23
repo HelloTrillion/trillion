@@ -30,6 +30,7 @@ from trillion.api.persona import create_persona_router
 from trillion.api.runtime import Runtime
 from trillion.api.session import PROTOCOL, Session
 from trillion.api.settings import create_router
+from trillion.api.skills import create_skills_router
 from trillion.api.slack import create_slack_router
 from trillion.api.usage import create_usage_router
 
@@ -167,6 +168,7 @@ def create_app(
             rt.mcp.callback_url = f"http://{loopback[0]}/mcp/callback"
     app.include_router(create_google_router(rt))
     app.include_router(create_slack_router(rt))
+    app.include_router(create_skills_router(rt))
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:

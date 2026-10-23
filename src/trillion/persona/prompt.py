@@ -26,6 +26,9 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _TONES = ("blunt", "gentle")
 _FIELD = re.compile(r"^([a-z_]+):\s*(.+?)\s*$")
 NAME_LIMIT = 40
+# The skills list stays small, and stops with a count past either limit (CON-6).
+MAX_SKILLS_LISTED = 50
+MAX_SKILLS_CHARS = 6000
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -105,17 +108,34 @@ def _fill(text: str, identity: Identity) -> str:
     )
 
 
+def skill_index(skills: Sequence[tuple[str, str]]) -> tuple[list[str], int]:
+    """The lines listing the skills that are on, and how many did not fit (CON-6)."""
+    lines: list[str] = []
+    used = 0
+    for label, description in skills:
+        line = f"- {label}: {description}"
+        if len(lines) >= MAX_SKILLS_LISTED or used + len(line) > MAX_SKILLS_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    return lines, len(skills) - len(lines)
+
+
 def system_blocks(
     identity: Identity,
     soul: str,
     granted_roots: Sequence[Path] = (),
     standing: Sequence[tuple[str, str]] = (),
+    skills: Sequence[tuple[str, str]] = (),
 ) -> list[SystemBlock]:
     """Soul, then rules, then the modality overlay: one block, identical every turn.
 
     `standing` is the user's standing rules as (id, text). They sit here, outside the
     conversation, so summarizing old turns can never drop one (BRN-5). Their text
-    is the user's own and is not filled in, so a brace in it stays a brace."""
+    is the user's own and is not filled in, so a brace in it stays a brace.
+
+    `skills` is (label, description) for each skill turned on (CON-6), in a stable
+    order, so the block only changes when a skill is switched."""
     shared = "\n".join(f"- {r}" for r in granted_roots) or "(none: file tools cannot be used)"
     # Names are filled into the authored text only, never into a folder path.
     parts = [
@@ -124,6 +144,10 @@ def system_blocks(
         f"Shared folders:\n{shared}",
         _fill(_prompt("text.md"), identity),
     ]
+    if skills:
+        lines, more = skill_index(skills)
+        tail = f"\n({more} more skills are turned on but not listed here.)" if more else ""
+        parts.append(f"{_fill(_prompt('skills.md'), identity)}\n" + "\n".join(lines) + tail)
     if standing:
         listed = "\n".join(f"- [{rid}] {text}" for rid, text in standing)
         parts.append(f"{_fill(_prompt('standing.md'), identity)}\n{listed}")

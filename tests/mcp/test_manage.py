@@ -204,7 +204,8 @@ def test_the_file_is_changed_whole_and_kept_private(tmp_path: Path) -> None:
     change(path, lambda s: s.__setitem__("new", {"url": "https://n.example/mcp"}))
     raw = json.loads(path.read_text())
     assert set(raw["mcpServers"]) == {"kept", "new"} and raw["other"] == 1
-    assert path.stat().st_mode & 0o077 == 0
+    if os.name != "nt":  # Windows has no owner-only mode bits; its ACLs are another matter
+        assert path.stat().st_mode & 0o077 == 0
     assert [s.name for s in load(path).servers] == ["kept", "new"]
 
 

@@ -118,6 +118,8 @@ Every tool asks you first until you switch it to run on its own, and what an app
 
 **Slack and Telegram.** With Slack connected she can search, read and post in your workspace (posting always asks), and you can talk to her there. Telegram lets you talk to her from your phone through a bot you make with @BotFather. In both she only answers: no tools, nothing approved from a chat, and only people you allow (the list starts empty). Both connect outbound, so nothing on your computer is reachable from the internet.
 
+**Skills.** Settings → **Skills** lists a few skills that come with Trillion (email replies, meeting prep, a weekly review) and any folder of `SKILL.md` skills you add; your `~/.claude/skills` works as it is. Every skill starts off: turn on the ones you trust. She reads a skill when a task calls for it. A skill can teach her how to do something, never let her skip asking you, and she never runs a skill's scripts. If a skill's files change, it switches off until you look at it again. Your choices are kept in `skills.json` in Trillion's data folder, and `trillion doctor` reports them.
+
 Connections are kept in `mcp.json` in Trillion's data folder (`~/.trillion/mcp.json`), in the format Claude Desktop and Cursor use, so you can also edit it by hand. A key is never written there, only its keychain name (`keychain:NAME`). `"risk": "read"` under `tools` lets a tool run without asking. `trillion doctor` checks the file.
 
 ## Contributing

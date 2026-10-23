@@ -60,6 +60,12 @@ def google_config_path() -> Path:
     return home() / "google.json"
 
 
+def skills_config_path() -> Path:
+    """The skill folders the user added and the skills they turned on (CON-6), each
+    with the fingerprint they approved."""
+    return home() / "skills.json"
+
+
 def slack_config_path() -> Path:
     """Which Slack tools may run without asking. Tokens are in the keychain."""
     return home() / "slack.json"

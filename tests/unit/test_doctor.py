@@ -447,3 +447,104 @@ def test_an_untested_custom_key_says_why(offers: list) -> None:
     assert _keys(lan)["Key: custom"].detail.endswith("the chosen service is sent no key")
     assert _keys(None)["Key: custom"].detail.endswith("no compatible service is chosen")
     assert offers == []
+
+
+def test_skills_say_how_many_are_on_and_which_need_a_look(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    fresh = doctor.check_skills(paths.skills_config_path())
+    assert fresh.status == "info" and fresh.detail == "none turned on"
+    mine = tmp_path / "mine" / "alpha"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: d\n---\nx", "utf-8")
+    lib = Library(paths.skills_config_path())
+    lib.add_folder(str(mine.parent))
+    lib.turn_on(f"folder:{mine.resolve()}")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "ok" and check.detail == "1 on"
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: e\n---\nx", "utf-8")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "warn" and "changed: alpha" in check.detail and check.fix
+    broken = mine.parent / "beta"
+    broken.mkdir()
+    (broken / "SKILL.md").write_text("no header", "utf-8")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert "beta" not in check.detail  # not turned on: only counted
+    assert "1 other can't be used" in check.detail
+
+
+def test_skills_that_are_not_turned_on_never_warn(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    mine = tmp_path / "mine" / "alpha"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: d\n---\nx", "utf-8")
+    broken = mine.parent / "beta"
+    broken.mkdir()
+    (broken / "SKILL.md").write_text("no header", "utf-8")
+    lib = Library(paths.skills_config_path())
+    lib.add_folder(str(mine.parent))
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "info" and check.detail == "none turned on; 1 other can't be used"
+    lib.turn_on(f"folder:{mine.resolve()}")
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "ok" and check.detail == "1 on; 1 other can't be used"
+
+
+def test_a_skill_folder_that_went_missing_is_reported(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    Library(paths.skills_config_path()).add_folder(str(mine))
+    mine.rmdir()
+    check = doctor.check_skills(paths.skills_config_path())
+    # No skill in it was on: nothing stopped working, so no warning.
+    assert check.status == "info" and "1 folder not found" in check.detail
+
+
+def test_a_missing_folder_with_skills_on_is_reported_once(home: Path, tmp_path: Path) -> None:
+    import shutil
+
+    from trillion.skills.library import Library
+
+    mine = tmp_path / "mine" / "alpha"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: d\n---\nx", "utf-8")
+    lib = Library(paths.skills_config_path())
+    lib.add_folder(str(mine.parent))
+    lib.turn_on(f"folder:{mine.resolve()}")
+    shutil.rmtree(mine.parent)
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "warn"
+    assert f"folder not found: {mine.parent.resolve()}" in check.detail
+    assert "turned on but not found" not in check.detail
+    assert "http" not in (check.fix or "") and "#show" not in (check.fix or "")
+
+
+def test_the_examination_includes_skills(home: Path, offers: list) -> None:
+    checks = examine()
+    assert checks["Skills"].status == "info"
+
+
+def test_skills_warn_when_their_settings_cannot_be_read(home: Path) -> None:
+    path = paths.skills_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    check = doctor.check_skills(path)
+    assert check.status == "warn" and "skills.json could not be read" in check.detail
+
+
+def test_skills_warn_when_one_turned_on_is_gone(home: Path, tmp_path: Path) -> None:
+    from trillion.skills.library import Library
+
+    mine = tmp_path / "mine" / "alpha"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("---\nname: alpha\ndescription: d\n---\nx", "utf-8")
+    lib = Library(paths.skills_config_path())
+    lib.add_folder(str(mine.parent))
+    lib.turn_on(f"folder:{mine.resolve()}")
+    (mine / "SKILL.md").unlink()
+    check = doctor.check_skills(paths.skills_config_path())
+    assert check.status == "warn"
+    assert f"turned on but not found: {mine.resolve()}" in check.detail
