@@ -12,6 +12,7 @@ import re
 import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
+from io import BufferedReader
 from pathlib import Path
 
 import yaml
@@ -23,7 +24,7 @@ MAX_FILES = 200
 MAX_DEPTH = 8
 MAX_NAME = 64
 MAX_DESCRIPTION = 1024
-_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".ts", ".rb", ".ps1"})
 # What editors and operating systems leave behind: never part of a skill.
 IGNORED = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", "__pycache__", ".git"})
@@ -56,49 +57,95 @@ class Invalid:
     reason: str
 
 
+def _is_link(path: Path) -> bool:
+    """A symlink, or a Windows junction, which `is_symlink` does not count."""
+    return path.is_symlink() or os.path.isjunction(path)
+
+
 def walk(folder: Path) -> Iterator[tuple[str, Path, int]]:
-    """Every file under `folder` as (relative path, path, depth), symlinks included and
-    never followed, ignored names skipped, in sorted order."""
+    """Every file under `folder` as (relative path, path, depth), links included and
+    never followed, ignored names skipped, in sorted order of relative path."""
+    found: list[tuple[str, Path, int]] = []
     for root, dirs, files in os.walk(folder, followlinks=False):
         here = Path(root)
         depth = len(here.relative_to(folder).parts)
-        dirs[:] = sorted(d for d in dirs if d not in IGNORED and not (here / d).is_symlink())
-        links = [d for d in os.listdir(here) if (here / d).is_symlink() and (here / d).is_dir()]
-        for name in sorted({*files, *links}):
+        # A link to a folder shows up in `dirs`: list it like a file, never enter it.
+        links = [d for d in dirs if _is_link(here / d)]
+        dirs[:] = sorted(d for d in dirs if d not in IGNORED and d not in links)
+        for name in [*files, *links]:
             if name in IGNORED:
                 continue
             path = here / name
-            yield path.relative_to(folder).as_posix(), path, depth
+            found.append((path.relative_to(folder).as_posix(), path, depth))
+    yield from sorted(found, key=lambda entry: entry[0])
+
+
+def open_regular(path: Path) -> BufferedReader:
+    """Open `path` for reading only if it is a regular file: never a link, a pipe or a
+    device. The open does not block, so a named pipe swapped in can't hang us, and
+    fstat checks what was actually opened."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+# The closing line is exactly `---`, give or take trailing spaces: `----` is not one.
+_OPEN = re.compile(r"\A---[ \t]*\n")
+_CLOSE = re.compile(r"^---[ \t]*$", re.M)
+
+
+def _uses_references(text: str) -> bool:
+    """Anchors and aliases let a tiny header expand into gigabytes. Skills don't need
+    them, so any at all is refused before the header is built."""
+    for event in yaml.parse(text, Loader=yaml.SafeLoader):
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None) is not None:
+            return True
+    return False
 
 
 def _header(text: str) -> tuple[dict[str, object], str] | Invalid:
-    text = text.removeprefix("﻿").replace("\r\n", "\n")
-    if not text.startswith("---\n"):
+    text = text.removeprefix("\ufeff").replace("\r\n", "\n")
+    opening = _OPEN.match(text)
+    closing = _CLOSE.search(text, opening.end()) if opening else None
+    if not opening or not closing:
         return Invalid("its SKILL.md has no header (the --- block at the top)")
-    end = text.find("\n---", 4)
-    if end < 0:
-        return Invalid("its SKILL.md has no header (the --- block at the top)")
+    raw = text[opening.end() : closing.start()]
     try:
-        data = yaml.safe_load(text[4:end])
-    except yaml.YAMLError:
+        if _uses_references(raw):
+            return Invalid("its header uses YAML references, which skills don't need")
+        data = yaml.safe_load(raw)
+    except (yaml.YAMLError, RecursionError):
         return Invalid("its header could not be read")
+    if data is None:  # an empty block: no fields, so no name
+        data = {}
     if not isinstance(data, dict):
         return Invalid("its header is not a set of fields")
-    body = text[end + 4 :].removeprefix("\n")
+    body = text[closing.end() :].removeprefix("\n")
     return data, body.strip()
 
 
-def _tools(raw: object) -> tuple[str, ...]:
+def _tools(raw: object) -> tuple[str, ...] | Invalid:
+    # Claude Code writes `Bash(git add:*), Read`: with a comma, only commas separate.
+    if raw is None:
+        return ()
     if isinstance(raw, str):
-        return tuple(t for t in re.split(r"[\s,]+", raw) if t)
-    if isinstance(raw, list):
-        return tuple(str(t).strip() for t in raw if str(t).strip())
-    return ()
+        parts = raw.split(",") if "," in raw else raw.split()
+        return tuple(t.strip() for t in parts if t.strip())
+    if isinstance(raw, list) and all(isinstance(t, str) for t in raw):
+        return tuple(t.strip() for t in raw if t.strip())
+    return Invalid("its allowed-tools must be text or a list of text")
 
 
 def _is_text(path: Path) -> bool:
     try:
-        path.read_bytes().decode("utf-8")
+        with open_regular(path) as f:
+            f.read(MAX_FILE + 1).decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return False
     return True
@@ -113,26 +160,35 @@ def _is_script(path: Path, mode: int) -> bool:
 def parse(folder: Path) -> Skill | Invalid:
     md = folder / SKILL_MD
     try:
-        size = md.lstat().st_size
+        info = md.lstat()
     except OSError:
         return Invalid("it has no SKILL.md")
-    if md.is_symlink() or not md.is_file():
+    if _is_link(md) or not stat.S_ISREG(info.st_mode):
         return Invalid("its SKILL.md is not a plain file")
-    if size > MAX_SKILL_MD:
-        return Invalid(f"its SKILL.md is too large (over {MAX_SKILL_MD // 1024} KB)")
+    too_large = Invalid(f"its SKILL.md is too large (over {MAX_SKILL_MD // 1024} KB)")
+    if info.st_size > MAX_SKILL_MD:
+        return too_large
     try:
-        text = md.read_text(encoding="utf-8")
+        with open_regular(md) as f:
+            data = f.read(MAX_SKILL_MD + 1)
+        text = data.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return Invalid("its SKILL.md is not readable text")
+    if len(data) > MAX_SKILL_MD:  # it grew after the lstat
+        return too_large
     header = _header(text)
     if isinstance(header, Invalid):
         return header
     fields, instructions = header
+    # Only plain strings: str() on an arbitrary YAML value could be huge.
+    for key in ("name", "description", "license"):
+        if fields.get(key) is not None and not isinstance(fields[key], str):
+            return Invalid(f"its {key} must be text")
     name = str(fields.get("name") or "").strip()
     description = " ".join(str(fields.get("description") or "").split())
     if not name:
         return Invalid("its header has no name")
-    if len(name) > MAX_NAME or not _NAME.match(name):
+    if len(name) > MAX_NAME or not _NAME.fullmatch(name):
         return Invalid(
             "its name must be lowercase letters, digits and single hyphens, "
             f"up to {MAX_NAME} characters"
@@ -141,18 +197,31 @@ def parse(folder: Path) -> Skill | Invalid:
         return Invalid("its header has no description")
     if len(description) > MAX_DESCRIPTION:
         return Invalid(f"its description is longer than {MAX_DESCRIPTION} characters")
+    tools = _tools(fields.get("allowed-tools"))
+    if isinstance(tools, Invalid):
+        return tools
     found: list[SkillFile] = []
     for rel, path, depth in walk(folder):
-        if depth >= MAX_DEPTH:
+        try:
+            rel.encode("utf-8")  # a name the OS let through but that isn't text
+        except UnicodeEncodeError:
+            return Invalid("a file name is not valid text")
+        if depth > MAX_DEPTH:
             return Invalid(f"its folders are too deep (over {MAX_DEPTH} levels)")
         if rel == SKILL_MD:
             continue
         if len(found) >= MAX_FILES:
             return Invalid(f"it has too many files (over {MAX_FILES})")
-        info = path.lstat()
+        try:
+            info = path.lstat()
+        except OSError:
+            return Invalid(f"{rel} could not be read")
+        link = stat.S_ISLNK(info.st_mode) or os.path.isjunction(path)
+        # Pipes and devices could hang a read or never end: no skill needs one.
+        if not link and not stat.S_ISREG(info.st_mode):
+            return Invalid(f"{rel} is not a regular file")
         if info.st_size > MAX_FILE:
             return Invalid(f"{rel} is too large (over {MAX_FILE // 1024} KB)")
-        link = stat.S_ISLNK(info.st_mode)
         found.append(
             SkillFile(
                 path=rel,
@@ -165,7 +234,7 @@ def parse(folder: Path) -> Skill | Invalid:
         name=name,
         description=description,
         instructions=instructions,
-        allowed_tools=_tools(fields.get("allowed-tools")),
+        allowed_tools=tools,
         license=str(fields.get("license") or "").strip(),
         files=tuple(found),
     )
