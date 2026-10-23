@@ -27,6 +27,15 @@ body {
   accent-color: var(--color-accent);
 }
 
+/* An open dropdown's list is drawn by the system. Windows paints it on white while
+   keeping the field's light text, which a see-through field background can't fix:
+   give the options the theme's own colours. */
+select option,
+select optgroup {
+  background-color: var(--color-bg-1);
+  color: var(--color-text-0);
+}
+
 /* Like any desktop app, the frame is not text to select: buttons, labels, headings.
    What she said, what you typed, paths and anything in a field still are. */
 body {
