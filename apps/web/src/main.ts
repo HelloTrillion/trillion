@@ -43,6 +43,7 @@ import {
   shownTheme,
 } from './prefs';
 import { type Api, createSettings } from './settings';
+import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
@@ -544,6 +545,7 @@ const appearance = createAppearance(
 );
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
 const connected = createConnected(panel.host('connected'), api, () => panel.refresh());
+const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
@@ -567,6 +569,7 @@ panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', 
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
+panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder', summary: () => (view.grantedRoots.length ? `${view.grantedRoots.length} shared` : 'None'), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
@@ -575,7 +578,11 @@ function openSettings(at?: string): void {
 }
 settingsBtn.addEventListener('click', () => openSettings());
 // Back from signing in to a service: Settings, at that connection, to confirm it.
-if (showOnStart) {
+// A changed skill links straight to its card: #show=skill:<id>.
+if (showOnStart?.startsWith('skill:')) {
+  skills.reveal(showOnStart.slice('skill:'.length));
+  openSettings('skills');
+} else if (showOnStart) {
   connected.reveal(showOnStart);
   openSettings('connected');
 }
