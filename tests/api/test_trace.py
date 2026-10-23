@@ -202,3 +202,29 @@ async def test_a_turn_a_tap_starts_is_timed_from_the_tap(rt: Runtime) -> None:
     typed, tapped = timings()
     assert typed["via"] == "text" and tapped["via"] == "tap"
     assert tapped["first_text_ms"] is not None
+
+
+async def test_a_playback_time_that_arrives_while_the_row_is_saved_is_kept(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt.provider = ScriptedProvider(say("One."))
+    voiced(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    saving = asyncio.Event()
+    record = rt.conversations.record_timing
+
+    async def slow(owner: str, row: dict[str, Any], now_ms: int) -> int:
+        saving.set()
+        await asyncio.sleep(0.03)
+        return await record(owner, row, now_ms)
+
+    monkeypatch.setattr(rt.conversations, "record_timing", slow)
+    await session.handle({"type": "turn.text", "text": "first"})
+    await asyncio.wait_for(saving.wait(), 5)
+    turn = page.all("reply.sentence")[0]["turn"]
+    await session.handle({"type": "playback.started", "turn_id": turn, "in_ms": 60})
+    await idle(session)
+    await session.close()
+    (row,) = timings()
+    assert row["played_ms"] is not None and row["played_ms"] >= 60

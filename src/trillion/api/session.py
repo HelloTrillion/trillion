@@ -684,6 +684,9 @@ class Session:
         self._last_trace = trace
         rt = self._rt
         provider = rt.provider
+        # A playback report can come while the row is being saved: it marks the trace,
+        # but there is no row to update yet. It is written once the row exists.
+        had_played = "played" in trace.marks
         row = trace.row(
             conversation_id=self.id,
             first_in_session=self._timed == 0,
@@ -696,6 +699,9 @@ class Session:
         self._timed += 1
         try:
             trace.row_id = await rt.conversations.record_timing(OWNER, row, rt.clock())
+            if not had_played and "played" in trace.marks:
+                played = trace.ms(trace.marks["played"])
+                await rt.conversations.timing_played(OWNER, trace.row_id, played)
         except Exception as e:
             logger.warning("timing not saved in session %s: %s", self.id, type(e).__name__)
 
