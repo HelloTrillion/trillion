@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.voice.audio import dead, frames, room, tone
 from trillion.voice.endpoint import (
+    BATCH_S,
     DEAD_AFTER_S,
     DONE_S,
     FAST_S,
@@ -28,19 +29,29 @@ def test_level_is_zero_for_silence_and_survives_an_odd_byte() -> None:
     assert level(tone(0.1) + b"\x01") == level(tone(0.1))
 
 
-def test_a_second_of_quiet_after_speech_ends_the_turn() -> None:
-    rules = EndOfSpeech(streaming=False)
+def test_a_second_of_quiet_ends_a_streaming_turn_with_no_final() -> None:
+    rules = EndOfSpeech(streaming=True)
     assert run(rules, room(0.5) + tone(1.0)) is None and rules.spoke
     assert run(rules, room(SLOW_S - 0.2)) is None  # a pause, not the end
     assert run(rules, room(0.4)) == "end"
     assert abs(rules.now - (1.5 + SLOW_S)) < 0.1
 
 
+def test_without_a_streaming_recognizer_two_seconds_of_quiet_end_the_turn() -> None:
+    """Local Whisper hears nothing until the turn is over: quiet is the only sign, so
+    a thinking pause of a second or more must not end it."""
+    rules = EndOfSpeech(streaming=False)
+    assert run(rules, room(0.5) + tone(1.0)) is None and rules.spoke
+    assert run(rules, room(1.5)) is None  # thinking, not finished
+    assert run(rules, room(BATCH_S - 1.5 + 0.1)) == "end"
+    assert abs(rules.now - (1.5 + BATCH_S)) < 0.15
+
+
 def test_a_pause_mid_thought_does_not_end_it() -> None:
     rules = EndOfSpeech(streaming=False)
-    said = room(0.3) + tone(0.8) + room(0.7) + tone(0.8) + room(0.7) + tone(0.5)
+    said = room(0.3) + tone(0.8) + room(1.2) + tone(0.8) + room(1.6) + tone(0.5)
     assert run(rules, said) is None
-    assert run(rules, room(1.2)) == "end"
+    assert run(rules, room(BATCH_S + 0.2)) == "end"
 
 
 def test_a_click_or_cough_is_not_speech() -> None:

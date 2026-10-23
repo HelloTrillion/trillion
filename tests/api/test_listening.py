@@ -147,7 +147,7 @@ async def test_a_batch_recognizer_shows_she_is_working_while_it_transcribes(rt: 
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "listen.start"})
-    await speak(session, tone(0.5) + room(1.2))
+    await speak(session, tone(0.5) + room(2.2))  # a batch recognizer waits two seconds
     await idle(session)
     assert page.all("transcript.partial") == []
     assert page.all("transcript.final")[0]["text"] == "turn it off"
