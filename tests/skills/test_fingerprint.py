@@ -107,3 +107,17 @@ def test_a_folder_too_big_to_walk_has_no_fingerprint(folder: Path) -> None:
     for i in range(MAX_FILES + 1):
         (folder / f"f{i}.md").write_text("", encoding="utf-8")
     assert fingerprint(folder) == ""
+
+
+def test_a_file_too_large_for_a_skill_is_not_hashed(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.skills import fingerprint as fp
+    from trillion.skills.parse import MAX_FILE
+
+    (folder / "data.bin").write_bytes(b"x" * (MAX_FILE + 1))
+    opened: list[Path] = []
+    real = fp.open_regular
+    monkeypatch.setattr(fp, "open_regular", lambda p: (opened.append(p), real(p))[1])
+    assert fingerprint(folder) == ""
+    assert opened == []  # not even the small files before it

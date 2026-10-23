@@ -153,7 +153,7 @@ class Library:
 
     def _write(self, data: dict[str, Any]) -> None:
         """Write the file whole, synced, and confirm it reads back as written."""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd, tmp = tempfile.mkstemp(prefix=".skills-", suffix=".json", dir=self._path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -168,7 +168,7 @@ class Library:
                 os.unlink(tmp)
             raise
         if json.loads(self._path.read_text(encoding="utf-8")) != data:
-            raise OSError("skills.json did not read back as written")
+            raise LibraryError("skills.json did not save; try again")
 
     # ── Finding skills ────────────────────────────────────────────────
 
@@ -193,38 +193,36 @@ class Library:
         self, sid: str, source: Source, folder: Path, root: Path | None, approved: str | None
     ) -> Entry:
         """Read one skill. The parse sits between two fingerprints, so what is read is
-        what the fingerprint covers: files changing meanwhile never count as on."""
+        what the fingerprint covers: files changing meanwhile never count as on. An
+        invalid skill is never hashed."""
+
+        def invalid(reason: str) -> Entry:
+            return Entry(
+                id=sid,
+                source=source,
+                folder=folder,
+                root=root,
+                skill=None,
+                reason=reason,
+                fingerprint="",
+                state="invalid",
+            )
+
+        found = parse(folder)  # first, so an invalid skill is never hashed
         for _ in range(2):
+            if isinstance(found, Invalid):
+                return invalid(found.reason)
             before = fingerprint(folder)
             found = parse(folder)
             if isinstance(found, Invalid):
-                return Entry(
-                    id=sid,
-                    source=source,
-                    folder=folder,
-                    root=root,
-                    skill=None,
-                    reason=found.reason,
-                    fingerprint="",
-                    state="invalid",
-                )
-            skill: Skill = found
+                return invalid(found.reason)
+            skill = found
             mark = fingerprint(folder)
             if mark == before:
                 break
-        else:
-            if approved is None:
-                return Entry(
-                    id=sid,
-                    source=source,
-                    folder=folder,
-                    root=root,
-                    skill=None,
-                    reason="its files are being changed; try again",
-                    fingerprint="",
-                    state="invalid",
-                )
         stable = mark == before  # else it kept changing: never "on"
+        if not stable and approved is None:
+            return invalid("its files are being changed; try again")
         state: State
         if approved is None:
             state = "off"
@@ -260,6 +258,7 @@ class Library:
 
     def lookup(self, ref: str) -> Entry:
         """A skill that is turned on, by id, or by a name only one skill that is on has.
+        By id it may be "changed" or "invalid": the caller must refuse anything not "on".
         When no skill that is on has the name, one whose files changed is returned with
         state "changed", for the caller to refuse."""
         ref = ref.strip()
@@ -326,16 +325,10 @@ class Library:
             raise LibraryError("that is not a folder on this computer") from None
 
     def add_folder(self, raw: str) -> Path:
-        try:
-            given = Path(raw.strip()).expanduser()
-            linked = is_link(given)
-        except (OSError, ValueError, RuntimeError):
-            raise LibraryError("that is not a folder on this computer") from None
-        if linked:
-            raise LibraryError("that is a link; choose the folder it points to")
-        if not _is_folder(given):
-            raise LibraryError("that is not a folder on this computer")
+        # A link (~/.claude/skills often is one) is stored as the folder it points to.
         path = self._resolve(raw)
+        if not _is_folder(path):
+            raise LibraryError("that is not a folder on this computer")
         if path == Path(path.anchor):
             raise LibraryError("a whole drive is too much; choose the folder your skills are in")
         # Inside Trillion's folder, or holding it (as a home folder does), in any case.
@@ -348,15 +341,19 @@ class Library:
         return path
 
     def remove_folder(self, raw: str) -> None:
-        """Forget a folder and its skills' choices, but not those of a folder the user
-        added inside it."""
+        """Forget a folder and its skills' choices: the folder itself, or its direct
+        subfolders, as the library only offers those. A skill another folder still
+        offers keeps its choice."""
         path = self._resolve(raw)
         data = self._read(strict=True)
         gone = [f for f in data["folders"] if _same(Path(f), path)]
         kept = [f for f in data["folders"] if f not in gone]
 
         def under(sid: str, folder: str) -> bool:
-            return sid == f"folder:{folder}" or sid.startswith(f"folder:{folder}{os.sep}")
+            if not sid.startswith("folder:"):
+                return False
+            skill = Path(sid.removeprefix("folder:"))
+            return _same(skill, Path(folder)) or _same(skill.parent, Path(folder))
 
         data["folders"] = kept
         data["enabled"] = {

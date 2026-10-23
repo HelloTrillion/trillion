@@ -371,7 +371,7 @@ def test_the_settings_file_is_synced_and_read_back(
         Path(dst).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(library.os, "replace", replace_badly)
-    with pytest.raises(OSError, match="read back"):
+    with pytest.raises(LibraryError, match="did not save"):
         lib.turn_off("curated:weekly-review")
 
 
@@ -413,11 +413,25 @@ def test_a_path_that_cannot_be_a_path_is_refused(lib: Library, raw: str) -> None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_a_link_to_a_folder_is_refused(lib: Library, tmp_path: Path) -> None:
-    make(tmp_path / "mine", "alpha")
+def test_a_link_to_a_folder_is_stored_as_where_it_points(lib: Library, tmp_path: Path) -> None:
+    a = make(tmp_path / "mine", "alpha")  # as ~/.claude/skills often is, from dotfiles
     (tmp_path / "link").symlink_to(tmp_path / "mine", target_is_directory=True)
-    with pytest.raises(LibraryError, match="link"):
-        lib.add_folder(str(tmp_path / "link"))
+    assert lib.add_folder(str(tmp_path / "link")) == (tmp_path / "mine").resolve()
+    assert [(f.path, f.found) for f in lib.folders()] == [((tmp_path / "mine").resolve(), True)]
+    assert f"folder:{a.resolve()}" in ids(lib)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_stored_folder_later_swapped_for_a_link_is_not_found(
+    lib: Library, tmp_path: Path
+) -> None:
+    make(tmp_path / "mine", "alpha")
+    make(tmp_path / "other", "beta")
+    lib.add_folder(str(tmp_path / "mine"))
+    (tmp_path / "mine").rename(tmp_path / "old")
+    (tmp_path / "mine").symlink_to(tmp_path / "other", target_is_directory=True)
+    assert [f.found for f in lib.folders()] == [False]
+    assert ids(lib) == {"curated:weekly-review": "off"}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
@@ -427,3 +441,35 @@ def test_ids_do_not_follow_a_subfolder_swapped_for_a_link(lib: Library, tmp_path
     lib.add_folder(str(mine))
     (entry,) = [e for e in lib.scan() if e.source == "folder"]
     assert entry.id == f"folder:{mine.resolve() / 'alpha'}"
+
+
+def test_an_invalid_skill_is_never_hashed(
+    lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = tmp_path / "mine" / "bad"
+    bad.mkdir(parents=True)
+    (bad / "SKILL.md").write_text("no header", encoding="utf-8")
+    (bad / "data.bin").write_bytes(b"x" * 1024)
+    lib.add_folder(str(tmp_path / "mine"))
+    hashed: list[str] = []
+    real = library.fingerprint
+    monkeypatch.setattr(library, "fingerprint", lambda f: (hashed.append(f.name), real(f))[1])
+    lib.scan()
+    assert "bad" not in hashed
+
+
+def test_removing_a_folder_inside_a_kept_one_drops_its_skills(lib: Library, tmp_path: Path) -> None:
+    make(tmp_path / "mine", "top")
+    sk = make(tmp_path / "mine" / "b", "sk")
+    lib.add_folder(str(tmp_path / "mine"))
+    lib.add_folder(str(tmp_path / "mine" / "b"))
+    lib.turn_on(f"folder:{sk.resolve()}")
+    lib.remove_folder(str(tmp_path / "mine" / "b"))
+    saved = json.loads((tmp_path / "home" / "skills.json").read_text())
+    assert saved["enabled"] == {}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_the_settings_folder_is_private(lib: Library, tmp_path: Path) -> None:
+    lib.turn_on("curated:weekly-review")
+    assert (tmp_path / "home").stat().st_mode & 0o777 == 0o700
