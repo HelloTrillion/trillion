@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { skillState, skillsSummary, toolLabel, unlistedText, type SkillRow, type SkillsState } from '../src/skills';
+import { changedFile, refusal, skillState, skillsSummary, toolLabel, unlistedText, type SkillRow, type SkillsState } from '../src/skills';
 
 const row = (state: SkillRow['state'], reason = ''): SkillRow => ({
   id: 'curated:a',
@@ -44,5 +44,25 @@ describe('skills', () => {
     expect(unlistedText(0)).toBe('');
     expect(unlistedText(1)).toBe('1 more skill is on than her instructions list');
     expect(unlistedText(3)).toBe('3 more skills are on than her instructions list');
+  });
+});
+
+describe('skill words', () => {
+  it('turns a refusal into one sentence', () => {
+    expect(refusal('that skill changed since this page showed it; look again')).toBe('That skill changed since this page showed it; look again.');
+    expect(refusal('not a folder.')).toBe('Not a folder.');
+    expect(refusal('  ends with dots... ')).toBe('Ends with dots.');
+    expect(refusal(undefined)).toBe('That did not work.');
+    expect(refusal([{ msg: 'x' }])).toBe('That did not work.');
+  });
+
+  it('names the file to read again, relative to the folder when it can', () => {
+    const at = (id: string, folder: string, source: SkillRow['source'] = 'folder') => changedFile({ id, folder, source });
+    expect(at('folder:/home/me/skills/pdf-forms', '/home/me/skills')).toBe('pdf-forms/SKILL.md');
+    expect(at('folder:/home/me/skills/pdf-forms', '/home/me/skills/')).toBe('pdf-forms/SKILL.md');
+    expect(at('folder:/home/me/skills', '/home/me/skills')).toBe('/home/me/skills/SKILL.md');
+    expect(at('folder:/elsewhere/x', '/home/me/skills')).toBe('/elsewhere/x/SKILL.md');
+    expect(at('folder:/home/me/skillset/x', '/home/me/skills')).toBe('/home/me/skillset/x/SKILL.md');
+    expect(at('curated:a', '', 'curated')).toBe('');
   });
 });

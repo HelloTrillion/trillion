@@ -74,6 +74,22 @@ export function unlistedText(n: number): string {
 
 const sentence = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** A refusal from the server, as a sentence: capitalised, with one full stop. */
+export function refusal(detail: unknown): string {
+  const text = typeof detail === 'string' ? detail.trim().replace(/[.\s]+$/, '') : '';
+  return `${sentence(text || 'That did not work')}.`;
+}
+
+/** The file to read again when a skill changed: its SKILL.md, relative to the folder
+ * the user added when it is inside it, else in full. Curated skills have none. */
+export function changedFile(s: Pick<SkillRow, 'id' | 'source' | 'folder'>): string {
+  if (s.source !== 'folder') return '';
+  const path = s.id.slice('folder:'.length);
+  const root = s.folder.replace(/\/+$/, '');
+  const inside = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : '';
+  return `${inside || path}/SKILL.md`;
+}
+
 // ── The screen ───────────────────────────────────────────────────────────
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
@@ -129,7 +145,7 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
         last = data as SkillsState;
         ok = true;
       } else {
-        error = { at, text: sentence(typeof data.detail === 'string' && data.detail ? data.detail : 'That did not work') + '.' };
+        error = { at, text: refusal(data.detail) };
       }
     } catch {
       error = { at, text: 'Trillion could not be reached.' };
@@ -149,12 +165,15 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
     return [p];
   }
 
-  function card(s: SkillRow): HTMLElement {
+  let ids = 0;
+
+  function card(s: SkillRow, grouped = false): HTMLElement {
     const box = el('div', `connected-card skills-card is-${s.state}${focus === s.id ? ' is-shown' : ''}`);
     box.dataset.skill = s.id;
     const head = el('div', 'connected-card-head');
     const words = el('span', 'connected-card-words');
     const state = el('small', 'connected-state');
+    state.id = `skill-state-${++ids}`;
     const said = el('span', 'connected-state-main');
     const kind = s.state === 'on' ? 'on' : s.state === 'off' ? 'off' : 'bad';
     said.append(el('span', `connected-dot connected-dot-${kind}`), document.createTextNode(skillState(s)));
@@ -168,10 +187,16 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
     input.type = 'checkbox';
     input.setAttribute('role', 'switch');
     input.checked = s.state === 'on';
-    input.disabled = s.state === 'invalid' || busy;
+    input.disabled = s.state === 'invalid';
     input.dataset.focus = `switch:${s.id}`;
     input.setAttribute('aria-label', `Use ${s.name}`);
+    input.setAttribute('aria-describedby', state.id);
     input.addEventListener('change', () => {
+      // One change at a time: a second click while the first is saving is undone.
+      if (busy) {
+        input.checked = !input.checked;
+        return;
+      }
       void send(s.id, 'PATCH', '/api/skills', { id: s.id, on: input.checked, fingerprint: s.fingerprint || null });
     });
     sw.append(input, el('span', 'connected-switch-track'));
@@ -179,13 +204,14 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
     box.append(head);
 
     const facts = el('ul', 'skills-facts');
-    facts.append(el('li', '', s.source === 'curated' ? 'Included with Trillion' : `From ${s.folder}`));
+    // Cards under a folder's row don't repeat it.
+    if (!grouped) facts.append(el('li', '', s.source === 'curated' ? 'Included with Trillion' : `From ${s.folder}`));
     if (s.tools.length) facts.append(el('li', '', `Tools it mentions: ${s.tools.map(toolLabel).join(', ')}`));
     if (s.has_scripts) facts.append(el('li', 'connected-warn', "Includes scripts Trillion won't run"));
     if (s.license) facts.append(el('li', '', `License: ${s.license}`));
     box.append(facts);
     if (s.state === 'changed') {
-      const where = s.source === 'folder' ? `${s.id.slice('folder:'.length)}/SKILL.md` : 'it';
+      const where = changedFile(s) || 'it';
       box.append(el('p', 'settings-hint connected-warn', `Its files changed, so she stopped using it. Read ${where} again, then turn it back on if you still trust it.`));
     }
     box.append(...errorLine(s.id));
@@ -208,8 +234,12 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
           (form.querySelector(`[data-focus="${CSS.escape(`remove:${f.path}`)}"]`) as HTMLElement | null)?.focus();
         }),
         button('Remove', 'connected-danger-solid', () => {
+          if (busy) return;
           confirming = '';
-          void send('folders', 'DELETE', '/api/skills/folders', { path: f.path });
+          // Its row is gone afterwards: focus goes to adding a folder.
+          void send('folders', 'DELETE', '/api/skills/folders', { path: f.path }).then(() => {
+            (form.querySelector('[data-focus="add-input"]') as HTMLElement | null)?.focus();
+          });
         }),
       );
       block.append(row, confirm);
@@ -219,7 +249,6 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
         draw();
         (form.querySelector('.connected-confirm button') as HTMLButtonElement | null)?.focus();
       });
-      remove.disabled = busy;
       remove.setAttribute('aria-label', `Remove the folder ${f.path}`);
       remove.dataset.focus = `remove:${f.path}`;
       row.append(remove);
@@ -228,7 +257,7 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
     if (f.found && !skills.length) block.append(el('p', 'settings-hint', 'No skills found in it. A skill is a folder with a SKILL.md file.'));
     if (skills.length) {
       const list = el('div', 'connected-list');
-      list.append(...skills.map(card));
+      list.append(...skills.map((k) => card(k, true)));
       block.append(list);
     }
     return block;
@@ -262,7 +291,6 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
       go();
     });
     const add = button('Add folder', 'approve', go);
-    add.disabled = busy;
     add.dataset.focus = 'add-button';
     row.append(label, input, add, el('small', 'settings-hint', 'A folder of skills, or one skill’s own folder. Each skill in it starts off.'));
     return row;
@@ -293,10 +321,13 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
       parts.push(box);
     }
 
+    // A refusal for a card that is no longer there is shown here instead.
+    if (error && error.at !== 'folders' && !last.skills.some((k) => k.id === error?.at)) parts.push(...errorLine(error.at));
+
     const curated = last.skills.filter((s) => s.source === 'curated');
     parts.push(el('h3', 'connected-heading', 'Included with Trillion'));
     const list = el('div', 'connected-list');
-    list.append(...curated.map(card));
+    list.append(...curated.map((k) => card(k, true)));
     parts.push(list);
 
     parts.push(el('h3', 'connected-heading', 'Your folders'));
@@ -311,7 +342,7 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
     const rest = mine.filter((s) => !shown.has(s.id));
     if (rest.length) {
       const more = el('div', 'connected-list');
-      more.append(...rest.map(card));
+      more.append(...rest.map((k) => card(k)));
       parts.push(more);
     }
     parts.push(addFolder(), ...errorLine('folders'));
@@ -319,6 +350,10 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
 
     if (active) (form.querySelector(`[data-focus="${CSS.escape(active)}"]`) as HTMLElement | null)?.focus();
   }
+
+  // Once at the start, so the sidebar says how many are on before the section is opened.
+  // After this turn, so the page has taken its session token from the address first.
+  window.setTimeout(() => void load(), 0);
 
   return {
     async open() {

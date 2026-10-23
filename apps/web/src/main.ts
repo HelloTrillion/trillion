@@ -87,9 +87,10 @@ function store(key: string, value?: string | null): string | null {
 }
 
 /** A link back from signing in names the connection to show: #show=google:gmail.
- * Taken once, and the address bar cleaned, like the token. */
+ * A skill's id is a path (#show=skill:folder:/a/b), so `/` is allowed; it is only
+ * ever compared, never fetched. Taken once, and the address bar cleaned, like the token. */
 function takeShow(): string | null {
-  const match = /(?:^#|&)show=([\w:.%-]+)/.exec(location.hash);
+  const match = /(?:^#|&)show=([\w:./%-]+)/.exec(location.hash);
   if (!match?.[1]) return null;
   history.replaceState(null, '', location.pathname);
   try {
