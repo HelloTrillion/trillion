@@ -108,6 +108,19 @@ def _fill(text: str, identity: Identity) -> str:
     )
 
 
+def skill_index(skills: Sequence[tuple[str, str]]) -> tuple[list[str], int]:
+    """The lines listing the skills that are on, and how many did not fit (CON-6)."""
+    lines: list[str] = []
+    used = 0
+    for label, description in skills:
+        line = f"- {label}: {description}"
+        if len(lines) >= MAX_SKILLS_LISTED or used + len(line) > MAX_SKILLS_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    return lines, len(skills) - len(lines)
+
+
 def system_blocks(
     identity: Identity,
     soul: str,
@@ -132,15 +145,7 @@ def system_blocks(
         _fill(_prompt("text.md"), identity),
     ]
     if skills:
-        lines: list[str] = []
-        used = 0
-        for label, description in skills:
-            line = f"- {label}: {description}"
-            if len(lines) >= MAX_SKILLS_LISTED or used + len(line) > MAX_SKILLS_CHARS:
-                break
-            lines.append(line)
-            used += len(line)
-        more = len(skills) - len(lines)
+        lines, more = skill_index(skills)
         tail = f"\n({more} more skills are turned on but not listed here.)" if more else ""
         parts.append(f"{_fill(_prompt('skills.md'), identity)}\n" + "\n".join(lines) + tail)
     if standing:
