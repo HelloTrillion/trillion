@@ -552,3 +552,57 @@ def test_changes_from_two_threads_both_land(lib: Library, tmp_path: Path) -> Non
     for t in threads:
         t.join()
     assert len(lib.folders()) == 8
+
+
+def test_a_file_listed_but_not_fingerprinted_never_counts_as_on(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A file made and removed between the two fingerprints could be in the parse's
+    # listing but in neither hash: the listing must be the one the hash walked.
+    from dataclasses import replace
+
+    from trillion.skills.parse import Skill, SkillFile
+
+    lib.turn_on("curated:weekly-review")
+    real_parse = library.parse
+
+    def parse(folder: Path) -> object:
+        found = real_parse(folder)
+        assert isinstance(found, Skill)
+        phantom = SkillFile(path="phantom.md", size=1, script=False, text=True)
+        return replace(found, files=(*found.files, phantom))
+
+    monkeypatch.setattr(library, "parse", parse)
+    (entry,) = lib.scan()
+    assert entry.state == "changed"
+    lib.turn_off("curated:weekly-review")
+    (entry,) = lib.scan()
+    assert entry.state == "invalid" and "being changed" in entry.reason
+
+
+def test_saving_retries_while_another_reader_holds_the_file(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Windows, replacing a file another thread has open raises PermissionError.
+    real_replace = os.replace
+    failures = iter([True, True])
+    slept: list[float] = []
+
+    def busy(src: str, dst: Path) -> None:
+        if next(failures, False):
+            raise PermissionError("in use")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(library.os, "replace", busy)
+    monkeypatch.setattr(library.time, "sleep", slept.append)
+    assert lib.turn_on("curated:weekly-review").state == "on"
+    assert len(slept) == 2
+
+    def always_busy(src: str, dst: Path) -> None:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(library.os, "replace", always_busy)
+    with pytest.raises(PermissionError):
+        lib.turn_off("curated:weekly-review")
+    assert ids(lib) == {"curated:weekly-review": "on"}
+    assert not [p for p in (lib._path.parent).iterdir() if p.name.startswith(".skills-")]

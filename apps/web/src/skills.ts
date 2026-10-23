@@ -85,9 +85,14 @@ export function refusal(detail: unknown): string {
 export function changedFile(s: Pick<SkillRow, 'id' | 'source' | 'folder'>): string {
   if (s.source !== 'folder') return '';
   const path = s.id.slice('folder:'.length);
-  const root = s.folder.replace(/\/+$/, '');
-  const inside = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : '';
-  return `${inside || path}/SKILL.md`;
+  // The path's own separator, so a Windows path never mixes `\` and `/`.
+  const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
+  const parts = path.split(/[\\/]/);
+  const root = s.folder.split(/[\\/]/);
+  while (root.length && !root[root.length - 1]) root.pop();
+  const within = root.some(Boolean) && parts.length > root.length && root.every((p, i) => p === parts[i]);
+  const inside = within ? parts.slice(root.length).join(sep) : '';
+  return `${inside || path}${sep}SKILL.md`;
 }
 
 // ── The screen ───────────────────────────────────────────────────────────
@@ -367,7 +372,7 @@ export function createSkills(host: Host, api: Api, changed: () => void): { open(
         focus = '';
       }
     },
-    /** Open at one skill's card: a changed skill links straight to it (#show=skill:<id>). */
+    /** Open at one skill's card, as #show=skill:<id> asks (nothing links there yet). */
     reveal(id: string) {
       focus = id;
     },

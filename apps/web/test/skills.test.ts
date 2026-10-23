@@ -64,5 +64,9 @@ describe('skill words', () => {
     expect(at('folder:/elsewhere/x', '/home/me/skills')).toBe('/elsewhere/x/SKILL.md');
     expect(at('folder:/home/me/skillset/x', '/home/me/skills')).toBe('/home/me/skillset/x/SKILL.md');
     expect(at('curated:a', '', 'curated')).toBe('');
+    // Windows: one kind of separator, never a mix.
+    expect(at('folder:C:\\Users\\me\\skills\\pdf-forms', 'C:\\Users\\me\\skills')).toBe('pdf-forms\\SKILL.md');
+    expect(at('folder:C:\\Users\\me\\skills', 'C:\\Users\\me\\skills')).toBe('C:\\Users\\me\\skills\\SKILL.md');
+    expect(at('folder:C:\\Users\\me\\skillset\\x', 'C:\\Users\\me\\skills\\')).toBe('C:\\Users\\me\\skillset\\x\\SKILL.md');
   });
 });

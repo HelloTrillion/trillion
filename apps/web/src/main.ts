@@ -87,10 +87,11 @@ function store(key: string, value?: string | null): string | null {
 }
 
 /** A link back from signing in names the connection to show: #show=google:gmail.
- * A skill's id is a path (#show=skill:folder:/a/b), so `/` is allowed; it is only
- * ever compared, never fetched. Taken once, and the address bar cleaned, like the token. */
+ * A skill's id is a path (#show=skill:folder:/a/b, or C:\a\b on Windows), so `/` and
+ * `\` are allowed; it is only ever compared, never fetched. Taken once, and the
+ * address bar cleaned, like the token. */
 function takeShow(): string | null {
-  const match = /(?:^#|&)show=([\w:./%-]+)/.exec(location.hash);
+  const match = /(?:^#|&)show=([\w:./\\%-]+)/.exec(location.hash);
   if (!match?.[1]) return null;
   history.replaceState(null, '', location.pathname);
   try {
@@ -579,7 +580,7 @@ function openSettings(at?: string): void {
 }
 settingsBtn.addEventListener('click', () => openSettings());
 // Back from signing in to a service: Settings, at that connection, to confirm it.
-// A changed skill links straight to its card: #show=skill:<id>.
+// #show=skill:<id> opens at that skill's card (nothing links there yet).
 if (showOnStart?.startsWith('skill:')) {
   skills.reveal(showOnStart.slice('skill:'.length));
   openSettings('skills');

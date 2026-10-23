@@ -70,9 +70,11 @@ class _SkillTool(BaseTool):
                 "invalid",
             )
         if entry.state != "on":
+            # The ref the model gave, not entry.name: that comes from the changed,
+            # unapproved SKILL.md, and this refusal reaches the model unwrapped.
             return _refused(
-                f"the skill {entry.name!r} changed since it was turned on, so it is off until "
-                "the user looks at it again in Settings → Skills",
+                f"the skill {str(ref).strip()!r} changed since it was turned on, so it is off "
+                "until the user looks at it again in Settings → Skills",
                 "changed",
             )
         return entry, entry.skill

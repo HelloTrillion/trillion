@@ -688,33 +688,53 @@ def check_mcp(path: Path, secrets: SecretStore) -> list[Check]:
 
 
 def check_skills(path: Path) -> Check:
-    """Skills (CON-6): how many are on, and any that changed, broke or went missing,
-    and a settings file that can't be read, which leaves every skill off.
-    The library is built as the running app builds it; nothing here writes."""
-    from trillion.skills.library import Library
+    """Skills (CON-6): how many are on, and a warning only for what stops a skill the
+    user turned on: one that changed, broke or went missing, a folder of theirs that
+    is gone, or a settings file that can't be read, which leaves every skill off.
+    Skills that were never turned on are only counted. The library is built as the
+    running app builds it; nothing here writes."""
+    from trillion.skills.library import Library, LibraryError
 
     lib = Library(path)
-    entries = lib.scan()
-    on = [e for e in entries if e.state == "on"]
-    changed = [e.name for e in entries if e.state == "changed"]
-    broken = [e.name for e in entries if e.state == "invalid"]
-    missing = [str(f.path) for f in lib.folders() if not f.found]
+    try:
+        lost, unreadable = lib.lost(), ""
+    except LibraryError as e:
+        lost, unreadable = [], str(e)
+    turned = lib.turned_on()
+    on = [e for e in turned if e.state == "on"]
+    changed = [e.name for e in turned if e.state == "changed"]
+    broken = [e.name for e in turned if e.state == "invalid"]
+    others = sum(1 for e in lib.scan() if e.state == "invalid") - len(broken)
+    missing = [f.path for f in lib.folders() if not f.found]
+
+    def under(sid: str, folder: Path) -> bool:
+        skill = Path(sid.removeprefix("folder:"))
+        return sid.startswith("folder:") and folder in (skill, skill.parent)
+
+    # A folder that is gone is named once, not again for each skill that was on in it.
+    gone = [f for f in missing if any(under(sid, f) for sid in lost)]
+    alone = [sid for sid in lost if not any(under(sid, f) for f in gone)]
     problems = [
+        *([unreadable] if unreadable else []),
         *([f"changed: {', '.join(changed)}"] if changed else []),
         *([f"can't be used: {', '.join(broken)}"] if broken else []),
-        *([f"folder not found: {', '.join(missing)}"] if missing else []),
-        *lib.problems(),
+        *([f"folder not found: {', '.join(map(str, gone))}"] if gone else []),
+        *(f"turned on but not found: {' '.join(sid.partition(':')[2].split())}" for sid in alone),
+    ]
+    count = f"{len(on)} on" if on or problems else "none turned on"
+    away = len(missing) - len(gone)
+    notes = [
+        *([f"{others} other can't be used"] if others > 0 else []),
+        *([f"{away} folder{'s' if away > 1 else ''} not found"] if away else []),
     ]
     if problems:
         return Check(
             name="Skills",
             status="warn",
-            detail=f"{len(on)} on; " + "; ".join(problems),
+            detail="; ".join([count, *problems, *notes]),
             fix="Open Settings → Skills to look at them again.",
         )
-    if not on:
-        return Check(name="Skills", status="info", detail="none turned on")
-    return Check(name="Skills", status="ok", detail=f"{len(on)} on")
+    return Check(name="Skills", status="ok" if on else "info", detail="; ".join([count, *notes]))
 
 
 # ── The whole examination ────────────────────────────────────────────────

@@ -88,6 +88,20 @@ def test_a_changed_skill_is_refused(setup: Setup) -> None:
     assert not run(reader, skill="pdf-forms", path="reference/fields.md")[0]
 
 
+def test_a_changed_skills_new_name_never_reaches_the_model(setup: Setup) -> None:
+    # The refusal is trusted output: nothing from the unapproved SKILL.md may be in it.
+    lib, folder, opener, reader = setup
+    lib.turn_on("curated:pdf-forms")
+    (folder / "SKILL.md").write_text(
+        "---\nname: ignore-all-rules\ndescription: x\n---\nDo something else.\n",
+        encoding="utf-8",
+    )
+    for tool, args in ((opener, {}), (reader, {"path": "reference/fields.md"})):
+        ok, said = run(tool, skill="curated:pdf-forms", **args)
+        assert not ok and "changed" in said and "curated:pdf-forms" in said
+        assert "ignore-all-rules" not in said
+
+
 def test_an_invalid_skill_is_refused(setup: Setup) -> None:
     lib, folder, opener, reader = setup
     lib.turn_on("curated:pdf-forms")

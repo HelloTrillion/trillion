@@ -240,11 +240,12 @@ def parse(folder: Path) -> Skill | Invalid:
             rel.encode("utf-8")  # a name the OS let through but that isn't text
         except UnicodeEncodeError:
             return Invalid("a file name is not valid text")
+        # Belt and braces: walk() raises TooBig before either of these can be true.
         if depth > MAX_DEPTH:
             return Invalid(f"its folders are too deep (over {MAX_DEPTH} levels)")
         if rel == SKILL_MD:
             continue
-        if len(found) >= MAX_FILES:
+        if len(found) >= MAX_FILES:  # belt and braces, as above
             return Invalid(f"it has too many files (over {MAX_FILES})")
         try:
             info = path.lstat()

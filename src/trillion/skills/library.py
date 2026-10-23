@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -28,6 +29,8 @@ CURATED = Path(__file__).resolve().parent / "curated"
 # mistake (a home folder, a project) from being read entry by entry.
 MAX_LISTED = 5000
 MAX_SUBFOLDERS = 500
+# On Windows, replacing a file another thread has open fails for a moment.
+_REPLACE_TRIES, _REPLACE_WAIT = 5, 0.05
 State = Literal["off", "on", "changed", "invalid"]
 Source = Literal["curated", "folder"]
 _Candidate = tuple[str, Source, Path, Path | None]
@@ -165,7 +168,14 @@ class Library:
                 f.flush()
                 os.fsync(f.fileno())
             os.chmod(tmp, 0o600)
-            os.replace(tmp, self._path)
+            for attempt in range(_REPLACE_TRIES):
+                try:
+                    os.replace(tmp, self._path)
+                    break
+                except PermissionError:
+                    if attempt == _REPLACE_TRIES - 1:
+                        raise
+                    time.sleep(_REPLACE_WAIT)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
@@ -197,8 +207,8 @@ class Library:
     ) -> Entry:
         """Read one skill. The parse sits between two fingerprints, the second over the
         SKILL.md bytes the parse read, so the instructions are the bytes the fingerprint
-        covers: files changing meanwhile never count as on. An invalid skill is never
-        hashed."""
+        covers, and its file listing must be the one the second fingerprint walked:
+        files changing meanwhile never count as on. An invalid skill is never hashed."""
 
         def invalid(reason: str) -> Entry:
             return Entry(
@@ -222,10 +232,16 @@ class Library:
                 return invalid(found.reason)
             skill = found
             # The SKILL.md bytes that were parsed, not whatever is on disk by now.
-            mark = fingerprint(folder, override={SKILL_MD: skill.source})
-            if mark == before:
+            walked: set[str] = set()
+            mark = fingerprint(folder, override={SKILL_MD: skill.source}, walked=walked)
+            # A file made and removed between the two hashes could be in the parse's
+            # listing, which skill_open shows, but in neither hash. ("" hashed nothing,
+            # and is never on.)
+            listed = {f.path for f in skill.files} | {SKILL_MD}
+            stable = mark == before and (not mark or listed == walked)
+            if stable:
                 break
-        stable = mark == before  # else it kept changing: never "on"
+        # Else it kept changing: never "on".
         if not stable and approved is None:
             return invalid("its files are being changed; try again")
         state: State
@@ -244,7 +260,7 @@ class Library:
             state=state,
         )
 
-    def _turned_on(self) -> list[Entry]:
+    def turned_on(self) -> list[Entry]:
         """Every skill the user turned on, in any state. Only those are read."""
         on = self._read(strict=False)["enabled"]
         if not on:
@@ -258,7 +274,7 @@ class Library:
 
     def enabled(self) -> list[Entry]:
         """The skills that are on and unchanged, by name, then id."""
-        on = [e for e in self._turned_on() if e.state == "on"]
+        on = [e for e in self.turned_on() if e.state == "on"]
         return sorted(on, key=lambda e: (e.name, e.id))
 
     def lookup(self, ref: str) -> Entry:
@@ -267,7 +283,7 @@ class Library:
         When no skill that is on has the name, one whose files changed is returned with
         state "changed", for the caller to refuse."""
         ref = ref.strip()
-        turned = self._turned_on()
+        turned = self.turned_on()
         for e in turned:
             if e.id == ref:
                 return e
@@ -390,15 +406,19 @@ class Library:
         settings file that can't be read, and skills turned on that are no longer found
         (a folder gone, moved or unreadable). For doctor and Settings."""
         try:
-            data = self._read(strict=True)
+            lost = self.lost()
         except LibraryError as e:
             return [str(e)]
-        found = {c[0] for c in self._candidates()}
         return [
-            f"turned on but not found: {' '.join(sid.partition(':')[2].split())}"
-            for sid in sorted(data["enabled"])
-            if sid not in found
+            f"turned on but not found: {' '.join(sid.partition(':')[2].split())}" for sid in lost
         ]
+
+    def lost(self) -> list[str]:
+        """The ids of skills turned on that are no longer found, sorted. Raises
+        LibraryError when skills.json can't be read."""
+        data = self._read(strict=True)
+        found = {c[0] for c in self._candidates()}
+        return [sid for sid in sorted(data["enabled"]) if sid not in found]
 
     def fact(self, entries: list[Entry] | None = None) -> str:
         """For describe_self (BRN-6). `entries` is enabled() if the caller has it."""

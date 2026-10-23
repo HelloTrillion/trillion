@@ -33,7 +33,12 @@ def _entry(path: Path) -> tuple[bytes, bytes]:
         return b"unreadable", b""
 
 
-def fingerprint(folder: Path, override: Mapping[str, bytes] | None = None) -> str:
+def fingerprint(
+    folder: Path,
+    override: Mapping[str, bytes] | None = None,
+    *,
+    walked: set[str] | None = None,
+) -> str:
     """SHA-256 over every entry's kind, relative path and content digest, in sorted
     order, each length-prefixed. Retargeting a symlink changes it. A folder too big
     to be a skill, or with a file over MAX_FILE, has none: "" matches no fingerprint
@@ -41,7 +46,10 @@ def fingerprint(folder: Path, override: Mapping[str, bytes] | None = None) -> st
 
     `override` gives the bytes of listed files by relative path, hashed as a plain
     file in place of what is on disk. It binds a check to the bytes a caller already
-    read: equal to the approved fingerprint only if those bytes are approved."""
+    read: equal to the approved fingerprint only if those bytes are approved.
+
+    `walked`, if given, is filled with the relative paths this hash covered, so a
+    caller can check a listing it got elsewhere is the one hashed."""
     given = override or {}
     try:
         entries = walk(folder)
@@ -58,6 +66,8 @@ def fingerprint(folder: Path, override: Mapping[str, bytes] | None = None) -> st
                 return ""
     except (TooBig, OSError):
         return ""
+    if walked is not None:
+        walked.update(rel for rel, _, _ in entries)
     digest = hashlib.sha256()
     for rel, path, _ in entries:
         if rel in given:
