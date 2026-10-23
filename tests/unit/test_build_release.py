@@ -49,8 +49,18 @@ def test_only_what_sign_in_needs_is_shipped(release: ModuleType) -> None:
     }
 
 
-def test_the_picker_key_is_optional(release: ModuleType) -> None:
+def test_the_picker_key_is_optional_for_a_local_build(release: ModuleType) -> None:
     assert "picker_key" not in json.loads(release.google_file(json.dumps(downloaded())))
+
+
+def test_a_release_without_the_picker_key_is_refused(release: ModuleType) -> None:
+    # Gmail and Calendar would work, and Drive would quietly not: stop the build instead.
+    with pytest.raises(release.ReleaseError, match="picker_key"):
+        release.google_file(json.dumps(downloaded()), require_picker=True)
+    shipped = release.google_file(
+        json.dumps({**downloaded(), "picker_key": PICKER}), require_picker=True
+    )
+    assert json.loads(shipped)["picker_key"] == PICKER
 
 
 @pytest.mark.parametrize(

@@ -23,7 +23,10 @@ them from a repository secret.
 3. Value: the JSON file Google gave for the Desktop app client (APIs & Services →
    Credentials → the client → Download JSON), with the Drive picker's API key added
    at the top level as `"picker_key": "AIza..."`. A maintainer's local
-   `src/trillion/connectors/google/google_client.json` is already in this shape.
+   `src/trillion/connectors/google/google_client.json` is already in this shape, and
+   the quickest way is `gh secret set GOOGLE_CLIENT_JSON < that-file`. The picker key
+   is required: without it Gmail and Calendar would work but choosing Drive files
+   would not, so the release build stops instead.
 
 The workflow has no pull request trigger, so code from a fork never runs with it.
 The build ships only `client_id`, `client_secret` and `picker_key`, and never prints
