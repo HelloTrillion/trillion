@@ -349,6 +349,9 @@ class Library:
 
     @staticmethod
     def _resolve(raw: str) -> Path:
+        # Windows doesn't refuse a NUL the way POSIX path calls do: refuse it here.
+        if "\x00" in raw:
+            raise LibraryError("that is not a folder on this computer")
         try:
             return Path(raw.strip()).expanduser().resolve()
         except (OSError, ValueError, RuntimeError):

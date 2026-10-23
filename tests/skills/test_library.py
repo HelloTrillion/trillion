@@ -12,7 +12,7 @@ import pytest
 
 from trillion import paths
 from trillion.skills import library
-from trillion.skills.library import Library, LibraryError
+from trillion.skills.library import Library, LibraryError, _show
 
 
 def make(root: Path, name: str, description: str = "Does a thing.") -> Path:
@@ -204,7 +204,8 @@ def test_lookup_by_name_or_id_and_duplicate_names(lib: Library, tmp_path: Path) 
     assert lib.lookup(f"folder:{dup.resolve()}").source == "folder"
     labels = [label for label, _ in lib.prompt_lines()]
     mine = (tmp_path / "mine").resolve()  # resolved, as stored (macOS: /var is /private/var)
-    assert labels == ["weekly-review", f"weekly-review (from {mine})"]
+    # Shown as the user knows it: on Windows the temporary folder is inside home ("~").
+    assert labels == ["weekly-review", f"weekly-review (from {_show(mine)})"]
     with pytest.raises(LibraryError, match="not turned on"):
         lib.lookup("nothing-here")
 
