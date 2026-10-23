@@ -75,7 +75,7 @@ async def test_a_batch_recognizer_gives_no_partials_and_its_words_at_the_end() -
 
     listener = Listener(stt, "one", on_partial=partial)
     await listener.start()
-    assert await feed(listener, tone(0.5) + room(1.3)) == "end"
+    assert await feed(listener, tone(0.5) + room(2.3)) == "end"  # BATCH_S of quiet
     assert (await listener.end()).text == "turn the lights off" and partials == []
 
 

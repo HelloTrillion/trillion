@@ -20,6 +20,10 @@ _WINDOW = SAMPLE_RATE // 50  # 20 ms
 FAST_S = 0.4
 # With no final to lean on, this much quiet does.
 SLOW_S = 1.0
+# A recognizer that only transcribes once the turn is over (local Whisper) gives
+# nothing to lean on at all, so quiet is the only sign. A second cut people off
+# mid-thought; two lets them pause to think, at the cost of a later reply.
+BATCH_S = 2.0
 # Quiet is not believed while the recognizer was hearing words this recently.
 RECENT_WORDS_S = 0.5
 # When the words sound finished and the recognizer heard the pause too, this much
@@ -161,4 +165,4 @@ class EndOfSpeech:
                 return None
             if self._last_final >= 0 and not self._pending_words:
                 return "end" if min(quiet, now - self._last_final) >= FAST_S else None
-        return "end" if quiet >= SLOW_S else None
+        return "end" if quiet >= (SLOW_S if self._streaming else BATCH_S) else None
