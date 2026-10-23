@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from trillion.skills.parse import MAX_FILES, MAX_SKILL_MD, Invalid, Skill, parse
+from trillion.skills.parse import MAX_DEPTH, MAX_FILES, MAX_SKILL_MD, Invalid, Skill, parse
 
 GOOD = "---\nname: pdf-forms\ndescription: Fill in PDF forms.\n---\n# PDF forms\nStep one.\n"
 
@@ -76,7 +76,6 @@ def test_allowed_tools_may_be_a_string_or_a_list(tmp_path: Path) -> None:
         ("---\nname: a\ndescription: " + "d" * 1025 + "\n---\nx", "description"),
         ("---\nname: [a, b]\ndescription: d\n---\nx", "its name must be text"),
         ("---\nname: a\ndescription: {x: 1}\n---\nx", "its description must be text"),
-        ("---\nname: a\ndescription: d\nlicense: 3\n---\nx", "its license must be text"),
         ("---\nname: a\ndescription: d\nallowed-tools: {x: 1}\n---\nx", "allowed-tools"),
         ("---\nname: a\ndescription: d\nallowed-tools: [Read, [x]]\n---\nx", "allowed-tools"),
         ("---\nname: &n a\ndescription: *n\n---\nx", "YAML references"),
@@ -110,6 +109,68 @@ def test_eight_levels_of_folders_are_allowed_and_nine_are_not(tmp_path: Path) ->
     (nested / "d8" / "x.md").write_text("x", encoding="utf-8")
     found = parse(eight)
     assert isinstance(found, Invalid) and "too deep (over 8 levels)" in found.reason
+
+
+def test_an_empty_folder_nine_levels_down_is_too_deep(tmp_path: Path) -> None:
+    folder = skill(tmp_path)
+    folder.joinpath(*[f"d{i}" for i in range(9)]).mkdir(parents=True)
+    found = parse(folder)
+    assert isinstance(found, Invalid) and "too deep" in found.reason
+
+
+def test_a_very_deep_folder_is_not_walked_to_the_bottom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = skill(tmp_path)
+    folder.joinpath(*[f"d{i}" for i in range(40)]).mkdir(parents=True)
+    seen: list[str] = []
+    real = os.walk
+
+    def spy(top: Path, **kw: object) -> object:
+        for root, dirs, files in real(top, **kw):  # type: ignore[call-overload]
+            seen.append(root)
+            yield root, dirs, files
+
+    monkeypatch.setattr(os, "walk", spy)
+    found = parse(folder)
+    assert isinstance(found, Invalid) and "too deep" in found.reason
+    assert len(seen) <= MAX_DEPTH + 1
+
+
+def test_a_huge_folder_stops_being_walked_early(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = skill(tmp_path)
+    for i in range(30):
+        sub = folder / f"pkg{i:02}"
+        sub.mkdir()
+        for j in range(20):
+            (sub / f"f{j}.md").write_text("", encoding="utf-8")
+    seen: list[str] = []
+    real = os.walk
+
+    def spy(top: Path, **kw: object) -> object:
+        for root, dirs, files in real(top, **kw):  # type: ignore[call-overload]
+            seen.append(root)
+            yield root, dirs, files
+
+    monkeypatch.setattr(os, "walk", spy)
+    found = parse(folder)
+    assert isinstance(found, Invalid) and "too many files" in found.reason
+    assert len(seen) < 15  # 200 files fill up after about ten folders of twenty
+
+
+def test_too_many_folders_is_too_many_even_when_empty(tmp_path: Path) -> None:
+    folder = skill(tmp_path)
+    for i in range(MAX_FILES + 1):
+        (folder / f"d{i}").mkdir()
+    found = parse(folder)
+    assert isinstance(found, Invalid) and "too many folders" in found.reason
+
+
+def test_a_license_that_is_not_text_is_ignored(tmp_path: Path) -> None:
+    found = parse(skill(tmp_path, "---\nname: a\ndescription: d\nlicense: 3\n---\nx"))
+    assert isinstance(found, Skill) and found.license == ""
 
 
 def test_editor_and_system_clutter_is_ignored(tmp_path: Path) -> None:

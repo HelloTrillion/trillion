@@ -7,7 +7,7 @@ import os
 import stat
 from pathlib import Path
 
-from trillion.skills.parse import _is_link, open_regular, walk
+from trillion.skills.parse import TooBig, is_link, open_regular, walk
 
 
 def _field(digest: hashlib._Hash, data: bytes) -> None:
@@ -18,7 +18,7 @@ def _field(digest: hashlib._Hash, data: bytes) -> None:
 def _entry(path: Path) -> tuple[bytes, bytes]:
     """(kind, digest of the content) for one entry. Links are hashed by where they
     point and never followed; pipes and devices are never opened."""
-    if _is_link(path):
+    if is_link(path):
         try:  # readlink also reads a junction's target
             return b"link", hashlib.sha256(os.fsencode(os.readlink(path))).digest()
         except OSError:
@@ -34,9 +34,14 @@ def _entry(path: Path) -> tuple[bytes, bytes]:
 
 def fingerprint(folder: Path) -> str:
     """SHA-256 over every entry's kind, relative path and content digest, in sorted
-    order, each length-prefixed. Retargeting a symlink changes it."""
+    order, each length-prefixed. Retargeting a symlink changes it. A folder too big
+    to be a skill has none: "" matches no fingerprint the user approved."""
+    try:
+        entries = walk(folder)
+    except (TooBig, OSError):
+        return ""
     digest = hashlib.sha256()
-    for rel, path, _ in walk(folder):
+    for rel, path, _ in entries:
         kind, content = _entry(path)
         _field(digest, kind)
         _field(digest, os.fsencode(rel))  # names that aren't UTF-8 still hash

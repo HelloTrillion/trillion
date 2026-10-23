@@ -99,3 +99,11 @@ def test_a_junction_is_hashed_by_its_target_and_not_entered(folder: Path, tmp_pa
     before = fingerprint(folder)
     (outside / "secret.md").write_text("b", encoding="utf-8")
     assert fingerprint(folder) == before
+
+
+def test_a_folder_too_big_to_walk_has_no_fingerprint(folder: Path) -> None:
+    from trillion.skills.parse import MAX_FILES
+
+    for i in range(MAX_FILES + 1):
+        (folder / f"f{i}.md").write_text("", encoding="utf-8")
+    assert fingerprint(folder) == ""
