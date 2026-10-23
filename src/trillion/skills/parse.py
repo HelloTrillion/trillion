@@ -75,7 +75,10 @@ def walk(folder: Path) -> list[tuple[str, Path, int]]:
     never followed, ignored names skipped, in sorted order of relative path.
 
     Raises TooBig as soon as there are more files or folders than a skill may have,
-    or a folder deeper than MAX_DEPTH, so nothing walks a home folder by mistake."""
+    or a folder deeper than MAX_DEPTH, so nothing walks a home folder by mistake. A
+    folder deeper than MAX_DEPTH counts even when empty. The checks run per folder:
+    os.walk still lists each folder whole, so one huge folder is listed before the
+    walk stops."""
     found: list[tuple[str, Path, int]] = []
     folders = 0
     for root, dirs, files in os.walk(folder, followlinks=False):

@@ -148,6 +148,7 @@ def test_a_folder_that_disappears_is_reported_not_dropped(lib: Library, tmp_path
     assert ids(lib) == {"curated:weekly-review": "off"}
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_a_linked_subfolder_is_not_a_skill(lib: Library, tmp_path: Path) -> None:
     elsewhere = make(tmp_path / "elsewhere", "alpha")
     mine = tmp_path / "mine"
@@ -236,3 +237,193 @@ def test_a_settings_file_of_the_wrong_shape_is_read_as_empty(lib: Library, tmp_p
 def test_the_settings_file_is_private(lib: Library, tmp_path: Path) -> None:
     lib.turn_on("curated:weekly-review")
     assert (tmp_path / "home" / "skills.json").stat().st_mode & 0o777 == 0o600
+
+
+posix_not_root = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions, not root"
+)
+
+
+@posix_not_root
+def test_a_folder_behind_one_that_cannot_be_opened_is_not_found(
+    lib: Library, tmp_path: Path
+) -> None:
+    make(tmp_path / "p" / "q", "alpha")
+    lib.add_folder(str(tmp_path / "p" / "q"))
+    lib.turn_on("curated:weekly-review")
+    (tmp_path / "p").chmod(0)
+    try:
+        assert [f.found for f in lib.folders()] == [False]
+        assert [e.id for e in lib.enabled()] == ["curated:weekly-review"]
+        assert ids(lib) == {"curated:weekly-review": "on"}
+        with pytest.raises(LibraryError, match="not a folder"):
+            lib.add_folder(str(tmp_path / "p" / "q"))
+    finally:
+        (tmp_path / "p").chmod(0o755)
+
+
+def test_a_name_shared_with_a_changed_skill_still_finds_the_one_that_is_on(
+    lib: Library, tmp_path: Path
+) -> None:
+    dup = make(tmp_path / "mine", "weekly-review")
+    lib.add_folder(str(tmp_path / "mine"))
+    lib.turn_on("curated:weekly-review")
+    lib.turn_on(f"folder:{dup.resolve()}")
+    (dup / "extra.md").write_text("new", encoding="utf-8")
+    assert [label for label, _ in lib.prompt_lines()] == ["weekly-review"]
+    assert lib.lookup("weekly-review").id == "curated:weekly-review"
+    (tmp_path / "curated" / "weekly-review" / "extra.md").write_text("new", encoding="utf-8")
+    with pytest.raises(LibraryError, match="more than one"):
+        lib.lookup("weekly-review")  # both changed: say which, by id
+
+
+def test_a_lone_changed_skill_is_found_for_the_caller_to_refuse(
+    lib: Library, tmp_path: Path
+) -> None:
+    lib.turn_on("curated:weekly-review")
+    (tmp_path / "curated" / "weekly-review" / "extra.md").write_text("new", encoding="utf-8")
+    assert lib.lookup("curated:weekly-review").state == "changed"
+
+
+def _case_insensitive(tmp_path: Path) -> bool:
+    probe = tmp_path / "probe"
+    probe.mkdir(exist_ok=True)
+    return (tmp_path / "PROBE").exists()
+
+
+def test_trillions_folder_is_refused_in_any_case(lib: Library, tmp_path: Path) -> None:
+    if not _case_insensitive(tmp_path):
+        pytest.skip("needs a file system that ignores case")
+    (tmp_path / "home").mkdir(exist_ok=True)
+    with pytest.raises(LibraryError, match="Trillion's own"):
+        lib.add_folder(str(tmp_path / "HOME"))
+    swapped = tmp_path.parent / tmp_path.name.swapcase()
+    with pytest.raises(LibraryError, match="Trillion's own"):
+        lib.add_folder(str(swapped))
+
+
+def test_the_same_folder_in_another_case_is_added_once(lib: Library, tmp_path: Path) -> None:
+    if not _case_insensitive(tmp_path):
+        pytest.skip("needs a file system that ignores case")
+    make(tmp_path / "mine", "alpha")
+    lib.add_folder(str(tmp_path / "mine"))
+    lib.add_folder(str(tmp_path / "MINE"))
+    assert len(lib.folders()) == 1
+    lib.remove_folder(str(tmp_path / "MINE"))
+    assert lib.folders() == []
+
+
+def test_removing_a_folder_keeps_one_added_inside_it(lib: Library, tmp_path: Path) -> None:
+    a = make(tmp_path / "mine", "alpha")
+    lib.add_folder(str(tmp_path / "mine"))
+    lib.add_folder(str(a))
+    lib.turn_on(f"folder:{a.resolve()}")
+    lib.remove_folder(str(tmp_path / "mine"))
+    assert ids(lib)[f"folder:{a.resolve()}"] == "on"
+
+
+def test_files_changing_while_read_never_count_as_on(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lib.turn_on("curated:weekly-review")
+    calls = iter(range(1000))
+    monkeypatch.setattr(library, "fingerprint", lambda folder: f"sha256:{next(calls)}")
+    (entry,) = lib.scan()
+    assert entry.state == "changed"
+    lib.turn_off("curated:weekly-review")
+    (entry,) = lib.scan()
+    assert entry.state == "invalid" and "being changed" in entry.reason
+    with pytest.raises(LibraryError, match="being changed"):
+        lib.turn_on("curated:weekly-review")
+
+
+def test_turning_on_what_the_page_showed(lib: Library, tmp_path: Path) -> None:
+    (shown,) = lib.scan()
+    (tmp_path / "curated" / "weekly-review" / "extra.md").write_text("new", encoding="utf-8")
+    with pytest.raises(LibraryError, match="changed since this page showed it"):
+        lib.turn_on(shown.id, expected=shown.fingerprint)
+    (now,) = lib.scan()
+    assert lib.turn_on(now.id, expected=now.fingerprint).state == "on"
+
+
+def test_an_empty_fingerprint_never_counts_as_on(
+    lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "home" / "skills.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"folders": [], "enabled": {"curated:weekly-review": ""}}', encoding="utf-8")
+    monkeypatch.setattr(library, "fingerprint", lambda folder: "")
+    assert ids(lib) == {"curated:weekly-review": "changed"}
+
+
+def test_the_settings_file_is_synced_and_read_back(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[int] = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(library.os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+    lib.turn_on("curated:weekly-review")
+    assert synced
+    real_replace = os.replace
+
+    def replace_badly(src: str, dst: Path) -> None:
+        real_replace(src, dst)
+        Path(dst).write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(library.os, "replace", replace_badly)
+    with pytest.raises(OSError, match="read back"):
+        lib.turn_off("curated:weekly-review")
+
+
+def test_a_turn_can_reuse_the_skills_it_already_read(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lib.turn_on("curated:weekly-review")
+    on = lib.enabled()
+    monkeypatch.setattr(library, "parse", lambda folder: pytest.fail("read again"))
+    assert lib.prompt_lines(on) == [("weekly-review", "Does a thing.")]
+    assert lib.fact(on).startswith("1 turned on: weekly-review")
+
+
+def test_labels_tell_apart_names_shared_in_one_folder_and_shorten_home(
+    lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path.resolve()))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path.resolve()))
+    mine = tmp_path / "mine"
+    for sub in ["a", "b"]:
+        folder = mine / sub
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text("---\nname: pdf\ndescription: d\n---\nx", "utf-8")
+    lib.add_folder(str(mine))
+    for e in lib.scan():
+        if e.source == "folder":
+            lib.turn_on(e.id)
+    labels = [label for label, _ in lib.prompt_lines()]
+    sep = os.sep
+    assert labels == [f"pdf (from ~{sep}mine{sep}a)", f"pdf (from ~{sep}mine{sep}b)"]
+
+
+@pytest.mark.parametrize("raw", ["a\x00b"])
+def test_a_path_that_cannot_be_a_path_is_refused(lib: Library, raw: str) -> None:
+    with pytest.raises(LibraryError):
+        lib.add_folder(raw)
+    with pytest.raises(LibraryError):
+        lib.remove_folder(raw)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_link_to_a_folder_is_refused(lib: Library, tmp_path: Path) -> None:
+    make(tmp_path / "mine", "alpha")
+    (tmp_path / "link").symlink_to(tmp_path / "mine", target_is_directory=True)
+    with pytest.raises(LibraryError, match="link"):
+        lib.add_folder(str(tmp_path / "link"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_ids_do_not_follow_a_subfolder_swapped_for_a_link(lib: Library, tmp_path: Path) -> None:
+    mine = tmp_path / "mine"
+    make(mine, "alpha")
+    lib.add_folder(str(mine))
+    (entry,) = [e for e in lib.scan() if e.source == "folder"]
+    assert entry.id == f"folder:{mine.resolve() / 'alpha'}"

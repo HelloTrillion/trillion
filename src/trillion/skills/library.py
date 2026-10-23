@@ -65,6 +65,41 @@ def _has_skill_md(folder: Path) -> bool:
         return False
 
 
+def _is_folder(path: Path) -> bool:
+    """A folder we can see, and not a link to one. Never raises."""
+    try:
+        return path.is_dir() and not is_link(path)
+    except (OSError, ValueError):
+        return False
+
+
+def _same(a: Path, b: Path) -> bool:
+    """The same folder, whatever the case of its name on a disk that ignores case."""
+    if os.path.normcase(a) == os.path.normcase(b):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return False
+
+
+def _within(path: Path, folder: Path) -> bool:
+    return any(_same(p, folder) for p in (path, *path.parents))
+
+
+def _show(path: Path) -> str:
+    """A folder as the user knows it: their home folder as "~", which also keeps
+    their account name out of the prompt."""
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return str(path)
+    for h in (home, home.resolve()):
+        if path.is_relative_to(h):
+            return str(Path("~") / path.relative_to(h))
+    return str(path)
+
+
 def _subfolders(root: Path) -> list[Path]:
     """The direct subfolders of `root` that hold a SKILL.md, links never followed. A
     folder that can't be listed has none."""
@@ -117,26 +152,32 @@ class Library:
         }
 
     def _write(self, data: dict[str, Any]) -> None:
+        """Write the file whole, synced, and confirm it reads back as written."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".skills-", suffix=".json", dir=self._path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
                 f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
             os.chmod(tmp, 0o600)
             os.replace(tmp, self._path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
+        if json.loads(self._path.read_text(encoding="utf-8")) != data:
+            raise OSError("skills.json did not read back as written")
 
     # ── Finding skills ────────────────────────────────────────────────
 
     def folders(self) -> list[Folder]:
-        return [Folder(Path(f), Path(f).is_dir()) for f in self._read(strict=False)["folders"]]
+        return [Folder(Path(f), _is_folder(Path(f))) for f in self._read(strict=False)["folders"]]
 
     def _candidates(self) -> list[_Candidate]:
-        """Every skill folder, by id, without reading any of them."""
+        """Every skill folder, by id, without reading any of them. Ids are built from
+        the stored folder and the subfolder's name, never by following a link."""
         out: dict[str, _Candidate] = {}
         for sub in _subfolders(self._curated):
             out.setdefault(f"curated:{sub.name}", (f"curated:{sub.name}", "curated", sub, None))
@@ -145,37 +186,56 @@ class Library:
                 continue
             subs = [f.path] if _has_skill_md(f.path) else _subfolders(f.path)
             for sub in subs:
-                sid = f"folder:{sub.resolve()}"
-                out.setdefault(sid, (sid, "folder", sub.resolve(), f.path))
+                out.setdefault(f"folder:{sub}", (f"folder:{sub}", "folder", sub, f.path))
         return list(out.values())
 
     def _entry(
         self, sid: str, source: Source, folder: Path, root: Path | None, approved: str | None
     ) -> Entry:
-        found = parse(folder)
-        if isinstance(found, Invalid):
-            return Entry(
-                id=sid,
-                source=source,
-                folder=folder,
-                root=root,
-                skill=None,
-                reason=found.reason,
-                fingerprint="",
-                state="invalid",
-            )
-        mark = fingerprint(folder)
+        """Read one skill. The parse sits between two fingerprints, so what is read is
+        what the fingerprint covers: files changing meanwhile never count as on."""
+        for _ in range(2):
+            before = fingerprint(folder)
+            found = parse(folder)
+            if isinstance(found, Invalid):
+                return Entry(
+                    id=sid,
+                    source=source,
+                    folder=folder,
+                    root=root,
+                    skill=None,
+                    reason=found.reason,
+                    fingerprint="",
+                    state="invalid",
+                )
+            skill: Skill = found
+            mark = fingerprint(folder)
+            if mark == before:
+                break
+        else:
+            if approved is None:
+                return Entry(
+                    id=sid,
+                    source=source,
+                    folder=folder,
+                    root=root,
+                    skill=None,
+                    reason="its files are being changed; try again",
+                    fingerprint="",
+                    state="invalid",
+                )
+        stable = mark == before  # else it kept changing: never "on"
         state: State
         if approved is None:
             state = "off"
         else:
-            state = "on" if approved == mark else "changed"
+            state = "on" if stable and mark and approved == mark else "changed"
         return Entry(
             id=sid,
             source=source,
             folder=folder,
             root=root,
-            skill=found,
+            skill=skill,
             reason="",
             fingerprint=mark,
             state=state,
@@ -199,14 +259,16 @@ class Library:
         return sorted(on, key=lambda e: (e.name, e.id))
 
     def lookup(self, ref: str) -> Entry:
-        """A skill that is on, by id or by a name only one skill that is on has. A skill
-        whose files changed is returned with state "changed", for the caller to refuse."""
+        """A skill that is turned on, by id, or by a name only one skill that is on has.
+        When no skill that is on has the name, one whose files changed is returned with
+        state "changed", for the caller to refuse."""
         ref = ref.strip()
-        found = [
-            e
-            for e in self._turned_on()
-            if e.id == ref or (e.skill is not None and e.skill.name == ref)
-        ]
+        turned = self._turned_on()
+        for e in turned:
+            if e.id == ref:
+                return e
+        named = [e for e in turned if e.skill is not None and e.skill.name == ref]
+        found = [e for e in named if e.state == "on"] or named
         if not found:
             raise LibraryError(f"{ref!r} is not turned on, or there is no such skill")
         if len(found) > 1:
@@ -216,22 +278,26 @@ class Library:
             )
         return found[0]
 
-    def prompt_lines(self) -> list[tuple[str, str]]:
-        """(label, description) for each skill that is on. A name two skills share is
-        labelled with the folder each came from."""
-        on = self.enabled()
-        names = [e.name for e in on]
+    def prompt_lines(self, entries: list[Entry] | None = None) -> list[tuple[str, str]]:
+        """(label, description) for each skill that is on; `entries` is enabled() if the
+        caller already has it. A name two skills share is labelled with where each came
+        from: the user's folder, or the skill's own when that folder has both."""
+        on = self.enabled() if entries is None else entries
         out: list[tuple[str, str]] = []
         for e in on:
             label = e.name
-            if names.count(e.name) > 1 and e.root is not None:
-                label = f"{e.name} (from {e.root})"
+            same = [o for o in on if o.name == e.name]
+            if len(same) > 1 and e.root is not None:
+                shared = sum(1 for o in same if o.root == e.root) > 1
+                label = f"{e.name} (from {_show(e.folder if shared else e.root)})"
             out.append((label, e.skill.description if e.skill else ""))
         return out
 
     # ── Changing the user's choices ───────────────────────────────────
 
-    def turn_on(self, sid: str) -> Entry:
+    def turn_on(self, sid: str, expected: str | None = None) -> Entry:
+        """Record the skill's fingerprint. `expected` is the fingerprint the user was
+        shown: if the files changed since, they haven't seen what they'd approve."""
         data = self._read(strict=True)
         match = [c for c in self._candidates() if c[0] == sid]
         if not match:
@@ -241,6 +307,8 @@ class Library:
             raise LibraryError(f"that skill can't be used: {entry.reason}")
         if not entry.fingerprint:  # it grew too big between the parse and the hash
             raise LibraryError("that skill's files could not be read; try again")
+        if expected is not None and entry.fingerprint != expected:
+            raise LibraryError("that skill changed since this page showed it; look again")
         data["enabled"][sid] = entry.fingerprint
         self._write(data)
         return self._entry(*match[0], entry.fingerprint)
@@ -250,37 +318,57 @@ class Library:
         if data["enabled"].pop(sid, None) is not None:
             self._write(data)
 
+    @staticmethod
+    def _resolve(raw: str) -> Path:
+        try:
+            return Path(raw.strip()).expanduser().resolve()
+        except (OSError, ValueError, RuntimeError):
+            raise LibraryError("that is not a folder on this computer") from None
+
     def add_folder(self, raw: str) -> Path:
-        path = Path(raw.strip()).expanduser()
-        if not path.is_dir():
+        try:
+            given = Path(raw.strip()).expanduser()
+            linked = is_link(given)
+        except (OSError, ValueError, RuntimeError):
+            raise LibraryError("that is not a folder on this computer") from None
+        if linked:
+            raise LibraryError("that is a link; choose the folder it points to")
+        if not _is_folder(given):
             raise LibraryError("that is not a folder on this computer")
-        path = path.resolve()
+        path = self._resolve(raw)
         if path == Path(path.anchor):
             raise LibraryError("a whole drive is too much; choose the folder your skills are in")
-        # Inside Trillion's folder, or holding it (as a home folder does).
-        if path.is_relative_to(self._data) or self._data.is_relative_to(path):
+        # Inside Trillion's folder, or holding it (as a home folder does), in any case.
+        if _within(path, self._data) or _within(self._data, path):
             raise LibraryError("that holds Trillion's own files; choose another folder")
         data = self._read(strict=True)
-        if str(path) not in data["folders"]:
+        if not any(_same(Path(f), path) for f in data["folders"]):
             data["folders"].append(str(path))
             self._write(data)
         return path
 
     def remove_folder(self, raw: str) -> None:
+        """Forget a folder and its skills' choices, but not those of a folder the user
+        added inside it."""
+        path = self._resolve(raw)
         data = self._read(strict=True)
-        path = str(Path(raw.strip()).expanduser().resolve())
-        data["folders"] = [f for f in data["folders"] if f != path]
-        prefix = f"folder:{path}"
+        gone = [f for f in data["folders"] if _same(Path(f), path)]
+        kept = [f for f in data["folders"] if f not in gone]
+
+        def under(sid: str, folder: str) -> bool:
+            return sid == f"folder:{folder}" or sid.startswith(f"folder:{folder}{os.sep}")
+
+        data["folders"] = kept
         data["enabled"] = {
             k: v
             for k, v in data["enabled"].items()
-            if not (k == prefix or k.startswith(prefix + os.sep))
+            if not any(under(k, g) for g in gone) or any(under(k, f) for f in kept)
         }
         self._write(data)
 
-    def fact(self) -> str:
-        """For describe_self (BRN-6)."""
-        on = self.enabled()
+    def fact(self, entries: list[Entry] | None = None) -> str:
+        """For describe_self (BRN-6). `entries` is enabled() if the caller has it."""
+        on = self.enabled() if entries is None else entries
         if not on:
             return "none turned on"
         return (
