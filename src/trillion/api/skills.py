@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from trillion.api.runtime import Runtime
+from trillion.connectors.google.tools import TOOLS as GOOGLE_TOOLS
 from trillion.persona.prompt import skill_index
 from trillion.skills.library import Entry, Library, LibraryError
 
@@ -65,7 +66,10 @@ def create_skills_router(rt: Runtime) -> APIRouter:
 
     def state() -> dict[str, Any]:
         lib = library()
-        have = {d.name for d in rt.registry.definitions()}
+        # Google's tools count while Google is not connected: Trillion has them.
+        have = {d.name for d in rt.registry.definitions()} | {
+            t.name() for tools in GOOGLE_TOOLS.values() for t in tools
+        }
         entries = lib.scan()
         on = sorted((e for e in entries if e.state == "on"), key=lambda e: (e.name, e.id))
         _, unlisted = skill_index(lib.prompt_lines(entries=on))

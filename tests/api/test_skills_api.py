@@ -35,6 +35,17 @@ def test_it_needs_the_session_token(make: Any) -> None:
     assert app.client.patch(PATH, json={"id": "curated:x", "on": True}).status_code == 401
 
 
+def test_curated_skills_are_listed_off(make: Any) -> None:
+    app: App = make()
+    body = app.client.get(PATH, headers=app.auth).json()
+    curated = [s for s in body["skills"] if s["source"] == "curated"]
+    assert {s["name"] for s in curated} == {"email-replies", "meeting-prep", "weekly-review"}
+    assert {s["state"] for s in curated} == {"off"}
+    assert all(s["folder"] == "" and s["license"] == "Apache-2.0" for s in curated)
+    # Every tool they mention is Trillion's, Google's included before it is connected.
+    assert all(t["available"] for s in curated for t in s["tools"])
+
+
 def test_a_fresh_install_has_no_folders_and_nothing_on(make: Any) -> None:
     app: App = make()
     body = app.client.get(PATH, headers=app.auth).json()
