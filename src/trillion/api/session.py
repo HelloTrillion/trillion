@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from trillion import __version__
 from trillion.api import listening
+from trillion.api.draft import Draft, same_words
 from trillion.api.listening import FOLLOW_UP_S, Listener
 from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
@@ -32,8 +33,9 @@ from trillion.brain.loop import (
     ToolEnded,
     ToolStarted,
     run_turn,
+    tool_schemas,
 )
-from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock
+from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock, Usage
 from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
 from trillion.persona.prompt import (
@@ -109,6 +111,12 @@ class Session:
         # the message that first called for it, and is never repeated.
         self._brought: set[str] = set()
         self._listener: Listener | None = None
+        # Her first call, started while the user is probably finishing (VOI-12); then,
+        # once it is the turn's own, the one the turn replays. Whether one was started
+        # in this stretch of listening, for the trace.
+        self._draft: Draft | None = None
+        self._using: Draft | None = None
+        self._drafted = False
         self._watchdog: asyncio.Task[None] | None = None
         self._last_audio = 0.0
         # How the current turn was said. A spoken yes is recorded as spoken (SPN-14).
@@ -247,6 +255,11 @@ class Session:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        # The turn is over by now, so nothing is replaying either of these.
+        await self._drop_draft()
+        using, self._using = self._using, None
+        if using is not None:
+            await self._let_go(using)
 
     # ── Incoming messages ────────────────────────────────────────────────
 
@@ -268,6 +281,8 @@ class Session:
                 await self._stop_listening()
                 await self._send("mic.stop", reason="cancelled")
                 await self._state(self._rest)
+            # Never the one a turn replays: that stops with its turn, below.
+            await self._drop_draft()
             if task is not None:
                 # Its end comes to rest, which offers what is held and ends the quiet.
                 task.cancel()
@@ -393,9 +408,14 @@ class Session:
         else:
             self._spoken = None
             listener = Listener(
-                rt.stt, rt.listening.choice, on_partial=self._partial, patience_s=patience_s
+                rt.stt,
+                rt.listening.choice,
+                on_partial=self._partial,
+                patience_s=patience_s,
+                on_turn=self._turn_signal,
             )
             self._listener = listener
+            self._drafted = False
             self._last_audio = asyncio.get_running_loop().time()
             self._warm()
             await self._state("arming")
@@ -445,6 +465,8 @@ class Session:
             watchdog.cancel()
         if listener is not None:
             await listener.abandon()
+        # After the listener: it can no longer start another.
+        await self._drop_draft()
         return listener
 
     async def _listening_failed(self, kind: str) -> None:
@@ -502,10 +524,12 @@ class Session:
         if verdict == "inaudible":
             # Said out loud rather than failing silently (VOI-4).
             await listener.abandon()
+            await self._drop_draft()
             await self._hearing_down("inaudible")
             await self._state(self._rest)
         elif verdict == "nothing":
             await listener.abandon()
+            await self._drop_draft()
             await self._state(self._rest)
         else:
             await self._state("processing")
@@ -516,11 +540,17 @@ class Session:
             self._task = asyncio.create_task(self._heard(listener, trace))
 
     async def _heard(self, listener: Listener, trace: Trace) -> None:
-        """Collect the words, then answer them. Runs as the session's one task."""
+        """Collect the words, then answer them. Runs as the session's one task.
+
+        A draft that heard the same words, against the same history, becomes the turn's
+        first call (VOI-12). Any other is let go before the turn starts."""
         answer = False
+        draft: Draft | None = None
         try:
             said = await listener.end()
             text = said.text[:MAX_TEXT].strip()
+            # Taken only now: one can still start while the last words arrive.
+            draft, self._draft = self._draft, None
             if text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
@@ -528,7 +558,20 @@ class Session:
                 self._via = "voice"
                 self._turn += 1
                 self.active_ms = self._rt.clock()
-                await self._save_input("user", text)
+                if draft is not None and self._usable(draft, text):
+                    # The message it was given is the one saved, so the turn's history
+                    # is exactly what the draft sent.
+                    await self._commit_input("user", draft.built)
+                    self._using, draft = draft, None
+                    trace.draft = "used"
+                else:
+                    if draft is not None:
+                        # Let go before the turn's own call, so they never run together.
+                        await self._let_go(draft)
+                        draft = None
+                    if self._drafted:
+                        trace.draft = "dropped"
+                    await self._save_input("user", text)
                 answer = True
             else:
                 # Sound, but no words in it. Said, so the silence is not a mystery.
@@ -542,6 +585,12 @@ class Session:
         except Exception as e:
             logger.error("listening failed in session %s: %s", self.id, type(e).__name__)
             await self._error("internal")
+        finally:
+            # Not used: nobody will read it. A turn cancelled here leaves none behind.
+            if draft is not None:
+                await self._let_go(draft)
+            if not answer:
+                await self._drop_draft()
         if answer:
             await self._run()
         else:
@@ -593,12 +642,17 @@ class Session:
         try:
             while not self._closed:
                 if self._queued:
+                    if self._using is not None:
+                        # A tap's note joins the history: the draft never saw it.
+                        await self._unuse()
                     # What the taps did, in one message, for her to answer.
                     note, self._queued = "\n".join(self._queued), []
                     await self._save_input("tap", note)
                 if self._rt.provider is None:
                     break
-                await self._compact_if_long()
+                if self._using is None:
+                    # A draft was only started on a history that needed no summary.
+                    await self._compact_if_long()
                 await self._one_turn()
                 if not self._queued:
                     break
@@ -606,6 +660,9 @@ class Session:
             # Only its own: never a task that started after this one was let go.
             if self._task is asyncio.current_task():
                 self._task = None
+            if self._using is not None:
+                # Never reached its turn.
+                await self._unuse()
         await self._state(self._rest)
 
     async def _one_turn(self) -> None:
@@ -666,6 +723,8 @@ class Session:
                     await self._send_card(r.pending_id)
 
         final = "idle"
+        # The draft this turn replays as its first call, if it has one (VOI-12).
+        using, self._using = self._using, None
         try:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
@@ -679,6 +738,7 @@ class Session:
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
                 save=self._save_from_loop,
+                first=using.replay() if using is not None else None,
             )
             # The model failed: her one sentence for it, spoken if her voice still works
             # and shown either way (VOI-14). Authored, since there is nobody to compose it.
@@ -734,7 +794,101 @@ class Session:
             final = "error"
             await self._keep_trace(trace, "error", voiced=speaker is not None)
             await self._error("internal")
+        finally:
+            if using is not None:
+                # Already over unless the turn was cut short. Its usage is the turn's.
+                await using.cancel()
         self._rest = final
+
+    # ── Early thinking (VOI-12) ──────────────────────────────────────────
+
+    async def _turn_signal(self, kind: str, text: str) -> None:
+        """The recognizer thinks they have probably finished, or that they carried on.
+        A draft starts on the first and is let go on the second."""
+        if kind == "resumed":
+            await self._drop_draft()
+        elif kind == "maybe":
+            await self._drop_draft()
+            await self._start_draft(text)
+
+    async def _start_draft(self, words: str) -> None:
+        """Her first call for these words, sent exactly as the confirmed turn would
+        send it, and held. Nothing is saved, shown, said or run."""
+        rt = self._rt
+        provider = rt.provider
+        words = words[:MAX_TEXT].strip()
+        if (
+            self._closed
+            or not rt.think_early
+            or provider is None
+            or not words
+            or self._task is not None
+            or self._queued
+        ):
+            return
+        # A listener is only open on a spoken turn: the message is marked as spoken.
+        built = await self._build_input("user", words, via="voice")
+        history = [*self._history, built.msg]
+        # A history the turn would summarize first is not the history it would send.
+        if compact.estimate(history) > rt.compact_at:
+            return
+        # The same as `_one_turn` sends: its rules and skills, its history, its tools.
+        system = await asyncio.to_thread(rt.system)
+        self._draft = Draft.start(
+            provider=provider,
+            system=system,
+            messages=compact.with_summary(self._summary, history),
+            tools=tool_schemas(rt.registry),
+            words=words,
+            built=built,
+            history_len=len(self._history),
+            summary=self._summary,
+        )
+        self._drafted = True
+
+    def _usable(self, draft: Draft, text: str) -> bool:
+        """The draft heard these words and sent what this turn would send."""
+        return (
+            not draft.failed
+            and same_words(draft.words, text)
+            and draft.history_len == len(self._history)
+            and draft.summary is self._summary
+            and not self._queued
+        )
+
+    async def _drop_draft(self) -> None:
+        """Let go of a draft not yet any turn's. Safe when there is none."""
+        draft, self._draft = self._draft, None
+        if draft is not None:
+            await self._let_go(draft)
+
+    async def _unuse(self) -> None:
+        """A draft taken for a turn that will not replay it after all."""
+        using, self._using = self._using, None
+        if using is None:
+            return
+        if self._arrived is not None:
+            self._arrived.draft = "dropped"
+        await self._let_go(using)
+
+    async def _let_go(self, draft: Draft) -> None:
+        """Stop a draft nobody will replay, and count what it cost. A provider reports
+        usage at the end of a call, so one stopped before then counts as nothing."""
+        await draft.cancel()
+        provider = self._rt.provider
+        usage = draft.usage()
+        if provider is None or usage == Usage():
+            return
+        pricing = provider.pricing()
+        await self._rt.conversations.record_usage(
+            owner_id=OWNER,
+            conversation_id=self.id,
+            provider=provider.name,
+            model=provider.model,
+            usage=usage,
+            cost_usd=pricing.cost(usage) if pricing is not None else None,
+            now_ms=self._rt.clock(),
+        )
 
     # ── Timing (ONB-11) ──────────────────────────────────────────────────
 
@@ -867,13 +1021,17 @@ class Session:
         del self._history[:cut], self._kinds[:cut], self._ids[:cut]
         await self._send("notice", code="compacted")
 
-    async def _build_input(self, kind: Kind, text: str) -> BuiltInput:
+    async def _build_input(
+        self, kind: Kind, text: str, *, via: Literal["voice", "text"] | None = None
+    ) -> BuiltInput:
         """The message a user input is saved as, built but not saved. A draft (VOI-12)
-        uses this, so a used draft saves exactly what it was given."""
+        uses this, so a used draft saves exactly what it was given. `via` is how it was
+        said, when that is not yet the session's."""
+        via = via or self._via
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
-        spoken = kind == "user" and self._via == "voice"
+        spoken = kind == "user" and via == "voice"
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
         recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())

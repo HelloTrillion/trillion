@@ -8,6 +8,7 @@ which does all of that as usual, and a dropped one is simply let go.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
@@ -23,6 +24,8 @@ from trillion.brain.types import (
     ToolSchema,
     Usage,
 )
+
+logger = logging.getLogger(__name__)
 
 _NOT_WORDS = re.compile(r"[^\w\s]")
 
@@ -97,7 +100,9 @@ class Draft:
                 self._more.set()
         except Exception as e:
             # Kept, not raised: nobody awaits a draft until a turn replays it, and the
-            # replay fails the same way a live call would.
+            # replay fails the same way a live call would. Its kind only: a provider's
+            # message can quote what was said.
+            logger.warning("draft failed: %s", getattr(e, "kind", type(e).__name__))
             self.failed = True
             self._error = e
 

@@ -290,7 +290,8 @@ class SqliteConversationStore:
         )
 
 
-# What a turn's timing row holds, beside its owner, conversation and time (migration 007).
+# What a turn's timing row holds, beside its owner, conversation and time (migrations
+# 007 and 009).
 TIMING_FIELDS = (
     "turn",
     "via",
@@ -309,6 +310,7 @@ TIMING_FIELDS = (
     "played_ms",
     "saved_ms",
     "calls_json",
+    "draft",
 )
 
 
