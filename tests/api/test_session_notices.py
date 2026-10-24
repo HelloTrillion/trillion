@@ -16,7 +16,7 @@ from tests.scheduler.conftest import FakeClock, ms, schedule
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, local_zone, open_runtime
 from trillion.api.session import OUT_OF_TURN, Session
-from trillion.brain.types import ContextBlock, TextBlock
+from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.delivery.door import Delivery, NotFree, free
 from trillion.persona import setup
 from trillion.scheduler.store import Notice, NoticeKind
@@ -410,4 +410,61 @@ async def test_a_sentence_about_a_leg_that_is_down_is_heard_under_its_own_number
     (said,) = page.all("reply.sentence")
     assert said["turn"] > OUT_OF_TURN
     assert session.facts().spoken_turn == said["turn"]
+    await session.close()
+
+
+async def test_a_failed_save_takes_out_only_its_own_messages(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    typed = Msg(role="user", blocks=(TextBlock(text="typed meanwhile"),))
+
+    async def broken(*a: Any, **k: Any) -> list[int]:
+        # A message of the user's is saved while the notices' write is under way.
+        await session._save("user", typed)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rt.conversations, "append_many", broken)
+    await notice(rt)
+    assert session._history == [typed] and session._kinds == ["user"]
+    assert page.all("notice") == []
+    await session.close()
+
+
+async def test_notice_speech_says_so_in_its_state_and_a_turns_does_not(rt: Runtime) -> None:
+    voiced(rt)
+    rt.provider = Gated(say("Hello there."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "hi"})
+    await idle(session)
+    await session.handle({"type": "playback.ended", "turn_id": 1})
+    await notice(rt, text="Stretch.")
+    await idle(session)
+    speaking = [m for m in page.all("state") if m["orb"] == "speaking"]
+    assert [m.get("notice", False) for m in speaking] == [False, True]
+    await session.close()
+
+
+async def test_after_stop_over_a_notice_the_next_held_one_is_shown_not_spoken(
+    rt: Runtime,
+) -> None:
+    rt.tts, rt.speech = FakeVoice(slow=True), SpeechSettings(kind="elevenlabs", voice="v1")
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await notice(rt, text="One.")
+    assert session._notice_task is not None  # she is saying it
+    await notice(rt, text="Two.")  # held: she is speaking
+    assert len(page.all("notice")) == 1
+    rt.tts = FakeVoice()
+    await session.handle({"type": "interrupt"})  # Stop
+    await idle(session)
+    assert [m["text"] for m in page.all("notice")] == ["One.", "Two."]
+    assert [m["text"] for m in page.all("reply.sentence")] == ["One."]
+    assert session._task is None
+    # Only what came straight after the Stop: a later one is spoken as usual.
+    await notice(rt, text="Three.")
+    await idle(session)
+    assert [m["text"] for m in page.all("reply.sentence")] == ["One.", "Three."]
     await session.close()

@@ -7,6 +7,9 @@ export type Orb = 'idle' | 'arming' | 'listening' | 'processing' | 'speaking' | 
 
 export type CardStatus = 'waiting' | 'working' | 'done' | 'declined' | 'failed' | 'unknown' | 'closed';
 
+/** What a reminder or timed ask left: her words, or a missed or failed one with none. */
+export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed';
+
 export type Entry =
   | { readonly kind: 'user'; readonly text: string }
   | { readonly kind: 'assistant'; readonly text: string; readonly interrupted: boolean }
@@ -20,7 +23,17 @@ export type Entry =
       readonly status: CardStatus;
       readonly note: string;
     }
-  | { readonly kind: 'notice'; readonly text: string };
+  | { readonly kind: 'notice'; readonly text: string }
+  | {
+      readonly kind: 'scheduled';
+      readonly id: string;
+      readonly what: NoticeKind;
+      readonly title: string;
+      /** Her words. Null for missed and failed: those are shown, never spoken. */
+      readonly text: string | null;
+      readonly dueMs: number;
+      readonly late: boolean;
+    };
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
 
@@ -52,10 +65,18 @@ export interface View {
   readonly hearing: string;
   readonly grantedRoots: readonly string[];
   readonly orb: Orb;
+  /** Her "speaking" is a notice's: the user may still send, and she gives way. */
+  readonly noticeSpeaking: boolean;
   readonly busy: boolean;
   /** True while a reply is streaming: the next piece of text belongs to it. */
   readonly replyOpen: boolean;
   readonly entries: readonly Entry[];
+  /** Notices that arrived during a reply. They join the conversation when it ends (VOI-17). */
+  readonly held: readonly Entry[];
+  /** A typed message sent and not yet taken up: put back if the core says it is busy. */
+  readonly pending: string | null;
+  /** Text for the message box, once: a refused message, never lost. The page clears it. */
+  readonly draft: string | null;
   readonly banner: string | null;
 }
 
@@ -70,9 +91,13 @@ export const INITIAL: View = {
   hearing: '',
   grantedRoots: [],
   orb: 'idle',
+  noticeSpeaking: false,
   busy: false,
   replyOpen: false,
   entries: [],
+  held: [],
+  pending: null,
+  draft: null,
   banner: null,
 };
 
@@ -156,6 +181,47 @@ function speechOf(raw: unknown): Speech | null {
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 
+const NOTICE_KINDS: readonly NoticeKind[] = ['reminder', 'ask', 'missed', 'failed'];
+
+function scheduledOf(msg: ServerMsg): Entry | null {
+  const what = NOTICE_KINDS.find((k) => k === msg['kind']);
+  const id = str(msg['id']);
+  if (!what || !id) return null;
+  // Only she writes words; a missed or failed one never carries any (D7).
+  const words = what === 'reminder' || what === 'ask' ? str(msg['text']) : '';
+  return {
+    kind: 'scheduled',
+    id,
+    what,
+    title: str(msg['title']),
+    text: words || null,
+    dueMs: typeof msg['due_ms'] === 'number' ? msg['due_ms'] : 0,
+    late: msg['late'] === true,
+  };
+}
+
+/** A reply is over: what waited for it joins the conversation, in order. */
+function release(view: View): View {
+  return view.held.length ? { ...view, entries: [...view.entries, ...view.held], held: [] } : view;
+}
+
+/** Busy means she is making a reply. Saying a notice is not: the user may cut in. */
+export function busyOf(orb: Orb, notice: boolean): boolean {
+  return orb === 'processing' || (orb === 'speaking' && !notice);
+}
+
+/** "due 4:00 pm", in this browser's time unless a zone is given. */
+export function dueLabel(ms: number, timeZone?: string): string {
+  const time = new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...(timeZone ? { timeZone } : {}) });
+  return `due ${time.replace(/[\u00a0\u202f]/g, ' ').toLowerCase()}`;
+}
+
+/** The quiet line for a reminder or timed ask that has no words of hers. */
+export function quietLine(e: { readonly what: NoticeKind; readonly title: string; readonly dueMs: number }, timeZone?: string): string {
+  const due = dueLabel(e.dueMs, timeZone);
+  return e.what === 'missed' ? `Missed: ${e.title} (${due})` : `Didn't finish: ${e.title} (${due})`;
+}
+
 function replaceLast(entries: readonly Entry[], match: (e: Entry) => boolean, next: (e: Entry) => Entry): Entry[] {
   const out = entries.slice();
   for (let i = out.length - 1; i >= 0; i--) {
@@ -207,10 +273,25 @@ export function toolLabel(name: string, outcome: string | null, ok: boolean): st
 
 /** A user message the page is about to send: shown at once, before the core echoes anything. */
 export function sent(view: View, text: string): View {
-  return { ...view, busy: true, replyOpen: false, banner: null, entries: [...view.entries, { kind: 'user', text }] };
+  return { ...view, busy: true, replyOpen: false, banner: null, pending: text, draft: null, entries: [...view.entries, { kind: 'user', text }] };
+}
+
+/** Drop the last user entry with this text: the one `sent` added. */
+function unsent(entries: readonly Entry[], text: string): Entry[] {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind === 'user' && e.text === text) return [...entries.slice(0, i), ...entries.slice(i + 1)];
+  }
+  return entries.slice();
 }
 
 export function reduce(view: View, msg: ServerMsg): View {
+  const next = step(view, msg);
+  // Whatever waited for a reply joins the conversation once none is under way.
+  return next.held.length && !next.busy && !next.replyOpen ? release(next) : next;
+}
+
+function step(view: View, msg: ServerMsg): View {
   switch (msg.type) {
     case 'session': {
       const model = msg['model'] as { provider?: unknown; model?: unknown } | null;
@@ -226,6 +307,9 @@ export function reduce(view: View, msg: ServerMsg): View {
         hearing: '',
         grantedRoots: Array.isArray(msg['granted_roots']) ? msg['granted_roots'].map((r) => String(r)) : [],
         busy: false,
+        noticeSpeaking: false,
+        held: [],
+        pending: null,
         banner: null,
       };
     }
@@ -249,7 +333,7 @@ export function reduce(view: View, msg: ServerMsg): View {
       return view.mic ? { ...view, hearing: str(msg['text']) } : view;
     case 'transcript.final':
       // What she heard is the user's message, shown exactly as she received it.
-      return { ...sent(view, str(msg['text'])), hearing: '' };
+      return { ...sent(view, str(msg['text'])), hearing: '', pending: null };
     case 'history': {
       const rows = Array.isArray(msg['messages']) ? (msg['messages'] as Record<string, unknown>[]) : [];
       const entries: Entry[] = rows.map((r) =>
@@ -261,7 +345,12 @@ export function reduce(view: View, msg: ServerMsg): View {
     }
     case 'state': {
       const orb = ORBS.find((o) => o === msg['orb']) ?? view.orb;
-      return { ...view, orb, busy: orb === 'processing' || orb === 'speaking' };
+      const noticeSpeaking = orb === 'speaking' && msg['notice'] === true;
+      const next = { ...view, orb, noticeSpeaking, busy: busyOf(orb, noticeSpeaking) };
+      // Her turn has started: the message was taken up.
+      if (orb === 'processing') return { ...next, pending: null };
+      // At rest, nothing is under way: whatever waited may come.
+      return orb === 'idle' || orb === 'error' ? release(next) : next;
     }
     case 'reply.delta': {
       const text = str(msg['text']);
@@ -269,10 +358,10 @@ export function reduce(view: View, msg: ServerMsg): View {
       if (view.replyOpen && last?.kind === 'assistant') {
         return { ...view, entries: [...view.entries.slice(0, -1), { ...last, text: last.text + text }] };
       }
-      return { ...view, replyOpen: true, entries: [...view.entries, { kind: 'assistant', text, interrupted: false }] };
+      return { ...view, replyOpen: true, pending: null, entries: [...view.entries, { kind: 'assistant', text, interrupted: false }] };
     }
     case 'turn.complete':
-      return { ...view, replyOpen: false, busy: false, hearing: '' };
+      return release({ ...view, replyOpen: false, busy: false, hearing: '', pending: null });
     case 'tool.start':
       return {
         ...view,
@@ -322,18 +411,27 @@ export function reduce(view: View, msg: ServerMsg): View {
       };
     }
     case 'interrupted':
-      return {
+      return release({
         ...view,
         replyOpen: false,
         busy: false,
         hearing: '',
+        pending: null,
         entries: replaceLast(
           view.entries,
           (e) => e.kind === 'assistant',
           (e) => ({ ...e, interrupted: true }) as Entry,
         ),
-      };
+      });
     case 'notice': {
+      if (msg['code'] === 'schedule') {
+        const entry = scheduledOf(msg);
+        const seen = (e: Entry): boolean => e.kind === 'scheduled' && entry?.kind === 'scheduled' && e.id === entry.id;
+        if (!entry || view.entries.some(seen) || view.held.some(seen)) return view;
+        // Nothing lands inside a reply that is still under way (VOI-17): it waits for the end.
+        const during = view.replyOpen || view.busy;
+        return during ? { ...view, held: [...view.held, entry] } : { ...view, entries: [...view.entries, entry] };
+      }
       // A long conversation was summarized for her. Nothing on screen goes away.
       const text =
         msg['code'] === 'compacted'
@@ -356,6 +454,17 @@ export function reduce(view: View, msg: ServerMsg): View {
         // Her voice failed; the reply itself carries on as text (VOI-14).
         const why = PROVIDER_ERRORS[str(msg['kind'])]?.replace('The model provider', 'The voice provider');
         return { ...view, banner: sentence || `${why ?? 'The voice provider failed.'} She is answering in text.` };
+      }
+      if (code === 'busy' && view.pending !== null) {
+        // The message was refused, not taken: back in the box, and off the screen.
+        return {
+          ...view,
+          entries: unsent(view.entries, view.pending),
+          draft: view.pending,
+          pending: null,
+          busy: busyOf(view.orb, view.noticeSpeaking),
+          banner: ERRORS['busy'] ?? null,
+        };
       }
       const text =
         code === 'provider'

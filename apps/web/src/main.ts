@@ -42,6 +42,7 @@ import {
   savedTheme,
   shownTheme,
 } from './prefs';
+import { createReminders } from './reminders';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
@@ -53,8 +54,10 @@ import {
   STATE_TEXT,
   type ServerMsg,
   type View,
+  dueLabel,
   expire,
   micFailed,
+  quietLine,
   reduce,
   sent,
   toolLabel,
@@ -337,6 +340,15 @@ function renderEntry(e: Entry): HTMLElement {
     }
     case 'notice':
       return el('p', 'notice', e.text);
+    case 'scheduled': {
+      // A missed or failed one has no words of hers: a quiet line, never her speech.
+      if (e.text === null) return el('p', 'notice scheduled-quiet', quietLine(e));
+      const box = el('div', 'msg assistant');
+      box.append(...formatted(e.text));
+      // Late: when it was due, so "now" in her words is not taken for now.
+      if (e.late) box.append(el('span', 'mark', dueLabel(e.dueMs)));
+      return box;
+    }
     case 'card': {
       const example = e.pendingId === EXAMPLE_CARD;
       const card = el('section', `card ${e.status}`);
@@ -423,7 +435,13 @@ function render(): void {
 
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
-  statusEl.textContent = ready ? STATE_TEXT[view.orb] : view.link === 'connecting' ? 'Connecting' : 'Offline';
+  statusEl.textContent = ready
+    ? view.noticeSpeaking
+      ? 'Speaking'
+      : STATE_TEXT[view.orb]
+    : view.link === 'connecting'
+      ? 'Connecting'
+      : 'Offline';
   newBtn.hidden = !ready || view.entries.length === 0;
   const introducing = ready && active(ob);
   settingsBtn.hidden = !ready || introducing;
@@ -548,6 +566,7 @@ const appearance = createAppearance(
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
 const connected = createConnected(panel.host('connected'), api, () => panel.refresh());
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
+const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
@@ -569,6 +588,7 @@ panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'mic
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
+panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
@@ -777,6 +797,7 @@ function connect(): void {
       bargeHeld = null;
     }
     apply(reduce(view, msg));
+    if (view.draft !== null) takeDraft(view.draft);
     if (msg.type === 'session' || msg.type === 'turn.complete') void refreshUsage();
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
     if (msg.type === 'session') {
@@ -819,6 +840,16 @@ function connect(): void {
 }
 
 // ── Input ────────────────────────────────────────────────────────────────
+
+/** A message the core refused as busy goes back in the box, unless something new is there. */
+function takeDraft(text: string): void {
+  if (!input.value.trim()) {
+    input.value = text;
+    input.dispatchEvent(new Event('input'));
+  }
+  apply({ ...view, draft: null });
+  input.focus();
+}
 
 function submit(): void {
   const text = input.value.trim();

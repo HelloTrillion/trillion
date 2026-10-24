@@ -91,6 +91,8 @@ class Session:
         self._closed = False
         self._greeted = False
         self._orb = ""
+        # Whether the orb's "speaking" is a notice's: the page stays free to send then.
+        self._orb_notice = False
         # The orb's state between turns: idle, or error after a failure.
         self._rest = "idle"
         # Memories already brought along in this conversation: each rides once, with
@@ -123,6 +125,9 @@ class Session:
         self._started = False
         # The last turn whose number speech went out under.
         self._voiced: int | None = None
+        # The user just pressed Stop: notices that arrive straight after it are shown,
+        # not spoken. Cleared at the first rest after it (VOI-9).
+        self._stopped = False
         # When the user last did something here. The live page is the latest (SUR-9).
         self.active_ms = rt.clock()
 
@@ -236,8 +241,10 @@ class Session:
         if kind == "turn.text":
             await self._on_text(msg.get("text"))
         elif kind == "interrupt":
-            # Before anything that awaits: a notice that arrives meanwhile is not stopped.
+            # Before anything that awaits: a notice that arrives meanwhile is not stopped,
+            # and is not spoken either: they asked for quiet.
             task = self._task
+            self._stopped = True
             # Stopped: the page drops what it was playing and never reports it played.
             self._spoken = None
             if self._listener is not None:
@@ -246,10 +253,12 @@ class Session:
                 await self._send("mic.stop", reason="cancelled")
                 await self._state(self._rest)
             if task is not None:
+                # Its end comes to rest, which offers what is held and ends the quiet.
                 task.cancel()
             else:
                 # Nothing to stop, but what was held for the speech just dropped may come.
                 await self._offer()
+                self._stopped = False
         elif kind == "listen.start":
             await self._on_listen(NOTHING_AFTER_S)
         elif kind == "barge":
@@ -902,13 +911,16 @@ class Session:
             tap_only=a.risk is Risk.SPEND or not a.recoverable,
         )
 
-    async def _state(self, orb: str) -> None:
-        if orb != self._orb:
-            self._orb = orb
-            await self._send("state", orb=orb)
+    async def _state(self, orb: str, *, notice: bool = False) -> None:
+        if orb != self._orb or notice != self._orb_notice:
+            self._orb, self._orb_notice = orb, notice
+            # A notice's speech says so: the page may send over it, and it gives way.
+            await self._send("state", orb=orb, **({"notice": True} if notice else {}))
         if orb in ("idle", "error"):
-            # At rest: anything held for this page may arrive now.
+            # At rest: anything held for this page may arrive now. What arrives at the
+            # first rest after a Stop is shown, not spoken; after that, as usual.
             await self._offer()
+            self._stopped = False
 
     # ── Notices (SUR-9, VOI-17) ──────────────────────────────────────────
 
@@ -994,21 +1006,24 @@ class Session:
                 late=n.late,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
-            if self._task is None and not self._closed:
+            if self._task is None and not self._closed and not self._stopped:
                 self._task = self._notice_task = asyncio.create_task(self._say_notices(said))
 
     async def _save_all(self, kind: Kind, msgs: Sequence[Msg]) -> None:
         """Like `_save`, for several at once: in the history before the write, so a turn
-        that starts meanwhile has them, and taken out again if the write fails."""
-        n = len(msgs)
+        that starts meanwhile has them, and taken out again if the write fails. Only
+        these: a message saved meanwhile stays, wherever they now are."""
         self._history.extend(msgs)
-        self._kinds.extend([kind] * n)
+        self._kinds.extend([kind] * len(msgs))
         try:
             ids = await self._rt.conversations.append_many(
                 self.id, OWNER, kind, msgs, self._rt.clock()
             )
         except BaseException:
-            del self._history[-n:], self._kinds[-n:]
+            mine = {id(m) for m in msgs}
+            kept = [i for i, m in enumerate(self._history) if id(m) not in mine]
+            self._history[:] = [self._history[i] for i in kept]
+            self._kinds[:] = [self._kinds[i] for i in kept]
             raise
         self._ids.extend(ids)
 
@@ -1024,7 +1039,7 @@ class Session:
         self._via = "text"
         speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
         try:
-            await self._state("speaking")
+            await self._state("speaking", notice=True)
             for text in said:
                 await speaker.feed(text)
                 await speaker.pause()
