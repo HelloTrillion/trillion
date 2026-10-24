@@ -17,6 +17,8 @@ interface Option {
   readonly note: string;
   readonly needs_key: boolean;
   readonly free: boolean;
+  /** The recognizer itself judges when a turn is over. */
+  readonly turns: boolean;
   readonly key_link: string | null;
   readonly install_hint: string | null;
   readonly key: { readonly saved: boolean; readonly ends: string } | null;
@@ -27,6 +29,7 @@ interface State {
   readonly saved: { readonly kind: string; readonly choice: string } | null;
   /** The choice made before listening was switched off, offered again when it comes back on. */
   readonly last?: { readonly kind: string; readonly choice: string } | null;
+  readonly think_early: boolean;
   readonly keychain: boolean;
 }
 
@@ -106,6 +109,18 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   fetchBtn.type = 'button';
   pickRow.append(pickLabel, pick, check, fetchBtn);
 
+  // Only offered when the recognizer judges turns, since only then does she know to start early.
+  const earlyRow = el('label', 'settings-check');
+  const early = el('input');
+  early.type = 'checkbox';
+  early.id = 'listening-early';
+  const earlyWords = el('span');
+  earlyWords.append(
+    el('strong', '', 'Start thinking before I finish'),
+    el('small', '', 'Faster replies. Some drafts are thrown away, which uses more of your model.'),
+  );
+  earlyRow.append(early, earlyWords);
+
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -115,7 +130,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   const close = el('button', '', 'Close');
   close.type = 'button';
   actions.append(save, close);
-  form.append(title, intro, choices, keyRow, pickRow, status, ...(microphones ? [microphones.element] : []), actions);
+  form.append(title, intro, choices, keyRow, pickRow, earlyRow, status, ...(microphones ? [microphones.element] : []), actions);
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
@@ -146,6 +161,8 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     }
     keyRow.hidden = !o?.needs_key;
     pickRow.hidden = !o;
+    earlyRow.hidden = !o?.turns;
+    early.checked = state?.think_early ?? true;
     keyInput.disabled = busy || !state?.keychain;
     keyInput.placeholder = o?.key ? 'Leave empty to keep the saved key' : 'Paste your key';
     keyHint.textContent = !state?.keychain
@@ -235,6 +252,13 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     }
   }
 
+  early.addEventListener('change', () =>
+    void run(async () => {
+      const r = await api('PUT', '/api/settings/listening/think-early', { on: early.checked });
+      if (r.ok) state = (await r.json()) as State;
+      else early.checked = !early.checked;
+    }),
+  );
   pick.addEventListener('change', refresh);
   check.addEventListener('click', () => void run(list));
   fetchBtn.addEventListener('click', () =>
