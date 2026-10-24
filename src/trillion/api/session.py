@@ -200,6 +200,10 @@ class Session:
         # and which words it was learned from already.
         self._echo = EchoShare()
         self._learned: set[tuple[str, float]] = set()
+        self._aligned: set[tuple[str, float]] = set()
+        # The sentence of the timeline's reply last reported playing, and when (the
+        # loop's clock): a watch opened mid-reply places it from that.
+        self._reported: tuple[int, float] | None = None
         # The user's spoken words are being collected and saved: a cut-in waits, or
         # cancelling her turn would lose them.
         self._collecting = False
@@ -629,7 +633,6 @@ class Session:
                         # Ended by the recognizer, even on a word that leads on.
                         done=done or listener.turn_done,
                         elapsed_s=elapsed,
-                        playing=(),
                     )
                 else:
                     decision = decide(
@@ -709,13 +712,18 @@ class Session:
         # Her playback, with its margins, is not the room.
         busy = [(a - LEAD_S, b + TAIL_S) for a, b in timeline.spans()]
         room = listener.room_level(busy=busy)
+        # How far from where she was placed her words are heard: measured, for the logs.
+        fresh = [w for w in words if (w.text, round(w.start_s, 1)) not in self._aligned]
+        for w in fresh:
+            self._aligned.add((w.text, round(w.start_s, 1)))
+            timeline.align(w)
         out: list[bool] = []
         for w in words:
             self._learn(listener, timeline, w)
             who = whose(
                 w,
                 timeline,
-                listener.mic_level,
+                listener.word_level,
                 share=self._echo.value,
                 room=room,
                 learned=self._echo.learned,
@@ -725,23 +733,23 @@ class Session:
 
     def _learn(self, listener: Listener, timeline: Timeline, word: Word) -> None:
         """Learn her echo's share from a word of hers, once per word."""
-        key = (word.text, round(word.start_s, 2))
+        key = (word.text, round(word.start_s, 1))
         if key in self._learned or not matched(word, timeline):
             return
         self._learned.add(key)
         self._echo.learn(
-            mic_level=listener.mic_level(word.start_s, word.end_s),
+            mic_level=listener.word_level(word.start_s, word.end_s),
             her_level=timeline.her_level(word.start_s, word.end_s),
         )
 
-    def _judge(self, ov: Overlap) -> Judge:
-        """For the listener heard over her: keep only their words, from where it was
-        last let go."""
-        listener, timeline, past = ov.listener, ov.timeline, ov.past_s
+    def _judge_on(
+        self, listener: Listener, timeline: Timeline | None, past_s: float = 0.0
+    ) -> Judge:
+        """For a listener that heard her: keep only their words, from `past_s` on."""
 
         def keep(words: Sequence[Word]) -> list[bool]:
             theirs = self._theirs(listener, timeline, words)
-            return [t and w.start_s >= past for w, t in zip(words, theirs, strict=True)]
+            return [t and w.start_s >= past_s for w, t in zip(words, theirs, strict=True)]
 
         return keep
 
@@ -750,14 +758,31 @@ class Session:
         ov.past_s = max([ov.past_s, *(w.end_s for w in ov.listener.heard_words())])
 
     def _stopped_her(self) -> None:
-        """She is being stopped: sentences of hers not reported played were never heard."""
+        """She is being stopped: sentences of hers not reported played were never heard,
+        but the one under way now was."""
         if self._timeline is not None:
-            self._timeline.stop()
+            self._timeline.stop(at_s=self._clock_now())
+
+    def _clock_now(self) -> float | None:
+        """The recognizer's clock now, if a listener that watched her is still open."""
+        clock = self._clock
+        return clock.sent_s if clock is not None and clock.open else None
 
     def _new_timeline(self) -> Timeline:
+        last = self._timeline
+        if last is not None and (offset := last.offset_s()) is not None:
+            # Numbers only: how far her reports were off the recognizer's clock.
+            logger.info(
+                "her playback in session %s was heard %+.2fs from its reports (%d words)",
+                self.id,
+                offset,
+                len(last.offsets),
+            )
         timeline = Timeline()
         self._timeline, self._timeline_turn = timeline, None
         self._learned.clear()
+        self._aligned.clear()
+        self._reported = None
         return timeline
 
     def _reply_timeline(self) -> Timeline:
@@ -797,7 +822,9 @@ class Session:
         if not ov.watching:
             return
         ov.watching = False
-        ov.listener.hear(patience_s=patience_s, judge=self._judge(ov))
+        ov.listener.hear(
+            patience_s=patience_s, judge=self._judge_on(ov.listener, ov.timeline, ov.past_s)
+        )
 
     def _her_heard(self) -> None:
         """A sentence of hers started playing: a watch goes on."""
@@ -839,14 +866,17 @@ class Session:
 
         # Nothing heard is shown, and no draft starts from it.
         listener = Listener(rt.stt, rt.listening.choice, on_partial=heard, watch=True)
+        now = self._now()
         # Her reply on this listener's clock: the one playing, or, before her voice
         # starts, the one coming.
         timeline = self._timeline
         if timeline is None or (running and self._speaker is None):
             timeline = self._new_timeline()
-        timeline.begin(at_s=listener.sent_s)
+        # Opened mid-reply: the sentence last reported playing started that long ago.
+        reported = self._reported
+        playing = (reported[0], now - reported[1]) if reported is not None else None
+        timeline.begin(at_s=listener.sent_s, playing=playing)
         self._clock = listener
-        now = self._now()
         ov = Overlap(
             listener=listener,
             started=now,
@@ -1034,6 +1064,10 @@ class Session:
                 patience_s=patience_s,
                 on_turn=self._turn_signal,
             )
+            if follow_up and self._timeline is not None and self._timeline.sentences:
+                # No watch placed her on this clock: her last sentence is taken to end
+                # as it opens, so her echo still in the air is hers.
+                listener.judge_by(self._judge_on(listener, self._timeline.ending_at(0.0)))
             self._listener = listener
             self._drafted = False
             self._last_audio = asyncio.get_running_loop().time()
@@ -1334,7 +1368,8 @@ class Session:
             self._timeline_turn = heard_as
 
             def on_audio(seq: int, written: str, spoken: str, levels: list[float]) -> None:
-                tl.sentence(seq, written=written, spoken=spoken, levels=levels)
+                at = self._clock_now()
+                tl.sentence(seq, written=written, spoken=spoken, levels=levels, at_s=at)
 
             speaker = Speaker(
                 rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes, on_audio
@@ -1491,7 +1526,7 @@ class Session:
             )
         except asyncio.CancelledError:
             if timeline is not None:
-                timeline.stop()
+                timeline.stop(at_s=self._clock_now())
             if speaker is not None:
                 await speaker.stop()
                 # Stopped: nothing of it is still to be heard.
@@ -1505,6 +1540,9 @@ class Session:
         except Exception as e:
             # The class name only: an exception message can carry conversation text.
             logger.error("turn failed in session %s: %s", self.id, type(e).__name__)
+            if timeline is not None:
+                # Nothing more of hers is coming.
+                timeline.stop(at_s=self._clock_now())
             final = "error"
             await self._keep_trace(trace, "error", voiced=speaker is not None)
             await self._error("internal")
@@ -1725,10 +1763,11 @@ class Session:
         # Where it starts on the recognizer's clock: the audio the watching listener has
         # sent by now, as the page sends its reports and its microphone in order. With
         # no listener watching there is no clock to place it on.
-        timeline, clock = self._timeline, self._clock
-        if timeline is not None and clock is not None and clock.open:
-            if self._timeline_turn == turn_id:
-                timeline.start(seq, at_s=clock.sent_s)
+        timeline, now = self._timeline, self._clock_now()
+        if timeline is not None and self._timeline_turn == turn_id:
+            self._reported = (seq, self._now())
+            if now is not None:
+                timeline.start(seq, at_s=now)
 
     async def _audible(self, turn_id: object, in_ms: object) -> None:
         """The page scheduled the first sound of a turn's reply, to be heard this far ahead."""

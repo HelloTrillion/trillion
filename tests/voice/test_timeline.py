@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trillion.voice.timeline import FINAL_CAP_S, LEAD_S, TAIL_S, WINDOW_S, Timeline
+from trillion.voice.types import Word
 
 
 def _tl() -> Timeline:
@@ -164,3 +165,65 @@ def test_a_new_watch_forgets_starts_on_the_old_clock() -> None:
     assert tl.spans() == [(0.0, 1.0), (1.0, 2.0)]
     tl.start(2, at_s=1.5)
     assert tl.spans() == [(0.0, 1.0), (1.5, 2.5)]
+
+
+def test_a_sentence_not_reported_cannot_start_before_its_audio_was_sent() -> None:
+    """Review I1: a watch opened while she thinks; her audio comes three seconds later.
+    The user's words in between are not placed inside her sentence."""
+    tl = Timeline()
+    tl.begin(at_s=0.0)
+    tl.sentence(
+        1,
+        written="Sure, I can do that.",
+        spoken="Sure, I can do that.",
+        levels=[0.1] * 50,
+        at_s=3.0,
+    )
+    assert tl.spans() == [(3.0, 4.0)]
+    assert _seq(tl, 2.0) is None and _seq(tl, 3.5) == 1
+
+
+def test_stopped_her_sentence_ends_where_she_was_stopped() -> None:
+    """Review I2: what she never got to say has no span."""
+    tl = Timeline()
+    tl.sentence(1, written="Should I send it?", spoken="Should I send it?", levels=[0.1] * 300)
+    tl.start(1, at_s=1.0)
+    tl.finish()
+    tl.stop(at_s=2.5)
+    assert tl.spans() == [(1.0, 2.5)]
+    assert tl.ended_at() == 2.5 + TAIL_S
+    assert _seq(tl, 2.5 + TAIL_S + 0.01) is None
+    # What the page had scheduled still plays for a moment.
+    assert tl.her_level(2.6, 2.8) > 0.0
+
+
+def test_a_sentence_under_way_when_she_is_stopped_keeps_its_span() -> None:
+    tl = _tl()
+    tl.start(1, at_s=10.0)
+    tl.stop(at_s=11.2)  # sentence 2 assumed under way from 11.0, never reported
+    assert tl.spans() == [(10.0, 11.0), (11.0, 11.2)]
+
+
+def test_a_watch_opened_mid_reply_places_the_sentence_playing() -> None:
+    """Review, deviation 4: sentences over before the watch have no span."""
+    tl = _tl()
+    tl.begin(at_s=0.0, playing=(2, 0.2))
+    assert tl.spans() == [(-0.2, 0.3)]
+
+
+def test_how_far_her_words_are_heard_from_the_reports_is_measured() -> None:
+    """Reports half a second late: her words are heard 0.5 s before where she is placed."""
+    tl = Timeline()
+    tl.sentence(
+        1,
+        written="Alright, properly this time.",
+        spoken="Alright, properly this time.",
+        levels=[0.1] * 100,
+    )
+    tl.start(1, at_s=1.5)  # truly playing from 1.0 to 3.0
+    assert tl.offset_s() is None
+    for i, w in enumerate(("Alright", "properly", "this", "time")):
+        at = 1.0 + 2.0 * (i + 0.5) / 4
+        tl.align(Word(text=w, start_s=at - 0.1, end_s=at + 0.1))
+    offset = tl.offset_s()
+    assert offset is not None and abs(offset + 0.5) < 1e-9

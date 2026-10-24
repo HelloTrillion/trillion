@@ -116,9 +116,7 @@ class Listener:
         # stretches, then the latest interim. Flux repeats the whole turn each report.
         self._final_words: list[Word] = []
         self._interim_words: tuple[Word, ...] = ()
-        # The words of the last turn the recognizer ended before this one, and the
-        # spans of earlier turns' words, for knowing when the room was quiet.
-        self._ended_words: tuple[Word, ...] = ()
+        # The spans of earlier turns' words, for knowing when the room was quiet.
         self._past_spans: deque[tuple[float, float]] = deque(maxlen=512)
         # Turns the recognizer called done on words that lead on ("... and"): kept,
         # with their words, and what follows joins them (VOI-12).
@@ -174,16 +172,17 @@ class Listener:
         got = [v for end, v in self._levels if end > t0 and end - LEVEL_WINDOW_S < t1]
         return sum(got) / len(got) if got else 0.0
 
+    def word_level(self, t0: float, t1: float) -> float:
+        """The microphone's loudness through the first half of a word. A word's start
+        is where its voice begins; its end often runs on, into the next voice: a word
+        of hers just before the user starts would take their loudness."""
+        return self.mic_level(t0, t0 + max(LEVEL_WINDOW_S, (t1 - t0) / 2))
+
     def turn_words(self) -> tuple[Word, ...]:
         """The timed words of the recognizer's current turn, latest report. A turn it
         has ended keeps its words until its next turn's words arrive. Words reported
         without times are placed at their report less the usual lag."""
         return (*self._final_words, *self._interim_words)
-
-    def ended_words(self) -> tuple[Word, ...]:
-        """The timed words of the recognizer's turn before the current one, if it ended
-        one: so a turn held as leading on, or cut short, can still be placed in time."""
-        return self._ended_words
 
     def room_level(self, *, busy: Iterable[tuple[float, float]] = ()) -> float:
         """The room's own loudness: the median of the last ten seconds' windows with no
@@ -192,7 +191,7 @@ class Listener:
         sentences' spans as `busy`, or her voice counts as the room."""
         spans = [
             *self._past_spans,
-            *((w.start_s, w.end_s) for w in (*self._ended_words, *self.turn_words())),
+            *((w.start_s, w.end_s) for w in self.turn_words()),
         ]
         since = self.sent_s - ROOM_LOOKBACK_S
         # Only spans reaching into the last ten seconds matter.
@@ -243,11 +242,6 @@ class Listener:
         """The recognizer has ended its current turn (even one held as leading on)."""
         return self._turn_ended
 
-    @property
-    def turn_open(self) -> bool:
-        """The recognizer's current turn has words and has not ended."""
-        return bool(self._raw_turn()) and not self._turn_ended
-
     def turn_text(self) -> str:
         """The words of the recognizer's current turn. A turn it has ended stays current
         until its next words arrive."""
@@ -269,6 +263,10 @@ class Listener:
         self._rules.heard(final=self._turn_ended, has_text=True)
         if self._turn_ended:
             self._end_turn()
+
+    def judge_by(self, judge: Judge) -> None:
+        """Keep only the words `judge` keeps as the user's (#102)."""
+        self._judge = judge
 
     def watch(self) -> None:
         """Back to watching, after deciding that what was heard was not a turn. Words
@@ -372,7 +370,9 @@ class Listener:
         True when held. A turn with no words of the user's in it is not theirs to end."""
         said = self._this_turn()
         if not said and self._raw_turn():
-            # Only her echo: the user may still speak.
+            # Only her echo: over, quietly, if anything was heard; the rules keep
+            # waiting for the user if nothing was.
+            self._rules.turn_over()
             return False
         if leads_on(self.text()):
             # Done on "and" or "um": they are likely finding their words. Keep
@@ -399,8 +399,7 @@ class Listener:
                     # The recognizer's next turn. Only words held from the last are kept.
                     self._turn_ended = False
                     self._finals, self._interim = [], ""
-                    self._past_spans.extend((w.start_s, w.end_s) for w in self._ended_words)
-                    self._ended_words = self.turn_words()
+                    self._past_spans.extend((w.start_s, w.end_s) for w in self.turn_words())
                     self._final_words, self._interim_words = [], ()
                 self._took_words(heard)
                 if self._watching:

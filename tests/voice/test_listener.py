@@ -415,19 +415,6 @@ async def test_a_watch_becomes_a_patient_follow_up_window() -> None:
     await listener.abandon()
 
 
-async def test_a_watch_knows_whether_the_recognizer_turn_is_still_going() -> None:
-    stt = FakeSTT(turns=True)
-    listener = await watcher(stt)
-    assert not listener.turn_open
-    stt.stream.say("third thing", final=False)
-    await asyncio.sleep(0.01)
-    assert listener.turn_open
-    stt.stream.say("third thing to know", final=True, turn="done")
-    await asyncio.sleep(0.01)
-    assert not listener.turn_open
-    await listener.abandon()
-
-
 async def reported(listener: Listener, text: str) -> None:
     """Wait until the recognizer's report has been read."""
     for _ in range(400):
@@ -516,7 +503,7 @@ async def test_mic_levels_are_kept_for_thirty_seconds() -> None:
 async def test_turn_words_are_the_latest_of_the_recognizers_turn() -> None:
     stt = FakeSTT(turns=True, word_times=True)
     listener = await watcher(stt)
-    assert listener.turn_words() == () and listener.ended_words() == ()
+    assert listener.turn_words() == ()
     we = Word(text="we", start_s=0.5, end_s=0.7)
     could = Word(text="could", start_s=0.7, end_s=0.9)
     stt.stream.say("we", final=False, words=(we,))
@@ -531,7 +518,6 @@ async def test_turn_words_are_the_latest_of_the_recognizers_turn() -> None:
     stt.stream.say("hm", final=False)  # the next turn, its words not timed
     await reported(listener, "hm")
     assert [w.text for w in listener.turn_words()] == ["hm"]  # placed by its report
-    assert listener.ended_words() == (we, could)
     await listener.abandon()
 
 
@@ -632,6 +618,5 @@ async def test_room_level_leaves_out_earlier_turns_words() -> None:
     stt.stream.say("b", final=True, turn="done")
     stt.stream.say("c", final=False)  # now "a" is two turns back
     await reported(listener, "c")
-    assert listener.ended_words() != first
     assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
     await listener.abandon()

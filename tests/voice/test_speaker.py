@@ -204,23 +204,12 @@ async def test_what_was_heard_is_still_known_once_she_has_finished() -> None:
     assert s.heard_text() == "First thing to know."
 
 
-async def test_what_she_is_saying_now_can_include_the_next_sentence() -> None:
-    """Her audio runs ahead of the reports, so watching for her echo looks one ahead."""
+async def test_what_she_is_saying_now_is_the_sentence_heard_and_the_one_before() -> None:
     s = speaker(SystemVoice(), Wire())
     await s.feed("One is first. Two is next. Three is last. Four")
     assert s.playing() == ()
-    assert s.playing(ahead=1) == ("One is first.",)
     s.played(2)
-    assert s.playing(ahead=1) == ("One is first.", "Two is next.", "Three is last.")
-
-
-async def test_what_was_said_aloud_is_known() -> None:
-    s = speaker(SystemVoice(), Wire())
-    await s.feed("One is first. It costs **five**. Three is last. ")
-    await s.finish()
-    s.played(1)
-    assert "It costs five." in s.playing(ahead=1, spoken=True)
-    assert "It costs five." not in s.playing(ahead=1)
+    assert s.playing() == ("One is first.", "Two is next.")
 
 
 class ToneVoice(FakeVoice):

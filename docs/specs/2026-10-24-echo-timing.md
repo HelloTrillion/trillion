@@ -47,7 +47,7 @@ Flux re-sends the whole turn in every report, with word times refined as it goes
 New `voice/timeline.py` holds `Timeline`, which is pure and owns no I/O. It knows:
 
 - **Each sentence's span.** `Timeline.start(seq, at_s=...)` is called when `playback.sentence` arrives, with `at_s` the watching listener's audio sent so far (`Listener.sent_s`). A sentence runs from `at_s` for its length.
-- **Each sentence's length and loudness.** `Speaker` measures her audio as it sends it: RMS per 20 ms window (`WINDOW_S`), keyed by `seq`, and reports it through `on_audio(seq, written, spoken, levels)`. `Timeline.sentence(seq, written=, spoken=, levels=)` receives them (more for a known `seq` extends it), and the length is the number of windows times `WINDOW_S`. A sentence not reported yet is assumed to follow the one before (the first, the moment the watch opened: `Timeline.begin(at_s=...)`).
+- **Each sentence's length and loudness.** `Speaker` measures her audio as it sends it: RMS per 20 ms window (`WINDOW_S`), keyed by `seq`, and reports it through `on_audio(seq, written, spoken, levels)`. `Timeline.sentence(seq, written=, spoken=, levels=)` receives them (more for a known `seq` extends it), and the length is the number of windows times `WINDOW_S`. A sentence not reported yet is assumed to follow the one before (the first, the moment the watch opened: `Timeline.begin(at_s=...)`), and never to start before its audio was first sent to the page (`sentence(..., at_s=)`, the watching listener's `sent_s` then). So words the user says while she is still thinking stay theirs once her audio arrives. A watch opened mid-reply places the sentence last reported playing from how long ago that report came, and the sentences before it are over.
 - **What she was saying.** Each sentence's written and spoken (speakable) text, so a word can be matched against the sentence playing at that moment.
 - **Margins.** `LEAD_S = 0.15` before and `TAIL_S = 0.35` after each span, for capture, network and room delay.
 
@@ -58,7 +58,9 @@ Queries:
 - `ended_at()` returns the end of her last sentence plus `TAIL_S`, once every sentence was sent (`finish()`) or she was stopped (`stop()`, from what was played). It may be an estimate.
 - `ended_final(now_s=...)` returns it only once it can be relied on: her last sentence was reported played, she was stopped, or the estimate is `FINAL_CAP_S` (3 s) old. The session switches to the follow-up window on this one, so a page playing behind can't make her last sentence's echo count as the user's. It can turn final later, so callers ask again rather than keep the first answer.
 
-A sentence that is never reported played (she was stopped first) never gets a span; later reported ones still do.
+When she is stopped (`stop(at_s=)`, the watching listener's `sent_s`), the sentence playing then ends there, plus `TAIL_S` for what the page had already scheduled; a sentence not yet under way never gets a span. Without a time, a sentence never reported played gets no span; later reported ones still do.
+
+How far her words are heard from where she was placed (`align`, `offset_s()`) is measured and logged as a number when the next reply begins, but not applied.
 
 ### 3. The microphone's loudness
 
@@ -77,7 +79,7 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
    - A word the recognizer wrote as several ("twenty-six", "$5") matches only if all its parts do.
    - Her own words said by the user over her ("send it" over "Should I send it or wait?") are `theirs` only once `echo_share` is learned from 5+ words, and when `mic ≥ max(2 × OVER_ECHO × echo_share × her_wide, ROOM × OVER_ROOM)`. `her_wide` is her level over the word widened by 0.3 s each side, since a word's times can be a little off hers.
 3. **During her playback, not matching:** loudness decides.
-   - `mic = mic_level(word)` and `expected = her_level(word) × echo_share`.
+   - `mic` is the microphone over the first half of the word (`Listener.word_level`): a word's end often runs on into the next voice, so her word just before the user starts would otherwise take their loudness. `expected = her_level(word) × echo_share`.
    - `theirs` if `mic ≥ max(expected × OVER_ECHO, ROOM × OVER_ROOM)`, with `OVER_ECHO = 2.5`.
    - Otherwise `hers`: a misheard echo.
 
@@ -108,7 +110,8 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
 
 - **No word times** (a recognizer with `word_times = False`): the page does not stream while she speaks and uses the local detector. That is the Whisper path today.
 - **A word with no time** (a report with text but an empty `words` list): it is judged as the time of the report minus 0.4 s.
-- **No `playback.sentence` report yet for a sentence the core has sent:** that sentence's span is assumed to start right after the previous one ends, or at the watch's start for the first. This covers her first words' echo arriving before the first report.
+- **No `playback.sentence` report yet for a sentence the core has sent:** that sentence's span is assumed to start right after the previous one ends, or at the watch's start for the first, but no earlier than its audio was sent. This covers her first words' echo arriving before the first report.
+- **A follow-up window opened without a watch** (no clock of hers): her last sentence is taken to end as the window opens, so her echo in its first `TAIL_S` is still hers.
 
 ## Errors and edge cases
 

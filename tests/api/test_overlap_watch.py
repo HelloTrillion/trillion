@@ -41,15 +41,19 @@ SENTENCE_S = 1.0
 
 
 class Steady(FakeVoice):
-    """A voice made in the core: every sentence is a second of tone at `HER`."""
+    """A voice made in the core: every sentence is `seconds` of tone at `HER`."""
+
+    def __init__(self, seconds: float = SENTENCE_S) -> None:
+        super().__init__()
+        self._seconds = seconds
 
     async def synthesize(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
         self.asked.append(text)
-        yield tone(SENTENCE_S, HER)
+        yield tone(self._seconds, HER)
 
 
-def steady(rt: Runtime) -> None:
-    rt.tts, rt.speech = Steady(), SpeechSettings(kind="elevenlabs", voice="v1")
+def steady(rt: Runtime, seconds: float = SENTENCE_S) -> None:
+    rt.tts, rt.speech = Steady(seconds), SpeechSettings(kind="elevenlabs", voice="v1")
 
 
 @pytest.fixture(autouse=True)
@@ -460,6 +464,98 @@ async def test_her_own_words_shouted_over_her_once_her_echo_is_known_are_theirs(
     await session.close()
 
 
+# ── Review of #102: words while she thinks, and after she is stopped ──
+
+
+async def test_their_words_while_she_thinks_stay_theirs_once_her_voice_comes(
+    rt: Runtime,
+) -> None:
+    """Review I1: the watch opens before her reply; what the user says meanwhile is
+    not taken for her once her audio arrives, seconds later."""
+    stt, provider = judging(rt, say("Sure, I can do that."), say("Tuesday too."))
+    steady(rt)
+    held = provider.hold(0)
+    page, session = await asked(rt, stt)
+    await watching(session)
+    await speak(session, room(0.5))
+    await them(session, 0.3)
+    heard(stt, ("yeah", 0.55, 0.75), final=True, turn="done")  # an acknowledgement
+    await speak(session, room(0.2))
+    await page.until("overlap.over")
+    held.set()
+    await page.until("reply.sentence")
+    await speak(session, room(0.1))
+    ov = session._overlap
+    assert ov is not None and ov.timeline is not None
+    # Her sentence starts no earlier than its audio was sent, after the "yeah".
+    ((start, _),) = ov.timeline.spans()
+    assert start >= 0.75
+    # Words said while she thought are theirs, judged now as when they were heard.
+    said = timed("and also Tuesday", 0.1, 0.5)
+    assert session._theirs(ov.listener, ov.timeline, said) == [True, True, True]
+    await session.close()
+
+
+async def test_their_words_after_she_is_stopped_are_theirs_though_she_had_more_to_say(
+    rt: Runtime,
+) -> None:
+    """Review I2: her long sentence is cut where she was stopped, so the user saying
+    the rest of it, after, is heard."""
+    reply = "Should I send the email to Bob or wait until Monday?"
+    stt, _ = judging(rt, say(reply), say("Sent."))
+    steady(rt, seconds=6.0)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await watching(session)
+    await played(session, page, 1)
+    await her(session, 0.5)
+    await them(session, 0.3)
+    heard(stt, ("Stop.", 0.55, 0.8), final=False)
+    await them(session, 0.1)
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None)
+    await speak(session, room(0.6))
+    at = clock(session)
+    await them(session, 0.8)
+    heard(
+        stt, ("Stop.", 0.55, 0.8), ("send the email to Bob.", at, at + 0.8), final=True, turn="done"
+    )
+    await speak(session, room(0.2))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "Stop. send the email to Bob."
+    await session.close()
+
+
+async def test_her_word_running_into_their_first_word_is_still_hers(rt: Runtime) -> None:
+    """Live: "five -- What about Tuesday?" and "does it. What about Tuesday?": her echo
+    word just before the user's first word, its time running into their voice, was
+    taken as loud, and theirs. A word of theirs is loud all through; hers is not."""
+    reply = "Should I send the email to Bob or wait until Monday?"
+    stt, _ = judging(rt, say(reply), say("Tuesday."))
+    steady(rt, seconds=6.0)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await watching(session)
+    await played(session, page, 1)
+    await her(session, 0.6)
+    heard(stt, ("should i send the email", 0.05, 0.55), final=False)
+    await her(session, 0.3)
+    assert session._echo.learned >= 5 and not page.all("overlap.duck")
+    await them(session, 0.6)  # from 0.9: "Bob" runs on into their voice
+    parts = (("should i send the email", 0.05, 0.55), ("to Bob", 0.6, 1.0))
+    heard(stt, *parts, ("what about Tuesday?", 1.0, 1.5), final=False)
+    await them(session, 0.1)
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None)
+    heard(stt, *parts, ("what about Tuesday?", 1.0, 1.5), final=True, turn="done")
+    await speak(session, room(0.2))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "what about Tuesday?"
+    await session.close()
+
+
 # ── The four live failures (#102) ────────────────────────────────────────
 
 ASK = "Three hundred what? Not following, give me the actual ask."
@@ -728,11 +824,10 @@ async def test_a_follow_up_window_from_a_watch_closes_when_nobody_speaks(rt: Run
     await session.close()
 
 
-# ── Without a watch there is no clock: words are theirs ──────────────────
+# ── Without a watch: her last sentence is taken to end as the window opens ──
 
 
-@pytest.mark.parametrize("words", ["Six?", "No, leave at six instead"])
-async def test_replies_reusing_her_words_are_never_dropped(rt: Runtime, words: str) -> None:
+async def windowed(rt: Runtime) -> tuple[FakeSTT, Page, Session]:
     stt, _ = judging(rt, say(LEAVE), say("Six it is."))
     steady(rt)
     page, session = await asked(rt, stt)
@@ -741,11 +836,38 @@ async def test_replies_reusing_her_words_are_never_dropped(rt: Runtime, words: s
     await played(session, page, 1, 2)
     await ended(session, page)  # a fresh window, no watch
     await until(lambda: session._listener is not None)
-    await speak(session, tone(0.3))
-    stt.stream.say(words, final=True, turn="done")
+    return stt, page, session
+
+
+@pytest.mark.parametrize("words", ["Six?", "No, leave at six instead"])
+async def test_replies_reusing_her_words_are_never_dropped(rt: Runtime, words: str) -> None:
+    stt, page, session = await windowed(rt)
+    await speak(session, room(0.5))
+    await them(session, 0.6)
+    heard(stt, (words, 0.55, 1.05), final=True, turn="done")
     await speak(session, room(0.2))
     await page.until("transcript.final", 2)
     assert page.all("transcript.final")[-1]["text"] == words
+    await session.close()
+
+
+async def test_her_last_words_as_a_window_opens_without_a_watch_are_not_a_turn(
+    rt: Runtime,
+) -> None:
+    """The safety net: her echo still in the air as the window opens is dropped, and
+    nothing is said about it."""
+    stt, page, session = await windowed(rt)
+    before = calls(rt)
+    await her(session, 0.3)
+    heard(stt, ("leave at six", 0.02, 0.3), final=False, turn="maybe")
+    await speak(session, room(0.1))
+    heard(stt, ("leave at six", 0.02, 0.3), final=True, turn="done")
+    await speak(session, room(session_module.FOLLOW_UP_S + 0.2))
+    await page.until("mic.stop", 2)
+    await idle(session)
+    assert len(page.all("transcript.final")) == 1 and session._turn == 1
+    assert calls(rt) == before and session._draft is None
+    assert not [m for m in page.all("notice") if m.get("reason") == "unheard"]
     await session.close()
 
 

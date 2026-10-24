@@ -121,55 +121,31 @@ def test_fillers_let_her_carry_on() -> None:
         assert decide(words, done=True, elapsed_s=0.3, playing=PLAYING) == "carry_on"
 
 
-# ── Duck, then confirm: a candidate alone never stops her ──
-
-ALRIGHT = ("Alright, properly this time.", "We start with the basics.")
+# ── Duck, then confirm: their words, once her echo is told apart ──
 
 
-def test_a_misheard_fragment_of_hers_alone_does_not_stop_her() -> None:
-    """Live: her "Alright, properly this time." came back as "or writes properly this"."""
-    cand = "or writes properly this"
-    assert confirm(cand, "", done=False, elapsed_s=0.3, playing=ALRIGHT) == "wait"
-    # Ended by the recognizer, it is still half hers: not enough.
-    assert confirm(cand, "", done=True, elapsed_s=0.5, playing=ALRIGHT) == "wait"
-    assert confirm(cand, "", done=False, elapsed_s=CONFIRM_S, playing=ALRIGHT) == "carry_on"
-    # More of her, or one more misheard word, is not them either.
-    assert confirm(cand, "time we start", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
-    assert confirm("or", "writes", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
+def test_one_word_of_theirs_alone_waits_then_carries_on() -> None:
+    assert confirm("tuesday", "", done=False, elapsed_s=0.3) == "wait"
+    assert confirm("tuesday", "", done=True, elapsed_s=0.5) == "wait"
+    assert confirm("tuesday", "", done=False, elapsed_s=CONFIRM_S) == "carry_on"
+    assert confirm("", "", done=False, elapsed_s=0.3) == "wait"
+    assert confirm("", "", done=True, elapsed_s=CONFIRM_S) == "carry_on"
 
 
 def test_new_words_of_theirs_after_the_duck_stop_her() -> None:
-    cand = "or writes"
-    assert confirm(cand, "what about", done=False, elapsed_s=0.4, playing=ALRIGHT) == "interrupt"
+    assert confirm("what", "about tuesday", done=False, elapsed_s=0.4) == "interrupt"
 
 
-def test_a_stop_word_not_hers_stops_her_at_once() -> None:
-    assert confirm("wait what", "", done=False, elapsed_s=0.1, playing=ALRIGHT) == "interrupt"
-    assert confirm("or writes", "stop", done=False, elapsed_s=0.2, playing=ALRIGHT) == "interrupt"
-
-
-def test_a_stop_word_of_hers_does_not() -> None:
-    playing = ("No, the train leaves at six.",)
-    assert confirm("no the trained", "", done=False, elapsed_s=0.2, playing=playing) == "wait"
+def test_a_stop_word_stops_her_at_once() -> None:
+    assert confirm("wait what", "", done=False, elapsed_s=0.1) == "interrupt"
+    assert confirm("tuesday", "stop", done=False, elapsed_s=0.2) == "interrupt"
 
 
 def test_acknowledgements_carry_on_as_before() -> None:
-    assert confirm("yeah sure", "", done=True, elapsed_s=0.3, playing=ALRIGHT) == "carry_on"
-    assert confirm("yeah sure", "", done=False, elapsed_s=0.3, playing=ALRIGHT) == "wait"
-    assert confirm("um uh", "", done=True, elapsed_s=0.3, playing=ALRIGHT) == "carry_on"
-    assert confirm("yeah yeah", "yeah yeah", done=True, elapsed_s=0.3, playing=ALRIGHT) == (
-        "interrupt"
-    )
-
-
-def test_a_long_candidate_of_theirs_needs_no_more() -> None:
-    assert (
-        confirm("what about the bus instead", "", done=True, elapsed_s=0.2, playing=ALRIGHT)
-        == "interrupt"
-    )
-
-
-PLATFORM = ("We leave at six from platform two.", "Bring your ticket.")
+    assert confirm("yeah sure", "", done=True, elapsed_s=0.3) == "carry_on"
+    assert confirm("yeah sure", "", done=False, elapsed_s=0.3) == "wait"
+    assert confirm("um uh", "", done=True, elapsed_s=0.3) == "carry_on"
+    assert confirm("yeah yeah", "yeah yeah", done=True, elapsed_s=0.3) == "interrupt"
 
 
 @pytest.mark.parametrize(
@@ -181,44 +157,16 @@ PLATFORM = ("We leave at six from platform two.", "Bring your ticket.")
         ("go back", "", True),
         ("tell me", "more", True),
         ("what time does the last", "bus", False),  # more after the duck still counts
+        ("what about the bus instead", "", True),
     ],
 )
 def test_short_real_cut_ins_stop_her(cand: str, after: str, done: bool) -> None:
-    assert confirm(cand, after, done=done, elapsed_s=1.1, playing=PLATFORM) == "interrupt"
+    assert confirm(cand, after, done=done, elapsed_s=1.1) == "interrupt"
 
 
 def test_two_words_of_theirs_not_yet_ended_wait_then_carry_on() -> None:
-    assert confirm("skip that", "", done=False, elapsed_s=0.5, playing=PLATFORM) == "wait"
-    assert confirm("skip that", "", done=False, elapsed_s=1.1, playing=PLATFORM) == "carry_on"
-
-
-# ── Three of theirs, or two in an ended turn ──
-
-
-def test_three_words_of_theirs_must_be_half_of_what_was_heard() -> None:
-    # Her echo with three misheard words in it is not the user.
-    cand, after = "or writes properly", "this time tame we start"
-    assert confirm(cand, after, done=False, elapsed_s=0.5, playing=ALRIGHT) == "wait"
-
-
-def test_an_ended_turn_of_two_counts_only_if_the_whole_turn_is_not_hers() -> None:
-    """The recognizer ends echo turns at her pauses: the whole turn, her words it let go
-    included, must be less than half hers."""
-    assert (
-        confirm("skip that", "", done=True, elapsed_s=0.3, playing=PLATFORM, turn="skip that")
-        == "interrupt"
-    )
-    assert (
-        confirm(
-            "skip that",
-            "",
-            done=True,
-            elapsed_s=0.3,
-            playing=PLATFORM,
-            turn="we leave at six from skip that",
-        )
-        == "wait"
-    )
+    assert confirm("skip that", "", done=False, elapsed_s=0.5) == "wait"
+    assert confirm("skip that", "", done=False, elapsed_s=1.1) == "carry_on"
 
 
 def test_numbers_and_years_are_spelled_out() -> None:
@@ -235,11 +183,3 @@ def test_numbers_and_years_are_spelled_out() -> None:
 def test_fillers_are_known() -> None:
     assert all(is_filler(w) for w in ("um", "uh", "hmm", "erm"))
     assert not is_filler("yeah") and not is_filler("stop")
-
-
-def test_her_stop_word_is_not_theirs_in_confirm() -> None:
-    """Live: her "Stopped." came back as "Stop." and stopped her."""
-    stopped = ("Stopped. For real this time,", "here is the plan.")
-    assert confirm("stop", "", done=True, elapsed_s=0.2, playing=stopped) != "interrupt"
-    playing = ("Let me check the times.",)
-    assert confirm("stop", "", done=False, elapsed_s=0.1, playing=playing) == "interrupt"

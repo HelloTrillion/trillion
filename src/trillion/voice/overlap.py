@@ -27,11 +27,10 @@ DECIDE_BY_S = 1.5
 # While watching, words that were not hers duck her; unless more of theirs follow
 # within this long, it was her echo misheard, and she carries on.
 CONFIRM_S = 1.0
-# This many words not hers, before or after the duck, are the user: a misheard
-# fragment of her is a word or two.
+# This many words of theirs, before or after the duck, are the user; and this many
+# in a turn the recognizer has ended.
 _CONFIRMED_STRAYS = 3
-# Ended on two words of theirs, the words must be less than this share hers.
-_HALF = 0.5
+_ENDED_STRAYS = 2
 # More than this many acknowledgements is saying something.
 _MOST_ACKS = 3
 # Spoken as two words; "uh huh" is how a recognizer may spell "uh-huh".
@@ -45,8 +44,6 @@ _ACKS = (
     )
     | _FILLERS
 )
-# Ended on this many words not hers, the recognizer's turn is the user's (see `confirm`).
-_ENDED_STRAYS = 2
 # Her words reached the microphone and the recognizer in any of these spellings.
 _SYMBOLS = {"$": " dollars ", "\u00a3": " pounds ", "\u20ac": " euros ", "%": " percent "}
 _BOUNDARY = re.compile(r"(?<=\d)(?=[^\W\d_])|(?<=[^\W\d_])(?=\d)")
@@ -136,10 +133,6 @@ def decide(words: str, *, done: bool, elapsed_s: float, playing: Sequence[str]) 
     return "carry_on" if done or elapsed_s >= ACK_AFTER_S else "wait"
 
 
-def _hers(playing: Sequence[str]) -> set[str]:
-    return {w for sentence in playing for w in _words(sentence)}
-
-
 # A stop word is hers when she says it in another form ("Stopped." comes back as
 # "Stop."): a word of hers that starts with it, this many letters at least. "no" only
 # as itself.
@@ -154,12 +147,6 @@ def is_stop(w: str) -> bool:
 def is_filler(w: str) -> bool:
     """Whether a word (as `words_of` gives it) is someone thinking aloud ("um")."""
     return w in _FILLERS
-
-
-def _mine(w: str, hers: set[str]) -> bool:
-    """Whether a heard word is one of hers: the same word, or a stop word she said in
-    another form (stop and stopped, wait and waiting)."""
-    return w in hers or (w in _STOPS and matches(w, hers, stop=True))
 
 
 # A longer word is another form of a shorter one when it is at least this long ("send"
@@ -191,45 +178,24 @@ def matches(w: str, hers: Collection[str], *, stop: bool = False) -> bool:
     return any(_inflects(w, h) or _inflects(h, w) for h in hers)
 
 
-def confirm(
-    candidate: str,
-    after: str,
-    *,
-    done: bool,
-    elapsed_s: float,
-    playing: Sequence[str],
-    turn: str | None = None,
-) -> Decision:
-    """Words that were not hers ducked her (the candidate); `after` is what has been
-    heard since. Two words not hers can be her echo misheard ("Alright, properly this
-    time" heard as "or writes properly this"), so they wait. Three across both stop
-    her, and so do two that the recognizer has ended a turn on, in words less than
-    half hers: a misheard fragment of her is half her words. A stop word that is not
-    hers stops her at once. Acknowledgements and fillers carry on as `decide` lets
-    them; nothing more by `CONFIRM_S` carries on.
-
-    Three words of theirs count only in words at least half theirs: her echo can carry
-    several misheard words. Two in an ended turn count only when the recognizer's
-    whole `turn` (her words it let go included) is less than half hers, since it ends
-    turns of her echo at her pauses too."""
-    hers = _hers(playing)
+def confirm(candidate: str, after: str, *, done: bool, elapsed_s: float) -> Decision:
+    """Words of theirs ducked her (the candidate); `after` is what has been heard since.
+    Only their words come here: her echo is told apart before (`voice/whose.py`). A stop
+    word stops her at once. Acknowledgements and fillers carry on as `decide` lets them.
+    Three words stop her, and so do two that the recognizer has ended a turn on; a word
+    alone may be her echo misheard and louder than most, so nothing more by
+    `CONFIRM_S` carries on."""
     heard = _words(candidate) + _words(after)
     if not heard:
         return "carry_on" if elapsed_s >= CONFIRM_S else "wait"
-    theirs = [w for w in heard if not _mine(w, hers)]
-    if any(w in _STOPS for w in theirs):
+    if any(w in _STOPS for w in heard):
         return "interrupt"
-    acks = _acks(theirs)
-    if acks is not None and theirs:
+    acks = _acks(heard)
+    if acks is not None:
         if acks > _MOST_ACKS:
             return "interrupt"
         return "carry_on" if done or elapsed_s >= ACK_AFTER_S else "wait"
-    said = [w for w in theirs if w not in _ACKS]
-    half_theirs = len(theirs) / len(heard) >= _HALF
-    if len(said) >= _CONFIRMED_STRAYS and half_theirs:
-        return "interrupt"
-    whole = _words(turn) if turn is not None else heard
-    whole_theirs = sum(not _mine(w, hers) for w in whole) / len(whole) if whole else 0.0
-    if done and len(said) >= _ENDED_STRAYS and whole_theirs > 1 - _HALF:
+    said = [w for w in heard if w not in _ACKS]
+    if len(said) >= _CONFIRMED_STRAYS or (done and len(said) >= _ENDED_STRAYS):
         return "interrupt"
     return "carry_on" if elapsed_s >= CONFIRM_S else "wait"
