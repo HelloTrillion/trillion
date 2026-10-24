@@ -234,3 +234,22 @@ def test_matching_helpers() -> None:
     assert matches("stop", hers, stop=True)
     assert not matches("trains", hers, stop=True)  # strict: only her word or its inflection
     assert is_stop("wait") and not is_stop("train")
+
+
+def test_one_low_first_word_does_not_lock_the_echo_share() -> None:
+    share = EchoShare()
+    share.learn(mic_level=0.0, her_level=0.2)  # clamped to 0.02
+    for _ in range(20):
+        share.learn(mic_level=0.02, her_level=0.2)
+    assert abs(share.value - 0.1) < 1e-9
+
+
+def test_her_peak_nearby_sets_the_bar_for_her_own_words() -> None:
+    # Quiet then loud: her mean over the span is lower than her peak, and the peak counts.
+    tl = Timeline()
+    text = "Should I send it or wait?"
+    tl.sentence(1, written=text, spoken=text, levels=[0.05] * 40 + [0.4] * 35)
+    tl.start(1, at_s=10.0)
+    # Peak 0.4: the bar is 2 x 2.5 x 0.1 x 0.4 = 0.2. The mean (0.145) would make it 0.07.
+    assert whose(W("send", 10.3), tl, mic(0.15), share=0.1, learned=5) == "hers"
+    assert whose(W("send", 10.3), tl, mic(0.21), share=0.1, learned=5) == "theirs"

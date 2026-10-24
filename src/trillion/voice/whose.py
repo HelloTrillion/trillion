@@ -7,12 +7,13 @@ than her echo would be. Pure.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from statistics import median
 from typing import Literal
 
 from trillion.voice.overlap import is_stop, matches, words_of
-from trillion.voice.timeline import Timeline
+from trillion.voice.timeline import WINDOW_S, Timeline
 from trillion.voice.types import Word
 
 Whose = Literal["hers", "theirs"]
@@ -33,6 +34,12 @@ WIDEN_S = 0.3
 
 # Mean microphone level over a span of the recognizer's clock.
 Level = Callable[[float, float], float]
+
+
+def _her_peak(timeline: Timeline, t0: float, t1: float) -> float:
+    """Her loudest 20 ms over a span: her echo may peak where the word was heard."""
+    n = max(1, math.ceil((t1 - t0) / WINDOW_S))
+    return max(timeline.her_level(t0 + i * WINDOW_S, t0 + (i + 1) * WINDOW_S) for i in range(n))
 
 
 def matched(word: Word, timeline: Timeline) -> bool:
@@ -68,7 +75,7 @@ def whose(
         # Her level over a wider span, since a word's times can be a little off hers.
         if learned < LEARNED_ENOUGH:
             return "hers"
-        her = timeline.her_level(word.start_s - WIDEN_S, word.end_s + WIDEN_S)
+        her = _her_peak(timeline, word.start_s - WIDEN_S, word.end_s + WIDEN_S)
         return "theirs" if loud >= max(2 * OVER_ECHO * share * her, floor) else "hers"
     expected = timeline.her_level(word.start_s, word.end_s) * share
     return "theirs" if loud >= max(expected * OVER_ECHO, floor) else "hers"
@@ -86,7 +93,8 @@ class EchoShare:
         if her_level <= _HER_SILENT:
             return
         ratio = min(_SHARE_MAX, max(_SHARE_MIN, mic_level / her_level))
-        if self._seen and ratio >= self.value * OVER_ECHO:
+        # Only once enough is known: one low first word must not lock out her echo.
+        if self.learned >= LEARNED_ENOUGH and ratio >= self.value * OVER_ECHO:
             return
         self._seen.append(ratio)
         del self._seen[:-_SHARE_KEEP]
