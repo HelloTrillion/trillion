@@ -105,13 +105,13 @@ Titles are trimmed, collapsed to one line, and cut at 80 characters.
 
 ### Naming: `brain/title.py`
 
-`async def name(provider, messages) -> str | None` asks the conversation's own
+`async def name(provider, messages) -> tuple[str | None, Usage]` asks the conversation's own
 model for a title from the user's first message and her first reply:
 
 - The conversation reaches the model wrapped as untrusted text (`spine.untrusted.wrap`), with one instruction: a 3–6 word title in sentence case, no quotes, no ending punctuation.
 - No tools, a 24-token limit, a 10-second timeout.
 - Its usage is recorded against the conversation like any model turn (BRN-4).
-- The answer is cleaned (quotes, trailing punctuation, newlines stripped; empty or longer than 80 characters rejected). Any failure returns `None` and the `'words'` title stays. Nothing is shown or spoken about it.
+- The answer is cleaned (quotes, trailing punctuation, newlines stripped; empty or longer than 80 characters rejected). Any failure gives `None` (with whatever usage the call reported) and the `'words'` title stays; the failure is logged by type only. Nothing is shown or spoken about it.
 
 It is not part of the history and the model never sees it again.
 
