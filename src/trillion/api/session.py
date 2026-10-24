@@ -541,7 +541,7 @@ class Session:
             listener = ov.listener
             speaker = self._speaker or ov.speaker
             decision = decide(
-                listener.text_now(),
+                listener.text(),
                 done=listener.verdict == "end",
                 # The audio's own clock as well: the page sends the words it held while
                 # deciding to duck all at once, and they were said before now. That
@@ -588,6 +588,8 @@ class Session:
             if task is not None:
                 task.cancel()
                 # Stop, or the session closing, can cancel this too: what follows checks.
+                # This can swallow this watcher's own cancellation; that is safe, as
+                # the `self._overlap is not ov` check below then returns.
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
                     await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
             else:
@@ -622,7 +624,7 @@ class Session:
             if self._listener is not listener:
                 return
             self._watchdog = asyncio.create_task(self._watch(listener))
-            if said := listener.text_now():
+            if said := listener.text():
                 await self._partial(said)
             if listener.verdict is not None and self._listener is listener:
                 # They finished while she was stopping.
@@ -1021,6 +1023,11 @@ class Session:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
             system = await asyncio.to_thread(rt.system)
+            if using is not None and list(using.system) != system:
+                # A rule or skill changed while the draft ran: it sent an old prompt.
+                trace.draft = "dropped"
+                await self._let_go(using)
+                using = None
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
@@ -1145,16 +1152,17 @@ class Session:
             or self._overlap is not None
         ):
             return
-        # The model is about to be sent her last reply: it can no longer be trimmed.
-        self._tail = None
         # A listener is only open on a spoken turn: the message is marked as spoken.
         built = await self._build_input("user", words, via="voice")
+        # The same as `_one_turn` sends: its rules and skills, its history, its tools.
+        system = await asyncio.to_thread(rt.system)
+        # Read after the awaits, so a trim meanwhile is in what is sent.
         history = [*self._history, built.msg]
         # A history the turn would summarize first is not the history it would send.
         if compact.estimate(history) > rt.compact_at:
             return
-        # The same as `_one_turn` sends: its rules and skills, its history, its tools.
-        system = await asyncio.to_thread(rt.system)
+        # The model is about to be sent her last reply: it can no longer be trimmed.
+        self._tail = None
         self._draft = Draft.start(
             provider=provider,
             system=system,

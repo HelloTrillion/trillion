@@ -19,7 +19,7 @@ from tests.voice.fakes import FakeSTT
 from trillion import paths
 from trillion.api.runtime import ListenSettings, Runtime, open_runtime
 from trillion.api.session import Session
-from trillion.brain.types import ProviderError
+from trillion.brain.types import ProviderError, SystemBlock
 from trillion.secrets.store import MemoryStore
 
 
@@ -325,4 +325,23 @@ async def test_a_tap_note_before_the_turn_starts_drops_the_used_draft(rt: Runtim
     rows = await rt.conversations.usage_since("local", 0)
     assert [r["unpriced_turns"] for r in rows] == [2]
     assert drafts() == ["dropped"]
+    await session.close()
+
+
+async def test_a_system_prompt_changed_before_the_end_drops_the_draft(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rule or skill changed while the draft ran: it sent an old prompt."""
+    stt, provider = judging(rt, say("Old rules."), say("New rules."))
+    session, page = await start(rt)
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: session._draft is not None and session._draft.finished)
+    changed = [*rt.system(), SystemBlock(text="a new rule")]
+    monkeypatch.setattr(rt, "system", lambda: changed)
+    await finish(session, stt, "call the dentist")
+    assert len(provider.calls) == 2
+    assert [m["text"] for m in page.all("reply.delta")] == ["New rules."]
+    assert drafts() == ["dropped"]
+    rows = await rt.conversations.usage_since("local", 0)
+    assert [r["unpriced_turns"] for r in rows] == [2]  # the dropped draft's, and the turn's
     await session.close()

@@ -45,7 +45,15 @@ class Draft:
     Use `Draft.start`. A draft has one reader: the confirmed turn, through `replay()`.
     """
 
-    def __init__(self, *, words: str, built: Any, history_len: int, summary: Any) -> None:
+    def __init__(
+        self,
+        *,
+        words: str,
+        built: Any,
+        history_len: int,
+        summary: Any,
+        system: Sequence[SystemBlock] = (),
+    ) -> None:
         self.words = words
         # The message the confirmed turn will save (the session's BuiltInput). Typed
         # loosely so this module does not import the session.
@@ -53,6 +61,8 @@ class Draft:
         # What it was built against: if either has changed, the draft is not used.
         self.history_len = history_len
         self.summary = summary
+        # The system prompt it sent: rules or skills changed since mean it is not used.
+        self.system = tuple(system)
         # The model it asked: a different one at the end means it is not used, and
         # what it spent is that model's.
         self.provider: ModelProvider | None = None
@@ -78,7 +88,7 @@ class Draft:
         history_len: int,
         summary: Any,
     ) -> Draft:
-        d = cls(words=words, built=built, history_len=history_len, summary=summary)
+        d = cls(words=words, built=built, history_len=history_len, summary=summary, system=system)
         d.provider = provider
         d._task = asyncio.create_task(d._run(provider, system, messages, tools))
         # On the task, not in _run: a task cancelled before it starts never runs _run.

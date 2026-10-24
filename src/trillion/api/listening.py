@@ -101,10 +101,6 @@ class Listener:
     def text(self) -> str:
         return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 
-    def text_now(self) -> str:
-        """What has been heard so far, for deciding while she talks (VOI-9)."""
-        return self.text()
-
     def promote(
         self,
         *,

@@ -473,3 +473,32 @@ async def test_a_reply_a_draft_has_read_is_never_trimmed(rt: Runtime, over: str)
     said = await last_said(rt, session)
     assert said[-1].blocks == (TextBlock(text=ANSWER),)
     await session.close()
+
+
+async def test_a_draft_that_never_starts_leaves_her_reply_trimmable(rt: Runtime) -> None:
+    """A history due a summary starts no draft, so nothing read her reply: it is still
+    cut to what was heard."""
+    stt, provider = judging(rt, say(ANSWER))
+    voiced(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("when should we leave", final=True, turn="done")
+    await speak(session, room(0.1))
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+
+    rt.compact_at = 1  # any history is due a summary now
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("and after that", final=False, turn="maybe")
+    await asyncio.sleep(0.05)
+    assert session._draft is None and len(provider.calls) == 1
+    await session.handle({"type": "barge"})
+
+    assert page.all("interrupted")[-1]["kept"] == "First thing to know.…"
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text="First thing to know.…" + INTERRUPTED),)
+    await session.close()

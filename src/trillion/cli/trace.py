@@ -69,7 +69,7 @@ def _tokens(calls: Sequence[Mapping[str, Any]]) -> str:
 
 def _table(rows: Sequence[Row], when: Callable[[int], str]) -> list[str]:
     head = (
-        *("when", "how", "tools", "words", "text", "audio", "heard", "done"),
+        *("when", "how", "tools", "draft", "words", "text", "audio", "heard", "done"),
         *("tokens in / out", "cached", "model"),
     )
     body: list[tuple[str, ...]] = []
@@ -81,6 +81,8 @@ def _table(rows: Sequence[Row], when: Callable[[int], str]) -> list[str]:
                 when(int(r["created_at"])),
                 str(r["via"]) + ("*" if r.get("first_in_session") else ""),
                 str(r["tools"]) if r["tools"] else "-",
+                # Whether a draft started early was used or let go (VOI-12).
+                d if (d := str(r.get("draft") or "none")) != "none" else "-",
                 _s(r.get("heard_ms")),
                 _s(r.get("first_text_ms")),
                 _s(r.get("first_audio_ms") or r.get("first_sentence_ms")),
@@ -92,7 +94,7 @@ def _table(rows: Sequence[Row], when: Callable[[int], str]) -> list[str]:
             )
         )
     widths = [max(len(h), *(len(b[i]) for b in body)) for i, h in enumerate(head)]
-    numeric = {2, 3, 4, 5, 6, 7, 8, 9}
+    numeric = {2, 4, 5, 6, 7, 8, 9, 10}
 
     def line(cells: Sequence[str]) -> str:
         return "  ".join(
@@ -221,6 +223,7 @@ def report(rows: Sequence[Row], *, local: bool = True) -> str:
         "audio sent",
         "heard: when it reached your speaker (~ where the page did not say, so the audio sent "
         "stands in)",
+        "draft: whether her answer started while you were finishing was used, or let go",
         "* the first turn after the page connected, when connections are still cold",
         "",
         *_spoken(rows),
