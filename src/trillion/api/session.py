@@ -13,6 +13,7 @@ import contextlib
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -63,6 +64,15 @@ MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(frozen=True, kw_only=True)
+class BuiltInput:
+    """A user input made ready to save: the message, and what committing it records."""
+
+    msg: Msg
+    text: str
+    brought: frozenset[str]
 
 
 class Session:
@@ -857,31 +867,43 @@ class Session:
         del self._history[:cut], self._kinds[:cut], self._ids[:cut]
         await self._send("notice", code="compacted")
 
-    async def _save_input(self, kind: Kind, text: str) -> None:
-        """A user input, with the context it was said in. Both are saved together and
-        replayed unchanged on every later turn: history is only ever appended to."""
+    async def _build_input(self, kind: Kind, text: str) -> BuiltInput:
+        """The message a user input is saved as, built but not saved. A draft (VOI-12)
+        uses this, so a used draft saves exactly what it was given."""
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
         spoken = kind == "user" and self._via == "voice"
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
+        recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
         context = volatile_context(
             datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
             pending,
-            self._remembered(text) if kind == "user" else "",
+            recalled,
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
+        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought)
+
+    async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
+        """Save a built input. History is only ever appended to."""
+        self._brought.update(built.brought)
         if kind == "user" and self._rt.web is not None:
             # Only what the user said themselves: never a tap's note, never a page.
-            self._rt.web.ledger.said(self.id, text)
-        await self._save(kind, Msg(role="user", blocks=blocks))
+            self._rt.web.ledger.said(self.id, built.text)
+        await self._save(kind, built.msg)
 
-    def _remembered(self, said: str) -> str:
-        """What she has saved that bears on this message, as untrusted text (MEM-5).
+    async def _save_input(self, kind: Kind, text: str) -> None:
+        """A user input, with the context it was said in. Both are saved together and
+        replayed unchanged on every later turn: history is only ever appended to."""
+        await self._commit_input(kind, await self._build_input(kind, text))
+
+    def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
+        """What she has saved that bears on this message, as untrusted text (MEM-5),
+        and the ids it used. Nothing is marked as brought until the message is saved.
 
         It is saved with the message like the rest of its context, so the history
         replays byte for byte. A correction or a forgetting therefore shows from the
@@ -889,8 +911,7 @@ class Session:
         rt = self._rt
         fresh = [m for m in rt.memory.recall(said) if m.id not in self._brought]
         text, used = present.alongside(fresh, rt.clock())
-        self._brought.update(m.id for m in used)
-        return wrap("memory_recall", text) if used else ""
+        return (wrap("memory_recall", text) if used else "", frozenset(m.id for m in used))
 
     async def _save_from_loop(self, msg: Msg) -> None:
         await self._save("assistant" if msg.role == "assistant" else "tool_results", msg)

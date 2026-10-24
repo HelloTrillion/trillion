@@ -214,3 +214,13 @@ async def test_opening_a_conversation_elsewhere_ends_the_first_session(rt: Runti
     assert rt.by_conversation[first.id] is second
     await second.close()
     assert first.id not in rt.by_conversation
+
+
+async def test_a_built_message_is_saved_byte_for_byte(rt: Runtime) -> None:
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    built = await session._build_input("user", "hello there")
+    assert session._history == []  # building saves nothing
+    await session._commit_input("user", built)
+    assert session._history[-1] == built.msg
+    await session.close()
