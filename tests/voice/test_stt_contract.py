@@ -42,10 +42,9 @@ PACK = ModelPack(
 )
 
 
-def results(text: str, *, final: bool) -> str:
-    return json.dumps(
-        {"type": "Results", "is_final": final, "channel": {"alternatives": [{"transcript": text}]}}
-    )
+def turn_info(event: str, text: str) -> str:
+    return json.dumps({"type": "TurnInfo", "event": event, "turn_index": 0,
+                       "transcript": text, "words": [], "end_of_turn_confidence": 0.9})  # fmt: skip
 
 
 class FakeSocket:
@@ -61,10 +60,10 @@ class FakeSocket:
             raise ConnectionClosedOK(None, None)
         self.sent.append(data)
         if isinstance(data, bytes) and len([s for s in self.sent if isinstance(s, bytes)]) == 1:
-            await self._out.put(results("write a note", final=False))
+            await self._out.put(turn_info("Update", "write a note"))
         if isinstance(data, str) and json.loads(data)["type"] == "CloseStream":
-            await self._out.put(json.dumps({"type": "Metadata"}))
-            await self._out.put(results(SAID, final=True))
+            await self._out.put(json.dumps({"type": "Connected"}))
+            await self._out.put(turn_info("EndOfTurn", SAID))
             await self._out.put(None)
 
     async def recv(self) -> str:
@@ -208,10 +207,12 @@ async def test_choices_are_offered_and_nothing_needs_setup_twice(kind: str, fake
 async def test_deepgram_asks_for_what_the_page_sends(fake: Fake) -> None:
     await listen(_deepgram(fake), "multi")
     url = fake.urls[0]
-    assert url.startswith("wss://api.deepgram.com/v1/listen?")
-    for part in ("model=nova-3", "language=multi", "encoding=linear16", "sample_rate=16000",
-                 "channels=1", "interim_results=true"):  # fmt: skip
+    assert url.startswith("wss://api.deepgram.com/v2/listen?")
+    for part in ("model=flux-general-multi", "encoding=linear16", "sample_rate=16000",
+                 "eot_threshold=0.7", "eager_eot_threshold=0.5",
+                 "eot_timeout_ms=5000"):  # fmt: skip
         assert part in url
+    assert "language=" not in url and "interim_results" not in url
     assert fake.headers[0]["Authorization"] == f"Token {SAMPLE_KEY}"
     assert SAMPLE_KEY not in url  # the key is a header, never part of the address
     sent = fake.socket.sent
@@ -249,8 +250,7 @@ async def test_deepgram_unreachable_and_garbled() -> None:
         deepgram.parse("not json")
     assert e.value.kind == "bad_response"
     assert deepgram.parse(json.dumps({"type": "SpeechStarted"})) is None
-    assert deepgram.parse(results("", final=False)) is None
-    assert deepgram.parse(results("", final=True)) == Heard(text="", final=True)
+    assert deepgram.parse(turn_info("Update", "")) is None
 
 
 # ── Local Whisper ────────────────────────────────────────────────────────
@@ -348,22 +348,22 @@ async def test_a_file_that_is_not_the_pinned_one_is_never_kept(
     assert list(tmp_path.iterdir()) == [] and not models.installed(PACK, tmp_path)
 
 
-def test_deepgram_says_when_it_heard_the_speaker_pause() -> None:
-    def said(text: str, *, final: bool, pause: bool) -> str:
-        return json.dumps(
-            {
-                "type": "Results",
-                "is_final": final,
-                "speech_final": pause,
-                "channel": {"alternatives": [{"transcript": text}]},
-            }
-        )
+def test_deepgram_turn_events_become_turn_signals() -> None:
+    assert deepgram.parse(turn_info("Update", "so I")) == Heard(text="so I", final=False)
+    assert deepgram.parse(turn_info("EagerEndOfTurn", "so I said")) == Heard(
+        text="so I said", final=False, turn="maybe"
+    )
+    assert deepgram.parse(turn_info("TurnResumed", "so I said")) == Heard(
+        text="so I said", final=False, turn="resumed"
+    )
+    assert deepgram.parse(turn_info("EndOfTurn", "so I said no")) == Heard(
+        text="so I said no", final=True, turn="done"
+    )
+    assert deepgram.parse(turn_info("StartOfTurn", "")) is None
+    assert deepgram.parse(json.dumps({"type": "Connected"})) is None
 
-    assert deepgram.parse(said("Hi there.", final=True, pause=True)) == Heard(
-        text="Hi there.", final=True, pause=True
-    )
-    assert deepgram.parse(said("Hi there", final=True, pause=False)) == Heard(
-        text="Hi there", final=True
-    )
-    # A pause on words that are not final yet is not one.
-    assert deepgram.parse(said("Hi", final=False, pause=True)) == Heard(text="Hi", final=False)
+
+async def test_deepgram_sends_audio_in_80ms_chunks(fake: Fake) -> None:
+    await listen(_deepgram(fake), "en")
+    chunks = [s for s in fake.socket.sent if isinstance(s, bytes)]
+    assert chunks and all(len(c) == 2560 for c in chunks[:-1]) and len(chunks[-1]) <= 2560

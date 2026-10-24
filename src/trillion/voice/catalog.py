@@ -108,6 +108,8 @@ class ListenOption:
     key_link: str | None
     # What to tell someone whose install lacks this provider's optional part.
     install_hint: str | None
+    # Whether this recognizer judges when a turn is over (VOI-12).
+    turns: bool = False
     build: Callable[[SecretStore], STTProvider]
 
     @property
@@ -144,6 +146,7 @@ LISTENING: tuple[ListenOption, ...] = (
         free=False,
         key_link="https://console.deepgram.com/",
         install_hint=None,
+        turns=True,
         build=_deepgram,
     ),
 )
