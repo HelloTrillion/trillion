@@ -325,6 +325,17 @@ class Session:
         """The user renamed her or themselves. The page follows; the next turn uses it."""
         await self._send("identity", agent_name=self._rt.identity.agent_name)
 
+    async def renamed(self, title: str) -> None:
+        """The user named this conversation: hers will never replace it."""
+        self._title_source = "user"
+        if self._naming is not None:
+            self._naming.cancel()
+        await self._broadcast_title(title)
+
+    async def deleted(self) -> None:
+        """The conversation was deleted elsewhere: the page starts a new one."""
+        await self._send("error", code="deleted")
+
     async def replaced(self) -> None:
         """This conversation was opened somewhere else. Say so, then stop for good."""
         await self._send("error", code="replaced")

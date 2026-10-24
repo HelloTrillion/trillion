@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
+from trillion.api.conversations import create_conversations_router
 from trillion.api.google import create_google_router
 from trillion.api.mcp import create_callback_router, create_mcp_router
 from trillion.api.persona import create_persona_router
@@ -170,6 +171,7 @@ def create_app(
     app.include_router(create_router(rt))
     app.include_router(create_persona_router(rt))
     app.include_router(create_usage_router(rt))
+    app.include_router(create_conversations_router(rt))
     app.include_router(create_mcp_router(rt))
     app.include_router(create_callback_router(rt))
     if rt.mcp is not None:

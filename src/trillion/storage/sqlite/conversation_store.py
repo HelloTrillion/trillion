@@ -217,7 +217,7 @@ class SqliteConversationStore:
         guard = " AND (title_source IS NULL OR title_source != 'user')" if source == "model" else ""
         cur = await self._conn.execute(
             "UPDATE conversations SET title = ?, title_source = ?"  # noqa: S608 - fixed text only
-            " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL" + guard,
+            " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NULL" + guard,
             (clean, source, conversation_id, owner_id),
         )
         return cur.rowcount == 1
