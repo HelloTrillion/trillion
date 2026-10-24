@@ -1077,6 +1077,18 @@ async def test_watching_a_voice_the_page_makes_is_refused(rt: Runtime) -> None:
     await session.close()
 
 
+async def test_watching_without_word_times_is_refused(rt: Runtime) -> None:
+    """Her echo is told apart by when each word was said (#102): no times, no watch."""
+    _, held, page, session = await spoken_reply(rt, say("We leave at six."))
+    assert rt.stt is not None
+    rt.stt.word_times = False  # type: ignore[misc]
+    await session.handle({"type": "overlap.watch"})
+    assert session._overlap is None and page.all("overlap.over")[-1]["end"] is True
+    held.set()
+    await idle(session)
+    await session.close()
+
+
 async def test_hearing_that_fails_while_watching_ends_the_watch(rt: Runtime) -> None:
     from trillion.voice.types import VoiceError
 

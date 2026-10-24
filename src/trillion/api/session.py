@@ -833,9 +833,10 @@ class Session:
 
     async def _on_watch(self) -> None:
         """The page streams the microphone while she speaks, so the user can cut in
-        (VOI-9). Her voice coming back is told from theirs by its words; only words
-        that are not hers duck her and are decided. That needs a recognizer that judges
-        turns, and a reply to talk over: one coming, or one still being heard."""
+        (VOI-9). Her voice coming back is told from theirs by when each word was said
+        and how loud it was (#102); only words that are theirs duck her and are decided.
+        That needs a recognizer that judges turns and times its words, and a reply to
+        talk over: one coming, or one still being heard."""
         rt = self._rt
         if self._overlap is not None:
             return
@@ -846,6 +847,7 @@ class Session:
             rt.stt is None
             or rt.listening is None
             or not rt.stt.turns
+            or not rt.stt.word_times
             or rt.provider is None
             or self._listener is not None
             # With her voice off there is nothing to talk over, and nothing to tell apart.
