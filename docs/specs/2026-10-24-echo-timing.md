@@ -46,8 +46,8 @@ Flux re-sends the whole turn in every report, with word times refined as it goes
 
 New `voice/timeline.py` holds `Timeline`, which is pure and owns no I/O. It knows:
 
-- **Each sentence's span.** `Timeline.start(seq, at_s)` is called when `playback.sentence` arrives, with `at_s` the watching listener's audio sent so far (`Listener.sent_s`). A sentence runs from `at_s` for its length.
-- **Each sentence's length and loudness.** `Speaker` measures her audio as it sends it: RMS per 20 ms window, keyed by `seq`. `Timeline.audio(seq, levels, window_s)` receives them, and the length is the sum.
+- **Each sentence's span.** `Timeline.start(seq, at_s=...)` is called when `playback.sentence` arrives, with `at_s` the watching listener's audio sent so far (`Listener.sent_s`). A sentence runs from `at_s` for its length.
+- **Each sentence's length and loudness.** `Speaker` measures her audio as it sends it: RMS per 20 ms window (`WINDOW_S`), keyed by `seq`, and reports it through `on_audio(seq, written, spoken, levels)`. `Timeline.sentence(seq, written=, spoken=, levels=)` receives them (more for a known `seq` extends it), and the length is the number of windows times `WINDOW_S`. A sentence not reported yet is assumed to follow the one before (the first, the moment the watch opened: `Timeline.begin(at_s=...)`).
 - **What she was saying.** Each sentence's written and spoken (speakable) text, so a word can be matched against the sentence playing at that moment.
 - **Margins.** `LEAD_S = 0.15` before and `TAIL_S = 0.35` after each span, for capture, network and room delay.
 
@@ -55,9 +55,10 @@ Queries:
 
 - `at(t)` returns the sentence playing at time `t` (with margins), or `None`.
 - `her_level(t0, t1)` returns her loudness over a span.
-- `ended_at` returns the end of her last sentence plus `TAIL_S`, once her turn is over.
+- `ended_at()` returns the end of her last sentence plus `TAIL_S`, once every sentence was sent (`finish()`) or she was stopped (`stop()`, from what was played). It may be an estimate.
+- `ended_final(now_s=...)` returns it only once it can be relied on: her last sentence was reported played, she was stopped, or the estimate is `FINAL_CAP_S` (3 s) old. The session switches to the follow-up window on this one, so a page playing behind can't make her last sentence's echo count as the user's. It can turn final later, so callers ask again rather than keep the first answer.
 
-A sentence that is never reported played (she was stopped first) never gets a span.
+A sentence that is never reported played (she was stopped first) never gets a span; later reported ones still do.
 
 ### 3. The microphone's loudness
 

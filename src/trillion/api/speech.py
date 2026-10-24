@@ -85,6 +85,7 @@ class Speaker:
         # What she wrote for each sentence sent, by its number: the history keeps her
         # words, not the spoken form of them (D8).
         self._said: list[tuple[int, str]] = []
+        self._written_by: dict[int, str] = {}
         # And what was sent to be said, which an echo of her repeats.
         self._spoken: dict[int, str] = {}
         # This round's text as she wrote it, and where in it each sentence sent ends:
@@ -138,7 +139,7 @@ class Speaker:
         return self._forms([n for n, _ in self._said if heard - 1 <= n <= heard + ahead], spoken)
 
     def _forms(self, seqs: list[int], spoken: bool) -> tuple[str, ...]:
-        written = dict(self._said)
+        written = self._written_by
         out: list[str] = []
         for n in seqs:
             out.append(written[n])
@@ -192,6 +193,7 @@ class Speaker:
             return
         self._count += 1
         self._said.append((self._count, sentence))
+        self._written_by[self._count] = sentence
         self._spoken[self._count] = text
         self._ends[self._count] = end
         await self._send("reply.sentence", turn=self._turn, seq=self._count, text=text)
@@ -209,10 +211,10 @@ class Speaker:
             seq, text = item
             if self._failed:
                 continue
-            written = dict(self._said).get(seq, text)
-            loud = _Loudness(self._window_bytes)
+            written = self._written_by.get(seq, text)
             for attempt in (1, 2):
                 sent = False
+                loud = _Loudness(self._window_bytes)
                 try:
                     pending = b""
                     async for chunk in self._provider.synthesize(text, voice=self._voice):

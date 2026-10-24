@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
+from trillion.voice.timeline import FINAL_CAP_S, LEAD_S, TAIL_S, WINDOW_S, Timeline
 
 
 def _tl() -> Timeline:
@@ -71,3 +71,85 @@ def test_a_sentence_never_played_has_no_span_once_she_is_stopped() -> None:
     assert _seq(tl, 11.4) == 2  # assumed to follow sentence 1
     tl.stop()
     assert _seq(tl, 11.4) is None
+
+
+def test_her_level_matches_window_by_window() -> None:
+    tl = Timeline()
+    tl.sentence(1, written="a", spoken="a", levels=[i / 100 for i in range(50)])
+    tl.sentence(2, written="b", spoken="b", levels=[0.5 - i / 100 for i in range(25)])
+    tl.start(1, at_s=10.0)
+    tl.start(2, at_s=11.3)
+
+    def walked(t0: float, t1: float) -> float:
+        got = [
+            level
+            for s in tl.sentences.values()
+            if s.start_s is not None
+            for i, level in enumerate(s.levels)
+            if s.start_s + i * WINDOW_S + WINDOW_S > t0 and s.start_s + i * WINDOW_S < t1
+        ]
+        return sum(got) / len(got) if got else 0.0
+
+    for t0, t1 in [
+        (9.0, 9.5),
+        (9.9, 10.05),
+        (10.013, 10.047),
+        (10.5, 11.5),
+        (11.0, 11.3),
+        (11.31, 11.9),
+        (9.0, 13.0),
+        (10.2, 10.2),
+    ]:
+        assert abs(tl.her_level(t0, t1) - walked(t0, t1)) < 1e-9, (t0, t1)
+
+
+def test_a_later_reported_sentence_places_past_an_unreported_one() -> None:
+    tl = _tl()
+    tl.sentence(3, written="See you.", spoken="See you.", levels=[0.1] * 25)
+    tl.start(1, at_s=10.0)
+    tl.start(3, at_s=12.0)
+    tl.stop()
+    assert _seq(tl, 11.5) is None  # 2 was never reported played
+    assert _seq(tl, 12.2) == 3
+
+
+def test_a_first_sentence_reported_late_still_places_the_next() -> None:
+    tl = _tl()  # no watch opened, sentence 1 not reported
+    tl.start(2, at_s=11.0)
+    assert _seq(tl, 11.2) == 2
+
+
+def test_her_end_once_stopped_is_the_end_of_what_played() -> None:
+    tl = _tl()
+    tl.start(1, at_s=10.0)
+    assert tl.ended_at() is None
+    tl.stop()
+    end = tl.ended_at()
+    assert end is not None and abs(end - (11.0 + TAIL_S)) < 1e-9
+    assert tl.ended_final(now_s=11.0) == end
+    nothing = _tl()
+    nothing.stop()
+    assert nothing.ended_at() is None and nothing.ended_final(now_s=99.0) is None
+
+
+def test_her_end_is_final_once_her_last_sentence_was_reported_played() -> None:
+    tl = _tl()
+    tl.start(1, at_s=10.0)
+    tl.finish()
+    estimate = 11.5 + TAIL_S  # sentence 2 assumed right after sentence 1
+    end = tl.ended_at()
+    assert end is not None and abs(end - estimate) < 1e-9
+    assert tl.ended_final(now_s=estimate) is None  # the page may be playing behind
+    tl.start(2, at_s=11.4)
+    final = tl.ended_final(now_s=11.5)
+    assert final is not None and abs(final - (11.9 + TAIL_S)) < 1e-9
+
+
+def test_an_estimated_end_turns_final_once_it_is_old() -> None:
+    tl = _tl()
+    tl.start(1, at_s=10.0)
+    tl.finish()
+    end = tl.ended_at()
+    assert end is not None
+    assert tl.ended_final(now_s=end + FINAL_CAP_S - 0.01) is None
+    assert tl.ended_final(now_s=end + FINAL_CAP_S) == end
