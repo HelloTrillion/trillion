@@ -86,6 +86,16 @@ Multiple finalized segments in one thought; a mid-thought pause of 1.5s; a self-
 | 2.2.5 | A tool runs for 90 seconds | The stream heartbeats; the client's playback loop stays alive; the late reply reaches the speaker (VOI-18). |
 | 2.2.6 | The user silences playback vs cancels the task | Two different outcomes, both defined. Silencing does not cancel; cancelling reconciles in-flight effects (VOI-15c). |
 
+### 2.2a Fluid turns (VOI-3, VOI-9, VOI-12), live with Deepgram
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.2a.1 | Pause mid-sentence for two seconds, then finish | One turn, not two; the pause did not end it. |
+| 2.2a.2 | Say a short question with a clear ending | She replies faster than with the switch off; the turn trace shows `draft=used`. |
+| 2.2a.3 | Say "yeah" while she is speaking | Her voice dips, then she carries on; nothing is saved as a turn. |
+| 2.2a.4 | Say "wait" while she is speaking | She stops, "wait" becomes your turn, and the saved reply ends at the sentence you were hearing. |
+| 2.2a.5 | Turn "Start thinking before I finish" off and on in Settings → Hearing | The switch changes and is still the same after a reload. |
+
 ### 2.3 Capture (VOI-2, VOI-4, VOI-15d)
 
 Echo cancellation returning silence on a multi-input interface; a stereo device with the microphone on channel 1 and an empty channel 0; a device unplugged mid-turn; permission denied; sleep and resume; a sign-off ("okay, thanks") ending active capture with nothing reopening it. Passes when each is detected and stated plainly — an inaudible capture says "I can't hear your microphone" rather than returning an empty transcript.
