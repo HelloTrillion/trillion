@@ -571,3 +571,75 @@ async def test_room_level_is_the_quiet_with_no_words_near() -> None:
     # Her playback can be left out too.
     assert listener.room_level(busy=[(0.0, 1.0)]) == 0.002
     await listener.abandon()
+
+
+async def test_levels_land_in_order_while_the_backlog_is_still_being_sent() -> None:
+    """A frame that arrives while the backlog's send is still waiting comes after it."""
+    release = asyncio.Event()
+
+    class Slow(FakeSTT):
+        async def open(self, *, choice: str):  # type: ignore[no-untyped-def]
+            stream = await super().open(choice=choice)
+            send, first = stream.send, [True]
+
+            async def slow(pcm: bytes) -> None:
+                if first[0]:
+                    first[0] = False
+                    await release.wait()
+                await send(pcm)
+
+            stream.send = slow  # type: ignore[method-assign]
+            return stream
+
+    stt = Slow(turns=True, word_times=True)
+    stt.opening.clear()
+    listener = Listener(stt, "en", on_partial=nothing, watch=True)
+    starting = asyncio.create_task(listener.start())
+    await asyncio.sleep(0)
+    await listener.audio(room(0.3))  # kept until connected
+    stt.opening.set()
+    await asyncio.sleep(0.01)  # the backlog's send is now waiting
+    later = asyncio.create_task(listener.audio(tone(0.1)))
+    await asyncio.sleep(0.01)
+    release.set()
+    await starting
+    await later
+    assert listener.sent_s == pytest.approx(0.4)
+    assert listener.mic_level(0.0, 0.3) < 0.002
+    assert listener.mic_level(0.3, 0.4) > 0.1
+    await listener.abandon()
+
+
+async def test_segment_style_turn_words_join_finals_and_the_latest_interim() -> None:
+    stt = FakeSTT(word_times=True)
+    listener = await watcher(stt)
+    a = Word(text="remind", start_s=0.2, end_s=0.4)
+    b = Word(text="me", start_s=0.4, end_s=0.5)
+    c = Word(text="to", start_s=0.6, end_s=0.7)
+    d = Word(text="call", start_s=0.7, end_s=0.9)
+    stt.stream.say("remind", final=True, words=(a,))
+    stt.stream.say("me", final=True, words=(b,))
+    stt.stream.say("to", final=False, words=(c,))
+    await reported(listener, "remind me to")
+    assert listener.turn_words() == (a, b, c)
+    stt.stream.say("to call", final=False, words=(c, d))  # the interim replaced
+    await reported(listener, "remind me to call")
+    assert listener.turn_words() == (a, b, c, d)
+    await listener.abandon()
+
+
+async def test_room_level_leaves_out_earlier_turns_words() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    await feed(listener, room(1.0) + tone(2.0) + room(1.0))
+    first = (Word(text="a", start_s=1.0, end_s=2.0),)
+    stt.stream.say("a", final=True, turn="done", words=first)
+    await reported(listener, "a")
+    stt.stream.say("b", final=False, words=(Word(text="b", start_s=2.0, end_s=3.0),))
+    await reported(listener, "b")
+    stt.stream.say("b", final=True, turn="done")
+    stt.stream.say("c", final=False)  # now "a" is two turns back
+    await reported(listener, "c")
+    assert listener.ended_words() != first
+    assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
+    await listener.abandon()

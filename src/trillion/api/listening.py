@@ -44,8 +44,9 @@ REPORT_LAG_S = 0.4
 MIN_LAG_S = 0.15
 # The microphone's loudness is kept per 20 ms of audio sent, for this long (#102).
 LEVEL_WINDOW_S = 0.02
-_WINDOW_BYTES = 2 * round(SAMPLE_RATE * LEVEL_WINDOW_S)
-_BYTES_PER_S = 2 * SAMPLE_RATE
+_SAMPLE_BYTES = 2  # PCM16
+_WINDOW_BYTES = _SAMPLE_BYTES * round(SAMPLE_RATE * LEVEL_WINDOW_S)
+_BYTES_PER_S = _SAMPLE_BYTES * SAMPLE_RATE
 LEVELS_KEPT_S = 30.0
 # The room's level: the quiet of the last this-many seconds, away from any word by
 # at least NEAR_WORD_S, and what it is taken to be before anything is known.
@@ -200,8 +201,9 @@ class Listener:
 
     def room_level(self, *, busy: Iterable[tuple[float, float]] = ()) -> float:
         """The room's own loudness: the median of the last ten seconds' windows with no
-        word heard near them, nor in any `busy` span (her playback, say). Until there
-        are any, a quiet room's level."""
+        word heard near them, nor in any `busy` span. Until there are any, a quiet
+        room's level. The listener does not know her playback: callers must pass her
+        sentences' spans as `busy`, or her voice counts as the room."""
         spans = [
             *self._past_spans,
             *((w.start_s, w.end_s) for w in (*self._ended_words, *self.turn_words())),
@@ -370,8 +372,10 @@ class Listener:
 
     async def _feed(self, pcm: bytes) -> Verdict | None:
         assert self._stream is not None  # noqa: S101 - narrowed by the callers
-        await self._stream.send(pcm)
+        # Measured before the send waits, so audio is placed in the order it is sent,
+        # even while the backlog's send is still going.
         self._measure(pcm)
+        await self._stream.send(pcm)
         if self._watching:
             return None  # nothing ends while watching: the session decides
         self._verdict = self._rules.audio(pcm)
