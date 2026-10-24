@@ -18,7 +18,7 @@ from trillion.brain.providers.anthropic import (
     wire_messages,
 )
 from trillion.brain.providers.anthropic import list_models as anthropic_list_models
-from trillion.brain.providers.openai_compat import OpenAICompatProvider
+from trillion.brain.providers.openai_compat import OpenAICompatProvider, request_body
 from trillion.brain.providers.openai_compat import list_models as openai_list_models
 from trillion.brain.types import (
     ContextBlock,
@@ -548,3 +548,56 @@ def test_another_providers_tool_ids_are_made_acceptable_and_still_pair() -> None
     wire = wire_messages(history, "k")
     sent_id = wire[1]["content"][0]["id"]
     assert sent_id == wire[2]["content"][0]["tool_use_id"] == "call_0_abc_def"
+
+
+# A notice is saved as her message outside a turn: two of hers can sit side by side,
+# and one can open a conversation before the user has said anything.
+NOTICE = Msg(role="assistant", blocks=(TextBlock(text="Time to stretch."),))
+USER = Msg(role="user", blocks=(TextBlock(text="thanks"),))
+REPLY = Msg(role="assistant", blocks=(TextBlock(text="Here you go."),))
+
+
+def test_anthropic_notices_beside_her_reply_go_as_one_message_of_hers() -> None:
+    wire = wire_messages([USER, REPLY, NOTICE, NOTICE, USER], "k")
+    assert [m["role"] for m in wire] == ["user", "assistant", "user"]
+    assert [b["text"] for b in wire[1]["content"]] == [
+        "Here you go.", "Time to stretch.", "Time to stretch.",
+    ]  # fmt: skip
+
+
+def test_anthropic_her_replayed_turn_stays_whole_when_a_notice_follows_it() -> None:
+    key = prefix_key("m1", SYSTEM, TOOLS)
+    raw = ProviderRaw(
+        provider="anthropic",
+        prefix_key=key,
+        content=(
+            {"type": "thinking", "thinking": "", "signature": "s"},
+            {"type": "text", "text": "t"},
+        ),
+    )
+    turn = Msg(role="assistant", blocks=(TextBlock(text="t"),), raw=raw)
+    wire = wire_messages([USER, turn, NOTICE, USER], key)
+    assert [m["role"] for m in wire] == ["user", "assistant", "user"]
+    assert raw.content[0]["type"] == "thinking" and len(raw.content) == 2  # never changed
+
+
+def test_anthropic_a_conversation_a_notice_opened_starts_with_the_user() -> None:
+    wire = wire_messages([NOTICE, USER], "k")
+    assert [m["role"] for m in wire] == ["user", "assistant", "user"]
+    assert wire[1]["content"] == [{"type": "text", "text": "Time to stretch."}]
+    assert wire[0]["content"][0]["text"]  # a placeholder, never shown or spoken
+
+
+def test_openai_compatible_notices_beside_her_reply_go_as_one_message_of_hers() -> None:
+    body = request_body(model="m", system=SYSTEM, messages=[USER, REPLY, NOTICE, USER], tools=[])
+    assert [m["role"] for m in body["messages"]] == ["system", "user", "assistant", "user"]
+    assert body["messages"][2]["content"] == "Here you go.\n\nTime to stretch."
+
+
+def test_openai_compatible_a_conversation_a_notice_opened_starts_with_the_user() -> None:
+    # Many local chat templates refuse anything but user, assistant, user, ...
+    body = request_body(model="m", system=SYSTEM, messages=[NOTICE, NOTICE, USER], tools=[])
+    assert [m["role"] for m in body["messages"]] == ["system", "user", "assistant", "user"]
+    assert body["messages"][2]["content"] == "Time to stretch.\n\nTime to stretch."
+    no_system = request_body(model="m", system=[], messages=[NOTICE, USER], tools=[])
+    assert [m["role"] for m in no_system["messages"]] == ["user", "assistant", "user"]

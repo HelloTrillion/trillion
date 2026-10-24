@@ -62,6 +62,12 @@ class ProviderRaw:
     content: tuple[Mapping[str, Any], ...]
 
 
+# Sent, never shown or spoken, before a conversation that opens with her message: a
+# notice can arrive before the user has said anything, and providers want the user
+# to speak first.
+OPENING = "(Nothing from the user yet: the next message is yours, sent on your own.)"
+
+
 @dataclass(frozen=True, kw_only=True)
 class Msg:
     role: Role

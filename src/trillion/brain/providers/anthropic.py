@@ -34,6 +34,7 @@ from anthropic import AsyncAnthropic
 
 from trillion import net
 from trillion.brain.types import (
+    OPENING,
     ContextBlock,
     Done,
     ModelChoice,
@@ -149,15 +150,33 @@ def wire_messages(messages: Sequence[Msg], key: str) -> list[dict[str, Any]]:
         if m.raw is None or m.raw.provider != NAME or m.raw.prefix_key != key:
             break
         start = i
-    return [
-        {
-            "role": m.role,
-            "content": [dict(b) for b in m.raw.content]
-            if i >= start and m.role == "assistant" and m.raw is not None
-            else _neutral(m),
-        }
-        for i, m in enumerate(messages)
-    ]
+    return _alternating(
+        [
+            {
+                "role": m.role,
+                "content": [dict(b) for b in m.raw.content]
+                if i >= start and m.role == "assistant" and m.raw is not None
+                else _neutral(m),
+            }
+            for i, m in enumerate(messages)
+        ]
+    )
+
+
+def _alternating(wire: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Notices are her messages saved outside a turn, so two of hers can sit side by
+    side, and one can open a conversation. Hers that touch go as one message, in
+    order, each block as it was; a conversation she opened starts with a short
+    placeholder from the user, which nobody sees."""
+    out: list[dict[str, Any]] = []
+    for m in wire:
+        if out and m["role"] == "assistant" and out[-1]["role"] == "assistant":
+            out[-1] = {"role": "assistant", "content": [*out[-1]["content"], *m["content"]]}
+        else:
+            out.append(m)
+    if out and out[0]["role"] == "assistant":
+        out.insert(0, {"role": "user", "content": [{"type": "text", "text": OPENING}]})
+    return out
 
 
 # The API allows four cache breakpoints in all; the instructions take one.
