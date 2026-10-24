@@ -16,7 +16,7 @@ import httpx
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
-from trillion.voice.types import CAPTURE, Choice, Heard, VoiceError
+from trillion.voice.types import CAPTURE, Choice, Heard, VoiceError, Word
 
 NAME = "deepgram"
 LISTEN_URL = "wss://api.deepgram.com/v2/listen"
@@ -74,6 +74,26 @@ _EVENTS: dict[str, Literal["maybe", "resumed", "done"] | None] = {
 }  # fmt: skip
 
 
+def _words(raw: object) -> tuple[Word, ...]:
+    """The timed words in a TurnInfo; malformed items are skipped."""
+    if not isinstance(raw, list):
+        return ()
+    out: list[Word] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text, start, end = item.get("word"), item.get("start"), item.get("end")
+        if (
+            isinstance(text, str)
+            and isinstance(start, int | float)
+            and isinstance(end, int | float)
+            and not isinstance(start, bool)
+            and not isinstance(end, bool)
+        ):
+            out.append(Word(text=text, start_s=float(start), end_s=float(end)))
+    return tuple(out)
+
+
 def parse(raw: bytes | str) -> Heard | None:
     """One message from Deepgram as words and a turn signal, or None when it carries none."""
     try:
@@ -93,7 +113,7 @@ def parse(raw: bytes | str) -> Heard | None:
     turn = _EVENTS[event]
     if turn is None and not text:
         return None
-    return Heard(text=text, final=turn == "done", turn=turn)
+    return Heard(text=text, final=turn == "done", turn=turn, words=_words(msg.get("words")))
 
 
 class _Stream:
@@ -150,6 +170,7 @@ class Deepgram:
     name = NAME
     streaming = True
     turns = True
+    word_times = True
 
     def __init__(
         self,
