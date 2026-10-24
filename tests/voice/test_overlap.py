@@ -6,9 +6,12 @@ from trillion.voice.overlap import (
     ACK_AFTER_S,
     DECIDE_BY_S,
     decide,
+    echo_through,
     judge_watch,
     judged_prefix,
     keys,
+    share_hers,
+    strip_hers,
 )
 
 PLAYING = ("We could leave at six.", "Or if traffic is bad, at half past.")
@@ -146,7 +149,8 @@ def test_her_own_stop_words_do_not_stop_her() -> None:
 
 def test_words_that_are_not_hers_are_a_candidate() -> None:
     assert judge_watch("what about a taxi", HER) == "candidate"
-    assert judge_watch("yeah", HER) == "candidate"  # deciding says it is an acknowledgement
+    assert judge_watch("yeah sure", HER) == "candidate"  # deciding says they acknowledge
+    assert judge_watch("yeah", HER) == "nothing"  # one word alone: she carries on anyway
     assert judge_watch("hang on", HER) == "candidate"
 
 
@@ -171,3 +175,69 @@ def test_judged_words_are_counted_from_the_start() -> None:
 
 def test_word_keys_ignore_case_and_punctuation() -> None:
     assert keys("No, the TRAIN.") == ("no", "the", "train")
+
+
+# ── Review of VOI-9: one misheard word, numbers, fillers, echo inside a candidate ──
+
+
+def test_one_word_not_hers_is_not_yet_a_candidate() -> None:
+    # Her "noon", misheard as "new", as the newest word of a growing report.
+    playing = ("We could meet at noon tomorrow.",)
+    assert judge_watch("new", playing) == "nothing"
+    assert judge_watch("at new", playing) == "echo"
+    assert judge_watch("meet at new", playing) == "echo"
+    # Two words that are not hers, or one that means stop, are.
+    assert judge_watch("what about", playing) == "candidate"
+    assert judge_watch("wait", playing) == "candidate"
+    # Fillers do not count towards it.
+    assert judge_watch("um uh", playing) == "nothing"
+
+
+def test_numbers_match_however_they_are_written() -> None:
+    playing = ("It costs $5 and starts at 10:30.",)
+    assert judge_watch("it costs five dollars", playing) == "echo"
+    assert judge_watch("starts at ten thirty", playing) == "echo"
+    assert judge_watch("costs 5", ("It costs five.",)) == "echo"
+    assert keys("3pm") == ("three pm",)
+
+
+def test_how_far_her_words_reach() -> None:
+    playing = ("We could meet at noon tomorrow.",)
+    # Up to and including the last of her words: a trailing word not hers stays open.
+    assert echo_through("we could new at noon", playing) == 5
+    assert echo_through("we could meet what", playing) == 3
+    assert echo_through("what about", playing) == 0
+
+
+def test_fillers_let_her_carry_on() -> None:
+    for words in ("um", "uh", "hmm", "erm", "uh um"):
+        assert decide(words, done=True, elapsed_s=0.3, playing=PLAYING) == "carry_on"
+
+
+def test_deciding_can_leave_out_her_words() -> None:
+    playing = ("We could leave at six.",)
+    assert decide("yeah leave at six", done=True, elapsed_s=0.3, playing=playing) == "interrupt"
+    assert (
+        decide("yeah leave at six", done=True, elapsed_s=0.3, playing=playing, drop_hers=True)
+        == "carry_on"
+    )
+    # A stop word is never left out.
+    assert (
+        decide("no", done=False, elapsed_s=0.1, playing=("No, the train.",), drop_hers=True)
+        == "interrupt"
+    )
+
+
+def test_her_leading_words_are_stripped_until_the_first_of_theirs() -> None:
+    hers = ("Third thing to know.",)
+    assert strip_hers("Third thing to know. What about tomorrow?", hers) == "What about tomorrow?"
+    assert strip_hers("third thing to know", hers) == ""
+    assert strip_hers("what about the third thing", hers) == "what about the third thing"
+    # A single word of hers in front is not taken from them.
+    assert strip_hers("know what I mean", hers) == "know what I mean"
+
+
+def test_share_of_her_words() -> None:
+    assert share_hers("third thing to know", ("Third thing to know.",)) == 1.0
+    assert share_hers("what about it", ("Third thing to know.",)) == 0.0
+    assert share_hers("", ("Third thing to know.",)) == 0.0

@@ -79,6 +79,8 @@ class Listener:
         # Words at the start of the recognizer's current turn already judged and let go.
         # Its reports repeat the whole turn so far, so they are skipped, not deleted.
         self._skip = 0
+        # When the user's first words were heard (the loop's clock), once listening.
+        self.began: float | None = None
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
@@ -133,6 +135,11 @@ class Listener:
         said = self._raw_turn()
         return " ".join(said.split()[self._skip :]) if self._skip else said
 
+    @property
+    def turn_open(self) -> bool:
+        """The recognizer's current turn has words and has not ended."""
+        return bool(self._raw_turn()) and not self._turn_ended
+
     def turn_text(self) -> str:
         """The words of the recognizer's current turn, less any forgotten. A turn it
         has ended stays current until its next words arrive."""
@@ -157,6 +164,7 @@ class Listener:
         said = self._this_turn()
         if not said:
             return
+        self.began = asyncio.get_running_loop().time()
         self._rules.heard(final=self._turn_ended, has_text=True)
         if self._turn_ended:
             self._end_turn()
@@ -272,6 +280,8 @@ class Listener:
                     await self._signal("resumed")
                 if heard.turn in ("maybe", "resumed") and self._provider.turns:
                     await self._signal(heard.turn)
+                if self.began is None and self.text():
+                    self.began = asyncio.get_running_loop().time()
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:

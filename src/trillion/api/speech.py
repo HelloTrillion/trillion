@@ -72,6 +72,8 @@ class Speaker:
         # What she wrote for each sentence sent, by its number: the history keeps her
         # words, not the spoken form of them (D8).
         self._said: list[tuple[int, str]] = []
+        # And what was sent to be said, which an echo of her repeats.
+        self._spoken: dict[int, str] = {}
         # This round's text as she wrote it, and where in it each sentence sent ends:
         # what was heard is kept as written, line breaks and all. A round ends when a
         # tool runs, and what came before it is saved whole.
@@ -115,11 +117,26 @@ class Speaker:
         heard = [end for n, end in self._ends.items() if n <= self._heard_seq]
         return self._written[: max(heard)] if heard else ""
 
-    def playing(self, *, ahead: int = 0) -> tuple[str, ...]:
+    def playing(self, *, ahead: int = 0, spoken: bool = False) -> tuple[str, ...]:
         """The sentence being heard and the one before: what an echo of her would say.
-        With `ahead`, that many after it too: her audio runs ahead of its reports."""
+        With `ahead`, that many after it too: her audio runs ahead of its reports. With
+        `spoken`, each as it was sent to be said as well ("five dollars" for "$5")."""
         heard = self._heard_seq
-        return tuple(s for n, s in self._said if heard - 1 <= n <= heard + ahead)
+        return self._forms([n for n, _ in self._said if heard - 1 <= n <= heard + ahead], spoken)
+
+    def _forms(self, seqs: list[int], spoken: bool) -> tuple[str, ...]:
+        written = dict(self._said)
+        out: list[str] = []
+        for n in seqs:
+            out.append(written[n])
+            if spoken and self._spoken.get(n, written[n]) != written[n]:
+                out.append(self._spoken[n])
+        return tuple(out)
+
+    def last(self, n: int = 2) -> tuple[str, ...]:
+        """Her final sentences sent to be played, written and as said: what an echo of
+        her end would say."""
+        return self._forms([seq for seq, _ in self._said[-n:]], True)
 
     async def finish(self) -> None:
         """The reply is complete. Returns once every sentence has been sent. Its last
@@ -162,6 +179,7 @@ class Speaker:
             return
         self._count += 1
         self._said.append((self._count, sentence))
+        self._spoken[self._count] = text
         self._ends[self._count] = end
         await self._send("reply.sentence", turn=self._turn, seq=self._count, text=text)
         if self._provider.where != "core":

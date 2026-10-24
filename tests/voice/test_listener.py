@@ -435,3 +435,23 @@ async def test_a_watch_becomes_a_patient_follow_up_window() -> None:
     listener.hear(patience_s=3.0)
     assert await feed(listener, room(3.1)) == "nothing"
     await listener.abandon()
+
+
+async def test_a_watch_knows_whether_the_recognizer_turn_is_still_going() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    assert not listener.turn_open and listener.began is None
+    stt.stream.say("third thing", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_open
+    listener.forget()
+    assert listener.turn_open  # let go of, but the recognizer's turn goes on
+    stt.stream.say("third thing to know", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    assert not listener.turn_open
+    assert listener.began is None  # nothing heard as the user yet
+    listener.hear()
+    stt.stream.say("hello", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.began is not None
+    await listener.abandon()
