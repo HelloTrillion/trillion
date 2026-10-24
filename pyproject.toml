@@ -102,7 +102,7 @@ packages = ["trillion"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*"]
+module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*"]
 strict = true
 
 [tool.pytest.ini_options]
