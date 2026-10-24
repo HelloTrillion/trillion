@@ -66,7 +66,7 @@ How far her words are heard from where she was placed (`align`, `offset_s()`) is
 
 The watching `Listener` keeps the RMS of every 20 ms of audio it forwards, on the same clock, for the last 30 s. `mic_level(t0, t1)` gives the level over a span.
 
-`ROOM` is the room's own level: the median of the windows outside her playback in which no word was heard, starting at 0.002. `OVER_ROOM = 4`, as in the page's detector.
+`ROOM` is the room's own level: the median of the last 10 s of windows outside her playback and at least 0.25 s from any word heard, starting at 0.002. `OVER_ROOM = 4`, as in the page's detector.
 
 ### 4. Judging a word
 
@@ -77,13 +77,13 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
    - Matching is loose: lowercase, punctuation stripped, numbers spelled out, and another form of the word in either direction. That is a prefix of 4+ letters, or 3+ letters followed by an ending (s, es, d, ed, ing, er, ers, ly, 's), with a final "e" dropped ("leave" and "leaving"). So "ask" and "asked" match, but "the" and "then", or "for" and "forget", do not.
    - A stop word is `hers` only if her sentence holds that word or an inflection of it ("stop" and "stopped").
    - A word the recognizer wrote as several ("twenty-six", "$5") matches only if all its parts do.
-   - Her own words said by the user over her ("send it" over "Should I send it or wait?") are `theirs` only once `echo_share` is learned from 5+ words, and when `mic ≥ max(2 × OVER_ECHO × echo_share × her_wide, ROOM × OVER_ROOM)`. `her_wide` is her level over the word widened by 0.3 s each side, since a word's times can be a little off hers.
+   - Her own words said by the user over her ("send it" over "Should I send it or wait?") are `theirs` only once `echo_share` is learned from 5+ words, and when `mic ≥ max(2 × OVER_ECHO × echo_share × her_wide, ROOM × OVER_ROOM)`. `her_wide` is her loudest 20 ms over the word widened by 0.3 s each side, since a word's times can be a little off hers and her echo may peak where the word was heard.
 3. **During her playback, not matching:** loudness decides.
    - `mic` is the microphone over the first half of the word (`Listener.word_level`): a word's end often runs on into the next voice, so her word just before the user starts would otherwise take their loudness. `expected = her_level(word) × echo_share`.
    - `theirs` if `mic ≥ max(expected × OVER_ECHO, ROOM × OVER_ROOM)`, with `OVER_ECHO = 2.5`.
    - Otherwise `hers`: a misheard echo.
 
-**Learning `echo_share`.** It is the median of `mic / her_level` over words judged `hers` by rule 2, clamped to [0.02, 1.0], over the last 50. It starts at 0.5, which is cautious: misheard echo stays hers. Once it has learned from 5 words, a word at `OVER_ECHO` times the current value or more is not learned from, because that is the user saying her word. The session learns from words that match her sentence (`matched`), once each. It is learned per session and kept across her replies.
+**Learning `echo_share`.** It is the median of `mic / her_level` over words judged `hers` by rule 2, clamped to [0.02, 1.0], over the last 20. It starts at 0.5, which is cautious: misheard echo stays hers. Once it has learned from 5 words, a word louder than `OVER_ECHO` times the current value counts only as `OVER_ECHO` times it: one loud word (the user saying her word) can't jump it, but her echo turned up still climbs, a step at a time. The session learns from words that match her sentence (`matched`), once each. It is learned per session and kept across her replies.
 
 ### 5. Using the judgement
 
@@ -133,11 +133,12 @@ Changes from the design above, after review and the live runs:
 - **A follow-up window opened without a watch** has no clock of hers. Her last sentence is taken to end as it opens (`Timeline.ending_at(0.0)`), so her echo still in the air, in its first `TAIL_S`, is hers.
 - **The clock offset is measured, not applied.** `Timeline.align` notes, for each of her words heard within 1.5 s of where she was placed saying it (taken as even steps through the sentence), how far off it was; `offset_s()` is the median. The session logs it, as a number only, when the next reply begins. The reports should be early by capture latency plus a part frame (about 0.05 to 0.2 s), inside the margins; apply it only if live logs show more.
 - **Watching a voice the page makes is refused** by the core, as the page already doesn't ask.
+- **Her echo turned up mid-session** (`EchoShare.learn`): a word far louder than her echo so far is clamped to `OVER_ECHO` times the current share instead of being discarded. Discarding it had locked the share low when the fake-microphone echo was switched from 8% to 35% mid-session, and her misheard words then leaked as the user's. Clamped, the share climbs a step at a time: after a full 20 words at 8%, about 21 of her matched words to follow a jump to 35%.
 
 **Known limits:**
 
-- **Loud echo without echo cancellation** (35% in the fake-microphone runs): a misheard proper noun of hers ("Shen Nong" heard as "Shanong") can be taken as theirs, and the user's first word overlapping her loud echo can be lost. Real echo cancellation leaves far less of her.
-- **Her echo getting louder mid-session** (headphones unplugged, speakers turned up): once `echo_share` has learned from 5 words, her words at 2.5 times its value or more are not learned from, so it cannot rise to the new level, and her misheard words stay louder than her echo is expected to be.
+- **Loud echo without echo cancellation** (35% in the fake-microphone runs) passes in a fresh session: echo only gives no turn, and "What about Tuesday?" over her and "Yes." after her question are exact (live, on the final code). A misheard proper noun of hers taken as theirs, or the user's first word lost under her loud echo, remain possible at such levels; real echo cancellation leaves far less of her.
+- **Her echo getting louder mid-session** (headphones unplugged, speakers turned up): `echo_share` follows, but gradually (about 21 of her matched words for a jump from 8% to 35%, see As built). Until it has, her misheard words can be louder than her echo is expected to be and be taken as theirs.
 - **Without a watch**, only the first `TAIL_S` of the window is judged against her; a late report of her echo timed after that is theirs.
 - **A user word whose recognizer start time comes early**, into the quiet before it, is measured partly over that quiet.
 

@@ -26,7 +26,7 @@ a radio. This spec makes three changes, Deepgram first:
 | D6 | **Acknowledgements are a short English list.** In any other language every word counts as an interruption. | Wrong in the safe direction: the user is heard. |
 | D7 | **Hearing that cannot give words mid-speech keeps today's barge-in.** With local Whisper or OpenAI, a voice over hers stops her at once, as now. | There are no words to judge with. |
 | D8 | **An interrupted spoken reply is kept up to the sentence being heard,** then "…" and the existing interrupted marker. Text she wrote but never said is dropped from the conversation, the screen and her memory. | The record matches what happened. |
-| D9 | **With hearing that judges turns, the microphone streams to it while she speaks, and her echo is told from the user by the words** (*as built after the second live test*). The page's loudness detector is used only for hearing that cannot judge turns. | What the user chose. Over speakers, the detector missed the user or lost their first words (see §3). |
+| D9 | **With hearing that judges turns, the microphone streams to it while she speaks, and her echo is told from the user by the words** (*as built after the second live test*; since #102, by when each word was said: `docs/specs/2026-10-24-echo-timing.md`). The page's loudness detector is used only for hearing that cannot judge turns. | What the user chose. Over speakers, the detector missed the user or lost their first words (see §3). |
 
 ## What the user sees
 
@@ -111,7 +111,8 @@ words were lost:
 - only 600 ms before the detection was kept, so earlier words were gone.
 
 So, with hearing that judges turns, the microphone now streams to the recognizer for as
-long as she speaks, and the core decides by the words.
+long as she speaks, and the core decides whose the words are (since #102, by when each
+word was said: `docs/specs/2026-10-24-echo-timing.md`).
 
 **The page** (`apps/web/src/main.ts`, `barge.ts`):
 
@@ -156,8 +157,9 @@ long as she speaks, and the core decides by the words.
 - **When:** a reply is coming or being heard: a running turn (including the moment
   right after the user's turn, before her reply starts), her last spoken reply still
   playing (`_tail`), or her sound not yet reported played. Hearing must judge turns,
-  a model and a voice must be set, her voice must not be off, and no listening may be
-  open. Otherwise it answers `overlap.over` with `end: true`.
+  a model and a voice made in the core must be set (#102: her echo is told apart by
+  her own audio), her voice must not be off, and no listening may be open.
+  Otherwise it answers `overlap.over` with `end: true`.
 - **Watching:** a `Listener` in watch mode streams every frame and never ends by
   itself; the recognizer's turns come and go. Nothing heard is shown, and no draft
   starts.
