@@ -105,6 +105,17 @@ class Listener:
         """What has been heard so far, for deciding while she talks (VOI-9)."""
         return self.text()
 
+    def promote(
+        self,
+        *,
+        on_partial: Callable[[str], Awaitable[None]],
+        on_turn: Callable[[str, str], Awaitable[None]] | None,
+    ) -> None:
+        """Words heard over her turned out to be the user's turn (VOI-9): from here they
+        are shown, and the recognizer's turn signals are passed on."""
+        self._on_partial = on_partial
+        self._on_turn = on_turn
+
     async def start(self) -> None:
         """Connect to the recognizer. Raises VoiceError; audio sent meanwhile is kept."""
         stream = await self._provider.open(choice=self._choice)
