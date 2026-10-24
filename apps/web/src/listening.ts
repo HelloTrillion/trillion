@@ -163,6 +163,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     pickRow.hidden = !o;
     earlyRow.hidden = !o?.turns;
     early.checked = state?.think_early ?? true;
+    early.disabled = busy;
     keyInput.disabled = busy || !state?.keychain;
     keyInput.placeholder = o?.key ? 'Leave empty to keep the saved key' : 'Paste your key';
     keyHint.textContent = !state?.keychain
@@ -252,13 +253,15 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     }
   }
 
-  early.addEventListener('change', () =>
+  early.addEventListener('change', () => {
+    // Read it first: run() refreshes the panel, which puts the stored value back.
+    const on = early.checked;
     void run(async () => {
-      const r = await api('PUT', '/api/settings/listening/think-early', { on: early.checked });
+      const r = await api('PUT', '/api/settings/listening/think-early', { on });
       if (r.ok) state = (await r.json()) as State;
-      else early.checked = !early.checked;
-    }),
-  );
+      else status.textContent = await problem(r);
+    });
+  });
   pick.addEventListener('change', refresh);
   check.addEventListener('click', () => void run(list));
   fetchBtn.addEventListener('click', () =>

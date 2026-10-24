@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from tests.api.test_server import SAMPLE_KEY, App, home, listening, make, speech  # noqa: F401
-from trillion.api.runtime import Runtime, open_runtime
+from trillion.api.runtime import OWNER, THINK_EARLY_PREF, Runtime, open_runtime
 from trillion.voice.providers.deepgram import Deepgram
 from trillion.voice.types import Choice
 
@@ -70,3 +70,24 @@ def test_turning_her_ears_off_keeps_what_was_chosen(
         assert again.listening_last.choice == "en"
     finally:
         asyncio.run(again.close())
+
+
+def test_thinking_early_survives_a_restart(make: Any, home: Path) -> None:
+    app = make(model=False)
+    off = app.client.put(
+        "/api/settings/listening/think-early", json={"on": False}, headers=app.auth
+    )
+    assert off.status_code == 200
+
+    again: Runtime = asyncio.run(open_runtime(secrets=app.secrets, env={}, persona=home))
+    try:
+        assert again.think_early is False
+        # Anything that is not a saved "off" means on.
+        asyncio.run(again.preferences.put(OWNER, THINK_EARLY_PREF, "x", again.clock()))
+    finally:
+        asyncio.run(again.close())
+    third: Runtime = asyncio.run(open_runtime(secrets=app.secrets, env={}, persona=home))
+    try:
+        assert third.think_early is True
+    finally:
+        asyncio.run(third.close())
