@@ -164,13 +164,83 @@ async def test_a_judging_recognizer_ends_the_turn_on_done_and_reports_maybe() ->
     await listener.start()
     assert await listener.audio(tone(0.6)) is None
     stt.stream.say("I need to remember to", final=False, turn="maybe")
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
     stt.stream.say("I need to remember to", final=False, turn="resumed")
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
     assert await listener.audio(room(2.5)) is None  # a pause, not the end
     stt.stream.say("I need to remember to call the dentist", final=True, turn="done")
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
     assert await listener.audio(room(0.04)) == "end"
     assert seen == [("maybe", "I need to remember to"), ("resumed", "I need to remember to")]
     said = await listener.end()
     assert said.text == "I need to remember to call the dentist"
+
+
+async def test_a_failing_turn_handler_does_not_stop_hearing() -> None:
+    stt = FakeSTT(turns=True)
+
+    async def broken(kind: str, text: str) -> None:
+        raise RuntimeError("boom")
+
+    listener = Listener(stt, "en", on_partial=nothing, on_turn=broken)
+    await listener.start()
+    await listener.audio(tone(0.6))
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await asyncio.sleep(0.01)
+    stt.stream.say("call the dentist", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    assert await listener.audio(room(0.04)) == "end"
+    assert (await listener.end()).text == "call the dentist"
+
+
+async def test_done_with_no_text_keeps_what_was_heard() -> None:
+    stt = FakeSTT(turns=True)
+    listener = Listener(stt, "en", on_partial=nothing)
+    await listener.start()
+    await listener.audio(tone(0.6))
+    stt.stream.say("call the dentist", final=False)
+    await asyncio.sleep(0.01)
+    stt.stream.say("", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    assert await listener.audio(room(0.04)) == "end"
+    assert (await listener.end()).text == "call the dentist"
+
+
+async def test_nothing_after_done_joins_the_turn() -> None:
+    stt = FakeSTT(turns=True)
+    listener = Listener(stt, "en", on_partial=nothing)
+    await listener.start()
+    await listener.audio(tone(0.6))
+    stt.stream.say("call the dentist", final=True, turn="done")
+    stt.stream.say("and then", final=False)
+    stt.stream.say("and then the bank", final=True)
+    await asyncio.sleep(0.01)
+    assert (await listener.end()).text == "call the dentist"
+
+
+async def test_a_recognizer_that_does_not_judge_never_calls_on_turn() -> None:
+    stt = FakeSTT(turns=False)
+    seen: list[str] = []
+
+    async def on_turn(kind: str, text: str) -> None:
+        seen.append(kind)
+
+    listener = Listener(stt, "en", on_partial=nothing, on_turn=on_turn)
+    await listener.start()
+    stt.stream.say("hello", final=False, turn="maybe")
+    await asyncio.sleep(0.01)
+    assert seen == []
+    await listener.abandon()
+
+
+async def test_a_judged_turn_still_stops_when_it_runs_too_long() -> None:
+    stt = FakeSTT(turns=True)
+    listener = Listener(stt, "en", on_partial=nothing)
+    await listener.start()
+    assert await feed(listener, tone(125.0)) == "too_long"
+    await listener.abandon()
+
+
+def test_describe_reports_a_judging_recognizer() -> None:
+    described = listening.describe(FakeSTT(turns=True), "deepgram", "x")
+    assert described is not None and described["turns"] is True

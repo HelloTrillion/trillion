@@ -128,6 +128,11 @@ class EndOfSpeech:
         if final and has_text:
             self._last_final = self.now
 
+    @property
+    def is_over(self) -> bool:
+        """The recognizer that judges turns has said this one is over."""
+        return self._over
+
     def turn_over(self) -> None:
         """The recognizer that judges turns says this one is over (VOI-12)."""
         self._over = True

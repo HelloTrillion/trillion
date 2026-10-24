@@ -136,9 +136,15 @@ class Listener:
     async def _read(self, stream: STTStream) -> None:
         try:
             async for heard in stream.events():
+                if self._rules.is_over:
+                    # The next turn's first words can arrive while we wrap up; they
+                    # are not part of this one.
+                    continue
                 if heard.turn == "done":
-                    # The whole turn, as the recognizer finally heard it.
-                    self._finals = [heard.text] if heard.text else self._finals
+                    # The whole turn, as the recognizer finally heard it. An empty
+                    # done keeps what the interim words said.
+                    kept = self.text()
+                    self._finals = [heard.text] if heard.text else ([kept] if kept else [])
                     self._interim = ""
                     self._rules.heard(final=True, has_text=bool(heard.text))
                     self._rules.turn_over()
@@ -153,8 +159,8 @@ class Listener:
                     # message so far reads as finished; otherwise the patient rules apply.
                     done = heard.pause and sounds_finished(self.text())
                     self._rules.heard(final=heard.final, has_text=bool(heard.text), done=done)
-                if heard.turn in ("maybe", "resumed") and self._on_turn is not None:
-                    await self._on_turn(heard.turn, self.text())
+                if heard.turn in ("maybe", "resumed") and self._provider.turns:
+                    await self._signal(heard.turn)
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:
@@ -165,6 +171,17 @@ class Listener:
             # The class name only: a recognizer's message can quote what it heard.
             logger.error("recognizer %s failed: %s", self._provider.name, type(e).__name__)
             self._error = VoiceError("internal")
+
+    async def _signal(self, kind: str) -> None:
+        if self._on_turn is None:
+            return
+        try:
+            await self._on_turn(kind, self.text())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # A broken handler must not stop hearing. The class name only.
+            logger.error("turn signal handler failed: %s", type(e).__name__)
 
     async def end(self) -> Utterance:
         """Stop the audio and collect everything that was said."""
