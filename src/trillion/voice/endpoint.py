@@ -89,29 +89,6 @@ def level(pcm: bytes) -> float:
     return float((sum(s * s for s in samples) / len(samples)) ** 0.5 / 32768)
 
 
-class Onsets:
-    """Where voices start, by loudness alone: for placing words in time, since a
-    recognizer reports them well after they were said."""
-
-    def __init__(self) -> None:
-        self._noise = 0.002
-        self._run = 0.0
-        self._on = False
-
-    def audio(self, pcm: bytes) -> float | None:
-        """One frame. When a voice has just started, how many seconds ago it began."""
-        loud = level(pcm)
-        if loud > max(_MIN_SPEECH, self._noise * _OVER_NOISE):
-            self._run += len(pcm) / 2 / SAMPLE_RATE
-            if not self._on and self._run >= _ONSET_S:
-                self._on = True
-                return self._run
-            return None
-        self._run, self._on = 0.0, False
-        self._noise += (loud - self._noise) * 0.05
-        return None
-
-
 class EndOfSpeech:
     def __init__(
         self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S, judged: bool = False

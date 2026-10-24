@@ -147,11 +147,6 @@ class Speaker:
                 out.append(self._spoken[n])
         return tuple(out)
 
-    def last(self, n: int = 2) -> tuple[str, ...]:
-        """Her final sentences sent to be played, written and as said: what an echo of
-        her end would say."""
-        return self._forms([seq for seq, _ in self._said[-n:]], True)
-
     async def finish(self) -> None:
         """The reply is complete. Returns once every sentence has been sent. Its last
         round stays known: she can still be talked over while it plays."""

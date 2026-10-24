@@ -51,8 +51,11 @@ class Timeline:
             known.levels.extend(levels)
 
     def begin(self, *, at_s: float) -> None:
-        """The watch opened here: her first sentence can't start earlier."""
+        """A watch opened here, on a new listener's clock: her first sentence can't
+        start earlier, and starts reported on an earlier clock no longer place her."""
         self.watch_s = at_s
+        for s in self.sentences.values():
+            s.start_s = None
 
     def start(self, seq: int, *, at_s: float) -> None:
         """The page reported sentence `seq` playing, with this much audio sent."""
@@ -84,6 +87,10 @@ class Timeline:
             out.append((s, start))
             prev_end = start + s.length_s
         return out
+
+    def spans(self) -> list[tuple[float, float]]:
+        """When each placed sentence of hers played, without margins."""
+        return [(start, start + s.length_s) for s, start in self._spans()]
 
     def at(self, t: float) -> Spoken | None:
         """The sentence playing at `t` on the recognizer's clock, margins included.

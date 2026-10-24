@@ -7,9 +7,9 @@ once. Words that are all in what she is saying are her own voice coming back.
 The list is English; in another language every word stops her, which is the safe
 way to be wrong.
 
-Before any of that, while she speaks, the words heard are watched (`judge_watch`):
-mostly hers is her own voice coming back, and only words that are mostly not hers
-start the deciding.
+While she speaks, whose each word is (hers or the user's) is judged by when it was
+said (`voice/whose.py`); only the user's words reach `confirm`. The word matching
+that judgement uses lives here (`words_of`, `matches`, `is_stop`).
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from collections.abc import Collection, Sequence
 from typing import Literal
 
 Decision = Literal["wait", "carry_on", "interrupt"]
-Watch = Literal["nothing", "echo", "candidate"]
 
 # Acknowledgements alone carry on once the recognizer says they are done, or after this.
 ACK_AFTER_S = 1.2
@@ -46,13 +45,8 @@ _ACKS = (
     )
     | _FILLERS
 )
-# Words heard while she speaks are her echo when at least this share of them is in
-# what she is saying: a recognizer mishears some of her, and a stray word of the user's
-# among hers is not yet them talking.
-ECHO_SHARE = 0.6
-# Fewer words than this that are not hers are not yet the user: a recognizer mishears
-# one of hers ("noon" as "new") as each report adds a word. A stop word is enough alone.
-_MOST_STRAYS = 1
+# Ended on this many words not hers, the recognizer's turn is the user's (see `confirm`).
+_ENDED_STRAYS = 2
 # Her words reached the microphone and the recognizer in any of these spellings.
 _SYMBOLS = {"$": " dollars ", "\u00a3": " pounds ", "\u20ac": " euros ", "%": " percent "}
 _BOUNDARY = re.compile(r"(?<=\d)(?=[^\W\d_])|(?<=[^\W\d_])(?=\d)")
@@ -142,20 +136,6 @@ def decide(words: str, *, done: bool, elapsed_s: float, playing: Sequence[str]) 
     return "carry_on" if done or elapsed_s >= ACK_AFTER_S else "wait"
 
 
-def keys(text: str) -> tuple[str, ...]:
-    """Each word as the recognizer spaced it, without case or punctuation: for telling
-    whether words already judged are still the start of what is heard."""
-    return tuple(" ".join(_words(token)) for token in text.split())
-
-
-def judged_prefix(words: str, judged: Sequence[str]) -> int:
-    """How many of the words, from the start, are the ones already judged. None of them
-    when the recognizer has revised those words since: then all are judged again."""
-    heard = keys(words)
-    n = len(judged)
-    return n if n and heard[:n] == tuple(judged) else 0
-
-
 def _hers(playing: Sequence[str]) -> set[str]:
     return {w for sentence in playing for w in _words(sentence)}
 
@@ -166,15 +146,20 @@ def _hers(playing: Sequence[str]) -> set[str]:
 _STEM = 3
 
 
+def is_stop(w: str) -> bool:
+    """Whether a word (as `words_of` gives it) means "stop"."""
+    return w in _STOPS
+
+
+def is_filler(w: str) -> bool:
+    """Whether a word (as `words_of` gives it) is someone thinking aloud ("um")."""
+    return w in _FILLERS
+
+
 def _mine(w: str, hers: set[str]) -> bool:
     """Whether a heard word is one of hers: the same word, or a stop word she said in
     another form (stop and stopped, wait and waiting)."""
     return w in hers or (w in _STOPS and matches(w, hers, stop=True))
-
-
-def is_stop(w: str) -> bool:
-    """Whether a word (as `words_of` gives it) means "stop"."""
-    return w in _STOPS
 
 
 # A longer word is another form of a shorter one when it is at least this long ("send"
@@ -206,61 +191,6 @@ def matches(w: str, hers: Collection[str], *, stop: bool = False) -> bool:
     return any(_inflects(w, h) or _inflects(h, w) for h in hers)
 
 
-def _stop(w: str, hers: set[str]) -> bool:
-    """A stop word that is the user's, not her own come back."""
-    return w in _STOPS and not _mine(w, hers)
-
-
-def judge_watch(words: str, playing: Sequence[str]) -> Watch:
-    """Words heard while she speaks: nothing, her own voice coming back, or perhaps the
-    user. `playing` is what she is saying now: the sentence being heard, the one before
-    and the one after, since her audio runs ahead of its reports.
-
-    Mostly hers is her echo; her own "No, the train..." comes back as hers. Otherwise
-    it takes two words that are not hers (fillers aside), or one that is a stop word,
-    to be a candidate: one misheard word of hers is not the user. Once words are a
-    candidate, `decide` weighs them, and there a stop word stops her."""
-    heard = _words(words)
-    if not heard:
-        return "nothing"
-    hers = _hers(playing)
-    mine = sum(_mine(w, hers) for w in heard)
-    if mine / len(heard) >= ECHO_SHARE:
-        return "echo"
-    strays = [w for w in heard if not _mine(w, hers) and w not in _FILLERS]
-    if len(strays) > _MOST_STRAYS or any(w in _STOPS for w in strays):
-        return "candidate"
-    return "echo" if mine else "nothing"
-
-
-def share_hers(words: str, playing: Sequence[str]) -> float:
-    """How much of the words are hers, 0 to 1."""
-    heard = _words(words)
-    hers = _hers(playing)
-    return sum(w in hers for w in heard) / len(heard) if heard else 0.0
-
-
-def _is_hers(token: str, hers: set[str]) -> bool:
-    return all(_mine(w, hers) for w in _words(token))
-
-
-def echo_through(words: str, playing: Sequence[str]) -> int:
-    """How many of the words, as the recognizer spaced them, are her echo: up to her
-    last word, taking in a word not hers only when two of hers follow it (a misheard
-    word inside her sentence). One of hers after it ("skip" then "that") is not enough:
-    that word may be the user's, and stays to be judged."""
-    hers = _hers(playing)
-    mark, run, stray = 0, 0, False
-    for i, token in enumerate(words.split()):
-        if _is_hers(token, hers):
-            run += 1
-            if not stray or run >= 2:
-                mark, stray = i + 1, False
-        else:
-            run, stray = 0, True
-    return mark
-
-
 def confirm(
     candidate: str,
     after: str,
@@ -284,6 +214,8 @@ def confirm(
     turns of her echo at her pauses too."""
     hers = _hers(playing)
     heard = _words(candidate) + _words(after)
+    if not heard:
+        return "carry_on" if elapsed_s >= CONFIRM_S else "wait"
     theirs = [w for w in heard if not _mine(w, hers)]
     if any(w in _STOPS for w in theirs):
         return "interrupt"
@@ -298,65 +230,6 @@ def confirm(
         return "interrupt"
     whole = _words(turn) if turn is not None else heard
     whole_theirs = sum(not _mine(w, hers) for w in whole) / len(whole) if whole else 0.0
-    if done and len(said) > _MOST_STRAYS and whole_theirs > 1 - _HALF:
+    if done and len(said) >= _ENDED_STRAYS and whole_theirs > 1 - _HALF:
         return "interrupt"
     return "carry_on" if elapsed_s >= CONFIRM_S else "wait"
-
-
-def _within(run: list[str], seq: list[str]) -> bool:
-    """Whether the words appear in this order, one after another, in the sequence."""
-    n = len(run)
-    return any(seq[i : i + n] == run for i in range(len(seq) - n + 1))
-
-
-def echo_of(words: str, playing: Sequence[str], *, early: bool) -> str:
-    """A turn heard just as she stopped, less her own last words come back: "" when it
-    is only her. Only on evidence: three or more of her words in her order (in front,
-    taken off; mostly her, all of it), or for one or two words, exactly her final ones
-    heard at once (`early`). A reply that reuses her words ("Six?" after "...leave at
-    six?") is theirs, and anything with a stop word in it always is."""
-    heard = _words(words)
-    mine = _hers(playing)
-    if not heard or any(_stop(w, mine) for w in heard):
-        return words.strip()
-    # Her own stop word at the end of theirs ("Skip that. No." over her "No, the
-    # train…") is her, come back as they spoke: taken off.
-    tokens = words.split()
-    while len(tokens) > 1 and all(w in _STOPS and _mine(w, mine) for w in _words(tokens[-1])):
-        tokens.pop()
-    if len(tokens) < len(words.split()):
-        words = " ".join(tokens)
-        heard = _words(words)
-    hers = [w for sentence in playing for w in _words(sentence)]
-    if len(heard) <= 2:
-        return "" if early and hers[-len(heard) :] == heard else words.strip()
-    lead = max((k for k in range(1, len(heard) + 1) if _within(heard[:k], hers)), default=0)
-    if lead == len(heard):
-        return ""
-    if lead >= 3:
-        # Off with the tokens that carried those words; the rest is theirs.
-        tokens, taken = words.split(), 0
-        while tokens and taken + len(_words(tokens[0])) <= lead:
-            taken += len(_words(tokens.pop(0)))
-        return " ".join(tokens)
-    runs = any(_within(heard[i : i + 3], hers) for i in range(len(heard) - 2))
-    if runs and share_hers(words, playing) >= ECHO_SHARE:
-        return ""
-    return words.strip()
-
-
-def is_said(words: str) -> bool:
-    """Whether there is a word in it that is not a filler."""
-    return any(w not in _FILLERS for w in _words(words))
-
-
-def late_echo(words: str, start: int, stop: int, playing: Sequence[str]) -> str:
-    """Her words come back after theirs as she was stopped: from word `start` (what had
-    been heard at the cut-in), the run of hers is taken out, up to the first word that
-    is not hers, and only among words heard by `stop`."""
-    hers = _hers(playing)
-    tokens = words.split()
-    end = start
-    while end < min(stop, len(tokens)) and _is_hers(tokens[end], hers):
-        end += 1
-    return " ".join(tokens[:start] + tokens[end:]) if end > start else words.strip()

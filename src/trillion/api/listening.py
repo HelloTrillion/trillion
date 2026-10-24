@@ -11,7 +11,7 @@ import contextlib
 import logging
 import statistics
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,13 +19,12 @@ from trillion.voice.endpoint import (
     NOTHING_AFTER_S,
     SAMPLE_RATE,
     EndOfSpeech,
-    Onsets,
     Verdict,
     leads_on,
     level,
     sounds_finished,
 )
-from trillion.voice.overlap import keys
+from trillion.voice.overlap import words_of
 from trillion.voice.types import Heard, STTProvider, STTStream, VoiceError, Word
 
 logger = logging.getLogger(__name__)
@@ -38,10 +37,10 @@ BATCH_WRAP_UP_S = 60.0
 _MAX_BACKLOG = 16_000 * 2 * 10
 # The window that reopens after she speaks waits this long for a first word (VOI-8).
 FOLLOW_UP_S = 3.0
-# A recognizer reports a word about this long after it was said, and never sooner
-# than the shorter time.
-REPORT_LAG_S = 0.4
-MIN_LAG_S = 0.15
+# A word reported without a time is taken as said this long before its report, the
+# usual lag of a recognizer, and lasting this long either side of then (#102).
+UNTIMED_LAG_S = 0.4
+_UNTIMED_HALF_S = 0.1
 # The microphone's loudness is kept per 20 ms of audio sent, for this long (#102).
 LEVEL_WINDOW_S = 0.02
 _SAMPLE_BYTES = 2  # PCM16
@@ -53,6 +52,10 @@ LEVELS_KEPT_S = 30.0
 ROOM_LOOKBACK_S = 10.0
 NEAR_WORD_S = 0.25
 ROOM_DEFAULT = 0.002
+
+
+# Which of these words to keep as the user's (#102): one answer per word.
+Judge = Callable[[Sequence[Word]], Sequence[bool]]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -97,25 +100,8 @@ class Listener:
         self._watching = watch
         # The recognizer said its current turn is over; its next words start another.
         self._turn_ended = False
-        # Words at the start of the recognizer's current turn already judged and let go.
-        # Its reports repeat the whole turn so far, so they are skipped, not deleted, and
-        # matched as words, not counted: it may revise them ("or writes" to "Skip that").
-        self._forgotten: tuple[str, ...] = ()
-        # When the user's first words were said (the loop's clock), once listening, and
-        # whether a voice starting was heard then, or only the report is to go by.
-        self.began: float | None = None
-        self.began_heard = False
-        # When the words were first reported, once listening.
-        self.seen: float | None = None
-        # When it was cut in on her, if it was: words heard after that may be her echo.
-        self.cut_in: float | None = None
-        # How many words had been heard, as reports came in: (loop time, count).
-        self._grew: deque[tuple[float, int]] = deque(maxlen=256)
-        # When the recognizer's current turn was first reported, and when voices
-        # started in the audio, by the loop's clock, latest last.
-        self._turn_seen: float | None = None
-        self._onsets = Onsets()
-        self._starts: deque[float] = deque(maxlen=32)
+        # Once heard over her, which words are the user's: her echo is left out (#102).
+        self._judge: Judge | None = None
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
@@ -135,8 +121,8 @@ class Listener:
         self._ended_words: tuple[Word, ...] = ()
         self._past_spans: deque[tuple[float, float]] = deque(maxlen=512)
         # Turns the recognizer called done on words that lead on ("... and"): kept,
-        # and what follows joins them (VOI-12).
-        self._held: list[str] = []
+        # with their words, and what follows joins them (VOI-12).
+        self._held: list[tuple[str, tuple[Word, ...]]] = []
         self._holding = False
         self._finals: list[str] = []
         self._interim = ""
@@ -191,7 +177,7 @@ class Listener:
     def turn_words(self) -> tuple[Word, ...]:
         """The timed words of the recognizer's current turn, latest report. A turn it
         has ended keeps its words until its next turn's words arrive. Words reported
-        without times are missing here (the text still has them)."""
+        without times are placed at their report less the usual lag."""
         return (*self._final_words, *self._interim_words)
 
     def ended_words(self) -> tuple[Word, ...]:
@@ -220,26 +206,37 @@ class Listener:
         return statistics.median(quiet) if quiet else ROOM_DEFAULT
 
     def text(self) -> str:
-        return " ".join(p for p in (*self._held, self._this_turn()) if p).strip()
+        """What the user said: words held, then the current turn's, less her echo once
+        a judge is set."""
+        held = [self._kept(text, words) for text, words in self._held]
+        return " ".join(p for p in (*held, self._this_turn()) if p).strip()
+
+    def raw_text(self) -> str:
+        """Everything the recognizer heard, her echo included."""
+        held = [text for text, _ in self._held]
+        return " ".join(p for p in (*held, self._raw_turn()) if p).strip()
+
+    def heard_words(self) -> tuple[Word, ...]:
+        """The words held and the current turn's, each with when it was said."""
+        held = [w for _, words in self._held for w in words]
+        return (*held, *self.turn_words())
 
     def _raw_turn(self) -> str:
         return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 
-    def _skipped(self, tokens: list[str]) -> int:
-        """How many of the turn's words, from its start, are still the ones let go."""
-        n = 0
-        for heard, gone in zip(keys(" ".join(tokens)), self._forgotten, strict=False):
-            if heard != gone:
-                break
-            n += 1
-        return n
+    def _kept(self, text: str, words: Sequence[Word]) -> str:
+        """The words the judge keeps, spelled as the text has them when it can be lined
+        up with them, so punctuation stays ("Tuesday?")."""
+        if self._judge is None or not text:
+            return text
+        keep = self._judge(words)
+        tokens = text.split()
+        if len(tokens) == len(words):
+            return " ".join(t for t, k in zip(tokens, keep, strict=True) if k)
+        return " ".join(w.text for w, k in zip(words, keep, strict=True) if k)
 
     def _this_turn(self) -> str:
-        said = self._raw_turn()
-        if not self._forgotten:
-            return said
-        tokens = said.split()
-        return " ".join(tokens[self._skipped(tokens) :])
+        return self._kept(self._raw_turn(), self.turn_words())
 
     @property
     def turn_done(self) -> bool:
@@ -251,84 +248,33 @@ class Listener:
         """The recognizer's current turn has words and has not ended."""
         return bool(self._raw_turn()) and not self._turn_ended
 
-    def whole_turn(self) -> str:
-        """The recognizer's current turn as it reports it, words let go included (and
-        words held, when it ended on one that leads on)."""
-        return " ".join(p for p in (*self._held, self._raw_turn()) if p)
-
     def turn_text(self) -> str:
-        """The words of the recognizer's current turn, less any forgotten. A turn it
-        has ended stays current until its next words arrive."""
+        """The words of the recognizer's current turn. A turn it has ended stays current
+        until its next words arrive."""
         return self._this_turn()
 
-    def forget(self, words: int | None = None) -> None:
-        """Let go of words already judged (VOI-9): this many more from the start of the
-        current turn, or, with none given, everything heard so far."""
-        tokens = self._raw_turn().split()
-        if words is None:
-            self._held = []
-            upto = len(tokens)
-        else:
-            upto = self._skipped(tokens) + words
-        self._forgotten = keys(" ".join(tokens[:upto]))
-
-    def hear(self, *, patience_s: float = NOTHING_AFTER_S) -> None:
+    def hear(self, *, patience_s: float = NOTHING_AFTER_S, judge: Judge | None = None) -> None:
         """Stop watching: from here this is listening to the user, with fresh rules for
-        when they have finished. Words of the current turn count as heard, and a turn
-        the recognizer already ended is over (or held, if it leads on)."""
+        when they have finished. Words of the current turn count as heard, those `judge`
+        keeps when one is given, and a turn the recognizer already ended is over (or
+        held, if it leads on)."""
         self._watching = False
         self._verdict = None
         self._holding = False
+        self._judge = judge
         said = self._this_turn()
         self._rules = self._new_rules(patience_s)
         if not said:
             return
-        self.began, self.began_heard = self.turn_began() or self._placed(self._now())
-        self.seen = self._turn_seen or self._now()
-        self._grew.append((self._now(), len(self.text().split())))
         self._rules.heard(final=self._turn_ended, has_text=True)
         if self._turn_ended:
             self._end_turn()
 
-    @staticmethod
-    def _now() -> float:
-        return asyncio.get_running_loop().time()
-
-    def _placed(self, seen: float) -> tuple[float, bool]:
-        """When words first reported at `seen` were said: the last voice to start at
-        least the recognizer's shortest lag before then (the last, not the first since
-        some point: a click before them must not count; and a fast report must not skip
-        the user's own start), and True; else the report less its usual lag, False."""
-        cutoff = seen - MIN_LAG_S
-        start = next((t for t in reversed(self._starts) if t <= cutoff), None)
-        return (start, True) if start is not None else (seen - REPORT_LAG_S, False)
-
-    def mark_cut_in(self) -> None:
-        """It was cut in on her now: what has been heard so far is theirs."""
-        self.cut_in = self._now()
-        self._grew.append((self.cut_in, len(self.text().split())))
-
-    def voice_since(self, start: float, until: float) -> bool:
-        """Whether a voice started in the audio between these times."""
-        return any(start <= t <= until for t in self._starts)
-
-    @property
-    def last_heard(self) -> float | None:
-        """When the latest words were reported."""
-        return self._grew[-1][0] if self._grew else self.seen
-
-    def words_by(self, when: float) -> int:
-        """How many words had been heard by then."""
-        return next((n for t, n in reversed(self._grew) if t <= when), 0)
-
-    def turn_began(self) -> tuple[float, bool] | None:
-        """When the recognizer's current turn was said (see `_placed`), if it has words."""
-        return self._placed(self._turn_seen) if self._turn_seen is not None else None
-
     def watch(self) -> None:
-        """Back to watching, after deciding that what was heard was not a turn. What
-        was heard is let go."""
-        self.forget()
+        """Back to watching, after deciding that what was heard was not a turn. Words
+        held are let go; which words were heard is the session's to remember."""
+        self._held = []
+        self._judge = None
         self._watching = True
         self._verdict = None
         self._holding = False
@@ -359,9 +305,6 @@ class Listener:
         if self._verdict is not None and not self._watching:
             return None
         self.frames += 1
-        # Frames arrive as they are captured, so their arrival places a voice in time.
-        if (ago := self._onsets.audio(pcm)) is not None:
-            self._starts.append(self._now() - ago)
         if self._error is not None:
             raise self._error
         if self._stream is None:
@@ -393,31 +336,55 @@ class Listener:
         self._sent += len(pcm)
 
     def _took_words(self, heard: Heard) -> None:
-        """A report's timed words, kept as its text is."""
+        """A report's timed words, kept as its text is. Words reported without times
+        are placed at the report less the usual lag."""
         if heard.turn == "done":
-            if heard.words:
-                self._final_words = list(heard.words)
+            if heard.text:
+                words = heard.words or self._untimed(heard.text, self.turn_words())
+                self._final_words = list(words)
             else:
                 self._final_words.extend(self._interim_words)
             self._interim_words = ()
         elif heard.final:
-            self._final_words.extend(heard.words)
+            if heard.text:
+                words = heard.words or self._untimed(heard.text, self._interim_words)
+                self._final_words.extend(words)
             self._interim_words = ()
         else:
-            self._interim_words = heard.words
+            self._interim_words = heard.words or self._untimed(heard.text, self._interim_words)
+
+    def _untimed(self, text: str, before: Sequence[Word]) -> tuple[Word, ...]:
+        """Words with no times, placed at this report less the usual lag. A word the
+        last report had in the same place keeps its time: reports repeat the turn."""
+        at = max(_UNTIMED_HALF_S, self.sent_s - UNTIMED_LAG_S)
+        lo, hi = at - _UNTIMED_HALF_S, at + _UNTIMED_HALF_S
+        out: list[Word] = []
+        for i, token in enumerate(text.split()):
+            prior = before[i] if i < len(before) else None
+            if prior is not None and words_of(prior.text) == words_of(token):
+                out.append(prior)
+            else:
+                out.append(Word(text=token, start_s=lo, end_s=hi))
+        return tuple(out)
 
     def _end_turn(self) -> bool:
         """The recognizer's turn is over: held when its words lead on, else ended.
-        True when held."""
+        True when held. A turn with no words of the user's in it is not theirs to end."""
+        said = self._this_turn()
+        if not said and self._raw_turn():
+            # Only her echo: the user may still speak.
+            return False
         if leads_on(self.text()):
             # Done on "and" or "um": they are likely finding their words. Keep
             # listening; the local rules end it if quiet goes on.
-            added, self._finals = [self._this_turn()], []
-            self._held.extend(a for a in added if a)
-            self._forgotten = ()
+            raw, words = self._raw_turn(), self.turn_words()
+            if raw:
+                self._held.append((raw, words))
+            self._past_spans.extend((w.start_s, w.end_s) for w in words)
+            self._finals, self._final_words, self._interim_words = [], [], ()
             self._holding = True
             self._rules.hold()
-            return bool(added[0])
+            return bool(said)
         self._rules.turn_over()
         return False
 
@@ -431,14 +398,11 @@ class Listener:
                 if heard.text and heard.turn != "done" and self._turn_ended:
                     # The recognizer's next turn. Only words held from the last are kept.
                     self._turn_ended = False
-                    self._finals, self._interim, self._forgotten = [], "", ()
-                    self._turn_seen = None
+                    self._finals, self._interim = [], ""
                     self._past_spans.extend((w.start_s, w.end_s) for w in self._ended_words)
                     self._ended_words = self.turn_words()
                     self._final_words, self._interim_words = [], ()
                 self._took_words(heard)
-                if heard.text and self._turn_seen is None:
-                    self._turn_seen = self._now()
                 if self._watching:
                     self._watched(heard)
                     if heard.text or heard.final:
@@ -455,7 +419,7 @@ class Listener:
                     self._finals = [heard.text] if heard.text else ([kept] if kept else [])
                     self._interim = ""
                     self._turn_ended = True
-                    self._rules.heard(final=True, has_text=bool(heard.text))
+                    self._rules.heard(final=True, has_text=self._has_text(heard))
                     if self._end_turn():
                         # As "probably finished": a draft may start (VOI-12).
                         await self._signal("maybe")
@@ -469,17 +433,12 @@ class Listener:
                     # Ended quickly only when the recognizer heard a pause and the whole
                     # message so far reads as finished; otherwise the patient rules apply.
                     done = heard.pause and sounds_finished(self.text())
-                    self._rules.heard(final=heard.final, has_text=bool(heard.text), done=done)
+                    has_text = self._has_text(heard)
+                    self._rules.heard(final=heard.final, has_text=has_text, done=done)
                 if resumed:
                     await self._signal("resumed")
                 if heard.turn in ("maybe", "resumed") and self._provider.turns:
                     await self._signal(heard.turn)
-                if self.began is None and self.text() and not self._watching:
-                    # When they began: a report comes well after the word.
-                    self.began, self.began_heard = self.turn_began() or self._placed(self._now())
-                    self.seen = self._turn_seen or self._now()
-                if not self._watching:
-                    self._grew.append((self._now(), len(self.text().split())))
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:
@@ -490,6 +449,11 @@ class Listener:
             # The class name only: a recognizer's message can quote what it heard.
             logger.error("recognizer %s failed: %s", self._provider.name, type(e).__name__)
             self._error = VoiceError("internal")
+
+    def _has_text(self, heard: Heard) -> bool:
+        """Whether a report has words of the user's in it: with a judge, her echo alone
+        is not the user speaking."""
+        return bool(heard.text) and (self._judge is None or bool(self._this_turn()))
 
     def _watched(self, heard: Heard) -> None:
         """A report while watching: the current turn's words, and nothing more."""

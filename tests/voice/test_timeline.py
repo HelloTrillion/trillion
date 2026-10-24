@@ -153,3 +153,14 @@ def test_an_estimated_end_turns_final_once_it_is_old() -> None:
     assert end is not None
     assert tl.ended_final(now_s=end + FINAL_CAP_S - 0.01) is None
     assert tl.ended_final(now_s=end + FINAL_CAP_S) == end
+
+
+def test_a_new_watch_forgets_starts_on_the_old_clock() -> None:
+    tl = Timeline()
+    tl.sentence(1, written="One.", spoken="One.", levels=[0.1] * 50)
+    tl.sentence(2, written="Two.", spoken="Two.", levels=[0.1] * 50)
+    tl.start(1, at_s=7.0)
+    tl.begin(at_s=0.0)  # a new listener: its clock starts again
+    assert tl.spans() == [(0.0, 1.0), (1.0, 2.0)]
+    tl.start(2, at_s=1.5)
+    assert tl.spans() == [(0.0, 1.0), (1.5, 2.5)]

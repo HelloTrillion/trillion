@@ -214,11 +214,10 @@ async def test_what_she_is_saying_now_can_include_the_next_sentence() -> None:
     assert s.playing(ahead=1) == ("One is first.", "Two is next.", "Three is last.")
 
 
-async def test_her_end_and_what_was_said_aloud_are_known() -> None:
+async def test_what_was_said_aloud_is_known() -> None:
     s = speaker(SystemVoice(), Wire())
     await s.feed("One is first. It costs **five**. Three is last. ")
     await s.finish()
-    assert s.last() == ("It costs **five**.", "It costs five.", "Three is last.")
     s.played(1)
     assert "It costs five." in s.playing(ahead=1, spoken=True)
     assert "It costs five." not in s.playing(ahead=1)
