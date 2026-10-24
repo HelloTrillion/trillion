@@ -32,7 +32,7 @@ is empty, and the sidebar can be hidden entirely.
   - **Title row:** the current conversation's title with a chevron, and a pencil button for a new conversation (this replaces "New conversation" in the top bar). A new, empty conversation reads "New conversation".
   - **Messages:** the transcript as today: her replies, the user's lines, tool chips, approval cards, reminders, quick replies, the live "hearing" line and the thinking line. It scrolls on its own; new lines keep it pinned to the bottom unless the user has scrolled up.
   - **Ask bar** at the bottom, with the mic, send and stop buttons, as today.
-- **Thread list.** Clicking the title, or ⌘K, swaps the messages for the thread list. Escape or picking a thread swaps back.
+- **Thread list.** Clicking the title, or ⌘⇧K, swaps the messages for the thread list. Escape or picking a thread swaps back.
   - A search box (focused on open), then conversations newest first, grouped "Today", "Yesterday", "Previous 7 days", "Older".
   - Each row: the title, and the time of its last message. The open one is marked.
   - A row's menu (⋯, or right-click) has **Rename** (edit in place, Enter saves, Escape cancels) and **Delete**.
@@ -53,7 +53,7 @@ is empty, and the sidebar can be hidden entirely.
 
 ### Keyboard and screen readers (SUR-6)
 
-- ⌘K (Ctrl+K elsewhere): the thread list. ⌘\\: hide or show the sidebar. Escape: close the thread list, then the workspace.
+- ⌘K stays the Ask bar (SUR-1). ⌘⇧K (Ctrl+Shift+K elsewhere): the thread list. ⌘\\: hide or show the sidebar. Escape: close the thread list, then the workspace.
 - The sidebar is an `<aside aria-label="Conversation">`; the thread list is a `listbox` with arrow-key movement; the workspace is a `region` with its title as its label and focus moves into it when it opens and back when it closes.
 - The orb's state is still announced in the live region, wherever the orb is.
 
