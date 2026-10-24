@@ -20,10 +20,12 @@ UPDATE conversations SET
         FROM messages m, json_each(m.blocks_json) b
         WHERE m.conversation_id = conversations.id AND m.kind = 'user'
           AND json_extract(b.value, '$.t') = 'text'
+          AND trim(json_extract(b.value, '$.text')) != ''
         ORDER BY m.id LIMIT 1
     ),
     title_source = 'words'
 WHERE EXISTS (
     SELECT 1 FROM messages m, json_each(m.blocks_json) b
     WHERE m.conversation_id = conversations.id AND m.kind = 'user'
-      AND json_extract(b.value, '$.t') = 'text');
+      AND json_extract(b.value, '$.t') = 'text'
+      AND trim(json_extract(b.value, '$.text')) != '');

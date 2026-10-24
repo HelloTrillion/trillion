@@ -34,6 +34,8 @@ WORDS_TITLE_MAX = 60
 
 @dataclass(frozen=True)
 class ChatRow:
+    """One line of the thread list."""
+
     id: str
     title: str | None
     last_message_at: int
@@ -175,7 +177,9 @@ class SqliteConversationStore:
     async def _touched(
         self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
     ) -> None:
-        """Recency, and the first words as a title until there is one."""
+        """Recency, and the first words as a title until there is one. The connection
+        autocommits, so these commit apart from the insert; a missed one heals on the
+        next message."""
         await self._conn.execute(
             "UPDATE conversations SET last_message_at = ? WHERE id = ? AND owner_id = ?",
             (now_ms, conversation_id, owner_id),
@@ -194,6 +198,7 @@ class SqliteConversationStore:
     async def title_of(
         self, conversation_id: str, owner_id: str
     ) -> tuple[str | None, TitleSource | None]:
+        """A conversation's title and who gave it; both None until it has one."""
         async with self._conn.execute(
             "SELECT title, title_source FROM conversations WHERE id = ? AND owner_id = ?",
             (conversation_id, owner_id),
@@ -222,12 +227,13 @@ class SqliteConversationStore:
         owner_id: str,
         *,
         query: str | None = None,
-        before_ms: int | None = None,
+        before: tuple[int, str] | None = None,
         limit: int = 50,
     ) -> tuple[list[ChatRow], bool]:
         """The user's conversations with something in them, newest first, and whether
         there are more. A query matches the title or the words of what was said, never
-        tool results and never the JSON around the words."""
+        tool results and never the JSON around the words. `before` is the last row shown,
+        as (last_message_at, id). LIKE folds ASCII case only."""
         where = [
             "c.owner_id = ?",
             "c.kind = 'chat'",
@@ -235,9 +241,9 @@ class SqliteConversationStore:
             "c.last_message_at IS NOT NULL",
         ]
         args: list[object] = [owner_id]
-        if before_ms is not None:
-            where.append("c.last_message_at < ?")
-            args.append(before_ms)
+        if before is not None:
+            where.append("(c.last_message_at < ? OR (c.last_message_at = ? AND c.id > ?))")
+            args += [before[0], before[0], before[1]]
         q = (query or "").strip()
         if q:
             where.append(
@@ -267,6 +273,7 @@ class SqliteConversationStore:
         return cur.rowcount == 1
 
     async def restore(self, conversation_id: str, owner_id: str) -> bool:
+        """Undo a delete; returns whether it brought one back."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = NULL"
             " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NOT NULL",

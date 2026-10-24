@@ -12,7 +12,7 @@ import pytest
 from trillion.brain.types import Msg, TextBlock
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
-from trillion.storage.sqlite.conversation_store import SqliteConversationStore
+from trillion.storage.sqlite.conversation_store import WORDS_TITLE_MAX, SqliteConversationStore
 
 OWNER = "local"
 
@@ -53,7 +53,7 @@ async def test_her_replies_never_title_it(store: SqliteConversationStore) -> Non
 async def test_a_long_first_message_is_cut(store: SqliteConversationStore) -> None:
     await chat(store, "c1", 1000, "word " * 40)
     title, _ = await store.title_of("c1", OWNER)
-    assert title is not None and len(title) <= 80
+    assert title is not None and len(title) <= WORDS_TITLE_MAX
 
 
 async def test_a_model_title_never_replaces_a_users(store: SqliteConversationStore) -> None:
@@ -70,10 +70,26 @@ async def test_the_list_is_newest_first_and_pages(store: SqliteConversationStore
         await chat(store, f"c{n}", 1000 * (n + 1), f"line {n}")
     page, more = await store.list_chats(OWNER, limit=2)
     assert [r.id for r in page] == ["c4", "c3"] and more
-    page, more = await store.list_chats(OWNER, before_ms=page[-1].last_message_at, limit=2)
+    page, more = await store.list_chats(
+        OWNER, before=(page[-1].last_message_at, page[-1].id), limit=2
+    )
     assert [r.id for r in page] == ["c2", "c1"] and more
-    page, more = await store.list_chats(OWNER, before_ms=page[-1].last_message_at, limit=2)
+    page, more = await store.list_chats(
+        OWNER, before=(page[-1].last_message_at, page[-1].id), limit=2
+    )
     assert [r.id for r in page] == ["c0"] and not more
+
+
+async def test_chats_at_the_same_moment_are_neither_skipped_nor_repeated(
+    store: SqliteConversationStore,
+) -> None:
+    for cid in ("a", "b", "c"):
+        await chat(store, cid, 1000, "hi")
+    first, more = await store.list_chats(OWNER, limit=2)
+    assert [r.id for r in first] == ["a", "b"] and more
+    last = first[-1]
+    second, more = await store.list_chats(OWNER, before=(last.last_message_at, last.id), limit=2)
+    assert [r.id for r in second] == ["c"] and not more
 
 
 async def test_empty_deleted_and_scheduled_are_not_listed(store: SqliteConversationStore) -> None:
@@ -145,6 +161,14 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
         (json.dumps([{"t": "text", "text": tabbed}]),),
     )
     await conn.execute(
+        "INSERT INTO conversations (id, owner_id, created_at) VALUES ('blank', 'local', 1)"
+    )
+    await conn.execute(
+        "INSERT INTO messages (owner_id, conversation_id, role, kind, blocks_json, created_at)"
+        " VALUES ('local', 'blank', 'user', 'user', ?, 6)",
+        (json.dumps([{"t": "text", "text": "  "}, {"t": "text", "text": "Real words"}]),),
+    )
+    await conn.execute(
         "INSERT INTO conversations (id, owner_id, created_at) VALUES ('bare', 'local', 1)"
     )
     await conn.execute(
@@ -160,4 +184,5 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
     assert source == "words" and title is not None and title.startswith("a bc")
     assert "\t" not in title and title == title.strip() and len(title) <= 60
     assert await store.title_of("bare", OWNER) == (None, None)
+    assert await store.title_of("blank", OWNER) == ("Real words", "words")
     await conn.close()

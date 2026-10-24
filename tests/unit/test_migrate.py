@@ -97,7 +97,7 @@ SHIPPED = {
     "008_schedules.sql": "6cf1aff31f5f9a4f182452af311525b2ed1ee79f31c958063c718ab1a276ec12",
     "009_turn_drafts.sql": "ebdb53c705c7a5c7ffc12dc6d18e279ffb452c867de9603122b96bcad165b5a6",
     "010_conversation_titles.sql": (
-        "69d9335cbcf32d01e4c3d6400674f4f14d64e6b0b7445dca3b5796c3965d2612"
+        "93bc8f7ed4b938ae7751a0ddd19e36e0ce54771a327bc747eceff35444edd769"
     ),
 }
 
