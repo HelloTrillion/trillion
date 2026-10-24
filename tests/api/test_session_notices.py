@@ -40,7 +40,11 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     granted = tmp_path / "granted"
     granted.mkdir()
     runtime = await open_runtime(
-        granted_roots=(granted,), persona=tmp_path, secrets=MemoryStore(), env={}
+        granted_roots=(granted,),
+        persona=tmp_path,
+        secrets=MemoryStore(),
+        # A zone of its own: Windows has none to read, and a reminder needs one.
+        env={"TZ": "UTC"},
     )
     runtime.clock = FakeClock(DUE)
     assert runtime.door is not None
