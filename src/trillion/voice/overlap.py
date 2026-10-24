@@ -169,13 +169,7 @@ _STEM = 3
 def _mine(w: str, hers: set[str]) -> bool:
     """Whether a heard word is one of hers: the same word, or a stop word she said in
     another form (stop and stopped, wait and waiting)."""
-    if w in hers:
-        return True
-    if w not in _STOPS or len(w) < _STEM:
-        return False
-    # Only her inflected form of the stop word: she said "stopped" and "stop" came
-    # back. Not the other way: her "can" does not make the user's "cancel" hers.
-    return any(h.startswith(w) for h in hers)
+    return w in hers or (w in _STOPS and matches(w, hers, stop=True))
 
 
 def is_stop(w: str) -> bool:
@@ -183,18 +177,33 @@ def is_stop(w: str) -> bool:
     return w in _STOPS
 
 
+# A longer word is another form of a shorter one when it is at least this long ("send"
+# and "sends"), or when what follows it is one of these endings ("ask" and "asked").
+_LONG_STEM = 4
+_ENDINGS = frozenset("s es d ed ing er ers ly 's".split())
+
+
+def _inflects(short: str, long: str) -> bool:
+    """Whether `long` is `short` with an ending: "ask" and "asked", "leave" and
+    "leaving" (its "e" dropped), but not "the" and "then" or "for" and "forget"."""
+    if len(short) < _STEM or len(long) <= len(short):
+        return False
+    if long.startswith(short):
+        return len(short) >= _LONG_STEM or long[len(short) :] in _ENDINGS
+    stem = short[:-1]
+    return short.endswith("e") and long.startswith(stem) and long[len(stem) :] in _ENDINGS
+
+
 def matches(w: str, hers: Collection[str], *, stop: bool = False) -> bool:
     """Whether a word (as `words_of` gives it) is one of hers. Loosely: the same word,
-    or one starts the other, the shorter at least 3 letters ("leave" and "leaving").
-    With `stop`, strictly, as a stop word is: her word itself, or her inflection of it
-    ("stop" by her "stopped"), never a shorter word of hers ("cancel" by her "can")."""
+    or another form of it either way ("ask" and "asked"). With `stop`, strictly, as a
+    stop word is: her word itself, or one of hers starting with it ("stop" by her
+    "stopped"), never a shorter word of hers ("cancel" by her "can")."""
     if w in hers:
         return True
-    if len(w) < _STEM:
-        return False
     if stop:
-        return any(h.startswith(w) for h in hers)
-    return any(h.startswith(w) or (len(h) >= _STEM and w.startswith(h)) for h in hers)
+        return len(w) >= _STEM and any(h.startswith(w) for h in hers)
+    return any(_inflects(w, h) or _inflects(h, w) for h in hers)
 
 
 def _stop(w: str, hers: set[str]) -> bool:

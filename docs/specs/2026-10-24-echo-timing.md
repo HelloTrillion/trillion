@@ -72,14 +72,16 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
 
 1. **Not during her playback** (`timeline.at(word.mid)` is `None`): `theirs`. This covers before her first sentence, the gaps between sentences, and after `ended_at`.
 2. **During her playback, and it matches a word of the sentence playing then:** `hers`.
-   - Matching is loose: lowercase, punctuation stripped, numbers spelled out, and a stem match on 3+ letters in either direction.
+   - Matching is loose: lowercase, punctuation stripped, numbers spelled out, and another form of the word in either direction. That is a prefix of 4+ letters, or 3+ letters followed by an ending (s, es, d, ed, ing, er, ers, ly, 's), with a final "e" dropped ("leave" and "leaving"). So "ask" and "asked" match, but "the" and "then", or "for" and "forget", do not.
    - A stop word is `hers` only if her sentence holds that word or an inflection of it ("stop" and "stopped").
+   - A word the recognizer wrote as several ("twenty-six", "$5") matches only if all its parts do.
+   - Her own words said by the user over her ("send it" over "Should I send it or wait?") are `theirs` only once `echo_share` is learned from 5+ words, and when `mic ≥ max(2 × OVER_ECHO × echo_share × her_wide, ROOM × OVER_ROOM)`. `her_wide` is her level over the word widened by 0.3 s each side, since a word's times can be a little off hers.
 3. **During her playback, not matching:** loudness decides.
    - `mic = mic_level(word)` and `expected = her_level(word) × echo_share`.
    - `theirs` if `mic ≥ max(expected × OVER_ECHO, ROOM × OVER_ROOM)`, with `OVER_ECHO = 2.5`.
    - Otherwise `hers`: a misheard echo.
 
-**Learning `echo_share`.** It is the median of `mic / her_level` over words judged `hers` by rule 2, clamped to [0.02, 1.0]. It starts at 0.5, which is cautious: misheard echo stays hers. It is learned per session and kept across her replies.
+**Learning `echo_share`.** It is the median of `mic / her_level` over words judged `hers` by rule 2, clamped to [0.02, 1.0], over the last 50. It starts at 0.5, which is cautious: misheard echo stays hers. Once it has a sample, a word at `OVER_ECHO` times the current value or more is not learned from, because that is the user saying her word. It is learned per session and kept across her replies.
 
 ### 5. Using the judgement
 

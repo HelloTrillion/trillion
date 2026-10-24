@@ -7,7 +7,7 @@ from collections.abc import Callable
 from trillion.voice.overlap import is_stop, matches, words_of
 from trillion.voice.timeline import Timeline
 from trillion.voice.types import Word
-from trillion.voice.whose import OVER_ECHO, OVER_ROOM, ROOM, EchoShare, whose
+from trillion.voice.whose import OVER_ECHO, OVER_ROOM, ROOM, EchoShare, matched, whose
 
 
 def _tl(text: str = "Give me the actual ask.") -> Timeline:
@@ -93,9 +93,23 @@ def test_a_stop_word_is_not_hers_by_a_shorter_word_of_hers() -> None:
 
 def test_a_stem_matches_either_way() -> None:
     tl = _tl("We are leaving at six.")
-    assert whose(W("leavin", 10.6), tl, mic(0.9), share=0.1) == "hers"
+    assert whose(W("leave", 10.6), tl, mic(0.9), share=0.1) == "hers"
     tl = _tl("We leave at six.")
-    assert whose(W("leaves", 10.6), tl, mic(0.9), share=0.1) == "hers"
+    assert whose(W("leaving", 10.6), tl, mic(0.9), share=0.1) == "hers"
+    tl = _tl("Did you ask?")
+    assert whose(W("asked", 10.6), tl, mic(0.9), share=0.1) == "hers"
+    tl = _tl("I asked.")
+    assert whose(W("ask", 10.6), tl, mic(0.9), share=0.1) == "hers"
+
+
+def test_a_short_word_is_not_matched_by_a_longer_different_one() -> None:
+    # Her "the", "for", "you" don't make the user's "then", "forget", "your" hers.
+    tl = _tl("Is the plan for you?")
+    for heard in ("then", "forget", "your", "android", "note"):
+        assert whose(W(heard, 10.6), tl, mic(0.9), share=0.1) == "theirs", heard
+    tl = _tl("Then forget your android note.")
+    for heard in ("the", "for", "you", "and", "not"):
+        assert whose(W(heard, 10.6), tl, mic(0.9), share=0.1) == "theirs", heard
 
 
 def test_numbers_match_spelled_or_written() -> None:
@@ -160,8 +174,55 @@ def test_echo_share_keeps_the_last_fifty() -> None:
     for _ in range(50):
         share.learn(mic_level=0.02, her_level=0.2)
     for _ in range(50):
-        share.learn(mic_level=0.06, her_level=0.2)
-    assert abs(share.value - 0.3) < 1e-9
+        share.learn(mic_level=0.04, her_level=0.2)
+    assert abs(share.value - 0.2) < 1e-9
+    assert share.learned == 50
+
+
+def test_echo_share_is_not_raised_by_the_user_saying_her_words() -> None:
+    share = EchoShare()
+    for _ in range(5):
+        share.learn(mic_level=0.02, her_level=0.2)
+    for _ in range(20):
+        share.learn(mic_level=0.2, her_level=0.2)  # ten times her echo: the user
+    assert abs(share.value - 0.1) < 1e-9
+    assert share.learned == 5
+
+
+def test_matched_is_her_words_while_she_says_them() -> None:
+    tl = _tl()
+    assert matched(W("actual", 10.8), tl)
+    assert not matched(W("actual", 12.5), tl)  # she had finished
+    assert not matched(W("tuesday", 10.8), tl)
+    assert not matched(W("...", 10.8), tl)
+
+
+def _send() -> Timeline:
+    return _tl("Should I send it or wait?")
+
+
+def test_her_words_shouted_over_her_are_theirs_once_her_echo_is_known() -> None:
+    tl = _send()
+    for t, text in ((10.6, "send"), (10.9, "it")):
+        assert whose(W(text, t), tl, mic(0.2), share=0.1, learned=5) == "theirs"
+        # Not before her echo is learned: then a matched word is hers.
+        assert whose(W(text, t), tl, mic(0.2), share=0.1, learned=4) == "hers"
+
+
+def test_her_words_at_echo_level_stay_hers_once_learned() -> None:
+    tl = _send()
+    assert whose(W("send", 10.6), tl, mic(0.02), share=0.1, learned=50) == "hers"
+    # Louder than an unmatched word needs, but not twice that.
+    assert whose(W("send", 10.6), tl, mic(0.09), share=0.1, learned=50) == "hers"
+
+
+def test_her_word_timed_just_past_her_sentence_is_judged_by_her_level_nearby() -> None:
+    # Heard 11.6 to 11.9, just after she ended at 11.5: her level on the bare word is 0,
+    # so only the widened span shows this is her echo.
+    tl = _send()
+    word = Word(text="wait", start_s=11.6, end_s=11.75)
+    assert tl.her_level(word.start_s, word.end_s) == 0.0
+    assert whose(word, tl, mic(0.02), share=0.1, learned=50) == "hers"
 
 
 def test_matching_helpers() -> None:

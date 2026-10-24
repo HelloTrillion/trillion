@@ -26,25 +26,52 @@ _SHARE_START = 0.5  # cautious: a misheard echo stays hers
 _SHARE_MIN, _SHARE_MAX = 0.02, 1.0
 _SHARE_KEEP = 50
 _HER_SILENT = 0.01  # below this she is too quiet to learn from
+# Her own word is the user's only once her echo is learned from this many words,
+LEARNED_ENOUGH = 5
+# with her level taken this much either side of the word.
+WIDEN_S = 0.3
 
 # Mean microphone level over a span of the recognizer's clock.
 Level = Callable[[float, float], float]
 
 
-def whose(word: Word, timeline: Timeline, mic: Level, *, share: float, room: float = ROOM) -> Whose:
-    """Hers or theirs. `share` is how much of her comes back (`EchoShare.value`);
-    `room` is the microphone's level when nobody speaks."""
+def matched(word: Word, timeline: Timeline) -> bool:
+    """Whether the word is one of the sentence she was playing then. "twenty-six" or
+    "$5" is several words: matched only if all of them are."""
     s = timeline.at(word.mid_s)
     if s is None:
-        return "theirs"
+        return False
     hers = set(words_of(f"{s.written} {s.spoken}"))
-    # "twenty-six" or "$5" is several words: hers only if all of them are.
     heard = words_of(word.text)
-    if heard and all(matches(w, hers, stop=is_stop(w)) for w in heard):
-        return "hers"
-    expected = timeline.her_level(word.start_s, word.end_s) * share
+    return bool(heard) and all(matches(w, hers, stop=is_stop(w)) for w in heard)
+
+
+def whose(
+    word: Word,
+    timeline: Timeline,
+    mic: Level,
+    *,
+    share: float,
+    room: float = ROOM,
+    learned: int = 0,
+) -> Whose:
+    """Hers or theirs. `share` is how much of her comes back (`EchoShare.value`),
+    learned from `learned` words (`EchoShare.learned`); `room` is the microphone's
+    level when nobody speaks."""
+    if timeline.at(word.mid_s) is None:
+        return "theirs"
     loud = mic(word.start_s, word.end_s)
-    return "theirs" if loud >= max(expected * OVER_ECHO, room * OVER_ROOM) else "hers"
+    floor = room * OVER_ROOM
+    if matched(word, timeline):
+        # The user saying her words over her ("send it" over "Should I send it?") is
+        # theirs only when far louder than her echo, and only once her echo is known.
+        # Her level over a wider span, since a word's times can be a little off hers.
+        if learned < LEARNED_ENOUGH:
+            return "hers"
+        her = timeline.her_level(word.start_s - WIDEN_S, word.end_s + WIDEN_S)
+        return "theirs" if loud >= max(2 * OVER_ECHO * share * her, floor) else "hers"
+    expected = timeline.her_level(word.start_s, word.end_s) * share
+    return "theirs" if loud >= max(expected * OVER_ECHO, floor) else "hers"
 
 
 class EchoShare:
@@ -54,11 +81,21 @@ class EchoShare:
         self._seen: list[float] = []
 
     def learn(self, *, mic_level: float, her_level: float) -> None:
-        """One word judged hers by its match: the microphone's level and hers."""
-        if her_level > _HER_SILENT:
-            self._seen.append(min(_SHARE_MAX, max(_SHARE_MIN, mic_level / her_level)))
-            del self._seen[:-_SHARE_KEEP]
+        """One word that matched hers: the microphone's level and hers. One far louder
+        than her echo so far is the user saying her word, and not learned from."""
+        if her_level <= _HER_SILENT:
+            return
+        ratio = min(_SHARE_MAX, max(_SHARE_MIN, mic_level / her_level))
+        if self._seen and ratio >= self.value * OVER_ECHO:
+            return
+        self._seen.append(ratio)
+        del self._seen[:-_SHARE_KEEP]
 
     @property
     def value(self) -> float:
         return median(self._seen) if self._seen else _SHARE_START
+
+    @property
+    def learned(self) -> int:
+        """How many words it was learned from (the last `_SHARE_KEEP` at most)."""
+        return len(self._seen)
