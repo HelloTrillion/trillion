@@ -16,6 +16,7 @@ import httpx
 from trillion import net
 from trillion.brain import sse
 from trillion.brain.types import (
+    OPENING,
     ContextBlock,
     Done,
     ModelChoice,
@@ -71,7 +72,30 @@ def _messages(system: Sequence[SystemBlock], messages: Sequence[Msg]) -> list[di
         )
         if text:
             out.append({"role": "user", "content": text})
-    return out
+    return _alternating(out)
+
+
+def _alternating(out: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Notices are her messages saved outside a turn, so two of hers can sit side by
+    side, and one can open a conversation; many local chat templates refuse both.
+    Hers that touch go as one message, and a conversation she opened starts with a
+    short placeholder from the user, which nobody sees."""
+    merged: list[dict[str, Any]] = []
+    for m in out:
+        last = merged[-1] if merged else None
+        if last is not None and m["role"] == "assistant" == last["role"]:
+            text = "\n\n".join(t for t in (last["content"], m["content"]) if t)
+            entry: dict[str, Any] = {"role": "assistant", "content": text or None}
+            calls = [*last.get("tool_calls", []), *m.get("tool_calls", [])]
+            if calls:
+                entry["tool_calls"] = calls
+            merged[-1] = entry
+        else:
+            merged.append(m)
+    first = 1 if merged and merged[0]["role"] == "system" else 0
+    if len(merged) > first and merged[first]["role"] == "assistant":
+        merged.insert(first, {"role": "user", "content": OPENING})
+    return merged
 
 
 def request_body(

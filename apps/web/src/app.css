@@ -1763,3 +1763,25 @@ button.connected-danger {
     flex-wrap: wrap;
   }
 }
+
+/* ── Reminders ───────────────────────────────────────────────────────── */
+
+/* Its parts sit in the section's own column, spaced like every other section. */
+.reminders-body {
+  display: contents;
+}
+
+/* A reminder or timed ask that has no words of hers: missed, or it didn't finish. */
+.notice.scheduled-quiet {
+  font-style: italic;
+}
+
+.reminders-recent {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}

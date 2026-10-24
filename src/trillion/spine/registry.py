@@ -18,10 +18,21 @@ _PATHY = re.compile(r"path|file|dir|folder", re.IGNORECASE)
 FIRST_PARTY_PACKAGE = "trillion.tools"
 # Top-level keywords that let arguments through that `properties` never names.
 _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
+# Families an unattended run never gets, whatever their risk: a run nobody watches does
+# not change what runs later (AGT-9).
+UNATTENDED_NEVER = frozenset({"schedule"})
 
 
 class RegistryError(ValueError):
     pass
+
+
+def runs_unattended(d: ToolDefinition) -> bool:
+    """Whether a run nobody is watching may use this tool (D5): only what the router runs
+    without a card, so never irreversible or spend (an MCP, Google or Slack tool the user
+    left asking first is registered irreversible), and nothing that changes the schedule.
+    `unattended()` offers exactly these, and the router refuses the rest by name."""
+    return d.risk not in GATED and d.category not in UNATTENDED_NEVER
 
 
 def validate(tool: Tool, module: str) -> None:
@@ -98,6 +109,18 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDefinition]:
         return list(self._definitions.values()) + list(META_TOOLS.values())
 
+    def unattended(self) -> ToolRegistry:
+        """A read-only view for a run nobody is watching (D5): only the tools that
+        `runs_unattended` allows, and not the meta tools that settle a card.
+
+        Taken when the run starts: a server connected later is not in it."""
+        view = _ReadOnly()
+        for name, d in self._definitions.items():
+            if runs_unattended(d):
+                view._tools[name] = self._tools[name]
+                view._definitions[name] = d
+        return view
+
     @classmethod
     def discover(cls, group: str = "trillion.tools") -> ToolRegistry:
         reg = cls()
@@ -106,3 +129,17 @@ class ToolRegistry:
             tool = obj() if isinstance(obj, type) else obj
             reg.register(tool, module=ep.value.split(":", 1)[0])
         return reg
+
+
+class _ReadOnly(ToolRegistry):
+    """What `unattended()` returns: nothing can be added to it or taken from it, and it
+    offers no meta tool, since an unattended run can settle no card."""
+
+    def register(self, tool: Tool, *, module: str | None = None) -> None:
+        raise RegistryError("an unattended view is read-only")
+
+    def unregister(self, name: str) -> None:
+        raise RegistryError("an unattended view is read-only")
+
+    def definitions(self) -> list[ToolDefinition]:
+        return list(self._definitions.values())

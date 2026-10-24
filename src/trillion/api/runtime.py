@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 import secrets
 import time
@@ -17,16 +19,20 @@ from trillion import paths
 from trillion.brain import compact
 from trillion.brain.config import ModelSettings, Source, resolve
 from trillion.brain.standing import StandingRules
-from trillion.brain.types import ModelProvider
+from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.channels.answer import Answerer
 from trillion.channels.manager import Channels
 from trillion.connectors.google.connection import GoogleConnection
 from trillion.connectors.mcp.config import load as mcp_load
 from trillion.connectors.mcp.servers import McpServers
 from trillion.connectors.slack.connection import SlackConnection
+from trillion.delivery.door import Door
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
+from trillion.scheduler import when
+from trillion.scheduler.ask import Asker
+from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
 from trillion.spine.audit import audit_key
@@ -37,12 +43,23 @@ from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
+from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.rules import DROP, KEEP, RuleDrop, RuleKeep
+from trillion.tools.schedule import (
+    ASK,
+    CANCEL,
+    LIST,
+    REMINDER,
+    AskSchedule,
+    ReminderSet,
+    ScheduleCancel,
+    ScheduleList,
+)
 from trillion.tools.skills import FILE as SKILL_FILE
 from trillion.tools.skills import OPEN as SKILL_OPEN
 from trillion.tools.skills import SkillFile, SkillOpen
@@ -50,7 +67,14 @@ from trillion.tools.web import FETCH, WebFetch
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 
+logger = logging.getLogger(__name__)
+
 OWNER = "local"
+# Speech outside a turn (a notice, a tap's answer, a sentence about a leg that is down)
+# is numbered from here, inside the u32 the audio frame carries, so the page's
+# "played" for it is never mistaken for a turn's, and a turn the page stopped never
+# swallows it.
+OUT_OF_TURN = 1 << 30
 SPEECH_PREF = "speech"
 LISTEN_PREF = "listening"
 # The last choice made, kept when the feature is switched off so that switching it
@@ -123,6 +147,19 @@ def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
+def local_zone(env: Mapping[str, str] | None = None) -> str | None:
+    """This computer's timezone as an IANA name, when it can be told: TZ, then where
+    /etc/localtime points. None where neither says: Windows keeps its own names, and
+    the standard library has no map from them, so there the user sets one in Settings
+    → Names and tone, which is what a refused reminder tells her to ask for."""
+    names = [(os.environ if env is None else env).get("TZ", "").removeprefix(":")]
+    with contextlib.suppress(OSError):
+        target = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in target:
+            names.append(target.split("zoneinfo/", 1)[1])
+    return next((n for n in names if n and when.known(n)), None)
+
+
 @dataclass(kw_only=True)
 class Runtime:
     router: Router
@@ -152,6 +189,11 @@ class Runtime:
     # The skills on as this process's latest turn read them, so describe_self tells
     # her what her instructions list without reading the disk on the event loop.
     skills_on: list[Entry] | None = None
+    # Reminders and timed asks (AGT-4, AGT-9): their store, the one door that delivers
+    # what they leave (SUR-9), and the loop that runs them. Started with the server.
+    schedules: SqliteScheduleStore | None = None
+    door: Door | None = None
+    scheduler: Scheduler | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -178,6 +220,12 @@ class Runtime:
     sessions: set[Any] = field(default_factory=set)
     by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
+    _asides: int = 0
+
+    def out_of_turn(self) -> int:
+        """A fresh number for speech outside a turn, never reused in this process."""
+        self._asides += 1
+        return OUT_OF_TURN + self._asides
 
     def facts(self) -> dict[str, Any]:
         """What is true of this running process, for `describe_self` (BRN-6)."""
@@ -220,11 +268,61 @@ class Runtime:
             "google": self.google.facts() if self.google is not None else "none",
             "slack": self.slack.facts() if self.slack is not None else "none",
             "skills": self.skills.fact(self.skills_on) if self.skills is not None else "none",
+            "reminders": (
+                "reminder_set says your words to the user at a time, once or repeating;"
+                " ask_schedule runs a request at a time with only the tools that never ask,"
+                " and asks the user first; schedule_list and schedule_cancel. They arrive in"
+                " the open page, or as a system notification when none is open, and run only"
+                " while Trillion is running: one missed while it was not arrives late and"
+                " says so"
+            ),
             "talking on slack or telegram": (
                 "the user can let people message you on Slack or Telegram; there you only"
                 " answer, with no tools, and only people the user allowed"
             ),
         }
+
+    def zone(self) -> str | None:
+        """The user's timezone: the one they gave (USER.md), else this computer's (AGT-9)."""
+        chosen = self.profile.timezone if self.profile is not None else ""
+        return chosen if chosen and when.known(chosen) else local_zone(self.env)
+
+    def skill_lines(self) -> list[tuple[str, str]]:
+        """(label, description) of each skill that is on and unchanged (CON-6), read now
+        and kept for describe_self. Blocking: call it off the event loop. Anything
+        unexpected leaves the turn without skills, logged by its kind only: the message
+        could name the user's files."""
+        if self.skills is None:
+            return []
+        try:
+            entries = self.skills.enabled()
+            lines = self.skills.prompt_lines(entries=entries)
+        except Exception as e:
+            logger.warning("skills could not be read: %s", type(e).__name__)
+            self.skills_on = []
+            return []
+        self.skills_on = entries
+        return lines
+
+    def system(self) -> list[SystemBlock]:
+        """The system blocks a turn gets, read now: rules, folders and the skills that
+        are on. Blocking, like `skill_lines`."""
+        return system_blocks(
+            self.identity,
+            self.soul,
+            self.granted_roots,
+            [(r.id, r.text) for r in self.rules.all()],
+            skills=self.skill_lines(),
+        )
+
+    def start_background(self) -> None:
+        """What runs beside the server, on its event loop: the scheduler."""
+        if self.scheduler is not None:
+            self.scheduler.start()
+
+    async def stop_background(self) -> None:
+        if self.scheduler is not None:
+            await self.scheduler.stop()
 
     def _mcp_fact(self) -> str:
         servers = self.mcp.states.values() if self.mcp is not None else []
@@ -287,6 +385,8 @@ class Runtime:
         await self.preferences.put(OWNER, ONBOARDING_PREF, "skipped", self.clock())
 
     async def close(self) -> None:
+        # First, so no tick runs on a connection that is closing.
+        await self.stop_background()
         if self.mcp is not None:
             await self.mcp.stop()
         if self.google is not None:
@@ -332,6 +432,8 @@ async def open_runtime(
     # Conversations use their own connection: the spine store holds explicit
     # transactions on its connection, and a message must never ride inside one.
     chat_conn = await connect(path)
+    # Schedules take explicit transactions too, so they get a connection of their own.
+    schedule_conn = await connect(path)
     registry = ToolRegistry.discover()
     store = SqliteSpineStore(spine_conn)
     router = Router(
@@ -386,7 +488,7 @@ async def open_runtime(
         onboarding_skipped=await preferences.get(OWNER, ONBOARDING_PREF) == "skipped",
         granted_roots=roots,
         env=env,
-        _connections=[spine_conn, chat_conn],
+        _connections=[spine_conn, chat_conn, schedule_conn],
     )
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
@@ -422,6 +524,31 @@ async def open_runtime(
         skill_tool = registry.get(name)
         if isinstance(skill_tool, SkillOpen | SkillFile):
             skill_tool.bind(rt.skills)
+    schedules = SqliteScheduleStore(schedule_conn)
+    rt.schedules = schedules
+    # Lambdas, so a test that replaces `rt.clock` moves every one of them.
+    rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
+    rt.scheduler = Scheduler(
+        schedules,
+        lambda: rt.clock(),
+        Asker(
+            provider=lambda: rt.provider,
+            router=router,
+            registry=registry,
+            conversations=rt.conversations,
+            system=rt.system,
+            identity=lambda: rt.identity,
+            granted_roots=lambda: rt.granted_roots,
+            zone=rt.zone,
+            clock=lambda: rt.clock(),
+            owner=OWNER,
+        ),
+        rt.door,
+    )
+    for name in (REMINDER, ASK, LIST, CANCEL):
+        schedule_tool = registry.get(name)
+        if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
+            schedule_tool.bind(schedules, zone=rt.zone, clock=lambda: rt.clock(), owner=OWNER)
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):

@@ -12,13 +12,11 @@ import difflib
 import os
 import re
 import tempfile
-import zoneinfo
 from dataclasses import dataclass, replace
-from functools import cache
 from pathlib import Path
 from typing import Literal, get_args
 
-from trillion import paths
+from trillion import paths, zones
 from trillion.persona.prompt import DEFAULT_AGENT_NAME, NAME_LIMIT, fields
 
 Directness = Literal["blunt", "balanced", "gentle"]
@@ -39,11 +37,8 @@ class SetupError(ValueError):
         self.suggestion = suggestion
 
 
-@cache
-def _zones() -> dict[str, str]:
-    """Every IANA zone this machine knows, by lower-case name. Empty when the machine has
-    no zone data at all (Windows needs the `tzdata` package): then nothing can be checked."""
-    return {z.lower(): z for z in zoneinfo.available_timezones()}
+# Every IANA zone this machine knows, by lower-case name (the one shared map).
+_zones = zones.names
 
 
 def unknown_zone(zone: str) -> SetupError | None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import aiosqlite
@@ -24,6 +24,8 @@ Kind = Literal["user", "tap", "assistant", "tool_results"]
 # does not: it carries its own authority for the one card tapped, and must never give
 # the model a later turn in which to confirm some other card.
 USER_INPUTS: tuple[Kind, ...] = ("user",)
+# A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
+ConversationKind = Literal["chat", "scheduled"]
 
 
 def _dump(b: Block) -> dict[str, Any]:
@@ -80,15 +82,19 @@ class SqliteConversationStore:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
 
-    async def create(self, conversation_id: str, owner_id: str, now_ms: int) -> None:
+    async def create(
+        self, conversation_id: str, owner_id: str, now_ms: int, kind: ConversationKind = "chat"
+    ) -> None:
         await self._conn.execute(
-            "INSERT INTO conversations (id, owner_id, created_at) VALUES (?, ?, ?)",
-            (conversation_id, owner_id, now_ms),
+            "INSERT INTO conversations (id, owner_id, created_at, kind) VALUES (?, ?, ?, ?)",
+            (conversation_id, owner_id, now_ms, kind),
         )
 
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
+        """Whether a page may open it: a chat of this owner's that was not deleted."""
         async with self._conn.execute(
-            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
+            " AND kind = 'chat'",
             (conversation_id, owner_id),
         ) as cur:
             return await cur.fetchone() is not None
@@ -112,6 +118,31 @@ class SqliteConversationStore:
             ),
         )
         return int(cur.lastrowid or 0)
+
+    async def append_many(
+        self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
+    ) -> list[int]:
+        """Save several messages in one statement, so all are kept or none, with no
+        transaction held open on the shared connection. Returns their ids in order."""
+        if not msgs:
+            return []
+        values: list[object] = []
+        for msg in msgs:
+            values += [
+                owner_id,
+                conversation_id,
+                msg.role,
+                kind,
+                json.dumps([_dump(b) for b in msg.blocks], ensure_ascii=False),
+                _dump_raw(msg.raw),
+                now_ms,
+            ]
+        rows = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(msgs))
+        cols = "owner_id, conversation_id, role, kind, blocks_json, raw_json, created_at"
+        sql = f"INSERT INTO messages ({cols}) VALUES {rows} RETURNING id"  # noqa: S608 - placeholders only
+        async with self._conn.execute(sql, values) as cur:
+            # RETURNING's order is not promised; ids rise in the order the rows went in.
+            return sorted(int(r[0]) for r in await cur.fetchall())
 
     async def history(self, conversation_id: str, owner_id: str) -> list[tuple[Kind, Msg]]:
         async with self._conn.execute(

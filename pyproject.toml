@@ -45,6 +45,10 @@ decision_record = "trillion.tools.record:DecisionRecord"
 web_fetch = "trillion.tools.web:WebFetch"
 skill_open = "trillion.tools.skills:SkillOpen"
 skill_file = "trillion.tools.skills:SkillFile"
+reminder_set = "trillion.tools.schedule:ReminderSet"
+ask_schedule = "trillion.tools.schedule:AskSchedule"
+schedule_list = "trillion.tools.schedule:ScheduleList"
+schedule_cancel = "trillion.tools.schedule:ScheduleCancel"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]
@@ -102,7 +106,7 @@ packages = ["trillion"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*"]
+module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*"]
 strict = true
 
 [tool.pytest.ini_options]

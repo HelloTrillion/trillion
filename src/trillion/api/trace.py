@@ -34,6 +34,9 @@ class Trace:
     # Spoken turns: how long the quiet lasted before listening decided they had finished.
     endpoint_s: float | None = None
     turn: int = 0
+    # The number its speech went out under: the turn's, or one of its own when the
+    # turn's number was already heard (a tap's answer). Playback reports name it.
+    heard_as: int = 0
     tools: int = 0
     marks: dict[str, float] = field(default_factory=dict)
     calls: list[dict[str, int | None]] = field(default_factory=list)

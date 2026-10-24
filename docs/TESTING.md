@@ -138,11 +138,11 @@ These come from operating a scheduled assistant daily, where work stopped happen
 
 | # | Scenario | Passes when |
 |---|---|---|
-| 4.1 | The laptop is asleep at the scheduled run time | The declared catch-up or skip policy is followed, and the occurrence is recorded **once**. |
-| 4.2 | Credentials are unavailable at run time | The run is marked **blocked**, not failed and not empty. The work is preserved and re-checked against current conditions when access returns. |
-| 4.3 | An approval waits overnight | The proposal is retained while execution authority expires; fresh approval is requested before anything runs (SPN-2b). |
+| 4.1 | The laptop is asleep at the scheduled run time | The declared catch-up or skip policy is followed, and the occurrence is recorded **once**. — [test](../tests/scheduler/test_runner.py) |
+| 4.2 | Credentials are unavailable at run time | The run is marked **blocked**, not failed and not empty. The work is preserved and re-checked against current conditions when access returns. — [test](../tests/scheduler/test_runner.py) |
+| 4.3 | An approval waits overnight | The proposal is retained while execution authority expires; fresh approval is requested before anything runs (SPN-2b). — [test](../tests/spine/test_unattended.py) |
 | 4.4 | A run reports success but made no progress | "No eligible work" is distinguishable from "inputs unavailable" and from "the parser broke". Source counts are checked independently where practical, without warning on already-processed inputs. |
-| 4.5 | The checker or the notification path itself stops | Health **expires**: yesterday's green goes stale when fresh evidence stops arriving, and the screen recognizes stale evidence even if the checker is dead. A harmless synthetic failure proves detection and delivery still work end to end. |
+| 4.5 | The checker or the notification path itself stops | Health **expires**: yesterday's green goes stale when fresh evidence stops arriving, and the screen recognizes stale evidence even if the checker is dead. A harmless synthetic failure proves detection and delivery still work end to end. — [the runner](../tests/scheduler/test_runner.py), [Settings](../apps/web/test/reminders.test.ts) |
 
 Supporting rule: every status carries `checked_at`, `evidence_as_of` and `next_due`. A green light with no fresh evidence is not green.
 
@@ -153,6 +153,8 @@ Supporting rule: every status carries `checked_at`, `evidence_as_of` and `next_d
 One door: every producer — alerts, routines, sub-agent results, errors, celebrations — writes to the queue, and exactly one component delivers. The test asserts that **no other component holds a route or credential to a surface**; this is structural, not a convention.
 
 Then: nothing arrives during a live reply; the same content never arrives twice; a routine with nothing to report delivers nothing at all (AGT-6); only `critical` arrives unasked.
+
+For reminders and timed asks: [the door](../tests/delivery/test_door.py), [no other route to a surface](../tests/delivery/test_structure.py), [notifications](../tests/delivery/test_notify.py), [in a live session](../tests/api/test_session_notices.py), [on the page](../apps/web/test/view.test.ts). Staying quiet when there is nothing to report (AGT-6) waits for routines (AGT-3).
 
 ---
 

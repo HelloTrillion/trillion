@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, expire, micFailed, reduce, sent, toolLabel, waiting } from '../src/view';
+import { INITIAL, type View, busyOf, dueLabel, expire, localClock, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -238,5 +238,126 @@ describe('voice in the view', () => {
     expect(toolLabel('memory_forget', 'confirmation_required', true)).toBe('memory_forget: confirmation required');
     expect(toolLabel('file_read', null, true)).toBe('file_read …');
     expect(toolLabel('file_read', 'succeeded', true)).toBe('file_read: succeeded');
+  });
+});
+
+describe('notices from reminders and timed asks', () => {
+  const ready = feed([{ type: 'session', id: 'c1', agent_name: 'Nova', model: { model: 'm' } }]);
+  const due = Date.UTC(2026, 9, 24, 20, 0);
+  const notice = (over: Record<string, unknown> = {}) => ({
+    type: 'notice',
+    code: 'schedule',
+    id: 'n1',
+    kind: 'reminder',
+    title: 'Stretch',
+    text: 'Time to stretch.',
+    due_ms: due,
+    due: '4:00 pm',
+    late: false,
+    ...over,
+  });
+
+  it('arrives as her message', () => {
+    const v = feed([notice()], ready);
+    expect(v.entries).toEqual([
+      { kind: 'scheduled', id: 'n1', what: 'reminder', title: 'Stretch', text: 'Time to stretch.', dueMs: due, due: '4:00 pm', late: false },
+    ]);
+  });
+
+  it('waits for a reply that is still arriving, then follows it', () => {
+    const v = feed([{ type: 'reply.delta', text: 'Half a' }, notice(), { type: 'reply.delta', text: ' reply.' }], ready);
+    expect(v.entries).toEqual([{ kind: 'assistant', text: 'Half a reply.', interrupted: false }]);
+    const after = reduce(v, { type: 'turn.complete' });
+    expect(after.entries.map((e) => e.kind)).toEqual(['assistant', 'scheduled']);
+    expect(after.held).toEqual([]);
+  });
+
+  it('waits while she works, and follows a reply that was stopped', () => {
+    const v = feed([{ type: 'state', orb: 'processing' }, notice()], ready);
+    expect(v.entries).toEqual([]);
+    expect(reduce(v, { type: 'interrupted' }).entries.map((e) => e.kind)).toEqual(['scheduled']);
+  });
+
+  it('is not held for ever by a turn that failed without completing', () => {
+    const v = feed([{ type: 'reply.delta', text: 'Half' }, notice(), { type: 'error', code: 'internal' }, { type: 'state', orb: 'error' }], ready);
+    expect(v.entries.map((e) => e.kind)).toEqual(['assistant', 'scheduled']);
+  });
+
+  it('is shown once, however often it is sent', () => {
+    expect(feed([notice(), notice()], ready).entries).toHaveLength(1);
+  });
+
+  it('never carries words for a missed or failed one', () => {
+    const v = feed([notice({ kind: 'missed', text: 'should not show' })], ready);
+    expect(v.entries[0]).toMatchObject({ kind: 'scheduled', what: 'missed', text: null });
+  });
+
+  it('ignores one with no id or an unknown kind', () => {
+    expect(feed([notice({ id: '' }), notice({ kind: 'other' })], ready).entries).toEqual([]);
+  });
+
+  it('labels a late one with the due time the core gave, in the schedule\'s own zone', () => {
+    const v = feed([notice({ late: true, due: 'Fri 11:44 pm' })], ready);
+    expect(v.entries[0]).toMatchObject({ due: 'Fri 11:44 pm', late: true });
+    expect(dueLabel('Fri 11:44 pm')).toBe('due Fri 11:44 pm');
+    expect(quietLine({ what: 'missed', title: 'Email', due: '4:00 pm' })).toBe('Missed: Email (due 4:00 pm)');
+    expect(quietLine({ what: 'failed', title: 'Email', due: 'Sat 4:00 pm' })).toBe("Didn't finish: Email (due Sat 4:00 pm)");
+  });
+
+  it('falls back to this browser\'s clock only when the core gave no words', () => {
+    expect(localClock(due, 'America/New_York')).toBe('4:00 pm');
+    expect(localClock(Date.UTC(2026, 9, 24, 13, 5), 'America/New_York')).toBe('9:05 am');
+    const v = feed([notice({ due: '' })], ready);
+    expect((v.entries[0] as { due: string }).due).toBe(localClock(due));
+  });
+});
+
+describe('notice speech never makes the page busy', () => {
+  const ready = feed([{ type: 'session', id: 'c1', agent_name: 'Nova', model: { model: 'm' } }]);
+
+  it('is busy for a turn, and not for a notice', () => {
+    expect(busyOf('processing', false)).toBe(true);
+    expect(busyOf('speaking', false)).toBe(true);
+    expect(busyOf('speaking', true)).toBe(false);
+    expect(busyOf('idle', false)).toBe(false);
+    const notice = reduce(ready, { type: 'state', orb: 'speaking', notice: true });
+    expect(notice).toMatchObject({ orb: 'speaking', busy: false, noticeSpeaking: true });
+    expect(waiting(notice)).toBe(false);
+    const turn = reduce(ready, { type: 'state', orb: 'speaking' });
+    expect(turn).toMatchObject({ orb: 'speaking', busy: true, noticeSpeaking: false });
+  });
+
+  it('puts a message refused as busy back in the box, and off the screen', () => {
+    const v = reduce(sent(ready, 'hi'), { type: 'error', code: 'busy' });
+    expect(v.entries.filter((e) => e.kind === 'user')).toEqual([]);
+    expect(v.draft).toBe('hi');
+    expect(v.busy).toBe(false);
+    expect(v.banner).toBe('Still answering the last message.');
+  });
+
+  it('keeps a message once her turn has started, and earlier ones of the same words', () => {
+    const before = feed([{ type: 'history', messages: [{ role: 'user', text: 'hi' }] }], ready);
+    const started = reduce(sent(before, 'hi'), { type: 'state', orb: 'processing' });
+    expect(started.pending).toBeNull();
+    // A later busy (a listen refused, say) takes nothing back.
+    const later = reduce(started, { type: 'error', code: 'busy' });
+    expect(later.entries.filter((e) => e.kind === 'user')).toHaveLength(2);
+    expect(later.draft).toBeNull();
+    const refused = reduce(sent(before, 'hi'), { type: 'error', code: 'busy' });
+    expect(refused.entries).toEqual([{ kind: 'user', text: 'hi' }]);
+  });
+
+  it('forgets a message once any other error ends it, so a later busy takes nothing back', () => {
+    const failed = reduce(sent(ready, 'hi'), { type: 'error', code: 'internal' });
+    expect(failed.pending).toBeNull();
+    const later = reduce(failed, { type: 'error', code: 'busy' });
+    expect(later.entries).toEqual([{ kind: 'user', text: 'hi' }]);
+    expect(later.draft).toBeNull();
+  });
+
+  it('never takes back what she heard', () => {
+    const v = feed([{ type: 'transcript.final', text: 'hello' }, { type: 'error', code: 'busy' }], ready);
+    expect(v.entries).toEqual([{ kind: 'user', text: 'hello' }]);
+    expect(v.draft).toBeNull();
   });
 });

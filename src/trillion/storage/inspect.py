@@ -98,3 +98,36 @@ def timings(path: Path, owner_id: str, limit: int) -> list[dict[str, Any]]:
         item["calls"] = calls if isinstance(calls, list) else []
         out.append(item)
     return out
+
+
+def schedules(path: Path, owner_id: str, since_ms: int) -> dict[str, Any] | None:
+    """Reminders and timed asks (AGT-4): how many are active, the next one due, and how
+    many runs were blocked or failed since a moment. None with no database, or one from
+    before the tables."""
+    if not path.exists():
+        return None
+    try:
+        with contextlib.closing(_read_only(path)) as conn:
+            (active,) = conn.execute(
+                "SELECT count(*) FROM schedules WHERE owner_id = ? AND status = 'active'",
+                (owner_id,),
+            ).fetchone()
+            soonest = conn.execute(
+                "SELECT next_due_ms, zone FROM schedules WHERE owner_id = ? AND status = 'active'"
+                " AND next_due_ms IS NOT NULL ORDER BY next_due_ms LIMIT 1",
+                (owner_id,),
+            ).fetchone()
+            (troubled,) = conn.execute(
+                "SELECT count(*) FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
+                " WHERE s.owner_id = ? AND r.status IN ('blocked', 'failed')"
+                " AND COALESCE(r.finished_ms, r.claimed_ms, r.due_ms) >= ?",
+                (owner_id, since_ms),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return {
+        "active": int(active),
+        "next_ms": int(soonest[0]) if soonest is not None else None,
+        "zone": str(soonest[1]) if soonest is not None else "",
+        "troubled": int(troubled),
+    }

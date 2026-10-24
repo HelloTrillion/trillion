@@ -94,6 +94,33 @@ is a known limit of this phase.
   skill's scripts are only ever read. `skill_file` returns only files listed
   in the approved skill and refuses links, `..` and absolute paths. A skill
   that can't be used is reported to her without any of its file names.
+- **Nothing that runs unattended can ask, or act where it would have asked.** A
+  timed ask runs with a view of the tools that holds only those the router runs
+  without a card: no irreversible or spend tool, no connected tool the user left
+  asking first, no tool that approves or declines, and none that sets or cancels
+  a schedule. The router also refuses every card, and every approval, to a call
+  made by a timed ask (`via="schedule"`). Setting a timed ask shows a card, so a
+  page or an email can't plant one. `reminder_set` is refused after she has read
+  a page, a file or a message in the same turn, so nothing she read can make her
+  say something later in her own voice, and a timed ask's answer counts as
+  something she read. `schedule_cancel` is refused in the same way, so what she
+  read can't undo a timed ask the user approved. A timed ask that was
+  interrupted is reported failed and never run again: a tool it used may
+  already have acted. A missed or failed notice is never spoken.
+- **Caveat: a timed ask's answer can pass on what she read.** She runs it
+  unattended, reads (an inbox, say) and reports in her own words, and that
+  answer is shown and spoken like any of her messages. Text in an email can
+  shape what she says there. The answer is marked as outside content
+  afterwards, so the turn it arrives in and the next can't set or cancel a
+  reminder on its strength, but the words themselves reach the user as she
+  wrote them.
+- **One door to a surface.** Only `delivery/door.py` can put a notice on the
+  page or show a system notification; the scheduler imports neither, and a test
+  checks it. System notifications run as argument lists, never through a shell,
+  with the words passed as arguments after `--` (`osascript`, `notify-send`) or
+  as environment values read by a fixed, encoded PowerShell script on Windows,
+  never spliced into a script. A timed ask's notification never shows what she
+  found.
 - **MCP servers run only if the user connected them**, in Settings →
   Connected tools or by editing `mcp.json` in Trillion's own folder, which no
   tool can edit. The routes that add, change or remove a server need the

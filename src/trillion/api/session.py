@@ -12,14 +12,15 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from trillion import __version__
 from trillion.api import listening
 from trillion.api.listening import FOLLOW_UP_S, Listener
-from trillion.api.runtime import OWNER, Runtime
+from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.api.trace import Trace, Via, ahead_ms
 from trillion.brain import compact
@@ -32,18 +33,18 @@ from trillion.brain.loop import (
     run_turn,
 )
 from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock
+from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
 from trillion.persona.prompt import (
     PendingNote,
     compaction,
     degraded,
     greeting,
-    system_blocks,
     volatile_context,
 )
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
-from trillion.spine.untrusted import wrap
+from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.types import VoiceError
@@ -60,11 +61,7 @@ NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
-# Tools whose results are someone else's words: a page anyone wrote, a file anyone sent.
-OUTSIDE = frozenset({"web_fetch", "file_read"})
-# Whole families of tools whose results are someone else's words: a connected
-# server's, and mail, events and documents from a connected account.
-OUTSIDE_CATEGORIES = frozenset({"mcp", "google", "slack"})
+__all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -84,8 +81,9 @@ class Session:
         self._kinds: list[Kind] = []
         self._ids: list[int] = []
         self._summary: str | None = None
-        # The turn in which she last read something from outside: a page or a file.
-        self._outside_turn: int | None = None
+        # The turns in which she read something from outside: a page, a file, or a
+        # timed ask's answer, which may quote an email (MEM-5).
+        self._outside: set[int] = set()
         self._turn = 0
         self._task: asyncio.Task[None] | None = None
         # Notes about taps that arrived mid-turn, delivered to the model afterwards.
@@ -93,6 +91,8 @@ class Session:
         self._closed = False
         self._greeted = False
         self._orb = ""
+        # Whether the orb's "speaking" is a notice's: the page stays free to send then.
+        self._orb_notice = False
         # The orb's state between turns: idle, or error after a failure.
         self._rest = "idle"
         # Memories already brought along in this conversation: each rides once, with
@@ -111,6 +111,25 @@ class Session:
         self._timed = 0
         self._mic_setup: dict[str, Any] = {}
         self._warming: asyncio.Future[Any] | None = None
+        # What the door judges "free" by (VOI-17): the last turn sent to be heard and
+        # when its audio finished sending, and the last one the page said it played.
+        self._spoken: tuple[int, int] | None = None
+        self._played: int | None = None
+        # She is saying a sentence of her own outside a turn: a leg is down (VOI-14).
+        self._saying = False
+        # Speaking notices, when that is the session's task: user input stops it.
+        self._notice_task: asyncio.Task[None] | None = None
+        # User input being taken in: nothing is delivered over it (VOI-17).
+        self._taking = 0
+        # Until the page has its history and cards, a notice would arrive before them.
+        self._started = False
+        # The last turn whose number speech went out under.
+        self._voiced: int | None = None
+        # The user just pressed Stop: notices that arrive straight after it are shown,
+        # not spoken. Cleared at the first rest after it (VOI-9).
+        self._stopped = False
+        # When the user last did something here. The live page is the latest (SUR-9).
+        self.active_ms = rt.clock()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -165,10 +184,17 @@ class Session:
         )
         rt.sessions.add(session)
         rt.by_conversation[session.id] = session
-        await session._send("history", messages=shown)
-        for a in await session._open_actions():
-            await session._send_card(a.id)
-        await session._state("idle")
+        try:
+            await session._send("history", messages=shown)
+            for a in await session._open_actions():
+                await session._send_card(a.id)
+            session._started = True
+            await session._state("idle")
+        except BaseException:
+            # Never left half started: the door would take it for the live page and
+            # hold every notice for it, with no system notification instead.
+            await session.close()
+            raise
         return session
 
     def _model(self) -> dict[str, str] | None:
@@ -221,13 +247,24 @@ class Session:
         if kind == "turn.text":
             await self._on_text(msg.get("text"))
         elif kind == "interrupt":
+            # Before anything that awaits: a notice that arrives meanwhile is not stopped,
+            # and is not spoken either: they asked for quiet.
+            task = self._task
+            self._stopped = True
+            # Stopped: the page drops what it was playing and never reports it played.
+            self._spoken = None
             if self._listener is not None:
                 # Stopping while she listens throws the words away: nothing is sent.
                 await self._stop_listening()
                 await self._send("mic.stop", reason="cancelled")
                 await self._state(self._rest)
-            if self._task is not None:
-                self._task.cancel()
+            if task is not None:
+                # Its end comes to rest, which offers what is held and ends the quiet.
+                task.cancel()
+            else:
+                # Nothing to stop, but what was held for the speech just dropped may come.
+                await self._offer()
+                self._stopped = False
         elif kind == "listen.start":
             await self._on_listen(NOTHING_AFTER_S)
         elif kind == "barge":
@@ -254,10 +291,14 @@ class Session:
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
         elif kind == "playback.ended":
+            turn_id = msg.get("turn_id")
+            if isinstance(turn_id, int) and not isinstance(turn_id, bool):
+                self._played = turn_id
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
             if self._via == "voice" and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
+            await self._offer()
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
@@ -270,12 +311,19 @@ class Session:
             await self._error("bad_message")
         elif self._rt.provider is None:
             await self._error("no_model")
-        elif self._task is not None:
+        else:
+            async with self._taking_input():
+                await self._take_text(text)
+
+    async def _take_text(self, text: str) -> None:
+        if self._task is not None:
             await self._error("busy")
         else:
+            self._spoken = None
             await self._stop_listening()
             self._via = "text"
             self._turn += 1
+            self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
             await self._save_input("user", text)
             self._begin()
@@ -289,14 +337,15 @@ class Session:
         rt = self._rt
         if rt.provider is None or rt.profile is None:
             return
-        if self._task is not None or self._history or self._greeted:
-            return
-        self._greeted = True
-        await self._stop_listening()
-        self._via = "text"
-        self._arrived = self._starting("greet")
-        self._queued.append(greeting(rt.identity))
-        self._begin()
+        async with self._taking_input():
+            if self._task is not None or self._history or self._greeted:
+                return
+            self._greeted = True
+            await self._stop_listening()
+            self._via = "text"
+            self._arrived = self._starting("greet")
+            self._queued.append(greeting(rt.identity))
+            self._begin()
 
     # ── Listening ────────────────────────────────────────────────────────
 
@@ -307,14 +356,20 @@ class Session:
 
         Stopping her is not cancelling work (VOI-15c): an action already approved
         finishes and is recorded before she listens."""
-        task = self._task
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
-                await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
-        await self._on_listen(NOTHING_AFTER_S)
+        self._spoken = None
+        async with self._taking_input():
+            task = self._task
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
+                    await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
+            await self._on_listen(NOTHING_AFTER_S)
 
     async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
+        async with self._taking_input():
+            await self._listen(patience_s, follow_up=follow_up)
+
+    async def _listen(self, patience_s: float, *, follow_up: bool) -> None:
         rt = self._rt
         if self._listener is not None:
             return
@@ -326,6 +381,7 @@ class Session:
         elif self._task is not None:
             await self._error("busy")
         else:
+            self._spoken = None
             listener = Listener(
                 rt.stt, rt.listening.choice, on_partial=self._partial, patience_s=patience_s
             )
@@ -399,12 +455,23 @@ class Session:
         # Not a spoken turn any more: the end of this sentence must not reopen the
         # microphone that just failed, or one fault would repeat itself forever.
         self._via = "text"
-        speaker = Speaker(rt.tts, rt.speech.voice, self._turn, self._send, self._send_bytes)
-        await speaker.feed(said)
-        await speaker.finish()
+        heard_as = rt.out_of_turn()
+        speaker = Speaker(rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes)
+        self._saying = True
+        try:
+            await speaker.feed(said)
+            await speaker.finish()
+            self._spoken = (heard_as, rt.clock())
+        finally:
+            self._saying = False
 
     async def _conclude(self, verdict: Verdict) -> None:
         """Listening is over. Either there is something to answer, or the reason is said."""
+        # Until the answer is the session's task, nothing is delivered in between.
+        async with self._taking_input():
+            await self._concluded(verdict)
+
+    async def _concluded(self, verdict: Verdict) -> None:
         listener, self._listener = self._listener, None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
@@ -450,6 +517,7 @@ class Session:
                 await self._send("transcript.final", text=text)
                 self._via = "voice"
                 self._turn += 1
+                self.active_ms = self._rt.clock()
                 await self._save_input("user", text)
                 answer = True
             else:
@@ -474,6 +542,11 @@ class Session:
         if not isinstance(pending_id, str) or not pending_id:
             await self._error("bad_message")
             return
+        self.active_ms = self._rt.clock()
+        async with self._taking_input():
+            await self._tapped(pending_id, decision)
+
+    async def _tapped(self, pending_id: str, decision: Literal["confirm", "cancel"]) -> None:
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
@@ -520,7 +593,9 @@ class Session:
                 if not self._queued:
                     break
         finally:
-            self._task = None
+            # Only its own: never a task that started after this one was let go.
+            if self._task is asyncio.current_task():
+                self._task = None
         await self._state(self._rest)
 
     async def _one_turn(self) -> None:
@@ -533,11 +608,17 @@ class Session:
             return
         speaking = False
         speaker: Speaker | None = None
+        heard_as = turn
         if rt.tts is not None and rt.speech is not None and not self._muted:
-            speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
+            # A turn's number is heard once: a tap's answer in the same turn gets its own,
+            # or the page's "played" for the first would pass for it (VOI-17).
+            heard_as = rt.out_of_turn() if self._voiced == turn else turn
+            self._voiced = turn
+            speaker = Speaker(rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes)
         # A turn nobody started (a tap's answer) starts now.
         trace, self._arrived = self._arrived or self._starting("tap"), None
         trace.turn = turn
+        trace.heard_as = heard_as
         self._trace = trace
 
         async def emit(ev: LoopEvent) -> None:
@@ -561,14 +642,10 @@ class Session:
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
             elif isinstance(ev, ToolEnded):
                 r = ev.response
-                outside = ev.name in OUTSIDE or (
-                    (d := rt.registry.definition(ev.name)) is not None
-                    and d.category in OUTSIDE_CATEGORIES
-                )
-                if outside and r.status == "succeeded":
+                if is_outside(ev.name, rt.registry.definition(ev.name)) and r.status == "succeeded":
                     # From here to the end of the turn, what she writes to memory is
                     # something she read, not something the user said.
-                    self._outside_turn = turn
+                    self._outside.add(turn)
                 await self._send(
                     "tool.end",
                     call_id=ev.call_id,
@@ -581,19 +658,13 @@ class Session:
         final = "idle"
         try:
             await self._state("processing")
-            # The skills that are on, read once for this turn and off the event loop.
-            skills = await asyncio.to_thread(_skill_lines, rt)
+            # Rules and the skills that are on, read once for this turn, off the event loop.
+            system = await asyncio.to_thread(rt.system)
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
                 registry=rt.registry,
-                system=system_blocks(
-                    rt.identity,
-                    rt.soul,
-                    rt.granted_roots,
-                    [(r.id, r.text) for r in rt.rules.all()],
-                    skills=skills,
-                ),
+                system=system,
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
@@ -611,6 +682,7 @@ class Session:
                     await speaker.pause()
                     await speaker.feed(down)
                 await speaker.finish()
+                self._spoken = (heard_as, rt.clock())
             await rt.conversations.record_usage(
                 owner_id=OWNER,
                 conversation_id=self.id,
@@ -642,6 +714,8 @@ class Session:
         except asyncio.CancelledError:
             if speaker is not None:
                 await speaker.stop()
+                # Stopped: nothing of it is still to be heard.
+                self._spoken = None
             await self._keep_trace(trace, "interrupted", voiced=speaker is not None)
             await self._send("interrupted")
         except Exception as e:
@@ -711,9 +785,9 @@ class Session:
             return
         at = self._now() + ahead_ms(in_ms) / 1000
         running, last = self._trace, self._last_trace
-        if running is not None and running.turn == turn_id:
+        if running is not None and running.heard_as == turn_id:
             running.mark("played", at)
-        elif last is not None and last.turn == turn_id and last.mark("played", at):
+        elif last is not None and last.heard_as == turn_id and last.mark("played", at):
             # Heard after the turn was saved: a long first sentence, or a slow page.
             if last.row_id is not None:
                 with contextlib.suppress(Exception):
@@ -728,15 +802,15 @@ class Session:
         *,
         turn: int | None = None,
     ) -> ToolContext:
+        at = self._turn if turn is None else turn
         return ToolContext(
             owner_id=OWNER,
             session_id=self.id,
-            turn=self._turn if turn is None else turn,
+            turn=at,
             call_id=call_id,
             via=via or self._via,
             granted_roots=self._rt.granted_roots,
-            read_outside=self._outside_turn is not None
-            and self._outside_turn == (self._turn if turn is None else turn),
+            read_outside=at in self._outside,
         )
 
     async def _save(self, kind: Kind, msg: Msg) -> None:
@@ -790,12 +864,15 @@ class Session:
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
         spoken = kind == "user" and self._via == "voice"
+        # The user's own clock, so "at four" means four where they are (AGT-9).
+        zone = self._rt.zone()
         context = volatile_context(
-            datetime.now().astimezone(),
+            datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
             pending,
             self._remembered(text) if kind == "user" else "",
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
+            zone=zone or "",
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
         if kind == "user" and self._rt.web is not None:
@@ -840,10 +917,153 @@ class Session:
             tap_only=a.risk is Risk.SPEND or not a.recoverable,
         )
 
-    async def _state(self, orb: str) -> None:
-        if orb != self._orb:
-            self._orb = orb
-            await self._send("state", orb=orb)
+    async def _state(self, orb: str, *, notice: bool = False) -> None:
+        if orb != self._orb or notice != self._orb_notice:
+            self._orb, self._orb_notice = orb, notice
+            # A notice's speech says so: the page may send over it, and it gives way.
+            await self._send("state", orb=orb, **({"notice": True} if notice else {}))
+        if orb in ("idle", "error"):
+            # At rest: anything held for this page may arrive now. What arrives at the
+            # first rest after a Stop is shown, not spoken; after that, as usual.
+            await self._offer()
+            self._stopped = False
+
+    # ── Notices (SUR-9, VOI-17) ──────────────────────────────────────────
+
+    def facts(self) -> Facts:
+        """What the door judges "free" by. Read from what is running, never a flag."""
+        task = self._task
+        spoken = self._spoken
+        return Facts(
+            turn_running=(task is not None and not task.done())
+            or self._saying
+            or self._taking > 0
+            or not self._started,
+            listening=self._listener is not None,
+            spoken_turn=spoken[0] if spoken is not None else None,
+            spoken_ms=spoken[1] if spoken is not None else None,
+            heard_turn=self._played,
+            active_ms=self.active_ms,
+        )
+
+    @contextlib.asynccontextmanager
+    async def _taking_input(self) -> AsyncIterator[None]:
+        """Around taking in what the user did: nothing is delivered until it is the
+        session's task or has come to nothing, and notice speech gives way to it."""
+        # Counted before the first await, so a tick in any gap sees the page busy.
+        self._taking += 1
+        try:
+            await self._hush()
+            yield
+        finally:
+            self._taking -= 1
+        if self._taking == 0 and self._task is None:
+            # It came to nothing: what was held for it may arrive now.
+            await self._offer()
+
+    async def _hush(self) -> None:
+        """Stop speaking notices, and wait until that has stopped. They stay saved."""
+        task = self._notice_task
+        if task is not None and task is self._task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def _offer(self) -> None:
+        door = self._rt.door
+        if door is None or self._closed:
+            return
+        try:
+            await door.offer(self)
+        except Exception as e:
+            # The notices stay held; the next tick's flush tries again.
+            logger.warning("notices not offered in session %s: %s", self.id, type(e).__name__)
+
+    async def deliver(self, notices: Sequence[Delivery]) -> None:
+        """The door hands over notices while this page is free. All or none: a page
+        that is no longer free raises `NotFree` before anything happens, and the door
+        holds them again. The ones with her words are saved as her messages in one
+        statement, so they survive a reload; then each is sent, and spoken if her
+        voice is on, best effort. A missed or failed one is shown by its title, never
+        spoken (PER-11). Speech is queued, never waited for."""
+        rt = self._rt
+        if self._closed or not free(self.facts(), rt.clock()):
+            raise NotFree
+        said = [n.text for n in notices if n.text]
+        if said:
+            await self._save_all(
+                "assistant", [Msg(role="assistant", blocks=(TextBlock(text=t),)) for t in said]
+            )
+        if any(n.kind == "ask" and n.text for n in notices):
+            # A timed ask's answer can quote what it read: whatever she does next on the
+            # strength of it is something she read, not something the user said (MEM-5).
+            self._outside.update({self._turn, self._turn + 1})
+        # Saved: from here nothing raises, or the door would hold them and they would be
+        # saved twice. `_send` already logs a failed send and goes on.
+        for n in notices:
+            await self._send(
+                "notice",
+                code="schedule",
+                id=n.id,
+                kind=n.kind,
+                title=n.title,
+                text=n.text,
+                due_ms=n.due_ms,
+                due=n.due,
+                late=n.late,
+            )
+        if said and rt.tts is not None and rt.speech is not None and not self._muted:
+            if self._task is None and not self._closed and not self._stopped:
+                self._task = self._notice_task = asyncio.create_task(self._say_notices(said))
+
+    async def _save_all(self, kind: Kind, msgs: Sequence[Msg]) -> None:
+        """Like `_save`, for several at once: in the history before the write, so a turn
+        that starts meanwhile has them, and taken out again if the write fails. Only
+        these: a message saved meanwhile stays, wherever they now are."""
+        self._history.extend(msgs)
+        self._kinds.extend([kind] * len(msgs))
+        try:
+            ids = await self._rt.conversations.append_many(
+                self.id, OWNER, kind, msgs, self._rt.clock()
+            )
+        except BaseException:
+            mine = {id(m) for m in msgs}
+            kept = [i for i, m in enumerate(self._history) if id(m) not in mine]
+            self._history[:] = [self._history[i] for i in kept]
+            self._kinds[:] = [self._kinds[i] for i in kept]
+            raise
+        self._ids.extend(ids)
+
+    async def _say_notices(self, said: list[str]) -> None:
+        """Her words for the notices, through the normal speech path. Runs as the
+        session's task, so nothing else starts over it, and "stop" stops it."""
+        rt = self._rt
+        if rt.tts is None or rt.speech is None:  # pragma: no cover - checked by deliver
+            self._task = None
+            return
+        turn = rt.out_of_turn()
+        # Not a spoken turn: when she has said it, the microphone stays closed.
+        self._via = "text"
+        speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
+        try:
+            await self._state("speaking", notice=True)
+            for text in said:
+                await speaker.feed(text)
+                await speaker.pause()
+            await speaker.finish()
+            self._spoken = (turn, rt.clock())
+        except asyncio.CancelledError:
+            await speaker.stop()
+            self._spoken = None
+        except Exception as e:
+            # Shown already and saved: only the speaking failed.
+            logger.warning("notice speech failed in session %s: %s", self.id, type(e).__name__)
+        finally:
+            if self._task is asyncio.current_task():
+                self._task = None
+            if self._notice_task is asyncio.current_task():
+                self._notice_task = None
+        await self._state(self._rest)
 
     async def _error(self, code: str, **extra: Any) -> None:
         await self._send("error", code=code, **extra)
@@ -868,20 +1088,3 @@ class Session:
             await self._raw_send({"type": kind, **body})
         except Exception as e:
             logger.debug("send of %s failed: %s", kind, type(e).__name__)
-
-
-def _skill_lines(rt: Runtime) -> list[tuple[str, str]]:
-    """(label, description) of each skill that is on and unchanged (CON-6). Read once
-    a turn and kept for describe_self. Anything unexpected leaves this turn without
-    skills, logged by its kind only: the message could name the user's files."""
-    if rt.skills is None:
-        return []
-    try:
-        entries = rt.skills.enabled()
-        lines = rt.skills.prompt_lines(entries=entries)
-    except Exception as e:
-        logger.warning("skills could not be read this turn: %s", type(e).__name__)
-        rt.skills_on = []
-        return []
-    rt.skills_on = entries
-    return lines
