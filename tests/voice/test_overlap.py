@@ -75,11 +75,25 @@ def test_an_acknowledgement_she_also_said_still_ends_in_carry_on() -> None:
     assert decide("okay", done=False, elapsed_s=DECIDE_BY_S, playing=playing) == "carry_on"
 
 
-def test_a_word_she_also_said_is_taken_for_echo() -> None:
-    # The trade-off: a real "stop" is lost when she just said "stop" herself.
+def test_a_stop_word_is_never_taken_for_echo() -> None:
     playing = ("You can stop the timer any time.",)
-    assert decide("stop", done=False, elapsed_s=0.4, playing=playing) == "wait"
-    assert decide("stop", done=False, elapsed_s=DECIDE_BY_S, playing=playing) == "carry_on"
+    assert decide("stop", done=False, elapsed_s=0.1, playing=playing) == "interrupt"
+    assert decide("no", done=False, elapsed_s=0.1, playing=("No, the train.",)) == "interrupt"
+
+
+def test_a_growing_transcript_changes_its_answer() -> None:
+    assert decide("yeah", done=False, elapsed_s=0.3, playing=PLAYING) == "wait"
+    assert decide("yeah but", done=False, elapsed_s=0.6, playing=PLAYING) == "interrupt"
+
+
+def test_nothing_playing_means_nothing_is_echo() -> None:
+    assert decide("six", done=False, elapsed_s=0.1, playing=()) == "interrupt"
+    assert decide("yeah", done=True, elapsed_s=0.1, playing=()) == "carry_on"
+
+
+@pytest.mark.parametrize("words", ["停", "нет", "10", "don't"])
+def test_words_in_any_script_or_digits_are_words(words: str) -> None:
+    assert decide(words, done=False, elapsed_s=0.1, playing=PLAYING) == "interrupt"
 
 
 def test_another_language_interrupts() -> None:

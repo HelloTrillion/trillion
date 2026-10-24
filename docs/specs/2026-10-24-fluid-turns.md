@@ -107,7 +107,7 @@ A **draft** is a real turn started early, with a closed **gate**.
 
 - It opens a listener in **overlap mode** without stopping her reply. `_listen` accepts this while a turn is running.
 - It decides with `voice/overlap.py`, a pure function `decide(words, done, elapsed_s, playing) -> "wait" | "carry_on" | "interrupt"`:
-  - **Echo:** words that all appear in the sentence she is playing, or the one before, count as her own voice coming back. They are ignored.
+  - **Echo:** words that all appear in the sentence she is playing, or the one before, count as her own voice coming back. They are ignored, except stop words ("stop", "wait", "no", "hold on" and the like), which always count as the user.
   - **Interrupt:** any word not in the acknowledgement list is an interruption, as soon as it is heard.
   - **Carry on (acknowledgement):** words that are all acknowledgements, three at most, and either `done` or 1.2 s passed.
   - **Carry on (no words):** no words by 1.5 s means a cough or a door.

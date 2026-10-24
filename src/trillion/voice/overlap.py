@@ -27,8 +27,11 @@ _PHRASES = re.compile(r"(?<!\S)(?:got it|i see|uh huh)(?!\S)")
 _ACKS = frozenset(
     "yeah yes yep mm-hm mm-hmm mmhmm mhm mm uh-huh right okay ok sure exactly totally true".split()
 )
-# Hyphens stay inside a word, so "mm-hm" and "uh-huh" are one word each.
-_WORD = re.compile(r"[a-z]+(?:-[a-z]+)*")
+# Any script and digits count as words. Hyphens and apostrophes stay inside a word,
+# so "mm-hm", "uh-huh" and "don't" are one word each.
+_WORD = re.compile(r"[^\W_]+(?:['-][^\W_]+)*")
+# Words that mean "stop". They are never taken for her echo.
+_STOPS = frozenset("stop wait no nope hold hang pause cancel enough quiet shh hey".split())
 
 
 def _words(text: str) -> list[str]:
@@ -47,9 +50,10 @@ def _acks(words: list[str]) -> int | None:
 def decide(words: str, *, done: bool, elapsed_s: float, playing: Sequence[str]) -> Decision:
     heard = _words(words)
     hers = {w for sentence in playing for w in _words(sentence)}
-    # Trade-off: if the user says only words she is saying (say "stop" while she says
-    # "stop the timer"), we can't tell them from her echo, so she carries on at the limit.
-    if heard and all(w in hers for w in heard):
+    # Trade-off: a stop word is always the user, even when she said it herself. If her
+    # own "no" or "wait" leaks back, she may stop; that is recoverable. Ignoring the
+    # user is not.
+    if heard and all(w in hers for w in heard) and not any(w in _STOPS for w in heard):
         heard = []  # her own voice, come back through the microphone
     if not heard:
         return "carry_on" if elapsed_s >= DECIDE_BY_S else "wait"
