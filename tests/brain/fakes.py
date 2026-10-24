@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+from trillion.brain.title import TITLE_TOKENS
 from trillion.brain.types import (
     Done,
     ModelEvent,
@@ -39,8 +40,13 @@ class ScriptedProvider:
     model = "fake-1"
 
     def __init__(
-        self, *replies: list[ModelEvent] | Exception, pricing: Pricing | None = None
+        self,
+        *replies: list[ModelEvent] | Exception,
+        pricing: Pricing | None = None,
+        names: bool = False,
     ) -> None:
+        self._names = names
+        self.tool_calls: list[Sequence[ToolSchema]] = []
         self._replies = list(replies)
         self._pricing = pricing
         self.calls: list[tuple[Sequence[SystemBlock], list[Msg]]] = []
@@ -56,7 +62,12 @@ class ScriptedProvider:
         tools: Sequence[ToolSchema],
         max_tokens: int,
     ) -> AsyncIterator[ModelEvent]:
+        if max_tokens == TITLE_TOKENS and not self._names:
+            # She names the conversation after her first reply; scripts are about turns.
+            yield Done(stop_reason="end", usage=Usage())
+            return
         self.calls.append((system, list(messages)))
+        self.tool_calls.append(list(tools))
         if not self._replies:
             raise ProviderError("script_exhausted")
         reply = self._replies.pop(0)
