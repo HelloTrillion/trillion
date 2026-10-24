@@ -59,6 +59,10 @@ NOT_DECISIONS: dict[str, str] = {
     "pending_action_args.args_json": "cleared for retention once settled (SPN-9)",
     "pending_action_args.cleared_at": "when it was cleared",
     "turn_timings.played_ms": "a measurement (ONB-11)",
+    "conversations.title": "a label for the thread list; decides nothing (SUR-1)",
+    "conversations.title_source": "who named it, so her title never replaces the user's",
+    "conversations.last_message_at": "recency for sorting the thread list",
+    "conversations.deleted_at": "soft delete (SPN-9); hides a conversation, decides no action",
     # History is otherwise only appended to. The one exception, in
     # SqliteConversationStore.amend_tail: her last spoken reply trimmed to what was heard,
     # and only while it is still the conversation's last message, so the model has

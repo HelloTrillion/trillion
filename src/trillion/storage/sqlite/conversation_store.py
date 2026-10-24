@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import aiosqlite
@@ -26,6 +27,30 @@ Kind = Literal["user", "tap", "assistant", "tool_results"]
 USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
 ConversationKind = Literal["chat", "scheduled"]
+TitleSource = Literal["words", "model", "user"]
+TITLE_MAX = 80
+WORDS_TITLE_MAX = 60
+
+
+@dataclass(frozen=True)
+class ChatRow:
+    id: str
+    title: str | None
+    last_message_at: int
+
+
+def tidy_title(text: str, limit: int = TITLE_MAX) -> str:
+    """One line, single spaces, cut at `limit`."""
+    return " ".join(text.split())[:limit].strip()
+
+
+def _first_text(msg: Msg) -> str:
+    return " ".join(b.text for b in msg.blocks if isinstance(b, TextBlock)).strip()
+
+
+def _like(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _dump(b: Block) -> dict[str, Any]:
@@ -117,6 +142,7 @@ class SqliteConversationStore:
                 now_ms,
             ),
         )
+        await self._touched(conversation_id, owner_id, kind, [msg], now_ms)
         return int(cur.lastrowid or 0)
 
     async def append_many(
@@ -142,7 +168,111 @@ class SqliteConversationStore:
         sql = f"INSERT INTO messages ({cols}) VALUES {rows} RETURNING id"  # noqa: S608 - placeholders only
         async with self._conn.execute(sql, values) as cur:
             # RETURNING's order is not promised; ids rise in the order the rows went in.
-            return sorted(int(r[0]) for r in await cur.fetchall())
+            ids = sorted(int(r[0]) for r in await cur.fetchall())
+        await self._touched(conversation_id, owner_id, kind, msgs, now_ms)
+        return ids
+
+    async def _touched(
+        self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
+    ) -> None:
+        """Recency, and the first words as a title until there is one."""
+        await self._conn.execute(
+            "UPDATE conversations SET last_message_at = ? WHERE id = ? AND owner_id = ?",
+            (now_ms, conversation_id, owner_id),
+        )
+        if kind != "user":
+            return
+        words = next((t for m in msgs if (t := _first_text(m))), "")
+        if not words:
+            return
+        await self._conn.execute(
+            "UPDATE conversations SET title = ?, title_source = 'words'"
+            " WHERE id = ? AND owner_id = ? AND title IS NULL",
+            (tidy_title(words, WORDS_TITLE_MAX), conversation_id, owner_id),
+        )
+
+    async def title_of(
+        self, conversation_id: str, owner_id: str
+    ) -> tuple[str | None, TitleSource | None]:
+        async with self._conn.execute(
+            "SELECT title, title_source FROM conversations WHERE id = ? AND owner_id = ?",
+            (conversation_id, owner_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return (row["title"], row["title_source"]) if row is not None else (None, None)
+
+    async def set_title(
+        self, conversation_id: str, owner_id: str, title: str, source: TitleSource
+    ) -> bool:
+        """Name a conversation; returns whether it did. Her title never replaces one the
+        user gave, checked in the statement itself so a rename racing her cannot lose."""
+        clean = tidy_title(title)
+        if not clean:
+            return False
+        guard = " AND (title_source IS NULL OR title_source != 'user')" if source == "model" else ""
+        cur = await self._conn.execute(
+            "UPDATE conversations SET title = ?, title_source = ?"  # noqa: S608 - fixed text only
+            " WHERE id = ? AND owner_id = ? AND deleted_at IS NULL" + guard,
+            (clean, source, conversation_id, owner_id),
+        )
+        return cur.rowcount == 1
+
+    async def list_chats(
+        self,
+        owner_id: str,
+        *,
+        query: str | None = None,
+        before_ms: int | None = None,
+        limit: int = 50,
+    ) -> tuple[list[ChatRow], bool]:
+        """The user's conversations with something in them, newest first, and whether
+        there are more. A query matches the title or the words of what was said, never
+        tool results and never the JSON around the words."""
+        where = [
+            "c.owner_id = ?",
+            "c.kind = 'chat'",
+            "c.deleted_at IS NULL",
+            "c.last_message_at IS NOT NULL",
+        ]
+        args: list[object] = [owner_id]
+        if before_ms is not None:
+            where.append("c.last_message_at < ?")
+            args.append(before_ms)
+        q = (query or "").strip()
+        if q:
+            where.append(
+                "(c.title LIKE ? ESCAPE '\\' OR EXISTS ("
+                " SELECT 1 FROM messages m, json_each(m.blocks_json) b"
+                " WHERE m.conversation_id = c.id AND m.kind IN ('user', 'assistant')"
+                " AND json_extract(b.value, '$.t') = 'text'"
+                " AND json_extract(b.value, '$.text') LIKE ? ESCAPE '\\'))"
+            )
+            args += [_like(q), _like(q)]
+        sql = (
+            "SELECT c.id, c.title, c.last_message_at FROM conversations c"  # noqa: S608
+            f" WHERE {' AND '.join(where)} ORDER BY c.last_message_at DESC, c.id LIMIT ?"
+        )
+        async with self._conn.execute(sql, [*args, limit + 1]) as cur:
+            rows = list(await cur.fetchall())
+        out = [ChatRow(r["id"], r["title"], int(r["last_message_at"])) for r in rows[:limit]]
+        return out, len(rows) > limit
+
+    async def delete(self, conversation_id: str, owner_id: str, now_ms: int) -> bool:
+        """Soft delete (SPN-9): hidden from the list and from resuming, kept on disk."""
+        cur = await self._conn.execute(
+            "UPDATE conversations SET deleted_at = ?"
+            " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NULL",
+            (now_ms, conversation_id, owner_id),
+        )
+        return cur.rowcount == 1
+
+    async def restore(self, conversation_id: str, owner_id: str) -> bool:
+        cur = await self._conn.execute(
+            "UPDATE conversations SET deleted_at = NULL"
+            " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NOT NULL",
+            (conversation_id, owner_id),
+        )
+        return cur.rowcount == 1
 
     async def amend_tail(
         self, conversation_id: str, owner_id: str, message_id: int, msg: Msg
