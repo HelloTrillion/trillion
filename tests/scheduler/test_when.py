@@ -129,3 +129,18 @@ def test_times_and_repeats_in_words() -> None:
         "every month on the 31st (or the month's last day)"
     )
     assert repeat_words(None) == "once"
+
+
+def test_zone_names_are_checked_and_made_canonical() -> None:
+    assert parse_local("2026-10-24T16:00", " America/New_York ").tzinfo.key == NY  # type: ignore[union-attr]
+    assert parse_local("2026-10-24T16:00", "america/new_york").tzinfo.key == NY  # type: ignore[union-attr]
+    for bad in (None, 5, "", "  "):
+        with pytest.raises(WhenError):
+            parse_local("2026-10-24T16:00", bad)  # type: ignore[arg-type]
+
+
+def test_a_day_with_no_real_minute_moves_to_the_next_day() -> None:
+    # Samoa skipped 30 December 2011 entirely.
+    apia = "Pacific/Apia"
+    found = next_after("2011-12-29T09:00", DAILY, apia, ms("2011-12-29T09:00", apia))
+    assert found == ms("2011-12-31T09:00", apia)

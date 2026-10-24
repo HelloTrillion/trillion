@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -82,3 +83,45 @@ def test_a_failure_returns_false_and_logs_only_its_kind(
     with caplog.at_level(logging.DEBUG):
         assert not n.notify(MARKER, MARKER, platform="linux", run=run, which=which, env={})
     assert MARKER not in caplog.text
+
+
+def test_macos_words_come_after_a_double_dash_so_they_are_never_options() -> None:
+    run = Recorder()
+    assert n.notify("-e x", "-e y", platform="darwin", run=run, which=which, env={})
+    ((args, _),) = run.calls
+    assert args[-3:] == ["--", "-e x", "-e y"]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+@pytest.mark.parametrize("text", ["a\x00b", "a\ud800b", "a\x07b\x1b[0m"])
+def test_odd_characters_never_raise_and_are_cleaned(platform: str, text: str) -> None:
+    run = Recorder()
+    assert n.notify(text, text, platform=platform, run=run, which=which, env={})
+    ((args, kw),) = run.calls
+    sent = [*args, *kw.get("env", {}).values()]
+    assert all("\x00" not in s and "\x07" not in s and "\x1b" not in s for s in sent)
+    for s in sent:
+        s.encode("utf-8")
+
+
+def test_a_value_error_from_the_run_returns_false() -> None:
+    run = Recorder(raises=ValueError("embedded null byte"))
+    assert not n.notify("T", "B", platform="linux", run=run, which=which, env={})
+
+
+def test_linux_body_markup_is_escaped() -> None:
+    run = Recorder()
+    n.notify("T <b>", "a & <b>x</b>", platform="linux", run=run, which=which, env={})
+    ((args, _),) = run.calls
+    assert args[-1] == "a &amp; &lt;b&gt;x&lt;/b&gt;" and args[-2] == "T <b>"
+
+
+def test_windows_prefers_the_system_powershell(tmp_path: object) -> None:
+    run = Recorder()
+    root = Path(str(tmp_path))
+    exe = root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    n.notify("T", "B", platform="win32", run=run, which=which, env={"SystemRoot": str(root)})
+    ((args, _),) = run.calls
+    assert args[0] == str(exe)

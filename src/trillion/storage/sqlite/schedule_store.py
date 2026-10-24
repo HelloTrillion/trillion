@@ -94,7 +94,12 @@ class SqliteScheduleStore:
                 # As in the spine store: never leave a transaction open on the connection.
                 await asyncio.shield(self._conn.rollback())
                 raise
-            await self._conn.execute("COMMIT")
+            try:
+                await self._conn.execute("COMMIT")
+            except BaseException:
+                # A failed COMMIT leaves the transaction open: close it.
+                await asyncio.shield(self._conn.rollback())
+                raise
 
     # ── Schedules ────────────────────────────────────────────────────────
 
@@ -152,8 +157,9 @@ class SqliteScheduleStore:
             cur = await conn.execute(
                 "INSERT OR IGNORE INTO task_runs"
                 " (schedule_id, due_ms, status, timeout_s, attempts, created_ms)"
-                " VALUES (?, ?, 'queued', ?, 0, ?)",
-                (schedule_id, due_ms, timeout_s, now_ms),
+                " SELECT ?, ?, 'queued', ?, 0, ? WHERE EXISTS"
+                " (SELECT 1 FROM schedules WHERE id = ? AND status = 'active')",
+                (schedule_id, due_ms, timeout_s, now_ms, schedule_id),
             )
             added = cur.rowcount == 1
             await conn.execute(
@@ -225,6 +231,8 @@ class SqliteScheduleStore:
             )
 
     async def reclaim(self, worker: str, now_ms: int) -> list[Run]:
+        # Assumes one Trillion process per data folder: a run claimed by any other
+        # worker id is taken to belong to a process that has gone.
         async with self._tx() as conn:
             async with conn.execute(
                 "UPDATE task_runs SET status = 'interrupted', finished_ms = ?,"

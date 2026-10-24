@@ -54,6 +54,8 @@ def schedule(**kw: Any) -> Schedule:
 @pytest.fixture
 async def store(tmp_path: Path) -> AsyncIterator[SqliteScheduleStore]:
     conn = await connect(tmp_path / "t.db")
-    await migrate(conn)
-    yield SqliteScheduleStore(conn)
-    await conn.close()
+    try:
+        await migrate(conn)
+        yield SqliteScheduleStore(conn)
+    finally:
+        await conn.close()

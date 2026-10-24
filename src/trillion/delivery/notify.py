@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -56,12 +57,24 @@ Which = Callable[[str], str | None]
 
 def cut(text: str) -> str:
     """One line, at most LIMIT characters."""
-    line = " ".join(text.split())
+    # Surrogates can't be encoded; control characters (NUL raises in argv and in the
+    # Windows environment) are dropped, and any whitespace run becomes one space.
+    clean = text.encode("utf-8", "replace").decode("utf-8")
+    clean = "".join(" " if c.isspace() else c for c in clean if c.isprintable() or c.isspace())
+    line = " ".join(clean.split())
     return line if len(line) <= LIMIT else line[: LIMIT - 1] + "…"
 
 
+def _system_powershell(env: Mapping[str, str]) -> str | None:
+    root = env.get("SystemRoot")
+    if not root:
+        return None
+    exe = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(exe) if exe.is_file() else None
+
+
 def command(
-    title: str, body: str, *, platform: str, which: Which
+    title: str, body: str, *, platform: str, which: Which, env: Mapping[str, str]
 ) -> tuple[list[str], dict[str, str]] | None:
     """The argument list, and environment values, that show one notification here.
     None where there is nothing to show it with."""
@@ -71,9 +84,10 @@ def command(
         if exe is None:
             return None
         script = [arg for line in _APPLESCRIPT for arg in ("-e", line)]
-        return [exe, *script, t, b], {}
+        # "--" ends the options: osascript would read a title like "-e ..." as script.
+        return [exe, *script, "--", t, b], {}
     if platform == "win32":
-        exe = which("powershell.exe") or which("powershell")
+        exe = _system_powershell(env) or which("powershell.exe") or which("powershell")
         if exe is None:
             return None
         encoded = base64.b64encode(_TOAST.encode("utf-16-le")).decode("ascii")
@@ -82,7 +96,9 @@ def command(
     exe = which("notify-send")
     if exe is None:
         return None
-    return [exe, "--app-name=Trillion", "--", t, b], {}
+    # Some notification servers render markup in the body.
+    safe = b.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return [exe, "--app-name=Trillion", "--", t, safe], {}
 
 
 def notify(
@@ -95,7 +111,8 @@ def notify(
     env: Mapping[str, str] | None = None,
 ) -> bool:
     """Show one notification. True only when the platform's tool said it did."""
-    found = command(title, body, platform=platform, which=which)
+    environ = os.environ if env is None else env
+    found = command(title, body, platform=platform, which=which, env=environ)
     if found is None:
         logger.info("no way to show a system notification on %s", platform)
         return False
@@ -105,13 +122,13 @@ def notify(
         "capture_output": True,
         "stdin": subprocess.DEVNULL,
         "timeout": TIMEOUT_S,
-        "env": {**(os.environ if env is None else env), **extra},
+        "env": {**environ, **extra},
     }
     if platform == "win32":
         options["creationflags"] = CREATE_NO_WINDOW
     try:
         done = run(args, **options)
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
         logger.warning("system notification failed: %s", type(e).__name__)
         return False
     if done.returncode != 0:

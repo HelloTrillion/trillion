@@ -12,8 +12,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import cache
 from typing import Any, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 Every = Literal["day", "weekday", "week", "month"]
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -80,10 +81,24 @@ def read_repeat(raw: object) -> Repeat | None:
 
 
 def zone_of(name: str) -> ZoneInfo:
+    """The zone for a name, by its canonical spelling (the same on every system)."""
+    if not isinstance(name, str) or not name.strip():
+        raise WhenError("a timezone name is needed")
+    wanted = name.strip()
+    # A case-insensitive file system accepts 'america/new_york'; Linux does not.
+    # Only the names zoneinfo lists count, so every system agrees.
+    key = _zone_keys().get(wanted.lower())
+    if key is None:
+        raise WhenError(f"{name!r} is not a timezone this computer knows")
     try:
-        return ZoneInfo(name)
+        return ZoneInfo(key)
     except (ZoneInfoNotFoundError, ValueError, OSError):
         raise WhenError(f"{name!r} is not a timezone this computer knows") from None
+
+
+@cache
+def _zone_keys() -> dict[str, str]:
+    return {k.lower(): k for k in available_timezones()}
 
 
 def known(name: str) -> bool:
@@ -139,9 +154,12 @@ def next_after(at_local: str, repeat: Repeat | None, zone: str, after_ms: int) -
     for _ in range(_HORIZON_DAYS):
         candidate = datetime.combine(day, start.time())
         if candidate >= start and repeat.matches(day):
-            ms = to_ms(_real(candidate, tz))
-            if ms > after_ms:
-                return ms
+            try:
+                found = to_ms(_real(candidate, tz))
+            except WhenError:
+                found = None  # a day with no real minute (Samoa, 2011): on to the next
+            if found is not None and found > after_ms:
+                return found
         day += timedelta(days=1)
     raise WhenError("that repeat never comes round")
 

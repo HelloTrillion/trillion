@@ -35,21 +35,25 @@ async def test_an_occurrence_is_recorded_once(store: SqliteScheduleStore) -> Non
 
 async def test_two_claimers_never_get_the_same_run(tmp_path: Path) -> None:
     conn_a = await connect(tmp_path / "t.db")
-    await migrate(conn_a)
-    conn_b = await connect(tmp_path / "t.db")
-    a, b = SqliteScheduleStore(conn_a), SqliteScheduleStore(conn_b)
-    await a.create(schedule())
-    await a.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
-    one, other = await asyncio.gather(a.claim("w1", DUE, 0), b.claim("w2", DUE, 0))
-    assert (one is None) != (other is None)
-    await a.create(schedule(id="e5f6a7b8"))
-    await a.enqueue("e5f6a7b8", DUE, None, 10.0, DUE)
-    await a.create(schedule(id="c9d0e1f2"))
-    await a.enqueue("c9d0e1f2", DUE, None, 10.0, DUE)
-    first, second = await asyncio.gather(a.claim("w1", DUE, 0), b.claim("w2", DUE, 0))
-    assert first is not None and second is not None and first.id != second.id
-    await conn_a.close()
-    await conn_b.close()
+    try:
+        await migrate(conn_a)
+        conn_b = await connect(tmp_path / "t.db")
+        try:
+            a, b = SqliteScheduleStore(conn_a), SqliteScheduleStore(conn_b)
+            await a.create(schedule())
+            await a.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
+            one, other = await asyncio.gather(a.claim("w1", DUE, 0), b.claim("w2", DUE, 0))
+            assert (one is None) != (other is None)
+            await a.create(schedule(id="e5f6a7b8"))
+            await a.enqueue("e5f6a7b8", DUE, None, 10.0, DUE)
+            await a.create(schedule(id="c9d0e1f2"))
+            await a.enqueue("c9d0e1f2", DUE, None, 10.0, DUE)
+            first, second = await asyncio.gather(a.claim("w1", DUE, 0), b.claim("w2", DUE, 0))
+            assert first is not None and second is not None and first.id != second.id
+        finally:
+            await conn_b.close()
+    finally:
+        await conn_a.close()
 
 
 async def test_a_claim_counts_the_attempt_and_takes_only_what_is_due(
@@ -162,10 +166,22 @@ async def test_a_scheduled_conversation_is_kept_but_no_page_can_open_it(tmp_path
     from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 
     conn = await connect(tmp_path / "t.db")
-    await migrate(conn)
-    chats = SqliteConversationStore(conn)
-    await chats.create("chat1", "local", 1)
-    await chats.create("ask1", "local", 1, kind="scheduled")
-    assert await chats.exists("chat1", "local")
-    assert not await chats.exists("ask1", "local")
-    await conn.close()
+    try:
+        await migrate(conn)
+        chats = SqliteConversationStore(conn)
+        await chats.create("chat1", "local", 1)
+        await chats.create("ask1", "local", 1, kind="scheduled")
+        assert await chats.exists("chat1", "local")
+        assert not await chats.exists("ask1", "local")
+    finally:
+        await conn.close()
+
+
+async def test_a_cancel_between_looking_and_enqueueing_leaves_no_run(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule())
+    (found,) = await store.due(DUE)
+    assert await store.cancel("local", found.id, DUE)
+    assert not await store.enqueue(found.id, DUE, None, 10.0, DUE)
+    assert await store.runs(found.id) == []
