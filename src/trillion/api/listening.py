@@ -13,7 +13,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from trillion.voice.endpoint import NOTHING_AFTER_S, EndOfSpeech, Verdict, sounds_finished
+from trillion.voice.endpoint import (
+    NOTHING_AFTER_S,
+    EndOfSpeech,
+    Verdict,
+    leads_on,
+    sounds_finished,
+)
 from trillion.voice.types import STTProvider, STTStream, VoiceError
 
 logger = logging.getLogger(__name__)
@@ -69,6 +75,10 @@ class Listener:
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
+        # Turns the recognizer called done on words that lead on ("... and"): kept,
+        # and what follows joins them (VOI-12).
+        self._held: list[str] = []
+        self._holding = False
         self._finals: list[str] = []
         self._interim = ""
         self._error: VoiceError | None = None
@@ -99,6 +109,9 @@ class Listener:
         return self._rules.quiet_s
 
     def text(self) -> str:
+        return " ".join(p for p in (*self._held, *self._finals, self._interim) if p).strip()
+
+    def _this_turn(self) -> str:
         return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 
     def promote(
@@ -147,14 +160,29 @@ class Listener:
                     # The next turn's first words can arrive while we wrap up; they
                     # are not part of this one.
                     continue
+                # They carried on after a done that led on.
+                resumed = bool(heard.text) and self._holding and heard.turn != "done"
+                if resumed:
+                    self._holding = False
                 if heard.turn == "done":
                     # The whole turn, as the recognizer finally heard it. An empty
                     # done keeps what the interim words said.
-                    kept = self.text()
+                    kept = self._this_turn()
                     self._finals = [heard.text] if heard.text else ([kept] if kept else [])
                     self._interim = ""
                     self._rules.heard(final=True, has_text=bool(heard.text))
-                    self._rules.turn_over()
+                    if leads_on(self.text()):
+                        # Done on "and" or "um": they are likely finding their words.
+                        # Keep listening; the local rules end it if quiet goes on.
+                        added, self._finals = self._finals, []
+                        self._held.extend(added)
+                        self._holding = True
+                        self._rules.hold()
+                        if added:
+                            # As "probably finished": a draft may start (VOI-12).
+                            await self._signal("maybe")
+                    else:
+                        self._rules.turn_over()
                 elif heard.final:
                     if heard.text:
                         self._finals.append(heard.text)
@@ -166,6 +194,8 @@ class Listener:
                     # message so far reads as finished; otherwise the patient rules apply.
                     done = heard.pause and sounds_finished(self.text())
                     self._rules.heard(final=heard.final, has_text=bool(heard.text), done=done)
+                if resumed:
+                    await self._signal("resumed")
                 if heard.turn in ("maybe", "resumed") and self._provider.turns:
                     await self._signal(heard.turn)
                 if self._provider.streaming and (heard.text or heard.final):

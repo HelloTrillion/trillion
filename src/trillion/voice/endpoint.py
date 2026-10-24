@@ -35,6 +35,9 @@ _GOING_ON = frozenset(
     "and but or so because if then than that which who to of for with the a an my "
     "your um uh er erm like".split()
 )
+# When the recognizer that judges turns says done on words that lead on ("I went to
+# the shop and"), she keeps listening, and this much more quiet ends the turn (VOI-12).
+HELD_QUIET_S = 2.5
 # A microphone that delivers nothing louder than this is not delivering sound at
 # all: muted, unplugged, or the wrong device. A real threshold, not "above zero".
 DEAD_LEVEL = 0.0006
@@ -58,6 +61,19 @@ def sounds_finished(text: str) -> bool:
         return False
     last = t.rstrip(".?!").rsplit(maxsplit=1)[-1:] or [""]
     return last[0].lower().strip("\"'(\u201c\u2018,;:") not in _GOING_ON
+
+
+def leads_on(text: str) -> bool:
+    """Whether words stop somewhere that leads on: a word like "and" or "um", an
+    ellipsis, a comma or a dash. Unlike `sounds_finished`, a missing full stop is not
+    enough, because a recognizer that judges turns may give no punctuation at all."""
+    t = text.strip().rstrip("\"')\u201d\u2019")
+    if not t:
+        return False
+    if t.endswith(("...", "\u2026", ",", ";", ":", "-", "\u2013", "\u2014")):
+        return True
+    last = t.rstrip(".?!").rsplit(maxsplit=1)[-1:] or [""]
+    return last[0].lower().strip("\"'(\u201c\u2018,;:") in _GOING_ON
 
 
 def level(pcm: bytes) -> float:
@@ -88,6 +104,8 @@ class EndOfSpeech:
         self._last_final = -1.0
         self._pending_words = False
         self._done = False
+        # When a done that led on was heard, by the audio's clock; -1 when none is held.
+        self._held = -1.0
 
     @property
     def now(self) -> float:
@@ -121,6 +139,8 @@ class EndOfSpeech:
             # New words undo an earlier "done": the speaker went on. An empty final, the
             # recognizer's report of silence, changes nothing.
             self._done = done and final
+            # Words after a held done: the recognizer judges this turn's end again.
+            self._held = -1.0
         if has_text:
             self._spoke = True
             self._last_words = self.now
@@ -136,6 +156,11 @@ class EndOfSpeech:
     def turn_over(self) -> None:
         """The recognizer that judges turns says this one is over (VOI-12)."""
         self._over = True
+
+    def hold(self) -> None:
+        """The recognizer said done, but the words lead on: keep listening, and end the
+        turn after `HELD_QUIET_S` more quiet unless new words come first."""
+        self._held = self.now
 
     def audio(self, pcm: bytes) -> Verdict | None:
         data = self._rest + pcm
@@ -170,7 +195,12 @@ class EndOfSpeech:
             return "nothing" if now >= self._patience else None
         if self._judged:
             # The recognizer judges the end by meaning; silence alone never does.
-            return "end" if self._over else None
+            if self._over:
+                return "end"
+            # A voice with no words (a cough, a breath) starts the quiet again.
+            if self._held >= 0 and now - max(self._held, self._last_voice) >= HELD_QUIET_S:
+                return "end"
+            return None
 
         quiet = now - self._last_voice
         if self._streaming and self._done and not self._pending_words and quiet >= DONE_S:

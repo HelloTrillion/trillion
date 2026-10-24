@@ -121,6 +121,24 @@ async def test_carrying_on_drops_the_draft_and_nothing_is_saved_or_sent(rt: Runt
     await session.close()
 
 
+async def test_a_done_that_leads_on_drafts_and_carrying_on_drops_it(rt: Runtime) -> None:
+    """The recognizer ended the turn on "and": she keeps listening, a draft starts as
+    on a maybe, and the words that follow drop it and join the message."""
+    stt, provider = judging(rt, say("Dropped."), say("Milk, got it."))
+    session, page = await start(rt)
+    stt.stream.say("I went to the shop and", final=True, turn="done")
+    await until(lambda: len(provider.calls) == 1)
+    assert session._listener is not None and session._draft is not None
+    stt.stream.say("bought milk", final=False)
+    await until(lambda: session._draft is None)
+    await finish(session, stt, "bought milk")
+    finals = [m["text"] for m in page.all("transcript.final")]
+    assert finals == ["I went to the shop and bought milk"]
+    assert [m["text"] for m in page.all("reply.delta")] == ["Milk, got it."]
+    assert drafts() == ["dropped"]
+    await session.close()
+
+
 async def test_different_final_words_drop_the_draft(rt: Runtime) -> None:
     stt, provider = judging(rt, say("Dropped."), say("Fresh."))
     session, page = await start(rt)
