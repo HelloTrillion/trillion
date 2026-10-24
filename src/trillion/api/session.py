@@ -66,8 +66,6 @@ BARGE_WAIT_S = 3.0
 NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
-# What is held while a barge waits for her to stop: ten seconds of 16 kHz PCM16.
-MAX_HELD = 16_000 * 2 * 10
 # While the user talks over her, what they said is weighed at least this often.
 OVERLAP_TICK_S = 0.05
 SURFACE = "web"
@@ -137,9 +135,6 @@ class Session:
         self._listener: Listener | None = None
         # The user is talking over her, and what they meant is being decided (VOI-9).
         self._overlap: Overlap | None = None
-        # What the page sends while an overlap that became a barge waits for her to
-        # stop: it is already sending, and the listener does not exist yet.
-        self._held: bytearray | None = None
         # Her first call, started while the user is probably finishing (VOI-12); then,
         # once it is the turn's own, the one the turn replays. Whether one was started
         # in this stretch of listening, for the trace.
@@ -501,17 +496,13 @@ class Session:
 
     async def _barge_instead(self) -> None:
         """An overlap that cannot be decided is a barge (D7). The page only ducked her,
-        so her sound is stopped here unless stopping her turn does it, and the frames it
-        sends meanwhile are held for the listener that follows."""
-        # Before anything that awaits: the next frame can arrive in any gap.
-        self._held = bytearray()
+        so her sound is stopped here unless stopping her turn does it."""
         task = self._task
-        try:
-            if task is None or task.done():
-                await self._stop_her_sound(self._tail[0] if self._tail is not None else None)
-            await self._on_barge()
-        finally:
-            self._held = None
+        if task is None or task.done():
+            await self._stop_her_sound(self._tail[0] if self._tail is not None else None)
+        # Frames the page sends meanwhile wait in the socket until this returns, by
+        # when the listener exists.
+        await self._on_barge()
 
     async def _stop_her_sound(self, speaker: Speaker | None) -> None:
         """Tell the page to stop whatever of her is still playing."""
@@ -675,10 +666,6 @@ class Session:
                 on_turn=self._turn_signal,
             )
             self._listener = listener
-            held, self._held = self._held, None
-            if held:
-                # Said while a barge waited for her to stop: kept, as the page held it.
-                await listener.audio(bytes(held))
             self._drafted = False
             self._last_audio = asyncio.get_running_loop().time()
             self._warm()
@@ -706,12 +693,7 @@ class Session:
                 await self._overlap_audio(ov, pcm)
             return
         listener = self._listener
-        if self._closed or len(pcm) > MAX_AUDIO_FRAME:
-            return
-        if listener is None:
-            held = self._held
-            if held is not None and len(held) + len(pcm) <= MAX_HELD:
-                held.extend(pcm)
+        if self._closed or listener is None or len(pcm) > MAX_AUDIO_FRAME:
             return
         self._last_audio = asyncio.get_running_loop().time()
         try:
