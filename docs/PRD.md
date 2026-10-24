@@ -784,7 +784,7 @@ The noise is Ashima simplex (public domain), 3 octaves. The third octave is scal
 | Token | Value |
 |---|---|
 | Backgrounds | `#0E0F13`, `#16171D`, `#1E2028` |
-| Text | `#F0F0EC`, `#9B9B97`, `#5C5C58` |
+| Text | `#F0F0EC`, `#9B9B97`, `#8A8A85` (every text colour reaches 4.5:1 on every background, in both themes) |
 | Accent (teal) | `#2DD4A8` |
 | Amber | `#F5A524` |
 | Radius | 8 / 12 / 16 / full |

@@ -7,6 +7,12 @@ describe('model settings', () => {
     expect(errorText('something-new')).toMatch(/did not work/);
   });
 
+  it('words every error a provider can send back', () => {
+    for (const code of ['bad_request', 'provider_error', 'bad_stream']) {
+      expect(errorText(code)).not.toMatch(/did not work/);
+    }
+  });
+
   it('keeps the saved model selected, else the recommended one, else the first', () => {
     const list = [{ id: 'a', label: 'a' }, { id: 'claude-opus-5-5', label: 'Opus' }];
     expect(preferred(list, 'a')).toBe('a');
