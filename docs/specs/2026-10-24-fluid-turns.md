@@ -78,24 +78,18 @@ a radio. This spec makes three changes, Deepgram first:
 
 A **draft** is a real turn started early, with a closed **gate**.
 
-- **On `maybe`:** if the switch is on, a model is set and no turn is running, the session starts a draft from the words so far.
-  - Its history is the saved conversation plus those words as the user's message. Nothing is saved.
-  - Its prompt is built exactly as a confirmed turn's would be, so a draft that is used gives the same answer.
-  - The draft is kept as `Session._draft`, separate from `_task`.
-  - The microphone is still open, so the door already counts the session as busy (VOI-17). Nothing about notices changes.
-- **While the gate is closed:**
-  - Text from the model is held in the draft and not sent to the page or the speaker.
-  - `brain/loop.py` `run_turn` gains `gate: Callable[[], Awaitable[None]] | None`. It is awaited before the first `add()` and before any tool is dispatched.
-  - A draft whose model call ends with a tool call therefore stops there, holding the call.
-  - A cancelled draft saves nothing: the "keep what was read" save in `run_turn` happens only after the gate has opened.
-- **On `resumed`:** the draft is cancelled and listening carries on. The draft's usage is still recorded, so `/api/usage` stays honest.
-- **On `done`:**
-  - **The words match the draft's** (compared ignoring case, spacing and punctuation):
-    1. The user's message is saved and the turn counter moves, exactly as today (VOI-15a).
-    2. The draft becomes `_task` and the gate opens.
-    3. Held text goes to the speaker and the page in order, and a held tool call is dispatched with the confirmed turn's context (SPN-2, MEM-5).
-  - **The words differ:** the draft is cancelled and the turn starts normally.
-- **If the draft failed** (a provider error while the gate was closed), it is dropped and the confirmed turn starts normally. A draft's failure is never shown.
+- **On `maybe`:** if the switch is on, a model is set, no turn is running and the history is not due to be compacted, the session starts a draft from the words so far (`api/draft.py`, `Draft`).
+  - **Building it:** the user's message is built exactly as a confirmed turn would build it (the context block, the recalled memories, the words), but not saved. `_save_input` is split into building the message and committing it, so a used draft saves that same message byte for byte.
+  - **What runs:** the draft runs only the model's **first call**, with the same system prompt, history, tools and token limit a confirmed turn would send. It records each event (text, tool calls, the end) as it arrives and does nothing else.
+  - **Holding:** nothing reaches the page, the speaker, the history or a tool, because none of those is in the draft. A first call that ends in a tool call simply ends there; the call is not run.
+  - **Where it lives:** `Session._draft`, separate from `_task`. The microphone is still open, so the door already counts the session as busy (VOI-17). Nothing about notices changes.
+- **On `resumed`:** the draft is cancelled and listening carries on. Its usage so far is recorded, so `/api/usage` stays honest.
+- **On `done`**, the draft is used when the words match (compared ignoring case, spacing and punctuation), and nothing has changed since it started (the same history length and summary, and no tap's note waiting):
+  1. The draft's message is committed and the turn counter moves, exactly as today (VOI-15a).
+  2. The turn runs as usual, except that `run_turn` takes the draft's recorded events, and then its live ones, as its first call (`brain/loop.py`: `run_turn(..., first=...)`) instead of calling the model again.
+  3. So the held text reaches the speaker and page in order, and a tool call it asked for is dispatched by the confirmed turn, with that turn's number and context (SPN-2, MEM-5).
+- **The words differ, or something changed:** the draft is cancelled, its usage recorded, and the turn starts normally.
+- **If the draft failed** (a provider error before it was used), it is dropped and the confirmed turn starts normally. A draft's failure is never shown.
 - **In the trace,** a turn records `draft: used | dropped | none`. A dropped draft's text is never kept anywhere.
 
 ### 3. Talking over her (VOI-9)
