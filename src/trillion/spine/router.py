@@ -54,7 +54,7 @@ from trillion.spine.hashing import args_hash, canonical_json
 from trillion.spine.loop_guard import LoopGuard, Verdict
 from trillion.spine.lossless import encode
 from trillion.spine.neutralize import neutralize
-from trillion.spine.registry import ToolRegistry
+from trillion.spine.registry import ToolRegistry, runs_unattended
 from trillion.spine.retention import RETENTION_DAYS, RETENTION_MS
 from trillion.spine.store import DecisionIn, SpineStore
 from trillion.spine.untrusted import wrap
@@ -77,6 +77,7 @@ _SUMMARY_LIMIT = 200
 _UNHASHABLE = "unhashable"
 _TARGET_CHANGED = "the target changed since you were asked"
 _NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
+_UNATTENDED = "nobody is here to approve it; say what you would do instead"
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
     Status.UNKNOWN: "unknown",
@@ -274,6 +275,9 @@ class Router:
             extra = set(call.args) - {"pending_id"}
             if not isinstance(pid, str) or not pid or extra:
                 return await audited("meta", _refused(Refusal.INVALID_ARGS, "pending_id only"))
+            if ctx.via == "schedule":
+                # Nobody said yes or no: an unattended run settles no card (D5).
+                return await audited("meta", _refused(Refusal.UNATTENDED, _UNATTENDED))
             decision: Literal["confirm", "cancel"] = (
                 "confirm" if call.name == CONFIRM_TOOL.name else "cancel"
             )
@@ -303,6 +307,10 @@ class Router:
         if tool is None:
             return await audited("unknown", _refused(Refusal.UNKNOWN_TOOL))
         risk = tool.definition.risk.value
+        if ctx.via == "schedule" and not runs_unattended(tool.definition):
+            # A card belongs to a session someone is watching (D5). Refused before any of
+            # the tool's own code runs, whether or not it was offered to this run.
+            return await audited(risk, _refused(Refusal.UNATTENDED, _UNATTENDED))
         if h is None:
             return await audited(risk, _refused(Refusal.INVALID_ARGS, "arguments must be JSON"))
 
@@ -411,6 +419,11 @@ class Router:
         if not await self._known(ctx.owner_id):
             return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
+        if ctx.via == "schedule":
+            meta = CONFIRM_TOOL.name if decision == "confirm" else CANCEL_TOOL.name
+            h = args_hash({"pending_id": pending_id})
+            refusal = _refused(Refusal.UNATTENDED, _UNATTENDED)
+            return await self._audit(ctx, start, meta, h, "meta", "resolve", refusal)
         a = await self._store.get_pending(pending_id)
         if a is None or a.owner_id != ctx.owner_id:
             meta = CONFIRM_TOOL.name if decision == "confirm" else CANCEL_TOOL.name
@@ -556,6 +569,8 @@ class Router:
         return await self._audit_resolution(a, ctx, start, response, decision="represent")
 
     async def _represent(self, a: PendingAction, ctx: ToolContext, now: int) -> RouterResponse:
+        if ctx.via == "schedule":
+            return _refused(Refusal.UNATTENDED, _UNATTENDED)
         if a.session_id != ctx.session_id:
             return _refused(Refusal.WRONG_SESSION)
         a = await self._expire_if_due(a, now, ctx)

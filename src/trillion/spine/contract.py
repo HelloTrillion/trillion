@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 JSON = Mapping[str, Any]
-Via = Literal["voice", "text", "tap", "channel"]
+# "schedule" is a timed ask running with nobody there (AGT-9): it can never raise or
+# settle a card.
+Via = Literal["voice", "text", "tap", "channel", "schedule"]
 Effect = Literal["confirmed", "none", "unknown"]
 
 

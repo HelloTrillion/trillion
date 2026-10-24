@@ -56,6 +56,8 @@ class Refusal(StrEnum):
     NOT_SHOWN = "not_shown"
     # Nobody by that owner id exists here. Refused before anything else happens (#4).
     UNKNOWN_OWNER = "unknown_owner"
+    # A timed ask running unattended: nobody is there to see a card or answer one (D5).
+    UNATTENDED = "unattended"
 
 
 @dataclass(frozen=True)
