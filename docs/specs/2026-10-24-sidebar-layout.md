@@ -97,7 +97,7 @@ message with `title_source = 'words'`.
 
 - `append` / `append_many` also set `last_message_at`, and set a `'words'` title from the first user message when there is no title yet.
 - `set_title(conversation_id, owner_id, title, source)`: a `'model'` title never replaces a `'user'` one (checked in the `UPDATE`'s `WHERE`, so a rename racing the naming task cannot lose).
-- `list(owner_id, *, query=None, before_ms=None, limit=50)` → rows of `id`, `title`, `last_message_at`, newest first, excluding deleted conversations and those with no messages. `query` matches `title`, or the `text` of a text block in a `user` or `assistant` message (`json_each` over `blocks_json`, so JSON keys never match), with `LIKE`, escaped, case-insensitive. Tool results are not searched.
+- `list_chats(owner_id, *, query=None, before=None, limit=50)` (`before` is the last row shown, `(last_message_at, id)`, so equal times never skip a row) → rows of `id`, `title`, `last_message_at`, newest first, excluding deleted conversations and those with no messages. `query` matches `title`, or the `text` of a text block in a `user` or `assistant` message (`json_each` over `blocks_json`, so JSON keys never match), with `LIKE`, escaped, case-insensitive. Tool results are not searched.
 - `delete(conversation_id, owner_id, now_ms)` sets `deleted_at`; `restore(conversation_id, owner_id)` clears it.
 - `exists` treats a deleted conversation as absent, so a stale tab cannot resume one.
 
@@ -128,7 +128,7 @@ sends `conversation.title{id, title}` to every page open on that conversation.
 
 Same token, origin and JSON rules as every other route (SPN-11).
 
-- `GET /api/conversations?q=&before=&limit=` → `{conversations: [{id, title, last_message_at}], more: bool}`
+- `GET /api/conversations?q=&before=&before_id=&limit=` → `{conversations: [{id, title, last_message_at}], more: bool}`
 - `PATCH /api/conversations/{id}` `{title}` → renames with source `'user'`. An empty title is `400 bad_request`.
 - `DELETE /api/conversations/{id}` → soft delete. Pages open on it get `error{code: 'deleted'}` and start a new conversation.
 - `POST /api/conversations/{id}/restore` → undo.

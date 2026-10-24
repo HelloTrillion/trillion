@@ -811,7 +811,7 @@ def test_search_and_paging(make) -> None:
         seed(app, f"c{n}", 1000 + n, f"trip {n}")
     r = app.client.get(PATH, params={"q": "trip", "limit": 2}, headers=app.auth).json()
     assert [c["id"] for c in r["conversations"]] == ["c2", "c1"] and r["more"]
-    r = app.client.get(PATH, params={"before": 1001, "limit": 2}, headers=app.auth).json()
+    r = app.client.get(PATH, params={"before": 1001, "before_id": "c1", "limit": 2}, headers=app.auth).json()
     assert [c["id"] for c in r["conversations"]] == ["c0"]
 
 
@@ -884,9 +884,13 @@ def create_conversations_router(rt: Runtime) -> APIRouter:
     router = APIRouter(prefix="/api/conversations")
 
     @router.get("")
-    async def listing(q: str = "", before: int | None = None, limit: int = 50) -> dict[str, Any]:
+    async def listing(
+        q: str = "", before: int | None = None, before_id: str = "", limit: int = 50
+    ) -> dict[str, Any]:
+        # The cursor is the last row shown: its time and id, so equal times never skip.
+        cursor = (before, before_id) if before is not None else None
         rows, more = await rt.conversations.list_chats(
-            OWNER, query=q or None, before_ms=before, limit=max(1, min(limit, LIMIT_MAX))
+            OWNER, query=q or None, before=cursor, limit=max(1, min(limit, LIMIT_MAX))
         )
         return {
             "conversations": [
@@ -1812,7 +1816,7 @@ Tests: malformed rows dropped; `more` defaults false; `retitle` changes only the
 export interface ThreadsDeps {
   readonly root: HTMLElement;
   /** GET /api/conversations with these params; resolves to the parsed JSON. */
-  readonly fetchPage: (params: { q: string; before: number | null }) => Promise<unknown>;
+  readonly fetchPage: (params: { q: string; before: { at: number; id: string } | null }) => Promise<unknown>;
   readonly rename: (id: string, title: string) => Promise<boolean>;
   readonly remove: (id: string) => Promise<boolean>;
   readonly restore: (id: string) => Promise<boolean>;
@@ -1841,7 +1845,7 @@ Build in `createThreads(d: ThreadsDeps): ThreadList`:
 - Row menu: a `⋯` button per row (`aria-label="More for <title>"`) and `contextmenu` on the row, opening a small menu with Rename and Delete.
   - Rename: replace the title span with an `input` holding the title; Enter calls `d.rename`; Escape or blur cancels. On failure, restore and show "Couldn't rename it" in the status line. On success update the row.
   - Delete: remove the row, call `d.remove`; on failure put it back with "Couldn't delete it". On success show the toast for 8 s with Undo → `d.restore` and reload. If the row was the current conversation, call `d.deletedCurrent()`.
-- Paging: when the last row scrolls into view (an `IntersectionObserver` on a sentinel `li`) and `more`, load the next page with `before` = the last row's `lastMessageAt` and append.
+- Paging: when the last row scrolls into view (an `IntersectionObserver` on a sentinel `li`) and `more`, load the next page with `before` = the last row's `{ at: lastMessageAt, id }` (sent as `before` and `before_id`) and append.
 
 - [ ] **Step 3: Wire in `main.ts`**
 
