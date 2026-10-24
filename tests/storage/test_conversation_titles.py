@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from importlib.resources import files
 from pathlib import Path
@@ -133,8 +134,30 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
         " VALUES ('local', 'old', 'user', 'user', ?, 7)",
         ('[{"t": "text", "text": "Plan the\\ntrip"}]',),
     )
+    await conn.execute(
+        "INSERT INTO conversations (id, owner_id, created_at) VALUES ('tabs', 'local', 1)"
+    )
+    # Cut at 60 characters lands on a space: the title must not end in one.
+    tabbed = "a\tb" + "c" * 56 + " d"
+    await conn.execute(
+        "INSERT INTO messages (owner_id, conversation_id, role, kind, blocks_json, created_at)"
+        " VALUES ('local', 'tabs', 'user', 'user', ?, 8)",
+        (json.dumps([{"t": "text", "text": tabbed}]),),
+    )
+    await conn.execute(
+        "INSERT INTO conversations (id, owner_id, created_at) VALUES ('bare', 'local', 1)"
+    )
+    await conn.execute(
+        "INSERT INTO messages (owner_id, conversation_id, role, kind, blocks_json, created_at)"
+        " VALUES ('local', 'bare', 'user', 'user', ?, 9)",
+        (json.dumps([{"t": "context", "text": "no words"}]),),
+    )
     assert await migrate(conn) == ["010_conversation_titles"]
     store = SqliteConversationStore(conn)
     assert await store.title_of("old", OWNER) == ("Plan the trip", "words")
-    assert (await store.list_chats(OWNER))[0][0].last_message_at == 7
+    assert (await store.list_chats(OWNER))[0][0].last_message_at == 9
+    title, source = await store.title_of("tabs", OWNER)
+    assert source == "words" and title is not None and title.startswith("a bc")
+    assert "\t" not in title and title == title.strip() and len(title) <= 60
+    assert await store.title_of("bare", OWNER) == (None, None)
     await conn.close()
