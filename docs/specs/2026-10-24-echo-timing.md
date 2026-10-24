@@ -83,18 +83,19 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
    - `theirs` if `mic ≥ max(expected × OVER_ECHO, ROOM × OVER_ROOM)`, with `OVER_ECHO = 2.5`.
    - Otherwise `hers`: a misheard echo.
 
-**Learning `echo_share`.** It is the median of `mic / her_level` over words judged `hers` by rule 2, clamped to [0.02, 1.0], over the last 50. It starts at 0.5, which is cautious: misheard echo stays hers. Once it has a sample, a word at `OVER_ECHO` times the current value or more is not learned from, because that is the user saying her word. It is learned per session and kept across her replies.
+**Learning `echo_share`.** It is the median of `mic / her_level` over words judged `hers` by rule 2, clamped to [0.02, 1.0], over the last 50. It starts at 0.5, which is cautious: misheard echo stays hers. Once it has learned from 5 words, a word at `OVER_ECHO` times the current value or more is not learned from, because that is the user saying her word. The session learns from words that match her sentence (`matched`), once each. It is learned per session and kept across her replies.
 
 ### 5. Using the judgement
 
 `Session`'s watch (fluid-turns §3) now works per word.
 
 - **While watching:**
-  - The listener's current turn is split into words judged `hers` and words judged `theirs`.
-  - The candidate is the run of `theirs` words.
-  - The steps that follow are the existing `confirm`/`decide`, given only `theirs` words: ducking, the 1.0 s confirmation, acknowledgements and fillers, stop words, and the 2-word and 3-word rules.
-- **When the user cuts in,** their turn is their words, in order. That always starts at their first word and never contains her echo, whether it arrives before, between or after their words, early or late.
-- **When her reply is heard to the end,** the watch becomes the follow-up window as soon as `ended_at` passes, with no separate 2 s grace. Words from before `ended_at` that were judged `hers` are dropped. A one-word "Yes." said after `ended_at` is theirs.
+  - The listener's words not yet dealt with (held and the current turn's) are split into words judged `hers` and words judged `theirs`.
+  - Any `theirs` word that is not a filler ducks her.
+  - The steps that follow are the existing `confirm`/`decide`, given only `theirs` words: the 1.0 s confirmation, acknowledgements and fillers, stop words, and the 2-word and 3-word rules. `confirm` no longer takes her words: they never reach it.
+  - After a carry-on, everything heard so far is dealt with: only words said after it count.
+- **When the user cuts in,** their turn is their words, in order. That always starts at their first word and never contains her echo, whether it arrives before, between or after their words, early or late. The promoted listener is given a judge (`Listener.hear(judge=)`): its text, the partials shown, the words drafts start from and the end-of-turn rules all see only their words. Punctuation on its own ("--", "…") goes with her words left out: it stays only between two words kept, and never starts their turn. A recognizer turn of only her echo ends listening quietly.
+- **When her reply is heard to the end,** the watch becomes the follow-up window as soon as `ended_final` has passed on the recognizer's clock, with no separate 2 s grace; or at once when the page has said she ended (`playback.ended`) and a word of theirs is heard. Words judged `hers` are dropped, however late they are reported. A one-word "Yes." said after `ended_at` is theirs.
 - **The `_heard` safety net** keeps only the turn's `theirs` words. If none are left, listening ends quietly with no notice.
 - **Drafts** start only from `theirs` words.
 
@@ -117,8 +118,28 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
 
 - **A reconnect** of the recognizer mid-watch restarts its clock. The watch ends, as it does today when hearing fails.
 - **The user speaks exactly in sync with her, very quietly:** their words are judged a misheard echo and dropped. Speaking up, or saying "stop" or "wait" (which aren't in her sentence), still works.
-- **Her voice played by the computer itself** (the system voice): the core has no audio, so no loudness. Rule 3 then treats every non-matching word as `theirs`. Stated as a limit; that voice already doesn't stream the watch (fluid-turns D7).
+- **Her voice played by the computer itself** (the system voice): the core has no audio, so no loudness. The page doesn't stream the watch for it, and the core refuses `overlap.watch` when her voice isn't made in the core.
 - **Privacy:** nothing heard is logged. Levels and times are kept only in memory for the session and discarded with it.
+
+## As built
+
+Changes from the design above, after review and the live runs:
+
+- **A word's loudness is taken over its first half** (`Listener.word_level`), for rules 2 and 3 and for learning `echo_share`. Live, her echo word just before the user's first word ("five -- What about Tuesday?", "does it. What about Tuesday?") was taken as theirs: a word's end time runs on into the next voice, so it took in their loudness. A word's start is where its voice begins.
+- **Placing a sentence not yet reported** (§2): no earlier than its audio was first sent (`Timeline.sentence(..., at_s=)`). A watch opened while she thinks no longer puts her first sentence at its start, which had turned the user's words said meanwhile into hers once her audio arrived.
+- **Stopping her** (`Timeline.stop(at_s=)`): the sentence playing ends where she was stopped, on the watching listener's clock, and her level runs `TAIL_S` past it for audio the page had already scheduled. A sentence not under way by then has no span.
+- **A watch opened mid-reply** places the sentence last reported playing from how long ago that report came (the loop's clock), and marks earlier ones over. `begin` clears times from an earlier listener's clock.
+- **A turn that fails** stops its timeline.
+- **A follow-up window opened without a watch** has no clock of hers. Her last sentence is taken to end as it opens (`Timeline.ending_at(0.0)`), so her echo still in the air, in its first `TAIL_S`, is hers.
+- **The clock offset is measured, not applied.** `Timeline.align` notes, for each of her words heard within 1.5 s of where she was placed saying it (taken as even steps through the sentence), how far off it was; `offset_s()` is the median. The session logs it, as a number only, when the next reply begins. The reports should be early by capture latency plus a part frame (about 0.05 to 0.2 s), inside the margins; apply it only if live logs show more.
+- **Watching a voice the page makes is refused** by the core, as the page already doesn't ask.
+
+**Known limits:**
+
+- **Loud echo without echo cancellation** (35% in the fake-microphone runs): a misheard proper noun of hers ("Shen Nong" heard as "Shanong") can be taken as theirs, and the user's first word overlapping her loud echo can be lost. Real echo cancellation leaves far less of her.
+- **Her echo getting louder mid-session** (headphones unplugged, speakers turned up): once `echo_share` has learned from 5 words, her words at 2.5 times its value or more are not learned from, so it cannot rise to the new level, and her misheard words stay louder than her echo is expected to be.
+- **Without a watch**, only the first `TAIL_S` of the window is judged against her; a late report of her echo timed after that is theirs.
+- **A user word whose recognizer start time comes early**, into the quiet before it, is measured partly over that quiet.
 
 ## Testing
 
@@ -130,7 +151,7 @@ New `voice/whose.py` holds `whose(word, timeline, mic, echo_share) -> "hers" | "
   - stop words, numbers and stems;
   - the margins;
   - learning `echo_share`.
-- **`tests/voice/test_timeline.py`:** stamping, lengths, a sentence never reported, and the fallback for her first sentence.
+- **`tests/voice/test_timeline.py`:** stamping, lengths, a sentence never reported, the fallback for her first sentence, a sentence not before its audio was sent, stopping where she was stopped, a watch opened mid-reply, and measuring the offset.
 - **`tests/voice/test_stt_contract.py`:** Deepgram fills `Heard.words` from `TurnInfo` and sets `word_times`.
 - **Session tests** use a fake recognizer that sends word times and a fake speaker with known levels. Each of the four live failures is reproduced by name and must now pass:
   - "ass." after her "…actual ask.";

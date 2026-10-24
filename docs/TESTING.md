@@ -97,6 +97,10 @@ Multiple finalized segments in one thought; a mid-thought pause of 1.5s; a self-
 | 2.2a.4a | On speakers, not headphones, let her finish a long reply without speaking; then ask again and cut in at normal volume with "what about the bus instead" | Her own voice coming back may duck her for a moment but does not stop her; she never answers her own last words. Cutting in with a few words usually stops her within about a second, and your turn starts with your words, not hers. Two or three words and then silence may not stop her: say it again. The Speak button reads "Listening" while she talks. |
 | 2.2a.4c | Right after she ends a question, answer with one word that she used ("Six?") and one she did not ("Yes.") | Both are heard as your turn. |
 | 2.2a.4b | Let her finish a reply, then speak within three seconds | No new connection opens: the watch becomes the follow-up window, and your words are the turn. |
+| 2.2a.4d | Echo timing (#102), on speakers: let her end a reply on "…give me the actual ask." and say nothing | Her last word coming back misheard ("ass.") is not a turn. |
+| 2.2a.4e | Cut in with "Skip that" over a sentence of hers with numbers in it ("…three hundred a month") | Your turn is exactly "Skip that"; her words still coming back after she stops are not added. |
+| 2.2a.4f | Let her end a reply on a short sentence ("Standing by.") and say nothing | Her last sentence, reported late, is not a turn, and the window closes. |
+| 2.2a.4g | Say "What about Tuesday?" over her | She stops, and your turn is exactly "What about Tuesday?": no word of hers before or after it, and no stray punctuation. |
 | 2.2a.5 | Turn "Start thinking before I finish" off and on in Settings → Hearing | The switch changes and is still the same after a reload. |
 
 ### 2.3 Capture (VOI-2, VOI-4, VOI-15d)
