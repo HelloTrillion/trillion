@@ -326,3 +326,89 @@ async def test_hearing_that_fails_while_deciding_lets_her_carry_on(rt: Runtime) 
     held.set()
     await idle(session)
     await session.close()
+
+
+# ── Her sound always stops when she is stopped (review of VOI-9) ────────
+
+
+async def test_an_interruption_once_all_of_her_reply_was_heard_still_stops_her(
+    rt: Runtime,
+) -> None:
+    stt, page, session = await answered(rt)
+    await played(session, page, 1, 2, 3)
+    await session.handle({"type": "overlap"})
+    stt.stream.say("no, the other one", final=False)
+    await speak(session, tone(0.2))
+    await until(lambda: session._listener is not None)
+    # Nothing to trim, so no `interrupted`: the page is told to stop her instead.
+    assert not page.all("interrupted")
+    turn = page.all("reply.sentence")[0]["turn"]
+    assert page.all("audio.stop")[-1]["turn"] == turn
+    history = await rt.conversations.history(session.id, "local")
+    assert history[-1][1].blocks == (TextBlock(text=ANSWER),)
+    await session.close()
+
+
+async def test_an_overlap_with_nothing_to_talk_over_stops_her_and_keeps_their_words(
+    rt: Runtime,
+) -> None:
+    stt, _ = judging(rt, say("Sure."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "overlap"})
+    # The page only ducked her: whatever of her still plays is stopped.
+    assert page.all("audio.stop")
+    assert session._overlap is None and session._listener is not None
+    await speak(session, room(0.1) + tone(0.4))
+    stt.stream.say("what time is it", final=True, turn="done")
+    await speak(session, room(0.1))
+    await page.until("transcript.final")
+    assert page.all("transcript.final")[-1]["text"] == "what time is it"
+    await session.close()
+
+
+async def test_frames_sent_while_a_fallback_barge_waits_are_kept(rt: Runtime) -> None:
+    """Without turn judging an overlap is a barge; the page is already sending what the
+    user says while her work finishes, and none of it is dropped."""
+    tool = Slow()
+    rt.registry.register(tool, module="tests.api")
+    stt = hearing(rt)
+    rt.provider = Gated(use("slow_read", {}), say("Here."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "read it"})
+    await asyncio.wait_for(tool.started.wait(), 5)
+    barging = asyncio.create_task(session.handle({"type": "overlap"}))
+    await asyncio.sleep(0)  # the page's message is handled before the frames after it
+    early = tone(0.3)
+    await speak(session, early)
+    assert session._listener is None  # still waiting for the read to finish
+    tool.release.set()
+    await barging
+    await until(lambda: session._listener is not None and session._listener.open)
+    assert len(stt.stream.audio) >= len(early)
+    await session.close()
+
+
+async def test_closing_while_the_overlap_listener_connects_lets_it_go(rt: Runtime) -> None:
+    stt, _, _, _, session = await spoken_reply(rt, say("A long answer."))
+    stt.opening.clear()
+    opening = asyncio.create_task(session.handle({"type": "overlap"}))
+    await until(lambda: session._overlap is not None)
+    await session.close()
+    stt.opening.set()
+    await opening
+    assert stt.stream.closed
+
+
+async def test_closing_while_listening_connects_lets_it_go(rt: Runtime) -> None:
+    stt, _ = judging(rt, say("Sure."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    stt.opening.clear()
+    opening = asyncio.create_task(session.handle({"type": "listen.start"}))
+    await page.until("mic.start")
+    await session.close()
+    stt.opening.set()
+    await opening
+    assert stt.stream.closed

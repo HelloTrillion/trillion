@@ -138,7 +138,7 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 - **A draft is running when a notice arrives:** the microphone is open, so the door holds the notice (VOI-17). Nothing changes.
 - **Overlap while her reply is only text** (voice muted): there is nothing to duck, and the page does not watch for barge-in (as today).
 - **A tap on an approval card during a draft:** taps belong to confirmed turns. A draft holds no card, because cards come from tools and a draft stops before tools.
-- **Privacy:** nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only `used`, `dropped`, `carry_on` and `interrupt`.
+- **Privacy:** Nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only whether a draft was used or dropped, and overlap decisions are logged as carry_on or interrupt.
 
 ## Testing
 
