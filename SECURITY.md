@@ -103,9 +103,17 @@ is a known limit of this phase.
   page or an email can't plant one. `reminder_set` is refused after she has read
   a page, a file or a message in the same turn, so nothing she read can make her
   say something later in her own voice, and a timed ask's answer counts as
-  something she read. A timed ask that was interrupted is reported failed and
-  never run again: a tool it used may already have acted. A missed or failed
-  notice is never spoken.
+  something she read. `schedule_cancel` is refused in the same way, so what she
+  read can't undo a timed ask the user approved. A timed ask that was
+  interrupted is reported failed and never run again: a tool it used may
+  already have acted. A missed or failed notice is never spoken.
+- **Caveat: a timed ask's answer can pass on what she read.** She runs it
+  unattended, reads (an inbox, say) and reports in her own words, and that
+  answer is shown and spoken like any of her messages. Text in an email can
+  shape what she says there. The answer is marked as outside content
+  afterwards, so the turn it arrives in and the next can't set or cancel a
+  reminder on its strength, but the words themselves reach the user as she
+  wrote them.
 - **One door to a surface.** Only `delivery/door.py` can put a notice on the
   page or show a system notification; the scheduler imports neither, and a test
   checks it. System notifications run as argument lists, never through a shell,
