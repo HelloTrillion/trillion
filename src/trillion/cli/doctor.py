@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable, Mapping
@@ -39,6 +40,7 @@ from trillion.voice.types import VoiceError
 Status = Literal["ok", "info", "warn", "fail"]
 OWNER = "local"
 NETWORK_TIMEOUT_S = 8.0
+DAY_MS = 24 * 60 * 60 * 1000
 # Folders that sync clients own. A database or a memory file inside one can lose writes (OPS-2).
 _SYNCED = ("onedrive", "dropbox", "google drive", "googledrive", "icloud", "mobile documents")
 
@@ -737,6 +739,34 @@ def check_skills(path: Path) -> Check:
     return Check(name="Skills", status="ok" if on else "info", detail="; ".join([count, *notes]))
 
 
+def check_scheduler(path: Path, now_ms: int) -> Check:
+    """Reminders and timed asks (AGT-4): how many are set and when the next is due. A run
+    blocked or failed in the last day is worth a look. Read from the database only:
+    doctor never starts the scheduler."""
+    from trillion.scheduler.when import WhenError, spoken
+
+    name = "Scheduler"
+    found = inspect.schedules(path, OWNER, now_ms - DAY_MS)
+    if found is None or not (found["active"] or found["troubled"]):
+        return Check(name=name, status="info", detail="no reminders or timed asks set")
+    detail = f"{found['active']} active"
+    if found["next_ms"] is not None:
+        try:
+            detail += f"; next due {spoken(found['next_ms'], found['zone'])}"
+        except WhenError:
+            detail += "; next due at a time in a timezone this computer doesn't know"
+    troubled = found["troubled"]
+    if troubled:
+        runs = "run" if troubled == 1 else "runs"
+        return Check(
+            name=name,
+            status="warn",
+            detail=f"{detail}; {troubled} {runs} blocked or failed in the last day",
+            fix="Open Settings → Reminders to see which. A blocked one is waiting for a model.",
+        )
+    return Check(name=name, status="ok", detail=detail)
+
+
 # ── The whole examination ────────────────────────────────────────────────
 
 
@@ -767,6 +797,7 @@ async def examine(
         check_memory(paths.memory_dir()),
         *check_mcp(paths.mcp_config_path(), secrets),
         check_skills(paths.skills_config_path()),
+        check_scheduler(paths.db_path(), time.time_ns() // 1_000_000),
     ]
     if options.secrets:
         checks += await check_credentials(secrets, env, offline=options.offline, model=model)
