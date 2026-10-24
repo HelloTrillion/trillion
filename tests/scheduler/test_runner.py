@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+import pytest
 
 from tests.scheduler.conftest import FakeClock, ms, schedule
 from trillion.scheduler.runner import AskFailed, NoModel, Scheduler
@@ -51,7 +54,8 @@ def make(
 ) -> tuple[Scheduler, FakeDoor, FakeClock]:
     clock, door = FakeClock(now), FakeDoor()
     ask = run_ask or Asks(AssertionError("no ask expected"))
-    return Scheduler(store, clock, ask, door, worker="w1", **kw), door, clock  # type: ignore[arg-type]
+    kw.setdefault("worker", "w1")
+    return Scheduler(store, clock, ask, door, **kw), door, clock  # type: ignore[arg-type]
 
 
 async def test_a_reminder_on_time_is_delivered_in_her_words(store: SqliteScheduleStore) -> None:
@@ -278,29 +282,58 @@ async def test_one_schedule_that_breaks_does_not_stop_the_others(
     assert sched.checked_ms == DUE and door.flushes == 1
 
 
-async def test_stopped_while_finishing_a_run_it_is_never_run_twice(
+async def test_stopped_after_the_notice_is_written_it_is_never_run_twice(
     store: SqliteScheduleStore,
 ) -> None:
     await store.create(schedule(kind="ask"))
-    finish = store.finish
 
-    async def stopped(*a: Any, **kw: Any) -> bool:
-        raise asyncio.CancelledError  # the server stopped right here
+    class Stops(FakeDoor):
+        async def added(self, notice: Notice) -> None:
+            raise asyncio.CancelledError  # the server stopped right here
 
-    store.finish = stopped  # type: ignore[method-assign]
+    clock, asks, stops = FakeClock(DUE), Asks("Done."), Stops()
+    sched = Scheduler(store, clock, asks, stops, worker="w1")
+    with pytest.raises(asyncio.CancelledError):
+        await sched.tick()
+    assert stops.flushes == 0  # stopping never waits on a page
+    after, door, _ = make(store, DUE + MINUTE, asks)  # the next process
+    await after.tick()
+    assert asks.calls == 1 and door.notices == []
+    (held,) = await store.held("local")
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "delivered" and run.result_notice == held.id
+
+
+async def test_stopped_while_the_notice_is_written_nothing_is_kept_and_it_runs_again(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(kind="ask"))
+    conn = store._conn
+    execute = conn.execute
+
+    def stops_at_the_run(sql: str, *a: Any) -> Any:
+        # Inside the transaction, after the notice was inserted.
+        if sql.startswith("UPDATE task_runs SET status = ?, finished_ms = ?"):
+            raise asyncio.CancelledError
+        return execute(sql, *a)
+
+    conn.execute = stops_at_the_run  # type: ignore[method-assign]
     asks = Asks("Done.")
     sched, door, _ = make(store, DUE, asks)
     try:
-        await sched.tick()
-    except asyncio.CancelledError:
-        pass
-    store.finish = finish  # type: ignore[method-assign]
-    after, _, _ = make(store, DUE + MINUTE, asks)  # the next process
+        with pytest.raises(asyncio.CancelledError):
+            await sched.tick()
+    finally:
+        conn.execute = execute  # type: ignore[method-assign]
+    assert await store.held("local") == [] and door.notices == []
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "running"
+    after, door, _ = make(store, DUE + MINUTE, asks, worker="w2")
     await after.tick()
-    assert asks.calls == 1 and len(door.notices) == 1
+    assert asks.calls == 2 and [n.text for n in door.notices] == ["Done."]
     assert len(await store.held("local")) == 1
     (run,) = await store.runs("a1b2c3d4")
-    assert run.status == "delivered" and run.result_notice == door.notices[0].id
+    assert run.status == "delivered" and run.attempts == 2
 
 
 async def test_an_empty_reply_is_a_failure(store: SqliteScheduleStore) -> None:
@@ -366,11 +399,15 @@ async def test_a_repeat_that_can_no_longer_be_worked_out_runs_once_and_ends(
 async def test_start_again_after_the_loop_ended(store: SqliteScheduleStore) -> None:
     sched, _, _ = make(store, DUE, tick_s=0)
     sched.start()
-    assert sched.running
-    await sched.stop()
+    first = sched._task
+    assert first is not None
+    first.cancel()  # the loop ends without stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+    assert not sched.running
     sched.start()
     try:
-        assert sched.running
+        assert sched.running and sched._task is not first
     finally:
         await sched.stop()
 

@@ -78,6 +78,10 @@ class Delivery:
     late: bool
 
 
+class NotFree(Exception):
+    """Raised by a session's `deliver` when its page is no longer free: it took none."""
+
+
 class SessionLike(Protocol):
     """What the door needs of a page's session. `api/session.py` is the real one."""
 
@@ -88,8 +92,8 @@ class SessionLike(Protocol):
 
     async def deliver(self, notices: Sequence[Delivery]) -> None:
         """Save each as her message and show it; speak the ones with words. Queues the
-        speech and returns, never waiting for it to play. Raises, taking none, if the
-        page is no longer free."""
+        speech and returns, never waiting for it to play. Raises `NotFree`, taking none,
+        if the page is no longer free."""
         ...
 
 

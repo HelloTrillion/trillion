@@ -121,16 +121,24 @@ class Scheduler:
     async def tick(self) -> None:
         """One pass: reclaim, enqueue what is due, run it, then let the door flush.
         `checked_ms` moves only when the pass got through; a store that can't be read
-        at all makes it raise, after the door has had its flush."""
+        at all makes it raise, after the door has had its flush. A cancelled tick
+        skips the flush."""
         async with self._ticking:
             try:
                 await self._pass()
-            finally:
-                try:
-                    await self._door.flush()
-                except Exception as e:
-                    logger.warning("the door could not flush: %s", type(e).__name__)
+            except asyncio.CancelledError:
+                raise  # shutting down: never wait on a page
+            except Exception:
+                await self._flush()
+                raise
+            await self._flush()
             self.checked_ms = self._clock()
+
+    async def _flush(self) -> None:
+        try:
+            await self._door.flush()
+        except Exception as e:
+            logger.warning("the door could not flush: %s", type(e).__name__)
 
     async def _pass(self) -> None:
         await self._reclaim()
@@ -187,7 +195,9 @@ class Scheduler:
 
     async def _abandon(self, run: Run, e: Exception) -> None:
         """A run that broke is finished as failed, with a notice if its schedule can
-        still be read, so it is neither stuck nor tried again."""
+        still be read, so it is neither stuck nor tried again. This holds even for a
+        store error that would have passed: by design a run is never retried silently,
+        and the user is told it didn't finish."""
         why = type(e).__name__
         logger.error("run %s broke: %s", run.id, why)
         try:

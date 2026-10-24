@@ -15,6 +15,7 @@ from trillion.delivery.door import (
     Delivery,
     Door,
     Facts,
+    NotFree,
     free,
     notification,
 )
@@ -179,7 +180,7 @@ class Refuses(FakePage):
     """A page that came busy between the door's look and its delivery."""
 
     async def deliver(self, notices: Sequence[Delivery]) -> None:
-        raise RuntimeError("busy")
+        raise NotFree
 
 
 async def test_a_page_that_cannot_take_them_leaves_them_held(store: SqliteScheduleStore) -> None:

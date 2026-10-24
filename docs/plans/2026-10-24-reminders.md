@@ -3828,7 +3828,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 9: Wiring: the runtime, the session and the server
 
 **Files:**
-- Modify: `src/trillion/api/runtime.py`, `src/trillion/api/session.py`, `src/trillion/api/app.py`
+- Modify: `src/trillion/api/runtime.py`, `src/trillion/api/session.py`, `src/trillion/api/app.py`, `src/trillion/storage/sqlite/conversation_store.py` (`append_many`)
 - Test: `tests/api/test_session_notices.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -3842,6 +3842,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -3852,6 +3853,7 @@ from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, local_zone, open_runtime
 from trillion.api.session import NOTICE_TURNS, Session
 from trillion.brain.types import ContextBlock, TextBlock
+from trillion.delivery.door import Delivery, NotFree
 from trillion.persona import setup
 from trillion.scheduler.store import Notice, NoticeKind
 from trillion.secrets.store import MemoryStore
@@ -4014,6 +4016,35 @@ async def test_she_works_out_times_in_the_users_own_zone(
     rt.profile = None
     assert local_zone({"TZ": "Europe/Paris"}) == "Europe/Paris"
     assert local_zone({"TZ": "Not/AZone"}) != "Not/AZone"
+
+
+async def test_busy_at_hand_over_it_raises_and_nothing_is_saved(rt: Runtime) -> None:
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    before = await rt.conversations.history(session.id, "local")
+    session._saying = True  # came busy between the door's look and the hand-over
+    item = Delivery(
+        id="n1", kind="reminder", title="Stretch", text="Stretch.", due_ms=DUE, late=False
+    )
+    with pytest.raises(NotFree):
+        await session.deliver([item])
+    assert await rt.conversations.history(session.id, "local") == before
+    assert page.all("notice") == []
+    session._saying = False
+    await session.close()
+
+
+async def test_a_socket_that_fails_after_the_save_loses_nothing(rt: Runtime) -> None:
+    async def gone(body: dict[str, Any]) -> None:
+        if body.get("type") == "notice":
+            raise ConnectionError("closed")
+
+    session = await Session.start(rt, gone, None)
+    await notice(rt)  # the door hands it over; sending it fails, and nothing raises
+    history = await rt.conversations.history(session.id, "local")
+    assert [m.blocks for _, m in history].count((TextBlock(text="Stretch."),)) == 1
+    assert rt.schedules is not None and await rt.schedules.held("local") == []
+    await session.close()
 ```
 
 - [ ] **Step 2: Run to see them fail**
@@ -4167,7 +4198,7 @@ The clocks are lambdas so a test that replaces `rt.clock` moves all of them.
 
 `src/trillion/api/session.py`:
 
-- Imports: `Sequence` from `collections.abc`; `from zoneinfo import ZoneInfo`; `from trillion.delivery.door import Delivery, Facts`.
+- Imports: `Sequence` from `collections.abc`; `from zoneinfo import ZoneInfo`; `from trillion.delivery.door import Delivery, Facts, NotFree, free`.
 
 - After `SURFACE = "web"`:
 
@@ -4270,16 +4301,22 @@ NOTICE_TURNS = 1 << 30
             await door.offer(self)
 
     async def deliver(self, notices: Sequence[Delivery]) -> None:
-        """The door hands over notices while this page is free. Each one with her words
-        is saved as her message, so it survives a reload, and spoken if her voice is on.
-        A missed or failed one is shown by its title, and never spoken (PER-11)."""
-        said: list[str] = []
+        """The door hands over notices while this page is free. All or none: a page
+        that is no longer free raises `NotFree` before anything happens, and the door
+        holds them again. The ones with her words are saved as her messages in one
+        statement, so they survive a reload; then each is sent, and spoken if her
+        voice is on, best effort. A missed or failed one is shown by its title, never
+        spoken (PER-11). Speech is queued, never waited for."""
+        if self._closed or not free(self.facts(), self._rt.clock()):
+            raise NotFree
+        said = [n.text for n in notices if n.text]
+        if said:
+            await self._save_all(
+                "assistant", [Msg(role="assistant", blocks=(TextBlock(text=t),)) for t in said]
+            )
+        # Saved: from here nothing raises, or the door would hold them and they would be
+        # saved twice. `_send` already logs a failed send and goes on.
         for n in notices:
-            if n.text:
-                await self._save(
-                    "assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),))
-                )
-                said.append(n.text)
             await self._send(
                 "notice",
                 code="schedule",
@@ -4294,6 +4331,15 @@ NOTICE_TURNS = 1 << 30
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
             if self._task is None:
                 self._task = asyncio.create_task(self._say_notices(said))
+
+    async def _save_all(self, kind: Kind, msgs: Sequence[Msg]) -> None:
+        ids = await self._rt.conversations.append_many(
+            self.id, OWNER, kind, msgs, self._rt.clock()
+        )
+        for msg, message_id in zip(msgs, ids, strict=True):
+            self._history.append(msg)
+            self._kinds.append(kind)
+            self._ids.append(message_id)
 
     async def _say_notices(self, said: list[str]) -> None:
         """Her words for the notices, through the normal speech path. Runs as the
@@ -4321,6 +4367,37 @@ NOTICE_TURNS = 1 << 30
         await self._state(self._rest)
 ```
 
+`src/trillion/storage/sqlite/conversation_store.py`, after `append` (import `Sequence` from `collections.abc`). One statement, so the messages are kept all together or not at all, with no transaction held open on the shared connection:
+
+```python
+    async def append_many(
+        self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
+    ) -> list[int]:
+        """Save several messages at once, all or none. Returns their ids in order."""
+        if not msgs:
+            return []
+        values: list[object] = []
+        for msg in msgs:
+            values += [
+                owner_id,
+                conversation_id,
+                msg.role,
+                kind,
+                json.dumps([_dump(b) for b in msg.blocks], ensure_ascii=False),
+                _dump_raw(msg.raw),
+                now_ms,
+            ]
+        rows = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(msgs))
+        async with self._conn.execute(
+            "INSERT INTO messages"
+            " (owner_id, conversation_id, role, kind, blocks_json, raw_json, created_at)"
+            f" VALUES {rows} RETURNING id",  # noqa: S608 - placeholders only
+            values,
+        ) as cur:
+            # RETURNING's order is not promised; ids rise in the order the rows went in.
+            return sorted(int(r[0]) for r in await cur.fetchall())
+```
+
 - [ ] **Step 5: Implement the server**
 
 `src/trillion/api/app.py`: import `AsyncIterator` from `collections.abc` and `asynccontextmanager` from `contextlib`; replace `app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)` with
@@ -4343,7 +4420,7 @@ and the development CORS list becomes `allow_methods=["GET", "POST", "PUT", "PAT
 - [ ] **Step 6: Run to pass**
 
 Run: `uv run pytest tests/api/test_session_notices.py -q`
-Expected: `7 passed`.
+Expected: `9 passed`.
 
 Run: `uv run pytest -q`
 Expected: the whole suite passes. Every `App` in `tests/api/test_server.py` now runs a scheduler with the real clock; with no schedules in its database, each tick does nothing.
