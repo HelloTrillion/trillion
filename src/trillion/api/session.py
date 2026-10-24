@@ -32,6 +32,7 @@ from trillion.brain.loop import (
     ReplyDelta,
     ToolEnded,
     ToolStarted,
+    cut,
     run_turn,
     tool_schemas,
 )
@@ -143,6 +144,9 @@ class Session:
         self._started = False
         # The last turn whose number speech went out under.
         self._voiced: int | None = None
+        # The running turn's voice: the page reports to it each sentence it starts
+        # playing, so an interrupted reply keeps what was heard (D8).
+        self._speaker: Speaker | None = None
         # The user just pressed Stop: notices that arrive straight after it are shown,
         # not spoken. Cleared at the first rest after it (VOI-9).
         self._stopped = False
@@ -314,6 +318,8 @@ class Session:
                 for k in ("rate", "device_rate", "state", "channels", "device", "track", "silent")
                 if isinstance(msg.get(k), int | float | str | bool)
             }
+        elif kind == "playback.sentence":
+            self._sentence_played(msg.get("turn_id"), msg.get("seq"))
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
         elif kind == "playback.ended":
@@ -687,6 +693,20 @@ class Session:
             heard_as = rt.out_of_turn() if self._voiced == turn else turn
             self._voiced = turn
             speaker = Speaker(rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes)
+        self._speaker = speaker
+        # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
+        # read, and so was one with her voice off (D8).
+        listened = speaker is not None and self._via == "voice"
+        # What the turn saved of the round it was cut off in, when that was cut to what
+        # was heard. Set only by the loop, so the page is told exactly what was kept.
+        kept: str | None = None
+
+        def heard(_written: str) -> str:
+            nonlocal kept
+            said = speaker.heard_text() if speaker is not None else ""
+            kept = cut(said)
+            return said
+
         # A turn nobody started (a tap's answer) starts now.
         trace, self._arrived = self._arrived or self._starting("tap"), None
         trace.turn = turn
@@ -744,6 +764,7 @@ class Session:
                 emit=emit,
                 save=self._save_from_loop,
                 first=using.replay() if using is not None else None,
+                heard=heard if listened else None,
             )
             # The model failed: her one sentence for it, spoken if her voice still works
             # and shown either way (VOI-14). Authored, since there is nobody to compose it.
@@ -792,7 +813,8 @@ class Session:
                 # Stopped: nothing of it is still to be heard.
                 self._spoken = None
             await self._keep_trace(trace, "interrupted", voiced=speaker is not None)
-            await self._send("interrupted")
+            # With `kept`, the page shows what was heard in place of what was written.
+            await self._send("interrupted", **({"kept": kept} if kept is not None else {}))
         except Exception as e:
             # The class name only: an exception message can carry conversation text.
             logger.error("turn failed in session %s: %s", self.id, type(e).__name__)
@@ -800,6 +822,8 @@ class Session:
             await self._keep_trace(trace, "error", voiced=speaker is not None)
             await self._error("internal")
         finally:
+            if self._speaker is speaker:
+                self._speaker = None
             if using is not None:
                 # Already over unless the turn was cut short. Its usage is the turn's.
                 await using.cancel()
@@ -952,6 +976,15 @@ class Session:
                 await rt.conversations.timing_played(OWNER, trace.row_id, played)
         except Exception as e:
             logger.warning("timing not saved in session %s: %s", self.id, type(e).__name__)
+
+    def _sentence_played(self, turn_id: object, seq: object) -> None:
+        """The page started playing a sentence of a reply (VOI-15b, D8). Only the running
+        turn's count: a report for one already over, or for a notice, is late news."""
+        speaker = self._speaker
+        if speaker is None or isinstance(turn_id, bool) or turn_id != speaker.turn:
+            return
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            speaker.played(seq)
 
     async def _audible(self, turn_id: object, in_ms: object) -> None:
         """The page scheduled the first sound of a turn's reply, to be heard this far ahead."""

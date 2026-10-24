@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import pytest
 
@@ -66,6 +66,7 @@ class Run:
         provider: ScriptedProvider,
         limits: Limits | None = None,
         first: AsyncIterator[ModelEvent] | None = None,
+        heard: Callable[[str], str] | None = None,
     ) -> TurnDone:
         return await run_turn(
             provider=provider,
@@ -78,6 +79,7 @@ class Run:
             save=self.save,
             limits=limits,
             first=first,
+            heard=heard,
         )
 
     def results(self) -> list[ToolResultBlock]:
@@ -222,6 +224,61 @@ async def test_an_interrupt_saves_the_partial_reply_marked(run: Run) -> None:
         await task
     # The half-made tool call is dropped: it never ran.
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Well, " + INTERRUPTED),))]
+
+
+async def _cut_off(run: Run, heard: Callable[[str], str] | None) -> list[str]:
+    """A reply cancelled mid-stream; what was said to `heard`, and what was saved."""
+    started = asyncio.Event()
+    asked: list[str] = []
+
+    class Slow(ScriptedProvider):
+        async def stream(self, **kw: object) -> AsyncIterator[ModelEvent]:  # type: ignore[override]
+            yield TextDelta(text="One. Two. ")
+            yield TextDelta(text="Three.")
+            started.set()
+            await asyncio.sleep(30)
+
+    def told(said: str) -> str:
+        asked.append(said)
+        return heard(said) if heard is not None else said
+
+    task = asyncio.create_task(run.go(Slow(), heard=told if heard is not None else None))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    return asked
+
+
+async def test_a_cancelled_spoken_turn_keeps_only_what_was_heard(run: Run) -> None:
+    asked = await _cut_off(run, lambda _said: "One.")
+    assert asked == ["One. Two. Three."]
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="One.…" + INTERRUPTED),))]
+
+
+async def test_a_spoken_turn_cut_off_before_a_sentence_was_heard_keeps_the_marker(
+    run: Run,
+) -> None:
+    await _cut_off(run, lambda _said: "")
+    # The history still shows she began.
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text=INTERRUPTED.strip()),))]
+
+
+async def test_a_spoken_turn_cut_off_before_she_wrote_anything_keeps_nothing(run: Run) -> None:
+    started = asyncio.Event()
+
+    class Quiet(ScriptedProvider):
+        async def stream(self, **kw: object) -> AsyncIterator[ModelEvent]:  # type: ignore[override]
+            started.set()
+            await asyncio.sleep(30)
+            yield TextDelta(text="never")
+
+    task = asyncio.create_task(run.go(Quiet(), heard=lambda _said: ""))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert run.saved == []
 
 
 async def test_an_interrupt_during_a_tool_lets_it_finish_and_records_it(run: Run) -> None:

@@ -102,6 +102,7 @@ async def run_turn(
     save: Callable[[Msg], Awaitable[None]],
     limits: Limits | None = None,
     first: AsyncIterator[ModelEvent] | None = None,
+    heard: Callable[[str], str] | None = None,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
@@ -109,7 +110,10 @@ async def run_turn(
     the turn adds; `emit` must not raise.
 
     `first`, when given, stands in for the first model call: a draft started while the
-    user was finishing (VOI-12)."""
+    user was finishing (VOI-12).
+
+    `heard`, for a spoken turn, cuts the text to what the user heard when it is
+    interrupted (D8): given what she wrote this round, it returns the part heard."""
     guard = LoopGuard(limits)
     tools = tool_schemas(registry)
     pricing = provider.pricing()
@@ -191,10 +195,16 @@ async def run_turn(
                     spent = spent + ev.usage
                     raw = ev.raw
         except asyncio.CancelledError:
-            # What the user already read is kept and marked; a half-formed tool call
-            # is dropped, because it never ran.
+            # What the user already read, or heard, is kept and marked; a half-formed
+            # tool call is dropped, because it never ran.
             if text:
-                await asyncio.shield(add(_assistant("".join(text) + INTERRUPTED, [], None)))
+                said = "".join(text)
+                if heard is not None:
+                    # Written but never said is dropped. With nothing heard, the marker
+                    # alone shows she began.
+                    said = cut(heard(said))
+                kept = said + INTERRUPTED if said else INTERRUPTED.strip()
+                await asyncio.shield(add(_assistant(kept, [], None)))
             raise
         except ProviderError as e:
             logger.warning("model provider %s failed: %s", provider.name, e.kind)
@@ -246,6 +256,12 @@ async def run_turn(
             raise asyncio.CancelledError
         if over_budget:
             return done("cost")
+
+
+def cut(heard: str) -> str:
+    """What a spoken reply keeps of a round when it is cut off: the heard part, then "…"
+    (D8). The page shows the same."""
+    return f"{heard}…" if heard else ""
 
 
 async def _finish(work: Awaitable[None]) -> bool:

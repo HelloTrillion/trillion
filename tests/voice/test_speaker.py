@@ -135,3 +135,38 @@ async def test_an_interrupt_stops_synthesis_and_tells_the_page() -> None:
     await s.feed("Nothing after a stop is spoken. ")
     assert wire.events[-1] == {"type": "audio.stop", "turn": 7}
     assert not [e for e in wire.events if isinstance(e, tuple)]
+
+
+async def test_the_speaker_knows_which_sentences_were_heard() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("We could leave at **six**. Or if traffic is bad, at half past. Or")
+    assert s.heard_text() == ""
+    s.played(1)
+    # What she wrote, markup and all: the history holds her words, not the spoken form.
+    assert s.heard_text() == "We could leave at **six**."
+    s.played(2)
+    assert s.heard_text() == "We could leave at **six**. Or if traffic is bad, at half past."
+    s.played(1)  # a late report never takes back what was heard
+    assert s.heard_text().endswith("half past.")
+    assert s.playing() == ("We could leave at **six**.", "Or if traffic is bad, at half past.")
+
+
+async def test_heard_text_is_only_this_round() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("Let me look. ")
+    s.played(1)
+    await s.pause()  # a tool runs between rounds
+    await s.feed("I found the train times. It leaves at four.")
+    assert s.heard_text() == ""
+    s.played(2)
+    assert s.heard_text() == "I found the train times."
+
+
+async def test_a_sentence_with_nothing_to_say_is_never_counted_as_heard() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("```\ncode\n``` ")
+    await s.pause()
+    await s.feed("I found the train times. And")
+    s.played(1)
+    # Nothing was sent for the code, so the page's sentence 1 is the next one.
+    assert s.turn == 7 and s.heard_text() == "I found the train times."
