@@ -160,3 +160,19 @@ async def test_she_is_named_from_her_answer_not_what_she_said_before_a_tool(
     assert "what is in my folder" in body and "Nothing there yet." in body
     assert "Let me check." not in body
     await s.close()
+
+
+async def test_a_naming_call_finishing_after_a_rename_changes_nothing(rt: Runtime) -> None:
+    provider = SlowNamer(say("One."), say("Slow title"))
+    rt.provider = provider
+    page = Page(rt)
+    s = await Session.start(rt, page.send, None)
+    await s.handle({"type": "turn.text", "text": "one"})
+    await page.until("turn.complete")
+    await rt.conversations.set_title(s.id, OWNER, "Mine", "user")
+    await s.renamed("Mine")
+    provider.named.set()
+    await asyncio.sleep(0.1)
+    assert [m["title"] for m in page.all("conversation.title")] == ["Mine"]
+    assert await rt.conversations.title_of(s.id, OWNER) == ("Mine", "user")
+    await s.close()

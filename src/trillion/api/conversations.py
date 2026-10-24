@@ -6,18 +6,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from trillion.api.runtime import OWNER, Runtime
 from trillion.storage.sqlite.conversation_store import tidy_title
 
 LIMIT_MAX = 100
+QUERY_MAX = 200
+# Before tidying, which cuts a title to its own limit.
+TITLE_MAX = 500
 
 
 class Rename(BaseModel):
-    title: str
+    title: str = Field(max_length=TITLE_MAX)
 
 
 def _not_found() -> JSONResponse:
@@ -29,12 +32,17 @@ def create_conversations_router(rt: Runtime) -> APIRouter:
 
     @router.get("")
     async def listing(
-        q: str = "", before: int | None = None, before_id: str = "", limit: int = 50
-    ) -> dict[str, Any]:
+        q: str = Query("", max_length=QUERY_MAX),
+        before: int | None = Query(None, ge=0, le=2**63 - 1),
+        before_id: str = Query("", max_length=100),
+        limit: int = Query(50, ge=1, le=LIMIT_MAX),
+    ) -> Any:
         # The cursor is the last row shown: its time and id, so equal times never skip.
+        if before is not None and not before_id:
+            return JSONResponse({"error": "bad_request"}, status_code=400)
         cursor = (before, before_id) if before is not None else None
         rows, more = await rt.conversations.list_chats(
-            OWNER, query=q or None, before=cursor, limit=max(1, min(limit, LIMIT_MAX))
+            OWNER, query=q or None, before=cursor, limit=limit
         )
         return {
             "conversations": [

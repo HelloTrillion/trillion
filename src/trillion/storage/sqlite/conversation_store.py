@@ -273,7 +273,7 @@ class SqliteConversationStore:
         return cur.rowcount == 1
 
     async def restore(self, conversation_id: str, owner_id: str) -> bool:
-        """Undo a delete; returns whether it brought one back."""
+        """Undo a delete; returns whether it brought one back (False for one not deleted)."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = NULL"
             " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NOT NULL",
