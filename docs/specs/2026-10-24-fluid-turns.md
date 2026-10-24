@@ -168,7 +168,7 @@ long as she speaks, and the core decides by the words.
   them are in what she is saying now: the sentence being heard, the one before **and
   the next one** (her audio runs ahead of its reports), each as she wrote it and as it
   was sent to be said. Numbers and money are spelled out on both sides ("$5" and "five
-  dollars", "10:30" and "ten thirty"). Stop words get no say here, so her own "No, the
+  dollars", "10:30" and "ten thirty", "2026" and "twenty twenty-six"). Stop words get no say here, so her own "No, the
   train…" coming back does not stop her. Otherwise a candidate takes two words that are
   not hers (fillers aside) or one stop word: each report adds about a word, and one
   misheard word of hers ("noon" as "new") is not the user.
@@ -176,27 +176,35 @@ long as she speaks, and the core decides by the words.
   words before them (`judged_prefix`), so a single new word never stands alone. Echo
   is judged up to its last word of hers (`echo_through`); a word of theirs after it
   waits for more. Words the recognizer has revised are judged again from the start.
-- **A candidate** (words that are not hers): the page is sent `overlap.duck`, the
-  echo judged before them is forgotten, and the decision clock starts at that moment.
-  From there `decide` runs as before, except that her words among theirs are left out
-  first (`drop_hers`; stop words never are), so "yeah" with her echo after it is still
-  an acknowledgement:
-  - **Echo:** words that all appear in the sentence she is playing, or the one before,
-    are ignored, except stop words ("stop", "wait", "no", "hold on" and the like),
-    which always count as the user.
-  - **Interrupt:** any word not in the acknowledgement list is an interruption, as soon
-    as it is heard.
-  - **Carry on (acknowledgement):** words that are all acknowledgements or fillers ("um",
-    "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s passed.
-  - **Carry on (no words):** no words by 1.5 s means a cough or a door.
-  - **Wait:** anything else, until the 1.5 s limit.
+- **A candidate: duck, then confirm** (*as built after the third live run*). Her
+  "Alright, properly this time." came back as "or writes properly this": two words not
+  hers, so a candidate, and deciding stopped her at once on her own echo. Now a
+  candidate only ducks her: the page is sent `overlap.duck`, the echo judged before it
+  is forgotten, and the clock starts. `confirm(candidate, after, …)` (pure) decides:
+  - **Interrupt at once:** a stop word ("stop", "wait", "no", "hold on" and the like)
+    that is not in what she is saying now; or a candidate of four or more words that
+    are not hers, which a misheard fragment of her never is.
+  - **Interrupt on confirmation:** new words since the duck, two of them not hers
+    (acknowledgements and fillers aside), in new words not mostly (60%) hers. She is
+    five times quieter by then, so less of her comes back, but one more misheard word
+    is as likely as the first; two words of theirs within a second is a person.
+  - **Carry on (acknowledgement):** words not hers that are all acknowledgements or
+    fillers ("um", "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s.
+  - **Carry on (not confirmed):** nothing more of theirs by `CONFIRM_S` (1 s) after the
+    duck: her echo, misheard. A user who says two or three words and stops in that
+    second is not heard either, and says it again; that is the price of never being
+    stopped by her own voice.
+  - **Wait:** anything else.
+  - Her own stop word ("No, the train…") never stops her.
+- The old `overlap` (the page ducked her itself) still goes to `decide` as before.
 - **On `carry_on`:** `overlap.over` is sent, the words are forgotten and the listener
   goes back to watching. Nothing is saved, and the turn counter does not move.
 - **On `interrupt`:** the reply is stopped as `_on_barge` stops it (VOI-15c: approved
   work finishes and is recorded), her saved reply is trimmed to what was heard (§4),
   and the same listener goes on as the user's turn with normal patience
-  (`mic.start{follow_up: false}`). The candidate's words are kept; her echo before them
-  is not.
+  (`mic.start{follow_up: false}`). The candidate's words and the words that confirmed
+  them are kept; her echo before them is not, and her words at the front of the turn
+  are taken off as below.
 - **Her reply heard to the end** (`playback.ended`) while only watching, after a spoken
   turn: the watch listener becomes the follow-up window (`FOLLOW_UP_S`,
   `mic.start{follow_up: true}`) on the same recognizer connection, but not at once
@@ -205,16 +213,25 @@ long as she speaks, and the core decides by the words.
   the user's next turn, and she answered herself in a loop. So the watch goes on
   judging, with her last two sentences added to what she is saying, for
   `ECHO_GRACE_S` (2 s) and until any recognizer turn that began over her has ended.
-  Words that are a candidate meanwhile are the user's turn at once (no duck, she has
-  finished), with her echo before them left out; otherwise the window opens with
-  everything heard let go. Heard to the end while deciding: carrying on does the same.
+  Any word of theirs meanwhile (one is enough once she has ended: "Yes.", "Thursday.")
+  is the user's turn at once (no duck, she has finished), with her echo judged while
+  she spoke left out. Words that are all hers ("Six?" after "…leave at six?") are kept
+  too, and left to the turn's own check below. Otherwise the window opens when the
+  grace is over, keeping what was heard since she ended. Heard to the end while
+  deciding: carrying on does the same.
 - **Her last words, after she stops** (every path): when she is heard to the end, or
   stopped by a cut-in, the session keeps what she was last saying (`_her_end`). A
-  spoken turn whose first words came within `ECHO_AFTER_S` (3 s) of that has her words
-  in front taken off (`strip_hers`, two or more of them), and is dropped quietly if
-  nothing else is left or it is still mostly (60%) hers. That covers a window opened
-  without a watch, a watch promoted by Speak or `barge`, and an interruption. No draft
-  starts in that time, and the words shown while listening leave her words out too.
+  spoken turn whose first words were said within `ECHO_AFTER_S` (3 s) of that is
+  checked by `echo_of`, only on evidence: three or more of her words in her order are
+  her echo (in front, taken off; a turn mostly her, all of it); one or two words are
+  hers only when they are exactly her final words, said within 0.3 s of her end.
+  Anything with a stop word in it is always the user's. A reply that reuses her words
+  ("Six?", "Tea." after "Coffee or tea?") is theirs. When a turn is dropped, the usual
+  "unheard" notice says so. When the words began is measured by the audio itself
+  (from her end, for a watch), not by when the recognizer reported them. That covers a
+  window opened without a watch, a watch promoted by Speak or `barge`, and an
+  interruption. No draft starts in that time, and the words shown while listening
+  leave her words out too.
 - **While the user's words are still being saved** (the recognizer handing over its
   last words after their turn): the watch does not judge. A cut-in then would cancel
   the turn collecting them and lose them; once they are saved, what the user went on
@@ -278,7 +295,7 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 - **A tap on an approval card during a draft:** taps belong to confirmed turns. A draft holds no card, because cards come from tools and a draft stops before tools.
 - **Privacy:** Nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only whether a draft was used or dropped, and overlap phases are logged by name only. With hearing that judges turns and barge-in on, the microphone goes to the hearing service while she speaks after a spoken turn (D9); Settings → Hearing says so.
 - **Talking right after a turn ends, before her reply starts:** while the recognizer is still handing over the user's last words, nothing is judged; once they are saved, words that are not hers are a candidate (nothing of hers is playing yet) and stop her reply as usual, becoming the next turn. A barge or Speak in that moment still cancels the turn being collected, as before.
-- **Her own words come back after she stops:** taken off the front of the user's turn for 3 s, and a turn that is only, or mostly, her words is dropped. A user who answers within 3 s with mostly her own words ("tell me what you need" after "Tell me what you need.") is not heard, which is the price of never answering herself.
+- **Her own words come back after she stops:** for 3 s, three or more of her words in her order are taken off the front of the user's turn, and a turn that is only, or mostly, such a run is dropped with the "unheard" notice. A user who repeats three or more of her words in her order straight after her is not heard, which is the price of never answering herself; short replies that reuse her words are heard.
 
 ## Testing
 

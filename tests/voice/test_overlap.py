@@ -4,14 +4,16 @@ import pytest
 
 from trillion.voice.overlap import (
     ACK_AFTER_S,
+    CONFIRM_S,
     DECIDE_BY_S,
+    confirm,
     decide,
+    echo_of,
     echo_through,
     judge_watch,
     judged_prefix,
     keys,
     share_hers,
-    strip_hers,
 )
 
 PLAYING = ("We could leave at six.", "Or if traffic is bad, at half past.")
@@ -214,30 +216,90 @@ def test_fillers_let_her_carry_on() -> None:
         assert decide(words, done=True, elapsed_s=0.3, playing=PLAYING) == "carry_on"
 
 
-def test_deciding_can_leave_out_her_words() -> None:
-    playing = ("We could leave at six.",)
-    assert decide("yeah leave at six", done=True, elapsed_s=0.3, playing=playing) == "interrupt"
-    assert (
-        decide("yeah leave at six", done=True, elapsed_s=0.3, playing=playing, drop_hers=True)
-        == "carry_on"
-    )
-    # A stop word is never left out.
-    assert (
-        decide("no", done=False, elapsed_s=0.1, playing=("No, the train.",), drop_hers=True)
-        == "interrupt"
-    )
-
-
-def test_her_leading_words_are_stripped_until_the_first_of_theirs() -> None:
-    hers = ("Third thing to know.",)
-    assert strip_hers("Third thing to know. What about tomorrow?", hers) == "What about tomorrow?"
-    assert strip_hers("third thing to know", hers) == ""
-    assert strip_hers("what about the third thing", hers) == "what about the third thing"
-    # A single word of hers in front is not taken from them.
-    assert strip_hers("know what I mean", hers) == "know what I mean"
-
-
 def test_share_of_her_words() -> None:
     assert share_hers("third thing to know", ("Third thing to know.",)) == 1.0
     assert share_hers("what about it", ("Third thing to know.",)) == 0.0
     assert share_hers("", ("Third thing to know.",)) == 0.0
+
+
+# ── Duck, then confirm: a candidate alone never stops her ──
+
+ALRIGHT = ("Alright, properly this time.", "We start with the basics.")
+
+
+def test_a_misheard_fragment_of_hers_alone_does_not_stop_her() -> None:
+    """Live: her "Alright, properly this time." came back as "or writes properly this"."""
+    cand = "or writes properly this"
+    assert confirm(cand, "", done=False, elapsed_s=0.3, playing=ALRIGHT) == "wait"
+    assert confirm(cand, "", done=True, elapsed_s=0.5, playing=ALRIGHT) == "wait"
+    assert confirm(cand, "", done=False, elapsed_s=CONFIRM_S, playing=ALRIGHT) == "carry_on"
+    # More of her, or one more misheard word, is not them either.
+    assert confirm(cand, "time we start", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
+    assert confirm(cand, "tame", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
+
+
+def test_new_words_of_theirs_after_the_duck_stop_her() -> None:
+    cand = "or writes"
+    assert confirm(cand, "what about", done=False, elapsed_s=0.4, playing=ALRIGHT) == "interrupt"
+
+
+def test_a_stop_word_not_hers_stops_her_at_once() -> None:
+    assert confirm("wait what", "", done=False, elapsed_s=0.1, playing=ALRIGHT) == "interrupt"
+    assert confirm("or writes", "stop", done=False, elapsed_s=0.2, playing=ALRIGHT) == "interrupt"
+
+
+def test_a_stop_word_of_hers_does_not() -> None:
+    playing = ("No, the train leaves at six.",)
+    assert confirm("no the trained", "", done=False, elapsed_s=0.2, playing=playing) == "wait"
+
+
+def test_acknowledgements_carry_on_as_before() -> None:
+    assert confirm("yeah sure", "", done=True, elapsed_s=0.3, playing=ALRIGHT) == "carry_on"
+    assert confirm("yeah sure", "", done=False, elapsed_s=0.3, playing=ALRIGHT) == "wait"
+    assert confirm("um uh", "", done=True, elapsed_s=0.3, playing=ALRIGHT) == "carry_on"
+    assert confirm("yeah yeah", "yeah yeah", done=True, elapsed_s=0.3, playing=ALRIGHT) == (
+        "interrupt"
+    )
+
+
+def test_a_long_candidate_of_theirs_needs_no_more() -> None:
+    assert (
+        confirm("what about the bus instead", "", done=True, elapsed_s=0.2, playing=ALRIGHT)
+        == "interrupt"
+    )
+
+
+# ── Her last words after she stops: dropped only on evidence (re-review N2, N4) ──
+
+LAST = ("We could take the bus.", "Or would you rather leave at six?")
+
+
+def test_her_last_words_come_back_whole_are_echo() -> None:
+    assert echo_of("Or would you rather leave at six?", LAST, early=False) == ""
+    assert echo_of("rather leave at six", LAST, early=False) == ""
+    # Her words in front of theirs are taken off, theirs kept.
+    assert echo_of("leave at six what about seven", LAST, early=False) == "what about seven"
+
+
+def test_replies_that_reuse_her_words_are_theirs() -> None:
+    assert echo_of("Six?", LAST, early=False) == "Six?"
+    assert echo_of("Tea.", ("Coffee or tea?",), early=False) == "Tea."
+    assert echo_of("the bus", LAST, early=False) == "the bus"
+    # A stop word is always theirs.
+    assert echo_of("No, leave at six instead", LAST, early=False) == "No, leave at six instead"
+    assert echo_of("wait rather leave at six", LAST, early=False) == "wait rather leave at six"
+    # Out of her order, it is not her coming back.
+    assert echo_of("six at leave", LAST, early=False) == "six at leave"
+
+
+def test_one_or_two_of_her_final_words_only_when_they_came_at_once() -> None:
+    assert echo_of("at six", LAST, early=True) == ""
+    assert echo_of("at six", LAST, early=False) == "at six"
+    assert echo_of("leave at", LAST, early=True) == "leave at"  # not her final words
+
+
+def test_years_match_however_they_are_written() -> None:
+    assert keys("2026") == ("twenty twenty six",)
+    assert keys("twenty twenty-six") == ("twenty", "twenty six")
+    assert judge_watch("in twenty twenty-six", ("It opens in 2026.",)) == "echo"
+    assert keys("2005") == ("two thousand five",)

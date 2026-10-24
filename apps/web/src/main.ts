@@ -202,6 +202,7 @@ function streamToCore(): boolean {
 function beginStreamWatch(): void {
   micMode = 'send';
   streamWatch = true;
+  unwatchPending = false;
   bargeHeld = null;
   send({ type: 'overlap.watch' });
 }
@@ -392,6 +393,7 @@ const mic = createMic({
     if (streamWatch) {
       // Unheard, the user cannot cut in: the core stops watching, and she carries on.
       streamWatch = false;
+      unwatchPending = false;
       micMode = 'send';
       send({ type: 'overlap.unwatch' });
       if (overlapping) {
@@ -1065,6 +1067,7 @@ function connect(): void {
       micMode = 'send';
       bargeHeld = null;
       streamWatch = false;
+      unwatchPending = false;
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));

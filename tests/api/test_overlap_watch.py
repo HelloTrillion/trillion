@@ -22,6 +22,7 @@ from tests.api.test_session import Page, idle
 from tests.api.test_session_notices import voiced
 from tests.brain.fakes import say
 from tests.voice.audio import room, tone
+from tests.voice.fakes import FakeSTT
 from trillion.api import session as session_module
 from trillion.api.runtime import Runtime
 from trillion.api.session import Session
@@ -170,12 +171,15 @@ async def test_her_last_sentence_reported_after_she_ends_is_not_a_turn(rt: Runti
     await speak(session, tone(0.2))
     stt.stream.say("Third thing to know.", final=True, turn="done")
     await speak(session, room(0.2))
-    await until(lambda: session._listener is not None)  # the window, after the grace
-    await speak(session, room(session_module.FOLLOW_UP_S + 0.2))
-    await page.until("mic.stop")
-    assert page.all("mic.stop")[-1]["reason"] == "nothing"
+    await until(lambda: session._listener is not None)  # after the grace
+    await speak(session, room(0.2))
+    await page.until("mic.stop", 2)
+    await page.until("notice")
+    await idle(session)
+    # Her own words: not answered, and said plainly rather than in silence.
     assert len(page.all("transcript.final")) == 1 and session._turn == 1
     assert calls(rt) == before and session._draft is None
+    assert [m for m in page.all("notice") if m.get("reason") == "unheard"]
     await session.close()
 
 
@@ -246,8 +250,7 @@ async def test_a_spoken_turn_that_is_her_echo_is_dropped(rt: Runtime) -> None:
     await idle(session)
     assert len(page.all("transcript.final")) == 1 and session._turn == 1
     assert calls(rt) == before and session._draft is None
-    # Quietly: not even "I didn't catch that".
-    assert not [m for m in page.all("notice") if m.get("reason") == "unheard"]
+    assert [m for m in page.all("notice") if m.get("reason") == "unheard"]
     await session.close()
 
 
@@ -573,16 +576,22 @@ async def test_a_cut_in_while_their_words_are_saved_waits_for_them(rt: Runtime) 
     await page.until("transcript.final")
     assert page.all("transcript.final")[0]["text"] == "tell me the plan"
     await speak(session, tone(0.1))
+    await page.until("overlap.duck")
+    stt.stream.say("and the budget for next week", final=False)
+    await speak(session, tone(0.1))
     await page.until("interrupted")
     await until(lambda: session._listener is not None)
     held.set()
-    stt.stream.say("and the budget", final=True, turn="done")
+    stt.stream.say("and the budget for next week", final=True, turn="done")
     await speak(session, room(0.1))
     await page.until("transcript.final", 2)
-    assert page.all("transcript.final")[-1]["text"] == "and the budget"
+    assert page.all("transcript.final")[-1]["text"] == "and the budget for next week"
     history = await rt.conversations.history(session.id, "local")
     said = [m.blocks[-1] for k, m in history if k == "user"]
-    assert said == [TextBlock(text="tell me the plan"), TextBlock(text="and the budget")]
+    assert said == [
+        TextBlock(text="tell me the plan"),
+        TextBlock(text="and the budget for next week"),
+    ]
     await session.close()
 
 
@@ -595,4 +604,144 @@ async def test_no_watch_while_her_voice_is_off(rt: Runtime) -> None:
     await session.handle({"type": "overlap.watch"})
     assert session._overlap is None and page.all("overlap.over")[-1]["end"] is True
     held.set()
+    await session.close()
+
+
+# ── Duck, then confirm ───────────────────────────────────────────────────
+
+ALRIGHT = "Alright, properly this time. We start with the basics. Then the rest."
+
+
+async def alright(rt: Runtime) -> tuple[FakeSTT, Page, Session]:
+    stt, _ = judging(rt, say(ALRIGHT), say("Of course."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+    await watching(session)
+    return stt, page, session
+
+
+async def test_her_echo_misheard_ducks_her_but_does_not_stop_her(rt: Runtime) -> None:
+    """Live: "Alright, properly this time." came back as "or writes properly this"."""
+    stt, page, session = await alright(rt)
+    stt.stream.say("or writes properly this", final=False)
+    await speak(session, tone(0.2))
+    await page.until("overlap.duck")
+    await speak(session, tone(0.2))
+    await page.until("overlap.over")
+    await speak(session, tone(0.2))
+    assert not page.all("interrupted") and session._listener is None and session._turn == 1
+    assert session._overlap is not None and session._overlap.watching
+    history = await rt.conversations.history(session.id, "local")
+    assert history[-1][1].blocks == (TextBlock(text=ALRIGHT),)
+    await session.close()
+
+
+async def test_their_words_after_the_duck_stop_her_and_all_are_kept(rt: Runtime) -> None:
+    stt, page, session = await alright(rt)
+    stt.stream.say("what about", final=False)
+    await speak(session, tone(0.2))
+    await page.until("overlap.duck")
+    assert not page.all("interrupted")
+    stt.stream.say("what about the bus instead", final=False)
+    await speak(session, tone(0.2))
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None)
+    stt.stream.say("what about the bus instead", final=True, turn="done")
+    await speak(session, room(0.1))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "what about the bus instead"
+    await session.close()
+
+
+async def test_a_stop_word_not_hers_stops_her_at_once(rt: Runtime) -> None:
+    stt, page, session = await alright(rt)
+    stt.stream.say("wait", final=False)
+    await speak(session, tone(0.1))
+    await page.until("interrupted")
+    await session.close()
+
+
+async def test_a_stop_word_of_hers_does_not_stop_her(rt: Runtime) -> None:
+    stt, _ = judging(rt, say("No, the train leaves at six. Then a bus."), say("Sure."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+    await watching(session)
+    stt.stream.say("no the trained", final=False)
+    await speak(session, tone(0.2))
+    await speak(session, tone(1.2))
+    assert not page.all("interrupted") and session._turn == 1
+    await session.close()
+
+
+# ── Re-review: short replies right after she ends are theirs (N1, N2) ────
+
+LEAVE = "We could take the bus. Or would you rather leave at six?"
+
+
+async def leave(rt: Runtime, *, watch: bool = True) -> tuple[FakeSTT, Page, Session]:
+    stt, _ = judging(rt, say(LEAVE), say("Six it is."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1, 2)
+    if watch:
+        await watching(session)
+    await ended(session, page)
+    return stt, page, session
+
+
+async def reply(session: Session, stt: FakeSTT, page: Page, words: str) -> None:
+    """A person answering after a moment; the recognizer reports it a little later. The
+    clock moves as the audio does."""
+    await speak(session, room(0.5))
+    await asyncio.sleep(0.5)
+    await speak(session, tone(0.3))
+    await asyncio.sleep(0.3)
+    stt.stream.say(words, final=True, turn="done")
+    await speak(session, room(0.2))
+
+
+@pytest.mark.parametrize("words", ["Yes.", "Six?", "Thursday."])
+async def test_a_one_word_reply_right_after_she_ends_is_a_turn(rt: Runtime, words: str) -> None:
+    stt, page, session = await leave(rt)
+    await reply(session, stt, page, words)
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == words and session._turn == 2
+    await session.close()
+
+
+@pytest.mark.parametrize("words", ["Six?", "No, leave at six instead"])
+async def test_replies_reusing_her_words_are_never_dropped(rt: Runtime, words: str) -> None:
+    stt, page, session = await leave(rt, watch=False)
+    await reply(session, stt, page, words)
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == words
+    await session.close()
+
+
+async def test_her_last_two_words_come_back_at_once_are_not_a_turn(rt: Runtime) -> None:
+    """The live loop: "Standing by." came back as the user's turn, and she answered it."""
+    stt, _ = judging(rt, say("Okay. Standing by."), say("Standing by."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1, 2)
+    await watching(session)
+    await ended(session, page)
+    await speak(session, tone(0.4))  # her last words, still coming back
+    stt.stream.say("Standing by.", final=True, turn="done")
+    await speak(session, room(0.2))
+    await until(lambda: session._listener is not None)
+    await speak(session, room(0.2))
+    await page.until("notice")
+    await idle(session)
+    assert len(page.all("transcript.final")) == 1 and session._turn == 1
     await session.close()

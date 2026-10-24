@@ -110,6 +110,8 @@ class EndOfSpeech:
         self._done = False
         # When a done that led on was heard, by the audio's clock; -1 when none is held.
         self._held = -1.0
+        # When someone was first heard, by the audio's clock; -1 before.
+        self._first = -1.0
 
     @property
     def now(self) -> float:
@@ -118,6 +120,11 @@ class EndOfSpeech:
     @property
     def spoke(self) -> bool:
         return self._spoke
+
+    @property
+    def first_spoke(self) -> float | None:
+        """When someone was first heard, by the audio's own clock: None before."""
+        return self._first if self._first >= 0 else None
 
     @property
     def peak(self) -> float:
@@ -146,6 +153,8 @@ class EndOfSpeech:
             # Words after a held done: the recognizer judges this turn's end again.
             self._held = -1.0
         if has_text:
+            if self._first < 0:
+                self._first = self.now
             self._spoke = True
             self._last_words = self.now
             self._pending_words = not final
@@ -186,6 +195,9 @@ class EndOfSpeech:
         if loud > max(_MIN_SPEECH, self._noise * _OVER_NOISE):
             self._run += _WINDOW / SAMPLE_RATE
             if self._run >= _ONSET_S:
+                if self._first < 0:
+                    # The onset began a little before it was believed.
+                    self._first = max(0.0, now - self._run)
                 self._spoke = True
                 self._last_voice = now
         else:

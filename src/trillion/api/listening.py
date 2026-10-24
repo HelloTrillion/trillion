@@ -32,6 +32,8 @@ BATCH_WRAP_UP_S = 60.0
 _MAX_BACKLOG = 16_000 * 2 * 10
 # The window that reopens after she speaks waits this long for a first word (VOI-8).
 FOLLOW_UP_S = 3.0
+# A recognizer reports a word about this long after it was said.
+REPORT_LAG_S = 0.4
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -79,8 +81,12 @@ class Listener:
         # Words at the start of the recognizer's current turn already judged and let go.
         # Its reports repeat the whole turn so far, so they are skipped, not deleted.
         self._skip = 0
-        # When the user's first words were heard (the loop's clock), once listening.
+        # When the user's first words were said (the loop's clock), once listening.
         self.began: float | None = None
+        # Watching with the audio's clock running (after her end), and when the
+        # recognizer's current turn was first reported.
+        self._clocked = False
+        self._turn_seen: float | None = None
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
@@ -160,14 +166,31 @@ class Listener:
         self._watching = False
         self._verdict = None
         self._holding = False
-        self._rules = self._new_rules(patience_s)
         said = self._this_turn()
+        began = self._began_by_watch() if said else None
+        self._clocked = False
+        self._rules = self._new_rules(patience_s)
         if not said:
             return
-        self.began = asyncio.get_running_loop().time()
+        self.began = began
         self._rules.heard(final=self._turn_ended, has_text=True)
         if self._turn_ended:
             self._end_turn()
+
+    def clock(self) -> None:
+        """While watching, start telling when someone speaks by the audio itself, from
+        now: after her end, so that words can be placed by when they were said."""
+        self._rules = self._new_rules(NOTHING_AFTER_S)
+        self._clocked = True
+
+    def _began_by_watch(self) -> float:
+        """When the words heard while watching began: by the audio once clocked, else
+        by when the recognizer first reported them, less its usual lag."""
+        now = asyncio.get_running_loop().time()
+        first = self._rules.first_spoke if self._clocked else None
+        if first is not None:
+            return now - max(0.0, self._rules.now - first)
+        return self._turn_seen - REPORT_LAG_S if self._turn_seen is not None else now
 
     def watch(self) -> None:
         """Back to watching, after deciding that what was heard was not a turn. What
@@ -215,6 +238,8 @@ class Listener:
         assert self._stream is not None  # noqa: S101 - narrowed by the callers
         await self._stream.send(pcm)
         if self._watching:
+            if self._clocked:
+                self._rules.audio(pcm)  # for its clock only
             return None  # nothing ends while watching: the session decides
         self._verdict = self._rules.audio(pcm)
         return self._verdict
@@ -245,6 +270,9 @@ class Listener:
                     # The recognizer's next turn. Only words held from the last are kept.
                     self._turn_ended = False
                     self._finals, self._interim, self._skip = [], "", 0
+                    self._turn_seen = None
+                if heard.text and self._turn_seen is None:
+                    self._turn_seen = asyncio.get_running_loop().time()
                 if self._watching:
                     self._watched(heard)
                     if heard.text or heard.final:
@@ -281,7 +309,10 @@ class Listener:
                 if heard.turn in ("maybe", "resumed") and self._provider.turns:
                     await self._signal(heard.turn)
                 if self.began is None and self.text():
-                    self.began = asyncio.get_running_loop().time()
+                    # When they began, by the audio: a report comes well after the word.
+                    first = self._rules.first_spoke
+                    ago = self._rules.now - first if first is not None else 0.0
+                    self.began = asyncio.get_running_loop().time() - max(0.0, ago)
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:
