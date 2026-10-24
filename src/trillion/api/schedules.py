@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from trillion.api.runtime import OWNER, Runtime
 from trillion.scheduler import when
 from trillion.scheduler.runner import TICK_S
-from trillion.scheduler.store import Schedule
+from trillion.scheduler.store import Result, Schedule
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 
 RECENT = 20
@@ -30,6 +30,13 @@ def _words(s: Schedule) -> tuple[str, str]:
         return upcoming, when.summary(s.at_local, s.repeat, s.zone)
     except when.WhenError:
         return "", ""
+
+
+def _due(r: Result) -> str:
+    try:
+        return when.spoken(r.run.due_ms, r.zone)
+    except when.WhenError:
+        return ""
 
 
 def create_schedules_router(rt: Runtime) -> APIRouter:
@@ -66,6 +73,8 @@ def create_schedules_router(rt: Runtime) -> APIRouter:
                 "title": r.title,
                 "status": r.run.status,
                 "due_ms": r.run.due_ms,
+                # In the schedule's own zone, as "next" is: the browser's may differ.
+                "due": _due(r),
                 "finished_ms": r.run.finished_ms,
                 "detail": r.run.detail or "",
             }

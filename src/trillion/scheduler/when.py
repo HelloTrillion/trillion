@@ -180,6 +180,19 @@ def spoken(ms: int, zone: str) -> str:
     return f"{day_words(dt)}, {clock_words(dt)}"
 
 
+def due_words(ms: int, zone: str, now_ms: int) -> str:
+    """'4:00 pm' today, 'Sat 4:00 pm' within the week, else 'Sat 24 Oct, 4:00 pm': when a
+    notice was due, in its own zone, so one that arrives overnight is not taken for now."""
+    tz = zone_of(zone)
+    dt = datetime.fromtimestamp(ms / 1000, tz)
+    today = datetime.fromtimestamp(now_ms / 1000, tz).date()
+    if dt.date() == today:
+        return clock_words(dt)
+    if abs((today - dt.date()).days) < 7:
+        return f"{_DAY_NAMES[dt.weekday()]} {clock_words(dt)}"
+    return f"{day_words(dt)}, {clock_words(dt)}"
+
+
 def _ordinal(n: int) -> str:
     end = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{end}"

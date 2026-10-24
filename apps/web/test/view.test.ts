@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, busyOf, dueLabel, expire, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
+import { INITIAL, type View, busyOf, dueLabel, expire, localClock, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -252,6 +252,7 @@ describe('notices from reminders and timed asks', () => {
     title: 'Stretch',
     text: 'Time to stretch.',
     due_ms: due,
+    due: '4:00 pm',
     late: false,
     ...over,
   });
@@ -259,7 +260,7 @@ describe('notices from reminders and timed asks', () => {
   it('arrives as her message', () => {
     const v = feed([notice()], ready);
     expect(v.entries).toEqual([
-      { kind: 'scheduled', id: 'n1', what: 'reminder', title: 'Stretch', text: 'Time to stretch.', dueMs: due, late: false },
+      { kind: 'scheduled', id: 'n1', what: 'reminder', title: 'Stretch', text: 'Time to stretch.', dueMs: due, due: '4:00 pm', late: false },
     ]);
   });
 
@@ -295,11 +296,19 @@ describe('notices from reminders and timed asks', () => {
     expect(feed([notice({ id: '' }), notice({ kind: 'other' })], ready).entries).toEqual([]);
   });
 
-  it('labels a late one with its due time, and a quiet line for one with no words', () => {
-    expect(dueLabel(due, 'America/New_York')).toBe('due 4:00 pm');
-    expect(dueLabel(Date.UTC(2026, 9, 24, 13, 5), 'America/New_York')).toBe('due 9:05 am');
-    expect(quietLine({ what: 'missed', title: 'Email', dueMs: due }, 'America/New_York')).toBe('Missed: Email (due 4:00 pm)');
-    expect(quietLine({ what: 'failed', title: 'Email', dueMs: due }, 'America/New_York')).toBe("Didn't finish: Email (due 4:00 pm)");
+  it('labels a late one with the due time the core gave, in the schedule\'s own zone', () => {
+    const v = feed([notice({ late: true, due: 'Fri 11:44 pm' })], ready);
+    expect(v.entries[0]).toMatchObject({ due: 'Fri 11:44 pm', late: true });
+    expect(dueLabel('Fri 11:44 pm')).toBe('due Fri 11:44 pm');
+    expect(quietLine({ what: 'missed', title: 'Email', due: '4:00 pm' })).toBe('Missed: Email (due 4:00 pm)');
+    expect(quietLine({ what: 'failed', title: 'Email', due: 'Sat 4:00 pm' })).toBe("Didn't finish: Email (due Sat 4:00 pm)");
+  });
+
+  it('falls back to this browser\'s clock only when the core gave no words', () => {
+    expect(localClock(due, 'America/New_York')).toBe('4:00 pm');
+    expect(localClock(Date.UTC(2026, 9, 24, 13, 5), 'America/New_York')).toBe('9:05 am');
+    const v = feed([notice({ due: '' })], ready);
+    expect((v.entries[0] as { due: string }).due).toBe(localClock(due));
   });
 });
 
@@ -336,6 +345,14 @@ describe('notice speech never makes the page busy', () => {
     expect(later.draft).toBeNull();
     const refused = reduce(sent(before, 'hi'), { type: 'error', code: 'busy' });
     expect(refused.entries).toEqual([{ kind: 'user', text: 'hi' }]);
+  });
+
+  it('forgets a message once any other error ends it, so a later busy takes nothing back', () => {
+    const failed = reduce(sent(ready, 'hi'), { type: 'error', code: 'internal' });
+    expect(failed.pending).toBeNull();
+    const later = reduce(failed, { type: 'error', code: 'busy' });
+    expect(later.entries).toEqual([{ kind: 'user', text: 'hi' }]);
+    expect(later.draft).toBeNull();
   });
 
   it('never takes back what she heard', () => {

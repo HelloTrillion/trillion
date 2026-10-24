@@ -35,6 +35,8 @@ export interface RunResult {
   readonly title: string;
   readonly status: RunStatus;
   readonly due_ms: number;
+  /** "Sat 24 Oct, 4:00 pm", in the schedule's own zone; empty if the core couldn't say. */
+  readonly due: string;
   readonly finished_ms: number | null;
   readonly detail: string;
 }
@@ -132,11 +134,12 @@ export function dueWords(ms: number, timeZone?: string): string {
   return `${get('weekday')} ${get('day')} ${get('month')}, ${get('hour')}:${get('minute')} ${get('dayPeriod').toLowerCase()}`;
 }
 
-/** One recent result: "Email: Missed (due Sat 24 Oct, 4:00 pm)". A reason only when it went wrong. */
-export function resultLine(r: Pick<RunResult, 'title' | 'status' | 'due_ms' | 'detail'>, timeZone?: string): string {
+/** One recent result: "Email: Missed (due Sat 24 Oct, 4:00 pm)". A reason only when it went
+ * wrong. The due time is the core's, in the schedule's zone; this browser's only if none. */
+export function resultLine(r: Pick<RunResult, 'title' | 'status' | 'due_ms' | 'due' | 'detail'>, timeZone?: string): string {
   // Waiting for a model already says why; a delivered or cancelled one needs none.
   const why = r.detail && (r.status === 'missed' || r.status === 'failed' || r.status === 'interrupted') ? `: ${r.detail}` : '';
-  return `${r.title}: ${resultText(r.status)}${why} (due ${dueWords(r.due_ms, timeZone)})`;
+  return `${r.title}: ${resultText(r.status)}${why} (due ${r.due || dueWords(r.due_ms, timeZone)})`;
 }
 
 /** Worth a warning colour: it went wrong, or is waiting. */
@@ -258,10 +261,12 @@ export function createReminders(host: Host, api: Api, changed: () => void): { op
         (form.querySelector(`[data-focus="${CSS.escape(`cancel:${u.id}`)}"]`) as HTMLElement | null)?.focus();
       });
       keep.setAttribute('aria-label', `Keep ${u.title}`);
+      keep.dataset.focus = `keep:${u.id}`;
       const drop = button('Cancel it', 'connected-danger-solid', () => {
         if (!busy) void cancel(u);
       });
       drop.setAttribute('aria-label', `Cancel ${u.title} for good`);
+      drop.dataset.focus = `drop:${u.id}`;
       confirm.append(el('span', '', `Cancel “${u.title}”? It won't come back.`), keep, drop);
       box.append(confirm);
     } else {
@@ -324,23 +329,38 @@ export function createReminders(host: Host, api: Api, changed: () => void): { op
   // Once at the start, so the sidebar can say how many are coming up; after this turn,
   // so the page has taken its session token from the address first.
   window.setTimeout(() => void load(), 0);
+  // Only while the section is open. Never under a confirm: a redraw would take its focus.
+  let timer = 0;
   let since = 0;
-  window.setInterval(() => {
-    if (!host.open) return;
+  function tick(): void {
+    if (!host.open) {
+      stop();
+      return;
+    }
     since += REDRAW_MS;
-    if (since >= RELOAD_MS) {
-      since = 0;
-      void load().then(draw);
-    } else draw();
-  }, REDRAW_MS);
+    const reload = since >= RELOAD_MS;
+    if (reload) since = 0;
+    if (confirming || busy) return;
+    if (reload) void load().then(() => (confirming || busy ? undefined : draw()));
+    else draw();
+  }
+  function stop(): void {
+    if (timer) window.clearInterval(timer);
+    timer = 0;
+  }
+  host.addEventListener('close', stop);
 
   return {
     async open() {
       host.showModal();
+      stop();
+      since = 0;
+      timer = window.setInterval(tick, REDRAW_MS);
       draw();
       await load();
       draw();
     },
-    summary: () => remindersSummary(now()),
+    // As last read: it is read again when the section opens, not while it is shut.
+    summary: () => remindersSummary(last),
   };
 }

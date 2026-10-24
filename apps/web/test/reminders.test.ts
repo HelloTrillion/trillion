@@ -84,12 +84,13 @@ describe('reminders', () => {
     expect(nextText({ next: '' })).toBe('Due now');
   });
 
-  it('gives each recent result its due time, and a reason only when it went wrong', () => {
+  it('gives each recent result the due time the core gave, and a reason only when it went wrong', () => {
+    const r = { title: 'Email', due: 'Sat 24 Oct, 4:00 pm', due_ms: 0, detail: 'no model' };
+    expect(resultLine({ ...r, status: 'blocked' })).toBe('Email: Waiting for a model (due Sat 24 Oct, 4:00 pm)');
+    expect(resultLine({ ...r, status: 'failed', detail: 'no reply' })).toBe("Email: Didn't finish: no reply (due Sat 24 Oct, 4:00 pm)");
+    expect(resultLine({ ...r, status: 'late', detail: 'retried' })).toBe('Email: Delivered late (due Sat 24 Oct, 4:00 pm)');
+    // Only when the core could not say: this browser's clock.
     expect(dueWords(due, 'America/New_York')).toBe('Sat 24 Oct, 4:00 pm');
-    expect(dueWords(Date.UTC(2026, 9, 26, 13, 5), 'America/New_York')).toBe('Mon 26 Oct, 9:05 am');
-    const r = { title: 'Email', due_ms: due, detail: 'no model' };
-    expect(resultLine({ ...r, status: 'blocked' }, 'America/New_York')).toBe('Email: Waiting for a model (due Sat 24 Oct, 4:00 pm)');
-    expect(resultLine({ ...r, status: 'failed', detail: 'no reply' }, 'America/New_York')).toBe("Email: Didn't finish: no reply (due Sat 24 Oct, 4:00 pm)");
-    expect(resultLine({ ...r, status: 'late', detail: 'retried' }, 'America/New_York')).toBe('Email: Delivered late (due Sat 24 Oct, 4:00 pm)');
+    expect(resultLine({ ...r, due: '', due_ms: due, status: 'missed', detail: '' }, 'America/New_York')).toBe('Email: Missed (due Sat 24 Oct, 4:00 pm)');
   });
 });

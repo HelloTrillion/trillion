@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from trillion.delivery import notify as system
+from trillion.scheduler import when
 from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, ScheduleStore
 from trillion.spine.clock import Clock
 
@@ -77,6 +78,9 @@ class Delivery:
     text: str | None
     due_ms: int
     late: bool
+    # When it was due, in words and in the schedule's own zone ("Sat 4:00 pm"). Empty
+    # when that can't be told: its schedule is gone, or its zone unknown here.
+    due: str = ""
 
 
 class NotFree(Exception):
@@ -157,6 +161,7 @@ class Door:
             if session is not self.live() or not free(session.facts(), now):
                 return 0
             out: list[Delivery] = []
+            zones: dict[str, str] = {}
             for n in await self._store.held(self._owner):
                 if await self._store.mark_delivered(n.id, session.id, now):
                     out.append(
@@ -168,6 +173,7 @@ class Door:
                             text=n.text if n.kind in ("reminder", "ask") else None,
                             due_ms=n.due_ms,
                             late=n.late or now - n.due_ms > LATE_MS,
+                            due=await self._due(n, now, zones),
                         )
                     )
         if not out:
@@ -188,6 +194,15 @@ class Door:
             await self._hold(out, session)
             return 0
         return len(out)
+
+    async def _due(self, n: Notice, now: int, zones: dict[str, str]) -> str:
+        if n.source_id not in zones:
+            s = await self._store.get(n.source_id)
+            zones[n.source_id] = s.zone if s is not None else ""
+        try:
+            return when.due_words(n.due_ms, zones[n.source_id], now)
+        except when.WhenError:
+            return ""
 
     async def _hold(self, out: Sequence[Delivery], session: SessionLike) -> None:
         """Only for a hand-over that raised: by the contract it took none of them."""

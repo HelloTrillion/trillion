@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from tests.scheduler.conftest import FakeClock, ms
+from tests.scheduler.conftest import FakeClock, ms, schedule
 from trillion.delivery.door import (
     PLAYBACK_GRACE_MS,
     READY,
@@ -249,3 +249,21 @@ async def test_a_hand_over_cut_short_still_finishes_and_is_never_held_again(
         await offer
     assert page.finished  # the session was never cut off mid-hand-over
     assert await store.held("local") == []  # taken once, so never held for another page
+
+
+async def test_its_due_time_is_in_the_schedules_own_zone(store: SqliteScheduleStore) -> None:
+    await store.create(schedule(zone="Europe/Paris", at_local="2026-10-24T22:00"))
+    page = FakePage("c1")
+    d, _, clock = door(store, [page])
+    clock.advance(10 * 3_600_000)  # delivered the next morning: it names the day
+    await d.added(await add(store))
+    assert [(x.due, x.late) for x in page.got] == [("Sat 10:00 pm", True)]
+
+
+async def test_a_notice_whose_schedule_is_gone_has_no_due_words(
+    store: SqliteScheduleStore,
+) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    await d.added(await add(store))
+    assert [x.due for x in page.got] == [""]

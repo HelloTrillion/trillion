@@ -1766,6 +1766,11 @@ button.connected-danger {
 
 /* ── Reminders ───────────────────────────────────────────────────────── */
 
+/* Its parts sit in the section's own column, spaced like every other section. */
+.reminders-body {
+  display: contents;
+}
+
 /* A reminder or timed ask that has no words of hers: missed, or it didn't finish. */
 .notice.scheduled-quiet {
   font-style: italic;

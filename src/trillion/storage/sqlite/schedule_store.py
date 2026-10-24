@@ -260,7 +260,8 @@ class SqliteScheduleStore:
 
     async def recent(self, owner_id: str, limit: int) -> list[Result]:
         async with self._conn.execute(
-            "SELECT r.*, s.title AS schedule_title, s.kind AS schedule_kind"
+            "SELECT r.*, s.title AS schedule_title, s.kind AS schedule_kind,"
+            " s.zone AS schedule_zone"
             " FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
             " WHERE s.owner_id = ? AND r.status NOT IN ('queued', 'running')"
             " ORDER BY COALESCE(r.finished_ms, r.claimed_ms, r.due_ms) DESC, r.id DESC"
@@ -269,7 +270,12 @@ class SqliteScheduleStore:
         ) as cur:
             rows = await cur.fetchall()
         return [
-            Result(run=_run(r), title=str(r["schedule_title"]), kind=r["schedule_kind"])
+            Result(
+                run=_run(r),
+                title=str(r["schedule_title"]),
+                kind=r["schedule_kind"],
+                zone=str(r["schedule_zone"]),
+            )
             for r in rows
         ]
 

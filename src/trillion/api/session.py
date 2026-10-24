@@ -1003,6 +1003,7 @@ class Session:
                 title=n.title,
                 text=n.text,
                 due_ms=n.due_ms,
+                due=n.due,
                 late=n.late,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:

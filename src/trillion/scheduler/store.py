@@ -69,6 +69,8 @@ class Result:
     run: Run
     title: str
     kind: Kind
+    # The schedule's zone, so its times are told as the user set them.
+    zone: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)

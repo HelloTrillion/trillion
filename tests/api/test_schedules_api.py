@@ -4,12 +4,11 @@
 
 from __future__ import annotations
 
-import time
 from functools import partial
 from typing import Any
 
 from tests.api.test_server import App, home, make  # noqa: F401
-from tests.scheduler.conftest import ms, schedule
+from tests.scheduler.conftest import FakeClock, ms, schedule
 from trillion.scheduler.when import Repeat
 
 PATH = "/api/schedules"
@@ -20,14 +19,14 @@ def put(app: App, **kw: Any) -> None:
     app.client.portal.call(app.rt.schedules.create, schedule(**kw))
 
 
-def checked(app: App) -> dict[str, Any]:
-    """The state, once the scheduler's first check (run as the server starts) is done."""
-    deadline = time.monotonic() + 10
-    while True:
-        body: dict[str, Any] = app.client.get(PATH, headers=app.auth).json()
-        if body["checked_ms"] is not None or time.monotonic() > deadline:
-            return body
-        time.sleep(0.02)
+def checked(app: App, now: int) -> dict[str, Any]:
+    """The state after one check at `now`, driven here: the server's own loop is stopped."""
+    assert app.rt.scheduler is not None and app.client.portal is not None
+    app.client.portal.call(app.rt.stop_background)
+    app.rt.clock = FakeClock(now)
+    app.client.portal.call(app.rt.scheduler.tick)
+    body: dict[str, Any] = app.client.get(PATH, headers=app.auth).json()
+    return body
 
 
 def test_it_needs_the_session_token(make: Any) -> None:
@@ -46,13 +45,14 @@ def test_it_lists_what_is_coming_up_and_when_it_last_checked(make: Any) -> None:
         kind="ask",
         title="Urgent email",
     )
-    body = checked(app)
+    now = ms("2099-10-24T12:00")
+    body = checked(app, now)
     (row,) = body["active"]
     assert row["title"] == "Urgent email" and row["kind"] == "ask"
     assert row["when"] == "Every weekday at 9:00 am" and row["repeat"] == "every weekday"
     assert row["next"] == "Mon 26 Oct, 9:00 am" and row["last"] is None
     assert body["recent"] == [] and body["tick_s"] == 15.0
-    assert body["checked_ms"] is not None and body["now_ms"] >= body["checked_ms"]
+    assert body["checked_ms"] == now and body["now_ms"] == now
 
 
 def test_recent_results_carry_their_status_and_due_time(make: Any) -> None:
@@ -73,6 +73,8 @@ def test_recent_results_carry_their_status_and_due_time(make: Any) -> None:
     (r,) = body["recent"]
     assert r["status"] == "missed" and r["due_ms"] == due and r["title"] == "Call the dentist"
     assert r["detail"] == "not running" and r["kind"] == "reminder"
+    # In the schedule's own zone, whatever the browser's.
+    assert r["due"] == "Sat 24 Oct, 4:00 pm"
 
 
 def test_cancel_removes_it_and_an_unknown_one_is_not_found(make: Any) -> None:

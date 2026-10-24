@@ -468,3 +468,14 @@ async def test_after_stop_over_a_notice_the_next_held_one_is_shown_not_spoken(
     await idle(session)
     assert [m["text"] for m in page.all("reply.sentence")] == ["One.", "Three."]
     await session.close()
+
+
+async def test_the_notice_event_carries_its_due_time_in_words(rt: Runtime) -> None:
+    assert rt.schedules is not None
+    await rt.schedules.create(schedule(title="Stretch"))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await notice(rt)
+    (shown,) = page.all("notice")
+    assert shown["due"] == "4:00 pm" and shown["due_ms"] == DUE
+    await session.close()

@@ -32,6 +32,8 @@ export type Entry =
       /** Her words. Null for missed and failed: those are shown, never spoken. */
       readonly text: string | null;
       readonly dueMs: number;
+      /** When it was due, in words, in the schedule's own zone: "4:00 pm", "Fri 4:00 pm". */
+      readonly due: string;
       readonly late: boolean;
     };
 
@@ -189,13 +191,16 @@ function scheduledOf(msg: ServerMsg): Entry | null {
   if (!what || !id) return null;
   // Only she writes words; a missed or failed one never carries any (D7).
   const words = what === 'reminder' || what === 'ask' ? str(msg['text']) : '';
+  const dueMs = typeof msg['due_ms'] === 'number' ? msg['due_ms'] : 0;
   return {
     kind: 'scheduled',
     id,
     what,
     title: str(msg['title']),
     text: words || null,
-    dueMs: typeof msg['due_ms'] === 'number' ? msg['due_ms'] : 0,
+    dueMs,
+    // The core's words, in the zone the user set it in. This browser's clock only if none.
+    due: str(msg['due']) || localClock(dueMs),
     late: msg['late'] === true,
   };
 }
@@ -210,15 +215,20 @@ export function busyOf(orb: Orb, notice: boolean): boolean {
   return orb === 'processing' || (orb === 'speaking' && !notice);
 }
 
-/** "due 4:00 pm", in this browser's time unless a zone is given. */
-export function dueLabel(ms: number, timeZone?: string): string {
+/** "4:00 pm" by this browser's clock: only for a notice the core gave no words for. */
+export function localClock(ms: number, timeZone?: string): string {
   const time = new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...(timeZone ? { timeZone } : {}) });
-  return `due ${time.replace(/[\u00a0\u202f]/g, ' ').toLowerCase()}`;
+  return time.replace(/[\u00a0\u202f]/g, ' ').toLowerCase();
+}
+
+/** "due Fri 4:00 pm". */
+export function dueLabel(due: string): string {
+  return `due ${due}`;
 }
 
 /** The quiet line for a reminder or timed ask that has no words of hers. */
-export function quietLine(e: { readonly what: NoticeKind; readonly title: string; readonly dueMs: number }, timeZone?: string): string {
-  const due = dueLabel(e.dueMs, timeZone);
+export function quietLine(e: { readonly what: NoticeKind; readonly title: string; readonly due: string }): string {
+  const due = dueLabel(e.due);
   return e.what === 'missed' ? `Missed: ${e.title} (${due})` : `Didn't finish: ${e.title} (${due})`;
 }
 
@@ -441,6 +451,10 @@ function step(view: View, msg: ServerMsg): View {
     }
     case 'error': {
       const code = str(msg['code']);
+      if (code !== 'busy') {
+        // Any error but busy ends what was sent: a later busy must not pull it back.
+        view = { ...view, pending: null };
+      }
       // Her own sentence for a leg that is down (VOI-14, SUR-8), when the core sends one.
       const sentence = str(msg['sentence']);
       if (code === 'unauthenticated') return { ...view, link: 'unauthenticated', busy: false };

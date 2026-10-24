@@ -9,6 +9,7 @@ import pytest
 from trillion.scheduler.when import (
     Repeat,
     WhenError,
+    due_words,
     next_after,
     parse_local,
     read_repeat,
@@ -144,3 +145,13 @@ def test_a_day_with_no_real_minute_moves_to_the_next_day() -> None:
     apia = "Pacific/Apia"
     found = next_after("2011-12-29T09:00", DAILY, apia, ms("2011-12-29T09:00", apia))
     assert found == ms("2011-12-31T09:00", apia)
+
+
+def test_a_due_time_names_its_day_unless_it_is_today() -> None:
+    due = ms("2026-10-24T16:00")
+    assert due_words(due, NY, ms("2026-10-24T16:03")) == "4:00 pm"
+    # Overnight: late, and not today any more.
+    assert due_words(due, NY, ms("2026-10-25T01:00")) == "Sat 4:00 pm"
+    assert due_words(due, NY, ms("2026-11-05T09:00")) == "Sat 24 Oct, 4:00 pm"
+    # The schedule's own zone, not the computer's: 4 pm in New York is 10 pm in Paris.
+    assert due_words(due, "Europe/Paris", ms("2026-10-24T16:03")) == "10:00 pm"

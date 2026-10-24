@@ -346,7 +346,7 @@ function renderEntry(e: Entry): HTMLElement {
       const box = el('div', 'msg assistant');
       box.append(...formatted(e.text));
       // Late: when it was due, so "now" in her words is not taken for now.
-      if (e.late) box.append(el('span', 'mark', dueLabel(e.dueMs)));
+      if (e.late) box.append(el('span', 'mark', dueLabel(e.due)));
       return box;
     }
     case 'card': {
