@@ -80,6 +80,10 @@ def parse(raw: bytes | str) -> Heard | None:
         msg = json.loads(raw)
     except ValueError as e:
         raise VoiceError("bad_response", type(e).__name__) from e
+    if isinstance(msg, dict) and msg.get("type") == "Error":
+        # Deepgram closes after this; it must read as a failed leg, not a quiet end.
+        # Never the description: it could echo what was said.
+        raise VoiceError("provider_unavailable", str(msg.get("code") or "error"))
     if not isinstance(msg, dict) or msg.get("type") != "TurnInfo":
         return None
     event = msg.get("event")

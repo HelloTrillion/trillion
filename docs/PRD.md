@@ -801,7 +801,7 @@ The noise is Ashima simplex (public domain), 3 octaves. The third octave is scal
 
 | Constant | Value | Why |
 |---|---|---|
-| STT | Deepgram Flux (`flux-general-multi`), 16 kHz linear16, 80 ms chunks, `eot_threshold=0.7`, `eager_eot_threshold=0.5` | — |
+| STT | Deepgram Flux (`flux-general-multi`), 16 kHz linear16, 80 ms chunks, `eot_threshold=0.7`, `eager_eot_threshold=0.5`, `eot_timeout_ms=5000` | — |
 | VAD silence threshold | -40 dBFS | — |
 | Silence to end of turn (slow path) | 1.0s | — |
 | Silence after a final transcript (fast path) | 0.4s | removes most of the perceived lag |

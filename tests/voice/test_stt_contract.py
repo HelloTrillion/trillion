@@ -219,8 +219,9 @@ async def test_deepgram_asks_for_what_the_page_sends(fake: Fake) -> None:
     assert sum(len(s) for s in sent if isinstance(s, bytes)) == len(tone(1.0))
     assert json.loads(sent[-1]) == {"type": "CloseStream"}
     # An unknown language falls back to the first, rather than reaching the URL.
-    await _deepgram(Fake(root=fake.root)).open(choice="en&keywords=x")
-    assert "keywords" not in fake.urls[-1]
+    other = Fake(root=fake.root)
+    await _deepgram(other).open(choice="en&keywords=x")
+    assert "keywords" not in other.urls[-1] and "model=flux-general-en" in other.urls[-1]
 
 
 @pytest.mark.parametrize(
@@ -359,6 +360,7 @@ def test_deepgram_turn_events_become_turn_signals() -> None:
     assert deepgram.parse(turn_info("EndOfTurn", "so I said no")) == Heard(
         text="so I said no", final=True, turn="done"
     )
+    assert deepgram.parse(turn_info("EndOfTurn", "")) == Heard(text="", final=True, turn="done")
     assert deepgram.parse(turn_info("StartOfTurn", "")) is None
     assert deepgram.parse(json.dumps({"type": "Connected"})) is None
 
@@ -367,3 +369,11 @@ async def test_deepgram_sends_audio_in_80ms_chunks(fake: Fake) -> None:
     await listen(_deepgram(fake), "en")
     chunks = [s for s in fake.socket.sent if isinstance(s, bytes)]
     assert chunks and all(len(c) == 2560 for c in chunks[:-1]) and len(chunks[-1]) <= 2560
+
+
+def test_deepgram_error_message_is_a_failure_with_only_its_code() -> None:
+    # The description could echo what was said, so only the code is kept.
+    raw = json.dumps({"type": "Error", "code": "INTERNAL", "description": "secret words"})
+    with pytest.raises(VoiceError) as e:
+        deepgram.parse(raw)
+    assert e.value.kind == "provider_unavailable" and "secret" not in str(e.value)
