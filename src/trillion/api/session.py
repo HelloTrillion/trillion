@@ -772,7 +772,7 @@ class Session:
         last = self._timeline
         if last is not None and (offset := last.offset_s()) is not None:
             # Numbers only: how far her reports were off the recognizer's clock.
-            logger.info(
+            logger.debug(
                 "her playback in session %s was heard %+.2fs from its reports (%d words)",
                 self.id,
                 offset,
