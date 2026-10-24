@@ -12,9 +12,10 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from functools import cache
 from typing import Any, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from trillion import zones
 
 Every = Literal["day", "weekday", "week", "month"]
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -87,18 +88,13 @@ def zone_of(name: str) -> ZoneInfo:
     wanted = name.strip()
     # A case-insensitive file system accepts 'america/new_york'; Linux does not.
     # Only the names zoneinfo lists count, so every system agrees.
-    key = _zone_keys().get(wanted.lower())
+    key = zones.names().get(wanted.lower())
     if key is None:
         raise WhenError(f"{name!r} is not a timezone this computer knows")
     try:
         return ZoneInfo(key)
     except (ZoneInfoNotFoundError, ValueError, OSError):
         raise WhenError(f"{name!r} is not a timezone this computer knows") from None
-
-
-@cache
-def _zone_keys() -> dict[str, str]:
-    return {k.lower(): k for k in available_timezones()}
 
 
 def known(name: str) -> bool:

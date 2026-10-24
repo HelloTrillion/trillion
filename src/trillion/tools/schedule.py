@@ -2,7 +2,8 @@
 
 `reminder_set` runs at once: it only delivers words she wrote, and is cheap to
 cancel. It is refused after she has read outside content in the turn, so a page or
-an email can't plant a reminder that speaks in her voice. `ask_schedule` is a
+an email can't plant a reminder that speaks in her voice; `schedule_cancel` is
+refused then too, so one can't undo what the user set. `ask_schedule` is a
 standing instruction that will run on its own, so it shows a card (D6).
 
 `when` is the user's local date and time. She works it out from the time in her
@@ -76,6 +77,11 @@ _REPEAT: dict[str, Any] = {
 _FROM_READING = (
     "a reminder can't be set after reading a page, a file or a message in this turn; "
     "tell the user what it would be for, then set it again"
+)
+_CANCEL_FROM_READING = (
+    "a reminder or timed ask can't be cancelled after reading a page, a file or a message"
+    " in this turn; tell the user which one it is: they can cancel it in Settings →"
+    " Reminders, or ask you again"
 )
 
 
@@ -326,6 +332,9 @@ class ScheduleCancel(_ScheduleTool):
         store = self._for(ctx)
         if store is None:
             return _refused("reminders are not available", "unavailable")
+        if ctx.read_outside:
+            # What she read must not undo what the user set, an approved timed ask least.
+            return _refused(_CANCEL_FROM_READING, "from_reading")
         if not await store.cancel(ctx.owner_id, str(args["id"]), self._clock()):
             return _refused("no such reminder or timed ask", "not_found")
         return ToolResult(ok=True, content=f"cancelled {args['id']}", effect="confirmed")

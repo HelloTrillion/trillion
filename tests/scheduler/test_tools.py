@@ -164,3 +164,13 @@ def test_no_schedule_tool_is_offered_to_a_run_nobody_watches() -> None:
     names = {"reminder_set", "ask_schedule", "schedule_list", "schedule_cancel"}
     assert names <= {d.name for d in registry.definitions()}
     assert not names & {d.name for d in registry.unattended().definitions()}
+
+
+async def test_cancel_is_refused_after_reading_outside_content(tools: Tools) -> None:
+    # An email must not talk her into cancelling a timed ask the user approved.
+    await tools.reminder.execute(REMIND, CTX)
+    (s,) = await tools.store.active("local")
+    done = await tools.cancel.execute({"id": s.id}, dataclasses.replace(CTX, read_outside=True))
+    assert not done.ok and done.error_kind == "from_reading"
+    assert "Settings" in done.content
+    assert [x.id for x in await tools.store.active("local")] == [s.id]

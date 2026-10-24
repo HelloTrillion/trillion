@@ -149,7 +149,9 @@ def _now_ms() -> int:
 
 def local_zone(env: Mapping[str, str] | None = None) -> str | None:
     """This computer's timezone as an IANA name, when it can be told: TZ, then where
-    /etc/localtime points. None where neither says (Windows keeps its own names)."""
+    /etc/localtime points. None where neither says: Windows keeps its own names, and
+    the standard library has no map from them, so there the user sets one in Settings
+    → Names and tone, which is what a refused reminder tells her to ask for."""
     names = [(os.environ if env is None else env).get("TZ", "").removeprefix(":")]
     with contextlib.suppress(OSError):
         target = os.path.realpath("/etc/localtime")
