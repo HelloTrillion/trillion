@@ -91,11 +91,6 @@ class Speaker:
         """Her voice failed: from there on the reply was read, not heard (VOI-14)."""
         return self._down
 
-    @property
-    def all_heard(self) -> bool:
-        """Every sentence sent has started playing: there is nothing unheard to cut."""
-        return self._heard_seq >= self._count
-
     async def feed(self, text: str) -> None:
         self._written += text
         for sentence in self._splitter.feed(text):

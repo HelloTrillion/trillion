@@ -141,6 +141,7 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 
 - Her last spoken reply, already saved, is trimmed to what was heard when the user cuts in (a barge, an overlap that interrupts, or Stop) while it still plays.
 - Only while the model has never been sent it: anything saved after it, or a draft that read it, blocks the trim.
+- **Cut in during her last sentence** (*as built after live testing*): every sentence having started playing is not the reply heard to the end. The last one is still playing, so it is kept and marked like any other ("…" and `INTERRUPTED`). Only `playback.ended` means she was heard to the end, and it lets the reply go. A live reply of one short sentence and one long one was otherwise saved whole once its second sentence started.
 - The store amends only the conversation's last assistant row (`amend_tail`), the documented exception to append-only (`scripts/check_one_writer.py`).
 - The provider's raw turn is dropped with it, so the next request misses the prompt cache once.
 

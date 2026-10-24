@@ -16,10 +16,11 @@ from tests.api.test_session_notices import voiced
 from tests.brain.fakes import say, use
 from tests.voice.audio import room, tone
 from tests.voice.fakes import FakeSTT
-from trillion.api.runtime import Runtime, open_runtime
+from tests.voice.test_speaker import FakeVoice
+from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
 from trillion.api.session import Session
 from trillion.brain.loop import INTERRUPTED
-from trillion.brain.types import TextBlock
+from trillion.brain.types import TextBlock, TextDelta
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import (
     JSON,
@@ -331,11 +332,25 @@ async def test_hearing_that_fails_while_deciding_lets_her_carry_on(rt: Runtime) 
 # ── Her sound always stops when she is stopped (review of VOI-9) ────────
 
 
-async def test_an_interruption_once_all_of_her_reply_was_heard_still_stops_her(
-    rt: Runtime,
-) -> None:
+async def test_an_interruption_during_her_last_sentence_marks_it(rt: Runtime) -> None:
+    """Every sentence has started, but the last is still playing: she was cut off, and
+    `interrupted` stops her on the page."""
     stt, page, session = await answered(rt)
     await played(session, page, 1, 2, 3)
+    await session.handle({"type": "overlap"})
+    stt.stream.say("no, the other one", final=False)
+    await speak(session, tone(0.2))
+    await until(lambda: session._listener is not None)
+    assert page.all("interrupted")[-1]["kept"] == ANSWER + "…"
+    history = await rt.conversations.history(session.id, "local")
+    assert history[-1][1].blocks == (TextBlock(text=ANSWER + "…" + INTERRUPTED),)
+    await session.close()
+
+
+async def test_an_interruption_with_nothing_to_trim_still_stops_her(rt: Runtime) -> None:
+    stt, page, session = await answered(rt)
+    await played(session, page, 1)
+    await session.handle({"type": "speech.mute", "muted": True})  # from here she is read
     await session.handle({"type": "overlap"})
     stt.stream.say("no, the other one", final=False)
     await speak(session, tone(0.2))
@@ -389,3 +404,135 @@ async def test_closing_while_listening_connects_lets_it_go(rt: Runtime) -> None:
     stt.opening.set()
     await opening
     assert stt.stream.closed
+
+
+# ── Talked over mid-reply: her saved reply ends at the sentence being heard (D8) ──
+
+TWO_HEARD = "First thing to know. Second thing to know.…"
+# As a live reply was: a short first sentence, then one long one that is still playing.
+LONG_LAST = (
+    "Tea began in China. It spread along the trade routes, by sea and by land, to Japan,"
+    " to India and at last to Europe, where it became a daily habit."
+)
+
+
+class Writing(Gated):
+    """Writes `ANSWER` and never finishes: the reply is still streaming."""
+
+    async def stream(self, **kw: Any) -> AsyncIterator[Any]:
+        self.running += 1
+        yield TextDelta(text=ANSWER)
+        await asyncio.sleep(30)
+
+
+class HeldVoice(FakeVoice):
+    """Her voice, made only once the test lets it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def synthesize(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
+        await self.gate.wait()
+        async for chunk in super().synthesize(text, voice=voice):
+            yield chunk
+
+
+def held_voice(rt: Runtime) -> HeldVoice:
+    tts = HeldVoice()
+    rt.tts, rt.speech = tts, SpeechSettings(kind="elevenlabs", voice="v1")
+    return tts
+
+
+async def cut_in_at_two(stt: FakeSTT, page: Page, session: Session) -> None:
+    """Sentence 1 is heard, they start talking over her, sentence 2 starts playing
+    while that is decided, then words that stop her."""
+    await played(session, page, 1)
+    await session.handle({"type": "overlap"})
+    assert session._overlap is not None
+    await played(session, page, 2)
+    stt.stream.say("wait stop I want something else", final=False)
+    await speak(session, tone(0.2))
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None)
+
+
+async def kept(rt: Runtime, page: Page, session: Session, heard: str) -> None:
+    assert page.all("interrupted")[-1].get("kept") == heard
+    history = await rt.conversations.history(session.id, "local")
+    assert history[-1][1].blocks == (TextBlock(text=heard + INTERRUPTED),)
+    assert session._history[-1].blocks == history[-1][1].blocks
+
+
+async def test_cut_in_while_she_still_writes_keeps_what_was_heard(rt: Runtime) -> None:
+    stt, _ = judging(rt)
+    rt.provider = Writing()
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("reply.sentence", 2)  # the third waits for what follows it
+    await cut_in_at_two(stt, page, session)
+    await kept(rt, page, session, TWO_HEARD)
+    await session.close()
+
+
+async def test_cut_in_while_her_last_words_are_voiced_keeps_what_was_heard(
+    rt: Runtime,
+) -> None:
+    stt, _ = judging(rt, say(ANSWER), say("Of course."))
+    held_voice(rt)
+    page, session = await asked(rt, stt)
+    await page.until("reply.sentence", 3)
+    await until(lambda: session._tail is not None)  # written; her voice is being made
+    await cut_in_at_two(stt, page, session)
+    await kept(rt, page, session, TWO_HEARD)
+    await session.close()
+
+
+async def test_cut_in_as_her_turn_ends_while_deciding_keeps_what_was_heard(
+    rt: Runtime,
+) -> None:
+    stt, _ = judging(rt, say(ANSWER), say("Of course."))
+    tts = held_voice(rt)
+    page, session = await asked(rt, stt)
+    await page.until("reply.sentence", 3)
+    await until(lambda: session._tail is not None)
+    await played(session, page, 1)
+    await session.handle({"type": "overlap"})
+    tts.gate.set()  # her voice is made: the turn ends while they are heard
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 2)
+    stt.stream.say("wait stop I want something else", final=False)
+    await speak(session, tone(0.2))
+    await page.until("interrupted")
+    await kept(rt, page, session, TWO_HEARD)
+    await session.close()
+
+
+async def test_cut_in_during_her_last_sentence_after_the_turn_still_marks_it(
+    rt: Runtime,
+) -> None:
+    """Every sentence has started playing, but the last is still being heard: she was
+    cut off, so the reply is marked, as one cut off mid-stream is (D8)."""
+    stt, _ = judging(rt, say(LONG_LAST), say("Of course."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    assert len(page.all("reply.sentence")) == 2
+    await cut_in_at_two(stt, page, session)
+    await kept(rt, page, session, LONG_LAST + "…")
+    await session.close()
+
+
+async def test_cut_in_during_her_last_sentence_while_it_is_voiced_still_marks_it(
+    rt: Runtime,
+) -> None:
+    stt, _ = judging(rt, say(LONG_LAST), say("Of course."))
+    held_voice(rt)
+    page, session = await asked(rt, stt)
+    await page.until("reply.sentence", 2)
+    await until(lambda: session._tail is not None)
+    await cut_in_at_two(stt, page, session)
+    await kept(rt, page, session, LONG_LAST + "…")
+    await session.close()

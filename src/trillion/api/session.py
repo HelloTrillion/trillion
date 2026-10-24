@@ -1280,9 +1280,11 @@ class Session:
         History is never changed once the model has been sent it. Her last spoken reply
         is the one exception: while it is still the conversation's last message, with
         no draft that has read it, it is cut to the sentences heard, as the loop cuts a
-        reply interrupted mid-stream. Nothing changes if all of it was heard, or if her
-        voice failed or was muted (then it was read). Returns what was kept, and with
-        `tell` sends it to the page; None when nothing changed."""
+        reply interrupted mid-stream. Every sentence having started is not all of it
+        heard: the last is still playing, and is kept and marked like the others. Only
+        `playback.ended` says she was heard to the end, and it lets the reply go.
+        Nothing changes if her voice failed or was muted (then it was read). Returns
+        what was kept, and with `tell` sends it to the page; None when nothing changed."""
         tail, self._tail = self._tail, None
         if tail is None:
             return None
@@ -1291,7 +1293,6 @@ class Session:
             self._ids[-1:] != [message_id]
             or self._draft is not None
             or self._using is not None
-            or speaker.all_heard
             or speaker.failed
             or self._muted
         ):

@@ -183,9 +183,6 @@ async def test_what_was_heard_keeps_her_formatting() -> None:
     await s.feed("- Then we leave the house. And")
     s.played(2)
     assert s.heard_text() == "Here is the plan for today.\n\n- First we pack all the bags."
-    assert not s.all_heard
-    s.played(3)
-    assert s.all_heard
 
 
 async def test_a_failed_voice_is_told_apart_from_a_stopped_one() -> None:
@@ -204,4 +201,4 @@ async def test_what_was_heard_is_still_known_once_she_has_finished() -> None:
     await s.feed("First thing to know. Second thing to know.")
     await s.finish()
     s.played(1)
-    assert s.heard_text() == "First thing to know." and not s.all_heard
+    assert s.heard_text() == "First thing to know."

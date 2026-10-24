@@ -354,15 +354,16 @@ async def test_a_late_barge_before_anything_was_heard_keeps_only_the_mark(
     await session.close()
 
 
-async def test_a_late_barge_once_everything_was_heard_changes_nothing(rt: Runtime) -> None:
+async def test_a_barge_during_her_last_sentence_still_marks_it(rt: Runtime) -> None:
+    """Every sentence has started, but the last is still playing: she was cut off."""
     page = Page(rt)
     session = await answered(rt, page)
     await played(session, page, 1, 2, 3)
     await session.handle({"type": "barge"})
 
-    assert not page.all("interrupted")
+    assert page.all("interrupted")[-1]["kept"] == ANSWER + "…"
     said = await last_said(rt, session)
-    assert said[-1].blocks == (TextBlock(text=ANSWER),)
+    assert said[-1].blocks == (TextBlock(text=ANSWER + "…" + INTERRUPTED),)
     await session.close()
 
 
