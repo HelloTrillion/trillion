@@ -59,6 +59,15 @@ NOT_DECISIONS: dict[str, str] = {
     "pending_action_args.args_json": "cleared for retention once settled (SPN-9)",
     "pending_action_args.cleared_at": "when it was cleared",
     "turn_timings.played_ms": "a measurement (ONB-11)",
+    # History is otherwise only appended to. The one exception, in
+    # SqliteConversationStore.amend_tail: her last spoken reply trimmed to what was heard,
+    # and only while it is still the conversation's last message, so the model has
+    # never been sent it (VOI-9, D8). The raw provider turn goes with it.
+    **{
+        f"messages.{c}": "her last spoken reply, trimmed to what was heard before the model"
+        " was sent it (VOI-9, D8): it approves nothing"
+        for c in ("blocks_json", "raw_json")
+    },
     "preferences.value_json": "a setting the user chose",
     "memories.file_missing": "whether the file is on disk: read from the disk, not decided",
     **{

@@ -167,7 +167,7 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | VOI-6 | **TTS sanitizer**: strip markdown, code, links, tables and emoji. A paragraph break becomes a pause. | P0 |
 | VOI-7 | **Turn-close detection**: when the user signs off ("okay, thanks"), she stays silent and does not take the last word. | P0 |
 | VOI-8 | **Hot mic**: after she speaks, the mic reopens for 3.0s (the orb turns gold). | P0 |
-| VOI-9 | **Barge-in**: tap to interrupt (P0). Voice barge-in using echo-cancelled VAD while she is speaking (P1). A partial reply is saved and marked `[interrupted]`. | P0 / P1 |
+| VOI-9 | **Barge-in**: tap to interrupt (P0). Voice barge-in using echo-cancelled VAD while she is speaking (P1). A partial reply is saved and marked `[interrupted]`; a spoken one is kept up to the sentence being heard. History is only appended to, and a reply is never changed after the model has been sent it; the one exception is trimming her last spoken reply to what was heard, before anything else is sent. | P0 / P1 |
 | VOI-10 | **Push-to-talk and the hot mic are the Shell's way in.** A click or a global hotkey starts capture; after she replies the mic reopens for 3.0s (VOI-8). No wake word is required to use Trillion. | P0 |
 | VOI-10a | **Wake word**, "Hello Trillion" for every install whatever the agent is called, via openWakeWord and the bundled model. Muted while she speaks, and switchable off. The wake phrase is a **separate setting from `agent_name`** (`wake.model` + `wake.phrase`); nothing in the core may assume they match. | P1 |
 | VOI-10b | **Custom wake words**: openWakeWord models trained on synthetic speech for "Hey {agent_name}", generated during onboarding. Opt-in transcript-based name spotting as a fallback. | P2 |

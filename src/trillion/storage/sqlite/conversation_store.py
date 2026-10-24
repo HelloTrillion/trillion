@@ -144,6 +144,28 @@ class SqliteConversationStore:
             # RETURNING's order is not promised; ids rise in the order the rows went in.
             return sorted(int(r[0]) for r in await cur.fetchall())
 
+    async def amend_tail(
+        self, conversation_id: str, owner_id: str, message_id: int, msg: Msg
+    ) -> bool:
+        """Replace a conversation's last message, and only its last; returns whether it
+        did. The one change history allows: her last spoken reply trimmed to what was
+        heard, before the model has been sent it (VOI-9, D8). Anything saved after it,
+        in this conversation, makes this a no-op."""
+        cur = await self._conn.execute(
+            "UPDATE messages SET blocks_json = ?, raw_json = ?"
+            " WHERE id = ? AND conversation_id = ? AND owner_id = ? AND role = 'assistant'"
+            " AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ?)",
+            (
+                json.dumps([_dump(b) for b in msg.blocks], ensure_ascii=False),
+                _dump_raw(msg.raw),
+                message_id,
+                conversation_id,
+                owner_id,
+                conversation_id,
+            ),
+        )
+        return cur.rowcount == 1
+
     async def history(self, conversation_id: str, owner_id: str) -> list[tuple[Kind, Msg]]:
         async with self._conn.execute(
             "SELECT role, kind, blocks_json, raw_json FROM messages"

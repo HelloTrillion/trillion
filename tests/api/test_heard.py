@@ -256,3 +256,155 @@ async def test_a_barge_while_her_last_words_are_still_being_voiced_keeps_the_usa
     (row,) = await rt.conversations.usage_since("local", 0)
     assert (row["input_tokens"], row["output_tokens"]) == (10, 5)
     await session.close()
+
+
+# ── A barge after she has written it all (D8) ────────────────────────────
+
+ANSWER = "First thing to know. Second thing to know. Third thing to know."
+
+
+async def answered(rt: Runtime, page: Page, *, slow: bool = False) -> Session:
+    """A spoken question, answered in full; with `slow`, her voice is still being made."""
+    hearing(rt)
+    rt.tts, rt.speech = FakeVoice(slow=slow), SpeechSettings(kind="elevenlabs", voice="v1")
+    rt.provider = ScriptedProvider(say(ANSWER))
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await page.until("reply.sentence", 3)
+    if slow:
+        await asyncio.sleep(0.05)  # written and saved; the voice is still being made
+        assert session._task is not None
+    else:
+        await page.until("turn.complete")
+        await idle(session)
+    return session
+
+
+async def played(session: Session, page: Page, *seqs: int) -> None:
+    turn = page.all("reply.sentence")[0]["turn"]
+    for seq in seqs:
+        await session.handle({"type": "playback.sentence", "turn_id": turn, "seq": seq})
+
+
+async def test_a_barge_while_her_last_words_are_voiced_keeps_what_was_heard(
+    rt: Runtime,
+) -> None:
+    page = Page(rt)
+    session = await answered(rt, page, slow=True)
+    await played(session, page, 1)
+    await session.handle({"type": "barge"})
+
+    (stopped,) = page.all("interrupted")
+    assert stopped["kept"] == "First thing to know.…"
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text="First thing to know.…" + INTERRUPTED),)
+    assert session._history[-1].blocks == said[-1].blocks
+    await session.close()
+
+
+async def test_a_barge_after_the_turn_while_she_still_plays_keeps_what_was_heard(
+    rt: Runtime,
+) -> None:
+    page = Page(rt)
+    session = await answered(rt, page)
+    await played(session, page, 1, 2)
+    await session.handle({"type": "barge"})
+
+    assert page.all("interrupted")[-1]["kept"] == "First thing to know. Second thing to know.…"
+    expected = "First thing to know. Second thing to know.…" + INTERRUPTED
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=expected),)
+    assert said[-1].raw is None  # no longer what the provider returned
+    assert session._history[-1].blocks == said[-1].blocks
+    assert page.all("mic.start")  # and she listens
+    await session.close()
+
+    # A reload shows what was kept.
+    again = Page(rt)
+    resumed = await Session.start(rt, again.send, session.id)
+    assert again.all("history")[0]["messages"][-1]["text"] == expected
+    await resumed.close()
+
+
+async def test_a_stop_after_the_turn_while_she_still_plays_keeps_what_was_heard(
+    rt: Runtime,
+) -> None:
+    page = Page(rt)
+    session = await answered(rt, page)
+    await played(session, page, 1)
+    await session.handle({"type": "interrupt"})
+
+    assert page.all("interrupted")[-1]["kept"] == "First thing to know.…"
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text="First thing to know.…" + INTERRUPTED),)
+    await session.close()
+
+
+async def test_a_late_barge_before_anything_was_heard_keeps_only_the_mark(
+    rt: Runtime,
+) -> None:
+    page = Page(rt)
+    session = await answered(rt, page)
+    await session.handle({"type": "barge"})
+
+    assert page.all("interrupted")[-1]["kept"] == ""
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=INTERRUPTED.strip()),)
+    await session.close()
+
+
+async def test_a_late_barge_once_everything_was_heard_changes_nothing(rt: Runtime) -> None:
+    page = Page(rt)
+    session = await answered(rt, page)
+    await played(session, page, 1, 2, 3)
+    await session.handle({"type": "barge"})
+
+    assert not page.all("interrupted")
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=ANSWER),)
+    await session.close()
+
+
+async def test_once_she_has_been_heard_to_the_end_nothing_is_cut(rt: Runtime) -> None:
+    page = Page(rt)
+    session = await answered(rt, page)
+    await played(session, page, 1)
+    turn = page.all("reply.sentence")[0]["turn"]
+    await session.handle({"type": "playback.ended", "turn_id": turn})
+    await session.handle({"type": "barge"})
+
+    assert not page.all("interrupted")
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=ANSWER),)
+    await session.close()
+
+
+async def test_a_late_barge_changes_nothing_once_something_was_saved_after_her_reply(
+    rt: Runtime,
+) -> None:
+    page = Page(rt)
+    session = await answered(rt, page)
+    await played(session, page, 1)
+    # A notice arrives after it: the reply is no longer the conversation's last word.
+    await session._save_all("assistant", [Msg(role="assistant", blocks=(TextBlock(text="Hi."),))])
+    await session.handle({"type": "barge"})
+
+    assert not page.all("interrupted")
+    said = await last_said(rt, session)
+    assert said[-2].blocks == (TextBlock(text=ANSWER),)
+    await session.close()
+
+
+async def test_the_store_only_amends_a_conversations_last_message(rt: Runtime) -> None:
+    store = rt.conversations
+    await store.create("c1", "local", 1)
+    await store.create("c2", "local", 1)
+    first = await store.append("c1", "local", "assistant", Msg(role="assistant", blocks=()), 1)
+    last = await store.append("c1", "local", "assistant", Msg(role="assistant", blocks=()), 2)
+    await store.append("c2", "local", "assistant", Msg(role="assistant", blocks=()), 3)
+    short = Msg(role="assistant", blocks=(TextBlock(text="cut"),))
+
+    assert not await store.amend_tail("c1", "local", first, short)
+    assert not await store.amend_tail("c2", "local", last, short)  # not that conversation's
+    assert await store.amend_tail("c1", "local", last, short)
+    assert [m.blocks for _, m in await store.history("c1", "local")] == [(), short.blocks]

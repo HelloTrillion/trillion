@@ -197,3 +197,11 @@ async def test_a_failed_voice_is_told_apart_from_a_stopped_one() -> None:
     await stopped.feed("First of all we go home. ")
     await stopped.stop()
     assert not stopped.failed
+
+
+async def test_what_was_heard_is_still_known_once_she_has_finished() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("First thing to know. Second thing to know.")
+    await s.finish()
+    s.played(1)
+    assert s.heard_text() == "First thing to know." and not s.all_heard

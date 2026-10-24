@@ -33,6 +33,7 @@ from trillion.brain.loop import (
     ToolEnded,
     ToolStarted,
     cut,
+    kept_of,
     run_turn,
     tool_schemas,
 )
@@ -147,6 +148,10 @@ class Session:
         # The running turn's voice: the page reports to it each sentence it starts
         # playing, so an interrupted reply keeps what was heard (D8).
         self._speaker: Speaker | None = None
+        # Her last spoken reply, saved whole, while it may still be playing: its voice
+        # and its id in the store. A barge before the model has been sent it trims it
+        # to what was heard (D8). Gone once anything is saved or sent after it.
+        self._tail: tuple[Speaker, int] | None = None
         # The user just pressed Stop: notices that arrive straight after it are shown,
         # not spoken. Cleared at the first rest after it (VOI-9).
         self._stopped = False
@@ -254,6 +259,7 @@ class Session:
             del self._rt.by_conversation[self.id]
         await self._stop_listening()
         self._closed = True
+        self._tail = None
         task = self._task
         if task is not None:
             task.cancel()
@@ -292,6 +298,8 @@ class Session:
                 # Its end comes to rest, which offers what is held and ends the quiet.
                 task.cancel()
             else:
+                # Her reply may still be playing: it keeps only what was heard.
+                await self.trim_tail()
                 # Nothing to stop, but what was held for the speech just dropped may come.
                 await self._offer()
                 self._stopped = False
@@ -326,6 +334,9 @@ class Session:
             turn_id = msg.get("turn_id")
             if isinstance(turn_id, int) and not isinstance(turn_id, bool):
                 self._played = turn_id
+            if self._tail is not None and self._tail[0].turn == turn_id:
+                # Heard to the end: there is nothing left to cut.
+                self._tail = None
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
             if self._via == "voice" and self._task is None and self._listener is None:
@@ -395,6 +406,9 @@ class Session:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
                     await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
+            else:
+                # Her turn is over but its sound may not be: keep only what was heard.
+                await self.trim_tail()
             await self._on_listen(NOTHING_AFTER_S)
 
     async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
@@ -694,6 +708,7 @@ class Session:
             self._voiced = turn
             speaker = Speaker(rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes)
         self._speaker = speaker
+        self._tail = None
         # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
         # read, and so was one with her voice off (D8).
         listened = speaker is not None and self._via == "voice"
@@ -710,6 +725,16 @@ class Session:
             kept = cut(said)
             return said
 
+        # The id of the last message the loop saved, when it is her reply.
+        reply_id: int | None = None
+
+        async def save(msg: Msg) -> None:
+            nonlocal reply_id
+            await self._save_from_loop(msg)
+            reply_id = self._ids[-1] if msg.role == "assistant" and self._ids else None
+
+        # Whether the loop has finished writing: after that, a barge trims what it saved.
+        written = False
         # A turn nobody started (a tap's answer) starts now.
         trace, self._arrived = self._arrived or self._starting("tap"), None
         trace.turn = turn
@@ -765,10 +790,11 @@ class Session:
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
-                save=self._save_from_loop,
+                save=save,
                 first=using.replay() if using is not None else None,
                 heard=heard if listened else None,
             )
+            written = True
             # The model failed: her one sentence for it, spoken if her voice still works
             # and shown either way (VOI-14). Authored, since there is nobody to compose it.
             down = (
@@ -789,6 +815,16 @@ class Session:
                     now_ms=rt.clock(),
                 )
             )
+            if (
+                listened
+                and speaker is not None
+                and done.stop == "end"
+                and reply_id is not None
+                and self._ids[-1:] == [reply_id]
+            ):
+                # Written and saved, but still to be heard: kept in case she is talked
+                # over while it plays.
+                self._tail = (speaker, reply_id)
             if speaker is not None:
                 if down is not None:
                     await speaker.pause()
@@ -819,6 +855,9 @@ class Session:
                 await speaker.stop()
                 # Stopped: nothing of it is still to be heard.
                 self._spoken = None
+            if written:
+                # Cut off while her last words were still being voiced.
+                kept = await self.trim_tail(tell=False)
             await self._keep_trace(trace, "interrupted", voiced=speaker is not None)
             # With `kept`, the page shows what was heard in place of what was written.
             await self._send("interrupted", **({"kept": kept} if kept is not None else {}))
@@ -865,6 +904,8 @@ class Session:
             or self._queued
         ):
             return
+        # The model is about to be sent her last reply: it can no longer be trimmed.
+        self._tail = None
         # A listener is only open on a spoken turn: the message is marked as spoken.
         built = await self._build_input("user", words, via="voice")
         history = [*self._history, built.msg]
@@ -984,14 +1025,58 @@ class Session:
         except Exception as e:
             logger.warning("timing not saved in session %s: %s", self.id, type(e).__name__)
 
+    async def trim_tail(self, *, tell: bool = True) -> str | None:
+        """Talked over after her reply was written: keep only what was heard (VOI-9, D8).
+
+        History is never changed once the model has been sent it. Her last spoken reply
+        is the one exception: while it is still the conversation's last message, with
+        no draft that has read it, it is cut to the sentences heard, as the loop cuts a
+        reply interrupted mid-stream. Nothing changes if all of it was heard, or if her
+        voice failed or was muted (then it was read). Returns what was kept, and with
+        `tell` sends it to the page; None when nothing changed."""
+        tail, self._tail = self._tail, None
+        if tail is None:
+            return None
+        speaker, message_id = tail
+        if (
+            self._ids[-1:] != [message_id]
+            or self._draft is not None
+            or self._using is not None
+            or speaker.all_heard
+            or speaker.failed
+            or self._muted
+        ):
+            return None
+        blocks = self._history[-1].blocks
+        if len(blocks) != 1 or not isinstance(blocks[0], TextBlock):
+            return None  # only a plain reply: a tool call is never cut
+        written, heard = blocks[0].text, speaker.heard_text()
+        if not written.startswith(heard):  # pragma: no cover - the speaker only saw this
+            return None
+        msg = Msg(role="assistant", blocks=(TextBlock(text=kept_of(written, heard)),))
+        try:
+            changed = await self._rt.conversations.amend_tail(self.id, OWNER, message_id, msg)
+        except Exception as e:
+            logger.warning("reply not trimmed in session %s: %s", self.id, type(e).__name__)
+            return None
+        if not changed:
+            return None
+        if message_id in self._ids:
+            self._history[self._ids.index(message_id)] = msg
+        kept = cut(heard)
+        if tell:
+            await self._send("interrupted", kept=kept)
+        return kept
+
     def _sentence_played(self, turn_id: object, seq: object) -> None:
         """The page started playing a sentence of a reply (VOI-15b, D8). Only the running
         turn's count: a report for one already over, or for a notice, is late news."""
-        speaker = self._speaker
-        if speaker is None or isinstance(turn_id, bool) or turn_id != speaker.turn:
+        if isinstance(turn_id, bool) or not isinstance(seq, int) or isinstance(seq, bool):
             return
-        if isinstance(seq, int) and not isinstance(seq, bool):
-            speaker.played(seq)
+        tail = self._tail[0] if self._tail is not None else None
+        for speaker in {self._speaker, tail}:
+            if speaker is not None and speaker.turn == turn_id:
+                speaker.played(seq)
 
     async def _audible(self, turn_id: object, in_ms: object) -> None:
         """The page scheduled the first sound of a turn's reply, to be heard this far ahead."""
@@ -1028,6 +1113,8 @@ class Session:
         )
 
     async def _save(self, kind: Kind, msg: Msg) -> None:
+        # Something after her last reply: it is no longer the one to trim.
+        self._tail = None
         self._history.append(msg)
         self._kinds.append(kind)
         message_id = await self._rt.conversations.append(
@@ -1249,6 +1336,7 @@ class Session:
         """Like `_save`, for several at once: in the history before the write, so a turn
         that starts meanwhile has them, and taken out again if the write fails. Only
         these: a message saved meanwhile stays, wherever they now are."""
+        self._tail = None
         self._history.extend(msgs)
         self._kinds.extend([kind] * len(msgs))
         try:

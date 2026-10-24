@@ -103,9 +103,12 @@ class Speaker:
 
     async def pause(self) -> None:
         """A tool is about to run: say what she has said so far rather than hold it."""
+        await self._flush()
+        self._written, self._at, self._ends = "", 0, {}
+
+    async def _flush(self) -> None:
         for sentence in self._splitter.flush():
             await self._say(sentence)
-        self._written, self._at, self._ends = "", 0, {}
 
     def played(self, seq: int) -> None:
         """The page started playing sentence `seq` (VOI-15b). Reports can come late."""
@@ -122,8 +125,9 @@ class Speaker:
         return tuple(s for n, s in self._said if self._heard_seq - 1 <= n <= self._heard_seq)
 
     async def finish(self) -> None:
-        """The reply is complete. Returns once every sentence has been sent."""
-        await self.pause()
+        """The reply is complete. Returns once every sentence has been sent. Its last
+        round stays known: she can still be talked over while it plays."""
+        await self._flush()
         if self._worker is not None:
             await self._queue.put(None)
             try:
