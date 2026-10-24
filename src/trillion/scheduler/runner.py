@@ -1,10 +1,12 @@
 """The scheduler (AGT-4, AGT-8): a loop inside the running server, its queue in SQLite.
 
 Each tick moves every due schedule on by one run, however many times it was missed
-(D3), then runs what is due one at a time. A reminder becomes a notice with her
-words. A timed ask is run unattended (`ask.py`) and its reply becomes the notice;
-one more than an hour late is reported missed instead of run stale, one with no
-model waits as blocked, and one that fails is reported and never silently retried.
+(D3), then runs what is due one at a time, reminders first. A reminder becomes a
+notice with her words. A timed ask is run unattended (`ask.py`) and its reply becomes
+the notice; one more than an hour late is reported missed instead of run stale, one
+with no model waits as blocked, and one that fails is reported and never silently
+retried. An ask can take minutes: while it runs, the scheduler goes on looking, so a
+reminder due meanwhile goes out on time and Settings never sees a stopped scheduler.
 
 Every tick also reclaims runs a crashed process left running, and runs of its own
 past their timeout: a reminder is tried once more, or reported missed; a timed ask,
@@ -25,6 +27,7 @@ from typing import Protocol
 
 from trillion.scheduler.store import (
     LATE_MS,
+    Kind,
     Notice,
     NoticeKind,
     Run,
@@ -92,7 +95,8 @@ class Scheduler:
         self._task: asyncio.Task[None] | None = None
         # One tick at a time, whoever calls it.
         self._ticking = asyncio.Lock()
-        # When the last tick finished. Settings shows it; it goes stale if this stops.
+        # When the scheduler last read its queue: at the start of each look, and at the
+        # end of each tick. Settings shows it; it goes stale if this stops or can't read.
         self.checked_ms: int | None = None
 
     @property
@@ -121,7 +125,7 @@ class Scheduler:
 
     async def tick(self) -> None:
         """One pass: reclaim, enqueue what is due, run it, then let the door flush.
-        `checked_ms` moves only when the pass got through; a store that can't be read
+        `checked_ms` moves only once the queue could be read; a store that can't be read
         at all makes it raise, after the door has had its flush. A cancelled tick
         skips the flush."""
         async with self._ticking:
@@ -144,22 +148,57 @@ class Scheduler:
     async def _pass(self) -> None:
         await self._reclaim()
         started = self._clock()
-        for s in await self._store.due(started):
+        await self._reminders(started)
+        # Then the timed asks, one at a time, still looking for reminders while each runs.
+        while (run := await self._claim("ask", started)) is not None:
+            await self._ask(run, started)
+
+    async def _reminders(self, started: int) -> None:
+        """Enqueue everything due, then deliver every due reminder. Reading the queue is
+        the heartbeat: it says the scheduler is checking, even while an ask runs long."""
+        now = self._clock()
+        for s in await self._store.due(now):
             try:
-                await self._enqueue(s, started)
+                await self._enqueue(s, now)
             except Exception as e:
                 logger.error("schedule %s could not be enqueued: %s", s.id, type(e).__name__)
-        while True:
-            now = self._clock()
-            # A run that blocks during this pass waits for the next one.
-            retry_before = min(now - round(self.tick_s * 1000), started - 1)
-            run = await self._store.claim(self._worker, now, retry_before)
-            if run is None:
-                break
-            try:
-                await self._run(run)
-            except Exception as e:
-                await self._abandon(run, e)
+        self.checked_ms = now
+        while (run := await self._claim("reminder", started)) is not None:
+            await self._settle(run)
+
+    async def _claim(self, kind: Kind, started: int) -> Run | None:
+        now = self._clock()
+        # A run that blocks during this pass waits for the next one.
+        retry_before = min(now - round(self.tick_s * 1000), started - 1)
+        return await self._store.claim(self._worker, now, retry_before, kind)
+
+    async def _settle(self, run: Run) -> None:
+        try:
+            await self._run(run)
+        except Exception as e:
+            await self._abandon(run, e)
+
+    async def _ask(self, run: Run, started: int) -> None:
+        """Run one timed ask. It can take up to its timeout: every tick meanwhile, what
+        came due is enqueued and the reminders among it delivered, on time."""
+        asking = asyncio.ensure_future(self._settle(run))
+        try:
+            while not asking.done():
+                await asyncio.wait({asking}, timeout=self.tick_s)
+                if asking.done():
+                    break
+                try:
+                    await self._reminders(started)
+                except Exception as e:
+                    # The ask goes on; `checked_ms` stays where it was, as it should.
+                    logger.error("scheduler look failed: %s", type(e).__name__)
+                await self._flush()
+        except BaseException:
+            # Shutting down: the ask stops with the tick. Its run is reclaimed later.
+            asking.cancel()
+            await asyncio.wait({asking})
+            raise
+        await asking
 
     async def _enqueue(self, s: Schedule, now: int) -> None:
         if s.next_due_ms is None:  # pragma: no cover - `due` only returns ones with a time

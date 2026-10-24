@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from tests.scheduler.conftest import NY, ms, schedule
+from tests.scheduler.conftest import NY, ms, runs, schedule, written
 from trillion.scheduler.store import Notice
 from trillion.scheduler.when import Repeat
 from trillion.storage.db import connect
@@ -27,7 +27,7 @@ async def test_an_occurrence_is_recorded_once(store: SqliteScheduleStore) -> Non
     await store.create(schedule())
     assert await store.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
     assert not await store.enqueue("a1b2c3d4", DUE, None, 10.0, DUE + 1)
-    assert [r.due_ms for r in await store.runs("a1b2c3d4")] == [DUE]
+    assert [r.due_ms for r in await runs(store, "a1b2c3d4")] == [DUE]
     done = await store.get("a1b2c3d4")
     assert done is not None and done.status == "done" and done.next_due_ms is None
     # Finished, with its run still to go: still listed as coming up.
@@ -107,7 +107,7 @@ async def test_cancelling_cancels_the_runs_still_waiting(store: SqliteScheduleSt
     await store.create(schedule(repeat=Repeat(every="day")))
     await store.enqueue("a1b2c3d4", DUE, DUE + 86_400_000, 10.0, DUE)
     assert await store.cancel("local", "a1b2c3d4", DUE + 5)
-    assert [r.status for r in await store.runs("a1b2c3d4")] == ["cancelled"]
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["cancelled"]
     gone = await store.get("a1b2c3d4")
     assert gone is not None and gone.status == "cancelled" and gone.next_due_ms is None
     assert await store.active("local") == []
@@ -131,26 +131,8 @@ async def test_results_name_their_schedule_newest_first(store: SqliteScheduleSto
 
 
 async def test_a_notice_is_held_then_delivered_once(store: SqliteScheduleStore) -> None:
-    first = await store.add_notice(
-        owner_id="local",
-        source_id="a1b2c3d4",
-        kind="reminder",
-        title="Call",
-        text="Call now.",
-        due_ms=DUE,
-        late=False,
-        now_ms=DUE,
-    )
-    second = await store.add_notice(
-        owner_id="local",
-        source_id="a1b2c3d4",
-        kind="missed",
-        title="Call",
-        text=None,
-        due_ms=DUE,
-        late=True,
-        now_ms=DUE + 1,
-    )
+    first = await written(store, due_ms=DUE, now_ms=DUE)
+    second = await written(store, kind="missed", text=None, due_ms=DUE, now_ms=DUE + 1, late=True)
     assert [n.id for n in await store.held("local")] == [first.id, second.id]
     assert await store.mark_delivered(first.id, "c1", DUE + 2)
     assert not await store.mark_delivered(first.id, "c2", DUE + 3)
@@ -185,7 +167,7 @@ async def test_a_cancel_between_looking_and_enqueueing_leaves_no_run(
     (found,) = await store.due(DUE)
     assert await store.cancel("local", found.id, DUE)
     assert not await store.enqueue(found.id, DUE, None, 10.0, DUE)
-    assert await store.runs(found.id) == []
+    assert await runs(store, found.id) == []
 
 
 async def test_a_run_finishes_with_its_notice_in_one_change(store: SqliteScheduleStore) -> None:
@@ -212,7 +194,7 @@ async def test_a_run_finishes_with_its_notice_in_one_change(store: SqliteSchedul
 
     n = await finish()
     assert n is not None and n.status == "held" and n.text == "Call now."
-    (done,) = await store.runs("a1b2c3d4")
+    (done,) = await runs(store, "a1b2c3d4")
     assert done.status == "delivered" and done.result_notice == n.id
     # A run already finished gets no second notice.
     assert await finish() is None and len(await store.held("local")) == 1
@@ -220,19 +202,33 @@ async def test_a_run_finishes_with_its_notice_in_one_change(store: SqliteSchedul
 
 async def test_a_delivery_can_be_taken_back_only_by_its_page(store: SqliteScheduleStore) -> None:
     due = ms("2026-10-24T16:00")
-    n = await store.add_notice(
-        owner_id="local",
-        source_id="a1b2c3d4",
-        kind="reminder",
-        title="Call",
-        text="Call now.",
-        due_ms=due,
-        late=False,
-        now_ms=due,
-    )
+    n = await written(store, due_ms=due, now_ms=due)
     assert await store.mark_delivered(n.id, "c1", due)
     assert not await store.unmark_delivered(n.id, "c2")
     assert await store.unmark_delivered(n.id, "c1")
     kept = await store.notice(n.id)
     assert kept is not None and kept.status == "held" and kept.delivered_to is None
     assert not await store.unmark_delivered(n.id, "c1")  # already held
+
+
+async def test_the_last_result_is_the_latest_run_of_each(store: SqliteScheduleStore) -> None:
+    await store.create(schedule(repeat=Repeat(every="day")))
+    for at, status in ((DUE, "missed"), (DUE + 86_400_000, "delivered")):
+        await store.enqueue("a1b2c3d4", at, at + 86_400_000, 10.0, at)
+        run = await store.claim("w1", at, 0)
+        assert run is not None
+        await store.finish(run.id, status, at + 5)  # type: ignore[arg-type]
+    (last,) = (await store.last_results("local")).values()
+    assert last.status == "delivered" and last.due_ms == DUE + 86_400_000
+
+
+async def test_a_claim_can_take_only_reminders(store: SqliteScheduleStore) -> None:
+    await store.create(schedule(id="ask00001", kind="ask"))
+    await store.create(schedule(id="rem00001"))
+    await store.enqueue("ask00001", DUE - 1, None, 120.0, DUE)
+    await store.enqueue("rem00001", DUE, None, 10.0, DUE)
+    first = await store.claim("w1", DUE, 0, "reminder")
+    assert first is not None and first.schedule_id == "rem00001"
+    assert await store.claim("w1", DUE, 0, "reminder") is None
+    ask = await store.claim("w1", DUE, 0)
+    assert ask is not None and ask.schedule_id == "ask00001"

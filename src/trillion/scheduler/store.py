@@ -111,9 +111,11 @@ class ScheduleStore(Protocol):
 
     async def cancel(self, owner_id: str, schedule_id: str, now_ms: int) -> bool: ...
 
-    async def claim(self, worker: str, now_ms: int, retry_before_ms: int) -> Run | None:
+    async def claim(
+        self, worker: str, now_ms: int, retry_before_ms: int, kind: Kind | None = None
+    ) -> Run | None:
         """Take the oldest due run, atomically: a queued one, or a blocked one last tried
-        at or before `retry_before_ms`."""
+        at or before `retry_before_ms`. Only a run of a schedule of `kind`, when given."""
         ...
 
     async def finish(
@@ -123,7 +125,6 @@ class ScheduleStore(Protocol):
         now_ms: int,
         *,
         detail: str | None = None,
-        notice_id: str | None = None,
     ) -> bool: ...
 
     async def block(self, run_id: int, now_ms: int, detail: str) -> None: ...
@@ -135,24 +136,11 @@ class ScheduleStore(Protocol):
 
     async def requeue(self, run_id: int, detail: str) -> None: ...
 
-    async def runs(self, schedule_id: str) -> list[Run]: ...
-
     async def recent(self, owner_id: str, limit: int) -> list[Result]: ...
 
-    async def last_results(self, owner_id: str) -> dict[str, Run]: ...
-
-    async def add_notice(
-        self,
-        *,
-        owner_id: str,
-        source_id: str,
-        kind: NoticeKind,
-        title: str,
-        text: str | None,
-        due_ms: int,
-        late: bool,
-        now_ms: int,
-    ) -> Notice: ...
+    async def last_results(self, owner_id: str) -> dict[str, Run]:
+        """The latest finished run of each schedule."""
+        ...
 
     async def finish_with_notice(
         self,

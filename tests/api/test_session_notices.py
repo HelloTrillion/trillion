@@ -12,7 +12,7 @@ import pytest
 from tests.api.test_listening import hearing
 from tests.api.test_session import Gated, Page, idle
 from tests.brain.fakes import say, use
-from tests.scheduler.conftest import FakeClock, ms, schedule
+from tests.scheduler.conftest import FakeClock, ms, schedule, written
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, local_zone, open_runtime
 from trillion.api.session import OUT_OF_TURN, Session
@@ -53,15 +53,8 @@ async def notice(
     rt: Runtime, kind: NoticeKind = "reminder", text: str | None = "Stretch."
 ) -> Notice:
     assert rt.schedules is not None and rt.door is not None
-    n = await rt.schedules.add_notice(
-        owner_id="local",
-        source_id="a1b2c3d4",
-        kind=kind,
-        title="Stretch",
-        text=text,
-        due_ms=DUE,
-        late=False,
-        now_ms=rt.clock(),
+    n = await written(
+        rt.schedules, kind=kind, text=text, title="Stretch", due_ms=DUE, now_ms=rt.clock()
     )
     await rt.door.added(n)
     return n
@@ -299,16 +292,19 @@ async def test_a_notice_due_while_a_message_is_saved_never_runs_beside_its_turn(
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
     real = rt.conversations.append
+    saving, saved = asyncio.Event(), asyncio.Event()
 
     async def slow(*a: Any, **k: Any) -> int:
-        await asyncio.sleep(0.02)
+        saving.set()
+        await saved.wait()
         return await real(*a, **k)
 
     rt.conversations.append = slow  # type: ignore[method-assign]
     typed = asyncio.create_task(session.handle({"type": "turn.text", "text": "hi"}))
-    await asyncio.sleep(0.005)
+    await saving.wait()
     await notice(rt, text="Stretch.")  # the tick lands while the message is being saved
     assert page.all("notice") == []
+    saved.set()
     await typed
     await idle(session)
     await session.handle({"type": "playback.ended", "turn_id": 1})
@@ -479,3 +475,20 @@ async def test_the_notice_event_carries_its_due_time_in_words(rt: Runtime) -> No
     (shown,) = page.all("notice")
     assert shown["due"] == "4:00 pm" and shown["due_ms"] == DUE
     await session.close()
+
+
+async def test_a_page_whose_start_fails_is_not_left_to_take_notices(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert rt.door is not None
+
+    async def broken(self: Session) -> list[Any]:
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(Session, "_open_actions", broken)
+    page = Page(rt)
+    with pytest.raises(RuntimeError):
+        await Session.start(rt, page.send, None)
+    assert rt.sessions == set() and rt.by_conversation == {}
+    await notice(rt)  # with no page left, the computer shows it
+    assert rt.door.notify.calls == [("Stretch", "Stretch.")]  # type: ignore[attr-defined]

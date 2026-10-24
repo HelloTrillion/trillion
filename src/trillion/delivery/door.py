@@ -5,7 +5,8 @@ A notice goes to the live page, the most recently active one, when that page is
 free. Free is judged from facts the page's session reports, never from a flag
 (VOI-17): no turn running, no microphone open, and the last thing sent to be heard
 reported played. With no page open the computer shows a notification, once, and
-the notice is held for the next page. Each notice is marked delivered before it is
+the notice is held for the next page; a busy live page gets no notification, the
+notice just waits for it. Each notice is marked delivered before it is
 sent, and only a held one can be, so none arrives twice. A session's `deliver`
 must raise, taking none of them, if its page is no longer free when they arrive:
 the door then holds them again for the next free page.
@@ -131,6 +132,8 @@ class Door:
         self.notify = notify
         self._lock = asyncio.Lock()
         self._notifying = asyncio.Lock()
+        # Notices whose notification was tried in this process, shown or not.
+        self._tried: set[str] = set()
 
     def live(self) -> SessionLike | None:
         """The most recently active connected page."""
@@ -143,11 +146,17 @@ class Door:
         if live is not None:
             await self.offer(live)
             return
+        await self._notify(notice.id)
+
+    async def _notify(self, notice_id: str) -> None:
+        """Show the system notification for a held notice, once. Tried once per
+        process: a notifier that can't show one isn't asked again every tick."""
         async with self._notifying:
             # As stored now, not as the caller saw it: shown once, never once delivered.
-            kept = await self._store.notice(notice.id)
+            kept = await self._store.notice(notice_id)
             if kept is None or kept.status != "held" or kept.notified_ms is not None:
                 return
+            self._tried.add(kept.id)
             title, body = notification(kept)
             # It can take seconds: never on the event loop.
             if await asyncio.to_thread(self.notify, title, body):
@@ -160,10 +169,14 @@ class Door:
             now = self._clock()
             if session is not self.live() or not free(session.facts(), now):
                 return 0
+            marked: list[str] = []
             out: list[Delivery] = []
             zones: dict[str, str] = {}
-            for n in await self._store.held(self._owner):
-                if await self._store.mark_delivered(n.id, session.id, now):
+            try:
+                for n in await self._store.held(self._owner):
+                    if not await self._store.mark_delivered(n.id, session.id, now):
+                        continue
+                    marked.append(n.id)
                     out.append(
                         Delivery(
                             id=n.id,
@@ -176,6 +189,12 @@ class Door:
                             due=await self._due(n, now, zones),
                         )
                     )
+            except BaseException:
+                # Stopped or broken part way: none was sent, so every one marked so far
+                # is held again, however often this is cancelled meanwhile.
+                putting = asyncio.ensure_future(self._hold(marked, session))
+                await _finished(putting)
+                raise
         if not out:
             return 0
         # Its own task, so a tick cut short never cuts a hand-over short: past its save
@@ -186,12 +205,12 @@ class Door:
         except asyncio.CancelledError:
             await _finished(handing)
             if not handing.cancelled() and handing.exception() is not None:
-                await asyncio.shield(self._hold(out, session))
+                await asyncio.shield(self._hold([d.id for d in out], session))
             raise
         except Exception as e:
             # It raised before taking any: they are held again for the next free page.
             logger.warning("page %s could not take notices: %s", session.id, type(e).__name__)
-            await self._hold(out, session)
+            await self._hold([d.id for d in out], session)
             return 0
         return len(out)
 
@@ -204,16 +223,25 @@ class Door:
         except when.WhenError:
             return ""
 
-    async def _hold(self, out: Sequence[Delivery], session: SessionLike) -> None:
-        """Only for a hand-over that raised: by the contract it took none of them."""
-        for d in out:
-            await self._store.unmark_delivered(d.id, session.id)
+    async def _hold(self, ids: Sequence[str], session: SessionLike) -> None:
+        """Only for notices `session` was never sent: by the contract it took none."""
+        for notice_id in ids:
+            try:
+                await self._store.unmark_delivered(notice_id, session.id)
+            except Exception as e:
+                logger.error("notice %s could not be held again: %s", notice_id, type(e).__name__)
 
     async def flush(self) -> None:
-        """On every scheduler tick: a page that came free without saying so gets its due."""
+        """On every scheduler tick: a page that came free without saying so gets its due.
+        With no page open, a held notice never shown (its page closed, or the process
+        stopped before it could be) gets its system notification, once."""
         live = self.live()
         if live is not None:
             await self.offer(live)
+            return
+        for n in await self._store.held(self._owner):
+            if n.notified_ms is None and n.id not in self._tried:
+                await self._notify(n.id)
 
 
 async def _finished(task: asyncio.Future[None]) -> None:

@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import aiosqlite
 
-from trillion.scheduler.store import Notice, NoticeKind, Result, Run, RunStatus, Schedule
+from trillion.scheduler.store import Kind, Notice, NoticeKind, Result, Run, RunStatus, Schedule
 from trillion.scheduler.when import read_repeat
 
 # A run still marked running this long past its own timeout is not running any more.
@@ -189,17 +189,20 @@ class SqliteScheduleStore:
 
     # ── Runs ─────────────────────────────────────────────────────────────
 
-    async def claim(self, worker: str, now_ms: int, retry_before_ms: int) -> Run | None:
+    async def claim(
+        self, worker: str, now_ms: int, retry_before_ms: int, kind: Kind | None = None
+    ) -> Run | None:
         async with self._tx() as conn:
             # A blocked run is tried again without counting as another attempt: it never ran.
             async with conn.execute(
                 "UPDATE task_runs SET status = 'running', claimed_by = ?, claimed_ms = ?,"
                 " started_ms = ?, attempts = attempts + CASE WHEN status = 'queued'"
                 " THEN 1 ELSE 0 END"
-                " WHERE id = (SELECT id FROM task_runs WHERE due_ms <= ? AND"
-                " (status = 'queued' OR (status = 'blocked' AND claimed_ms <= ?))"
-                " ORDER BY due_ms, id LIMIT 1) RETURNING *",
-                (worker, now_ms, now_ms, now_ms, retry_before_ms),
+                " WHERE id = (SELECT r.id FROM task_runs r JOIN schedules s"
+                " ON s.id = r.schedule_id WHERE r.due_ms <= ? AND (? IS NULL OR s.kind = ?)"
+                " AND (r.status = 'queued' OR (r.status = 'blocked' AND r.claimed_ms <= ?))"
+                " ORDER BY r.due_ms, r.id LIMIT 1) RETURNING *",
+                (worker, now_ms, now_ms, now_ms, kind, kind, retry_before_ms),
             ) as cur:
                 row = await cur.fetchone()
         return _run(row) if row is not None else None
@@ -211,14 +214,13 @@ class SqliteScheduleStore:
         now_ms: int,
         *,
         detail: str | None = None,
-        notice_id: str | None = None,
     ) -> bool:
         async with self._tx() as conn:
             cur = await conn.execute(
                 "UPDATE task_runs SET status = ?, finished_ms = ?,"
-                " detail = COALESCE(?, detail), result_notice = COALESCE(?, result_notice)"
+                " detail = COALESCE(?, detail)"
                 " WHERE id = ? AND status IN ('running', 'interrupted')",
-                (status, now_ms, detail, notice_id, run_id),
+                (status, now_ms, detail, run_id),
             )
             return cur.rowcount == 1
 
@@ -252,12 +254,6 @@ class SqliteScheduleStore:
                 (detail, run_id),
             )
 
-    async def runs(self, schedule_id: str) -> list[Run]:
-        async with self._conn.execute(
-            "SELECT * FROM task_runs WHERE schedule_id = ? ORDER BY id", (schedule_id,)
-        ) as cur:
-            return [_run(r) for r in await cur.fetchall()]
-
     async def recent(self, owner_id: str, limit: int) -> list[Result]:
         async with self._conn.execute(
             "SELECT r.*, s.title AS schedule_title, s.kind AS schedule_kind,"
@@ -281,49 +277,16 @@ class SqliteScheduleStore:
 
     async def last_results(self, owner_id: str) -> dict[str, Run]:
         async with self._conn.execute(
-            "SELECT r.* FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
-            " WHERE s.owner_id = ? AND r.status NOT IN ('queued', 'running') ORDER BY r.id",
+            # Only the latest finished run of each schedule, never its whole history.
+            "SELECT r.* FROM task_runs r JOIN (SELECT MAX(x.id) AS id FROM task_runs x"
+            " JOIN schedules s ON s.id = x.schedule_id WHERE s.owner_id = ?"
+            " AND x.status NOT IN ('queued', 'running') GROUP BY x.schedule_id) last"
+            " ON last.id = r.id",
             (owner_id,),
         ) as cur:
             return {str(r["schedule_id"]): _run(r) for r in await cur.fetchall()}
 
     # ── Notices ──────────────────────────────────────────────────────────
-
-    async def add_notice(
-        self,
-        *,
-        owner_id: str,
-        source_id: str,
-        kind: NoticeKind,
-        title: str,
-        text: str | None,
-        due_ms: int,
-        late: bool,
-        now_ms: int,
-    ) -> Notice:
-        n = Notice(
-            id=uuid.uuid4().hex,
-            owner_id=owner_id,
-            source_id=source_id,
-            kind=kind,
-            title=title,
-            text=text,
-            due_ms=due_ms,
-            late=late,
-            created_ms=now_ms,
-            status="held",
-            delivered_ms=None,
-            delivered_to=None,
-            notified_ms=None,
-        )
-        async with self._tx() as conn:
-            await conn.execute(
-                "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
-                " due_ms, late, created_ms, status) VALUES (?, ?, 'schedule', ?, ?, ?, ?, ?, ?,"
-                " ?, 'held')",
-                (n.id, owner_id, source_id, kind, title, text, due_ms, int(late), now_ms),
-            )
-        return n
 
     async def finish_with_notice(
         self,

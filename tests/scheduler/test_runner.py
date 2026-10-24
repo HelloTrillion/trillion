@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from tests.scheduler.conftest import FakeClock, ms, schedule
+from tests.scheduler.conftest import FakeClock, ms, runs, schedule
 from trillion.scheduler.runner import AskFailed, NoModel, Scheduler
 from trillion.scheduler.store import Notice, Schedule
 from trillion.scheduler.when import Repeat
@@ -69,7 +69,7 @@ async def test_a_reminder_on_time_is_delivered_in_her_words(store: SqliteSchedul
         False,
         "Call the dentist",
     )
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "delivered" and run.result_notice == n.id
     assert sched.checked_ms == DUE and door.flushes == 1
     await sched.tick()
@@ -80,7 +80,7 @@ async def test_nothing_happens_before_it_is_due(store: SqliteScheduleStore) -> N
     await store.create(schedule())
     sched, door, _ = make(store, DUE - 1)
     await sched.tick()
-    assert door.notices == [] and await store.runs("a1b2c3d4") == []
+    assert door.notices == [] and await runs(store, "a1b2c3d4") == []
 
 
 async def test_asleep_through_it_the_reminder_arrives_late(store: SqliteScheduleStore) -> None:
@@ -89,7 +89,7 @@ async def test_asleep_through_it_the_reminder_arrives_late(store: SqliteSchedule
     await sched.tick()
     (n,) = door.notices
     assert n.late and n.text == "Time to call the dentist."
-    assert [r.status for r in await store.runs("a1b2c3d4")] == ["late"]
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["late"]
 
 
 async def test_five_missed_days_catch_up_as_one_late_run(store: SqliteScheduleStore) -> None:
@@ -100,7 +100,7 @@ async def test_five_missed_days_catch_up_as_one_late_run(store: SqliteScheduleSt
     sched, door, _ = make(store, ms("2026-10-24T09:30"))
     await sched.tick()
     assert len(door.notices) == 1 and door.notices[0].late
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.due_ms == first and run.status == "late"
     s = await store.get("a1b2c3d4")
     assert s is not None and s.status == "active" and s.next_due_ms == ms("2026-10-25T09:00")
@@ -114,7 +114,7 @@ async def test_a_timed_ask_half_an_hour_late_still_runs(store: SqliteScheduleSto
     assert asks.calls == 1
     (n,) = door.notices
     assert (n.kind, n.text, n.late) == ("ask", "Two urgent emails.", True)
-    assert [r.status for r in await store.runs("a1b2c3d4")] == ["late"]
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["late"]
 
 
 async def test_a_timed_ask_two_hours_late_is_missed_not_run(store: SqliteScheduleStore) -> None:
@@ -125,7 +125,7 @@ async def test_a_timed_ask_two_hours_late_is_missed_not_run(store: SqliteSchedul
     assert asks.calls == 0
     (n,) = door.notices
     assert n.kind == "missed" and n.text is None
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "missed" and run.detail == "more than an hour late"
 
 
@@ -135,12 +135,12 @@ async def test_no_model_blocks_then_runs_once_it_is_back(store: SqliteScheduleSt
     sched, door, clock = make(store, DUE, asks)
     await sched.tick()
     assert door.notices == []
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "blocked" and run.detail == "no model"
     clock.advance(15_000)
     await sched.tick()
     assert asks.calls == 2 and [n.text for n in door.notices] == ["Done."]
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "delivered" and run.attempts == 1
 
 
@@ -152,7 +152,7 @@ async def test_no_model_for_over_an_hour_becomes_missed(store: SqliteScheduleSto
     clock.advance(61 * MINUTE)
     await sched.tick()
     assert [n.kind for n in door.notices] == ["missed"]
-    assert [r.status for r in await store.runs("a1b2c3d4")] == ["missed"]
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["missed"]
 
 
 async def test_a_timed_ask_that_times_out_fails_and_is_not_retried(
@@ -171,7 +171,7 @@ async def test_a_timed_ask_that_times_out_fails_and_is_not_retried(
     await sched.tick()
     (n,) = door.notices
     assert n.kind == "failed" and n.text is None
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "timed out after 0.05 s"
     clock.advance(15_000)
     await sched.tick()
@@ -182,7 +182,7 @@ async def test_a_failure_says_why_in_a_few_words(store: SqliteScheduleStore) -> 
     await store.create(schedule(kind="ask"))
     sched, door, _ = make(store, DUE, Asks(AskFailed("the model sent back nothing")))
     await sched.tick()
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "the model sent back nothing"
     assert door.notices[0].kind == "failed"
 
@@ -196,7 +196,7 @@ async def test_a_restart_mid_run_runs_a_reminder_once_more_and_records_it(
     sched, door, _ = make(store, DUE + MINUTE)
     await sched.tick()
     assert [n.text for n in door.notices] == ["Time to call the dentist."]
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "delivered" and run.attempts == 2
     assert run.detail == "interrupted; tried again"
 
@@ -214,7 +214,7 @@ async def test_a_timed_ask_interrupted_mid_run_is_failed_not_run_again(
     assert asks.calls == 0
     (n,) = door.notices
     assert n.kind == "failed" and n.text is None
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "interrupted" and run.attempts == 1
     await sched.tick()
     assert asks.calls == 0 and len(door.notices) == 1
@@ -225,7 +225,7 @@ async def test_a_run_interrupted_twice_is_missed(store: SqliteScheduleStore) -> 
     await store.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
     await store.claim("first", DUE, 0)
     await store.reclaim("second", DUE)
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     await store.requeue(run.id, "interrupted; tried again")
     await store.claim("second", DUE, 0)  # and that process died too
     sched, door, _ = make(store, DUE + MINUTE)
@@ -242,7 +242,7 @@ async def test_cancelling_removes_the_runs_still_waiting(store: SqliteScheduleSt
     clock.advance(15_000)
     await sched.tick()
     assert asks.calls == 1 and door.notices == []
-    assert [r.status for r in await store.runs("a1b2c3d4")] == ["cancelled"]
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["cancelled"]
 
 
 async def test_a_tick_that_fails_leaves_the_last_check_where_it_was(
@@ -296,7 +296,7 @@ async def test_one_schedule_that_breaks_does_not_stop_the_others(
     sched, door, _ = make(store, DUE)
     await sched.tick()
     assert [n.source_id for n in door.notices] == ["a1b2c3d4"]
-    assert [r.status for r in await store.runs("bad00002")] == ["failed"]
+    assert [r.status for r in await runs(store, "bad00002")] == ["failed"]
     assert sched.checked_ms == DUE and door.flushes == 1
 
 
@@ -318,7 +318,7 @@ async def test_stopped_after_the_notice_is_written_it_is_never_run_twice(
     await after.tick()
     assert asks.calls == 1 and door.notices == []
     (held,) = await store.held("local")
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "delivered" and run.result_notice == held.id
 
 
@@ -344,14 +344,14 @@ async def test_stopped_while_the_notice_is_written_nothing_is_kept_and_it_is_not
     finally:
         conn.execute = execute  # type: ignore[method-assign]
     assert await store.held("local") == [] and door.notices == []
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "running"
     after, door, _ = make(store, DUE + MINUTE, asks, worker="w2")
     await after.tick()
     # It ran once already; it is reported as not finished, never run a second time.
     assert asks.calls == 1 and [(n.kind, n.text) for n in door.notices] == [("failed", None)]
     assert len(await store.held("local")) == 1
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "interrupted" and run.attempts == 1
 
 
@@ -361,7 +361,7 @@ async def test_an_empty_reply_is_a_failure(store: SqliteScheduleStore) -> None:
     await sched.tick()
     (n,) = door.notices
     assert n.kind == "failed" and n.text is None
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "no reply"
 
 
@@ -371,7 +371,7 @@ async def test_a_timeout_inside_the_ask_is_not_the_ask_timing_out(
     await store.create(schedule(kind="ask"))
     sched, _, _ = make(store, DUE, Asks(TimeoutError()))
     await sched.tick()
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "TimeoutError"
 
 
@@ -383,7 +383,7 @@ async def test_an_interrupted_ask_past_the_hour_is_failed(store: SqliteScheduleS
     sched, door, _ = make(store, DUE + 61 * MINUTE, asks)
     await sched.tick()
     assert asks.calls == 0 and [n.kind for n in door.notices] == ["failed"]
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "failed" and run.detail == "interrupted"
 
 
@@ -397,7 +397,7 @@ async def test_an_interrupted_reminder_is_delivered_once_more(
     await sched.tick()
     (n,) = door.notices
     assert n.kind == "reminder" and n.late
-    (run,) = await store.runs("a1b2c3d4")
+    (run,) = await runs(store, "a1b2c3d4")
     assert run.status == "late" and run.attempts == 2
 
 
@@ -436,3 +436,66 @@ async def test_two_ticks_at_once_take_turns(store: SqliteScheduleStore) -> None:
     sched, door, _ = make(store, DUE)
     await asyncio.gather(sched.tick(), sched.tick())
     assert len(door.notices) == 1 and door.flushes == 2
+
+
+async def test_in_a_pass_reminders_go_out_before_timed_asks(store: SqliteScheduleStore) -> None:
+    # The ask was due first, but it can take minutes: the reminder doesn't wait for it.
+    await store.create(schedule(id="ask00001", kind="ask", next_due_ms=DUE - MINUTE))
+    await store.create(schedule(id="rem00001"))
+    sched, door, _ = make(store, DUE, Asks("Two urgent emails."))
+    await sched.tick()
+    assert [n.kind for n in door.notices] == ["reminder", "ask"]
+
+
+async def test_a_reminder_due_while_an_ask_runs_goes_out_on_time(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(id="ask00001", kind="ask"))
+    await store.create(schedule(id="rem00001", next_due_ms=DUE + MINUTE))
+    clock = FakeClock(DUE)
+    reminded = asyncio.Event()
+
+    class Door(FakeDoor):
+        async def added(self, notice: Notice) -> None:
+            await super().added(notice)
+            if notice.kind == "reminder":
+                reminded.set()
+
+    async def slow(s: Schedule) -> str:
+        clock.advance(MINUTE)  # she is still working when the reminder comes due
+        await reminded.wait()
+        assert sched.checked_ms == DUE + MINUTE  # still checking, as Settings shows
+        return "Two urgent emails."
+
+    door = Door()
+    sched = Scheduler(store, clock, slow, door, worker="w1", tick_s=0)
+    await asyncio.wait_for(sched.tick(), 5)
+    assert [(n.kind, n.late) for n in door.notices] == [("reminder", False), ("ask", False)]
+    assert [r.status for r in await runs(store, "rem00001")] == ["delivered"]
+
+
+async def test_a_store_that_fails_while_an_ask_runs_does_not_stop_the_ask(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(kind="ask"))
+    clock = FakeClock(DUE)
+    looked = asyncio.Event()
+    due = store.due
+
+    async def broken(now_ms: int) -> list[Schedule]:
+        if now_ms > DUE:
+            looked.set()
+            raise RuntimeError("disk")
+        return await due(now_ms)
+
+    async def slow(s: Schedule) -> str:
+        clock.advance(MINUTE)
+        await looked.wait()
+        return "Done."
+
+    store.due = broken  # type: ignore[method-assign]
+    door = FakeDoor()
+    sched = Scheduler(store, clock, slow, door, worker="w1", tick_s=0)
+    await asyncio.wait_for(sched.tick(), 5)
+    assert [n.text for n in door.notices] == ["Done."]
+    assert sched.checked_ms == DUE + MINUTE  # the pass itself got through

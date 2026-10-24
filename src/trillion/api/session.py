@@ -184,11 +184,17 @@ class Session:
         )
         rt.sessions.add(session)
         rt.by_conversation[session.id] = session
-        await session._send("history", messages=shown)
-        for a in await session._open_actions():
-            await session._send_card(a.id)
-        session._started = True
-        await session._state("idle")
+        try:
+            await session._send("history", messages=shown)
+            for a in await session._open_actions():
+                await session._send_card(a.id)
+            session._started = True
+            await session._state("idle")
+        except BaseException:
+            # Never left half started: the door would take it for the live page and
+            # hold every notice for it, with no system notification instead.
+            await session.close()
+            raise
         return session
 
     def _model(self) -> dict[str, str] | None:

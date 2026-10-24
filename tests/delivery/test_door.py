@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from tests.scheduler.conftest import FakeClock, ms, schedule
+from tests.scheduler.conftest import FakeClock, ms, schedule, written
 from trillion.delivery.door import (
     PLAYBACK_GRACE_MS,
     READY,
@@ -70,16 +70,7 @@ async def add(
     text: str | None = "Call now.",
     title: str = "Call",
 ) -> Notice:
-    return await store.add_notice(
-        owner_id="local",
-        source_id="a1b2c3d4",
-        kind=kind,
-        title=title,
-        text=text,
-        due_ms=DUE,
-        late=False,
-        now_ms=DUE,
-    )
+    return await written(store, kind=kind, text=text, title=title, due_ms=DUE, now_ms=DUE)
 
 
 def test_free_is_judged_from_facts() -> None:
@@ -260,10 +251,91 @@ async def test_its_due_time_is_in_the_schedules_own_zone(store: SqliteScheduleSt
     assert [(x.due, x.late) for x in page.got] == [("Sat 10:00 pm", True)]
 
 
-async def test_a_notice_whose_schedule_is_gone_has_no_due_words(
+async def test_a_notice_whose_zone_is_unknown_here_has_no_due_words(
     store: SqliteScheduleStore,
 ) -> None:
+    await store.create(schedule(zone="Nowhere/Gone"))
     page = FakePage("c1")
     d, _, _ = door(store, [page])
     await d.added(await add(store))
     assert [x.due for x in page.got] == [""]
+
+
+async def test_a_hand_over_stopped_while_marking_puts_back_what_it_marked(
+    store: SqliteScheduleStore,
+) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    first, second = await add(store), await add(store)
+    looking, never = asyncio.Event(), asyncio.Event()
+    get = store.get
+
+    async def stuck(schedule_id: str) -> object:
+        looking.set()  # the first is marked delivered by now
+        await never.wait()
+        return await get(schedule_id)
+
+    store.get = stuck  # type: ignore[method-assign,assignment]
+    offer = asyncio.create_task(d.offer(page))
+    await looking.wait()
+    offer.cancel()  # the server stopping
+    with pytest.raises(asyncio.CancelledError):
+        await offer
+    store.get = get  # type: ignore[method-assign]
+    assert [n.id for n in await store.held("local")] == [first.id, second.id]
+    assert page.got == []
+    assert await d.offer(page) == 2  # and the next free page gets both
+
+
+async def test_a_store_error_while_marking_puts_back_what_it_marked(
+    store: SqliteScheduleStore,
+) -> None:
+    import sqlite3
+
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    first = await add(store)
+
+    async def broken(schedule_id: str) -> object:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    get = store.get
+    store.get = broken  # type: ignore[method-assign,assignment]
+    with pytest.raises(sqlite3.OperationalError):
+        await d.offer(page)
+    store.get = get  # type: ignore[method-assign]
+    assert [n.id for n in await store.held("local")] == [first.id]
+    assert page.got == []
+
+
+async def test_with_no_page_a_tick_notifies_what_is_held_and_not_yet_shown(
+    store: SqliteScheduleStore,
+) -> None:
+    # Held when its page closed, or written just before a crash: never notified.
+    d, shown, _ = door(store, [])
+    await add(store)
+    await d.flush()
+    await d.flush()
+    assert shown.shown == [("Call", "Call now.")]  # once
+
+
+async def test_a_notification_that_fails_is_not_tried_on_every_tick(
+    store: SqliteScheduleStore,
+) -> None:
+    fails = FakeNotify(shows=False)
+    d, _, _ = door(store, [], fails)
+    n = await add(store)
+    await d.flush()
+    await d.flush()
+    assert len(fails.shown) == 1
+    kept = await store.notice(n.id)
+    assert kept is not None and kept.status == "held" and kept.notified_ms is None
+
+
+async def test_with_a_page_open_a_tick_never_notifies(store: SqliteScheduleStore) -> None:
+    page = FakePage("c1")
+    page.state = dataclasses.replace(page.state, turn_running=True)
+    d, shown, _ = door(store, [page])
+    await add(store)
+    await d.flush()
+    assert shown.shown == [] and page.got == []  # a busy live page: the notice waits
