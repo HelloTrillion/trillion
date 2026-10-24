@@ -231,11 +231,12 @@ def test_a_misheard_fragment_of_hers_alone_does_not_stop_her() -> None:
     """Live: her "Alright, properly this time." came back as "or writes properly this"."""
     cand = "or writes properly this"
     assert confirm(cand, "", done=False, elapsed_s=0.3, playing=ALRIGHT) == "wait"
+    # Ended by the recognizer, it is still half hers: not enough.
     assert confirm(cand, "", done=True, elapsed_s=0.5, playing=ALRIGHT) == "wait"
     assert confirm(cand, "", done=False, elapsed_s=CONFIRM_S, playing=ALRIGHT) == "carry_on"
     # More of her, or one more misheard word, is not them either.
     assert confirm(cand, "time we start", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
-    assert confirm(cand, "tame", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
+    assert confirm("or", "writes", done=False, elapsed_s=0.6, playing=ALRIGHT) == "wait"
 
 
 def test_new_words_of_theirs_after_the_duck_stop_her() -> None:
@@ -303,3 +304,26 @@ def test_years_match_however_they_are_written() -> None:
     assert keys("twenty twenty-six") == ("twenty", "twenty six")
     assert judge_watch("in twenty twenty-six", ("It opens in 2026.",)) == "echo"
     assert keys("2005") == ("two thousand five",)
+
+
+PLATFORM = ("We leave at six from platform two.", "Bring your ticket.")
+
+
+@pytest.mark.parametrize(
+    ("cand", "after", "done"),
+    [
+        ("what about", "tuesday", True),
+        ("what about", "tuesday", False),  # three words of theirs need no end
+        ("skip that", "", True),
+        ("go back", "", True),
+        ("tell me", "more", True),
+        ("what time does the last", "bus", False),  # more after the duck still counts
+    ],
+)
+def test_short_real_cut_ins_stop_her(cand: str, after: str, done: bool) -> None:
+    assert confirm(cand, after, done=done, elapsed_s=1.1, playing=PLATFORM) == "interrupt"
+
+
+def test_two_words_of_theirs_not_yet_ended_wait_then_carry_on() -> None:
+    assert confirm("skip that", "", done=False, elapsed_s=0.5, playing=PLATFORM) == "wait"
+    assert confirm("skip that", "", done=False, elapsed_s=1.1, playing=PLATFORM) == "carry_on"

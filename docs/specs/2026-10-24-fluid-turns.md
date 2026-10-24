@@ -182,18 +182,19 @@ long as she speaks, and the core decides by the words.
   candidate only ducks her: the page is sent `overlap.duck`, the echo judged before it
   is forgotten, and the clock starts. `confirm(candidate, after, …)` (pure) decides:
   - **Interrupt at once:** a stop word ("stop", "wait", "no", "hold on" and the like)
-    that is not in what she is saying now; or a candidate of four or more words that
-    are not hers, which a misheard fragment of her never is.
-  - **Interrupt on confirmation:** new words since the duck, two of them not hers
-    (acknowledgements and fillers aside), in new words not mostly (60%) hers. She is
-    five times quieter by then, so less of her comes back, but one more misheard word
-    is as likely as the first; two words of theirs within a second is a person.
+    that is not in what she is saying now.
+  - **Interrupt on three:** three words that are not hers (acknowledgements and
+    fillers aside), before and after the duck together ("what about" then "Tuesday").
+    A misheard fragment of her is a word or two.
+  - **Interrupt on an ended two:** two such words that the recognizer has ended a turn
+    on ("skip that", "go back"), in words less than half hers. The live fragment "or
+    writes properly this" is half hers, so it does not.
   - **Carry on (acknowledgement):** words not hers that are all acknowledgements or
     fillers ("um", "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s.
-  - **Carry on (not confirmed):** nothing more of theirs by `CONFIRM_S` (1 s) after the
-    duck: her echo, misheard. A user who says two or three words and stops in that
-    second is not heard either, and says it again; that is the price of never being
-    stopped by her own voice.
+  - **Carry on (not confirmed):** nothing more by `CONFIRM_S` (1 s) after the duck: her
+    echo, misheard. Two words of theirs that the recognizer has not ended in that
+    second are not heard either, and are said again; that is the margin over her own
+    misheard echo.
   - **Wait:** anything else.
   - Her own stop word ("No, the train…") never stops her.
 - The old `overlap` (the page ducked her itself) still goes to `decide` as before.
@@ -224,11 +225,20 @@ long as she speaks, and the core decides by the words.
   spoken turn whose first words were said within `ECHO_AFTER_S` (3 s) of that is
   checked by `echo_of`, only on evidence: three or more of her words in her order are
   her echo (in front, taken off; a turn mostly her, all of it); one or two words are
-  hers only when they are exactly her final words, said within 0.3 s of her end.
+  hers only when they are exactly her final words, said as she stopped (below).
   Anything with a stop word in it is always the user's. A reply that reuses her words
   ("Six?", "Tea." after "Coffee or tea?") is theirs. When a turn is dropped, the usual
-  "unheard" notice says so. When the words began is measured by the audio itself
-  (from her end, for a watch), not by when the recognizer reported them. That covers a
+  "unheard" notice says so.
+- **When words were said** (*after the third review*): a recognizer reports words
+  0.5 to 1 s after they were said, so the report time is not enough. Each listener
+  notes where voices start in the audio (`Onsets`, by loudness, timed by when the frame
+  arrived). Words were said at the last voice start at least the recognizer's lag
+  (0.4 s) before they were first reported: the last, not the first, so a click or
+  reverb just after her end does not make the user's "Six." look like her echo. Said
+  within 0.3 s of her end is "as she stopped". When no start was heard (her echo can
+  be too quiet to clear the bar), words first reported within 1.2 s of her end are.
+  While a watch is in its grace, words that are all hers and said as she stopped are
+  marked as her echo and let go with it. That covers a
   window opened without a watch, a watch promoted by Speak or `barge`, and an
   interruption. No draft starts in that time, and the words shown while listening
   leave her words out too.

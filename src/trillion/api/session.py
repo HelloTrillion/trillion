@@ -61,6 +61,7 @@ from trillion.voice.overlap import (
     judge_watch,
     judged_prefix,
     keys,
+    share_hers,
 )
 from trillion.voice.types import VoiceError
 
@@ -86,8 +87,10 @@ ECHO_GRACE_S = 2.0
 # Words that begin this soon after she stopped are weighed against what she said last:
 # mostly hers, they are her echo, and never a turn or a draft.
 ECHO_AFTER_S = 3.0
-# One or two of her final words count as her echo only when heard this soon after her end.
+# One or two of her final words count as her echo only when said this soon after her end,
+# or, with no voice heard starting, first reported this soon after it.
 _AT_ONCE_S = 0.3
+_REPORTED_AT_ONCE_S = 1.2
 # While watching, new words are weighed with this many judged ones before them, so one
 # misheard word among hers does not stand alone.
 _CONTEXT_WORDS = 4
@@ -639,7 +642,8 @@ class Session:
                     decision = confirm(
                         " ".join(tokens[: ov.ducked_on]),
                         " ".join(tokens[ov.ducked_on :]),
-                        done=done,
+                        # Ended by the recognizer, even on a word that leads on.
+                        done=done or listener.turn_done,
                         elapsed_s=elapsed,
                         playing=self._her_playing(ov),
                     )
@@ -693,6 +697,16 @@ class Session:
             if verdict == "candidate" or (verdict == "nothing" and is_said(new)):
                 await self._follow_up_from(ov)
                 return False
+            placed = ov.listener.turn_began()
+            if (
+                verdict == "echo"
+                and placed is not None
+                and share_hers(new, playing) == 1.0
+                and self._at_once(*placed)
+            ):
+                # All hers, and said as she stopped: her echo, let go with the rest.
+                through = echo_through(new, playing)
+                ov.echo = keys(said)[: judged + through]
         elif verdict == "echo":
             # Judged up to her last word; a word of theirs after it waits for more.
             through = echo_through(" ".join(tokens[judged:]), playing)
@@ -847,8 +861,6 @@ class Session:
             # a moment longer, then becomes the window (see `_watch_once`).
             if ov.ended_at is None:
                 ov.ended_at = self._now()
-                # From her end, words are placed by when they were said.
-                ov.listener.clock()
             ov.wake.set()
         elif ov.ended or not (unheard or self._tail is not None):
             logger.info("talked over in session %s: watch_over", self.id)
@@ -1049,17 +1061,28 @@ class Session:
         listener = self._listener
         if listener is not None:
             # Her last words, come back as she stopped, are not shown as theirs.
-            text = self._less_her_echo(text, listener.began)
+            text = self._less_her_echo(text, listener)
         await self._send("transcript.partial", text=text)
 
-    def _less_her_echo(self, text: str, began: float | None) -> str:
+    def _less_her_echo(self, text: str, listener: Listener) -> str:
         """Words that began just as she stopped, less her own last words come back
         (`echo_of`): "" when that is all they are. Others are as they are."""
+        began = listener.began
         hers = self._her_words(began)
-        end = self._her_end
-        if not text or not hers or began is None or end is None:
+        if not text or not hers or began is None:
             return text
-        return echo_of(text, hers, early=began <= end[0] + _AT_ONCE_S)
+        return echo_of(text, hers, early=self._at_once(began, listener.began_heard))
+
+    def _at_once(self, began: float, heard: bool) -> bool:
+        """Whether words were said as she stopped: their voice started within
+        `_AT_ONCE_S` of her end, or with no start heard, they were first reported within
+        `_REPORTED_AT_ONCE_S` (her echo is in the air as she ends)."""
+        end = self._her_end
+        if end is None:
+            return False
+        if heard:
+            return began <= end[0] + _AT_ONCE_S
+        return began + listening.REPORT_LAG_S <= end[0] + _REPORTED_AT_ONCE_S
 
     async def _stop_listening(self) -> Listener | None:
         await self._end_overlap(tell=True)
@@ -1156,7 +1179,7 @@ class Session:
             text = said.text[:MAX_TEXT].strip()
             # Taken only now: one can still start while the last words arrive.
             draft, self._draft = self._draft, None
-            text = self._less_her_echo(text, listener.began)
+            text = self._less_her_echo(text, listener)
             if said.text.strip() and not text:
                 logger.info("spoken turn in session %s dropped: her echo", self.id)
             if text:

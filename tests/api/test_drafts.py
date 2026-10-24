@@ -63,6 +63,7 @@ async def until(ok: Callable[[], bool]) -> None:
 async def finish(session: Session, stt: FakeSTT, text: str) -> None:
     """The recognizer says the turn is over, and the next audio ends listening."""
     stt.stream.say(text, final=True, turn="done")
+    await asyncio.sleep(0.01)  # read before the audio that ends listening
     await speak(session, room(0.1))
     await idle(session)
 

@@ -171,15 +171,13 @@ async def test_her_last_sentence_reported_after_she_ends_is_not_a_turn(rt: Runti
     await speak(session, tone(0.2))
     stt.stream.say("Third thing to know.", final=True, turn="done")
     await speak(session, room(0.2))
-    await until(lambda: session._listener is not None)  # after the grace
-    await speak(session, room(0.2))
+    await until(lambda: session._listener is not None)  # after the grace, echo let go
+    await speak(session, room(session_module.FOLLOW_UP_S + 0.2))
     await page.until("mic.stop", 2)
-    await page.until("notice")
+    assert page.all("mic.stop")[-1]["reason"] == "nothing"
     await idle(session)
-    # Her own words: not answered, and said plainly rather than in silence.
     assert len(page.all("transcript.final")) == 1 and session._turn == 1
     assert calls(rt) == before and session._draft is None
-    assert [m for m in page.all("notice") if m.get("reason") == "unheard"]
     await session.close()
 
 
@@ -586,6 +584,7 @@ async def test_a_cut_in_while_their_words_are_saved_waits_for_them(rt: Runtime) 
     await speak(session, room(0.1))
     await page.until("transcript.final", 2)
     assert page.all("transcript.final")[-1]["text"] == "and the budget for next week"
+    await idle(session)  # saved by now
     history = await rt.conversations.history(session.id, "local")
     said = [m.blocks[-1] for k, m in history if k == "user"]
     assert said == [
@@ -703,7 +702,7 @@ async def reply(session: Session, stt: FakeSTT, page: Page, words: str) -> None:
     await speak(session, room(0.5))
     await asyncio.sleep(0.5)
     await speak(session, tone(0.3))
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.5)  # the recognizer's lag
     stt.stream.say(words, final=True, turn="done")
     await speak(session, room(0.2))
 
@@ -726,8 +725,12 @@ async def test_replies_reusing_her_words_are_never_dropped(rt: Runtime, words: s
     await session.close()
 
 
-async def test_her_last_two_words_come_back_at_once_are_not_a_turn(rt: Runtime) -> None:
-    """The live loop: "Standing by." came back as the user's turn, and she answered it."""
+async def test_her_last_two_words_come_back_at_once_are_not_a_turn(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live loop: "Standing by." came back as the user's turn, and she answered it.
+    As live: her echo was in the air before her end, and is reported 0.7 s after it."""
+    monkeypatch.setattr(session_module, "ECHO_GRACE_S", 1.0)
     stt, _ = judging(rt, say("Okay. Standing by."), say("Standing by."))
     voiced(rt)
     page, session = await asked(rt, stt)
@@ -735,13 +738,65 @@ async def test_her_last_two_words_come_back_at_once_are_not_a_turn(rt: Runtime) 
     await idle(session)
     await played(session, page, 1, 2)
     await watching(session)
+    await speak(session, tone(0.6))  # her voice, coming back as she plays
     await ended(session, page)
-    await speak(session, tone(0.4))  # her last words, still coming back
+    await speak(session, room(0.1))
+    await asyncio.sleep(0.7)
+    stt.stream.say("Standing by.", final=True, turn="done")
+    await speak(session, room(0.1))
+    await until(lambda: session._listener is not None)  # the window, her echo let go
+    await speak(session, room(session_module.FOLLOW_UP_S + 0.2))
+    await page.until("mic.stop", 2)
+    assert page.all("mic.stop")[-1]["reason"] == "nothing"
+    assert len(page.all("transcript.final")) == 1 and session._turn == 1
+    await session.close()
+
+
+async def test_her_last_two_words_reported_late_without_a_watch_are_not_a_turn(
+    rt: Runtime,
+) -> None:
+    stt, _ = judging(rt, say("Okay. Standing by."), say("Standing by."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1, 2)
+    await ended(session, page)  # a fresh window, no watch
+    await until(lambda: session._listener is not None)
+    await speak(session, room(0.1))
+    await asyncio.sleep(0.7)
     stt.stream.say("Standing by.", final=True, turn="done")
     await speak(session, room(0.2))
-    await until(lambda: session._listener is not None)
-    await speak(session, room(0.2))
+    await page.until("mic.stop", 2)
     await page.until("notice")
-    await idle(session)
     assert len(page.all("transcript.final")) == 1 and session._turn == 1
+    await session.close()
+
+
+async def test_a_click_as_she_ends_does_not_make_their_reply_her_echo(rt: Runtime) -> None:
+    """A noise right after her end is not when the user's words began."""
+    stt, page, session = await leave(rt)
+    await speak(session, tone(0.1) + room(0.2))  # a click, just as she ends
+    await reply(session, stt, page, "Six?")
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "Six?" and session._turn == 2
+    await session.close()
+
+
+# ── Duck, then confirm: short real cut-ins (R1) ──────────────────────────
+
+
+@pytest.mark.parametrize("words", ["what about Tuesday", "skip that"])
+async def test_short_real_cut_ins_stop_her(rt: Runtime, words: str) -> None:
+    stt, page, session = await alright(rt)
+    stt.stream.say(words, final=False)
+    await speak(session, tone(0.2))
+    stt.stream.say(words, final=True, turn="done")
+    await speak(session, tone(0.1) + room(0.2))
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None or len(page.all("transcript.final")) > 1)
+    # "skip that" ends on a word that leads on: the turn waits for more quiet.
+    await speak(session, room(3.0))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == words
     await session.close()
