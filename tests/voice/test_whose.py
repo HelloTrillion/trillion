@@ -169,24 +169,43 @@ def test_echo_share_ignores_her_silence() -> None:
     assert share.value == 0.5
 
 
-def test_echo_share_keeps_the_last_fifty() -> None:
+def test_echo_share_keeps_the_last_twenty() -> None:
     share = EchoShare()
-    for _ in range(50):
+    for _ in range(20):
         share.learn(mic_level=0.02, her_level=0.2)
-    for _ in range(50):
+    for _ in range(20):
         share.learn(mic_level=0.04, her_level=0.2)
     assert abs(share.value - 0.2) < 1e-9
-    assert share.learned == 50
+    assert share.learned == 20
 
 
-def test_echo_share_is_not_raised_by_the_user_saying_her_words() -> None:
+def test_echo_share_is_not_jumped_by_the_user_saying_her_words() -> None:
     share = EchoShare()
     for _ in range(5):
         share.learn(mic_level=0.02, her_level=0.2)
-    for _ in range(20):
+    for _ in range(3):
         share.learn(mic_level=0.2, her_level=0.2)  # ten times her echo: the user
     assert abs(share.value - 0.1) < 1e-9
-    assert share.learned == 5
+
+
+def test_a_few_loud_user_words_among_her_echo_barely_move_it() -> None:
+    share = EchoShare()
+    for i in range(40):
+        share.learn(mic_level=0.9 if i % 5 == 4 else 0.1, her_level=1.0)
+    assert abs(share.value - 0.1) < 1e-9
+
+
+def test_echo_share_climbs_when_her_echo_gets_louder() -> None:
+    # Speakers turned up mid-session: her echo was 8%, now 35%.
+    share = EchoShare()
+    for _ in range(20):
+        share.learn(mic_level=0.08, her_level=1.0)
+    for _ in range(10):
+        share.learn(mic_level=0.35, her_level=1.0)
+    assert share.value > 0.1  # climbing, a step at a time
+    for _ in range(11):
+        share.learn(mic_level=0.35, her_level=1.0)
+    assert abs(share.value - 0.35) < 1e-9  # there in 21 words
 
 
 def test_matched_is_her_words_while_she_says_them() -> None:

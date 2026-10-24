@@ -25,7 +25,7 @@ OVER_ROOM = 4.0
 ROOM = 0.002
 _SHARE_START = 0.5  # cautious: a misheard echo stays hers
 _SHARE_MIN, _SHARE_MAX = 0.02, 1.0
-_SHARE_KEEP = 50
+_SHARE_KEEP = 20
 _HER_SILENT = 0.01  # below this she is too quiet to learn from
 # Her own word is the user's only once her echo is learned from this many words,
 LEARNED_ENOUGH = 5
@@ -88,14 +88,15 @@ class EchoShare:
         self._seen: list[float] = []
 
     def learn(self, *, mic_level: float, her_level: float) -> None:
-        """One word that matched hers: the microphone's level and hers. One far louder
-        than her echo so far is the user saying her word, and not learned from."""
+        """One word that matched hers: the microphone's level and hers."""
         if her_level <= _HER_SILENT:
             return
         ratio = min(_SHARE_MAX, max(_SHARE_MIN, mic_level / her_level))
-        # Only once enough is known: one low first word must not lock out her echo.
-        if self.learned >= LEARNED_ENOUGH and ratio >= self.value * OVER_ECHO:
-            return
+        # Once enough is known, one word far louder than her echo so far (the user
+        # saying her word) counts only as that much louder: her echo turned up still
+        # climbs, a step at a time, but one loud word can't jump it.
+        if self.learned >= LEARNED_ENOUGH:
+            ratio = min(ratio, self.value * OVER_ECHO)
         self._seen.append(ratio)
         del self._seen[:-_SHARE_KEEP]
 
