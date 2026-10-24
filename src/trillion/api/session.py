@@ -28,6 +28,7 @@ from trillion.api.trace import Trace, Via, ahead_ms
 from trillion.brain import compact
 from trillion.brain import title as naming
 from trillion.brain.loop import (
+    INTERRUPTED,
     CallTimed,
     LoopEvent,
     ReplyDelta,
@@ -1585,16 +1586,32 @@ class Session:
         next turn never waits on it."""
         if self._naming is not None or self._title_source in ("model", "user"):
             return
-        replies = [
-            m
-            for m in self._history
-            if m.role == "assistant"
-            and any(isinstance(b, TextBlock) and b.text.strip() for b in m.blocks)
-        ]
-        said = [m for m, k in zip(self._history, self._kinds, strict=True) if k == "user"]
-        if not replies or not said or self._rt.provider is None:
+        exchange = self._first_exchange()
+        if exchange is None or self._rt.provider is None:
             return
-        self._naming = asyncio.create_task(self._name(said[0], replies[0]))
+        self._naming = asyncio.create_task(self._name(*exchange))
+
+    def _first_exchange(self) -> tuple[Msg, Msg] | None:
+        """The user's first message and her answer to it: her last words before the
+        next input, so the answer and not a "Let me check." before a tool call. A
+        reply cut off before any word is no answer; the next one with words is."""
+        said: Msg | None = None
+        answer: str | None = None
+        for m, k in zip(self._history, self._kinds, strict=True):
+            if k in ("user", "tap"):
+                if answer is not None:
+                    break
+                if k == "user" and said is None:
+                    said = m
+            elif k == "assistant" and said is not None:
+                text = "".join(b.text for b in m.blocks if isinstance(b, TextBlock))
+                # The mark an interrupted reply is saved with is not her words.
+                text = text.replace(INTERRUPTED.strip(), "").strip()
+                if text:
+                    answer = text
+        if said is None or answer is None:
+            return None
+        return said, Msg(role="assistant", blocks=(TextBlock(text=answer),))
 
     async def _name(self, said: Msg, reply: Msg) -> None:
         rt = self._rt
@@ -1603,7 +1620,8 @@ class Session:
             return
         named, usage = await naming.name(provider, [said, reply])
         try:
-            await self._record_usage(provider, usage)
+            # Recorded even if the session closes meanwhile: the call was paid for.
+            await asyncio.shield(self._record_usage(provider, usage))
             if named is None:
                 return
             if await rt.conversations.set_title(self.id, OWNER, named, "model"):

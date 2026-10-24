@@ -10,10 +10,10 @@ from typing import Any
 import pytest
 
 from tests.api.test_session import Page
-from tests.brain.fakes import ScriptedProvider, is_naming, say
+from tests.brain.fakes import ScriptedProvider, is_naming, say, use
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import Session
-from trillion.brain.types import ModelEvent
+from trillion.brain.types import ModelEvent, TextBlock
 from trillion.secrets.store import MemoryStore
 
 
@@ -143,3 +143,20 @@ async def test_closing_stops_a_naming_call_in_flight(rt: Runtime) -> None:
     await s.close()
     assert naming.cancelled()
     assert page.all("conversation.title") == []
+
+
+async def test_she_is_named_from_her_answer_not_what_she_said_before_a_tool(
+    rt: Runtime,
+) -> None:
+    look = use("file_list", {"path": str(rt.granted_roots[0])}, text="Let me check. ")
+    provider = ScriptedProvider(look, say("Nothing there yet."), say("Empty folder"), names=True)
+    rt.provider = provider
+    page = Page(rt)
+    s = await Session.start(rt, page.send, None)
+    await s.handle({"type": "turn.text", "text": "what is in my folder"})
+    await page.until("conversation.title")
+    _, sent = provider.calls[-1]
+    body = "".join(b.text for b in sent[0].blocks if isinstance(b, TextBlock))
+    assert "what is in my folder" in body and "Nothing there yet." in body
+    assert "Let me check." not in body
+    await s.close()
