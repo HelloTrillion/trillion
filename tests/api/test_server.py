@@ -298,6 +298,22 @@ def test_the_model_sees_the_soul_once_and_context_on_the_newest_turn_only(make: 
     assert app.provider.calls[0][1] == [first]
 
 
+def test_the_time_she_is_given_is_the_users_and_names_its_zone(make: Any) -> None:
+    from trillion.persona import setup
+
+    # No zone given at onboarding: the computer's own.
+    app = make(say("One."), say("Two."), env={"TZ": "Europe/Paris"})
+    with app.connect() as chat:
+        chat.say("first")
+        chat.until("state")
+        app.rt.profile = setup.Profile(user_name="Sam", timezone="Asia/Tokyo")
+        chat.say("second")
+    first, _, second = app.provider.calls[1][1]
+    assert first.blocks[0].text.startswith("<context>\nnow: ")
+    assert "(Europe/Paris)" in first.blocks[0].text
+    assert "JST (Asia/Tokyo)" in second.blocks[0].text  # the one they gave wins
+
+
 def test_with_no_model_the_app_still_opens_and_says_why(make: Any) -> None:
     app = make(model=False)
     with app.connect() as chat:

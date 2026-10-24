@@ -114,3 +114,21 @@ def test_a_skill_description_is_never_treated_as_a_placeholder() -> None:
     ident = Identity(agent_name="Nova", user_name="Sam")
     text = system_blocks(ident, "soul", skills=[("x", "Write as {user_name}.")])[0].text
     assert "- x: Write as {user_name}." in text
+
+
+def test_the_time_carries_the_users_zone_by_name() -> None:
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 10, 24, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+    text = volatile_context(now, [], zone="America/New_York")
+    assert "now: Saturday 2026-10-24 16:00 EDT (America/New_York)" in text
+    # With no zone known, the line is as it always was.
+    assert "now: Saturday 2026-10-24 16:00 EDT\n" in volatile_context(now, [])
+
+
+def test_a_timed_ask_is_told_the_user_is_away() -> None:
+    from trillion.persona.prompt import scheduled
+
+    text = scheduled(Identity(agent_name="Nova", user_name="Sam"))
+    assert "Sam asked for this earlier" in text and "{user_name}" not in text
+    assert "say plainly what you would do" in text

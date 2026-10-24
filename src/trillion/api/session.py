@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from trillion import __version__
 from trillion.api import listening
@@ -43,7 +44,7 @@ from trillion.persona.prompt import (
 )
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
-from trillion.spine.untrusted import wrap
+from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.types import VoiceError
@@ -60,11 +61,6 @@ NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
-# Tools whose results are someone else's words: a page anyone wrote, a file anyone sent.
-OUTSIDE = frozenset({"web_fetch", "file_read"})
-# Whole families of tools whose results are someone else's words: a connected
-# server's, and mail, events and documents from a connected account.
-OUTSIDE_CATEGORIES = frozenset({"mcp", "google", "slack"})
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -561,11 +557,7 @@ class Session:
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
             elif isinstance(ev, ToolEnded):
                 r = ev.response
-                outside = ev.name in OUTSIDE or (
-                    (d := rt.registry.definition(ev.name)) is not None
-                    and d.category in OUTSIDE_CATEGORIES
-                )
-                if outside and r.status == "succeeded":
+                if is_outside(ev.name, rt.registry.definition(ev.name)) and r.status == "succeeded":
                     # From here to the end of the turn, what she writes to memory is
                     # something she read, not something the user said.
                     self._outside_turn = turn
@@ -790,12 +782,15 @@ class Session:
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
         spoken = kind == "user" and self._via == "voice"
+        # The user's own clock, so "at four" means four where they are (AGT-9).
+        zone = self._rt.zone()
         context = volatile_context(
-            datetime.now().astimezone(),
+            datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
             pending,
             self._remembered(text) if kind == "user" else "",
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
+            zone=zone or "",
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
         if kind == "user" and self._rt.web is not None:

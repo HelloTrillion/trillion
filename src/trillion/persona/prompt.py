@@ -180,6 +180,11 @@ def compaction(identity: Identity) -> str:
     return _fill(_prompt("compact.md"), identity)
 
 
+def scheduled(identity: Identity) -> str:
+    """What a timed ask is told on top of her usual instructions: the user is away (AGT-9)."""
+    return _fill(_prompt("scheduled.md"), identity)
+
+
 def greeting(identity: Identity) -> str:
     """What the app tells her when onboarding ends, so her first real line is her own."""
     return _fill(_prompt("greeting.md"), identity)
@@ -190,14 +195,19 @@ def volatile_context(
     pending: Sequence[PendingNote],
     recalled: str = "",
     spoken: Identity | None = None,
+    zone: str = "",
 ) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
 
     `recalled` is memory that matches the message, already wrapped as untrusted
     text by the caller. It stays outside the identity block and outside `<context>`:
-    what was once said is never promoted to something the host asserts (MEM-6b)."""
-    lines = [f"now: {now.strftime('%A %Y-%m-%d %H:%M %Z').strip()}"]
+    what was once said is never promoted to something the host asserts (MEM-6b).
+
+    `zone` is the user's timezone by name, so she can work out a time for a reminder
+    in it (AGT-9); `now` is already in that zone."""
+    when = now.strftime("%A %Y-%m-%d %H:%M %Z").strip()
+    lines = [f"now: {when} ({zone})" if zone else f"now: {when}"]
     lines.extend(f"waiting for an answer: {p.pending_id}: {p.summary}" for p in pending)
     if spoken is not None:
         # How this one message arrived (PER-3, #40). It rides here, with the message,

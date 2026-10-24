@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import secrets
 import time
@@ -27,6 +28,7 @@ from trillion.connectors.slack.connection import SlackConnection
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
+from trillion.scheduler import when
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
 from trillion.spine.audit import audit_key
@@ -121,6 +123,17 @@ def build_listening(settings: ListenSettings | None, secrets: SecretStore) -> ST
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def local_zone(env: Mapping[str, str] | None = None) -> str | None:
+    """This computer's timezone as an IANA name, when it can be told: TZ, then where
+    /etc/localtime points. None where neither says (Windows keeps its own names)."""
+    names = [(os.environ if env is None else env).get("TZ", "").removeprefix(":")]
+    with contextlib.suppress(OSError):
+        target = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in target:
+            names.append(target.split("zoneinfo/", 1)[1])
+    return next((n for n in names if n and when.known(n)), None)
 
 
 @dataclass(kw_only=True)
@@ -225,6 +238,11 @@ class Runtime:
                 " answer, with no tools, and only people the user allowed"
             ),
         }
+
+    def zone(self) -> str | None:
+        """The user's timezone: the one they gave (USER.md), else this computer's (AGT-9)."""
+        chosen = self.profile.timezone if self.profile is not None else ""
+        return chosen if chosen and when.known(chosen) else local_zone(self.env)
 
     def _mcp_fact(self) -> str:
         servers = self.mcp.states.values() if self.mcp is not None else []
