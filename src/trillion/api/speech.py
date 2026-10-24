@@ -82,8 +82,14 @@ class Speaker:
         await self.pause()
         if self._worker is not None:
             await self._queue.put(None)
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await self._worker
+            except asyncio.CancelledError:
+                # The worker stopped by `stop()` is fine; this task being stopped is not
+                # something to swallow, or its turn would end as if it were heard.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
         await self._send("audio.end", turn=self._turn, sentences=self._count)
 
     async def stop(self) -> None:

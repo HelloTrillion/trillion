@@ -70,6 +70,11 @@ from trillion.voice.types import STTProvider, TTSProvider
 logger = logging.getLogger(__name__)
 
 OWNER = "local"
+# Speech outside a turn (a notice, a tap's answer, a sentence about a leg that is down)
+# is numbered from here, inside the u32 the audio frame carries, so the page's
+# "played" for it is never mistaken for a turn's, and a turn the page stopped never
+# swallows it.
+OUT_OF_TURN = 1 << 30
 SPEECH_PREF = "speech"
 LISTEN_PREF = "listening"
 # The last choice made, kept when the feature is switched off so that switching it
@@ -213,6 +218,12 @@ class Runtime:
     sessions: set[Any] = field(default_factory=set)
     by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
+    _asides: int = 0
+
+    def out_of_turn(self) -> int:
+        """A fresh number for speech outside a turn, never reused in this process."""
+        self._asides += 1
+        return OUT_OF_TURN + self._asides
 
     def facts(self) -> dict[str, Any]:
         """What is true of this running process, for `describe_self` (BRN-6)."""

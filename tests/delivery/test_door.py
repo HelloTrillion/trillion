@@ -216,3 +216,36 @@ async def test_missed_and_failed_never_carry_stored_words(store: SqliteScheduleS
 def test_a_turn_sent_to_be_heard_always_says_when() -> None:
     with pytest.raises(ValueError):
         dataclasses.replace(IDLE, spoken_turn=1, spoken_ms=None)
+
+
+class Slow(FakePage):
+    """Takes the notices, then is slow to finish sending them."""
+
+    def __init__(self, id: str, active_ms: int = 0) -> None:
+        super().__init__(id, active_ms)
+        self.gate = asyncio.Event()
+        self.finished = False
+
+    async def deliver(self, notices: Sequence[Delivery]) -> None:
+        self.got.extend(notices)  # saved: from here it has them
+        await self.gate.wait()
+        self.finished = True
+
+
+async def test_a_hand_over_cut_short_still_finishes_and_is_never_held_again(
+    store: SqliteScheduleStore,
+) -> None:
+    page = Slow("c1", active_ms=1)
+    d, _, _ = door(store, [page])
+    n = await add(store)
+    offer = asyncio.create_task(d.offer(page))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert [x.id for x in page.got] == [n.id]
+    offer.cancel()  # the scheduler stopping, say
+    await asyncio.sleep(0)
+    page.gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await offer
+    assert page.finished  # the session was never cut off mid-hand-over
+    assert await store.held("local") == []  # taken once, so never held for another page

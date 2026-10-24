@@ -14,6 +14,7 @@ the door then holds them again for the next free page.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
@@ -171,18 +172,25 @@ class Door:
                     )
         if not out:
             return 0
+        # Its own task, so a tick cut short never cuts a hand-over short: past its save
+        # the session must not stop half way, or they would be held and saved again.
+        handing = asyncio.ensure_future(session.deliver(out))
         try:
-            await session.deliver(out)
+            await asyncio.shield(handing)
+        except asyncio.CancelledError:
+            await _finished(handing)
+            if not handing.cancelled() and handing.exception() is not None:
+                await asyncio.shield(self._hold(out, session))
+            raise
         except Exception as e:
+            # It raised before taking any: they are held again for the next free page.
             logger.warning("page %s could not take notices: %s", session.id, type(e).__name__)
             await self._hold(out, session)
             return 0
-        except BaseException:
-            await asyncio.shield(self._hold(out, session))
-            raise
         return len(out)
 
     async def _hold(self, out: Sequence[Delivery], session: SessionLike) -> None:
+        """Only for a hand-over that raised: by the contract it took none of them."""
         for d in out:
             await self._store.unmark_delivered(d.id, session.id)
 
@@ -191,3 +199,11 @@ class Door:
         live = self.live()
         if live is not None:
             await self.offer(live)
+
+
+async def _finished(task: asyncio.Future[None]) -> None:
+    """Wait for a hand-over to end, however often the waiting is cancelled. It is short:
+    one write and the sends, never the speech."""
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait({task})
