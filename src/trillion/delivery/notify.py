@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -51,18 +52,37 @@ _APPLESCRIPT = (
     "end run",
 )
 
+# Some notification servers render markup in the body.
+_ENTITIES = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}
+
 Run = Callable[..., Any]
 Which = Callable[[str], str | None]
 
 
-def cut(text: str) -> str:
-    """One line, at most LIMIT characters."""
+def _keep(c: str) -> bool:
+    # Format characters (zero-width joiners, direction marks) are part of the words.
+    return c.isprintable() or c.isspace() or unicodedata.category(c) == "Cf"
+
+
+def cut(text: str, *, markup: bool = False) -> str:
+    """One line, at most LIMIT characters. With `markup`, `&`, `<` and `>` are escaped
+    first, and the cut never splits an entity, so the result stays within LIMIT."""
     # Surrogates can't be encoded; control characters (NUL raises in argv and in the
     # Windows environment) are dropped, and any whitespace run becomes one space.
     clean = text.encode("utf-8", "replace").decode("utf-8")
-    clean = "".join(" " if c.isspace() else c for c in clean if c.isprintable() or c.isspace())
+    clean = "".join(" " if c.isspace() else c for c in clean if _keep(c))
     line = " ".join(clean.split())
-    return line if len(line) <= LIMIT else line[: LIMIT - 1] + "…"
+    pieces = [_ENTITIES.get(c, c) for c in line] if markup else list(line)
+    if sum(len(p) for p in pieces) <= LIMIT:
+        return "".join(pieces)
+    out: list[str] = []
+    size = 0
+    for p in pieces:
+        if size + len(p) > LIMIT - 1:
+            break
+        out.append(p)
+        size += len(p)
+    return "".join(out) + "…"
 
 
 def _system_powershell(env: Mapping[str, str]) -> str | None:
@@ -96,9 +116,8 @@ def command(
     exe = which("notify-send")
     if exe is None:
         return None
-    # Some notification servers render markup in the body.
-    safe = b.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return [exe, "--app-name=Trillion", "--", t, safe], {}
+    # Escaped inside the cut, so the escaped body is what the limit applies to.
+    return [exe, "--app-name=Trillion", "--", t, cut(body, markup=True)], {}
 
 
 def notify(

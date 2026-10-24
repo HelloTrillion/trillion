@@ -125,3 +125,20 @@ def test_windows_prefers_the_system_powershell(tmp_path: object) -> None:
     n.notify("T", "B", platform="win32", run=run, which=which, env={"SystemRoot": str(root)})
     ((args, _),) = run.calls
     assert args[0] == str(exe)
+
+
+def test_linux_body_is_escaped_before_it_is_cut_so_it_stays_within_the_limit() -> None:
+    run = Recorder()
+    n.notify("T", "&" * 500, platform="linux", run=run, which=which, env={})
+    ((args, _),) = run.calls
+    body = args[-1]
+    assert len(body) <= n.LIMIT and body.endswith("&amp;…")
+    # Never half an entity before the ellipsis.
+    assert body[:-1].replace("&amp;", "") == ""
+
+
+def test_format_characters_are_kept() -> None:
+    family = "\U0001f468‍\U0001f469‍\U0001f467"  # joined by zero-width joiners
+    text = f"{family} ‏שלום‎ ok"
+    assert n.cut(text) == text
+    assert n.cut("a\x00b\x1bc") == "abc"  # control characters still go
