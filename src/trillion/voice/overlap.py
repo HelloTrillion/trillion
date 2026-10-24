@@ -15,7 +15,7 @@ start the deciding.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Literal
 
 Decision = Literal["wait", "carry_on", "interrupt"]
@@ -97,7 +97,7 @@ def _number(w: str) -> list[str]:
     return _year(n) if len(w) == 4 and 1100 <= n <= 2099 else _spelled(n)
 
 
-def _words(text: str) -> list[str]:
+def words_of(text: str) -> list[str]:
     """Words, lower case, with numbers and money spelled out: she writes "$5" and
     "10:30", says "five dollars" and "ten thirty", and either may come back."""
     text = text.lower().replace("\u2019", "'")
@@ -112,6 +112,9 @@ def _words(text: str) -> list[str]:
         else:
             out.append(w)
     return out
+
+
+_words = words_of
 
 
 def _acks(words: list[str]) -> int | None:
@@ -173,6 +176,25 @@ def _mine(w: str, hers: set[str]) -> bool:
     # Only her inflected form of the stop word: she said "stopped" and "stop" came
     # back. Not the other way: her "can" does not make the user's "cancel" hers.
     return any(h.startswith(w) for h in hers)
+
+
+def is_stop(w: str) -> bool:
+    """Whether a word (as `words_of` gives it) means "stop"."""
+    return w in _STOPS
+
+
+def matches(w: str, hers: Collection[str], *, stop: bool = False) -> bool:
+    """Whether a word (as `words_of` gives it) is one of hers. Loosely: the same word,
+    or one starts the other, the shorter at least 3 letters ("leave" and "leaving").
+    With `stop`, strictly, as a stop word is: her word itself, or her inflection of it
+    ("stop" by her "stopped"), never a shorter word of hers ("cancel" by her "can")."""
+    if w in hers:
+        return True
+    if len(w) < _STEM:
+        return False
+    if stop:
+        return any(h.startswith(w) for h in hers)
+    return any(h.startswith(w) or (len(h) >= _STEM and w.startswith(h)) for h in hers)
 
 
 def _stop(w: str, hers: set[str]) -> bool:
