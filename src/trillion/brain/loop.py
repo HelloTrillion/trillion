@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from trillion.brain.types import (
     Block,
     Done,
+    ModelEvent,
     ModelProvider,
     Msg,
     ProviderError,
@@ -100,11 +101,15 @@ async def run_turn(
     emit: Callable[[LoopEvent], Awaitable[None]],
     save: Callable[[Msg], Awaitable[None]],
     limits: Limits | None = None,
+    first: AsyncIterator[ModelEvent] | None = None,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
     `history` ends with the user's message. `save` is called once for each message
-    the turn adds; `emit` must not raise."""
+    the turn adds; `emit` must not raise.
+
+    `first`, when given, stands in for the first model call: a draft started while the
+    user was finishing (VOI-12)."""
     guard = LoopGuard(limits)
     tools = tool_schemas(registry)
     pricing = provider.pricing()
@@ -162,13 +167,20 @@ async def run_turn(
         raw: ProviderRaw | None = None
         clock = asyncio.get_running_loop().time
         started = clock()
-        first: float | None = None
-        try:
-            async for ev in provider.stream(
+        # Only the first round may use the given stream; later rounds ask the model.
+        source = (
+            first
+            if first is not None
+            else provider.stream(
                 system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS
-            ):
-                if first is None and isinstance(ev, TextDelta | ToolUse):
-                    first = clock()
+            )
+        )
+        first = None
+        first_token: float | None = None
+        try:
+            async for ev in source:
+                if first_token is None and isinstance(ev, TextDelta | ToolUse):
+                    first_token = clock()
                 if isinstance(ev, TextDelta):
                     text.append(ev.text)
                     await emit(ReplyDelta(text=ev.text))
@@ -190,7 +202,7 @@ async def run_turn(
                 await add(_assistant("".join(text), [], None))
             return done("provider_error", e.kind)
 
-        await emit(CallTimed(started=started, first_token=first, ended=clock(), usage=spent))
+        await emit(CallTimed(started=started, first_token=first_token, ended=clock(), usage=spent))
         usage = usage + spent
         over_budget = False
         if pricing is not None and cost is not None:

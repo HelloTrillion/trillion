@@ -61,7 +61,12 @@ class Run:
     async def save(self, msg: Msg) -> None:
         self.saved.append(msg)
 
-    async def go(self, provider: ScriptedProvider, limits: Limits | None = None) -> TurnDone:
+    async def go(
+        self,
+        provider: ScriptedProvider,
+        limits: Limits | None = None,
+        first: AsyncIterator[ModelEvent] | None = None,
+    ) -> TurnDone:
         return await run_turn(
             provider=provider,
             router=self.spine.router,
@@ -72,6 +77,7 @@ class Run:
             emit=self.emit,
             save=self.save,
             limits=limits,
+            first=first,
         )
 
     def results(self) -> list[ToolResultBlock]:
@@ -324,3 +330,40 @@ async def test_an_interrupt_while_the_tool_call_is_being_saved_still_answers_it(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert _pairs(history) == (1, 1)
+
+
+async def _drafted(events: list[ModelEvent]) -> AsyncIterator[ModelEvent]:
+    for ev in events:
+        yield ev
+
+
+async def test_a_first_call_given_to_the_turn_is_used_instead_of_calling_the_model(
+    run: Run,
+) -> None:
+    target = run.spine.granted / "note.txt"
+    target.write_text("hi", encoding="utf-8")
+    provider = ScriptedProvider(say("It says hi."))
+    drafted = _drafted(use("file_read", {"path": str(target)}, text="Let me look. "))
+    done = await run.go(provider, first=drafted)
+    # One model call: the round after the tool. The first round came from the draft.
+    assert len(provider.calls) == 1
+    assert done.stop == "end"
+    assert [type(e) for e in run.events] == [
+        ReplyDelta,
+        CallTimed,
+        ToolStarted,
+        ToolEnded,
+        ReplyDelta,
+        CallTimed,
+    ]
+    assert run.events[0] == ReplyDelta(text="Let me look. ")
+    (result,) = run.results()
+    assert not result.is_error
+
+
+async def test_a_given_first_call_that_ends_in_text_never_calls_the_model(run: Run) -> None:
+    provider = ScriptedProvider(say("unused"))
+    done = await run.go(provider, first=_drafted(say("Hi.")))
+    assert provider.calls == []
+    assert done.stop == "end"
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Hi."),))]
