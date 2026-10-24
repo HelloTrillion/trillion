@@ -26,6 +26,7 @@ a radio. This spec makes three changes, Deepgram first:
 | D6 | **Acknowledgements are a short English list.** In any other language every word counts as an interruption. | Wrong in the safe direction: the user is heard. |
 | D7 | **Hearing that cannot give words mid-speech keeps today's barge-in.** With local Whisper or OpenAI, a voice over hers stops her at once, as now. | There are no words to judge with. |
 | D8 | **An interrupted spoken reply is kept up to the sentence being heard,** then "…" and the existing interrupted marker. Text she wrote but never said is dropped from the conversation, the screen and her memory. | The record matches what happened. |
+| D9 | **With hearing that judges turns, the microphone streams to it while she speaks, and her echo is told from the user by the words** (*as built after the second live test*). The page's loudness detector is used only for hearing that cannot judge turns. | What the user chose. Over speakers, the detector missed the user or lost their first words (see §3). |
 
 ## What the user sees
 
@@ -98,31 +99,120 @@ A **draft** is a real turn started early, with a closed **gate**.
 
 ### 3. Talking over her (VOI-9)
 
+*As built after the second live test (D9).* The first build had the page decide, by
+loudness, that the user had started talking over her, and only then send audio. With
+a real microphone and speakers, cutting in barely worked and the first three or four
+words were lost:
+
+- the user had to be about twice as loud as her learned echo, which over speakers is
+  often louder than normal speech into a desk microphone;
+- while the user talked below that bar, the detector learned their voice as her echo,
+  and the bar rose against them;
+- only 600 ms before the detection was kept, so earlier words were gone.
+
+So, with hearing that judges turns, the microphone now streams to the recognizer for as
+long as she speaks, and the core decides by the words.
+
 **The page** (`apps/web/src/main.ts`, `barge.ts`):
 
-- **Detecting:** the existing `BargeDetector` still decides that someone started speaking over her.
-- **Hearing that judges turns:**
-  - Her playback gain ramps to 0.2 over 80 ms.
-  - The page sends `{type: "overlap"}` and then the held pre-roll audio, as `barge` does today.
-- **Otherwise:** it sends `barge`, as today.
-- **On `overlap.over`:** the gain ramps back to 1, and watching for barge-in continues.
-- **One microphone, not two** (*as built after live testing*): after a spoken turn, `mic.stop{reason: end}` no longer closes the microphone when barge-in could watch her reply (`holdForReply` in `barge.ts`). It switches to watching and stays open until her first sound, when the detector starts over for her echo. Opening an echo-cancelled microphone again at her first sound reconfigured the audio device on a Mac and glitched her first words. Not after `too_long`: the user is often still talking, and the warm-up would learn their voice as the room; that closes as before. Before she sounds, the detector hears the room (her level is 0): with hearing that judges turns, the user going on talking sends `overlap` and the core decides; otherwise nothing is sent and the pre-roll rolls on until she speaks. While it watches, the Speak button shows "Listening" ("Listening for you to cut in. Nothing is sent."), even while she answers (VOI-15d). The held microphone closes as a watching one does, and also when the turn ends without a sound from her, or after 15 s of waiting.
+- **Hearing that judges turns, her voice played on this page, barge-in on:** when the
+  microphone is held for her reply (right after the user's spoken turn) or watching
+  starts at her first sound, the page sends `{type: "overlap.watch"}` once and then
+  every microphone frame. It does no loudness detection and no ducking of its own.
+  - `overlap.duck`: her playback gain ramps to 0.2 over 80 ms.
+  - `overlap.over`: the gain ramps back to 1, and the microphone goes on streaming.
+  - `overlap.over` with `end: true`, or `mic.stop`: the watch is over; the microphone
+    closes unless it is already the user's turn.
+  - `interrupted` / `audio.stop`: she stops, as before; the microphone stays as it is,
+    because the core is making it the user's turn (`mic.start` follows) or ends it.
+  - `mic.start`: the stream simply carries on as the user's turn.
+  - When the page stops watching itself (its 15 s hold without a sound from her, the
+    switch turned off, the microphone failing), it sends `{type: "overlap.unwatch"}`.
+  - The Speak button shows "Listening" ("Listening for you to cut in."), and Settings →
+    Hearing says that while she talks the microphone goes to the hearing service so it
+    can tell when the user cuts in.
+- **Otherwise** (local Whisper, OpenAI): the `BargeDetector` decides that someone
+  started speaking over her, and the page sends `barge` with the held pre-roll, as
+  before (D7). Two fixes from the live test: after the half-second warm-up, a level
+  well above the room only creeps the learned echo and room level up (at most 20% at a
+  time, at 0.4% per frame), so the user talking under the bar no longer raises it; and
+  the pre-roll keeps two seconds (33 frames), not 600 ms.
+- **One microphone, not two** (*as built after the first live test*): after a spoken
+  turn, `mic.stop{reason: end}` does not close the microphone when barge-in could watch
+  her reply (`holdForReply` in `barge.ts`). It switches to watching and stays open,
+  rather than opening again at her first sound: opening an echo-cancelled microphone
+  then reconfigured the audio device on a Mac and glitched her first words. Not after
+  `too_long`: the user is often still talking. The held microphone closes when the
+  turn ends without a sound from her, or after 15 s of waiting.
 
-**The session**, on `overlap`:
+**The session**, on `overlap.watch`:
 
-- It opens a listener in **overlap mode** without stopping her reply. `_listen` accepts this while a turn is running.
-- It decides with `voice/overlap.py`, a pure function `decide(words, done, elapsed_s, playing) -> "wait" | "carry_on" | "interrupt"`:
-  - **Echo:** words that all appear in the sentence she is playing, or the one before, count as her own voice coming back. They are ignored, except stop words ("stop", "wait", "no", "hold on" and the like), which always count as the user.
-  - **Interrupt:** any word not in the acknowledgement list is an interruption, as soon as it is heard.
-  - **Carry on (acknowledgement):** words that are all acknowledgements, three at most, and either `done` or 1.2 s passed.
+- **When:** a reply is coming or being heard: a running turn (including the moment
+  right after the user's turn, before her reply starts), her last spoken reply still
+  playing (`_tail`), or her sound not yet reported played. Hearing must judge turns,
+  a model must be set, and no listening may be open. Otherwise it answers
+  `overlap.over` with `end: true`.
+- **Watching:** a `Listener` in watch mode streams every frame and never ends by
+  itself; the recognizer's turns come and go. Nothing heard is shown, and no draft
+  starts. `Listener.turn_text()` is the words of the recognizer's current turn;
+  `Listener.forget()` lets go of words already judged (the recognizer repeats the
+  whole turn in each report, so they are skipped, not deleted).
+- **Echo by words** (`voice/overlap.py`, `judge_watch(words, playing)` →
+  `"nothing" | "echo" | "candidate"`, pure): words are her echo when at least 60% of
+  them are in what she is saying now: the sentence being heard, the one before **and
+  the next one**, because her audio runs ahead of its reports. Stop words get no say
+  here, so her own "No, the train…" coming back does not stop her. Only the words not
+  already judged are weighed (`judged_prefix`): her echo grows within one recognizer
+  turn, and the user's first words after it count on their own. Words the recognizer
+  has revised are judged again from the start.
+- **A candidate** (words that are not hers): the page is sent `overlap.duck`, the
+  echo judged before them is forgotten, and the decision clock starts at that moment.
+  From there `decide` runs exactly as before:
+  - **Echo:** words that all appear in the sentence she is playing, or the one before,
+    are ignored, except stop words ("stop", "wait", "no", "hold on" and the like),
+    which always count as the user.
+  - **Interrupt:** any word not in the acknowledgement list is an interruption, as soon
+    as it is heard.
+  - **Carry on (acknowledgement):** words that are all acknowledgements, three at most,
+    and either `done` or 1.2 s passed.
   - **Carry on (no words):** no words by 1.5 s means a cough or a door.
-  - **Wait:** anything else, until the 1.5 s limit. At the limit, words decide as above.
-- **On `carry_on`:** the overlap listener is abandoned, `overlap.over` is sent and she carries on. Nothing is saved, and the turn counter does not move.
-- **On `interrupt`:**
-  - The reply is stopped as `_on_barge` stops it today (VOI-15c: approved work finishes and is recorded).
-  - The same listener goes on as the user's turn, with normal patience. Its words so far are kept.
-- **A word that leads on, alone over her** ("so"): its `done` is held, but deciding never waits for the end. It goes by the words: "so" is not an acknowledgement, so she stops at once, and no acknowledgement leads on.
-- **If her reply finishes while deciding:** `carry_on` simply ends the overlap. `interrupt` is an ordinary turn, with nothing left to stop.
+  - **Wait:** anything else, until the 1.5 s limit.
+- **On `carry_on`:** `overlap.over` is sent, the words are forgotten and the listener
+  goes back to watching. Nothing is saved, and the turn counter does not move.
+- **On `interrupt`:** the reply is stopped as `_on_barge` stops it (VOI-15c: approved
+  work finishes and is recorded), her saved reply is trimmed to what was heard (§4),
+  and the same listener goes on as the user's turn with normal patience
+  (`mic.start{follow_up: false}`). The candidate's words are kept; her echo before them
+  is not.
+- **Her reply heard to the end** (`playback.ended`) while only watching, after a spoken
+  turn: the watch listener becomes the follow-up window (`FOLLOW_UP_S`,
+  `mic.start{follow_up: true}`), its echo forgotten, on the same recognizer
+  connection. Heard to the end while deciding: carrying on does the same.
+- **The watch ends** (`overlap.over` with `end: true`) when her turn ends with nothing
+  of hers left to hear (a reply only written, an error), when nothing of hers has
+  started playing for 15 s (`WATCH_HOLD_S`), when no audio arrives for 3 s, when the
+  recognizer fails, on `overlap.unwatch`, a typed message or new settings; and quietly
+  on Stop or a closed session.
+- **Other messages while watching:** a `barge` stops her now, and the watch becomes
+  the turn; `listen.start` (Speak) over her finished reply does the same, with nothing
+  heard before it kept; the page's own `overlap` starts deciding at once.
+- **Facts:** listening is true while watching, so notices wait (VOI-17). No draft
+  starts while a watch or a decision is open.
+- **Logs:** only the phase by name (watching, deciding, carry_on, interrupt,
+  follow_up, watch_over), never words.
+- **Cost and privacy:** with hearing that judges turns, audio goes to the hearing
+  service for as long as she speaks after a spoken turn, not only while the user
+  talks. Deepgram bills that audio by the minute. The Settings note says so, and the
+  switch turns it off.
+
+**The old `overlap`** (the page ducked her itself) is still accepted, as before: it
+opens a listener in overlap mode and decides with `decide`.
+
+- **A word that leads on, alone over her** ("so"): its `done` is held, but deciding
+  never waits for the end. "So" is not an acknowledgement, so she stops at once.
+- **If her reply finishes while deciding:** `carry_on` simply ends the overlap, or for
+  a watch, opens the follow-up window. `interrupt` is an ordinary turn, with nothing
+  left to stop.
 
 The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "right", "okay", "ok", "sure", "got it", "i see", "exactly", "totally" and "true". It is matched on whole, normalized words.
 
@@ -154,7 +244,8 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 - **A draft is running when a notice arrives:** the microphone is open, so the door holds the notice (VOI-17). Nothing changes.
 - **Overlap while her reply is only text** (voice muted): there is nothing to duck, and the page does not watch for barge-in (as today).
 - **A tap on an approval card during a draft:** taps belong to confirmed turns. A draft holds no card, because cards come from tools and a draft stops before tools.
-- **Privacy:** Nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only whether a draft was used or dropped, and overlap decisions are logged as carry_on or interrupt.
+- **Privacy:** Nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only whether a draft was used or dropped, and overlap phases are logged by name only. With hearing that judges turns and barge-in on, the microphone goes to the hearing service while she speaks after a spoken turn (D9); Settings → Hearing says so.
+- **Talking right after a turn ends, before her reply starts:** words that are not hers are a candidate at once (nothing of hers is playing yet), and an interruption cancels the turn being started, as a barge would.
 
 ## Testing
 
@@ -172,24 +263,27 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
   - the switch turned off;
   - usage recorded for a dropped draft that had finished;
   - a draft dropped when the system prompt changed.
-- **`tests/voice/test_overlap.py`:** `decide` on acknowledgements, interruptions, echo, silence, the time limits and words in another language.
+- **`tests/voice/test_overlap.py`:** `decide` on acknowledgements, interruptions, echo, silence, the time limits and words in another language; `judge_watch` on her echo (misheard too), her own "No, …", the user's words amid her echo, acknowledgements; `judged_prefix`.
+- **`tests/voice/test_listener.py`:** watch mode streams and never ends, one recognizer turn at a time; `forget`; `hear` (a turn already done is done); back to `watch`; a watch as a follow-up window.
 - **`tests/api/test_overlap_session.py`:**
   - carry on: the reply is untouched and nothing is saved;
   - interrupt: the reply stops and the same listener becomes the turn;
   - the reply finishing mid-decision;
   - Whisper keeps `barge`.
+- **`tests/api/test_overlap_watch.py`:** echo alone changes nothing; an acknowledgement ducks then carries on, reply untouched; the user's words after her echo interrupt, with their first words kept and the echo left out; her reply ending while watching becomes the follow-up window on the same listener; watching with a running turn, with a tail, and before her first sound; a reply that never sounds; the 15 s and no-audio bounds; `overlap.unwatch`; Stop, close, a typed message, new settings; `barge`, `listen.start` and `overlap` while watching; no draft; refusals.
 - **`tests/api/test_heard.py`:**
   - an interrupted spoken reply saved to the heard sentence;
   - nothing heard;
   - typed and muted replies unchanged;
   - `kept` sent to the page;
   - a reply already saved, talked over while it plays, trimmed to what was heard, and never once a draft has read it (a draft that never started leaves it trimmable).
-- **Web:** ducking and restoring the gain; `overlap` vs `barge` by capability; `playback.sentence` reporting; replacing the bubble with `kept`.
+- **Web:** ducking and restoring the gain; `overlap` vs `barge` by capability; `playback.sentence` reporting; replacing the bubble with `kept`; watching by streaming or locally (`watchMode`, `watchTitle`); the detector not learning the user's voice under the bar; a two-second pre-roll; the Settings note (`bargeHint`).
 - **Live check:** with the user's Deepgram key and audio stubbed so nothing plays aloud:
   - a mid-sentence pause no longer cuts the turn;
   - a draft is used on a clear ending;
   - an acknowledgement over her reply carries on;
-  - an interruption is kept to the heard sentence.
+  - an interruption is kept to the heard sentence;
+  - over speakers, her echo does not stop her, and cutting in keeps the user's first words.
 
 ## Not in this spec
 

@@ -94,6 +94,8 @@ Multiple finalized segments in one thought; a mid-thought pause of 1.5s; a self-
 | 2.2a.2 | Say a short question with a clear ending | She replies faster than with the switch off; the turn trace shows `draft=used`. |
 | 2.2a.3 | Say "yeah" while she is speaking | Her voice dips, then she carries on; nothing is saved as a turn. |
 | 2.2a.4 | Say "wait" while she is speaking | She stops, "wait" becomes your turn, and the saved reply ends at the sentence you were hearing. |
+| 2.2a.4a | On speakers, not headphones, let her finish a long reply without speaking; then ask again and cut in at normal volume with "what about the bus instead" | Her own voice coming back never ducks or stops her. Cutting in stops her within a second, and your turn starts with "what about", not with a word or two of hers. The Speak button reads "Listening" while she talks. |
+| 2.2a.4b | Let her finish a reply, then speak within three seconds | No new connection opens: the watch becomes the follow-up window, and your words are the turn. |
 | 2.2a.5 | Turn "Start thinking before I finish" off and on in Settings → Hearing | The switch changes and is still the same after a reload. |
 
 ### 2.3 Capture (VOI-2, VOI-4, VOI-15d)
