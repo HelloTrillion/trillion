@@ -222,3 +222,61 @@ async def test_her_end_and_what_was_said_aloud_are_known() -> None:
     s.played(1)
     assert "It costs five." in s.playing(ahead=1, spoken=True)
     assert "It costs five." not in s.playing(ahead=1)
+
+
+class ToneVoice(FakeVoice):
+    """0.1 s of a square tone at a known amplitude, in uneven pieces."""
+
+    def __init__(self, amplitude: int, rate: int = 16_000) -> None:
+        super().__init__()
+        self.output_format = AudioFormat(sample_rate=rate)
+        self._amplitude = amplitude
+        self._rate = rate
+
+    async def synthesize(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
+        self.asked.append(text)
+        n = self._rate // 10
+        pcm = struct.pack(f"<{n}h", *[self._amplitude * (1 if i % 2 else -1) for i in range(n)])
+        # Pieces that don't line up with her 20 ms windows: partial ones carry over.
+        for a, b in ((0, 202), (202, 1002), (1002, len(pcm))):
+            yield pcm[a:b]
+
+
+@pytest.mark.parametrize("rate", [16_000, 24_000])
+async def test_her_loudness_is_reported_per_20_ms_with_what_she_said(rate: int) -> None:
+    wire = Wire()
+    reports: list[tuple[int, str, str, list[float]]] = []
+    s = Speaker(
+        ToneVoice(8192, rate),
+        "v1",
+        7,
+        wire.send,
+        wire.send_bytes,
+        on_audio=lambda seq, written, spoken, levels: reports.append(
+            (seq, written, spoken, levels)
+        ),
+    )
+    await s.feed("It costs **five**. ")
+    await s.finish()
+    assert {(seq, w, sp) for seq, w, sp, _ in reports} == {
+        (1, "It costs **five**.", "It costs five.")
+    }
+    levels = [level for *_, chunk in reports for level in chunk]
+    assert len(levels) == 5
+    assert all(abs(level - 8192 / 32768) < 1e-6 for level in levels)
+
+
+async def test_no_loudness_is_reported_for_a_voice_the_page_makes() -> None:
+    reports: list[int] = []
+    wire = Wire()
+    s = Speaker(
+        SystemVoice(),
+        "v1",
+        7,
+        wire.send,
+        wire.send_bytes,
+        on_audio=lambda seq, *_: reports.append(seq),
+    )
+    await s.feed("Short answer: yes. ")
+    await s.finish()
+    assert reports == []

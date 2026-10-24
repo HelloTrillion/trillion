@@ -16,13 +16,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import struct
+import sys
+from array import array
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trillion.persona.prompt import degraded
 from trillion.voice.sentences import SentenceSplitter
 from trillion.voice.speakable import speakable
+from trillion.voice.timeline import WINDOW_S
 from trillion.voice.types import TTSProvider, VoiceError
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,9 @@ RETRY_S = 0.5
 
 SendJson = Callable[..., Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
+# Her audio for a sentence as it is sent: seq, as written, as said, loudness per 20 ms.
+OnAudio = Callable[[int, str, str, list[float]], None]
+_DEFAULT_RATE = 16_000
 
 
 def frame(turn: int, sentence: int, pcm: bytes) -> bytes:
@@ -55,12 +62,18 @@ class Speaker:
         turn: int,
         send: SendJson,
         send_bytes: SendBytes,
+        on_audio: OnAudio | None = None,
     ) -> None:
         self._provider = provider
         self._voice = voice
         self._turn = turn
         self._send = send
         self._send_bytes = send_bytes
+        self._on_audio = on_audio
+        fmt = provider.output_format
+        rate = fmt.sample_rate * fmt.channels if fmt is not None else _DEFAULT_RATE
+        # Bytes of PCM16 in one loudness window.
+        self._window_bytes = 2 * max(1, round(rate * WINDOW_S))
         # Her voice starts at the first natural pause, not the first full stop.
         self._splitter = SentenceSplitter(clause_first=True)
         self._count = 0
@@ -196,6 +209,8 @@ class Speaker:
             seq, text = item
             if self._failed:
                 continue
+            written = dict(self._said).get(seq, text)
+            loud = _Loudness(self._window_bytes)
             for attempt in (1, 2):
                 sent = False
                 try:
@@ -203,9 +218,11 @@ class Speaker:
                     async for chunk in self._provider.synthesize(text, voice=self._voice):
                         pending += chunk
                         while len(pending) >= _FRAME_BYTES:
+                            self._report(seq, written, text, loud.feed(pending[:_FRAME_BYTES]))
                             await self._send_bytes(frame(self._turn, seq, pending[:_FRAME_BYTES]))
                             pending = pending[_FRAME_BYTES:]
                             sent = True
+                    self._report(seq, written, text, loud.feed(pending) + loud.flush())
                     if pending:
                         await self._send_bytes(frame(self._turn, seq, pending))
                     break
@@ -226,6 +243,10 @@ class Speaker:
                     await self._fail("internal")
                     break
 
+    def _report(self, seq: int, written: str, spoken: str, levels: list[float]) -> None:
+        if self._on_audio is not None and levels:
+            self._on_audio(seq, written, spoken, levels)
+
     async def _fail(self, kind: str) -> None:
         if self._failed:
             return
@@ -233,6 +254,35 @@ class Speaker:
         logger.warning("speech provider %s failed: %s", self._provider.name, kind)
         # The reply itself is unaffected: it keeps arriving as text.
         await self._send("error", code="speech", kind=kind, sentence=degraded("voice", kind))
+
+
+class _Loudness:
+    """Her loudness per window of PCM16 (0 to 1), carrying a part window between
+    pieces of one sentence."""
+
+    def __init__(self, window_bytes: int) -> None:
+        self._window = window_bytes
+        self._carry = b""
+
+    def feed(self, pcm: bytes) -> list[float]:
+        data = self._carry + pcm
+        whole = len(data) - len(data) % self._window
+        self._carry = data[whole:]
+        return [_rms(data[i : i + self._window]) for i in range(0, whole, self._window)]
+
+    def flush(self) -> list[float]:
+        """The sentence's last part window, if any."""
+        rest, self._carry = self._carry, b""
+        return [_rms(rest)] if len(rest) >= 2 else []
+
+
+def _rms(pcm: bytes) -> float:
+    samples = array("h", pcm[: len(pcm) - len(pcm) % 2])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768
 
 
 def describe(
