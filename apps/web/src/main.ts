@@ -165,6 +165,9 @@ let micMode: 'send' | 'watch' = 'send';
 let bargeHeld: ArrayBuffer[] | null = null;
 // She is ducked and the core is deciding: every frame goes to it as heard.
 let overlapping = false;
+// The user cut in (an overlap or a barge) and the core has not yet opened or closed the
+// microphone for it. A refusal meanwhile must close it, even after `audio.stop`.
+let cutIn = false;
 const detector = new BargeDetector();
 const preroll = new Preroll();
 
@@ -207,6 +210,7 @@ function watchFrame(pcm: ArrayBuffer): void {
       // Duck, then decide (VOI-9): she goes quiet while the core hears what this is.
       voice.duck(true);
       overlapping = true;
+      cutIn = true;
       micMode = 'send';
       send({ type: 'overlap' });
       // The words from just before go first, then the microphone carries on as heard.
@@ -214,6 +218,7 @@ function watchFrame(pcm: ArrayBuffer): void {
     } else {
       bargeHeld = preroll.drain();
       voice.stop();
+      cutIn = true;
       send({ type: 'barge' });
     }
   }
@@ -823,6 +828,8 @@ function connect(): void {
         if (!voice.active) stopWatchingSoon();
       }
       overlapping = false;
+      // Answered: she carries on, and the microphone goes back to watching.
+      cutIn = false;
     }
     if (msg.type === 'transcript.final') spokeLast = true;
     // The core opens and closes the microphone; the page only ever follows (VOI-15d).
@@ -847,7 +854,7 @@ function connect(): void {
     // hear or answer with. The microphone must not go on sending into nothing.
     const stuck =
       msg.type === 'error' &&
-      (bargeHeld !== null || overlapping) &&
+      (bargeHeld !== null || overlapping || cutIn) &&
       ['busy', 'no_model', 'no_listening'].includes(String(msg['code']));
     if (stuck && overlapping) {
       voice.duck(false);
@@ -858,6 +865,7 @@ function connect(): void {
       micMode = 'send';
       bargeHeld = null;
     }
+    if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
     if (view.draft !== null) takeDraft(view.draft);
     if (msg.type === 'session' || msg.type === 'turn.complete') void refreshUsage();
@@ -895,6 +903,7 @@ function connect(): void {
     micMode = 'send';
     bargeHeld = null;
     overlapping = false;
+    cutIn = false;
     if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
     setTimeout(connect, retryMs);
@@ -951,6 +960,7 @@ const interrupt = (): void => {
   micMode = 'send';
   bargeHeld = null;
   overlapping = false;
+  cutIn = false;
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);

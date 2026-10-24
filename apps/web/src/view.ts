@@ -3,6 +3,9 @@
  * No DOM and no socket here, so every transition can be tested.
  */
 
+/** What the core saves for a reply cut off before a word of it was heard (VOI-9). */
+const INTERRUPTED_MARK = '[interrupted]';
+
 export type Orb = 'idle' | 'arming' | 'listening' | 'processing' | 'speaking' | 'error';
 
 export type CardStatus = 'waiting' | 'working' | 'done' | 'declined' | 'failed' | 'unknown' | 'closed';
@@ -436,7 +439,11 @@ function step(view: View, msg: ServerMsg): View {
           view.entries,
           (e) => e.kind === 'assistant',
           // With `kept`, only what the user heard of a spoken reply is shown (VOI-9).
-          (e) => ({ ...e, interrupted: true, ...(typeof msg['kept'] === 'string' ? { text: msg['kept'] } : {}) }) as Entry,
+          // Nothing heard is saved as the marker alone: shown as a reload shows it.
+          (e) =>
+            (msg['kept'] === ''
+              ? { ...e, text: INTERRUPTED_MARK, interrupted: false }
+              : { ...e, interrupted: true, ...(typeof msg['kept'] === 'string' ? { text: msg['kept'] } : {}) }) as Entry,
         ),
       });
     case 'notice': {

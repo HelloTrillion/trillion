@@ -118,6 +118,13 @@ describe('view', () => {
     expect(v.entries[0]).toEqual({ kind: 'assistant', text: 'One.…', interrupted: true });
   });
 
+  it('shows a reply cut off before a word was heard as a reload does', () => {
+    const live = feed([{ type: 'reply.delta', text: 'One. Two.' }, { type: 'interrupted', kept: '' }]);
+    // Saved as the marker alone, which a reload shows as its text.
+    const reloaded = feed([{ type: 'history', messages: [{ role: 'assistant', text: '[interrupted]' }] }]);
+    expect(live.entries).toEqual(reloaded.entries);
+  });
+
   it('keeps the full text when nothing says what was heard', () => {
     const v = feed([{ type: 'reply.delta', text: 'Typed answer.' }, { type: 'interrupted' }]);
     expect(v.entries[0]).toEqual({ kind: 'assistant', text: 'Typed answer.', interrupted: true });
