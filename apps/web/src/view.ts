@@ -46,10 +46,13 @@ export interface Speech {
   readonly sample_rate: number | null;
 }
 
-/** How she hears, when she can. `streaming` means words appear while the user speaks. */
+/** How she hears, when she can. `streaming` means words appear while the user speaks;
+ * `turns` means the hearing judges when they have finished, so a "yeah" over her
+ * can be told from an interruption (VOI-9). */
 export interface Listening {
   readonly kind: string;
   readonly streaming: boolean;
+  readonly turns: boolean;
 }
 
 export type MicProblem = 'denied' | 'no_device' | 'unsupported' | 'failed' | 'silent';
@@ -166,7 +169,9 @@ const STOPS: Readonly<Record<string, string>> = {
 function listeningOf(raw: unknown): Listening | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  return typeof r['kind'] === 'string' ? { kind: r['kind'], streaming: r['streaming'] === true } : null;
+  return typeof r['kind'] === 'string'
+    ? { kind: r['kind'], streaming: r['streaming'] === true, turns: r['turns'] === true }
+    : null;
 }
 
 function speechOf(raw: unknown): Speech | null {
@@ -430,7 +435,8 @@ function step(view: View, msg: ServerMsg): View {
         entries: replaceLast(
           view.entries,
           (e) => e.kind === 'assistant',
-          (e) => ({ ...e, interrupted: true }) as Entry,
+          // With `kept`, only what the user heard of a spoken reply is shown (VOI-9).
+          (e) => ({ ...e, interrupted: true, ...(typeof msg['kept'] === 'string' ? { text: msg['kept'] } : {}) }) as Entry,
         ),
       });
     case 'notice': {

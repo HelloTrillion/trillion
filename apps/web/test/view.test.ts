@@ -113,6 +113,32 @@ describe('view', () => {
     expect(v.entries.map((e) => e.kind === 'assistant' && e.text)).toEqual(['Shall I?', 'Done.']);
   });
 
+  it('trims an interrupted reply to what was heard', () => {
+    const v = feed([{ type: 'reply.delta', text: 'One. Two. Three.' }, { type: 'interrupted', kept: 'One.…' }]);
+    expect(v.entries[0]).toEqual({ kind: 'assistant', text: 'One.…', interrupted: true });
+  });
+
+  it('keeps the full text when nothing says what was heard', () => {
+    const v = feed([{ type: 'reply.delta', text: 'Typed answer.' }, { type: 'interrupted' }]);
+    expect(v.entries[0]).toEqual({ kind: 'assistant', text: 'Typed answer.', interrupted: true });
+  });
+
+  it('trims a finished reply that was talked over while it still played', () => {
+    const v = feed([
+      { type: 'reply.delta', text: 'One. Two.' },
+      { type: 'tool.start', call_id: 'c', name: 'x' },
+      { type: 'reply.delta', text: 'Three. Four.' },
+      { type: 'turn.complete' },
+      { type: 'interrupted', kept: 'Three.…' },
+    ]);
+    expect(v.entries.map((e) => (e.kind === 'assistant' ? [e.text, e.interrupted] : e.kind))).toEqual([
+      ['One. Two.', false],
+      'tool',
+      ['Three.…', true],
+    ]);
+    expect(v).toMatchObject({ replyOpen: false, busy: false });
+  });
+
   it('marks the reply that was interrupted', () => {
     const v = feed([{ type: 'reply.delta', text: 'So' }, { type: 'interrupted' }, { type: 'reply.delta', text: 'New' }]);
     expect(v.entries).toEqual([
@@ -177,7 +203,8 @@ describe('voice in the view', () => {
     const ready = feed([{ type: 'session', id: 'c1', model: { model: 'm' }, listening: ears }]);
 
     it('knows whether she can hear, and follows a change in settings', () => {
-      expect(ready.listening).toEqual({ kind: 'deepgram', streaming: true });
+      expect(ready.listening).toEqual({ kind: 'deepgram', streaming: true, turns: false });
+      expect(feed([{ type: 'listening', listening: { kind: 'deepgram', streaming: true, turns: true } }]).listening?.turns).toBe(true);
       expect(feed([{ type: 'session', id: 'c1', model: null }]).listening).toBeNull();
       expect(feed([{ type: 'listening', listening: null }], ready).listening).toBeNull();
       expect(feed([{ type: 'listening', listening: { kind: 'whisper', streaming: false } }]).listening?.streaming).toBe(false);
