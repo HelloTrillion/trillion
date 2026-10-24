@@ -173,8 +173,10 @@ long as she speaks, and the core decides by the words.
   dollars", "10:30" and "ten thirty", "2026" and "twenty twenty-six"). Stop words get no say here, so her own "No, the
   train…" coming back does not stop her. A stop word is hers in another form too
   (*after the fourth live run*): her "Stopped." came back as "Stop." and stopped her,
-  over and over, so "stop" matches "stopped", "wait" matches "waiting", and so on (the
-  same first three letters or more, either way); "no" only matches "no". Otherwise a candidate takes two words that are
+  over and over, so a stop word is hers when a word of hers starts with it ("stop" and
+  her "stopped", "wait" and her "waiting"), not the other way (her "can" does not make
+  the user's "cancel" hers); "no" only matches "no". So a user's "stop" right after she
+  said "we stopped at the station" counts as hers, and does not stop her. Otherwise a candidate takes two words that are
   not hers (fillers aside) or one stop word: each report adds about a word, and one
   misheard word of hers ("noon" as "new") is not the user.
 - **What is weighed** (*after review*): the words not yet judged, with up to four judged
@@ -199,9 +201,10 @@ long as she speaks, and the core decides by the words.
   - **Carry on (acknowledgement):** words not hers that are all acknowledgements or
     fillers ("um", "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s.
   - **Carry on (not confirmed):** nothing more by `CONFIRM_S` (1 s) after the duck: her
-    echo, misheard. Two words of theirs that the recognizer has not ended in that
-    second are not heard either, and are said again; that is the margin over her own
-    misheard echo.
+    echo, misheard. Two words of theirs without a stop word, over her speaking on
+    (so the recognizer does not end their turn), may carry on too, and are said again;
+    three words or a stop word stop her. That is the margin over her own misheard
+    echo.
   - **Wait:** anything else.
   - Her own stop word ("No, the train…", "Stopped") never stops her, and one of hers
     at the end of their turn ("Skip that. No.") is taken off it.
@@ -237,6 +240,19 @@ long as she speaks, and the core decides by the words.
   Anything with a stop word in it is always the user's. A reply that reuses her words
   ("Six?", "Tea." after "Coffee or tea?") is theirs. When a turn is dropped, the usual
   "unheard" notice says so.
+- **A voice of theirs, not only words** (*after the fifth live run*): her final
+  "ask." came back, misheard, as "ass.", and a one-word reply after her end was a
+  turn. Words alone cannot tell her misheard echo from a reply, so after she is heard
+  to the end, words count only if a voice started (`Onsets`, above the room's level)
+  at least 0.2 s after her end and before the last of them was reported: her echo has
+  died away by then. With no such voice, every word heard is her echo: let go by the
+  watch, and dropped by the turn's check without the "unheard" notice, since nothing
+  of the user's was heard.
+- **Her late echo after a cut-in** (*after the fifth live run*): "Skip that." was saved
+  as "Skip that. -- three hundred.": her words, still coming back as she was stopped.
+  The listener notes how many words it had at the cut-in; her words (current, previous
+  and next sentence, stems for stop words) that follow those within 1.5 s are taken
+  out, up to the first word that is not hers (`late_echo`).
 - **When words were said** (*after the third review*): a recognizer reports words
   0.5 to 1 s after they were said, so the report time is not enough. Each listener
   notes where voices start in the audio (`Onsets`, by loudness, timed by when the frame

@@ -258,7 +258,9 @@ async def test_talking_over_her_while_a_tool_runs(rt: Runtime) -> None:
     rt.provider = Gated(use("slow_read", {}), say("Never said."))
     await session.handle({"type": "playback.ended", "turn_id": page.all("audio.end")[-1]["turn"]})
     await until(lambda: session._listener is not None)
-    await speak(session, room(0.1) + tone(0.3))
+    await speak(session, room(0.1))
+    await asyncio.sleep(0.3)  # the user answers a moment after she ends
+    await speak(session, tone(0.3))
     stt.stream.say("what is there", final=True, turn="done")
     await speak(session, room(0.1))
     await asyncio.wait_for(tool.started.wait(), 5)

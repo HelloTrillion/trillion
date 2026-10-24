@@ -13,6 +13,7 @@ from trillion.voice.overlap import (
     judge_watch,
     judged_prefix,
     keys,
+    late_echo,
     share_hers,
 )
 
@@ -391,3 +392,17 @@ def test_an_ended_turn_of_two_counts_only_if_the_whole_turn_is_not_hers() -> Non
         )
         == "wait"
     )
+
+
+def test_her_late_echo_after_their_words_is_taken_out() -> None:
+    """Live: "Skip that." was saved as "Skip that. -- three hundred."."""
+    playing = ("That comes to twenty seven hundred, or three hundred a month.",)
+    assert late_echo("Skip that. -- three hundred.", 2, 6, playing) == "Skip that."
+    # Only up to the first word that is not hers, and only in the given stretch.
+    assert late_echo("Skip that hundred please", 2, 4, playing) == "Skip that please"
+    assert late_echo("Skip that please hundred", 2, 4, playing) == "Skip that please hundred"
+    assert late_echo("Skip that. Three hundred.", 2, 2, playing) == "Skip that. Three hundred."
+
+
+def test_her_short_word_does_not_make_their_stop_word_hers() -> None:
+    assert judge_watch("cancel", ("You can go now.",)) == "candidate"

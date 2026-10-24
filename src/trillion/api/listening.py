@@ -91,6 +91,12 @@ class Listener:
         # whether a voice starting was heard then, or only the report is to go by.
         self.began: float | None = None
         self.began_heard = False
+        # When the words were first reported, once listening.
+        self.seen: float | None = None
+        # When it was cut in on her, if it was: words heard after that may be her echo.
+        self.cut_in: float | None = None
+        # How many words had been heard, as reports came in: (loop time, count).
+        self._grew: deque[tuple[float, int]] = deque(maxlen=256)
         # When the recognizer's current turn was first reported, and when voices
         # started in the audio, by the loop's clock, latest last.
         self._turn_seen: float | None = None
@@ -205,6 +211,8 @@ class Listener:
         if not said:
             return
         self.began, self.began_heard = self.turn_began() or self._placed(self._now())
+        self.seen = self._turn_seen or self._now()
+        self._grew.append((self._now(), len(self.text().split())))
         self._rules.heard(final=self._turn_ended, has_text=True)
         if self._turn_ended:
             self._end_turn()
@@ -221,6 +229,24 @@ class Listener:
         cutoff = seen - MIN_LAG_S
         start = next((t for t in reversed(self._starts) if t <= cutoff), None)
         return (start, True) if start is not None else (seen - REPORT_LAG_S, False)
+
+    def mark_cut_in(self) -> None:
+        """It was cut in on her now: what has been heard so far is theirs."""
+        self.cut_in = self._now()
+        self._grew.append((self.cut_in, len(self.text().split())))
+
+    def voice_since(self, start: float, until: float) -> bool:
+        """Whether a voice started in the audio between these times."""
+        return any(start <= t <= until for t in self._starts)
+
+    @property
+    def last_heard(self) -> float | None:
+        """When the latest words were reported."""
+        return self._grew[-1][0] if self._grew else self.seen
+
+    def words_by(self, when: float) -> int:
+        """How many words had been heard by then."""
+        return next((n for t, n in reversed(self._grew) if t <= when), 0)
 
     def turn_began(self) -> tuple[float, bool] | None:
         """When the recognizer's current turn was said (see `_placed`), if it has words."""
@@ -346,6 +372,9 @@ class Listener:
                 if self.began is None and self.text() and not self._watching:
                     # When they began: a report comes well after the word.
                     self.began, self.began_heard = self.turn_began() or self._placed(self._now())
+                    self.seen = self._turn_seen or self._now()
+                if not self._watching:
+                    self._grew.append((self._now(), len(self.text().split())))
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:

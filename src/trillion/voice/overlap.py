@@ -158,7 +158,8 @@ def _hers(playing: Sequence[str]) -> set[str]:
 
 
 # A stop word is hers when she says it in another form ("Stopped." comes back as
-# "Stop."): the same first letters, this many at least. "no" only as itself.
+# "Stop."): a word of hers that starts with it, this many letters at least. "no" only
+# as itself.
 _STEM = 3
 
 
@@ -169,7 +170,9 @@ def _mine(w: str, hers: set[str]) -> bool:
         return True
     if w not in _STOPS or len(w) < _STEM:
         return False
-    return any(len(h) >= _STEM and (h.startswith(w) or w.startswith(h)) for h in hers)
+    # Only her inflected form of the stop word: she said "stopped" and "stop" came
+    # back. Not the other way: her "can" does not make the user's "cancel" hers.
+    return any(h.startswith(w) for h in hers)
 
 
 def _stop(w: str, hers: set[str]) -> bool:
@@ -314,3 +317,15 @@ def echo_of(words: str, playing: Sequence[str], *, early: bool) -> str:
 def is_said(words: str) -> bool:
     """Whether there is a word in it that is not a filler."""
     return any(w not in _FILLERS for w in _words(words))
+
+
+def late_echo(words: str, start: int, stop: int, playing: Sequence[str]) -> str:
+    """Her words come back after theirs as she was stopped: from word `start` (what had
+    been heard at the cut-in), the run of hers is taken out, up to the first word that
+    is not hers, and only among words heard by `stop`."""
+    hers = _hers(playing)
+    tokens = words.split()
+    end = start
+    while end < min(stop, len(tokens)) and _is_hers(tokens[end], hers):
+        end += 1
+    return " ".join(tokens[:start] + tokens[end:]) if end > start else words.strip()

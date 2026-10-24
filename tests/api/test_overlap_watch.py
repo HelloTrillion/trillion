@@ -35,6 +35,8 @@ __all__ = ["rt"]
 @pytest.fixture(autouse=True)
 def short_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "ECHO_GRACE_S", 0.2)
+    # A loaded machine can leave a few seconds between frames: not a page gone quiet.
+    monkeypatch.setattr(session_module, "NO_AUDIO_S", 30.0)
 
 
 async def watching(session: Session) -> None:
@@ -122,6 +124,7 @@ async def test_her_reply_ending_while_watching_becomes_the_follow_up_window(
     stt.stream.say("third thing", final=False)  # her echo, let go
     await speak(session, tone(0.2))
     await ended(session, page)
+    await they_start(session)
     # The recognizer's turn goes on: its report repeats the echo, which stays let go.
     stt.stream.say("third thing and the fourth", final=True, turn="done")
     await speak(session, tone(0.3) + room(0.1))
@@ -147,6 +150,14 @@ async def test_nobody_speaking_after_her_end_opens_the_window_after_the_grace(
 
 
 # ── Her echo after she ends is never the user's turn (the talking-to-herself loop) ──
+
+
+async def they_start(session: Session) -> None:
+    """The user starts speaking a moment after her end: a voice the audio hears start."""
+    await speak(session, room(0.2))
+    await asyncio.sleep(0.3)
+    await speak(session, tone(0.2))
+    await asyncio.sleep(0.2)
 
 
 async def ended(session: Session, page: Page) -> None:
@@ -186,6 +197,7 @@ async def test_a_real_follow_up_after_she_ends_is_heard_at_once(rt: Runtime) -> 
     await played(session, page, 1, 2, 3)
     await watching(session)
     await ended(session, page)
+    await they_start(session)
     stt.stream.say("what about tomorrow", final=False)
     await speak(session, tone(0.2))
     await until(lambda: session._listener is not None)
@@ -206,6 +218,7 @@ async def test_her_tail_then_their_words_in_one_turn_keeps_only_theirs(rt: Runti
     stt.stream.say("third thing to know", final=False)
     await speak(session, tone(0.2))
     assert session._listener is None
+    await they_start(session)
     stt.stream.say("third thing to know what about tomorrow", final=False)
     await speak(session, tone(0.2))
     await until(lambda: session._listener is not None)
@@ -244,11 +257,12 @@ async def test_a_spoken_turn_that_is_her_echo_is_dropped(rt: Runtime) -> None:
     await speak(session, tone(0.1))
     stt.stream.say("Third thing to know.", final=True, turn="done")
     await speak(session, room(0.2))
-    await page.until("mic.stop")
+    await page.until("mic.stop", 2)
     await idle(session)
     assert len(page.all("transcript.final")) == 1 and session._turn == 1
     assert calls(rt) == before and session._draft is None
-    assert [m for m in page.all("notice") if m.get("reason") == "unheard"]
+    # Only her voice was heard: nothing of theirs was missed, so nothing is said.
+    assert not [m for m in page.all("notice") if m.get("reason") == "unheard"]
     await session.close()
 
 
@@ -257,7 +271,7 @@ async def test_their_own_words_just_after_she_ends_are_answered(rt: Runtime) -> 
     await played(session, page, 1, 2, 3)
     await ended(session, page)
     await until(lambda: session._listener is not None)
-    await speak(session, tone(0.3))
+    await they_start(session)
     stt.stream.say("Tell me the fourth.", final=True, turn="done")
     await speak(session, room(0.2))
     await page.until("transcript.final", 2)
@@ -768,7 +782,7 @@ async def test_her_last_two_words_reported_late_without_a_watch_are_not_a_turn(
     stt.stream.say("Standing by.", final=True, turn="done")
     await speak(session, room(0.2))
     await page.until("mic.stop", 2)
-    await page.until("notice")
+    await idle(session)
     assert len(page.all("transcript.final")) == 1 and session._turn == 1
     await session.close()
 
@@ -876,4 +890,80 @@ async def test_a_fast_report_of_their_reply_is_still_theirs(rt: Runtime) -> None
     await speak(session, room(0.2))
     await page.until("transcript.final", 2)
     assert page.all("transcript.final")[-1]["text"] == "Six?" and session._turn == 2
+    await session.close()
+
+
+# ── Acoustic evidence: a voice must start after her end (live, 8% echo) ──
+
+ASK = "Three hundred what? Not following, give me the actual ask."
+
+
+async def asking(rt: Runtime, *, watch: bool) -> tuple[FakeSTT, Page, Session]:
+    stt, _ = judging(rt, say(ASK), say("Ok."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1, 2)
+    if watch:
+        await watching(session)
+    await speak(session, tone(0.4) + room(0.1))  # her voice coming back, to her end
+    await ended(session, page)
+    return stt, page, session
+
+
+@pytest.mark.parametrize("watch", [True, False])
+async def test_her_last_word_misheard_with_no_new_voice_is_not_a_turn(
+    rt: Runtime, watch: bool
+) -> None:
+    """Live: her final "ask." came back as "ass." and became the user's turn."""
+    stt, page, session = await asking(rt, watch=watch)
+    await speak(session, room(0.3))
+    await asyncio.sleep(0.7)  # reported late, as live
+    stt.stream.say("ass.", final=True, turn="done")
+    await speak(session, room(0.2))
+    await until(lambda: session._listener is not None or len(page.all("mic.stop")) > 1)
+    await speak(session, room(session_module.FOLLOW_UP_S + 0.2))
+    await page.until("mic.stop", 2)
+    await idle(session)
+    assert len(page.all("transcript.final")) == 1 and session._turn == 1
+    assert not [m for m in page.all("notice") if m.get("reason") == "unheard"]
+    await session.close()
+
+
+@pytest.mark.parametrize("watch", [True, False])
+async def test_a_yes_with_its_own_voice_after_her_end_is_a_turn(rt: Runtime, watch: bool) -> None:
+    stt, page, session = await asking(rt, watch=watch)
+    await speak(session, room(0.2))
+    await asyncio.sleep(0.5)
+    await speak(session, tone(0.3))  # their voice starts, half a second after her end
+    await asyncio.sleep(0.4)
+    stt.stream.say("Yes.", final=True, turn="done")
+    await speak(session, room(0.2))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "Yes." and session._turn == 2
+    await session.close()
+
+
+async def test_her_late_echo_after_their_cut_in_is_not_their_words(rt: Runtime) -> None:
+    """Live: "Skip that." was saved as "Skip that. -- three hundred.": her words, still
+    coming back after she was stopped."""
+    reply = "It comes to twenty seven hundred, or three hundred a month. Then taxes."
+    stt, _ = judging(rt, say(reply), say("Ok."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+    await watching(session)
+    stt.stream.say("skip that please", final=False)
+    await speak(session, tone(0.2))
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None)
+    stt.stream.say("skip that please three hundred", final=False)  # her, late
+    await speak(session, tone(0.2))
+    stt.stream.say("Skip that please. Three hundred.", final=True, turn="done")
+    await speak(session, room(0.2))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "Skip that please."
     await session.close()
