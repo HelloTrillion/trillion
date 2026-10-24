@@ -8,6 +8,7 @@ from trillion.voice.endpoint import (
     DEAD_AFTER_S,
     DONE_S,
     FAST_S,
+    HELD_MAX_S,
     HELD_QUIET_S,
     SLOW_S,
     EndOfSpeech,
@@ -219,6 +220,8 @@ def test_what_leads_on() -> None:
     somewhere counts; a missing full stop does not."""
     leading = ["I went to the shop and", "So um", "and.", "Hmm...", "Hmm\u2026", "first,", "well -"]
     ending = ["I went to the shop", "yeah", "Call the dentist.", "What time is it?", ""]
+    # A question or an exclamation is finished, whatever word it ends on.
+    ending += ["Who's that?", "What is it for?", "So?", "And!"]
     assert all(leads_on(t) for t in leading)
     assert not any(leads_on(t) for t in ending)
 
@@ -232,6 +235,45 @@ def test_a_held_done_ends_after_more_quiet() -> None:
     assert not rules.is_over
     assert rules.audio(room(HELD_QUIET_S - 0.1)) is None
     assert rules.audio(room(0.2)) == "end"
+    assert rules.is_over  # what follows is the next thought
+
+
+def test_held_quiet_counts_from_when_the_voice_stopped() -> None:
+    """An early done waits about 2.5 s of silence in all; a done the recognizer forced
+    after a long silence ends at once."""
+    early = EndOfSpeech(streaming=True, judged=True)
+    early.audio(tone(0.6) + room(0.7))
+    early.heard(final=True, has_text=True)
+    early.hold()
+    assert early.audio(room(HELD_QUIET_S - 0.8)) is None
+    assert early.audio(room(0.2)) == "end"
+    late = EndOfSpeech(streaming=True, judged=True)
+    late.audio(tone(0.6) + room(5.0))
+    late.heard(final=True, has_text=True)
+    late.hold()
+    assert late.audio(room(0.04)) == "end"
+
+
+def test_a_held_done_ends_within_the_cap_whatever_noise_goes_on() -> None:
+    """A breath, a keyboard or a television must not keep a held turn open."""
+    rules = EndOfSpeech(streaming=True, judged=True)
+    rules.audio(tone(0.6))
+    start = rules.now
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    assert rules.audio((tone(0.3) + room(1.0)) * 6) == "end"
+    assert rules.now - start <= HELD_MAX_S + 0.05
+
+
+def test_an_empty_done_does_not_restart_a_hold() -> None:
+    rules = EndOfSpeech(streaming=True, judged=True)
+    rules.audio(tone(0.6))
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    rules.audio((tone(0.3) + room(1.0)) * 3)
+    rules.heard(final=True, has_text=False)
+    rules.hold()
+    assert rules.audio((tone(0.3) + room(1.0)) * 2) == "end"
 
 
 def test_a_voice_after_a_held_done_starts_the_quiet_again() -> None:

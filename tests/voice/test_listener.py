@@ -279,14 +279,22 @@ async def test_a_done_that_leads_on_keeps_listening_and_joins_what_follows() -> 
 
 async def test_a_done_that_leads_on_ends_after_more_quiet() -> None:
     stt = FakeSTT(turns=True)
-    listener = Listener(stt, "en", on_partial=nothing)
+    seen: list[tuple[str, str]] = []
+
+    async def on_turn(kind: str, text: str) -> None:
+        seen.append((kind, text))
+
+    listener = Listener(stt, "en", on_partial=nothing, on_turn=on_turn)
     await listener.start()
     assert await listener.audio(tone(0.6)) is None
     stt.stream.say("I went to the shop and um", final=True, turn="done")
     await asyncio.sleep(0.01)
     assert await listener.audio(room(HELD_QUIET_S - 0.1)) is None
     assert await listener.audio(room(0.2)) == "end"
+    stt.stream.say("and then", final=False)  # the next thought, while wrapping up
+    await asyncio.sleep(0.01)
     assert (await listener.end()).text == "I went to the shop and um"
+    assert seen == [("maybe", "I went to the shop and um")]  # no resumed
 
 
 async def test_an_acknowledgement_over_her_is_done_at_once() -> None:
@@ -300,6 +308,21 @@ async def test_an_acknowledgement_over_her_is_done_at_once() -> None:
     assert await listener.audio(room(0.04)) == "end"
     decision = decide(listener.text(), done=True, elapsed_s=0.5, playing=["We could leave at six."])
     assert decision == "carry_on"
+    await listener.abandon()
+
+
+async def test_a_word_that_leads_on_over_her_is_decided_by_its_words() -> None:
+    """Over her, "so" is held as a turn's end, but deciding goes by the words, not by
+    the end: anything but an acknowledgement stops her at once."""
+    stt = FakeSTT(turns=True)
+    listener = Listener(stt, "en", on_partial=nothing)
+    await listener.start()
+    await listener.audio(tone(0.4))
+    stt.stream.say("so", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    assert await listener.audio(room(0.04)) is None
+    decision = decide(listener.text(), done=False, elapsed_s=0.5, playing=["We could leave."])
+    assert decision == "interrupt"
     await listener.abandon()
 
 

@@ -36,8 +36,11 @@ _GOING_ON = frozenset(
     "your um uh er erm like".split()
 )
 # When the recognizer that judges turns says done on words that lead on ("I went to
-# the shop and"), she keeps listening, and this much more quiet ends the turn (VOI-12).
+# the shop and"), she keeps listening (VOI-12). This much quiet since the voice
+# stopped ends the turn, so an early done still waits for a real pause.
 HELD_QUIET_S = 2.5
+# And this long after the done at most, whatever noise (a breath, a television) goes on.
+HELD_MAX_S = 5.0
 # A microphone that delivers nothing louder than this is not delivering sound at
 # all: muted, unplugged, or the wrong device. A real threshold, not "above zero".
 DEAD_LEVEL = 0.0006
@@ -68,11 +71,12 @@ def leads_on(text: str) -> bool:
     ellipsis, a comma or a dash. Unlike `sounds_finished`, a missing full stop is not
     enough, because a recognizer that judges turns may give no punctuation at all."""
     t = text.strip().rstrip("\"')\u201d\u2019")
-    if not t:
+    # A question or an exclamation is finished, whatever word it ends on ("So?").
+    if not t or t.endswith(("?", "!")):
         return False
     if t.endswith(("...", "\u2026", ",", ";", ":", "-", "\u2013", "\u2014")):
         return True
-    last = t.rstrip(".?!").rsplit(maxsplit=1)[-1:] or [""]
+    last = t.rstrip(".").rsplit(maxsplit=1)[-1:] or [""]
     return last[0].lower().strip("\"'(\u201c\u2018,;:") in _GOING_ON
 
 
@@ -159,8 +163,10 @@ class EndOfSpeech:
 
     def hold(self) -> None:
         """The recognizer said done, but the words lead on: keep listening, and end the
-        turn after `HELD_QUIET_S` more quiet unless new words come first."""
-        self._held = self.now
+        turn after `HELD_QUIET_S` of quiet unless new words come first. A second done
+        with no new words does not start the clock again."""
+        if self._held < 0:
+            self._held = self.now
 
     def audio(self, pcm: bytes) -> Verdict | None:
         data = self._rest + pcm
@@ -197,8 +203,9 @@ class EndOfSpeech:
             # The recognizer judges the end by meaning; silence alone never does.
             if self._over:
                 return "end"
-            # A voice with no words (a cough, a breath) starts the quiet again.
-            if self._held >= 0 and now - max(self._held, self._last_voice) >= HELD_QUIET_S:
+            if self._held >= 0 and (self.quiet_s >= HELD_QUIET_S or now - self._held >= HELD_MAX_S):
+                # Over for good: the next thought's first words are not part of it.
+                self._over = True
                 return "end"
             return None
 

@@ -32,7 +32,7 @@ a radio. This spec makes three changes, Deepgram first:
 - **Pausing to think.**
   - With Deepgram, a pause in the middle of a thought no longer ends the turn. "I need to remember to… call the dentist" arrives as one message.
   - Silence still ends a turn eventually: after 5 seconds at most, even mid-thought.
-  - If the hearing calls the turn over on a word that leads on ("I went to the shop and…", "um"), she keeps listening: what they say next joins the same message, and 2.5 seconds more quiet ends it.
+  - If the hearing calls the turn over on a word that leads on ("I went to the shop and…", "um"), she keeps listening: what they say next joins the same message, and 2.5 seconds of quiet ends it (still 5 seconds at most).
   - When the words do sound finished, she answers sooner than today, because she started thinking during the pause.
 - **Talking over her.**
   - The moment the user speaks, she gets quieter.
@@ -72,7 +72,7 @@ a radio. This spec makes three changes, Deepgram first:
 `api/listening.py`, the `Listener`:
 
 - **When the recognizer judges turns,** `done` is the verdict "end" when the words do not lead on. The local rules in `voice/endpoint.py` still decide `nothing`, `inaudible`, `too_long` and a dead microphone. The `FAST_S`, `SLOW_S`, `DONE_S` and `sounds_finished` paths are not used.
-- **A `done` on words that lead on is held.** Flux was seen ending a turn 0.7 s into a pause after "I went to the shop and". When the whole message so far ends on a word like "and", "to" or "um", an ellipsis, a comma or a dash (`leads_on`), she keeps listening: the words are kept, the session is told `maybe` (a draft may start), and the recognizer's next turn joins the same message, with `resumed` on its first words. A later `done` that does not lead on ends it; so does `HELD_QUIET_S` (2.5 s) more quiet by the audio's clock, restarted by any voice. A missing full stop alone does not hold a turn, because the recognizer may not punctuate.
+- **A `done` on words that lead on is held.** Flux was seen ending a turn 0.7 s into a pause after "I went to the shop and". When the whole message so far ends on a word like "and", "to" or "um", an ellipsis, a comma or a dash (`leads_on`), she keeps listening: the words are kept, the session is told `maybe` (a draft may start), and the recognizer's next turn joins the same message, with `resumed` on its first words. A later `done` that does not lead on ends it. So does `HELD_QUIET_S` (2.5 s) of quiet since the voice stopped, by the audio's clock: an early `done` waits about 2.5 s of silence in all, and one the recognizer forced after 5 s of silence ends at once. A held turn ends `HELD_MAX_S` (5 s) after the `done` at most, and once it ends, words that follow belong to the next turn. A missing full stop alone does not hold a turn, because the recognizer may not punctuate; a question or an exclamation ("So?") never does.
 - **`maybe` and `resumed`** are passed to a new `on_turn` callback with the words so far.
 - **Otherwise,** everything works exactly as today.
 
@@ -120,6 +120,7 @@ A **draft** is a real turn started early, with a closed **gate**.
 - **On `interrupt`:**
   - The reply is stopped as `_on_barge` stops it today (VOI-15c: approved work finishes and is recorded).
   - The same listener goes on as the user's turn, with normal patience. Its words so far are kept.
+- **A word that leads on, alone over her** ("so"): its `done` is held, but deciding never waits for the end. It goes by the words: "so" is not an acknowledgement, so she stops at once, and no acknowledgement leads on.
 - **If her reply finishes while deciding:** `carry_on` simply ends the overlap. `interrupt` is an ordinary turn, with nothing left to stop.
 
 The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "right", "okay", "ok", "sure", "got it", "i see", "exactly", "totally" and "true". It is matched on whole, normalized words.
@@ -146,6 +147,7 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 
 - **The recognizer never says `done`:** `eot_timeout_ms` forces one after 5 s of silence. `too_long` still ends a turn at 120 s.
 - **An acknowledgement over her** ("yeah", unpunctuated) does not lead on, so its `done` is not held and she carries on at once.
+- **Noise during a held turn:** a breath, a keyboard or a television restarts the 2.5 s of quiet, so a held turn ends 5 s after the recognizer's `done` at most. New words cancel the hold, and the recognizer judges the end again.
 - **The Deepgram connection drops mid-turn:** as today, the words heard so far are kept and a draft is cancelled (VOI-14).
 - **A draft is running when a notice arrives:** the microphone is open, so the door holds the notice (VOI-17). Nothing changes.
 - **Overlap while her reply is only text** (voice muted): there is nothing to duck, and the page does not watch for barge-in (as today).
