@@ -1785,3 +1785,9 @@ button.connected-danger {
   color: var(--color-text-1);
   overflow-wrap: anywhere;
 }
+
+/* Open only to notice the user cutting in: nothing is sent (VOI-15d). */
+#mic.watching {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}

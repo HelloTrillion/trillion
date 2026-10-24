@@ -180,6 +180,12 @@ function endHold(): void {
   awaitingHer = false;
   if (holdTimer !== null) clearTimeout(holdTimer);
   holdTimer = null;
+  render();
+}
+
+/** Open and only watching for the user to cut in: shown, though nothing is sent (VOI-15d). */
+function watching(): boolean {
+  return micMode === 'watch' && mic.on;
 }
 
 /** Wait for her reply with the microphone open, but not forever. */
@@ -207,6 +213,7 @@ function holdForHer(): void {
   preroll.drain();
   watchGen++;
   armHold();
+  render();
 }
 
 function canWatch(): boolean {
@@ -224,15 +231,16 @@ function canWatch(): boolean {
 function startWatching(): void {
   const held = awaitingHer;
   endHold();
-  if (held && micMode === 'watch' && mic.on) {
+  if (micMode === 'watch' && mic.on) {
     if (!canWatch()) {
-      stopWatching();
+      if (held) stopWatching();
       return;
     }
-    // Already open since the user's turn: not opened again, which is what glitched
-    // her first words. Only started over for her voice, so the warm-up learns her
-    // echo from her first sound, as it did when the microphone opened then. Not while
-    // the user's first words are held: they are cutting in.
+    // Already open (since the user's turn, or still from her last reply): not opened
+    // again, which is what glitched her first words. Only started over for her voice,
+    // so the warm-up learns her echo from her first sound, as it did when the
+    // microphone opened then. Not while the user's first words are held: they are
+    // cutting in. A new watch: a late "close soon" from before must leave it be.
     if (!bargeHeld) detector.reset();
     watchGen++;
     return;
@@ -252,6 +260,7 @@ function stopWatching(): void {
   endHold();
   mic.stop();
   micMode = 'send';
+  render();
 }
 
 function watchFrame(pcm: ArrayBuffer): void {
@@ -261,6 +270,10 @@ function watchFrame(pcm: ArrayBuffer): void {
   }
   preroll.push(pcm);
   if (detector.push(frameLevel(pcm), voice.level() ?? 0)) {
+    // Before her reply sounds there is nothing to stop yet. Only hearing that judges
+    // turns lets the core decide what this is; otherwise the pre-roll just rolls on,
+    // and the user can still interrupt once she speaks.
+    if (awaitingHer && !view.listening?.turns) return;
     if (view.listening?.turns) {
       // Duck, then decide (VOI-9): she goes quiet while the core hears what this is.
       voice.duck(true);
@@ -268,6 +281,7 @@ function watchFrame(pcm: ArrayBuffer): void {
       cutIn = true;
       micMode = 'send';
       send({ type: 'overlap' });
+      render();
       // The words from just before go first, then the microphone carries on as heard.
       for (const frame of preroll.drain()) if (socket?.readyState === WebSocket.OPEN) socket.send(frame);
     } else {
@@ -313,7 +327,10 @@ const mic = createMic({
     if (micMode === 'watch') watchFrame(pcm);
     else if (socket?.readyState === WebSocket.OPEN) socket.send(pcm);
   },
-  onSetup: (setup) => send({ type: 'mic.opened', ...setup }),
+  onSetup: (setup) => {
+    send({ type: 'mic.opened', ...setup });
+    render(); // a watching microphone is shown once it is really open
+  },
   device: savedMic,
   onProblem: (problem) => {
     endHold();
@@ -574,15 +591,22 @@ function render(): void {
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
   stopBtn.hidden = !(view.busy || voice.active || view.mic);
-  micBtn.hidden = !canType || view.busy || introducing;
-  micBtn.textContent = view.mic ? 'Done' : 'Speak';
+  // Watching for a cut-in is a microphone open too, so it shows, even while she answers.
+  const watch = !view.mic && watching();
+  micBtn.hidden = !canType || (view.busy && !watch) || introducing;
+  micBtn.textContent = view.mic ? 'Done' : watch ? 'Listening' : 'Speak';
   micBtn.title = !view.listening
     ? 'Choose how she hears you'
     : view.mic
       ? 'Send what you said'
-      : 'Speak to her';
+      : watch
+        ? 'Listening for you to cut in. Nothing is sent.'
+        : 'Speak to her';
+  if (watch) micBtn.setAttribute('aria-label', micBtn.title);
+  else micBtn.removeAttribute('aria-label');
   micBtn.setAttribute('aria-pressed', String(view.mic));
   micBtn.classList.toggle('live', view.mic);
+  micBtn.classList.toggle('watching', watch);
   footEl.textContent = !ready
     ? ''
     : view.grantedRoots.length

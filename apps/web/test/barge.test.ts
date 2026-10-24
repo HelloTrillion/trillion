@@ -112,12 +112,16 @@ describe('after a spoken turn: the microphone stays open for her reply, or close
 
   it('stays open when words were heard and barge-in may watch her answer', () => {
     expect(holdForReply(spoken)).toBe(true);
-    // Cut off at the longest turn: still answered.
-    expect(holdForReply({ ...spoken, reason: 'too_long' })).toBe(true);
   });
 
   it('closes when no reply is coming', () => {
     for (const reason of ['nothing', 'inaudible', 'cancelled', 'failed', undefined]) {
+      expect(holdForReply({ ...spoken, reason })).toBe(false);
+    }
+  });
+
+  it('closes after the longest turn, when the user is often still talking', () => {
+    for (const reason of ['too_long']) {
       expect(holdForReply({ ...spoken, reason })).toBe(false);
     }
   });

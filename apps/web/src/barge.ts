@@ -118,10 +118,12 @@ export interface TurnEnd {
  * answers, rather than closing now and opening again at her first sound: on a Mac,
  * opening or closing an echo-cancelled microphone reconfigures the audio device and
  * glitches her first words, and the gap in between would hear nobody. Only when a
- * reply is coming (the words were heard) and barge-in may watch it. */
+ * reply is coming (the user finished) and barge-in may watch it. */
 export function holdForReply(t: TurnEnd): boolean {
   return (
-    (t.reason === 'end' || t.reason === 'too_long') &&
+    // Not after the longest turn: the user is often still talking, and the warm-up
+    // would learn their voice as the room.
+    t.reason === 'end' &&
     t.micOn &&
     t.bargeOn &&
     t.linkReady &&
