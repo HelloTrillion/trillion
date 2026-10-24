@@ -49,12 +49,19 @@ describe('the first sound', () => {
 });
 
 // Just enough of the Web Audio API to schedule buffers on a clock that stands still.
+// A ramp is pending until cancelled: setting `value` alone does not stop it.
 class FakeParam {
   value = 1;
+  ramp: number | null = null;
   setTargetAtTime(target: number): void {
-    this.value = target;
+    this.ramp = target;
   }
-  cancelScheduledValues(): void {}
+  cancelScheduledValues(): void {
+    this.ramp = null;
+  }
+  get heard(): number {
+    return this.ramp ?? this.value;
+  }
 }
 
 class FakeContext {
@@ -133,11 +140,16 @@ describe('her voice from the core', () => {
   it('goes quieter while the user may be talking over her, and back', () => {
     voice.audio(frame(3, 0, loud));
     voice.duck(true);
-    expect(gain?.gain.value).toBe(DUCKED);
+    expect(gain?.gain.heard).toBe(DUCKED);
     voice.duck(false);
-    expect(gain?.gain.value).toBe(1);
+    expect(gain?.gain.heard).toBe(1);
+  });
+
+  it('is at full volume after a stop, even mid-ramp', () => {
+    voice.audio(frame(3, 0, loud));
     voice.duck(true);
     voice.stop(); // the next reply starts at full volume
-    expect(gain?.gain.value).toBe(1);
+    expect(gain?.gain.ramp).toBeNull();
+    expect(gain?.gain.heard).toBe(1);
   });
 });

@@ -253,9 +253,15 @@ const mic = createMic({
   onSetup: (setup) => send({ type: 'mic.opened', ...setup }),
   device: savedMic,
   onProblem: (problem) => {
-    // Unheard, the user cannot be talking over her any more: she comes back up.
-    if (overlapping) voice.duck(false);
-    overlapping = false;
+    if (overlapping) {
+      // Unheard, the user cannot be talking over her any more: she comes back up and
+      // carries on. The core hears nothing more and lets her, so nothing is stopped.
+      voice.duck(false);
+      overlapping = false;
+      micMode = 'send';
+      apply(micFailed(view, problem));
+      return;
+    }
     if (micMode === 'watch' && !bargeHeld) {
       // Only watching for a barge-in: she carries on, and nothing needs saying.
       micMode = 'send';
@@ -837,8 +843,17 @@ function connect(): void {
         void mic.start();
       }
     }
-    const busyBarge = msg.type === 'error' && msg['code'] === 'busy' && bargeHeld !== null;
-    if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening') || busyBarge) {
+    // The user cut in, and the core could not listen after all: busy, or nothing to
+    // hear or answer with. The microphone must not go on sending into nothing.
+    const stuck =
+      msg.type === 'error' &&
+      (bargeHeld !== null || overlapping) &&
+      ['busy', 'no_model', 'no_listening'].includes(String(msg['code']));
+    if (stuck && overlapping) {
+      voice.duck(false);
+      overlapping = false;
+    }
+    if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening') || stuck) {
       mic.stop();
       micMode = 'send';
       bargeHeld = null;
@@ -941,6 +956,8 @@ const interrupt = (): void => {
 stopBtn.addEventListener('click', interrupt);
 /** Start listening, or, while listening, send what she heard. The Speak button and Space. */
 function talk(): void {
+  // The core is hearing them over her already, and would ignore a new start.
+  if (overlapping) return;
   if (!view.listening) {
     void listeningSettings.open();
   } else if (view.mic) {
