@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import pytest
 
@@ -17,6 +17,7 @@ from trillion.brain.loop import (
     ToolEnded,
     ToolStarted,
     TurnDone,
+    kept_of,
     run_turn,
 )
 from trillion.brain.types import (
@@ -61,7 +62,13 @@ class Run:
     async def save(self, msg: Msg) -> None:
         self.saved.append(msg)
 
-    async def go(self, provider: ScriptedProvider, limits: Limits | None = None) -> TurnDone:
+    async def go(
+        self,
+        provider: ScriptedProvider,
+        limits: Limits | None = None,
+        first: AsyncIterator[ModelEvent] | None = None,
+        heard: Callable[[str], str | None] | None = None,
+    ) -> TurnDone:
         return await run_turn(
             provider=provider,
             router=self.spine.router,
@@ -72,6 +79,8 @@ class Run:
             emit=self.emit,
             save=self.save,
             limits=limits,
+            first=first,
+            heard=heard,
         )
 
     def results(self) -> list[ToolResultBlock]:
@@ -218,6 +227,75 @@ async def test_an_interrupt_saves_the_partial_reply_marked(run: Run) -> None:
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Well, " + INTERRUPTED),))]
 
 
+async def _cut_off(run: Run, heard: Callable[[str], str | None] | None) -> list[str]:
+    """A reply cancelled mid-stream; what was said to `heard`, and what was saved."""
+    started = asyncio.Event()
+    asked: list[str] = []
+
+    class Slow(ScriptedProvider):
+        async def stream(self, **kw: object) -> AsyncIterator[ModelEvent]:  # type: ignore[override]
+            yield TextDelta(text="One. Two. ")
+            yield TextDelta(text="Three.")
+            started.set()
+            await asyncio.sleep(30)
+
+    def told(said: str) -> str | None:
+        asked.append(said)
+        return heard(said) if heard is not None else said
+
+    task = asyncio.create_task(run.go(Slow(), heard=told if heard is not None else None))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    return asked
+
+
+async def test_a_cancelled_spoken_turn_keeps_only_what_was_heard(run: Run) -> None:
+    asked = await _cut_off(run, lambda _said: "One.")
+    assert asked == ["One. Two. Three."]
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="One.…" + INTERRUPTED),))]
+
+
+async def test_a_spoken_turn_cut_off_before_a_sentence_was_heard_keeps_the_marker(
+    run: Run,
+) -> None:
+    await _cut_off(run, lambda _said: "")
+    # The history still shows she began.
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text=INTERRUPTED.strip()),))]
+
+
+async def test_a_spoken_turn_whose_voice_went_keeps_everything_she_wrote(run: Run) -> None:
+    # No answer to what was heard: the user read it instead (voice failed or muted).
+    await _cut_off(run, lambda _said: None)
+    assert run.saved == [
+        Msg(role="assistant", blocks=(TextBlock(text="One. Two. Three." + INTERRUPTED),))
+    ]
+
+
+def test_the_one_rule_for_what_an_interrupted_reply_keeps() -> None:
+    assert kept_of("One. Two.", None) == "One. Two." + INTERRUPTED
+    assert kept_of("One. Two.", "One.") == "One.…" + INTERRUPTED
+    assert kept_of("One. Two.", "") == INTERRUPTED.strip()
+
+
+async def test_a_spoken_turn_cut_off_before_she_wrote_anything_keeps_nothing(run: Run) -> None:
+    started = asyncio.Event()
+
+    class Quiet(ScriptedProvider):
+        async def stream(self, **kw: object) -> AsyncIterator[ModelEvent]:  # type: ignore[override]
+            started.set()
+            await asyncio.sleep(30)
+            yield TextDelta(text="never")
+
+    task = asyncio.create_task(run.go(Quiet(), heard=lambda _said: ""))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert run.saved == []
+
+
 async def test_an_interrupt_during_a_tool_lets_it_finish_and_records_it(run: Run) -> None:
     provider = ScriptedProvider(use("slow_irreversible", {}), say("unreached"))
     gate = asyncio.Event()
@@ -324,3 +402,54 @@ async def test_an_interrupt_while_the_tool_call_is_being_saved_still_answers_it(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert _pairs(history) == (1, 1)
+
+
+async def _drafted(events: list[ModelEvent]) -> AsyncIterator[ModelEvent]:
+    for ev in events:
+        yield ev
+
+
+async def test_a_first_call_given_to_the_turn_is_used_instead_of_calling_the_model(
+    run: Run,
+) -> None:
+    target = run.spine.granted / "note.txt"
+    target.write_text("hi", encoding="utf-8")
+    provider = ScriptedProvider(say("It says hi."))
+    drafted = _drafted(use("file_read", {"path": str(target)}, text="Let me look. "))
+    done = await run.go(provider, first=drafted)
+    # One model call: the round after the tool. The first round came from the draft.
+    assert len(provider.calls) == 1
+    assert done.stop == "end"
+    assert [type(e) for e in run.events] == [
+        ReplyDelta,
+        CallTimed,
+        ToolStarted,
+        ToolEnded,
+        ReplyDelta,
+        CallTimed,
+    ]
+    assert run.events[0] == ReplyDelta(text="Let me look. ")
+    (result,) = run.results()
+    assert not result.is_error
+
+
+async def test_a_given_first_call_that_ends_in_text_never_calls_the_model(run: Run) -> None:
+    provider = ScriptedProvider(say("unused"))
+    done = await run.go(provider, first=_drafted(say("Hi.")))
+    assert provider.calls == []
+    assert done.stop == "end"
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Hi."),))]
+
+
+async def test_a_given_first_call_that_fails_midway_ends_the_turn_like_a_real_call(
+    run: Run,
+) -> None:
+    async def dies() -> AsyncIterator[ModelEvent]:
+        yield TextDelta(text="So far")
+        raise ProviderError("rate_limited")
+
+    provider = ScriptedProvider(say("unused"))
+    done = await run.go(provider, first=dies())
+    assert provider.calls == []
+    assert done.stop == "provider_error" and done.error_kind == "rate_limited"
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="So far"),))]

@@ -8,6 +8,13 @@
  * room's own level, and counts as the user only a sound well above both, held
  * for a quarter of a second: a word, not a cough, a click or her loudest syllable.
  *
+ * After the warm-up, a sound under the bar may be the user talking quietly over her,
+ * not her echo. Learning it as echo would raise the bar against them, so from then on
+ * the learned levels only creep up.
+ *
+ * With hearing that judges turns none of this runs: the microphone goes to the core
+ * while she speaks, and her echo is told from the user by the words.
+ *
  * Pure: levels in, a yes or no out. The page measures the levels.
  */
 
@@ -28,6 +35,11 @@ const MAX_ECHO = 0.6;
 const MIN_VOICE = 0.02;
 // How quickly the learned levels follow the sound (per frame).
 const LEARN = 0.15;
+// After the warm-up, a level well above the room rises only this fast, and by no more
+// than this share of itself at a time: about 7% in five seconds of the user talking
+// under the bar, where it used to double in a few frames.
+const CREEP = 0.004;
+const CREEP_CAP = 1.2;
 
 /** The loudness of one frame of PCM16, 0 to 1 (root mean square). */
 export function frameLevel(pcm: ArrayBuffer): number {
@@ -68,7 +80,7 @@ export class BargeDetector {
     if (this.frames <= WARMUP_FRAMES) {
       // Everything heard while warming up is learned, however loud: a strong leak
       // must raise the bar, not slip under it.
-      this.learn(mic, playback);
+      this.learn(mic, playback, false);
       this.lastPlayback = playback;
       return false;
     }
@@ -77,7 +89,7 @@ export class BargeDetector {
       this.run++;
     } else {
       this.run = 0;
-      this.learn(mic, playback);
+      this.learn(mic, playback, true);
     }
     this.lastPlayback = playback;
     if (this.run >= ONSET_FRAMES) {
@@ -87,23 +99,98 @@ export class BargeDetector {
     return false;
   }
 
-  private learn(mic: number, playback: number): void {
+  private learn(mic: number, playback: number, settled: boolean): void {
+    // Well above the room once the warm-up is over: perhaps the user, under the bar.
+    const creep = settled && mic > this.room * OVER_ROOM;
     if (playback > 0.01) {
       // She is playing: what the microphone hears is mostly her, coming back.
-      const share = Math.min(MAX_ECHO, mic / playback);
-      // Rises quickly, falls slowly: a leak must never be underestimated.
-      this.echo += (share - this.echo) * (share > this.echo ? 0.5 : LEARN / 3);
+      let share = Math.min(MAX_ECHO, mic / playback);
+      // Rises quickly, falls slowly: a leak must never be underestimated. But never
+      // quickly on what may be the user's own voice.
+      let rise = 0.5;
+      if (creep) {
+        share = Math.min(share, this.echo * CREEP_CAP);
+        rise = CREEP;
+      }
+      this.echo += (share - this.echo) * (share > this.echo ? rise : LEARN / 3);
+    } else if (settled && mic > this.room) {
+      // Rooms get louder slowly (a fan); a voice under the bar must not count as one.
+      this.room += (Math.min(mic, this.room * CREEP_CAP) - this.room) * (creep ? CREEP : LEARN);
     } else {
       this.room += (mic - this.room) * LEARN;
     }
   }
 }
 
+/** What the page knows when the core closes listening (`mic.stop`). */
+export interface TurnEnd {
+  /** Why listening ended, as `mic.stop` says. */
+  readonly reason: unknown;
+  readonly micOn: boolean;
+  readonly bargeOn: boolean;
+  readonly linkReady: boolean;
+  readonly listening: boolean;
+  /** Her voice is played on this page (not off, not the computer's own voice). */
+  readonly coreVoice: boolean;
+  readonly onboarding: boolean;
+  /** The user has cut in and the core has not answered it yet. */
+  readonly cutIn: boolean;
+}
+
+/** After a spoken turn, the microphone stays open and watches for the user while she
+ * answers, rather than closing now and opening again at her first sound: on a Mac,
+ * opening or closing an echo-cancelled microphone reconfigures the audio device and
+ * glitches her first words, and the gap in between would hear nobody. Only when a
+ * reply is coming (the user finished) and barge-in may watch it. */
+export function holdForReply(t: TurnEnd): boolean {
+  return (
+    // Not after the longest turn: the user is often still talking, and the warm-up
+    // would learn their voice as the room.
+    t.reason === 'end' &&
+    t.micOn &&
+    t.bargeOn &&
+    t.linkReady &&
+    t.listening &&
+    t.coreVoice &&
+    !t.onboarding &&
+    !t.cutIn
+  );
+}
+
+/** How the open microphone watches while she speaks. With hearing that judges turns it
+ * streams to the core, which tells her echo from the user by the words; otherwise the
+ * levels are measured here and nothing is sent until the user cuts in. */
+export type WatchMode = 'stream' | 'local';
+
+export function watchMode(turns: boolean): WatchMode {
+  return turns ? 'stream' : 'local';
+}
+
+/** The Speak button's title while it only watches (VOI-15d): open, and what is sent. */
+export function watchTitle(mode: WatchMode): string {
+  return mode === 'stream' ? 'Listening for you to cut in.' : 'Listening for you to cut in. Nothing is sent.';
+}
+
+/** What a streaming watch does when the core says `overlap.over`: `close` when the
+ * watch is over (`end`); `stop` when the page asked to stop while the core decided, or
+ * can no longer watch (the switch off, its own microphone turn); else `keep` streaming. */
+export function afterOver(o: { end: boolean; pending: boolean; canWatch: boolean }): 'close' | 'stop' | 'keep' {
+  if (o.end) return 'close';
+  return o.pending || !o.canWatch ? 'stop' : 'keep';
+}
+
+/** Held for her reply this long without a sound from her, the microphone closes: a
+ * reply that turns out silent, a long tool, an error. */
+export const HOLD_MS = 15_000;
+
+// Two seconds: the detector notices a voice late, and more so a quiet one.
+const PREROLL_FRAMES = Math.round(2 / FRAME_S);
+
 /** The last few frames before the user was noticed, so their first word is kept. */
 export class Preroll {
   private frames: ArrayBuffer[] = [];
 
-  constructor(private readonly keep = 10) {} // 600 ms
+  constructor(private readonly keep = PREROLL_FRAMES) {}
 
   push(frame: ArrayBuffer): void {
     this.frames.push(frame);

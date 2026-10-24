@@ -1,7 +1,7 @@
 """Deepgram streaming speech recognition, on the user's own account and key (VOI-11c).
 
 Audio goes up a WebSocket as it is captured and words come back while the user
-is still speaking.
+is still speaking. It uses Flux, which also judges when a turn is over (VOI-12).
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import urlencode
 
 import httpx
@@ -19,9 +19,16 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketExce
 from trillion.voice.types import CAPTURE, Choice, Heard, VoiceError
 
 NAME = "deepgram"
-LISTEN_URL = "wss://api.deepgram.com/v1/listen"
+LISTEN_URL = "wss://api.deepgram.com/v2/listen"
 PROJECTS_URL = "https://api.deepgram.com/v1/projects"
-MODEL = "nova-3"
+# Flux: Deepgram's recognizer that judges the end of a turn by meaning (VOI-12).
+MODELS = {"en": "flux-general-en", "multi": "flux-general-multi"}
+# Probably finished at 0.5, finished at 0.7, and never more than five seconds of quiet.
+EOT_THRESHOLD = 0.7
+EAGER_EOT_THRESHOLD = 0.5
+EOT_TIMEOUT_MS = 5000
+# Deepgram's recommended chunk: 80 ms of 16 kHz PCM16.
+CHUNK_BYTES = 2560
 CHOICES = (
     Choice(id="en", name="English"),
     Choice(id="multi", name="Many languages, detected as you speak"),
@@ -51,44 +58,59 @@ async def _connect(url: str, headers: Mapping[str, str]) -> Socket:
 
 def listen_url(language: str) -> str:
     query = {
-        "model": MODEL,
-        "language": language,
+        "model": MODELS.get(language, MODELS["en"]),
         "encoding": "linear16",
         "sample_rate": CAPTURE.sample_rate,
-        "channels": CAPTURE.channels,
-        "interim_results": "true",
-        "smart_format": "true",
-        # Deepgram's own view of a pause; the listener still decides when a turn is over.
-        "endpointing": 300,
+        "eot_threshold": EOT_THRESHOLD,
+        "eager_eot_threshold": EAGER_EOT_THRESHOLD,
+        "eot_timeout_ms": EOT_TIMEOUT_MS,
     }
     return f"{LISTEN_URL}?{urlencode(query)}"
 
 
+_EVENTS: dict[str, Literal["maybe", "resumed", "done"] | None] = {
+    "Update": None, "StartOfTurn": None,
+    "EagerEndOfTurn": "maybe", "TurnResumed": "resumed", "EndOfTurn": "done",
+}  # fmt: skip
+
+
 def parse(raw: bytes | str) -> Heard | None:
-    """One message from Deepgram as words, or None when it carries none."""
+    """One message from Deepgram as words and a turn signal, or None when it carries none."""
     try:
         msg = json.loads(raw)
     except ValueError as e:
         raise VoiceError("bad_response", type(e).__name__) from e
-    if not isinstance(msg, dict) or msg.get("type") != "Results":
+    if isinstance(msg, dict) and msg.get("type") == "Error":
+        # Deepgram closes after this; it must read as a failed leg, not a quiet end.
+        # Never the description: it could echo what was said.
+        raise VoiceError("provider_unavailable", str(msg.get("code") or "error"))
+    if not isinstance(msg, dict) or msg.get("type") != "TurnInfo":
         return None
-    alternatives = (msg.get("channel") or {}).get("alternatives") or [{}]
-    text = str(alternatives[0].get("transcript") or "").strip()
-    final = msg.get("is_final") is True
-    pause = final and msg.get("speech_final") is True
-    return Heard(text=text, final=final, pause=pause) if text or final else None
+    event = msg.get("event")
+    if event not in _EVENTS:
+        return None
+    text = str(msg.get("transcript") or "").strip()
+    turn = _EVENTS[event]
+    if turn is None and not text:
+        return None
+    return Heard(text=text, final=turn == "done", turn=turn)
 
 
 class _Stream:
     def __init__(self, socket: Socket) -> None:
         self._socket = socket
         self._closed = False
+        # Audio waits here until there is a whole chunk to send.
+        self._rest = b""
 
     async def send(self, pcm: bytes) -> None:
         if self._closed or not pcm:
             return
+        self._rest += pcm
         try:
-            await self._socket.send(pcm)
+            while len(self._rest) >= CHUNK_BYTES:
+                piece, self._rest = self._rest[:CHUNK_BYTES], self._rest[CHUNK_BYTES:]
+                await self._socket.send(piece)
         except ConnectionClosed as e:
             raise VoiceError("unreachable", type(e).__name__) from e
 
@@ -96,6 +118,9 @@ class _Stream:
         if self._closed:
             return
         try:
+            if self._rest:
+                await self._socket.send(self._rest)
+                self._rest = b""
             # Deepgram answers with whatever it still holds, then closes the socket.
             await self._socket.send(json.dumps({"type": "CloseStream"}))
         except ConnectionClosed:
@@ -124,6 +149,7 @@ class _Stream:
 class Deepgram:
     name = NAME
     streaming = True
+    turns = True
 
     def __init__(
         self,

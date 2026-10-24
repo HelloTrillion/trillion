@@ -192,6 +192,7 @@ class _Stream:
 class LocalWhisper:
     name = NAME
     streaming = False
+    turns = False
 
     def __init__(
         self,

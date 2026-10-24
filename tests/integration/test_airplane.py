@@ -141,7 +141,7 @@ def test_hosted_ears_say_why_and_typing_still_works(make: Any, airplane: list[st
     assert deepgram is not None
     secrets.set(deepgram.secret, KEY)
     app.rt.stt = deepgram.build(secrets)
-    app.rt.listening = ListenSettings(kind="deepgram", choice="nova-3")
+    app.rt.listening = ListenSettings(kind="deepgram", choice="en")
     with app.connect() as chat:
         chat.ws.send_json({"type": "listen.start"})
         msgs, took = timed(lambda: chat.until("error"))

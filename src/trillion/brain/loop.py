@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from trillion.brain.types import (
     Block,
     Done,
+    ModelEvent,
     ModelProvider,
     Msg,
     ProviderError,
@@ -100,11 +101,20 @@ async def run_turn(
     emit: Callable[[LoopEvent], Awaitable[None]],
     save: Callable[[Msg], Awaitable[None]],
     limits: Limits | None = None,
+    first: AsyncIterator[ModelEvent] | None = None,
+    heard: Callable[[str], str | None] | None = None,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
     `history` ends with the user's message. `save` is called once for each message
-    the turn adds; `emit` must not raise."""
+    the turn adds; `emit` must not raise.
+
+    `first`, when given, stands in for the first model call: a draft started while the
+    user was finishing (VOI-12).
+
+    `heard`, for a spoken turn, cuts the text to what the user heard when it is
+    interrupted (D8): given what she wrote this round, it returns the part heard, or
+    None when the user read it all instead (her voice failed or was muted)."""
     guard = LoopGuard(limits)
     tools = tool_schemas(registry)
     pricing = provider.pricing()
@@ -162,13 +172,20 @@ async def run_turn(
         raw: ProviderRaw | None = None
         clock = asyncio.get_running_loop().time
         started = clock()
-        first: float | None = None
-        try:
-            async for ev in provider.stream(
+        # Only the first round may use the given stream; later rounds ask the model.
+        source = (
+            first
+            if first is not None
+            else provider.stream(
                 system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS
-            ):
-                if first is None and isinstance(ev, TextDelta | ToolUse):
-                    first = clock()
+            )
+        )
+        first = None
+        first_token: float | None = None
+        try:
+            async for ev in source:
+                if first_token is None and isinstance(ev, TextDelta | ToolUse):
+                    first_token = clock()
                 if isinstance(ev, TextDelta):
                     text.append(ev.text)
                     await emit(ReplyDelta(text=ev.text))
@@ -179,10 +196,12 @@ async def run_turn(
                     spent = spent + ev.usage
                     raw = ev.raw
         except asyncio.CancelledError:
-            # What the user already read is kept and marked; a half-formed tool call
-            # is dropped, because it never ran.
+            # What the user already read, or heard, is kept and marked; a half-formed
+            # tool call is dropped, because it never ran.
             if text:
-                await asyncio.shield(add(_assistant("".join(text) + INTERRUPTED, [], None)))
+                said = "".join(text)
+                kept = kept_of(said, heard(said) if heard is not None else None)
+                await asyncio.shield(add(_assistant(kept, [], None)))
             raise
         except ProviderError as e:
             logger.warning("model provider %s failed: %s", provider.name, e.kind)
@@ -190,7 +209,7 @@ async def run_turn(
                 await add(_assistant("".join(text), [], None))
             return done("provider_error", e.kind)
 
-        await emit(CallTimed(started=started, first_token=first, ended=clock(), usage=spent))
+        await emit(CallTimed(started=started, first_token=first_token, ended=clock(), usage=spent))
         usage = usage + spent
         over_budget = False
         if pricing is not None and cost is not None:
@@ -234,6 +253,21 @@ async def run_turn(
             raise asyncio.CancelledError
         if over_budget:
             return done("cost")
+
+
+def kept_of(written: str, heard: str | None) -> str:
+    """The one rule for what an interrupted reply keeps of its round (VOI-9, D8).
+
+    Read (`heard` is None): all she wrote. Heard: the heard part and "…"; written but
+    never said is dropped. With nothing heard, the marker alone shows she began."""
+    said = written if heard is None else cut(heard)
+    return said + INTERRUPTED if said else INTERRUPTED.strip()
+
+
+def cut(heard: str) -> str:
+    """What a spoken reply keeps of a round when it is cut off: the heard part, then "…"
+    (D8). The page shows the same."""
+    return f"{heard}…" if heard else ""
 
 
 async def _finish(work: Awaitable[None]) -> bool:

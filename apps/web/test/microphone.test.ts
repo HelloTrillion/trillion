@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { constraints, loudest } from '../src/mic';
-import { deviceName, meterLevel } from '../src/microphone';
+import { bargeHint, deviceName, meterLevel } from '../src/microphone';
 
 const tone = (n: number, loud: number): Float32Array =>
   Float32Array.from({ length: n }, (_, i) => loud * Math.sin(i / 3));
@@ -44,5 +44,13 @@ describe('the microphone settings', () => {
     expect(meterLevel(new Float32Array(512))).toBe(0);
     expect(meterLevel(tone(512, 0.15))).toBeGreaterThan(0.6);
     expect(meterLevel(tone(512, 1))).toBe(1);
+  });
+});
+
+describe('interrupting her by talking', () => {
+  it('says the microphone goes to the hearing service when that hearing judges turns', () => {
+    expect(bargeHint(true)).toContain('goes to the hearing service');
+    expect(bargeHint(true)).not.toContain('Nothing is sent');
+    expect(bargeHint(false)).toContain('Nothing is sent until you do');
   });
 });

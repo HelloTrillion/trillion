@@ -104,3 +104,12 @@ def test_a_turn_with_several_model_calls_lists_each() -> None:
 
 def test_a_turn_that_did_not_end_says_why() -> None:
     assert "claude-sonnet-5 (interrupted)" in trace.report([row(stop="interrupted")])
+
+
+def test_each_turn_says_whether_a_draft_was_used() -> None:
+    out = trace.report([row(draft="used"), row(draft="dropped"), row(draft="none")])
+    head = next(ln for ln in out.splitlines() if ln.startswith("when "))
+    assert " draft " in head
+    lines = [ln for ln in out.splitlines() if "claude-sonnet-5" in ln]
+    assert " used " in lines[0] and " dropped " in lines[1]
+    assert "used" not in lines[2] and "dropped" not in lines[2]

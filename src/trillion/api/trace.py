@@ -38,6 +38,8 @@ class Trace:
     # turn's number was already heard (a tap's answer). Playback reports name it.
     heard_as: int = 0
     tools: int = 0
+    # Spoken turns: whether a draft started early was used, or one was dropped (VOI-12).
+    draft: Literal["used", "dropped", "none"] = "none"
     marks: dict[str, float] = field(default_factory=dict)
     calls: list[dict[str, int | None]] = field(default_factory=list)
     # The stored row, once the turn is over: a late `played` updates it.
@@ -78,7 +80,7 @@ class Trace:
         ears: str | None,
         stop: str,
     ) -> dict[str, Any]:
-        """The row `turn_timings` keeps (migration 007)."""
+        """The row `turn_timings` keeps (migrations 007 and 009)."""
         out: dict[str, Any] = {
             "conversation_id": conversation_id,
             "turn": self.turn,
@@ -92,6 +94,7 @@ class Trace:
             "tools": self.tools,
             "endpoint_ms": round(self.endpoint_s * 1000) if self.endpoint_s is not None else None,
             "calls_json": json.dumps(self.calls, separators=(",", ":")),
+            "draft": self.draft,
         }
         for name in MARKS:
             at = self.marks.get(name)

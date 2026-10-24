@@ -8,8 +8,11 @@ from trillion.voice.endpoint import (
     DEAD_AFTER_S,
     DONE_S,
     FAST_S,
+    HELD_MAX_S,
+    HELD_QUIET_S,
     SLOW_S,
     EndOfSpeech,
+    leads_on,
     level,
     sounds_finished,
 )
@@ -194,3 +197,109 @@ def test_what_sounds_finished() -> None:
     unfinished = ["set a timer for", "I want to go and.", "So um.", "Hmm...", "Hmm…", "", "and."]
     assert all(sounds_finished(t) for t in finished)
     assert not any(sounds_finished(t) for t in unfinished)
+
+
+def test_a_recognizer_that_judges_turns_decides_the_end() -> None:
+    """VOI-12: with `judged`, silence never ends the turn; the recognizer's done does."""
+    rules = EndOfSpeech(streaming=True, judged=True)
+    assert rules.audio(tone(0.6)) is None
+    rules.heard(final=False, has_text=True)
+    # Three seconds of quiet: the old rules would have ended it at one.
+    assert rules.audio(room(3.0)) is None
+    rules.turn_over()
+    assert rules.audio(room(0.04)) == "end"
+
+
+def test_judged_rules_still_say_nothing_and_inaudible() -> None:
+    assert EndOfSpeech(streaming=True, judged=True, patience_s=1.0).audio(room(1.2)) == "nothing"
+    assert EndOfSpeech(streaming=True, judged=True).audio(bytes(16_000 * 2 * 3)) == "inaudible"
+
+
+def test_what_leads_on() -> None:
+    """A recognizer may give no punctuation at all, so only a word or mark that leads
+    somewhere counts; a missing full stop does not."""
+    leading = ["I went to the shop and", "So um", "and.", "Hmm...", "Hmm\u2026", "first,", "well -"]
+    ending = ["I went to the shop", "yeah", "Call the dentist.", "What time is it?", ""]
+    # A question or an exclamation is finished, whatever word it ends on.
+    ending += ["Who's that?", "What is it for?", "So?", "And!"]
+    assert all(leads_on(t) for t in leading)
+    assert not any(leads_on(t) for t in ending)
+
+
+def test_a_held_done_ends_after_more_quiet() -> None:
+    """The recognizer said done on words that lead on: more quiet ends it after all."""
+    rules = EndOfSpeech(streaming=True, judged=True)
+    assert rules.audio(tone(0.6)) is None
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    assert not rules.is_over
+    assert rules.audio(room(HELD_QUIET_S - 0.1)) is None
+    assert rules.audio(room(0.2)) == "end"
+    assert rules.is_over  # what follows is the next thought
+
+
+def test_held_quiet_counts_from_when_the_voice_stopped() -> None:
+    """An early done waits about 2.5 s of silence in all; a done the recognizer forced
+    after a long silence ends at once."""
+    early = EndOfSpeech(streaming=True, judged=True)
+    early.audio(tone(0.6) + room(0.7))
+    early.heard(final=True, has_text=True)
+    early.hold()
+    assert early.audio(room(HELD_QUIET_S - 0.8)) is None
+    assert early.audio(room(0.2)) == "end"
+    late = EndOfSpeech(streaming=True, judged=True)
+    late.audio(tone(0.6) + room(5.0))
+    late.heard(final=True, has_text=True)
+    late.hold()
+    assert late.audio(room(0.04)) == "end"
+
+
+def test_a_held_done_ends_within_the_cap_whatever_noise_goes_on() -> None:
+    """A breath, a keyboard or a television must not keep a held turn open."""
+    rules = EndOfSpeech(streaming=True, judged=True)
+    rules.audio(tone(0.6))
+    start = rules.now
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    assert rules.audio((tone(0.3) + room(1.0)) * 6) == "end"
+    assert rules.now - start <= HELD_MAX_S + 0.05
+
+
+def test_an_empty_done_does_not_restart_a_hold() -> None:
+    rules = EndOfSpeech(streaming=True, judged=True)
+    rules.audio(tone(0.6))
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    rules.audio((tone(0.3) + room(1.0)) * 3)
+    rules.heard(final=True, has_text=False)
+    rules.hold()
+    assert rules.audio((tone(0.3) + room(1.0)) * 2) == "end"
+
+
+def test_a_voice_after_a_held_done_starts_the_quiet_again() -> None:
+    rules = EndOfSpeech(streaming=True, judged=True)
+    rules.audio(tone(0.6))
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    assert rules.audio(room(2.0) + tone(0.3) + room(2.0)) is None
+    assert rules.audio(room(0.6)) == "end"
+
+
+def test_new_words_after_a_held_done_leave_the_end_to_the_recognizer() -> None:
+    rules = EndOfSpeech(streaming=True, judged=True)
+    rules.audio(tone(0.6))
+    rules.heard(final=True, has_text=True)
+    rules.hold()
+    rules.heard(final=False, has_text=True)
+    assert rules.audio(room(4.0)) is None
+
+
+def test_onsets_are_found_by_loudness_with_how_long_ago_they_began() -> None:
+    from trillion.voice.endpoint import Onsets
+
+    o = Onsets()
+    found = [o.audio(f) for f in frames(room(0.5) + tone(0.3) + room(0.5) + tone(0.3))]
+    starts = [(i, ago) for i, ago in enumerate(found) if ago is not None]
+    assert len(starts) == 2  # one per voice, not one per frame
+    # Noticed after its onset, and said how long ago it began.
+    assert all(0.0 < ago <= 0.13 for _, ago in starts)

@@ -13,12 +13,14 @@ import contextlib
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from trillion import __version__
 from trillion.api import listening
+from trillion.api.draft import Draft, same_words
 from trillion.api.listening import FOLLOW_UP_S, Listener
 from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
@@ -30,9 +32,12 @@ from trillion.brain.loop import (
     ReplyDelta,
     ToolEnded,
     ToolStarted,
+    cut,
+    kept_of,
     run_turn,
+    tool_schemas,
 )
-from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock
+from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock, Usage
 from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
 from trillion.persona.prompt import (
@@ -47,6 +52,18 @@ from trillion.spine.contract import Risk, ToolContext
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
+from trillion.voice.overlap import (
+    confirm,
+    decide,
+    echo_of,
+    echo_through,
+    is_said,
+    judge_watch,
+    judged_prefix,
+    keys,
+    late_echo,
+    share_hers,
+)
 from trillion.voice.types import VoiceError
 
 logger = logging.getLogger(__name__)
@@ -60,9 +77,71 @@ BARGE_WAIT_S = 3.0
 NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
+# While the user talks over her, what they said is weighed at least this often.
+OVERLAP_TICK_S = 0.05
+# Watching while she speaks ends if nothing of hers has started playing for this long:
+# a reply that never sounds, a long tool, a page that stopped reporting (VOI-9).
+WATCH_HOLD_S = 15.0
+# The recognizer reports her last words up to a second after she stops: a watch goes on
+# telling them from the user's this long after her end before it becomes the window.
+ECHO_GRACE_S = 2.0
+# Words that begin this soon after she stopped are weighed against what she said last:
+# mostly hers, they are her echo, and never a turn or a draft.
+ECHO_AFTER_S = 3.0
+# One or two of her final words count as her echo only when said this soon after her end,
+# or, with no voice heard starting, first reported this soon after it.
+_AT_ONCE_S = 0.3
+_REPORTED_AT_ONCE_S = 1.2
+# After she is heard to the end, words count only with a voice starting this long after
+# her end at least: her echo dies away within it, so it cannot be her.
+_NEW_VOICE_S = 0.2
+# After a cut-in, her words heard this soon after theirs are her echo, still coming.
+_LATE_ECHO_S = 1.5
+# While watching, new words are weighed with this many judged ones before them, so one
+# misheard word among hers does not stand alone.
+_CONTEXT_WORDS = 4
 SURFACE = "web"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(kw_only=True)
+class Overlap:
+    """The user started talking over her (VOI-9): what they meant is being decided."""
+
+    listener: Listener
+    started: float
+    # The reply being talked over, for telling her own voice from theirs.
+    speaker: Speaker | None
+    watcher: asyncio.Task[None] | None = None
+    # Each frame wakes the watcher, so a word stops her as soon as it is heard.
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    # Decided: it is becoming the user's turn while her reply stops.
+    promoting: bool = False
+    # She finished being heard meanwhile: carrying on opens the follow-up window.
+    ended: bool = False
+    # Opened by the page to watch while she speaks: every frame is streamed, and this
+    # decides when to duck her. False for the page's own `overlap`, already ducked.
+    watch: bool = False
+    # Still only watching: nothing heard so far is anything but her.
+    watching: bool = False
+    # The words at the start of the recognizer's current turn already judged hers.
+    echo: tuple[str, ...] = ()
+    # When a sentence of hers last started playing, or the watch began.
+    her_at: float = 0.0
+    # When she was heard to the end: from then her last words may still come back.
+    ended_at: float | None = None
+    # How many words were heard when she was ducked: what follows confirms them.
+    ducked_on: int = 0
+
+
+@dataclass(frozen=True, kw_only=True)
+class BuiltInput:
+    """A user input made ready to save: the message, and what committing it records."""
+
+    msg: Msg
+    text: str
+    brought: frozenset[str]
 
 
 class Session:
@@ -99,6 +178,14 @@ class Session:
         # the message that first called for it, and is never repeated.
         self._brought: set[str] = set()
         self._listener: Listener | None = None
+        # The user is talking over her, and what they meant is being decided (VOI-9).
+        self._overlap: Overlap | None = None
+        # Her first call, started while the user is probably finishing (VOI-12); then,
+        # once it is the turn's own, the one the turn replays. Whether one was started
+        # in this stretch of listening, for the trace.
+        self._draft: Draft | None = None
+        self._using: Draft | None = None
+        self._drafted = False
         self._watchdog: asyncio.Task[None] | None = None
         self._last_audio = 0.0
         # How the current turn was said. A spoken yes is recorded as spoken (SPN-14).
@@ -125,6 +212,23 @@ class Session:
         self._started = False
         # The last turn whose number speech went out under.
         self._voiced: int | None = None
+        # The running turn's voice: the page reports to it each sentence it starts
+        # playing, so an interrupted reply keeps what was heard (D8).
+        self._speaker: Speaker | None = None
+        # The last reply's voice, kept after its turn: what her echo would say.
+        self._voice_last: Speaker | None = None
+        # When she last stopped being heard, and what she was saying then: her echo of
+        # it may still arrive, and is never taken for the user (VOI-9).
+        self._her_end: tuple[float, tuple[str, ...]] | None = None
+        # Whether that end was her heard to the end (else she was cut in on).
+        self._her_end_heard = False
+        # The user's spoken words are being collected and saved: a cut-in waits, or
+        # cancelling her turn would lose them.
+        self._collecting = False
+        # Her last spoken reply, saved whole, while it may still be playing: its voice
+        # and its id in the store. A barge before the model has been sent it trims it
+        # to what was heard (D8). Gone once anything is saved or sent after it.
+        self._tail: tuple[Speaker, int] | None = None
         # The user just pressed Stop: notices that arrive straight after it are shown,
         # not spoken. Cleared at the first rest after it (VOI-9).
         self._stopped = False
@@ -213,6 +317,9 @@ class Session:
 
     async def settings_changed(self) -> None:
         """Settings changed. The next turn uses them; one in flight finishes as it was."""
+        if self._overlap is not None and self._overlap.watch:
+            # The hearing it watches with may be gone: the page opens it again if it can.
+            await self._end_overlap(tell=True)
         await self._send("model", model=self._model())
         await self._send("speech", speech=self._speech())
         await self._send("listening", listening=self._listening())
@@ -230,13 +337,21 @@ class Session:
         self._rt.sessions.discard(self)
         if self._rt.by_conversation.get(self.id) is self:
             del self._rt.by_conversation[self.id]
+        await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
+        self._tail = None
         task = self._task
         if task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        # The turn is over by now, so nothing is replaying either of these. Belt and
+        # braces: every path that ends a turn already lets its draft go.
+        await self._drop_draft()
+        using, self._using = self._using, None
+        if using is not None:
+            await self._let_go(using)
 
     # ── Incoming messages ────────────────────────────────────────────────
 
@@ -253,22 +368,54 @@ class Session:
             self._stopped = True
             # Stopped: the page drops what it was playing and never reports it played.
             self._spoken = None
+            # Whatever they were saying over her goes too; the page stops everything.
+            await self._end_overlap(tell=False)
             if self._listener is not None:
                 # Stopping while she listens throws the words away: nothing is sent.
                 await self._stop_listening()
                 await self._send("mic.stop", reason="cancelled")
                 await self._state(self._rest)
+            # Never the one a turn replays: that stops with its turn, below.
+            await self._drop_draft()
             if task is not None:
                 # Its end comes to rest, which offers what is held and ends the quiet.
                 task.cancel()
             else:
+                # Her reply may still be playing: it keeps only what was heard.
+                await self.trim_tail()
                 # Nothing to stop, but what was held for the speech just dropped may come.
                 await self._offer()
                 self._stopped = False
         elif kind == "listen.start":
-            await self._on_listen(NOTHING_AFTER_S)
+            ov = self._overlap
+            if ov is not None and ov.watching and self._task is None:
+                # Speak, while her finished reply plays: the watch becomes the turn.
+                ov.listener.forget()
+                await self._leave_watch(ov)
+                await self._overlap_interrupts(ov)
+            else:
+                await self._on_listen(NOTHING_AFTER_S)
         elif kind == "barge":
-            await self._on_barge()
+            ov = self._overlap
+            if ov is not None:
+                # Already listening over her: that becomes the turn.
+                await self._leave_watch(ov)
+                await self._overlap_interrupts(ov)
+            else:
+                await self._on_barge()
+        elif kind == "overlap":
+            ov = self._overlap
+            if ov is not None and ov.watching:
+                # The page ducked her itself: decide now.
+                await self._start_deciding(ov)
+            else:
+                await self._on_overlap()
+        elif kind == "overlap.watch":
+            await self._on_watch()
+        elif kind == "overlap.unwatch":
+            # The page stopped watching (a switch turned off, a microphone gone).
+            if self._overlap is not None and self._overlap.watching:
+                await self._end_overlap(tell=True)
         elif kind == "listen.stop":
             # The user says they are done: what was heard so far is the message.
             if self._listener is not None:
@@ -288,15 +435,35 @@ class Session:
                 for k in ("rate", "device_rate", "state", "channels", "device", "track", "silent")
                 if isinstance(msg.get(k), int | float | str | bool)
             }
+        elif kind == "playback.sentence":
+            self._sentence_played(msg.get("turn_id"), msg.get("seq"))
+            self._her_heard()
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
+            self._her_heard()
         elif kind == "playback.ended":
             turn_id = msg.get("turn_id")
             if isinstance(turn_id, int) and not isinstance(turn_id, bool):
                 self._played = turn_id
+            last = self._voice_last
+            if last is not None and last.turn == turn_id:
+                # Her last words may still come back through the microphone.
+                self._her_end = (self._now(), last.last())
+                self._her_end_heard = True
+            if self._tail is not None and self._tail[0].turn == turn_id:
+                # Heard to the end: there is nothing left to cut.
+                self._tail = None
+            ov = self._overlap
+            if ov is not None and ov.watching:
+                # Heard to the end while only watching: the watch is the follow-up.
+                ov.ended = True
+                await self._watch_settles()
+            elif ov is not None:
+                # They are talking over her end: what they meant decides what follows.
+                ov.ended = True
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
-            if self._via == "voice" and self._task is None and self._listener is None:
+            elif self._via == "voice" and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
             await self._offer()
         elif kind == "confirm.shown":
@@ -357,13 +524,481 @@ class Session:
         Stopping her is not cancelling work (VOI-15c): an action already approved
         finishes and is recorded before she listens."""
         self._spoken = None
+        self._stopped_her()
         async with self._taking_input():
             task = self._task
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
                     await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
+            else:
+                # Her turn is over but its sound may not be: keep only what was heard.
+                await self.trim_tail()
             await self._on_listen(NOTHING_AFTER_S)
+
+    # ── Talking over her (VOI-9) ─────────────────────────────────────────
+
+    async def _on_overlap(self) -> None:
+        """The page ducked her voice because the user started talking over it (VOI-9).
+
+        Her reply keeps going, quieter, while about a second of what they say is heard;
+        then they either let her carry on or become the turn. That needs a recognizer
+        that gives words while they talk and a reply to talk over: a turn running, or
+        her finished reply still playing. Otherwise it is a barge, as before (D7)."""
+        rt = self._rt
+        if self._overlap is not None:
+            return
+        task = self._task
+        # Notices are not a reply: talking over one stops it, as before.
+        running = task is not None and not task.done() and task is not self._notice_task
+        if (
+            rt.stt is None
+            or rt.listening is None
+            or not rt.stt.turns
+            or rt.provider is None
+            or self._listener is not None
+            or not (running or self._tail is not None)
+        ):
+            await self._barge_instead()
+            return
+        tail = self._tail[0] if self._tail is not None else None
+        # Nothing heard is shown until it turns out to be the user's turn, and no
+        # draft starts from it: her reply must stay as it is until then.
+        listener = Listener(rt.stt, rt.listening.choice, on_partial=self._unshown)
+        ov = Overlap(listener=listener, started=self._now(), speaker=self._speaker or tail)
+        self._overlap = ov
+        try:
+            await listener.start()
+        except VoiceError as e:
+            # They cannot be heard over her: she stops, as a barge would stop her, and
+            # the listening that follows says what is wrong.
+            logger.warning("listening over her failed in session %s: %s", self.id, e.kind)
+            if self._overlap is ov:
+                self._overlap = None
+                await listener.abandon()
+                await self._barge_instead()
+            return
+        if self._overlap is ov:
+            ov.watcher = asyncio.create_task(self._watch_overlap(ov))
+        elif not ov.promoting:
+            # Stopped or closed while it connected: nobody will close it otherwise.
+            await listener.abandon()
+
+    async def _barge_instead(self) -> None:
+        """An overlap that cannot be decided is a barge (D7). The page only ducked her,
+        so her sound is stopped here unless stopping her turn does it."""
+        task = self._task
+        if task is None or task.done():
+            await self._stop_her_sound(self._tail[0] if self._tail is not None else None)
+        # Frames the page sends meanwhile wait in the socket until this returns, by
+        # when the listener exists.
+        await self._on_barge()
+
+    async def _stop_her_sound(self, speaker: Speaker | None) -> None:
+        """Tell the page to stop whatever of her is still playing."""
+        if speaker is not None:
+            turn: int | None = speaker.turn
+        elif self._spoken is not None:
+            turn = self._spoken[0]
+        else:
+            turn = self._played
+        await self._send("audio.stop", turn=turn)
+
+    async def _unshown(self, text: str) -> None:
+        return None
+
+    async def _overlap_audio(self, ov: Overlap, pcm: bytes) -> None:
+        """A frame heard over her. Every frame goes to the listener deciding, and to it
+        still while it becomes the turn, so none of their words is lost."""
+        self._last_audio = self._now()
+        try:
+            verdict = await ov.listener.audio(pcm)
+        except VoiceError as e:
+            if not ov.promoting:
+                # Hearing failed: she carries on, as if they had not spoken.
+                logger.warning("listening over her failed in session %s: %s", self.id, e.kind)
+                if ov.watch:
+                    # Nothing more can be heard with it: the watch is over.
+                    await self._end_overlap(tell=True)
+                    await self._offer()
+                else:
+                    await self._overlap_carries_on(ov)
+            # Becoming the turn: the listener raises it again on the next frame.
+            return
+        ov.wake.set()
+        if verdict is not None and verdict != "end" and not ov.promoting:
+            # Nothing said, a dead microphone, or far too long: she carries on.
+            await self._overlap_carries_on(ov)
+
+    async def _watch_overlap(self, ov: Overlap) -> None:
+        """Weigh what has been heard over her, on every frame and every tick."""
+        while self._overlap is ov and not ov.promoting:
+            if ov.watching:
+                if not await self._watch_once(ov):
+                    return
+            else:
+                listener = ov.listener
+                speaker = self._speaker or ov.speaker
+                done = listener.verdict == "end"
+                # The audio's own clock as well: the page sends the words it held while
+                # deciding to duck all at once, and they were said before now. That
+                # pre-roll counts too, so the limits land about 0.3 s early.
+                elapsed = max(self._now() - ov.started, listener.heard_s)
+                if ov.watch:
+                    # Ducked on words that were not hers: they may be her echo misheard,
+                    # so it takes more of theirs to stop her.
+                    tokens = listener.text().split()
+                    decision = confirm(
+                        " ".join(tokens[: ov.ducked_on]),
+                        " ".join(tokens[ov.ducked_on :]),
+                        # Ended by the recognizer, even on a word that leads on.
+                        done=done or listener.turn_done,
+                        elapsed_s=elapsed,
+                        playing=self._her_playing(ov),
+                        turn=listener.whole_turn(),
+                    )
+                else:
+                    decision = decide(
+                        listener.text(),
+                        done=done,
+                        elapsed_s=elapsed,
+                        playing=speaker.playing() if speaker is not None else (),
+                    )
+                if decision == "carry_on":
+                    await self._overlap_carries_on(ov)
+                    # Watching again, unless that ended it.
+                    continue
+                if decision == "interrupt":
+                    await self._overlap_interrupts(ov)
+                    return
+            ov.wake.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(ov.wake.wait(), OVERLAP_TICK_S)
+
+    async def _watch_once(self, ov: Overlap) -> bool:
+        """While she speaks: are the words heard hers, nothing, or perhaps the user?
+        After her end, the same for a moment more, then the window opens. False once
+        the watch is over."""
+        now = self._now()
+        if now - self._last_audio > NO_AUDIO_S or now - ov.her_at > WATCH_HOLD_S:
+            # The page stopped sending, or nothing of hers has played for long.
+            logger.info("talked over in session %s: watch_over", self.id)
+            await self._end_overlap(tell=True)
+            await self._offer()
+            return False
+        if self._collecting:
+            # Their last words are still being saved: judged once they are.
+            return True
+        said = ov.listener.turn_text()
+        tokens = said.split()
+        # Only the words not already judged, with a few judged ones before them: her
+        # echo goes on growing in the same turn, and one misheard word is not theirs.
+        judged = judged_prefix(said, ov.echo)
+        playing = self._her_playing(ov)
+        verdict = "nothing"
+        if len(tokens) > judged:
+            window = " ".join(tokens[max(0, judged - _CONTEXT_WORDS) :])
+            verdict = judge_watch(window, playing)
+        if self._after_her(ov) and ov.ended_at is not None:
+            # She has finished: any word of theirs is their turn, a one-word "Yes." too.
+            # Words that are all hers are kept as well; the turn drops them only on
+            # evidence they are her (`_less_her_echo`), as "Six?" may be theirs. But
+            # only with a voice starting after her end: without one, whatever the words,
+            # they are her echo misheard ("ask." heard as "ass.").
+            new = " ".join(tokens[judged:])
+            if new and not ov.listener.voice_since(ov.ended_at + _NEW_VOICE_S, now):
+                ov.echo = keys(said)
+            elif verdict == "candidate" or (verdict == "nothing" and is_said(new)):
+                await self._follow_up_from(ov)
+                return False
+            placed = ov.listener.turn_began()
+            if (
+                verdict == "echo"
+                and placed is not None
+                and share_hers(new, playing) == 1.0
+                and self._at_once(*placed)
+            ):
+                # All hers, and said as she stopped: her echo, let go with the rest.
+                through = echo_through(new, playing)
+                ov.echo = keys(said)[: judged + through]
+        elif verdict == "echo":
+            # Judged up to her last word; a word of theirs after it waits for more.
+            through = echo_through(" ".join(tokens[judged:]), playing)
+            ov.echo = keys(said)[: judged + through]
+        elif verdict == "candidate":
+            await self._start_deciding(ov)
+            return True
+        if (
+            self._after_her(ov)
+            and ov.ended_at is not None
+            and now - ov.ended_at >= ECHO_GRACE_S
+            and not ov.listener.turn_open
+        ):
+            # Her echo has had time to come back, and no turn of the recognizer's that
+            # began over her is still going: the window opens, with what was heard
+            # since she ended (only her echo judged while she spoke is let go).
+            await self._follow_up_from(ov)
+            return False
+        return True
+
+    def _after_her(self, ov: Overlap) -> bool:
+        """She was heard to the end of a spoken turn: the watch is the next window."""
+        return (
+            ov.ended_at is not None
+            and self._task is None
+            and self._via == "voice"
+            and self._listener is None
+        )
+
+    def _her_playing(self, ov: Overlap) -> tuple[str, ...]:
+        """What an echo of her would say now: the sentences around the one being heard,
+        written and as said, and just after her end, her last ones."""
+        speaker = self._speaker or (self._tail[0] if self._tail is not None else ov.speaker)
+        if speaker is None and self._task is None:
+            speaker = self._voice_last
+        playing = speaker.playing(ahead=1, spoken=True) if speaker is not None else ()
+        return playing + self._her_words(self._now())
+
+    def _her_words(self, began: float | None) -> tuple[str, ...]:
+        """Her last words, when something began just as she stopped: else nothing."""
+        end = self._her_end
+        if end is None or began is None or not end[0] - 1.0 <= began <= end[0] + ECHO_AFTER_S:
+            return ()
+        return end[1]
+
+    def _stopped_her(self, ov: Overlap | None = None) -> None:
+        """She is being stopped: what she was saying may still come back for a moment."""
+        speaker = self._speaker or (self._tail[0] if self._tail is not None else None)
+        if speaker is None and ov is not None:
+            speaker = ov.speaker
+        if speaker is not None:
+            self._her_end = (self._now(), speaker.playing(ahead=1, spoken=True))
+            self._her_end_heard = False
+
+    async def _start_deciding(self, ov: Overlap) -> None:
+        """Words that are not hers: duck her, and decide from now, as for an overlap."""
+        if not ov.watching or self._overlap is not ov:
+            return
+        await self._leave_watch(ov)
+        ov.ducked_on = len(ov.listener.text().split())
+        ov.started = self._now()
+        logger.info("talked over in session %s: deciding", self.id)
+        await self._send("overlap.duck")
+        ov.wake.set()
+
+    async def _leave_watch(self, ov: Overlap, *, patience_s: float = NOTHING_AFTER_S) -> None:
+        """Stop only watching: what follows is heard as the user. Words already judged
+        hers are let go first: her echo before their words is not what they said."""
+        if not ov.watching:
+            return
+        ov.watching = False
+        ov.listener.forget(judged_prefix(ov.listener.turn_text(), ov.echo))
+        ov.echo = ()
+        ov.listener.hear(patience_s=patience_s)
+
+    def _her_heard(self) -> None:
+        """A sentence of hers started playing: a watch goes on."""
+        if self._overlap is not None:
+            self._overlap.her_at = self._now()
+
+    async def _on_watch(self) -> None:
+        """The page streams the microphone while she speaks, so the user can cut in
+        (VOI-9). Her voice coming back is told from theirs by its words; only words
+        that are not hers duck her and are decided. That needs a recognizer that judges
+        turns, and a reply to talk over: one coming, or one still being heard."""
+        rt = self._rt
+        if self._overlap is not None:
+            return
+        task = self._task
+        running = task is not None and not task.done() and task is not self._notice_task
+        unheard = self._spoken is not None and self._spoken[0] != self._played
+        if (
+            rt.stt is None
+            or rt.listening is None
+            or not rt.stt.turns
+            or rt.provider is None
+            or self._listener is not None
+            # With her voice off there is nothing to talk over, and nothing to tell apart.
+            or self._muted
+            or rt.tts is None
+            or rt.speech is None
+            or not (running or self._tail is not None or unheard)
+        ):
+            await self._send("overlap.over", end=True)
+            return
+        tail = self._tail[0] if self._tail is not None else None
+        wake = asyncio.Event()
+
+        async def heard(_: str) -> None:
+            wake.set()  # judged at once, not at the next tick
+
+        # Nothing heard is shown, and no draft starts from it.
+        listener = Listener(rt.stt, rt.listening.choice, on_partial=heard, watch=True)
+        now = self._now()
+        ov = Overlap(
+            listener=listener,
+            started=now,
+            speaker=self._speaker or tail,
+            wake=wake,
+            watch=True,
+            watching=True,
+            her_at=now,
+        )
+        self._overlap = ov
+        self._last_audio = now
+        logger.info("talked over in session %s: watching", self.id)
+        try:
+            await listener.start()
+        except VoiceError as e:
+            # She carries on unwatched; Stop still works.
+            logger.warning("watching over her failed in session %s: %s", self.id, e.kind)
+            if self._overlap is ov:
+                self._overlap = None
+                await listener.abandon()
+                await self._send("overlap.over", end=True)
+            return
+        if self._overlap is ov:
+            ov.watcher = asyncio.create_task(self._watch_overlap(ov))
+        elif not ov.promoting:
+            # Stopped or closed while it connected: nobody will close it otherwise.
+            await listener.abandon()
+
+    async def _watch_settles(self) -> None:
+        """Her turn is over, or she has been heard to the end, while only watching. Heard
+        to the end after a spoken turn, the watch becomes the follow-up window (VOI-8);
+        with nothing of hers left to hear, it ends; otherwise it waits for her end."""
+        ov = self._overlap
+        if ov is None or not ov.watching or self._task is not None:
+            return
+        unheard = self._spoken is not None and self._spoken[0] != self._played
+        if ov.ended and self._via == "voice" and self._listener is None:
+            # Her last words may still come back: the watch tells them from the user's
+            # a moment longer, then becomes the window (see `_watch_once`).
+            if ov.ended_at is None:
+                ov.ended_at = self._now()
+            ov.wake.set()
+        elif ov.ended or not (unheard or self._tail is not None):
+            logger.info("talked over in session %s: watch_over", self.id)
+            await self._end_overlap(tell=True)
+
+    async def _follow_up_from(self, ov: Overlap) -> None:
+        """She finished being heard: the listener that watched her goes on as the window
+        that opens after she speaks, without a new connection. Her echo judged while
+        she spoke is let go; words heard since she ended go on as the turn."""
+        async with self._taking_input():
+            if self._overlap is not ov or ov.promoting:
+                return
+            ov.promoting = True
+            logger.info("talked over in session %s: follow_up", self.id)
+            await self._leave_watch(ov, patience_s=FOLLOW_UP_S)
+            self._spoken = None
+            await self._become_turn(ov, follow_up=True)
+
+    async def _overlap_carries_on(self, ov: Overlap) -> None:
+        """An acknowledgement, or nothing at all: she carries on. Nothing is saved, and
+        the turn counter does not move. A watch goes back to watching."""
+        if self._overlap is not ov or ov.promoting:
+            return
+        logger.info("talked over in session %s: carry_on", self.id)
+        if ov.watch:
+            await self._send("overlap.over")
+            ov.listener.watch()
+            ov.watching = True
+            ov.echo = ()
+            ov.her_at = max(ov.her_at, self._now())
+            if ov.ended:
+                await self._watch_settles()
+            await self._offer()
+            return
+        await self._end_overlap(tell=True)
+        if ov.ended and self._via == "voice" and self._task is None and self._listener is None:
+            # She finished being heard while they spoke: the window that would have opened.
+            await self._on_listen(FOLLOW_UP_S, follow_up=True)
+        # Notices held while they were heard may arrive now.
+        await self._offer()
+
+    async def _overlap_interrupts(self, ov: Overlap) -> None:
+        """A real interruption: she stops as a barge stops her, and the listener that
+        was deciding goes on as the user's turn, every word kept (VOI-9).
+
+        Stopping her is not cancelling work (VOI-15c): an action already approved
+        finishes and is recorded first."""
+        if self._overlap is not ov or ov.promoting:
+            return
+        ov.promoting = True
+        logger.info("talked over in session %s: interrupt", self.id)
+        self._spoken = None
+        self._stopped_her(ov)
+        async with self._taking_input():
+            task = self._task
+            if task is not None:
+                task.cancel()
+                # Stop, or the session closing, can cancel this too: what follows checks.
+                # This can swallow this watcher's own cancellation; that is safe, as
+                # the `self._overlap is not ov` check below then returns.
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
+                    await asyncio.wait_for(asyncio.shield(task), BARGE_WAIT_S)
+            else:
+                # Her turn is over but its sound may not be: keep only what was heard.
+                speaker = self._tail[0] if self._tail is not None else ov.speaker
+                if await self.trim_tail() is None:
+                    # Nothing to trim, so no `interrupted` stops her: say it plainly.
+                    await self._stop_her_sound(speaker)
+            if self._overlap is not ov:
+                # Stopped or closed meanwhile; that let go of the listener.
+                return
+            if self._task is not None or self._listener is not None or self._closed:
+                # Her work is still finishing: as a barge would, say she is busy.
+                self._overlap = None
+                ov.watcher = None
+                await ov.listener.abandon()
+                await self._over(ov)
+                await self._error("busy")
+                return
+            ov.listener.mark_cut_in()
+            await self._become_turn(ov, follow_up=False)
+
+    async def _become_turn(self, ov: Overlap, *, follow_up: bool) -> None:
+        """The listener that heard them over her goes on as the user's turn."""
+        self._overlap = None
+        ov.watcher = None
+        listener = ov.listener
+        listener.promote(on_partial=self._partial, on_turn=self._turn_signal)
+        self._listener = listener
+        self._drafted = False
+        self._last_audio = self._now()
+        self._warm()
+        # The page's microphone is already open; this tells it the words are a turn.
+        await self._send("mic.start", follow_up=follow_up)
+        # Each send can let a Stop or a close in: only a listener still open goes on.
+        if self._listener is not listener:
+            return
+        await self._state("listening")
+        if self._listener is not listener:
+            return
+        self._watchdog = asyncio.create_task(self._watch(listener))
+        if said := listener.text():
+            await self._partial(said)
+        if listener.verdict is not None and self._listener is listener:
+            # They finished while she was stopping.
+            await self._conclude(listener.verdict)
+
+    async def _end_overlap(self, *, tell: bool) -> None:
+        """Stop deciding (or watching) and let go of what was heard over her. With
+        `tell`, the page brings her voice back up, and a watch's microphone closes."""
+        ov, self._overlap = self._overlap, None
+        if ov is None:
+            return
+        watcher, ov.watcher = ov.watcher, None
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+        await ov.listener.abandon()
+        if tell:
+            await self._over(ov)
+
+    async def _over(self, ov: Overlap) -> None:
+        """Her voice back up. For a watch, `end`: the page stops sending, as it is over."""
+        await self._send("overlap.over", **({"end": True} if ov.watch else {}))
 
     async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
         async with self._taking_input():
@@ -371,7 +1006,7 @@ class Session:
 
     async def _listen(self, patience_s: float, *, follow_up: bool) -> None:
         rt = self._rt
-        if self._listener is not None:
+        if self._listener is not None or self._overlap is not None:
             return
         if rt.stt is None or rt.listening is None:
             if not follow_up:
@@ -383,9 +1018,14 @@ class Session:
         else:
             self._spoken = None
             listener = Listener(
-                rt.stt, rt.listening.choice, on_partial=self._partial, patience_s=patience_s
+                rt.stt,
+                rt.listening.choice,
+                on_partial=self._partial,
+                patience_s=patience_s,
+                on_turn=self._turn_signal,
             )
             self._listener = listener
+            self._drafted = False
             self._last_audio = asyncio.get_running_loop().time()
             self._warm()
             await self._state("arming")
@@ -400,9 +1040,17 @@ class Session:
             if self._listener is listener:
                 self._watchdog = asyncio.create_task(self._watch(listener))
                 await self._state("listening")
+            elif self._closed:
+                # Closed while it connected: nobody will close it otherwise.
+                await listener.abandon()
 
     async def audio(self, pcm: bytes) -> None:
         """A binary frame from the page: microphone audio, 16 kHz mono PCM16 (VOI-1)."""
+        ov = self._overlap
+        if ov is not None:
+            if not self._closed and len(pcm) <= MAX_AUDIO_FRAME:
+                await self._overlap_audio(ov, pcm)
+            return
         listener = self._listener
         if self._closed or listener is None or len(pcm) > MAX_AUDIO_FRAME:
             return
@@ -426,15 +1074,67 @@ class Session:
                 return
 
     async def _partial(self, text: str) -> None:
+        listener = self._listener
+        if listener is not None:
+            # Her last words, come back as she stopped, are not shown as theirs.
+            text, _ = self._less_her_echo(text, listener)
         await self._send("transcript.partial", text=text)
 
+    def _less_her_echo(self, text: str, listener: Listener) -> tuple[str, bool]:
+        """Words heard just as she stopped, less her own come back: "" when that is all
+        they are. True when no voice but hers was heard at all, so nothing of the user's
+        was missed. Others are as they are.
+
+        - Heard to the end: words count only if a voice started after her end
+          (`_NEW_VOICE_S` after it, past her echo dying away). Without one, every word
+          is her echo, however the recognizer misheard it ("ask" for her "ask.").
+        - Cut in on: her words heard within `_LATE_ECHO_S` of the cut-in, after theirs,
+          are taken out (`late_echo`), up to the first word that is not hers.
+        - Then `echo_of`: her words in front, or a turn mostly hers."""
+        end = self._her_end
+        if not text or end is None:
+            return text, False
+        seen, last = listener.seen, listener.last_heard
+        if (
+            self._her_end_heard
+            and seen is not None
+            and last is not None
+            and end[0] - 1.0 <= seen <= end[0] + ECHO_AFTER_S
+            # A voice must start after her end and before the last words came.
+            and not listener.voice_since(end[0] + _NEW_VOICE_S, last)
+        ):
+            return "", True
+        if listener.cut_in is not None and not self._her_end_heard:
+            start = listener.words_by(listener.cut_in)
+            stop = listener.words_by(listener.cut_in + _LATE_ECHO_S)
+            text = late_echo(text, start, max(stop, start), end[1])
+        began = listener.began
+        hers = self._her_words(began)
+        if not hers or began is None:
+            return text, False
+        return echo_of(text, hers, early=self._at_once(began, listener.began_heard)), False
+
+    def _at_once(self, began: float, heard: bool) -> bool:
+        """Whether words were said as she stopped: their voice started within
+        `_AT_ONCE_S` of her end, or with no start heard, they were first reported within
+        `_REPORTED_AT_ONCE_S` (her echo is in the air as she ends)."""
+        end = self._her_end
+        if end is None:
+            return False
+        if heard:
+            return began <= end[0] + _AT_ONCE_S
+        return began + listening.REPORT_LAG_S <= end[0] + _REPORTED_AT_ONCE_S
+
     async def _stop_listening(self) -> Listener | None:
+        await self._end_overlap(tell=True)
         listener, self._listener = self._listener, None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
         if listener is not None:
             await listener.abandon()
+        # After the listener: it can no longer start another.
+        await self._drop_draft()
         return listener
 
     async def _listening_failed(self, kind: str) -> None:
@@ -492,13 +1192,16 @@ class Session:
         if verdict == "inaudible":
             # Said out loud rather than failing silently (VOI-4).
             await listener.abandon()
+            await self._drop_draft()
             await self._hearing_down("inaudible")
             await self._state(self._rest)
         elif verdict == "nothing":
             await listener.abandon()
+            await self._drop_draft()
             await self._state(self._rest)
         else:
             await self._state("processing")
+            self._collecting = True
             # The turn starts when they stopped talking, not when that was noticed.
             quiet = listener.quiet_s
             trace = self._starting("voice", ago=quiet)
@@ -506,22 +1209,51 @@ class Session:
             self._task = asyncio.create_task(self._heard(listener, trace))
 
     async def _heard(self, listener: Listener, trace: Trace) -> None:
-        """Collect the words, then answer them. Runs as the session's one task."""
+        """Collect the words, then answer them. Runs as the session's one task.
+
+        A draft that heard the same words, against the same history, becomes the turn's
+        first call (VOI-12). Any other is let go before the turn starts."""
         answer = False
+        only_her = False
+        draft: Draft | None = None
         try:
             said = await listener.end()
             text = said.text[:MAX_TEXT].strip()
+            # Taken only now: one can still start while the last words arrive.
+            draft, self._draft = self._draft, None
+            text, only_her = self._less_her_echo(text, listener)
+            if said.text.strip() and not text:
+                logger.info("spoken turn in session %s dropped: her echo", self.id)
             if text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
-                await self._send("transcript.final", text=text)
+                usable = draft is not None and self._usable(draft, text)
+                # A used draft saves its own words: the screen shows those, so a reload
+                # shows the same.
+                shown = draft.words if usable and draft is not None else text
+                await self._send("transcript.final", text=shown)
                 self._via = "voice"
                 self._turn += 1
                 self.active_ms = self._rt.clock()
-                await self._save_input("user", text)
+                if usable and draft is not None:
+                    # The message it was given is the one saved, so the turn's history
+                    # is exactly what the draft sent.
+                    await self._commit_input("user", draft.built)
+                    self._using, draft = draft, None
+                    trace.draft = "used"
+                else:
+                    if draft is not None:
+                        # Let go before the turn's own call, so they never run together.
+                        await self._let_go(draft)
+                        draft = None
+                    if self._drafted:
+                        trace.draft = "dropped"
+                    await self._save_input("user", text)
                 answer = True
-            else:
-                # Sound, but no words in it. Said, so the silence is not a mystery.
+                self._collecting = False
+            elif not only_her:
+                # Sound, but no words in it (or only her own, come back). Said, so the
+                # silence is not a mystery. Only her voice heard: nothing was missed.
                 await self._send("notice", code="listening", reason="unheard")
         except VoiceError as e:
             logger.warning("listening failed in session %s: %s", self.id, e.kind)
@@ -532,10 +1264,19 @@ class Session:
         except Exception as e:
             logger.error("listening failed in session %s: %s", self.id, type(e).__name__)
             await self._error("internal")
+        finally:
+            self._collecting = False
+            # Not used: nobody will read it. A turn cancelled here leaves none behind.
+            if draft is not None:
+                await self._let_go(draft)
+            if not answer:
+                await self._drop_draft()
         if answer:
             await self._run()
         else:
             self._task = None
+            # No reply is coming: a watch for one ends.
+            await self._watch_settles()
             await self._state(self._rest)
 
     async def _on_tap(self, pending_id: object, decision: Literal["confirm", "cancel"]) -> None:
@@ -583,12 +1324,17 @@ class Session:
         try:
             while not self._closed:
                 if self._queued:
+                    if self._using is not None:
+                        # A tap's note joins the history: the draft never saw it.
+                        await self._unuse()
                     # What the taps did, in one message, for her to answer.
                     note, self._queued = "\n".join(self._queued), []
                     await self._save_input("tap", note)
                 if self._rt.provider is None:
                     break
-                await self._compact_if_long()
+                if self._using is None:
+                    # A draft was only started on a history that needed no summary.
+                    await self._compact_if_long()
                 await self._one_turn()
                 if not self._queued:
                     break
@@ -596,6 +1342,11 @@ class Session:
             # Only its own: never a task that started after this one was let go.
             if self._task is asyncio.current_task():
                 self._task = None
+            if self._using is not None:
+                # Never reached its turn.
+                await self._unuse()
+        # A watch over her reply ends now unless something of hers is still to be heard.
+        await self._watch_settles()
         await self._state(self._rest)
 
     async def _one_turn(self) -> None:
@@ -615,6 +1366,36 @@ class Session:
             heard_as = rt.out_of_turn() if self._voiced == turn else turn
             self._voiced = turn
             speaker = Speaker(rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes)
+        self._speaker = speaker
+        if speaker is not None:
+            self._voice_last = speaker
+        self._tail = None
+        # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
+        # read, and so was one with her voice off (D8).
+        listened = speaker is not None and self._via == "voice"
+        # What the turn saved of the round it was cut off in, when that was cut to what
+        # was heard. Set only by the loop, so the page is told exactly what was kept.
+        kept: str | None = None
+
+        def heard(_written: str) -> str | None:
+            nonlocal kept
+            if speaker is None or speaker.failed or self._muted:
+                # Her voice went or was turned off midway: the rest was read, not lost.
+                return None
+            said = speaker.heard_text()
+            kept = cut(said)
+            return said
+
+        # The id of the last message the loop saved, when it is her reply.
+        reply_id: int | None = None
+
+        async def save(msg: Msg) -> None:
+            nonlocal reply_id
+            await self._save_from_loop(msg)
+            reply_id = self._ids[-1] if msg.role == "assistant" and self._ids else None
+
+        # Whether the loop has finished writing: after that, a barge trims what it saved.
+        written = False
         # A turn nobody started (a tap's answer) starts now.
         trace, self._arrived = self._arrived or self._starting("tap"), None
         trace.turn = turn
@@ -656,10 +1437,17 @@ class Session:
                     await self._send_card(r.pending_id)
 
         final = "idle"
+        # The draft this turn replays as its first call, if it has one (VOI-12).
+        using, self._using = self._using, None
         try:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
             system = await asyncio.to_thread(rt.system)
+            if using is not None and list(using.system) != system:
+                # A rule or skill changed while the draft ran: it sent an old prompt.
+                trace.draft = "dropped"
+                await self._let_go(using)
+                using = None
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
@@ -668,8 +1456,11 @@ class Session:
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
-                save=self._save_from_loop,
+                save=save,
+                first=using.replay() if using is not None else None,
+                heard=heard if listened else None,
             )
+            written = True
             # The model failed: her one sentence for it, spoken if her voice still works
             # and shown either way (VOI-14). Authored, since there is nobody to compose it.
             down = (
@@ -677,21 +1468,35 @@ class Session:
                 if done.stop == "provider_error"
                 else None
             )
+            if (
+                listened
+                and speaker is not None
+                and done.stop == "end"
+                and reply_id is not None
+                and self._ids[-1:] == [reply_id]
+            ):
+                # Written and saved, but still to be heard: kept in case she is talked
+                # over while it plays.
+                self._tail = (speaker, reply_id)
+            # Recorded before her last words are voiced: the model's work is done and
+            # paid for even if she is talked over while they play.
+            await asyncio.shield(
+                rt.conversations.record_usage(
+                    owner_id=OWNER,
+                    conversation_id=self.id,
+                    provider=provider.name,
+                    model=provider.model,
+                    usage=done.usage,
+                    cost_usd=done.cost_usd,
+                    now_ms=rt.clock(),
+                )
+            )
             if speaker is not None:
                 if down is not None:
                     await speaker.pause()
                     await speaker.feed(down)
                 await speaker.finish()
                 self._spoken = (heard_as, rt.clock())
-            await rt.conversations.record_usage(
-                owner_id=OWNER,
-                conversation_id=self.id,
-                provider=provider.name,
-                model=provider.model,
-                usage=done.usage,
-                cost_usd=done.cost_usd,
-                now_ms=rt.clock(),
-            )
             if down is not None:
                 final = "error"
                 await self._error("provider", kind=done.error_kind, sentence=down)
@@ -716,15 +1521,127 @@ class Session:
                 await speaker.stop()
                 # Stopped: nothing of it is still to be heard.
                 self._spoken = None
+            if written:
+                # Cut off while her last words were still being voiced.
+                kept = await self.trim_tail(tell=False)
             await self._keep_trace(trace, "interrupted", voiced=speaker is not None)
-            await self._send("interrupted")
+            # With `kept`, the page shows what was heard in place of what was written.
+            await self._send("interrupted", **({"kept": kept} if kept is not None else {}))
         except Exception as e:
             # The class name only: an exception message can carry conversation text.
             logger.error("turn failed in session %s: %s", self.id, type(e).__name__)
             final = "error"
             await self._keep_trace(trace, "error", voiced=speaker is not None)
             await self._error("internal")
+        finally:
+            if self._speaker is speaker:
+                self._speaker = None
+            if using is not None:
+                # Already over unless the turn was cut short. Its usage is the turn's.
+                await using.cancel()
         self._rest = final
+
+    # ── Early thinking (VOI-12) ──────────────────────────────────────────
+
+    async def _turn_signal(self, kind: str, text: str) -> None:
+        """The recognizer thinks they have probably finished, or that they carried on.
+        A draft starts on the first and is let go on the second."""
+        if kind == "resumed":
+            await self._drop_draft()
+        elif kind == "maybe":
+            await self._drop_draft()
+            await self._start_draft(text)
+
+    async def _start_draft(self, words: str) -> None:
+        """Her first call for these words, sent exactly as the confirmed turn would
+        send it, and held. Nothing is saved, shown, said or run.
+
+        Runs on the recognizer's reader task, so it must stay quick: a database read,
+        a memory recall and the system prompt, read off the event loop."""
+        rt = self._rt
+        provider = rt.provider
+        words = words[:MAX_TEXT].strip()
+        if (
+            self._closed
+            or not rt.think_early
+            or provider is None
+            or not words
+            or self._task is not None
+            or self._queued
+            # Deciding whether she was interrupted: her reply must stay trimmable.
+            or self._overlap is not None
+            # Just after she stopped: these may be her own words coming back.
+            or self._her_words(self._now())
+        ):
+            return
+        # A listener is only open on a spoken turn: the message is marked as spoken.
+        built = await self._build_input("user", words, via="voice")
+        # The same as `_one_turn` sends: its rules and skills, its history, its tools.
+        system = await asyncio.to_thread(rt.system)
+        # Read after the awaits, so a trim meanwhile is in what is sent.
+        history = [*self._history, built.msg]
+        # A history the turn would summarize first is not the history it would send.
+        if compact.estimate(history) > rt.compact_at:
+            return
+        # The model is about to be sent her last reply: it can no longer be trimmed.
+        self._tail = None
+        self._draft = Draft.start(
+            provider=provider,
+            system=system,
+            messages=compact.with_summary(self._summary, history),
+            tools=tool_schemas(rt.registry),
+            words=words,
+            built=built,
+            history_len=len(self._history),
+            summary=self._summary,
+        )
+        self._drafted = True
+
+    def _usable(self, draft: Draft, text: str) -> bool:
+        """The draft heard these words and sent what this turn would send."""
+        return (
+            not draft.failed
+            and draft.provider is self._rt.provider
+            and same_words(draft.words, text)
+            and draft.history_len == len(self._history)
+            and draft.summary is self._summary
+            and not self._queued
+        )
+
+    async def _drop_draft(self) -> None:
+        """Let go of a draft not yet any turn's. Safe when there is none."""
+        draft, self._draft = self._draft, None
+        if draft is not None:
+            await self._let_go(draft)
+
+    async def _unuse(self) -> None:
+        """A draft taken for a turn that will not replay it after all."""
+        using, self._using = self._using, None
+        if using is None:
+            return
+        if self._arrived is not None:
+            self._arrived.draft = "dropped"
+        await self._let_go(using)
+
+    async def _let_go(self, draft: Draft) -> None:
+        """Stop a draft nobody will replay, and count what it cost. A provider reports
+        usage at the end of a call, so one stopped before then counts as nothing."""
+        await draft.cancel()
+        # The model it asked, which may no longer be the one in use.
+        provider = draft.provider
+        usage = draft.usage()
+        if provider is None or usage == Usage():
+            return
+        pricing = provider.pricing()
+        await self._rt.conversations.record_usage(
+            owner_id=OWNER,
+            conversation_id=self.id,
+            provider=provider.name,
+            model=provider.model,
+            usage=usage,
+            cost_usd=pricing.cost(usage) if pricing is not None else None,
+            now_ms=self._rt.clock(),
+        )
 
     # ── Timing (ONB-11) ──────────────────────────────────────────────────
 
@@ -779,6 +1696,60 @@ class Session:
         except Exception as e:
             logger.warning("timing not saved in session %s: %s", self.id, type(e).__name__)
 
+    async def trim_tail(self, *, tell: bool = True) -> str | None:
+        """Talked over after her reply was written: keep only what was heard (VOI-9, D8).
+
+        History is never changed once the model has been sent it. Her last spoken reply
+        is the one exception: while it is still the conversation's last message, with
+        no draft that has read it, it is cut to the sentences heard, as the loop cuts a
+        reply interrupted mid-stream. Every sentence having started is not all of it
+        heard: the last is still playing, and is kept and marked like the others. Only
+        `playback.ended` says she was heard to the end, and it lets the reply go.
+        Nothing changes if her voice failed or was muted (then it was read). Returns
+        what was kept, and with `tell` sends it to the page; None when nothing changed."""
+        tail, self._tail = self._tail, None
+        if tail is None:
+            return None
+        speaker, message_id = tail
+        if (
+            self._ids[-1:] != [message_id]
+            or self._draft is not None
+            or self._using is not None
+            or speaker.failed
+            or self._muted
+        ):
+            return None
+        blocks = self._history[-1].blocks
+        if len(blocks) != 1 or not isinstance(blocks[0], TextBlock):
+            return None  # only a plain reply: a tool call is never cut
+        written, heard = blocks[0].text, speaker.heard_text()
+        if not written.startswith(heard):  # pragma: no cover - the speaker only saw this
+            return None
+        msg = Msg(role="assistant", blocks=(TextBlock(text=kept_of(written, heard)),))
+        try:
+            changed = await self._rt.conversations.amend_tail(self.id, OWNER, message_id, msg)
+        except Exception as e:
+            logger.warning("reply not trimmed in session %s: %s", self.id, type(e).__name__)
+            return None
+        if not changed:
+            return None
+        if message_id in self._ids:
+            self._history[self._ids.index(message_id)] = msg
+        kept = cut(heard)
+        if tell:
+            await self._send("interrupted", kept=kept)
+        return kept
+
+    def _sentence_played(self, turn_id: object, seq: object) -> None:
+        """The page started playing a sentence of a reply (VOI-15b, D8). Only the running
+        turn's count: a report for one already over, or for a notice, is late news."""
+        if isinstance(turn_id, bool) or not isinstance(seq, int) or isinstance(seq, bool):
+            return
+        tail = self._tail[0] if self._tail is not None else None
+        for speaker in {self._speaker, tail}:
+            if speaker is not None and speaker.turn == turn_id:
+                speaker.played(seq)
+
     async def _audible(self, turn_id: object, in_ms: object) -> None:
         """The page scheduled the first sound of a turn's reply, to be heard this far ahead."""
         if isinstance(turn_id, bool) or not isinstance(turn_id, int):
@@ -814,6 +1785,8 @@ class Session:
         )
 
     async def _save(self, kind: Kind, msg: Msg) -> None:
+        # Something after her last reply: it is no longer the one to trim.
+        self._tail = None
         self._history.append(msg)
         self._kinds.append(kind)
         message_id = await self._rt.conversations.append(
@@ -857,31 +1830,47 @@ class Session:
         del self._history[:cut], self._kinds[:cut], self._ids[:cut]
         await self._send("notice", code="compacted")
 
-    async def _save_input(self, kind: Kind, text: str) -> None:
-        """A user input, with the context it was said in. Both are saved together and
-        replayed unchanged on every later turn: history is only ever appended to."""
+    async def _build_input(
+        self, kind: Kind, text: str, *, via: Literal["voice", "text"] | None = None
+    ) -> BuiltInput:
+        """The message a user input is saved as, built but not saved. A draft (VOI-12)
+        uses this, so a used draft saves exactly what it was given. `via` is how it was
+        said, when that is not yet the session's."""
+        via = via or self._via
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
         ]
-        spoken = kind == "user" and self._via == "voice"
+        spoken = kind == "user" and via == "voice"
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
+        recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
         context = volatile_context(
             datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
             pending,
-            self._remembered(text) if kind == "user" else "",
+            recalled,
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
+        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought)
+
+    async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
+        """Save a built input. History is only ever appended to."""
+        self._brought.update(built.brought)
         if kind == "user" and self._rt.web is not None:
             # Only what the user said themselves: never a tap's note, never a page.
-            self._rt.web.ledger.said(self.id, text)
-        await self._save(kind, Msg(role="user", blocks=blocks))
+            self._rt.web.ledger.said(self.id, built.text)
+        await self._save(kind, built.msg)
 
-    def _remembered(self, said: str) -> str:
-        """What she has saved that bears on this message, as untrusted text (MEM-5).
+    async def _save_input(self, kind: Kind, text: str) -> None:
+        """A user input, with the context it was said in. Both are saved together and
+        replayed unchanged on every later turn: history is only ever appended to."""
+        await self._commit_input(kind, await self._build_input(kind, text))
+
+    def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
+        """What she has saved that bears on this message, as untrusted text (MEM-5),
+        and the ids it used. Nothing is marked as brought until the message is saved.
 
         It is saved with the message like the rest of its context, so the history
         replays byte for byte. A correction or a forgetting therefore shows from the
@@ -889,8 +1878,7 @@ class Session:
         rt = self._rt
         fresh = [m for m in rt.memory.recall(said) if m.id not in self._brought]
         text, used = present.alongside(fresh, rt.clock())
-        self._brought.update(m.id for m in used)
-        return wrap("memory_recall", text) if used else ""
+        return (wrap("memory_recall", text) if used else "", frozenset(m.id for m in used))
 
     async def _save_from_loop(self, msg: Msg) -> None:
         await self._save("assistant" if msg.role == "assistant" else "tool_results", msg)
@@ -939,7 +1927,7 @@ class Session:
             or self._saying
             or self._taking > 0
             or not self._started,
-            listening=self._listener is not None,
+            listening=self._listener is not None or self._overlap is not None,
             spoken_turn=spoken[0] if spoken is not None else None,
             spoken_ms=spoken[1] if spoken is not None else None,
             heard_turn=self._played,
@@ -1020,6 +2008,7 @@ class Session:
         """Like `_save`, for several at once: in the history before the write, so a turn
         that starts meanwhile has them, and taken out again if the write fails. Only
         these: a message saved meanwhile stays, wherever they now are."""
+        self._tail = None
         self._history.extend(msgs)
         self._kinds.extend([kind] * len(msgs))
         try:
@@ -1073,6 +2062,9 @@ class Session:
             return
         if self._trace is not None:
             self._trace.mark("first_audio", self._now())
+        if self._overlap is not None:
+            # Her audio is on its way: a watch goes on.
+            self._overlap.her_at = self._now()
         try:
             await self._raw_send_bytes(data)
         except Exception as e:

@@ -48,6 +48,15 @@ export function meterLevel(samples: Float32Array): number {
 export interface BargeSwitch {
   on(): boolean;
   set(on: boolean): void;
+  /** The chosen hearing judges turns: then the microphone goes to it while she talks. */
+  turns?(): boolean;
+}
+
+/** What the switch tells the user about where their microphone goes (VOI-9). */
+export function bargeHint(turns: boolean): string {
+  return turns
+    ? 'While she talks, the microphone stays open and goes to the hearing service, so it can tell when you cut in. Turn it off if she stops herself when using speakers.'
+    : 'While she answers a spoken question, the microphone stays open on this computer to notice you cut in. Nothing is sent until you do. Turn it off if she stops herself when using speakers.';
 }
 
 export function createMicrophones(
@@ -80,22 +89,17 @@ export function createMicrophones(
   const note = el('p', 'settings-hint');
   note.setAttribute('role', 'status');
   card.append(head, row, meter, note);
+  // Where the microphone goes depends on the hearing, so it is said again on each refresh.
+  const bargeNote = el('small', '', bargeHint(barge?.turns?.() ?? false));
   if (barge) {
-    // Talking over her stops her (VOI-9). The page listens for it on this computer only.
+    // Talking over her stops her (VOI-9).
     const label = el('label', 'settings-check');
     const box = el('input');
     box.type = 'checkbox';
     box.checked = barge.on();
     box.addEventListener('change', () => barge.set(box.checked));
     const words = el('span');
-    words.append(
-      el('strong', '', 'Interrupt her by talking'),
-      el(
-        'small',
-        '',
-        'While she answers a spoken question, the microphone stays open on this computer to notice you cut in. Nothing is sent until you do. Turn it off if she stops herself when using speakers.',
-      ),
-    );
+    words.append(el('strong', '', 'Interrupt her by talking'), bargeNote);
     label.append(box, words);
     card.append(label);
   }
@@ -103,6 +107,7 @@ export function createMicrophones(
   let testing: { stop(): void } | null = null;
 
   async function refresh(): Promise<void> {
+    bargeNote.textContent = bargeHint(barge?.turns?.() ?? false);
     let found: MediaDeviceInfo[] = [];
     try {
       found = (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];

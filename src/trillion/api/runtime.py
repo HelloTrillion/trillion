@@ -77,6 +77,7 @@ OWNER = "local"
 OUT_OF_TURN = 1 << 30
 SPEECH_PREF = "speech"
 LISTEN_PREF = "listening"
+THINK_EARLY_PREF = "think_early"
 # The last choice made, kept when the feature is switched off so that switching it
 # back on does not mean choosing everything again.
 SPEECH_LAST_PREF = "speech_last"
@@ -204,6 +205,8 @@ class Runtime:
     stt: STTProvider | None = None
     speech_last: SpeechSettings | None = None
     listening_last: ListenSettings | None = None
+    # Whether she drafts a reply while the user may still be talking (VOI-12).
+    think_early: bool = True
     identity: Identity
     soul: str
     # Where the identity files live, and what onboarding last wrote there (PER-6).
@@ -481,6 +484,7 @@ async def open_runtime(
         or speech,
         listening_last=ListenSettings.from_json(await preferences.get(OWNER, LISTEN_LAST_PREF))
         or listening,
+        think_early=await preferences.get(OWNER, THINK_EARLY_PREF) is not False,
         identity=load_identity(persona),
         soul=load_soul(persona),
         persona_dir=persona or paths.persona_dir(),

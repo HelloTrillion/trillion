@@ -35,6 +35,12 @@ _GOING_ON = frozenset(
     "and but or so because if then than that which who to of for with the a an my "
     "your um uh er erm like".split()
 )
+# When the recognizer that judges turns says done on words that lead on ("I went to
+# the shop and"), she keeps listening (VOI-12). This much quiet since the voice
+# stopped ends the turn, so an early done still waits for a real pause.
+HELD_QUIET_S = 2.5
+# And this long after the done at most, whatever noise (a breath, a television) goes on.
+HELD_MAX_S = 5.0
 # A microphone that delivers nothing louder than this is not delivering sound at
 # all: muted, unplugged, or the wrong device. A real threshold, not "above zero".
 DEAD_LEVEL = 0.0006
@@ -60,6 +66,20 @@ def sounds_finished(text: str) -> bool:
     return last[0].lower().strip("\"'(\u201c\u2018,;:") not in _GOING_ON
 
 
+def leads_on(text: str) -> bool:
+    """Whether words stop somewhere that leads on: a word like "and" or "um", an
+    ellipsis, a comma or a dash. Unlike `sounds_finished`, a missing full stop is not
+    enough, because a recognizer that judges turns may give no punctuation at all."""
+    t = text.strip().rstrip("\"')\u201d\u2019")
+    # A question or an exclamation is finished, whatever word it ends on ("So?").
+    if not t or t.endswith(("?", "!")):
+        return False
+    if t.endswith(("...", "\u2026", ",", ";", ":", "-", "\u2013", "\u2014")):
+        return True
+    last = t.rstrip(".").rsplit(maxsplit=1)[-1:] or [""]
+    return last[0].lower().strip("\"'(\u201c\u2018,;:") in _GOING_ON
+
+
 def level(pcm: bytes) -> float:
     """Loudness of one stretch of PCM16, 0 to 1 (root mean square)."""
     samples = array("h")
@@ -69,9 +89,36 @@ def level(pcm: bytes) -> float:
     return float((sum(s * s for s in samples) / len(samples)) ** 0.5 / 32768)
 
 
+class Onsets:
+    """Where voices start, by loudness alone: for placing words in time, since a
+    recognizer reports them well after they were said."""
+
+    def __init__(self) -> None:
+        self._noise = 0.002
+        self._run = 0.0
+        self._on = False
+
+    def audio(self, pcm: bytes) -> float | None:
+        """One frame. When a voice has just started, how many seconds ago it began."""
+        loud = level(pcm)
+        if loud > max(_MIN_SPEECH, self._noise * _OVER_NOISE):
+            self._run += len(pcm) / 2 / SAMPLE_RATE
+            if not self._on and self._run >= _ONSET_S:
+                self._on = True
+                return self._run
+            return None
+        self._run, self._on = 0.0, False
+        self._noise += (loud - self._noise) * 0.05
+        return None
+
+
 class EndOfSpeech:
-    def __init__(self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S) -> None:
+    def __init__(
+        self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S, judged: bool = False
+    ) -> None:
         self._streaming = streaming
+        self._judged = judged
+        self._over = False
         self._patience = patience_s
         self._rest = b""
         self._samples = 0
@@ -84,6 +131,8 @@ class EndOfSpeech:
         self._last_final = -1.0
         self._pending_words = False
         self._done = False
+        # When a done that led on was heard, by the audio's clock; -1 when none is held.
+        self._held = -1.0
 
     @property
     def now(self) -> float:
@@ -117,12 +166,30 @@ class EndOfSpeech:
             # New words undo an earlier "done": the speaker went on. An empty final, the
             # recognizer's report of silence, changes nothing.
             self._done = done and final
+            # Words after a held done: the recognizer judges this turn's end again.
+            self._held = -1.0
         if has_text:
             self._spoke = True
             self._last_words = self.now
             self._pending_words = not final
         if final and has_text:
             self._last_final = self.now
+
+    @property
+    def is_over(self) -> bool:
+        """The recognizer that judges turns has said this one is over."""
+        return self._over
+
+    def turn_over(self) -> None:
+        """The recognizer that judges turns says this one is over (VOI-12)."""
+        self._over = True
+
+    def hold(self) -> None:
+        """The recognizer said done, but the words lead on: keep listening, and end the
+        turn after `HELD_QUIET_S` of quiet unless new words come first. A second done
+        with no new words does not start the clock again."""
+        if self._held < 0:
+            self._held = self.now
 
     def audio(self, pcm: bytes) -> Verdict | None:
         data = self._rest + pcm
@@ -155,6 +222,15 @@ class EndOfSpeech:
             if now >= DEAD_AFTER_S and self._peak < DEAD_LEVEL:
                 return "inaudible"
             return "nothing" if now >= self._patience else None
+        if self._judged:
+            # The recognizer judges the end by meaning; silence alone never does.
+            if self._over:
+                return "end"
+            if self._held >= 0 and (self.quiet_s >= HELD_QUIET_S or now - self._held >= HELD_MAX_S):
+                # Over for good: the next thought's first words are not part of it.
+                self._over = True
+                return "end"
+            return None
 
         quiet = now - self._last_voice
         if self._streaming and self._done and not self._pending_words and quiet >= DONE_S:

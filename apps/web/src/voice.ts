@@ -23,6 +23,10 @@ const FRAME_AUDIO = 0x01;
 const LEAD_S = 0.06;
 // Quieter than this is the silence a voice service puts before its first word.
 const AUDIBLE = 0.01;
+/** Her volume while the user may be talking over her: still heard, not in the way (VOI-9). */
+export const DUCKED = 0.2;
+// The ramp's time constant: most of the way down in about 80 ms, so it never clicks.
+const DUCK_S = 0.03;
 
 /** The first sample loud enough to hear, or -1 if there is none. */
 export function firstAudible(pcm: Int16Array, level = AUDIBLE): number {
@@ -53,6 +57,8 @@ export interface VoiceHooks {
   onEnded(turn: number, playedMs: number): void;
   /** The turn's first sound is scheduled, to be heard `inMs` from now (ONB-11). */
   onAudible(turn: number, inMs: number): void;
+  /** A sentence started playing: what the user has heard (VOI-9). */
+  onSentence(turn: number, seq: number): void;
   /** Lets the Galaxy listen to her voice. Returns a function that detaches. */
   attach(node: AudioNode): () => void;
 }
@@ -61,12 +67,14 @@ export interface Voice {
   configure(config: SpeechConfig | null): void;
   /** Call from a click or key press: browsers only allow sound after one. */
   unlock(): void;
-  sentence(turn: number, text: string): void;
+  sentence(turn: number, seq: number, text: string): void;
   audio(data: ArrayBuffer): void;
   /** The core has sent everything for this turn. */
   end(turn: number): void;
   /** Silence now, and drop whatever is queued. */
   stop(): void;
+  /** Quieter while the user may be talking over her (VOI-9). */
+  duck(on: boolean): void;
   readonly active: boolean;
   /** How loud she is right now, 0 to 1; null when the computer's own voice speaks,
    * which the page cannot measure. Used to tell her echo from the user (VOI-9). */
@@ -88,6 +96,10 @@ export function createVoice(hooks: VoiceHooks): Voice {
   let playedMs = 0;
   let stopped = -1; // a turn whose late audio must be ignored
   let heard = -1; // the turn whose first sound has been reported
+  // The sentence last scheduled, so each is reported once, when it starts sounding.
+  let lastSeq = -1;
+  let lastSeqTurn = -1;
+  const reportTimers = new Set<ReturnType<typeof setTimeout>>();
   const sources = new Set<AudioBufferSourceNode>();
 
   const settle = (): void => {
@@ -147,7 +159,7 @@ export function createVoice(hooks: VoiceHooks): Voice {
     unlock() {
       if (config?.where === 'core') void context().resume();
     },
-    sentence(t, text) {
+    sentence(t, seq, text) {
       if (config?.where !== 'client' || !('speechSynthesis' in window) || !begin(t)) return;
       const utterance = new SpeechSynthesisUtterance(text);
       const chosen = speechSynthesis.getVoices().find((v) => v.voiceURI === config?.voice);
@@ -160,6 +172,7 @@ export function createVoice(hooks: VoiceHooks): Voice {
           heard = t;
           hooks.onAudible(t, 0);
         }
+        hooks.onSentence(t, seq);
       };
       const finish = (): void => {
         if (done) return;
@@ -198,6 +211,20 @@ export function createVoice(hooks: VoiceHooks): Voice {
           hooks.onAudible(frame.turn, Math.max(0, Math.round(ahead * 1000)));
         }
       }
+      if (frame.seq !== lastSeq || frame.turn !== lastSeqTurn) {
+        // A new sentence: reported when it reaches the speaker, not when it arrives,
+        // because what was heard is what an interruption keeps.
+        lastSeq = frame.seq;
+        lastSeqTurn = frame.turn;
+        const { turn: t, seq } = frame;
+        const latency = audio.outputLatency || audio.baseLatency || 0;
+        const inMs = Math.max(0, (nextAt - audio.currentTime + latency) * 1000);
+        const timer = setTimeout(() => {
+          reportTimers.delete(timer);
+          if (t !== stopped) hooks.onSentence(t, seq);
+        }, inMs);
+        reportTimers.add(timer);
+      }
       nextAt += buffer.duration;
       sources.add(source);
       sounding++;
@@ -229,6 +256,16 @@ export function createVoice(hooks: VoiceHooks): Voice {
         }
       }
       sources.clear();
+      // A sentence stopped before it sounded was never heard.
+      for (const timer of reportTimers) clearTimeout(timer);
+      reportTimers.clear();
+      lastSeq = -1;
+      lastSeqTurn = -1;
+      // The next reply starts at full volume, whatever was ducked.
+      if (gain) {
+        gain.gain.cancelScheduledValues(0);
+        gain.gain.value = 1;
+      }
       if ('speechSynthesis' in window) speechSynthesis.cancel();
       nextAt = 0;
       sounding = 0;
@@ -236,6 +273,10 @@ export function createVoice(hooks: VoiceHooks): Voice {
       turn = -1;
       settle();
       void detach; // the analyser stays attached for the next reply
+    },
+    duck(on) {
+      if (!ctx || !gain) return;
+      gain.gain.setTargetAtTime(on ? DUCKED : 1, ctx.currentTime, DUCK_S);
     },
   };
 }

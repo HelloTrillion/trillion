@@ -14,13 +14,14 @@ from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from trillion.api.runtime import (
     LISTEN_PREF,
     MODEL_PREF,
     OWNER,
     SPEECH_PREF,
+    THINK_EARLY_PREF,
     ListenSettings,
     Runtime,
     SpeechSettings,
@@ -96,6 +97,12 @@ class ListenProbe(BaseModel):
 
     kind: str = Field(max_length=40)
     api_key: str | None = Field(default=None, min_length=1, max_length=_KEY_LIMIT)
+
+
+class ThinkEarly(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    on: StrictBool
 
 
 class ListenSave(BaseModel):
@@ -343,6 +350,7 @@ def create_router(rt: Runtime) -> APIRouter:
                     "note": o.note,
                     "needs_key": o.needs_key,
                     "free": o.free,
+                    "turns": o.turns,
                     "key_link": o.key_link,
                     "install_hint": o.install_hint,
                     "key": {"saved": True, "ends": value[-4:] if len(value) >= 20 else ""}
@@ -356,6 +364,7 @@ def create_router(rt: Runtime) -> APIRouter:
             "saved": {"kind": s.kind, "choice": s.choice} if s else None,
             "last": {"kind": last.kind, "choice": last.choice} if last else None,
             "active": rt.stt is not None,
+            "think_early": rt.think_early,
             "keychain": rt.secrets.available(),
         }
 
@@ -374,6 +383,13 @@ def create_router(rt: Runtime) -> APIRouter:
 
     @router.get("/listening")
     async def read_listening() -> dict[str, Any]:
+        return describe_listening()
+
+    @router.put("/listening/think-early")
+    async def save_think_early(body: ThinkEarly) -> Any:
+        """Whether she starts a draft while the user may still be talking (VOI-12)."""
+        rt.think_early = body.on
+        await rt.preferences.put(OWNER, THINK_EARLY_PREF, body.on, rt.clock())
         return describe_listening()
 
     @router.post("/listening/choices")

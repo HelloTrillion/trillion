@@ -135,3 +135,90 @@ async def test_an_interrupt_stops_synthesis_and_tells_the_page() -> None:
     await s.feed("Nothing after a stop is spoken. ")
     assert wire.events[-1] == {"type": "audio.stop", "turn": 7}
     assert not [e for e in wire.events if isinstance(e, tuple)]
+
+
+async def test_the_speaker_knows_which_sentences_were_heard() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("We could leave at **six**. Or if traffic is bad, at half past. Or")
+    assert s.heard_text() == ""
+    s.played(1)
+    # What she wrote, markup and all: the history holds her words, not the spoken form.
+    assert s.heard_text() == "We could leave at **six**."
+    s.played(2)
+    assert s.heard_text() == "We could leave at **six**. Or if traffic is bad, at half past."
+    s.played(1)  # a late report never takes back what was heard
+    assert s.heard_text().endswith("half past.")
+    assert s.playing() == ("We could leave at **six**.", "Or if traffic is bad, at half past.")
+
+
+async def test_heard_text_is_only_this_round() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("Let me look. ")
+    s.played(1)
+    await s.pause()  # a tool runs between rounds
+    await s.feed("I found the train times. It leaves at four.")
+    assert s.heard_text() == ""
+    s.played(2)
+    assert s.heard_text() == "I found the train times."
+
+
+async def test_a_sentence_with_nothing_to_say_goes_with_the_one_before() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("```\ncode\n``` ")
+    await s.pause()
+    await s.feed("I put the notes in the file below.\n\n```\nprint(1)\n```\n\n")
+    await s.feed("Then we are done with it all. And")
+    s.played(1)
+    # Nothing was sent for the code, so the page's sentence 1 is the next one; the code
+    # after it is kept with it rather than cut out of the middle.
+    assert s.turn == 7
+    assert s.heard_text() == "I put the notes in the file below.\n\n```\nprint(1)\n```"
+    s.played(2)
+    assert s.heard_text().endswith("```\n\nThen we are done with it all.")
+
+
+async def test_what_was_heard_keeps_her_formatting() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("Here is the plan for today.\n\n- First we pack all the bags.\n")
+    await s.feed("- Then we leave the house. And")
+    s.played(2)
+    assert s.heard_text() == "Here is the plan for today.\n\n- First we pack all the bags."
+
+
+async def test_a_failed_voice_is_told_apart_from_a_stopped_one() -> None:
+    s = speaker(FakeVoice(fail_on="Second"), Wire())
+    await s.feed("First of all we go home. Second we eat dinner. ")
+    await s.finish()
+    assert s.failed
+    stopped = speaker(FakeVoice(), Wire())
+    await stopped.feed("First of all we go home. ")
+    await stopped.stop()
+    assert not stopped.failed
+
+
+async def test_what_was_heard_is_still_known_once_she_has_finished() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("First thing to know. Second thing to know.")
+    await s.finish()
+    s.played(1)
+    assert s.heard_text() == "First thing to know."
+
+
+async def test_what_she_is_saying_now_can_include_the_next_sentence() -> None:
+    """Her audio runs ahead of the reports, so watching for her echo looks one ahead."""
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("One is first. Two is next. Three is last. Four")
+    assert s.playing() == ()
+    assert s.playing(ahead=1) == ("One is first.",)
+    s.played(2)
+    assert s.playing(ahead=1) == ("One is first.", "Two is next.", "Three is last.")
+
+
+async def test_her_end_and_what_was_said_aloud_are_known() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("One is first. It costs **five**. Three is last. ")
+    await s.finish()
+    assert s.last() == ("It costs **five**.", "It costs five.", "Three is last.")
+    s.played(1)
+    assert "It costs five." in s.playing(ahead=1, spoken=True)
+    assert "It costs five." not in s.playing(ahead=1)

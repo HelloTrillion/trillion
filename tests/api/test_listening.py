@@ -86,6 +86,7 @@ async def test_a_spoken_message_becomes_a_turn(rt: Runtime) -> None:
         "kind": "deepgram",
         "choice": "en",
         "streaming": True,
+        "turns": False,
     }
 
     await session.handle({"type": "listen.start"})

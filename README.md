@@ -26,7 +26,7 @@ She has a face. An orb of noise-displaced light breathes while idle, turns gold 
 
 ### 2. The Voice
 
-Sub-second turn-taking, a wake word, barge-in, and a microphone that is already warm when you start speaking, so your first syllable is never clipped. Under that sits a personality with actual opinions: brief, dry, deadpan. She pressure-tests your plan in one question instead of five bullet points, and she never opens with "Great question!"
+Sub-second turn-taking, a wake word, barge-in, and a microphone that is already warm when you start speaking, so your first syllable is never clipped. With Deepgram you can pause mid-thought without being cut off, and say "yeah" over her without stopping her; anything else stops her and she listens. "Start thinking before I finish" (Settings → Hearing, on by default) lets her begin her answer early, at the cost of some extra model calls. Usage counts a draft once the provider reports it; one cut short before then isn't counted, though the provider may still bill its input. Under that sits a personality with actual opinions: brief, dry, deadpan. She pressure-tests your plan in one question instead of five bullet points, and she never opens with "Great question!"
 
 ### 3. The Spine
 
@@ -106,7 +106,7 @@ It checks the data folder, the database, the port, the keychain, your model, voi
 
 `--grant` shares one folder with the file tools; without it they are off. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
-**Talking to her.** Open **Settings** (the menu button, top left), then **Microphone**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on only while you are speaking to her.
+**Talking to her.** Open **Settings** (the menu button, top left), then **Microphone**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 

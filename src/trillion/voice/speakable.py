@@ -23,6 +23,10 @@ _INLINE_CODE = re.compile(r"`([^`\n]*)`")
 _LEFTOVER = re.compile(r"[*_`~#|]+")
 _SPACES = re.compile(r"[ \t]+")
 _BLANKS = re.compile(r"\n{3,}")
+# Em and en dashes: some voices read them out as noise, so they become a pause.
+_DASH = re.compile(r"[ \t]*[\u2014\u2013]+[ \t]*")
+# The pause a dash left before other punctuation, or at the end of a line, is dropped.
+_LOOSE_COMMA = re.compile(r",[ \t]*(?=[,.;:!?]|$)", re.MULTILINE)
 # Symbols, pictographs and the invisible characters that join or modify them.
 _NOT_SPOKEN = {"So", "Sk", "Cs", "Co", "Cn"}
 _JOINERS = {0x200D, 0xFE0E, 0xFE0F, 0x20E3}
@@ -52,6 +56,8 @@ def speakable(text: str) -> str:
         text = _EMPHASIS.sub(r"\2", text)
     text = _INLINE_CODE.sub(r"\1", text)
     text = _LEFTOVER.sub(" ", text)
+    text = _DASH.sub(", ", text)
+    text = _LOOSE_COMMA.sub("", text)
     text = "".join(ch for ch in text if not _is_emoji(ch))
     text = _SPACES.sub(" ", text)
     text = "\n".join(line.strip() for line in text.split("\n"))

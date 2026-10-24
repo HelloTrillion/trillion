@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { firstAudible, parseFrame, toFloat } from '../src/voice';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DUCKED, type Voice, createVoice, firstAudible, parseFrame, toFloat } from '../src/voice';
 
 function frame(turn: number, seq: number, samples: number[], kind = 1): ArrayBuffer {
   const buf = new ArrayBuffer(9 + samples.length * 2);
@@ -45,5 +45,111 @@ describe('the first sound', () => {
   it('says when a frame is silence throughout', () => {
     expect(firstAudible(new Int16Array([0, 1, -2, 100]))).toBe(-1);
     expect(firstAudible(new Int16Array([]))).toBe(-1);
+  });
+});
+
+// Just enough of the Web Audio API to schedule buffers on a clock that stands still.
+// A ramp is pending until cancelled: setting `value` alone does not stop it.
+class FakeParam {
+  value = 1;
+  ramp: number | null = null;
+  setTargetAtTime(target: number): void {
+    this.ramp = target;
+  }
+  cancelScheduledValues(): void {
+    this.ramp = null;
+  }
+  get heard(): number {
+    return this.ramp ?? this.value;
+  }
+}
+
+class FakeContext {
+  currentTime = 0;
+  outputLatency = 0;
+  baseLatency = 0;
+  destination = {};
+  createGain() {
+    return { gain: new FakeParam(), connect() {} };
+  }
+  createAnalyser() {
+    return { fftSize: 0, connect() {}, getFloatTimeDomainData() {} };
+  }
+  createBuffer(_channels: number, length: number, rate: number) {
+    return { duration: length / rate, sampleRate: rate, copyToChannel() {} };
+  }
+  createBufferSource() {
+    return { buffer: null, onended: null, connect() {}, start() {}, stop() {} };
+  }
+  resume(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+describe('her voice from the core', () => {
+  let heard: [number, number][];
+  let gain: { gain: FakeParam } | null;
+  let voice: Voice;
+  const loud = Array.from({ length: 10 }, () => 9000); // 10 ms at 1 kHz
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal('AudioContext', FakeContext);
+    vi.stubGlobal('window', {});
+    heard = [];
+    gain = null;
+    voice = createVoice({
+      onActive: () => {},
+      onEnded: () => {},
+      onAudible: () => {},
+      onSentence: (turn, seq) => heard.push([turn, seq]),
+      attach: (node) => {
+        gain = node as unknown as { gain: FakeParam };
+        return () => {};
+      },
+    });
+    voice.configure({ kind: 'k', where: 'core', voice: null, sample_rate: 1000 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('says when each sentence starts sounding, once per sentence', () => {
+    voice.audio(frame(3, 0, loud));
+    voice.audio(frame(3, 0, loud));
+    voice.audio(frame(3, 1, loud));
+    expect(heard).toEqual([]); // scheduled, not yet heard
+    vi.advanceTimersByTime(70); // past the lead: the first sentence is sounding
+    expect(heard).toEqual([[3, 0]]);
+    vi.advanceTimersByTime(20);
+    expect(heard).toEqual([
+      [3, 0],
+      [3, 1],
+    ]);
+  });
+
+  it('never reports a sentence that was stopped before it sounded', () => {
+    voice.audio(frame(3, 0, loud));
+    voice.stop();
+    vi.advanceTimersByTime(1000);
+    expect(heard).toEqual([]);
+  });
+
+  it('goes quieter while the user may be talking over her, and back', () => {
+    voice.audio(frame(3, 0, loud));
+    voice.duck(true);
+    expect(gain?.gain.heard).toBe(DUCKED);
+    voice.duck(false);
+    expect(gain?.gain.heard).toBe(1);
+  });
+
+  it('is at full volume after a stop, even mid-ramp', () => {
+    voice.audio(frame(3, 0, loud));
+    voice.duck(true);
+    voice.stop(); // the next reply starts at full volume
+    expect(gain?.gain.ramp).toBeNull();
+    expect(gain?.gain.heard).toBe(1);
   });
 });

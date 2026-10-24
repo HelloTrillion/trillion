@@ -888,6 +888,19 @@ def test_listening_settings_need_the_token_and_list_the_catalog(make: Any) -> No
     assert listening(app, kind="nope", choice="x").json() == {"error": "unknown_provider"}
 
 
+def test_thinking_early_is_on_by_default_and_can_be_turned_off(make: Any) -> None:
+    app = make(model=False)
+    path = "/api/settings/listening"
+    got = app.client.get(path, headers=app.auth).json()
+    assert got["think_early"] is True
+    assert {o["kind"]: o["turns"] for o in got["options"]} == {"whisper": False, "deepgram": True}
+    r = app.client.put(f"{path}/think-early", json={"on": False}, headers=app.auth)
+    assert r.status_code == 200 and r.json()["think_early"] is False
+    assert app.rt.think_early is False
+    bad = app.client.put(f"{path}/think-early", json={"on": "yes"}, headers=app.auth)
+    assert bad.status_code == 422
+
+
 def test_a_hosted_recognizer_needs_a_key_that_works(
     make: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -929,6 +942,7 @@ def test_a_hosted_recognizer_needs_a_key_that_works(
             "kind": "deepgram",
             "choice": "multi",
             "streaming": True,
+            "turns": True,
         }
     assert app.rt.stt is not None and app.rt.stt.name == "deepgram"
 
