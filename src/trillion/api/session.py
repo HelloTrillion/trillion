@@ -255,7 +255,8 @@ class Session:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-        # The turn is over by now, so nothing is replaying either of these.
+        # The turn is over by now, so nothing is replaying either of these. Belt and
+        # braces: every path that ends a turn already lets its draft go.
         await self._drop_draft()
         using, self._using = self._using, None
         if using is not None:
@@ -554,11 +555,15 @@ class Session:
             if text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
-                await self._send("transcript.final", text=text)
+                usable = draft is not None and self._usable(draft, text)
+                # A used draft saves its own words: the screen shows those, so a reload
+                # shows the same.
+                shown = draft.words if usable and draft is not None else text
+                await self._send("transcript.final", text=shown)
                 self._via = "voice"
                 self._turn += 1
                 self.active_ms = self._rt.clock()
-                if draft is not None and self._usable(draft, text):
+                if usable and draft is not None:
                     # The message it was given is the one saved, so the turn's history
                     # is exactly what the draft sent.
                     await self._commit_input("user", draft.built)
@@ -813,7 +818,10 @@ class Session:
 
     async def _start_draft(self, words: str) -> None:
         """Her first call for these words, sent exactly as the confirmed turn would
-        send it, and held. Nothing is saved, shown, said or run."""
+        send it, and held. Nothing is saved, shown, said or run.
+
+        Runs on the recognizer's reader task, so it must stay quick: a database read,
+        a memory recall and the system prompt, read off the event loop."""
         rt = self._rt
         provider = rt.provider
         words = words[:MAX_TEXT].strip()
@@ -850,6 +858,7 @@ class Session:
         """The draft heard these words and sent what this turn would send."""
         return (
             not draft.failed
+            and draft.provider is self._rt.provider
             and same_words(draft.words, text)
             and draft.history_len == len(self._history)
             and draft.summary is self._summary
@@ -875,7 +884,8 @@ class Session:
         """Stop a draft nobody will replay, and count what it cost. A provider reports
         usage at the end of a call, so one stopped before then counts as nothing."""
         await draft.cancel()
-        provider = self._rt.provider
+        # The model it asked, which may no longer be the one in use.
+        provider = draft.provider
         usage = draft.usage()
         if provider is None or usage == Usage():
             return

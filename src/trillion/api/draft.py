@@ -53,6 +53,9 @@ class Draft:
         # What it was built against: if either has changed, the draft is not used.
         self.history_len = history_len
         self.summary = summary
+        # The model it asked: a different one at the end means it is not used, and
+        # what it spent is that model's.
+        self.provider: ModelProvider | None = None
         self.failed = False
         self.cancelled = False
         self.finished = False
@@ -76,6 +79,7 @@ class Draft:
         summary: Any,
     ) -> Draft:
         d = cls(words=words, built=built, history_len=history_len, summary=summary)
+        d.provider = provider
         d._task = asyncio.create_task(d._run(provider, system, messages, tools))
         # On the task, not in _run: a task cancelled before it starts never runs _run.
         d._task.add_done_callback(lambda _: d._over())

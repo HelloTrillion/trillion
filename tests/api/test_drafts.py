@@ -265,3 +265,64 @@ async def test_a_typed_turn_never_starts_a_draft(rt: Runtime) -> None:
     assert session._draft is None and len(provider.calls) == 1
     assert drafts() == ["none"]
     await session.close()
+
+
+async def test_a_model_changed_before_the_end_drops_the_draft(rt: Runtime) -> None:
+    stt, old = judging(rt, say("From the old one."))
+    session, page = await start(rt)
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: session._draft is not None and session._draft.finished)
+    new = Gated(say("From the new one."))
+    new.name = "other"
+    rt.provider = new
+    await finish(session, stt, "call the dentist")
+    assert len(old.calls) == 1 and len(new.calls) == 1
+    assert [m["text"] for m in page.all("reply.delta")] == ["From the new one."]
+    rows = await rt.conversations.usage_since("local", 0)
+    # The dropped draft is the old model's spending, not the new one's.
+    assert {r["provider"]: r["unpriced_turns"] for r in rows} == {"fake": 1, "other": 1}
+    assert drafts() == ["dropped"]
+    await session.close()
+
+
+async def test_a_used_draft_shows_the_words_it_saved(rt: Runtime) -> None:
+    """The screen shows what is saved, so a reload shows the same words."""
+    stt, _ = judging(rt, say("Sure."))
+    session, page = await start(rt)
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: session._draft is not None)
+    await finish(session, stt, "Call the dentist.")
+    assert [m["text"] for m in page.all("transcript.final")] == ["call the dentist"]
+    saved = [m for k, m in await rt.conversations.history(session.id, "local") if k == "user"]
+    assert saved[0].blocks[-1].text == "call the dentist"  # type: ignore[union-attr]
+    await session.close()
+
+
+async def test_a_tap_note_before_the_turn_starts_drops_the_used_draft(rt: Runtime) -> None:
+    """A tap's note joins the history after the draft was taken, so it is not replayed.
+
+    The tap is made to land exactly then: while the words are being shown, which is
+    after the draft was judged usable and before the turn starts."""
+    stt, provider = judging(rt, say("Drafted."), say("Answer."))
+    session, page = await start(rt)
+    shown = page.send
+
+    async def send(body: dict[str, Any]) -> None:
+        await shown(body)
+        if body["type"] == "transcript.final":
+            session._queued.append("[host] a tap's note")
+
+    session._raw_send = send
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: session._draft is not None and session._draft.finished)
+    draft = session._draft
+    await finish(session, stt, "call the dentist")
+    assert draft is not None and draft.finished
+    assert len(provider.calls) == 2
+    assert [m["text"] for m in page.all("reply.delta")] == ["Answer."]
+    kinds = [k for k, _ in await rt.conversations.history(session.id, "local")]
+    assert kinds == ["user", "tap", "assistant"]
+    rows = await rt.conversations.usage_since("local", 0)
+    assert [r["unpriced_turns"] for r in rows] == [2]
+    assert drafts() == ["dropped"]
+    await session.close()
