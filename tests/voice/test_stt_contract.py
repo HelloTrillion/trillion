@@ -392,6 +392,11 @@ def test_deepgram_reports_when_each_word_was_said() -> None:
         {"word": "wait", "start": 2.0, "end": 2.4, "confidence": 0.9},
         {"word": "stop", "start": 2.4, "end": 2.88, "confidence": 0.9},
         {"word": "bad", "start": "x", "end": 3.0},
+        {"word": "bool", "start": True, "end": 3.0},
+        {"word": "missing", "start": 3.0},
+        {"word": "nan", "start": float("nan"), "end": 3.0},
+        {"word": "inf", "start": 3.0, "end": float("inf")},
+        {"word": "backwards", "start": 3.0, "end": 2.5},
         "junk",
     ]
     heard = deepgram.parse(turn_info("Update", "wait stop", words))

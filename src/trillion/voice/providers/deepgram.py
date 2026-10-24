@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Literal, Protocol
 from urllib.parse import urlencode
@@ -90,7 +91,9 @@ def _words(raw: object) -> tuple[Word, ...]:
             and not isinstance(start, bool)
             and not isinstance(end, bool)
         ):
-            out.append(Word(text=text, start_s=float(start), end_s=float(end)))
+            # A bad time would poison the judgement later: skip the word.
+            if math.isfinite(start) and math.isfinite(end) and end >= start:
+                out.append(Word(text=text, start_s=float(start), end_s=float(end)))
     return tuple(out)
 
 
