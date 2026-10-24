@@ -24,6 +24,8 @@ Kind = Literal["user", "tap", "assistant", "tool_results"]
 # does not: it carries its own authority for the one card tapped, and must never give
 # the model a later turn in which to confirm some other card.
 USER_INPUTS: tuple[Kind, ...] = ("user",)
+# A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
+ConversationKind = Literal["chat", "scheduled"]
 
 
 def _dump(b: Block) -> dict[str, Any]:
@@ -80,15 +82,19 @@ class SqliteConversationStore:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
 
-    async def create(self, conversation_id: str, owner_id: str, now_ms: int) -> None:
+    async def create(
+        self, conversation_id: str, owner_id: str, now_ms: int, kind: ConversationKind = "chat"
+    ) -> None:
         await self._conn.execute(
-            "INSERT INTO conversations (id, owner_id, created_at) VALUES (?, ?, ?)",
-            (conversation_id, owner_id, now_ms),
+            "INSERT INTO conversations (id, owner_id, created_at, kind) VALUES (?, ?, ?, ?)",
+            (conversation_id, owner_id, now_ms, kind),
         )
 
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
+        """Whether a page may open it: a chat of this owner's that was not deleted."""
         async with self._conn.execute(
-            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
+            " AND kind = 'chat'",
             (conversation_id, owner_id),
         ) as cur:
             return await cur.fetchone() is not None

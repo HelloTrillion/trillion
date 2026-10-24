@@ -62,6 +62,20 @@ NOT_DECISIONS: dict[str, str] = {
     "preferences.value_json": "a setting the user chose",
     "memories.file_missing": "whether the file is on disk: read from the disk, not decided",
     **{
+        f"schedules.{c}": "a reminder's own progress (AGT-4): it approves nothing"
+        for c in ("status", "next_due_ms")
+    },
+    **{
+        f"task_runs.{c}": "a scheduled run's progress (AGT-4): it approves nothing"
+        for c in (
+            "status claimed_by claimed_ms started_ms finished_ms attempts detail result_notice"
+        ).split()
+    },
+    **{
+        f"notices.{c}": "whether a notice reached the user (SUR-9): it approves nothing"
+        for c in ("status", "delivered_ms", "delivered_to", "notified_ms")
+    },
+    **{
         f"memories.{c}": _MIRRORED
         for c in (
             "type text source moves status version created_at as_of supersedes "
