@@ -13,7 +13,8 @@ import hmac
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,16 @@ def create_app(
     extra_origins: frozenset[str] = frozenset(),
     static: Path | None = None,
 ) -> FastAPI:
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # The scheduler runs on the server's own event loop, from start to stop.
+        rt.start_background()
+        try:
+            yield
+        finally:
+            await rt.stop_background()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     origins = frozenset(f"http://{h}" for h in hosts) | extra_origins
 
     @app.exception_handler(RequestValidationError)
@@ -178,7 +188,7 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=sorted(extra_origins),
-            allow_methods=["GET", "POST", "PUT"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["authorization", "content-type"],
         )
 

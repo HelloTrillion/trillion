@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import aiosqlite
@@ -118,6 +118,31 @@ class SqliteConversationStore:
             ),
         )
         return int(cur.lastrowid or 0)
+
+    async def append_many(
+        self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
+    ) -> list[int]:
+        """Save several messages in one statement, so all are kept or none, with no
+        transaction held open on the shared connection. Returns their ids in order."""
+        if not msgs:
+            return []
+        values: list[object] = []
+        for msg in msgs:
+            values += [
+                owner_id,
+                conversation_id,
+                msg.role,
+                kind,
+                json.dumps([_dump(b) for b in msg.blocks], ensure_ascii=False),
+                _dump_raw(msg.raw),
+                now_ms,
+            ]
+        rows = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(msgs))
+        cols = "owner_id, conversation_id, role, kind, blocks_json, raw_json, created_at"
+        sql = f"INSERT INTO messages ({cols}) VALUES {rows} RETURNING id"  # noqa: S608 - placeholders only
+        async with self._conn.execute(sql, values) as cur:
+            # RETURNING's order is not promised; ids rise in the order the rows went in.
+            return sorted(int(r[0]) for r in await cur.fetchall())
 
     async def history(self, conversation_id: str, owner_id: str) -> list[tuple[Kind, Msg]]:
         async with self._conn.execute(

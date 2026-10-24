@@ -981,3 +981,14 @@ def test_microphone_audio_arrives_as_binary_frames_and_never_breaks_the_socket(m
         chat.ws.send_bytes(b"\x00\x01" * 480)  # audio nobody asked for is dropped
         chat.ws.send_bytes(b"\x00" * 200_000)
         assert reply(chat.say("still there?")) == "hi"
+
+
+# ── Reminders (AGT-4) ────────────────────────────────────────────────────
+
+
+def test_the_scheduler_runs_while_the_server_does(make: Any) -> None:
+    app = make()
+    scheduler = app.rt.scheduler
+    assert scheduler is not None and scheduler.running
+    app.client.portal.call(app.rt.close)  # the runtime stops it first, before closing
+    assert not scheduler.running

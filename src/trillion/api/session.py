@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -33,13 +33,13 @@ from trillion.brain.loop import (
     run_turn,
 )
 from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock
+from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
 from trillion.persona.prompt import (
     PendingNote,
     compaction,
     degraded,
     greeting,
-    system_blocks,
     volatile_context,
 )
 from trillion.spine.confirm import Status
@@ -61,6 +61,9 @@ NO_AUDIO_S = 3.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
 SURFACE = "web"
+# Speech for a notice is numbered apart from turns, so a turn the page stopped never
+# swallows it, and the page's "played" for it is told apart.
+NOTICE_TURNS = 1 << 30
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -107,6 +110,15 @@ class Session:
         self._timed = 0
         self._mic_setup: dict[str, Any] = {}
         self._warming: asyncio.Future[Any] | None = None
+        # What the door judges "free" by (VOI-17): the last turn sent to be heard and
+        # when its audio finished sending, and the last one the page said it played.
+        self._spoken: tuple[int, int] | None = None
+        self._played: int | None = None
+        # She is saying a sentence of her own outside a turn: a leg is down (VOI-14).
+        self._saying = False
+        self._notices = 0
+        # When the user last did something here. The live page is the latest (SUR-9).
+        self.active_ms = rt.clock()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -250,10 +262,14 @@ class Session:
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
         elif kind == "playback.ended":
+            turn_id = msg.get("turn_id")
+            if isinstance(turn_id, int) and not isinstance(turn_id, bool):
+                self._played = turn_id
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
             if self._via == "voice" and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
+            await self._offer()
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
@@ -272,6 +288,7 @@ class Session:
             await self._stop_listening()
             self._via = "text"
             self._turn += 1
+            self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
             await self._save_input("user", text)
             self._begin()
@@ -396,8 +413,13 @@ class Session:
         # microphone that just failed, or one fault would repeat itself forever.
         self._via = "text"
         speaker = Speaker(rt.tts, rt.speech.voice, self._turn, self._send, self._send_bytes)
-        await speaker.feed(said)
-        await speaker.finish()
+        self._saying = True
+        try:
+            await speaker.feed(said)
+            await speaker.finish()
+            self._spoken = (self._turn, rt.clock())
+        finally:
+            self._saying = False
 
     async def _conclude(self, verdict: Verdict) -> None:
         """Listening is over. Either there is something to answer, or the reason is said."""
@@ -446,6 +468,7 @@ class Session:
                 await self._send("transcript.final", text=text)
                 self._via = "voice"
                 self._turn += 1
+                self.active_ms = self._rt.clock()
                 await self._save_input("user", text)
                 answer = True
             else:
@@ -470,6 +493,7 @@ class Session:
         if not isinstance(pending_id, str) or not pending_id:
             await self._error("bad_message")
             return
+        self.active_ms = self._rt.clock()
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
@@ -573,19 +597,13 @@ class Session:
         final = "idle"
         try:
             await self._state("processing")
-            # The skills that are on, read once for this turn and off the event loop.
-            skills = await asyncio.to_thread(_skill_lines, rt)
+            # Rules and the skills that are on, read once for this turn, off the event loop.
+            system = await asyncio.to_thread(rt.system)
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
                 registry=rt.registry,
-                system=system_blocks(
-                    rt.identity,
-                    rt.soul,
-                    rt.granted_roots,
-                    [(r.id, r.text) for r in rt.rules.all()],
-                    skills=skills,
-                ),
+                system=system,
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
                 emit=emit,
@@ -603,6 +621,7 @@ class Session:
                     await speaker.pause()
                     await speaker.feed(down)
                 await speaker.finish()
+                self._spoken = (turn, rt.clock())
             await rt.conversations.record_usage(
                 owner_id=OWNER,
                 conversation_id=self.id,
@@ -634,6 +653,8 @@ class Session:
         except asyncio.CancelledError:
             if speaker is not None:
                 await speaker.stop()
+                # Stopped: nothing of it is still to be heard.
+                self._spoken = None
             await self._keep_trace(trace, "interrupted", voiced=speaker is not None)
             await self._send("interrupted")
         except Exception as e:
@@ -839,6 +860,102 @@ class Session:
         if orb != self._orb:
             self._orb = orb
             await self._send("state", orb=orb)
+        if orb in ("idle", "error"):
+            # At rest: anything held for this page may arrive now.
+            await self._offer()
+
+    # ── Notices (SUR-9, VOI-17) ──────────────────────────────────────────
+
+    def facts(self) -> Facts:
+        """What the door judges "free" by. Read from what is running, never a flag."""
+        task = self._task
+        spoken = self._spoken
+        return Facts(
+            turn_running=(task is not None and not task.done()) or self._saying,
+            listening=self._listener is not None,
+            spoken_turn=spoken[0] if spoken is not None else None,
+            spoken_ms=spoken[1] if spoken is not None else None,
+            heard_turn=self._played,
+            active_ms=self.active_ms,
+        )
+
+    async def _offer(self) -> None:
+        door = self._rt.door
+        if door is None or self._closed:
+            return
+        try:
+            await door.offer(self)
+        except Exception as e:
+            # The notices stay held; the next tick's flush tries again.
+            logger.warning("notices not offered in session %s: %s", self.id, type(e).__name__)
+
+    async def deliver(self, notices: Sequence[Delivery]) -> None:
+        """The door hands over notices while this page is free. All or none: a page
+        that is no longer free raises `NotFree` before anything happens, and the door
+        holds them again. The ones with her words are saved as her messages in one
+        statement, so they survive a reload; then each is sent, and spoken if her
+        voice is on, best effort. A missed or failed one is shown by its title, never
+        spoken (PER-11). Speech is queued, never waited for."""
+        rt = self._rt
+        if self._closed or not free(self.facts(), rt.clock()):
+            raise NotFree
+        said = [n.text for n in notices if n.text]
+        if said:
+            await self._save_all(
+                "assistant", [Msg(role="assistant", blocks=(TextBlock(text=t),)) for t in said]
+            )
+        # Saved: from here nothing raises, or the door would hold them and they would be
+        # saved twice. `_send` already logs a failed send and goes on.
+        for n in notices:
+            await self._send(
+                "notice",
+                code="schedule",
+                id=n.id,
+                kind=n.kind,
+                title=n.title,
+                text=n.text,
+                due_ms=n.due_ms,
+                late=n.late,
+            )
+        if said and rt.tts is not None and rt.speech is not None and not self._muted:
+            if self._task is None and not self._closed:
+                self._task = asyncio.create_task(self._say_notices(said))
+
+    async def _save_all(self, kind: Kind, msgs: Sequence[Msg]) -> None:
+        ids = await self._rt.conversations.append_many(self.id, OWNER, kind, msgs, self._rt.clock())
+        for msg, message_id in zip(msgs, ids, strict=True):
+            self._history.append(msg)
+            self._kinds.append(kind)
+            self._ids.append(message_id)
+
+    async def _say_notices(self, said: list[str]) -> None:
+        """Her words for the notices, through the normal speech path. Runs as the
+        session's task, so nothing else starts over it, and "stop" stops it."""
+        rt = self._rt
+        if rt.tts is None or rt.speech is None:  # pragma: no cover - checked by deliver
+            self._task = None
+            return
+        self._notices += 1
+        turn = NOTICE_TURNS + self._notices
+        # Not a spoken turn: when she has said it, the microphone stays closed.
+        self._via = "text"
+        speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
+        try:
+            await self._state("speaking")
+            for text in said:
+                await speaker.feed(text)
+                await speaker.pause()
+            await speaker.finish()
+            self._spoken = (turn, rt.clock())
+        except asyncio.CancelledError:
+            await speaker.stop()
+            self._spoken = None
+        except Exception as e:
+            # Shown already and saved: only the speaking failed.
+            logger.warning("notice speech failed in session %s: %s", self.id, type(e).__name__)
+        finally:
+            self._task = None
+        await self._state(self._rest)
 
     async def _error(self, code: str, **extra: Any) -> None:
         await self._send("error", code=code, **extra)
@@ -863,20 +980,3 @@ class Session:
             await self._raw_send({"type": kind, **body})
         except Exception as e:
             logger.debug("send of %s failed: %s", kind, type(e).__name__)
-
-
-def _skill_lines(rt: Runtime) -> list[tuple[str, str]]:
-    """(label, description) of each skill that is on and unchanged (CON-6). Read once
-    a turn and kept for describe_self. Anything unexpected leaves this turn without
-    skills, logged by its kind only: the message could name the user's files."""
-    if rt.skills is None:
-        return []
-    try:
-        entries = rt.skills.enabled()
-        lines = rt.skills.prompt_lines(entries=entries)
-    except Exception as e:
-        logger.warning("skills could not be read this turn: %s", type(e).__name__)
-        rt.skills_on = []
-        return []
-    rt.skills_on = entries
-    return lines
