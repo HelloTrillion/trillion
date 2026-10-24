@@ -140,3 +140,9 @@ def test_a_zone_whose_abbreviation_is_its_name_is_said_once() -> None:
     now = datetime(2026, 10, 24, 16, 0, tzinfo=ZoneInfo("UTC"))
     text = volatile_context(now, [], zone="UTC")
     assert "now: Saturday 2026-10-24 16:00 UTC\n" in text and "(UTC)" not in text
+
+
+def test_she_is_told_a_reminder_is_a_schedule_never_a_memory() -> None:
+    text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
+    assert "call reminder_set; never save a reminder as a memory" in text
+    assert "ask_schedule" in text and "YYYY-MM-DDTHH:MM" in text
