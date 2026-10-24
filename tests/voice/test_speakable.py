@@ -39,3 +39,19 @@ def test_a_code_block_still_being_streamed_is_not_read_out() -> None:
 def test_it_never_adds_words() -> None:
     written = "**Bold** [link](http://x.example) `code` 🎉 # not a heading"
     assert set(speakable(written).split()) <= {"Bold", "link", "code", "not", "a", "heading"}
+
+
+@pytest.mark.parametrize(
+    ("written", "said"),
+    [
+        ("Leave at six \u2014 traffic is bad.", "Leave at six, traffic is bad."),
+        ("Leave at six\u2014traffic is bad.", "Leave at six, traffic is bad."),
+        ("Mondays \u2013 Fridays only.", "Mondays, Fridays only."),
+        ("Bring milk \u2014 eggs \u2014 and bread.", "Bring milk, eggs, and bread."),
+        ("Wait \u2014", "Wait"),
+        ("A well-known place, 9-5.", "A well-known place, 9-5."),
+    ],
+)
+def test_a_dash_between_words_is_a_pause_not_a_sound(written: str, said: str) -> None:
+    """Em and en dashes are read aloud as noise by some voices; she pauses instead."""
+    assert speakable(written) == said
