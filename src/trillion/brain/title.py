@@ -7,6 +7,7 @@ A failure leaves the first-words title in place, and nothing is shown or spoken.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Sequence
 
@@ -22,6 +23,8 @@ from trillion.brain.types import (
 )
 from trillion.spine.untrusted import wrap
 
+logger = logging.getLogger(__name__)
+
 TITLE_TOKENS = 24
 # Naming is a nicety: a slow local model must not hold anything up.
 TIMEOUT_S = 10.0
@@ -36,13 +39,18 @@ INSTRUCTIONS = (
 
 # Straight and curly quotes, and backticks, around the whole title.
 _QUOTES = "\"'`\u201c\u201d\u2018\u2019"
+_WRAPS = _QUOTES + "*_"
+_ENDS = ".!?;:, "
 _LABEL = re.compile(r"^\s*title\s*:\s*", re.I)
 
 
 def clean(text: str) -> str | None:
     """The model's answer as a title, or None when it is not one."""
     line = " ".join(text.split())
-    line = _LABEL.sub("", line).strip().strip(_QUOTES).rstrip(".!?;:,").strip()
+    line = _LABEL.sub("", line).strip()
+    # Quotes, markdown and end marks nest in any order: peel until nothing changes.
+    while (peeled := line.strip(_WRAPS).rstrip(_ENDS).lstrip(_ENDS)) != line:
+        line = peeled
     if not line or len(line) > MAX_CHARS or len(line.split()) > MAX_WORDS:
         return None
     return line
@@ -72,6 +80,8 @@ async def name(
 
     try:
         await asyncio.wait_for(ask(), timeout_s)
-    except Exception:
+    except Exception as e:  # naming is best effort; the first words stay
+        # A timed-out call usually reports no usage: Done comes last.
+        logger.info("naming failed: %s", type(e).__name__)
         return None, usage
     return clean("".join(text)), usage

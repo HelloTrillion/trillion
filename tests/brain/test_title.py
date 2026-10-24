@@ -21,6 +21,9 @@ def first(user: str, her: str) -> list[Msg]:
 def test_clean_keeps_a_plain_title() -> None:
     assert title.clean('"Planning the trip."\n') == "Planning the trip"
     assert title.clean("Title: Moving the dentist") == "Moving the dentist"
+    assert title.clean('"Moving the dentist".') == "Moving the dentist"
+    assert title.clean("**Moving the dentist**") == "Moving the dentist"
+    assert title.clean("_Moving the dentist_.") == "Moving the dentist"
 
 
 def test_clean_refuses_empty_and_long() -> None:
@@ -41,6 +44,7 @@ async def test_name_asks_without_tools_and_wraps_the_conversation() -> None:
     assert isinstance(body, TextBlock)
     assert "<untrusted_tool_result" in body.text and "move the dentist" in body.text
     assert model.tool_calls[0] == []  # no tools offered
+    assert model.max_tokens == [title.TITLE_TOKENS] == [24]
 
 
 async def test_a_failure_or_timeout_gives_none() -> None:
@@ -49,7 +53,7 @@ async def test_a_failure_or_timeout_gives_none() -> None:
 
     class Slow(ScriptedProvider):
         async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:  # type: ignore[override]
-            await asyncio.sleep(10)
+            await asyncio.sleep(60)
             yield  # type: ignore[misc]
 
     assert (await title.name(Slow(names=True), first("a", "b"), timeout_s=0.01))[0] is None
@@ -65,4 +69,4 @@ async def test_the_fake_skips_naming_calls_unless_asked() -> None:
     model = ScriptedProvider(say("Reply"))
     named, usage = await title.name(model, first("a", "b"))
     assert named is None and usage == Usage()
-    assert model.calls == []  # the script is untouched
+    assert model.calls == [] and model.naming_calls == 1  # the script is untouched

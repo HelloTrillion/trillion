@@ -11,10 +11,9 @@ from typing import Any
 
 import pytest
 
-from tests.brain.fakes import ScriptedProvider, say, use
+from tests.brain.fakes import ScriptedProvider, is_naming, say, use
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import Session
-from trillion.brain.title import TITLE_TOKENS
 from trillion.brain.types import ModelEvent
 from trillion.secrets.store import MemoryStore
 
@@ -33,7 +32,7 @@ class Gated(ScriptedProvider):
         return self.gates[call]
 
     async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
-        if kw["max_tokens"] == TITLE_TOKENS:  # naming is not a turn: no gate, no count
+        if is_naming(kw["system"]):  # naming is not a turn: no gate, no count
             async for ev in super().stream(**kw):
                 yield ev
             return

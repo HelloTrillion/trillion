@@ -11,9 +11,8 @@ from typing import Any
 import httpx
 import pytest
 
-from tests.brain.fakes import say
+from tests.brain.fakes import is_naming, say
 from tests.spine.conftest import Spine
-from trillion.brain.title import TITLE_TOKENS
 from trillion.brain.types import Done, ModelEvent, Msg, SystemBlock, Usage
 from trillion.channels.answer import Answerer
 from trillion.channels.base import Inbound
@@ -96,7 +95,7 @@ class Tools:
         tools: Sequence[Any],
         max_tokens: int,
     ) -> AsyncIterator[ModelEvent]:
-        if max_tokens == TITLE_TOKENS:  # naming her first reply is not a turn
+        if is_naming(system):  # naming her first reply is not a turn
             yield Done(stop_reason="end", usage=Usage())
             return
         self.offered.append(list(tools))
