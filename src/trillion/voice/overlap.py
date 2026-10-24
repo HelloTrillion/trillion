@@ -35,7 +35,7 @@ _STOPS = frozenset("stop wait no nope hold hang pause cancel enough quiet shh he
 
 
 def _words(text: str) -> list[str]:
-    return _WORD.findall(text.lower())
+    return _WORD.findall(text.lower().replace("\u2019", "'"))
 
 
 def _acks(words: list[str]) -> int | None:

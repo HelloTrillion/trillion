@@ -98,3 +98,8 @@ def test_words_in_any_script_or_digits_are_words(words: str) -> None:
 
 def test_another_language_interrupts() -> None:
     assert decide("oui", done=True, elapsed_s=0.3, playing=PLAYING) == "interrupt"
+
+
+def test_curly_and_straight_apostrophes_match() -> None:
+    playing = ("We don\u2019t need to leave yet.",)
+    assert decide("don't need", done=False, elapsed_s=0.4, playing=playing) == "wait"
