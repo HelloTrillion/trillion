@@ -120,7 +120,13 @@ It is not part of the history and the model never sees it again.
 After the turn that completes **her first reply** in a conversation, the session
 starts `name()` as a background task (one per conversation; never for a resumed
 conversation that already has a `'model'` or `'user'` title). It does not delay
-or block the next turn. On success it saves with `set_title(..., 'model')` and
+or block the next turn (a local model that serves one request at a time may queue
+the next reply briefly behind this 24-token call). A resumed conversation still
+titled by first words is tried once per session; a failed naming is not retried
+within it. The bare interruption mark is never her reply: she names from her
+last words before the user's next message. (A reply trimmed by a late barge after
+naming has started may still lend it words she wrote but was not heard saying; the
+title is only a label.) On success it saves with `set_title(..., 'model')` and
 sends `conversation.title{id, title}` to every page open on that conversation.
 `session{id}` gains `title` (null for a new conversation).
 
