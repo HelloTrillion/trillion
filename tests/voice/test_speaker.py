@@ -162,11 +162,38 @@ async def test_heard_text_is_only_this_round() -> None:
     assert s.heard_text() == "I found the train times."
 
 
-async def test_a_sentence_with_nothing_to_say_is_never_counted_as_heard() -> None:
+async def test_a_sentence_with_nothing_to_say_goes_with_the_one_before() -> None:
     s = speaker(SystemVoice(), Wire())
     await s.feed("```\ncode\n``` ")
     await s.pause()
-    await s.feed("I found the train times. And")
+    await s.feed("I put the notes in the file below.\n\n```\nprint(1)\n```\n\n")
+    await s.feed("Then we are done with it all. And")
     s.played(1)
-    # Nothing was sent for the code, so the page's sentence 1 is the next one.
-    assert s.turn == 7 and s.heard_text() == "I found the train times."
+    # Nothing was sent for the code, so the page's sentence 1 is the next one; the code
+    # after it is kept with it rather than cut out of the middle.
+    assert s.turn == 7
+    assert s.heard_text() == "I put the notes in the file below.\n\n```\nprint(1)\n```"
+    s.played(2)
+    assert s.heard_text().endswith("```\n\nThen we are done with it all.")
+
+
+async def test_what_was_heard_keeps_her_formatting() -> None:
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("Here is the plan for today.\n\n- First we pack all the bags.\n")
+    await s.feed("- Then we leave the house. And")
+    s.played(2)
+    assert s.heard_text() == "Here is the plan for today.\n\n- First we pack all the bags."
+    assert not s.all_heard
+    s.played(3)
+    assert s.all_heard
+
+
+async def test_a_failed_voice_is_told_apart_from_a_stopped_one() -> None:
+    s = speaker(FakeVoice(fail_on="Second"), Wire())
+    await s.feed("First of all we go home. Second we eat dinner. ")
+    await s.finish()
+    assert s.failed
+    stopped = speaker(FakeVoice(), Wire())
+    await stopped.feed("First of all we go home. ")
+    await stopped.stop()
+    assert not stopped.failed

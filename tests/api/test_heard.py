@@ -12,9 +12,10 @@ import pytest
 from tests.api.test_listening import hearing, speak
 from tests.api.test_session import Page, idle
 from tests.api.test_session_notices import voiced
-from tests.brain.fakes import ScriptedProvider, use
+from tests.brain.fakes import ScriptedProvider, say, use
 from tests.voice.audio import room, tone
-from trillion.api.runtime import Runtime, open_runtime
+from tests.voice.test_speaker import FakeVoice
+from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
 from trillion.api.session import Session
 from trillion.brain.loop import INTERRUPTED
 from trillion.brain.types import ModelEvent, Msg, TextBlock, TextDelta
@@ -196,4 +197,62 @@ async def test_cut_off_after_a_tool_before_she_writes_again_nothing_is_cut(
     said = await last_said(rt, session)
     assert said[-1].blocks[0] == TextBlock(text="Let me look. ")
     gate.set()
+    await session.close()
+
+
+async def test_a_reply_whose_voice_was_muted_midway_keeps_everything_she_wrote(
+    rt: Runtime,
+) -> None:
+    hearing(rt)
+    voiced(rt)
+    rt.provider = Halting()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await page.until("reply.sentence", 2)
+    turn = page.all("reply.sentence")[0]["turn"]
+    await session.handle({"type": "playback.sentence", "turn_id": turn, "seq": 1})
+    await session.handle({"type": "speech.mute", "muted": True})  # from here she is read
+    await session.handle({"type": "barge"})
+
+    assert "kept" not in page.all("interrupted")[-1]
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=REPLY + INTERRUPTED),)
+    await session.close()
+
+
+async def test_a_reply_whose_voice_failed_keeps_everything_she_wrote(rt: Runtime) -> None:
+    hearing(rt)
+    rt.tts, rt.speech = FakeVoice(fail_on="First"), SpeechSettings(kind="elevenlabs", voice="v1")
+    rt.provider = Halting()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await page.until("error")  # her voice is down: the rest is read on screen
+    turn = page.all("reply.sentence")[0]["turn"]
+    await session.handle({"type": "playback.sentence", "turn_id": turn, "seq": 1})
+    await session.handle({"type": "barge"})
+
+    assert "kept" not in page.all("interrupted")[-1]
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=REPLY + INTERRUPTED),)
+    await session.close()
+
+
+async def test_a_barge_while_her_last_words_are_still_being_voiced_keeps_the_usage(
+    rt: Runtime,
+) -> None:
+    hearing(rt)
+    rt.tts, rt.speech = FakeVoice(slow=True), SpeechSettings(kind="elevenlabs", voice="v1")
+    rt.provider = ScriptedProvider(say("First thing. Second thing."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await page.until("reply.sentence", 2)
+    await asyncio.sleep(0.05)  # written and saved; the voice is still being made
+    assert session._task is not None
+    await session.handle({"type": "barge"})
+
+    (row,) = await rt.conversations.usage_since("local", 0)
+    assert (row["input_tokens"], row["output_tokens"]) == (10, 5)
     await session.close()

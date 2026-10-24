@@ -102,7 +102,7 @@ async def run_turn(
     save: Callable[[Msg], Awaitable[None]],
     limits: Limits | None = None,
     first: AsyncIterator[ModelEvent] | None = None,
-    heard: Callable[[str], str] | None = None,
+    heard: Callable[[str], str | None] | None = None,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
@@ -113,7 +113,8 @@ async def run_turn(
     user was finishing (VOI-12).
 
     `heard`, for a spoken turn, cuts the text to what the user heard when it is
-    interrupted (D8): given what she wrote this round, it returns the part heard."""
+    interrupted (D8): given what she wrote this round, it returns the part heard, or
+    None when the user read it all instead (her voice failed or was muted)."""
     guard = LoopGuard(limits)
     tools = tool_schemas(registry)
     pricing = provider.pricing()
@@ -199,11 +200,7 @@ async def run_turn(
             # tool call is dropped, because it never ran.
             if text:
                 said = "".join(text)
-                if heard is not None:
-                    # Written but never said is dropped. With nothing heard, the marker
-                    # alone shows she began.
-                    said = cut(heard(said))
-                kept = said + INTERRUPTED if said else INTERRUPTED.strip()
+                kept = kept_of(said, heard(said) if heard is not None else None)
                 await asyncio.shield(add(_assistant(kept, [], None)))
             raise
         except ProviderError as e:
@@ -256,6 +253,15 @@ async def run_turn(
             raise asyncio.CancelledError
         if over_budget:
             return done("cost")
+
+
+def kept_of(written: str, heard: str | None) -> str:
+    """The one rule for what an interrupted reply keeps of its round (VOI-9, D8).
+
+    Read (`heard` is None): all she wrote. Heard: the heard part and "…"; written but
+    never said is dropped. With nothing heard, the marker alone shows she began."""
+    said = written if heard is None else cut(heard)
+    return said + INTERRUPTED if said else INTERRUPTED.strip()
 
 
 def cut(heard: str) -> str:

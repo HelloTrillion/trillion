@@ -701,9 +701,12 @@ class Session:
         # was heard. Set only by the loop, so the page is told exactly what was kept.
         kept: str | None = None
 
-        def heard(_written: str) -> str:
+        def heard(_written: str) -> str | None:
             nonlocal kept
-            said = speaker.heard_text() if speaker is not None else ""
+            if speaker is None or speaker.failed or self._muted:
+                # Her voice went or was turned off midway: the rest was read, not lost.
+                return None
+            said = speaker.heard_text()
             kept = cut(said)
             return said
 
@@ -773,21 +776,25 @@ class Session:
                 if done.stop == "provider_error"
                 else None
             )
+            # Recorded before her last words are voiced: the model's work is done and
+            # paid for even if she is talked over while they play.
+            await asyncio.shield(
+                rt.conversations.record_usage(
+                    owner_id=OWNER,
+                    conversation_id=self.id,
+                    provider=provider.name,
+                    model=provider.model,
+                    usage=done.usage,
+                    cost_usd=done.cost_usd,
+                    now_ms=rt.clock(),
+                )
+            )
             if speaker is not None:
                 if down is not None:
                     await speaker.pause()
                     await speaker.feed(down)
                 await speaker.finish()
                 self._spoken = (heard_as, rt.clock())
-            await rt.conversations.record_usage(
-                owner_id=OWNER,
-                conversation_id=self.id,
-                provider=provider.name,
-                model=provider.model,
-                usage=done.usage,
-                cost_usd=done.cost_usd,
-                now_ms=rt.clock(),
-            )
             if down is not None:
                 final = "error"
                 await self._error("provider", kind=done.error_kind, sentence=down)

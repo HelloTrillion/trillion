@@ -67,20 +67,37 @@ class Speaker:
         self._failed = False
         self._queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
+        # Whether her voice itself failed, as against being stopped (VOI-14).
+        self._down = False
         # What she wrote for each sentence sent, by its number: the history keeps her
         # words, not the spoken form of them (D8).
         self._said: list[tuple[int, str]] = []
-        # The last sentence the page started playing, and where this round began: a
-        # round ends when a tool runs, and what came before it is saved whole.
+        # This round's text as she wrote it, and where in it each sentence sent ends:
+        # what was heard is kept as written, line breaks and all. A round ends when a
+        # tool runs, and what came before it is saved whole.
+        self._written = ""
+        self._at = 0
+        self._ends: dict[int, int] = {}
+        # The last sentence the page started playing.
         self._heard_seq = 0
-        self._round_from = 1
 
     @property
     def turn(self) -> int:
         """The turn number the page knows this reply's sound by."""
         return self._turn
 
+    @property
+    def failed(self) -> bool:
+        """Her voice failed: from there on the reply was read, not heard (VOI-14)."""
+        return self._down
+
+    @property
+    def all_heard(self) -> bool:
+        """Every sentence sent has started playing: there is nothing unheard to cut."""
+        return self._heard_seq >= self._count
+
     async def feed(self, text: str) -> None:
+        self._written += text
         for sentence in self._splitter.feed(text):
             await self._say(sentence)
 
@@ -88,15 +105,17 @@ class Speaker:
         """A tool is about to run: say what she has said so far rather than hold it."""
         for sentence in self._splitter.flush():
             await self._say(sentence)
-        self._round_from = self._count + 1
+        self._written, self._at, self._ends = "", 0, {}
 
     def played(self, seq: int) -> None:
         """The page started playing sentence `seq` (VOI-15b). Reports can come late."""
         self._heard_seq = max(self._heard_seq, seq)
 
     def heard_text(self) -> str:
-        """This round's sentences the user has started to hear (D8)."""
-        return " ".join(s for n, s in self._said if self._round_from <= n <= self._heard_seq)
+        """This round's text, as she wrote it, up to the end of the last sentence the
+        user has started to hear (D8). Always a beginning of what she wrote."""
+        heard = [end for n, end in self._ends.items() if n <= self._heard_seq]
+        return self._written[: max(heard)] if heard else ""
 
     def playing(self) -> tuple[str, ...]:
         """The sentence being heard and the one before: what an echo of her would say."""
@@ -127,11 +146,22 @@ class Speaker:
         await self._send("audio.stop", turn=self._turn)
 
     async def _say(self, sentence: str) -> None:
+        # The splitter gives back pieces of the text exactly, only trimmed.
+        found = self._written.find(sentence, self._at)
+        end = found + len(sentence) if found >= 0 else len(self._written)
+        self._at = end
         text = speakable(sentence)
-        if not text or self._failed:
+        if not text:
+            # Nothing to say (a link, some code): it goes with the sentence before it,
+            # so keeping what was heard never takes it out of the middle.
+            if self._ends:
+                self._ends[max(self._ends)] = end
+            return
+        if self._failed:
             return
         self._count += 1
         self._said.append((self._count, sentence))
+        self._ends[self._count] = end
         await self._send("reply.sentence", turn=self._turn, seq=self._count, text=text)
         if self._provider.where != "core":
             return
@@ -180,7 +210,7 @@ class Speaker:
     async def _fail(self, kind: str) -> None:
         if self._failed:
             return
-        self._failed = True
+        self._failed = self._down = True
         logger.warning("speech provider %s failed: %s", self._provider.name, kind)
         # The reply itself is unaffected: it keeps arriving as text.
         await self._send("error", code="speech", kind=kind, sentence=degraded("voice", kind))

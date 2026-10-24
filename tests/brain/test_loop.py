@@ -17,6 +17,7 @@ from trillion.brain.loop import (
     ToolEnded,
     ToolStarted,
     TurnDone,
+    kept_of,
     run_turn,
 )
 from trillion.brain.types import (
@@ -66,7 +67,7 @@ class Run:
         provider: ScriptedProvider,
         limits: Limits | None = None,
         first: AsyncIterator[ModelEvent] | None = None,
-        heard: Callable[[str], str] | None = None,
+        heard: Callable[[str], str | None] | None = None,
     ) -> TurnDone:
         return await run_turn(
             provider=provider,
@@ -226,7 +227,7 @@ async def test_an_interrupt_saves_the_partial_reply_marked(run: Run) -> None:
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Well, " + INTERRUPTED),))]
 
 
-async def _cut_off(run: Run, heard: Callable[[str], str] | None) -> list[str]:
+async def _cut_off(run: Run, heard: Callable[[str], str | None] | None) -> list[str]:
     """A reply cancelled mid-stream; what was said to `heard`, and what was saved."""
     started = asyncio.Event()
     asked: list[str] = []
@@ -238,7 +239,7 @@ async def _cut_off(run: Run, heard: Callable[[str], str] | None) -> list[str]:
             started.set()
             await asyncio.sleep(30)
 
-    def told(said: str) -> str:
+    def told(said: str) -> str | None:
         asked.append(said)
         return heard(said) if heard is not None else said
 
@@ -262,6 +263,20 @@ async def test_a_spoken_turn_cut_off_before_a_sentence_was_heard_keeps_the_marke
     await _cut_off(run, lambda _said: "")
     # The history still shows she began.
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text=INTERRUPTED.strip()),))]
+
+
+async def test_a_spoken_turn_whose_voice_went_keeps_everything_she_wrote(run: Run) -> None:
+    # No answer to what was heard: the user read it instead (voice failed or muted).
+    await _cut_off(run, lambda _said: None)
+    assert run.saved == [
+        Msg(role="assistant", blocks=(TextBlock(text="One. Two. Three." + INTERRUPTED),))
+    ]
+
+
+def test_the_one_rule_for_what_an_interrupted_reply_keeps() -> None:
+    assert kept_of("One. Two.", None) == "One. Two." + INTERRUPTED
+    assert kept_of("One. Two.", "One.") == "One.…" + INTERRUPTED
+    assert kept_of("One. Two.", "") == INTERRUPTED.strip()
 
 
 async def test_a_spoken_turn_cut_off_before_she_wrote_anything_keeps_nothing(run: Run) -> None:
