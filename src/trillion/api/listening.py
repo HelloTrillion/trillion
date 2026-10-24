@@ -20,7 +20,7 @@ from trillion.voice.endpoint import (
     leads_on,
     sounds_finished,
 )
-from trillion.voice.types import STTProvider, STTStream, VoiceError
+from trillion.voice.types import Heard, STTProvider, STTStream, VoiceError
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +64,21 @@ class Listener:
         on_partial: Callable[[str], Awaitable[None]],
         patience_s: float = NOTHING_AFTER_S,
         on_turn: Callable[[str, str], Awaitable[None]] | None = None,
+        watch: bool = False,
     ) -> None:
         self._provider = provider
         self._choice = choice
         self._on_partial = on_partial
         self._on_turn = on_turn
-        self._rules = EndOfSpeech(
-            streaming=provider.streaming, patience_s=patience_s, judged=provider.turns
-        )
+        self._rules = self._new_rules(patience_s)
+        # Watching while she speaks (VOI-9): every frame goes to the recognizer, its
+        # turns come and go, and nothing ends until `hear` makes this a turn.
+        self._watching = watch
+        # The recognizer said its current turn is over; its next words start another.
+        self._turn_ended = False
+        # Words at the start of the recognizer's current turn already judged and let go.
+        # Its reports repeat the whole turn so far, so they are skipped, not deleted.
+        self._skip = 0
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
@@ -85,9 +92,17 @@ class Listener:
         self._verdict: Verdict | None = None
         self.frames = 0
 
+    def _new_rules(self, patience_s: float) -> EndOfSpeech:
+        p = self._provider
+        return EndOfSpeech(streaming=p.streaming, patience_s=patience_s, judged=p.turns)
+
     @property
     def open(self) -> bool:
         return self._stream is not None
+
+    @property
+    def watching(self) -> bool:
+        return self._watching
 
     @property
     def verdict(self) -> Verdict | None:
@@ -109,10 +124,51 @@ class Listener:
         return self._rules.quiet_s
 
     def text(self) -> str:
-        return " ".join(p for p in (*self._held, *self._finals, self._interim) if p).strip()
+        return " ".join(p for p in (*self._held, self._this_turn()) if p).strip()
+
+    def _raw_turn(self) -> str:
+        return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 
     def _this_turn(self) -> str:
-        return " ".join(p for p in (*self._finals, self._interim) if p).strip()
+        said = self._raw_turn()
+        return " ".join(said.split()[self._skip :]) if self._skip else said
+
+    def turn_text(self) -> str:
+        """The words of the recognizer's current turn, less any forgotten. A turn it
+        has ended stays current until its next words arrive."""
+        return self._this_turn()
+
+    def forget(self, words: int | None = None) -> None:
+        """Let go of words already judged (VOI-9): this many more from the start of the
+        current turn, or, with none given, everything heard so far."""
+        if words is None:
+            self._held = []
+            words = len(self._this_turn().split())
+        self._skip += words
+
+    def hear(self, *, patience_s: float = NOTHING_AFTER_S) -> None:
+        """Stop watching: from here this is listening to the user, with fresh rules for
+        when they have finished. Words of the current turn count as heard, and a turn
+        the recognizer already ended is over (or held, if it leads on)."""
+        self._watching = False
+        self._verdict = None
+        self._holding = False
+        self._rules = self._new_rules(patience_s)
+        said = self._this_turn()
+        if not said:
+            return
+        self._rules.heard(final=self._turn_ended, has_text=True)
+        if self._turn_ended:
+            self._end_turn()
+
+    def watch(self) -> None:
+        """Back to watching, after deciding that what was heard was not a turn. What
+        was heard is let go."""
+        self.forget()
+        self._watching = True
+        self._verdict = None
+        self._holding = False
+        self._rules = self._new_rules(NOTHING_AFTER_S)
 
     def promote(
         self,
@@ -136,7 +192,7 @@ class Listener:
 
     async def audio(self, pcm: bytes) -> Verdict | None:
         """More from the microphone. Returns a verdict once, when listening should end."""
-        if self._verdict is not None:
+        if self._verdict is not None and not self._watching:
             return None
         self.frames += 1
         if self._error is not None:
@@ -150,15 +206,41 @@ class Listener:
     async def _feed(self, pcm: bytes) -> Verdict | None:
         assert self._stream is not None  # noqa: S101 - narrowed by the callers
         await self._stream.send(pcm)
+        if self._watching:
+            return None  # nothing ends while watching: the session decides
         self._verdict = self._rules.audio(pcm)
         return self._verdict
+
+    def _end_turn(self) -> bool:
+        """The recognizer's turn is over: held when its words lead on, else ended.
+        True when held."""
+        if leads_on(self.text()):
+            # Done on "and" or "um": they are likely finding their words. Keep
+            # listening; the local rules end it if quiet goes on.
+            added, self._finals = [self._this_turn()], []
+            self._held.extend(a for a in added if a)
+            self._skip = 0
+            self._holding = True
+            self._rules.hold()
+            return bool(added[0])
+        self._rules.turn_over()
+        return False
 
     async def _read(self, stream: STTStream) -> None:
         try:
             async for heard in stream.events():
-                if self._rules.is_over:
+                if self._rules.is_over and not self._watching:
                     # The next turn's first words can arrive while we wrap up; they
                     # are not part of this one.
+                    continue
+                if heard.text and heard.turn != "done" and self._turn_ended:
+                    # The recognizer's next turn. Only words held from the last are kept.
+                    self._turn_ended = False
+                    self._finals, self._interim, self._skip = [], "", 0
+                if self._watching:
+                    self._watched(heard)
+                    if heard.text or heard.final:
+                        await self._on_partial(self.turn_text())
                     continue
                 # They carried on after a done that led on.
                 resumed = bool(heard.text) and self._holding and heard.turn != "done"
@@ -167,22 +249,14 @@ class Listener:
                 if heard.turn == "done":
                     # The whole turn, as the recognizer finally heard it. An empty
                     # done keeps what the interim words said.
-                    kept = self._this_turn()
+                    kept = self._raw_turn()
                     self._finals = [heard.text] if heard.text else ([kept] if kept else [])
                     self._interim = ""
+                    self._turn_ended = True
                     self._rules.heard(final=True, has_text=bool(heard.text))
-                    if leads_on(self.text()):
-                        # Done on "and" or "um": they are likely finding their words.
-                        # Keep listening; the local rules end it if quiet goes on.
-                        added, self._finals = self._finals, []
-                        self._held.extend(added)
-                        self._holding = True
-                        self._rules.hold()
-                        if added:
-                            # As "probably finished": a draft may start (VOI-12).
-                            await self._signal("maybe")
-                    else:
-                        self._rules.turn_over()
+                    if self._end_turn():
+                        # As "probably finished": a draft may start (VOI-12).
+                        await self._signal("maybe")
                 elif heard.final:
                     if heard.text:
                         self._finals.append(heard.text)
@@ -208,6 +282,20 @@ class Listener:
             # The class name only: a recognizer's message can quote what it heard.
             logger.error("recognizer %s failed: %s", self._provider.name, type(e).__name__)
             self._error = VoiceError("internal")
+
+    def _watched(self, heard: Heard) -> None:
+        """A report while watching: the current turn's words, and nothing more."""
+        if heard.turn == "done":
+            kept = self._raw_turn()
+            self._finals = [heard.text] if heard.text else ([kept] if kept else [])
+            self._interim = ""
+            self._turn_ended = True
+        elif heard.final:
+            if heard.text:
+                self._finals.append(heard.text)
+            self._interim = ""
+        else:
+            self._interim = heard.text
 
     async def _signal(self, kind: str) -> None:
         if self._on_turn is None:

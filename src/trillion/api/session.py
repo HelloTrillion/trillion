@@ -52,7 +52,7 @@ from trillion.spine.contract import Risk, ToolContext
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
-from trillion.voice.overlap import decide
+from trillion.voice.overlap import decide, judge_watch, judged_prefix, keys
 from trillion.voice.types import VoiceError
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ NO_AUDIO_S = 3.0
 MAX_AUDIO_FRAME = 64_000
 # While the user talks over her, what they said is weighed at least this often.
 OVERLAP_TICK_S = 0.05
+# Watching while she speaks ends if nothing of hers has started playing for this long:
+# a reply that never sounds, a long tool, a page that stopped reporting (VOI-9).
+WATCH_HOLD_S = 15.0
 SURFACE = "web"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
@@ -88,6 +91,15 @@ class Overlap:
     promoting: bool = False
     # She finished being heard meanwhile: carrying on opens the follow-up window.
     ended: bool = False
+    # Opened by the page to watch while she speaks: every frame is streamed, and this
+    # decides when to duck her. False for the page's own `overlap`, already ducked.
+    watch: bool = False
+    # Still only watching: nothing heard so far is anything but her.
+    watching: bool = False
+    # The words at the start of the recognizer's current turn already judged hers.
+    echo: tuple[str, ...] = ()
+    # When a sentence of hers last started playing, or the watch began.
+    her_at: float = 0.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -262,6 +274,9 @@ class Session:
 
     async def settings_changed(self) -> None:
         """Settings changed. The next turn uses them; one in flight finishes as it was."""
+        if self._overlap is not None and self._overlap.watching:
+            # The hearing it watches with may be gone: the page opens it again if it can.
+            await self._end_overlap(tell=True)
         await self._send("model", model=self._model())
         await self._send("speech", speech=self._speech())
         await self._send("listening", listening=self._listening())
@@ -329,16 +344,35 @@ class Session:
                 await self._offer()
                 self._stopped = False
         elif kind == "listen.start":
-            await self._on_listen(NOTHING_AFTER_S)
+            ov = self._overlap
+            if ov is not None and ov.watching and self._task is None:
+                # Speak, while her finished reply plays: the watch becomes the turn.
+                ov.listener.forget()
+                await self._leave_watch(ov)
+                await self._overlap_interrupts(ov)
+            else:
+                await self._on_listen(NOTHING_AFTER_S)
         elif kind == "barge":
             ov = self._overlap
             if ov is not None:
                 # Already listening over her: that becomes the turn.
+                await self._leave_watch(ov)
                 await self._overlap_interrupts(ov)
             else:
                 await self._on_barge()
         elif kind == "overlap":
-            await self._on_overlap()
+            ov = self._overlap
+            if ov is not None and ov.watching:
+                # The page ducked her itself: decide now.
+                await self._start_deciding(ov)
+            else:
+                await self._on_overlap()
+        elif kind == "overlap.watch":
+            await self._on_watch()
+        elif kind == "overlap.unwatch":
+            # The page stopped watching (a switch turned off, a microphone gone).
+            if self._overlap is not None and self._overlap.watching:
+                await self._end_overlap(tell=True)
         elif kind == "listen.stop":
             # The user says they are done: what was heard so far is the message.
             if self._listener is not None:
@@ -360,8 +394,10 @@ class Session:
             }
         elif kind == "playback.sentence":
             self._sentence_played(msg.get("turn_id"), msg.get("seq"))
+            self._her_heard()
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
+            self._her_heard()
         elif kind == "playback.ended":
             turn_id = msg.get("turn_id")
             if isinstance(turn_id, int) and not isinstance(turn_id, bool):
@@ -369,9 +405,14 @@ class Session:
             if self._tail is not None and self._tail[0].turn == turn_id:
                 # Heard to the end: there is nothing left to cut.
                 self._tail = None
-            if self._overlap is not None:
+            ov = self._overlap
+            if ov is not None and ov.watching:
+                # Heard to the end while only watching: the watch is the follow-up.
+                ov.ended = True
+                await self._watch_settles()
+            elif ov is not None:
                 # They are talking over her end: what they meant decides what follows.
-                self._overlap.ended = True
+                ov.ended = True
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
             elif self._via == "voice" and self._task is None and self._listener is None:
@@ -527,7 +568,12 @@ class Session:
             if not ov.promoting:
                 # Hearing failed: she carries on, as if they had not spoken.
                 logger.warning("listening over her failed in session %s: %s", self.id, e.kind)
-                await self._overlap_carries_on(ov)
+                if ov.watch:
+                    # Nothing more can be heard with it: the watch is over.
+                    await self._end_overlap(tell=True)
+                    await self._offer()
+                else:
+                    await self._overlap_carries_on(ov)
             # Becoming the turn: the listener raises it again on the next frame.
             return
         ov.wake.set()
@@ -538,33 +584,182 @@ class Session:
     async def _watch_overlap(self, ov: Overlap) -> None:
         """Weigh what has been heard over her, on every frame and every tick."""
         while self._overlap is ov and not ov.promoting:
-            listener = ov.listener
-            speaker = self._speaker or ov.speaker
-            decision = decide(
-                listener.text(),
-                done=listener.verdict == "end",
-                # The audio's own clock as well: the page sends the words it held while
-                # deciding to duck all at once, and they were said before now. That
-                # pre-roll counts too, so the limits land about 0.3 s early.
-                elapsed_s=max(self._now() - ov.started, listener.heard_s),
-                playing=speaker.playing() if speaker is not None else (),
-            )
-            if decision == "carry_on":
-                await self._overlap_carries_on(ov)
-                return
-            if decision == "interrupt":
-                await self._overlap_interrupts(ov)
-                return
+            if ov.watching:
+                if not await self._watch_once(ov):
+                    return
+            else:
+                listener = ov.listener
+                speaker = self._speaker or ov.speaker
+                decision = decide(
+                    listener.text(),
+                    done=listener.verdict == "end",
+                    # The audio's own clock as well: the page sends the words it held while
+                    # deciding to duck all at once, and they were said before now. That
+                    # pre-roll counts too, so the limits land about 0.3 s early.
+                    elapsed_s=max(self._now() - ov.started, listener.heard_s),
+                    playing=speaker.playing() if speaker is not None else (),
+                )
+                if decision == "carry_on":
+                    await self._overlap_carries_on(ov)
+                    # Watching again, unless that ended it.
+                    continue
+                if decision == "interrupt":
+                    await self._overlap_interrupts(ov)
+                    return
             ov.wake.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(ov.wake.wait(), OVERLAP_TICK_S)
 
+    async def _watch_once(self, ov: Overlap) -> bool:
+        """While she speaks: are the words heard hers, nothing, or perhaps the user?
+        False once the watch is over."""
+        now = self._now()
+        if now - self._last_audio > NO_AUDIO_S or now - ov.her_at > WATCH_HOLD_S:
+            # The page stopped sending, or nothing of hers has played for long.
+            logger.info("talked over in session %s: watch_over", self.id)
+            await self._end_overlap(tell=True)
+            await self._offer()
+            return False
+        said = ov.listener.turn_text()
+        # Only the words not already judged: her echo goes on growing in the same turn.
+        judged = judged_prefix(said, ov.echo)
+        # Her reply as it plays: still being written, or written and saved.
+        speaker = self._speaker or (self._tail[0] if self._tail is not None else ov.speaker)
+        playing = speaker.playing(ahead=1) if speaker is not None else ()
+        verdict = judge_watch(" ".join(said.split()[judged:]), playing)
+        if verdict == "echo":
+            ov.echo = keys(said)
+        elif verdict == "candidate":
+            await self._start_deciding(ov)
+        return True
+
+    async def _start_deciding(self, ov: Overlap) -> None:
+        """Words that are not hers: duck her, and decide from now, as for an overlap."""
+        if not ov.watching or self._overlap is not ov:
+            return
+        await self._leave_watch(ov)
+        ov.started = self._now()
+        logger.info("talked over in session %s: deciding", self.id)
+        await self._send("overlap.duck")
+        ov.wake.set()
+
+    async def _leave_watch(self, ov: Overlap) -> None:
+        """Stop only watching: what follows is heard as the user. Words already judged
+        hers are let go first: her echo before their words is not what they said."""
+        if not ov.watching:
+            return
+        ov.watching = False
+        ov.listener.forget(judged_prefix(ov.listener.turn_text(), ov.echo))
+        ov.echo = ()
+        ov.listener.hear()
+
+    def _her_heard(self) -> None:
+        """A sentence of hers started playing: a watch goes on."""
+        if self._overlap is not None:
+            self._overlap.her_at = self._now()
+
+    async def _on_watch(self) -> None:
+        """The page streams the microphone while she speaks, so the user can cut in
+        (VOI-9). Her voice coming back is told from theirs by its words; only words
+        that are not hers duck her and are decided. That needs a recognizer that judges
+        turns, and a reply to talk over: one coming, or one still being heard."""
+        rt = self._rt
+        if self._overlap is not None:
+            return
+        task = self._task
+        running = task is not None and not task.done() and task is not self._notice_task
+        unheard = self._spoken is not None and self._spoken[0] != self._played
+        if (
+            rt.stt is None
+            or rt.listening is None
+            or not rt.stt.turns
+            or rt.provider is None
+            or self._listener is not None
+            or not (running or self._tail is not None or unheard)
+        ):
+            await self._send("overlap.over", end=True)
+            return
+        tail = self._tail[0] if self._tail is not None else None
+        wake = asyncio.Event()
+
+        async def heard(_: str) -> None:
+            wake.set()  # judged at once, not at the next tick
+
+        # Nothing heard is shown, and no draft starts from it.
+        listener = Listener(rt.stt, rt.listening.choice, on_partial=heard, watch=True)
+        now = self._now()
+        ov = Overlap(
+            listener=listener,
+            started=now,
+            speaker=self._speaker or tail,
+            wake=wake,
+            watch=True,
+            watching=True,
+            her_at=now,
+        )
+        self._overlap = ov
+        self._last_audio = now
+        logger.info("talked over in session %s: watching", self.id)
+        try:
+            await listener.start()
+        except VoiceError as e:
+            # She carries on unwatched; Stop still works.
+            logger.warning("watching over her failed in session %s: %s", self.id, e.kind)
+            if self._overlap is ov:
+                self._overlap = None
+                await listener.abandon()
+                await self._send("overlap.over", end=True)
+            return
+        if self._overlap is ov:
+            ov.watcher = asyncio.create_task(self._watch_overlap(ov))
+        elif not ov.promoting:
+            # Stopped or closed while it connected: nobody will close it otherwise.
+            await listener.abandon()
+
+    async def _watch_settles(self) -> None:
+        """Her turn is over, or she has been heard to the end, while only watching. Heard
+        to the end after a spoken turn, the watch becomes the follow-up window (VOI-8);
+        with nothing of hers left to hear, it ends; otherwise it waits for her end."""
+        ov = self._overlap
+        if ov is None or not ov.watching or self._task is not None:
+            return
+        unheard = self._spoken is not None and self._spoken[0] != self._played
+        if ov.ended and self._via == "voice" and self._listener is None:
+            await self._follow_up_from(ov)
+        elif ov.ended or not (unheard or self._tail is not None):
+            logger.info("talked over in session %s: watch_over", self.id)
+            await self._end_overlap(tell=True)
+
+    async def _follow_up_from(self, ov: Overlap) -> None:
+        """She finished being heard: the listener that watched her goes on as the window
+        that opens after she speaks, without a new connection. Her echo is let go."""
+        async with self._taking_input():
+            if self._overlap is not ov or ov.promoting:
+                return
+            ov.promoting = True
+            logger.info("talked over in session %s: follow_up", self.id)
+            ov.watching = False
+            ov.listener.forget()
+            ov.listener.hear(patience_s=FOLLOW_UP_S)
+            self._spoken = None
+            await self._become_turn(ov, follow_up=True)
+
     async def _overlap_carries_on(self, ov: Overlap) -> None:
         """An acknowledgement, or nothing at all: she carries on. Nothing is saved, and
-        the turn counter does not move."""
+        the turn counter does not move. A watch goes back to watching."""
         if self._overlap is not ov or ov.promoting:
             return
         logger.info("talked over in session %s: carry_on", self.id)
+        if ov.watch:
+            await self._send("overlap.over")
+            ov.listener.watch()
+            ov.watching = True
+            ov.echo = ()
+            ov.her_at = max(ov.her_at, self._now())
+            if ov.ended:
+                await self._watch_settles()
+            await self._offer()
+            return
         await self._end_overlap(tell=True)
         if ov.ended and self._via == "voice" and self._task is None and self._listener is None:
             # She finished being heard while they spoke: the window that would have opened.
@@ -601,38 +796,44 @@ class Session:
             if self._overlap is not ov:
                 # Stopped or closed meanwhile; that let go of the listener.
                 return
-            self._overlap = None
-            ov.watcher = None
-            listener = ov.listener
             if self._task is not None or self._listener is not None or self._closed:
                 # Her work is still finishing: as a barge would, say she is busy.
-                await listener.abandon()
-                await self._send("overlap.over")
+                self._overlap = None
+                ov.watcher = None
+                await ov.listener.abandon()
+                await self._over(ov)
                 await self._error("busy")
                 return
-            listener.promote(on_partial=self._partial, on_turn=self._turn_signal)
-            self._listener = listener
-            self._drafted = False
-            self._last_audio = self._now()
-            self._warm()
-            # The page's microphone is already open; this tells it the words are a turn.
-            await self._send("mic.start", follow_up=False)
-            # Each send can let a Stop or a close in: only a listener still open goes on.
-            if self._listener is not listener:
-                return
-            await self._state("listening")
-            if self._listener is not listener:
-                return
-            self._watchdog = asyncio.create_task(self._watch(listener))
-            if said := listener.text():
-                await self._partial(said)
-            if listener.verdict is not None and self._listener is listener:
-                # They finished while she was stopping.
-                await self._conclude(listener.verdict)
+            await self._become_turn(ov, follow_up=False)
+
+    async def _become_turn(self, ov: Overlap, *, follow_up: bool) -> None:
+        """The listener that heard them over her goes on as the user's turn."""
+        self._overlap = None
+        ov.watcher = None
+        listener = ov.listener
+        listener.promote(on_partial=self._partial, on_turn=self._turn_signal)
+        self._listener = listener
+        self._drafted = False
+        self._last_audio = self._now()
+        self._warm()
+        # The page's microphone is already open; this tells it the words are a turn.
+        await self._send("mic.start", follow_up=follow_up)
+        # Each send can let a Stop or a close in: only a listener still open goes on.
+        if self._listener is not listener:
+            return
+        await self._state("listening")
+        if self._listener is not listener:
+            return
+        self._watchdog = asyncio.create_task(self._watch(listener))
+        if said := listener.text():
+            await self._partial(said)
+        if listener.verdict is not None and self._listener is listener:
+            # They finished while she was stopping.
+            await self._conclude(listener.verdict)
 
     async def _end_overlap(self, *, tell: bool) -> None:
-        """Stop deciding and let go of what was heard over her. With `tell`, the page
-        brings her voice back up."""
+        """Stop deciding (or watching) and let go of what was heard over her. With
+        `tell`, the page brings her voice back up, and a watch's microphone closes."""
         ov, self._overlap = self._overlap, None
         if ov is None:
             return
@@ -641,7 +842,11 @@ class Session:
             watcher.cancel()
         await ov.listener.abandon()
         if tell:
-            await self._send("overlap.over")
+            await self._over(ov)
+
+    async def _over(self, ov: Overlap) -> None:
+        """Her voice back up. For a watch, `end`: the page stops sending, as it is over."""
+        await self._send("overlap.over", **({"end": True} if ov.watch else {}))
 
     async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
         async with self._taking_input():
@@ -861,6 +1066,8 @@ class Session:
             await self._run()
         else:
             self._task = None
+            # No reply is coming: a watch for one ends.
+            await self._watch_settles()
             await self._state(self._rest)
 
     async def _on_tap(self, pending_id: object, decision: Literal["confirm", "cancel"]) -> None:
@@ -929,6 +1136,8 @@ class Session:
             if self._using is not None:
                 # Never reached its turn.
                 await self._unuse()
+        # A watch over her reply ends now unless something of hers is still to be heard.
+        await self._watch_settles()
         await self._state(self._rest)
 
     async def _one_turn(self) -> None:

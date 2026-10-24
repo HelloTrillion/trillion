@@ -115,9 +115,11 @@ class Speaker:
         heard = [end for n, end in self._ends.items() if n <= self._heard_seq]
         return self._written[: max(heard)] if heard else ""
 
-    def playing(self) -> tuple[str, ...]:
-        """The sentence being heard and the one before: what an echo of her would say."""
-        return tuple(s for n, s in self._said if self._heard_seq - 1 <= n <= self._heard_seq)
+    def playing(self, *, ahead: int = 0) -> tuple[str, ...]:
+        """The sentence being heard and the one before: what an echo of her would say.
+        With `ahead`, that many after it too: her audio runs ahead of its reports."""
+        heard = self._heard_seq
+        return tuple(s for n, s in self._said if heard - 1 <= n <= heard + ahead)
 
     async def finish(self) -> None:
         """The reply is complete. Returns once every sentence has been sent. Its last

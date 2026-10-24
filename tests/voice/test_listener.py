@@ -329,3 +329,109 @@ async def test_a_word_that_leads_on_over_her_is_decided_by_its_words() -> None:
 def test_describe_reports_a_judging_recognizer() -> None:
     described = listening.describe(FakeSTT(turns=True), "deepgram", "x")
     assert described is not None and described["turns"] is True
+
+
+# ── Watching while she speaks (VOI-9) ────────────────────────────────────
+
+
+async def watcher(stt: FakeSTT) -> Listener:
+    listener = Listener(stt, "en", on_partial=nothing, watch=True)
+    await listener.start()
+    return listener
+
+
+async def test_watching_hears_one_recognizer_turn_at_a_time_and_never_ends() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    assert listener.watching
+    # Her echo, a turn the recognizer ends: nothing ends here, however long it goes.
+    assert await feed(listener, tone(10.0)) is None
+    stt.stream.say("we could leave", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "we could leave"
+    stt.stream.say("We could leave at six.", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "We could leave at six."  # until the next turn starts
+    stt.stream.say("or later", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "or later" and listener.text() == "or later"
+    assert await feed(listener, room(130.0)) is None  # never too long, never nothing
+    assert stt.stream.audio  # every frame went to the recognizer
+    await listener.abandon()
+
+
+async def test_forgotten_words_stay_forgotten_as_the_turn_grows() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    stt.stream.say("we could leave", final=False)
+    await asyncio.sleep(0.01)
+    listener.forget(2)
+    assert listener.turn_text() == "leave"
+    stt.stream.say("we could leave at six wait", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "leave at six wait"
+    listener.forget()
+    assert listener.turn_text() == "" and listener.text() == ""
+    stt.stream.say("we could leave at six wait what", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "what"
+    # The recognizer's next turn starts afresh.
+    stt.stream.say("we could leave at six wait what", final=True, turn="done")
+    stt.stream.say("hello", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "hello"
+    await listener.abandon()
+
+
+async def test_hearing_after_watching_ends_on_the_turn_and_keeps_its_words() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    await feed(listener, tone(3.0))
+    stt.stream.say("we could leave at six", final=True, turn="done")
+    stt.stream.say("wait", final=False)
+    await asyncio.sleep(0.01)
+    listener.hear()
+    assert not listener.watching and listener.text() == "wait"
+    assert await feed(listener, tone(0.3)) is None
+    stt.stream.say("wait, make it seven", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    assert await feed(listener, room(0.1)) == "end"
+    assert (await listener.end()).text == "wait, make it seven"
+
+
+async def test_a_turn_already_done_when_hearing_starts_is_done() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    stt.stream.say("yeah", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    listener.hear()
+    assert await feed(listener, room(0.1)) == "end"
+    assert listener.text() == "yeah"
+    await listener.abandon()
+
+
+async def test_back_to_watching_after_a_decided_turn() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    stt.stream.say("yeah", final=True, turn="done")
+    await asyncio.sleep(0.01)
+    listener.hear()
+    assert await feed(listener, room(0.1)) == "end"
+    listener.watch()
+    assert listener.watching and listener.verdict is None and listener.text() == ""
+    assert await feed(listener, tone(1.0)) is None
+    stt.stream.say("next words", final=False)
+    await asyncio.sleep(0.01)
+    assert listener.turn_text() == "next words"
+    await listener.abandon()
+
+
+async def test_a_watch_becomes_a_patient_follow_up_window() -> None:
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    stt.stream.say("of course", final=False)
+    await asyncio.sleep(0.01)
+    listener.forget()
+    listener.hear(patience_s=3.0)
+    assert await feed(listener, room(3.1)) == "nothing"
+    await listener.abandon()

@@ -202,3 +202,13 @@ async def test_what_was_heard_is_still_known_once_she_has_finished() -> None:
     await s.finish()
     s.played(1)
     assert s.heard_text() == "First thing to know."
+
+
+async def test_what_she_is_saying_now_can_include_the_next_sentence() -> None:
+    """Her audio runs ahead of the reports, so watching for her echo looks one ahead."""
+    s = speaker(SystemVoice(), Wire())
+    await s.feed("One is first. Two is next. Three is last. Four")
+    assert s.playing() == ()
+    assert s.playing(ahead=1) == ("One is first.",)
+    s.played(2)
+    assert s.playing(ahead=1) == ("One is first.", "Two is next.", "Three is last.")
