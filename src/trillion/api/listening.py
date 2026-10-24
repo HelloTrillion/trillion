@@ -9,21 +9,24 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import statistics
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
 from trillion.voice.endpoint import (
     NOTHING_AFTER_S,
+    SAMPLE_RATE,
     EndOfSpeech,
     Onsets,
     Verdict,
     leads_on,
+    level,
     sounds_finished,
 )
 from trillion.voice.overlap import keys
-from trillion.voice.types import Heard, STTProvider, STTStream, VoiceError
+from trillion.voice.types import Heard, STTProvider, STTStream, VoiceError, Word
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,16 @@ FOLLOW_UP_S = 3.0
 # than the shorter time.
 REPORT_LAG_S = 0.4
 MIN_LAG_S = 0.15
+# The microphone's loudness is kept per 20 ms of audio sent, for this long (#102).
+LEVEL_WINDOW_S = 0.02
+_WINDOW_BYTES = 2 * round(SAMPLE_RATE * LEVEL_WINDOW_S)
+_BYTES_PER_S = 2 * SAMPLE_RATE
+LEVELS_KEPT_S = 30.0
+# The room's level: the quiet of the last this-many seconds, away from any word by
+# at least NEAR_WORD_S, and what it is taken to be before anything is known.
+ROOM_LOOKBACK_S = 10.0
+NEAR_WORD_S = 0.25
+ROOM_DEFAULT = 0.002
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -105,6 +118,21 @@ class Listener:
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
+        # The recognizer's clock (#102): bytes sent since the stream opened, a part
+        # window not yet measured, and the loudness of each 20 ms: (end, level).
+        self._sent = 0
+        self._carry = b""
+        self._levels: deque[tuple[float, float]] = deque(
+            maxlen=round(LEVELS_KEPT_S / LEVEL_WINDOW_S)
+        )
+        # The current recognizer turn's timed words, as the turn's text is kept: final
+        # stretches, then the latest interim. Flux repeats the whole turn each report.
+        self._final_words: list[Word] = []
+        self._interim_words: tuple[Word, ...] = ()
+        # The words of the last turn the recognizer ended before this one, and the
+        # spans of earlier turns' words, for knowing when the room was quiet.
+        self._ended_words: tuple[Word, ...] = ()
+        self._past_spans: deque[tuple[float, float]] = deque(maxlen=512)
         # Turns the recognizer called done on words that lead on ("... and"): kept,
         # and what follows joins them (VOI-12).
         self._held: list[str] = []
@@ -145,6 +173,49 @@ class Listener:
     def quiet_s(self) -> float:
         """How long the user has been quiet, in the audio received so far."""
         return self._rules.quiet_s
+
+    @property
+    def sent_s(self) -> float:
+        """Seconds of audio sent to the recognizer since its stream opened: its clock,
+        on which word times are given (the backlog sent on connecting included)."""
+        return self._sent / _BYTES_PER_S
+
+    def mic_level(self, t0: float, t1: float) -> float:
+        """The microphone's mean loudness (0 to 1) over the 20 ms windows of audio sent
+        that overlap `t0`..`t1` on the recognizer's clock; 0 when none are kept."""
+        t1 = max(t1, t0 + 1e-9)
+        got = [v for end, v in self._levels if end > t0 and end - LEVEL_WINDOW_S < t1]
+        return sum(got) / len(got) if got else 0.0
+
+    def turn_words(self) -> tuple[Word, ...]:
+        """The timed words of the recognizer's current turn, latest report. A turn it
+        has ended keeps its words until its next turn's words arrive. Words reported
+        without times are missing here (the text still has them)."""
+        return (*self._final_words, *self._interim_words)
+
+    def ended_words(self) -> tuple[Word, ...]:
+        """The timed words of the recognizer's turn before the current one, if it ended
+        one: so a turn held as leading on, or cut short, can still be placed in time."""
+        return self._ended_words
+
+    def room_level(self, *, busy: Iterable[tuple[float, float]] = ()) -> float:
+        """The room's own loudness: the median of the last ten seconds' windows with no
+        word heard near them, nor in any `busy` span (her playback, say). Until there
+        are any, a quiet room's level."""
+        spans = [
+            *self._past_spans,
+            *((w.start_s, w.end_s) for w in (*self._ended_words, *self.turn_words())),
+        ]
+        since = self.sent_s - ROOM_LOOKBACK_S
+        # Only spans reaching into the last ten seconds matter.
+        near = [(a - NEAR_WORD_S, b + NEAR_WORD_S) for a, b in spans if b + NEAR_WORD_S > since]
+        near.extend((a, b) for a, b in busy if b > since)
+        quiet = [
+            v
+            for end, v in self._levels
+            if end > since and not any(end > a and end - LEVEL_WINDOW_S < b for a, b in near)
+        ]
+        return statistics.median(quiet) if quiet else ROOM_DEFAULT
 
     def text(self) -> str:
         return " ".join(p for p in (*self._held, self._this_turn()) if p).strip()
@@ -300,10 +371,36 @@ class Listener:
     async def _feed(self, pcm: bytes) -> Verdict | None:
         assert self._stream is not None  # noqa: S101 - narrowed by the callers
         await self._stream.send(pcm)
+        self._measure(pcm)
         if self._watching:
             return None  # nothing ends while watching: the session decides
         self._verdict = self._rules.audio(pcm)
         return self._verdict
+
+    def _measure(self, pcm: bytes) -> None:
+        """Count audio sent and keep its loudness per 20 ms, carrying a part window."""
+        data = self._carry + pcm
+        whole = len(data) - len(data) % _WINDOW_BYTES
+        start = self._sent - len(self._carry)
+        for i in range(0, whole, _WINDOW_BYTES):
+            end = (start + i + _WINDOW_BYTES) / _BYTES_PER_S
+            self._levels.append((end, level(data[i : i + _WINDOW_BYTES])))
+        self._carry = data[whole:]
+        self._sent += len(pcm)
+
+    def _took_words(self, heard: Heard) -> None:
+        """A report's timed words, kept as its text is."""
+        if heard.turn == "done":
+            if heard.words:
+                self._final_words = list(heard.words)
+            else:
+                self._final_words.extend(self._interim_words)
+            self._interim_words = ()
+        elif heard.final:
+            self._final_words.extend(heard.words)
+            self._interim_words = ()
+        else:
+            self._interim_words = heard.words
 
     def _end_turn(self) -> bool:
         """The recognizer's turn is over: held when its words lead on, else ended.
@@ -332,6 +429,10 @@ class Listener:
                     self._turn_ended = False
                     self._finals, self._interim, self._forgotten = [], "", ()
                     self._turn_seen = None
+                    self._past_spans.extend((w.start_s, w.end_s) for w in self._ended_words)
+                    self._ended_words = self.turn_words()
+                    self._final_words, self._interim_words = [], ()
+                self._took_words(heard)
                 if heard.text and self._turn_seen is None:
                     self._turn_seen = self._now()
                 if self._watching:

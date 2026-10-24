@@ -12,7 +12,7 @@ from trillion.api import listening
 from trillion.api.listening import Listener, Utterance
 from trillion.voice.endpoint import HELD_QUIET_S
 from trillion.voice.overlap import decide
-from trillion.voice.types import VoiceError
+from trillion.voice.types import VoiceError, Word
 
 
 async def feed(listener: Listener, pcm: bytes) -> str | None:
@@ -479,4 +479,95 @@ async def test_forgotten_words_are_matched_not_counted_when_the_recognizer_revis
     stt.stream.say("or writes skip that", final=False)
     await reported(listener, "or writes skip that")
     assert listener.turn_text() == "skip that"
+    await listener.abandon()
+
+
+# ── The recognizer's clock, mic levels and timed words (#102) ────────────
+
+
+async def test_audio_sent_counts_the_backlog_on_the_recognizers_clock() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    stt.opening.clear()
+    listener = Listener(stt, "en", on_partial=nothing, watch=True)
+    starting = asyncio.create_task(listener.start())
+    await asyncio.sleep(0)
+    await feed(listener, tone(0.3))
+    assert listener.sent_s == 0.0  # kept, not yet sent
+    stt.opening.set()
+    await starting
+    await feed(listener, room(0.5))
+    assert listener.sent_s == pytest.approx(0.8)
+    assert listener.sent_s == len(stt.stream.audio) / 32_000
+    await listener.abandon()
+
+
+async def test_mic_level_is_the_loudness_of_audio_sent_over_a_span() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    await feed(listener, room(1.0) + tone(0.5))
+    loud, quiet = listener.mic_level(1.1, 1.4), listener.mic_level(0.2, 0.8)
+    assert loud == pytest.approx(0.2 / 2**0.5, rel=0.05)
+    assert quiet < 0.002 and loud > 50 * quiet
+    assert listener.mic_level(5.0, 6.0) == 0.0  # nothing sent then
+    await listener.abandon()
+
+
+async def test_mic_levels_are_kept_for_thirty_seconds() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    await feed(listener, tone(1.0) + room(31.0))
+    assert listener.mic_level(0.0, 1.0) == 0.0  # let go
+    assert listener.mic_level(31.0, 32.0) > 0.0
+    await listener.abandon()
+
+
+async def test_turn_words_are_the_latest_of_the_recognizers_turn() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    assert listener.turn_words() == () and listener.ended_words() == ()
+    we = Word(text="we", start_s=0.5, end_s=0.7)
+    could = Word(text="could", start_s=0.7, end_s=0.9)
+    stt.stream.say("we", final=False, words=(we,))
+    await reported(listener, "we")
+    assert listener.turn_words() == (we,)
+    stt.stream.say("we could", final=False, words=(we, could))  # the whole turn again
+    await reported(listener, "we could")
+    assert listener.turn_words() == (we, could)
+    stt.stream.say("We could.", final=True, turn="done", words=(we, could))
+    await reported(listener, "We could.")
+    assert listener.turn_words() == (we, could)  # the finished turn's, until the next
+    stt.stream.say("hm", final=False)  # the next turn, its words not yet timed
+    await reported(listener, "hm")
+    assert listener.turn_words() == ()
+    assert listener.ended_words() == (we, could)
+    await listener.abandon()
+
+
+async def test_a_done_without_words_keeps_the_turns_words() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    yes = Word(text="yes", start_s=1.0, end_s=1.2)
+    stt.stream.say("yes", final=False, words=(yes,))
+    await reported(listener, "yes")
+    stt.stream.say("", final=True, turn="done")
+    for _ in range(100):
+        if listener.turn_done:
+            break
+        await asyncio.sleep(0.005)
+    assert listener.turn_done and listener.turn_words() == (yes,)
+    await listener.abandon()
+
+
+async def test_room_level_is_the_quiet_with_no_words_near() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    assert listener.room_level() == 0.002  # nothing known yet
+    await feed(listener, room(1.0) + tone(2.0))
+    assert listener.room_level() > 0.1  # the voice, with no words to place it
+    words = (Word(text="a", start_s=1.0, end_s=2.0), Word(text="b", start_s=2.0, end_s=3.0))
+    stt.stream.say("a b", final=False, words=words)
+    await reported(listener, "a b")
+    assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
+    # Her playback can be left out too.
+    assert listener.room_level(busy=[(0.0, 1.0)]) == 0.002
     await listener.abandon()
