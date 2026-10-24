@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from tests.api.test_drafts import judging
 from tests.api.test_listening import hearing, speak
 from tests.api.test_session import Page, idle
 from tests.api.test_session_notices import voiced
@@ -408,3 +409,67 @@ async def test_the_store_only_amends_a_conversations_last_message(rt: Runtime) -
     assert not await store.amend_tail("c2", "local", last, short)  # not that conversation's
     assert await store.amend_tail("c1", "local", last, short)
     assert [m.blocks for _, m in await store.history("c1", "local")] == [(), short.blocks]
+
+
+async def test_a_barge_while_the_turn_is_still_being_counted_keeps_what_was_heard(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Talked over between saving her reply and recording what it cost."""
+    counting, counted = asyncio.Event(), asyncio.Event()
+    record = rt.conversations.record_usage
+
+    async def slow_record(**kw: Any) -> None:
+        counting.set()
+        await counted.wait()
+        await record(**kw)
+
+    monkeypatch.setattr(rt.conversations, "record_usage", slow_record)
+    hearing(rt)
+    voiced(rt)
+    rt.provider = ScriptedProvider(say(ANSWER))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await asyncio.wait_for(counting.wait(), 5)
+    await played(session, page, 1)
+    await session.handle({"type": "barge"})
+
+    assert page.all("interrupted")[-1]["kept"] == "First thing to know.…"
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text="First thing to know.…" + INTERRUPTED),)
+    counted.set()
+    await asyncio.sleep(0.05)
+    assert await rt.conversations.usage_since("local", 0)  # still recorded
+    await session.close()
+
+
+@pytest.mark.parametrize("over", ["barge", "interrupt"])
+async def test_a_reply_a_draft_has_read_is_never_trimmed(rt: Runtime, over: str) -> None:
+    """A draft sends the model her reply: from then on it stays as it was."""
+    stt, provider = judging(rt, say(ANSWER), say("Of course."))
+    voiced(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("when should we leave", final=True, turn="done")
+    await speak(session, room(0.1))
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+
+    # The user starts again while she still plays, and sounds done: a draft starts.
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("and after that", final=False, turn="maybe")
+    for _ in range(400):
+        if len(provider.calls) == 2:
+            break
+        await asyncio.sleep(0.005)
+    assert len(provider.calls) == 2 and ANSWER in str(provider.calls[1][1])
+    await session.handle({"type": over})
+
+    assert all("kept" not in m for m in page.all("interrupted"))
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=ANSWER),)
+    await session.close()

@@ -802,6 +802,16 @@ class Session:
                 if done.stop == "provider_error"
                 else None
             )
+            if (
+                listened
+                and speaker is not None
+                and done.stop == "end"
+                and reply_id is not None
+                and self._ids[-1:] == [reply_id]
+            ):
+                # Written and saved, but still to be heard: kept in case she is talked
+                # over while it plays.
+                self._tail = (speaker, reply_id)
             # Recorded before her last words are voiced: the model's work is done and
             # paid for even if she is talked over while they play.
             await asyncio.shield(
@@ -815,16 +825,6 @@ class Session:
                     now_ms=rt.clock(),
                 )
             )
-            if (
-                listened
-                and speaker is not None
-                and done.stop == "end"
-                and reply_id is not None
-                and self._ids[-1:] == [reply_id]
-            ):
-                # Written and saved, but still to be heard: kept in case she is talked
-                # over while it plays.
-                self._tail = (speaker, reply_id)
             if speaker is not None:
                 if down is not None:
                     await speaker.pause()
