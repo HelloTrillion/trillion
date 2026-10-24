@@ -70,8 +70,12 @@ def level(pcm: bytes) -> float:
 
 
 class EndOfSpeech:
-    def __init__(self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S) -> None:
+    def __init__(
+        self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S, judged: bool = False
+    ) -> None:
         self._streaming = streaming
+        self._judged = judged
+        self._over = False
         self._patience = patience_s
         self._rest = b""
         self._samples = 0
@@ -124,6 +128,10 @@ class EndOfSpeech:
         if final and has_text:
             self._last_final = self.now
 
+    def turn_over(self) -> None:
+        """The recognizer that judges turns says this one is over (VOI-12)."""
+        self._over = True
+
     def audio(self, pcm: bytes) -> Verdict | None:
         data = self._rest + pcm
         step = _WINDOW * 2
@@ -155,6 +163,9 @@ class EndOfSpeech:
             if now >= DEAD_AFTER_S and self._peak < DEAD_LEVEL:
                 return "inaudible"
             return "nothing" if now >= self._patience else None
+        if self._judged:
+            # The recognizer judges the end by meaning; silence alone never does.
+            return "end" if self._over else None
 
         quiet = now - self._last_voice
         if self._streaming and self._done and not self._pending_words and quiet >= DONE_S:

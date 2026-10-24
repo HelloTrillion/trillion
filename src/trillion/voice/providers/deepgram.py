@@ -124,6 +124,7 @@ class _Stream:
 class Deepgram:
     name = NAME
     streaming = True
+    turns = False
 
     def __init__(
         self,

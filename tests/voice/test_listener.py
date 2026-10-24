@@ -126,6 +126,7 @@ def test_describe_tells_the_page_how_words_arrive() -> None:
         "kind": "whisper",
         "choice": "base",
         "streaming": False,
+        "turns": False,
     }
 
 
@@ -150,3 +151,26 @@ async def test_a_pause_after_an_unfinished_thought_waits_as_before() -> None:
     stt.stream.say("I was thinking that maybe we could and", final=True, pause=True)
     await asyncio.sleep(0.01)
     assert await feed(listener, room(0.2)) is None  # not cut off on "and"
+
+
+async def test_a_judging_recognizer_ends_the_turn_on_done_and_reports_maybe() -> None:
+    stt = FakeSTT(turns=True)
+    seen: list[tuple[str, str]] = []
+
+    async def on_turn(kind: str, text: str) -> None:
+        seen.append((kind, text))
+
+    listener = Listener(stt, "en", on_partial=nothing, on_turn=on_turn)
+    await listener.start()
+    assert await listener.audio(tone(0.6)) is None
+    stt.stream.say("I need to remember to", final=False, turn="maybe")
+    await asyncio.sleep(0)
+    stt.stream.say("I need to remember to", final=False, turn="resumed")
+    await asyncio.sleep(0)
+    assert await listener.audio(room(2.5)) is None  # a pause, not the end
+    stt.stream.say("I need to remember to call the dentist", final=True, turn="done")
+    await asyncio.sleep(0)
+    assert await listener.audio(room(0.04)) == "end"
+    assert seen == [("maybe", "I need to remember to"), ("resumed", "I need to remember to")]
+    said = await listener.end()
+    assert said.text == "I need to remember to call the dentist"

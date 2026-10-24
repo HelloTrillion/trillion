@@ -69,6 +69,10 @@ class Heard:
     # The recognizer itself heard the speaker stop here (Deepgram's speech_final).
     # A hint for the listener, never the decision.
     pause: bool = False
+    # From a recognizer that judges turns itself (VOI-12): "maybe" (probably finished),
+    # "resumed" (they carried on after a maybe) or "done" (over; `text` is the whole
+    # turn). None from recognizers that leave the decision to the listener.
+    turn: Literal["maybe", "resumed", "done"] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -102,6 +106,8 @@ class STTProvider(Protocol):
     # True when words arrive while the user is still speaking. False when the whole
     # utterance is transcribed after it ends, so there is nothing to show meanwhile.
     streaming: bool
+    # True when the recognizer itself decides that the user has finished (VOI-12).
+    turns: bool
 
     async def open(self, *, choice: str) -> STTStream:
         """Start listening. Raises VoiceError if it cannot."""

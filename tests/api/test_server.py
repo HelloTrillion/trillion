@@ -929,6 +929,7 @@ def test_a_hosted_recognizer_needs_a_key_that_works(
             "kind": "deepgram",
             "choice": "multi",
             "streaming": True,
+            "turns": False,
         }
     assert app.rt.stt is not None and app.rt.stt.name == "deepgram"
 

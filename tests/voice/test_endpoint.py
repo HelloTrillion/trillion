@@ -194,3 +194,19 @@ def test_what_sounds_finished() -> None:
     unfinished = ["set a timer for", "I want to go and.", "So um.", "Hmm...", "Hmm…", "", "and."]
     assert all(sounds_finished(t) for t in finished)
     assert not any(sounds_finished(t) for t in unfinished)
+
+
+def test_a_recognizer_that_judges_turns_decides_the_end() -> None:
+    """VOI-12: with `judged`, silence never ends the turn; the recognizer's done does."""
+    rules = EndOfSpeech(streaming=True, judged=True)
+    assert rules.audio(tone(0.6)) is None
+    rules.heard(final=False, has_text=True)
+    # Three seconds of quiet: the old rules would have ended it at one.
+    assert rules.audio(room(3.0)) is None
+    rules.turn_over()
+    assert rules.audio(room(0.04)) == "end"
+
+
+def test_judged_rules_still_say_nothing_and_inaudible() -> None:
+    assert EndOfSpeech(streaming=True, judged=True, patience_s=1.0).audio(room(1.2)) == "nothing"
+    assert EndOfSpeech(streaming=True, judged=True).audio(bytes(16_000 * 2 * 3)) == "inaudible"

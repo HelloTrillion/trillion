@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Literal
 
 from trillion.voice.types import Choice, Heard, VoiceError
 
@@ -16,8 +17,15 @@ class FakeStream:
         self.finished = False
         self.closed = False
 
-    def say(self, text: str, *, final: bool = True, pause: bool = False) -> None:
-        self._events.put_nowait(Heard(text=text, final=final, pause=pause))
+    def say(
+        self,
+        text: str,
+        *,
+        final: bool = True,
+        pause: bool = False,
+        turn: Literal["maybe", "resumed", "done"] | None = None,
+    ) -> None:
+        self._events.put_nowait(Heard(text=text, final=final, pause=pause, turn=turn))
 
     async def send(self, pcm: bytes) -> None:
         self.audio.extend(pcm)
@@ -45,8 +53,11 @@ class FakeStream:
 class FakeSTT:
     name = "fake-ears"
 
-    def __init__(self, *, streaming: bool = True, fail: str | None = None) -> None:
+    def __init__(
+        self, *, streaming: bool = True, turns: bool = False, fail: str | None = None
+    ) -> None:
         self.streaming = streaming
+        self.turns = turns
         self.fail = fail
         # What it reports once the audio stops, as a batch recognizer does.
         self.on_finish: list[str] = []

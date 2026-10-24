@@ -41,7 +41,12 @@ def describe(
     """What the page needs to know about listening: that it can, and how words arrive."""
     if provider is None or kind is None:
         return None
-    return {"kind": kind, "choice": choice, "streaming": provider.streaming}
+    return {
+        "kind": kind,
+        "choice": choice,
+        "streaming": provider.streaming,
+        "turns": provider.turns,
+    }
 
 
 class Listener:
@@ -52,11 +57,15 @@ class Listener:
         *,
         on_partial: Callable[[str], Awaitable[None]],
         patience_s: float = NOTHING_AFTER_S,
+        on_turn: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._provider = provider
         self._choice = choice
         self._on_partial = on_partial
-        self._rules = EndOfSpeech(streaming=provider.streaming, patience_s=patience_s)
+        self._on_turn = on_turn
+        self._rules = EndOfSpeech(
+            streaming=provider.streaming, patience_s=patience_s, judged=provider.turns
+        )
         self._stream: STTStream | None = None
         self._reader: asyncio.Task[None] | None = None
         self._backlog = bytearray()
@@ -92,6 +101,10 @@ class Listener:
     def text(self) -> str:
         return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 
+    def text_now(self) -> str:
+        """What has been heard so far, for deciding while she talks (VOI-9)."""
+        return self.text()
+
     async def start(self) -> None:
         """Connect to the recognizer. Raises VoiceError; audio sent meanwhile is kept."""
         stream = await self._provider.open(choice=self._choice)
@@ -123,16 +136,25 @@ class Listener:
     async def _read(self, stream: STTStream) -> None:
         try:
             async for heard in stream.events():
-                if heard.final:
+                if heard.turn == "done":
+                    # The whole turn, as the recognizer finally heard it.
+                    self._finals = [heard.text] if heard.text else self._finals
+                    self._interim = ""
+                    self._rules.heard(final=True, has_text=bool(heard.text))
+                    self._rules.turn_over()
+                elif heard.final:
                     if heard.text:
                         self._finals.append(heard.text)
                     self._interim = ""
                 else:
                     self._interim = heard.text
-                # Ended quickly only when the recognizer heard a pause and the whole
-                # message so far reads as finished; otherwise the patient rules apply.
-                done = heard.pause and sounds_finished(self.text())
-                self._rules.heard(final=heard.final, has_text=bool(heard.text), done=done)
+                if heard.turn != "done":
+                    # Ended quickly only when the recognizer heard a pause and the whole
+                    # message so far reads as finished; otherwise the patient rules apply.
+                    done = heard.pause and sounds_finished(self.text())
+                    self._rules.heard(final=heard.final, has_text=bool(heard.text), done=done)
+                if heard.turn in ("maybe", "resumed") and self._on_turn is not None:
+                    await self._on_turn(heard.turn, self.text())
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
         except VoiceError as e:
