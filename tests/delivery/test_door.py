@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from collections.abc import Sequence
+
+import pytest
 
 from tests.scheduler.conftest import FakeClock, ms
 from trillion.delivery.door import (
@@ -170,3 +173,45 @@ async def test_missed_and_failed_carry_no_words(store: SqliteScheduleStore) -> N
     assert [(x.kind, x.text) for x in page.got] == [("missed", None), ("failed", None)]
     missed = await add(store, kind="missed", text=None)
     assert notification(missed) == ("Call", "Missed: Trillion was not running at the time")
+
+
+class Refuses(FakePage):
+    """A page that came busy between the door's look and its delivery."""
+
+    async def deliver(self, notices: Sequence[Delivery]) -> None:
+        raise RuntimeError("busy")
+
+
+async def test_a_page_that_cannot_take_them_leaves_them_held(store: SqliteScheduleStore) -> None:
+    page = Refuses("c1", active_ms=2)
+    pages: list[FakePage] = [page]
+    d, _, _ = door(store, pages)
+    first, second = await add(store), await add(store)
+    await d.added(first)
+    assert [n.id for n in await store.held("local")] == [first.id, second.id]
+    pages.remove(page)
+    after = FakePage("c2", active_ms=3)
+    pages.append(after)
+    assert await d.offer(after) == 2
+    assert [x.id for x in after.got] == [first.id, second.id]
+
+
+async def test_two_notices_at_once_with_no_page_show_once_each(
+    store: SqliteScheduleStore,
+) -> None:
+    d, shown, _ = door(store, [])
+    n = await add(store)
+    await asyncio.gather(d.added(n), d.added(n))
+    assert shown.shown == [("Call", "Call now.")]
+
+
+async def test_missed_and_failed_never_carry_stored_words(store: SqliteScheduleStore) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    await d.added(await add(store, kind="failed", text="stray words"))
+    assert [(x.kind, x.text) for x in page.got] == [("failed", None)]
+
+
+def test_a_turn_sent_to_be_heard_always_says_when() -> None:
+    with pytest.raises(ValueError):
+        dataclasses.replace(IDLE, spoken_turn=1, spoken_ms=None)

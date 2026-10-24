@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 from tests.scheduler.conftest import NY, ms, schedule
+from trillion.scheduler.store import Notice
 from trillion.scheduler.when import Repeat
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
@@ -185,3 +186,53 @@ async def test_a_cancel_between_looking_and_enqueueing_leaves_no_run(
     assert await store.cancel("local", found.id, DUE)
     assert not await store.enqueue(found.id, DUE, None, 10.0, DUE)
     assert await store.runs(found.id) == []
+
+
+async def test_a_run_finishes_with_its_notice_in_one_change(store: SqliteScheduleStore) -> None:
+    due = ms("2026-10-24T16:00")
+    await store.create(schedule())
+    await store.enqueue("a1b2c3d4", due, None, 10.0, due)
+    run = await store.claim("w1", due, 0)
+    assert run is not None
+
+    async def finish() -> Notice | None:
+        assert run is not None
+        return await store.finish_with_notice(
+            run.id,
+            "delivered",
+            due,
+            owner_id="local",
+            source_id="a1b2c3d4",
+            kind="reminder",
+            title="Call",
+            text="Call now.",
+            due_ms=due,
+            late=False,
+        )
+
+    n = await finish()
+    assert n is not None and n.status == "held" and n.text == "Call now."
+    (done,) = await store.runs("a1b2c3d4")
+    assert done.status == "delivered" and done.result_notice == n.id
+    # A run already finished gets no second notice.
+    assert await finish() is None and len(await store.held("local")) == 1
+
+
+async def test_a_delivery_can_be_taken_back_only_by_its_page(store: SqliteScheduleStore) -> None:
+    due = ms("2026-10-24T16:00")
+    n = await store.add_notice(
+        owner_id="local",
+        source_id="a1b2c3d4",
+        kind="reminder",
+        title="Call",
+        text="Call now.",
+        due_ms=due,
+        late=False,
+        now_ms=due,
+    )
+    assert await store.mark_delivered(n.id, "c1", due)
+    assert not await store.unmark_delivered(n.id, "c2")
+    assert await store.unmark_delivered(n.id, "c1")
+    kept = await store.notice(n.id)
+    assert kept is not None and kept.status == "held" and kept.delivered_to is None
+    assert not await store.unmark_delivered(n.id, "c1")  # already held

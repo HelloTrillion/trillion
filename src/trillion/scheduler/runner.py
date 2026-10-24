@@ -6,6 +6,10 @@ words. A timed ask is run unattended (`ask.py`) and its reply becomes the notice
 one more than an hour late is reported missed instead of run stale, one with no
 model waits as blocked, and one that fails is reported and never silently retried.
 
+Every tick also reclaims runs a crashed process left running, and runs of its own
+past their timeout: each is tried once more, or reported missed. One schedule or run
+that breaks is logged and skipped, never allowed to hold up the rest.
+
 The runner never touches a surface. It writes notices and tells the door (SUR-9).
 """
 
@@ -85,11 +89,17 @@ class Scheduler:
         # Who claims runs: this process. A run another one left running was interrupted.
         self._worker = worker or uuid.uuid4().hex
         self._task: asyncio.Task[None] | None = None
+        # One tick at a time, whoever calls it.
+        self._ticking = asyncio.Lock()
         # When the last tick finished. Settings shows it; it goes stale if this stops.
         self.checked_ms: int | None = None
 
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
     def start(self) -> None:
-        if self._task is None:
+        if not self.running:
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -109,19 +119,38 @@ class Scheduler:
             await asyncio.sleep(self.tick_s)
 
     async def tick(self) -> None:
-        """One pass. The first one after a start also reclaims what a crash left."""
+        """One pass: reclaim, enqueue what is due, run it, then let the door flush.
+        `checked_ms` moves only when the pass got through; a store that can't be read
+        at all makes it raise, after the door has had its flush."""
+        async with self._ticking:
+            try:
+                await self._pass()
+            finally:
+                try:
+                    await self._door.flush()
+                except Exception as e:
+                    logger.warning("the door could not flush: %s", type(e).__name__)
+            self.checked_ms = self._clock()
+
+    async def _pass(self) -> None:
         await self._reclaim()
-        now = self._clock()
-        for s in await self._store.due(now):
-            await self._enqueue(s, now)
+        started = self._clock()
+        for s in await self._store.due(started):
+            try:
+                await self._enqueue(s, started)
+            except Exception as e:
+                logger.error("schedule %s could not be enqueued: %s", s.id, type(e).__name__)
         while True:
             now = self._clock()
-            run = await self._store.claim(self._worker, now, now - round(self.tick_s * 1000))
+            # A run that blocks during this pass waits for the next one.
+            retry_before = min(now - round(self.tick_s * 1000), started - 1)
+            run = await self._store.claim(self._worker, now, retry_before)
             if run is None:
                 break
-            await self._run(run)
-        await self._door.flush()
-        self.checked_ms = self._clock()
+            try:
+                await self._run(run)
+            except Exception as e:
+                await self._abandon(run, e)
 
     async def _enqueue(self, s: Schedule, now: int) -> None:
         if s.next_due_ms is None:  # pragma: no cover - `due` only returns ones with a time
@@ -138,17 +167,40 @@ class Scheduler:
     async def _reclaim(self) -> None:
         now = self._clock()
         for run in await self._store.reclaim(self._worker, now):
+            try:
+                await self._retry_or_miss(run, now)
+            except Exception as e:
+                await self._abandon(run, e)
+
+    async def _retry_or_miss(self, run: Run, now: int) -> None:
+        s = await self._store.get(run.schedule_id)
+        if s is None or s.status == "cancelled":
+            await self._store.finish(run.id, "cancelled", now, detail="cancelled")
+        elif run.attempts < MAX_ATTEMPTS and (
+            s.kind == "reminder" or now - run.due_ms <= ASK_WINDOW_MS
+        ):
+            # Unattended tools never ask and only do what the user can undo, so a
+            # second attempt is safe. It is recorded as one.
+            await self._store.requeue(run.id, "interrupted; tried again")
+        else:
+            await self._notice(run, s, "missed", None, "missed", "interrupted")
+
+    async def _abandon(self, run: Run, e: Exception) -> None:
+        """A run that broke is finished as failed, with a notice if its schedule can
+        still be read, so it is neither stuck nor tried again."""
+        why = type(e).__name__
+        logger.error("run %s broke: %s", run.id, why)
+        try:
             s = await self._store.get(run.schedule_id)
-            if s is None or s.status == "cancelled":
-                await self._store.finish(run.id, "cancelled", now, detail="cancelled")
-            elif run.attempts < MAX_ATTEMPTS and (
-                s.kind == "reminder" or now - run.due_ms <= ASK_WINDOW_MS
-            ):
-                # Unattended tools never ask and only do what the user can undo, so a
-                # second attempt is safe. It is recorded as one.
-                await self._store.requeue(run.id, "interrupted; tried again")
-            else:
-                await self._notice(run, s, "missed", None, "missed", "interrupted")
+            if s is not None:
+                await self._notice(run, s, "failed", None, "failed", why)
+                return
+        except Exception as again:
+            logger.error("run %s: no notice: %s", run.id, type(again).__name__)
+        try:
+            await self._store.finish(run.id, "failed", self._clock(), detail=why)
+        except Exception as again:
+            logger.error("run %s could not be finished: %s", run.id, type(again).__name__)
 
     async def _run(self, run: Run) -> None:
         now = self._clock()
@@ -163,13 +215,18 @@ class Scheduler:
         if now - run.due_ms > ASK_WINDOW_MS:
             await self._notice(run, s, "missed", None, "missed", "more than an hour late")
             return
+        limit = asyncio.timeout(self._ask_timeout_s)
         try:
-            said = await asyncio.wait_for(self._run_ask(s), self._ask_timeout_s)
+            async with limit:
+                said = await self._run_ask(s)
         except NoModel:
             await self._store.block(run.id, self._clock(), "no model")
             return
         except TimeoutError:
-            why = f"timed out after {self._ask_timeout_s:g} s"
+            # Ours only if the limit ran out; one raised inside the ask is its failure.
+            why = (
+                f"timed out after {self._ask_timeout_s:g} s" if limit.expired() else "TimeoutError"
+            )
             await self._notice(run, s, "failed", None, "failed", why)
             return
         except AskFailed as e:
@@ -178,6 +235,9 @@ class Scheduler:
         except Exception as e:
             logger.warning("timed ask %s failed: %s", s.id, type(e).__name__)
             await self._notice(run, s, "failed", None, "failed", type(e).__name__)
+            return
+        if not said.strip():
+            await self._notice(run, s, "failed", None, "failed", "no reply")
             return
         await self._notice(run, s, "ask", said, "late" if late else "delivered")
 
@@ -191,7 +251,13 @@ class Scheduler:
         detail: str | None = None,
     ) -> None:
         now = self._clock()
-        notice = await self._store.add_notice(
+        # The notice and the run's end are one change: a crash between them can never
+        # leave the run to be tried again with its notice already written.
+        notice = await self._store.finish_with_notice(
+            run.id,
+            status,
+            now,
+            detail=detail,
             owner_id=s.owner_id,
             source_id=s.id,
             kind=kind,
@@ -199,9 +265,10 @@ class Scheduler:
             text=text,
             due_ms=run.due_ms,
             late=now - run.due_ms > LATE_MS,
-            now_ms=now,
         )
-        await self._store.finish(run.id, status, now, detail=detail, notice_id=notice.id)
+        if notice is None:
+            logger.warning("run %s was already finished", run.id)
+            return
         try:
             await self._door.added(notice)
         except Exception as e:

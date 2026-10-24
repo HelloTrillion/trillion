@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from tests.scheduler.conftest import FakeClock, ms, schedule
 from trillion.scheduler.runner import AskFailed, NoModel, Scheduler
@@ -159,7 +160,7 @@ async def test_a_timed_ask_that_times_out_fails_and_is_not_retried(
     async def forever(s: Schedule) -> str:
         nonlocal calls
         calls += 1
-        await asyncio.sleep(30)
+        await asyncio.Event().wait()
         return "late"
 
     sched, door, clock = make(store, DUE, forever, ask_timeout_s=0.05)
@@ -225,16 +226,157 @@ async def test_cancelling_removes_the_runs_still_waiting(store: SqliteScheduleSt
 async def test_a_tick_that_fails_leaves_the_last_check_where_it_was(
     store: SqliteScheduleStore,
 ) -> None:
-    sched, _, clock = make(store, DUE)
+    sched, _, clock = make(store, DUE, tick_s=0)
     await sched.tick()
     assert sched.checked_ms == DUE
+    calls = 0
+    again = asyncio.Event()
 
     async def broken(now_ms: int) -> list[Schedule]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            again.set()
         raise RuntimeError("disk")
 
     store.due = broken  # type: ignore[method-assign]
     clock.advance(15_000)
     sched.start()
-    await asyncio.sleep(0.05)
+    try:
+        await asyncio.wait_for(again.wait(), 1)  # it failed, and the loop went on
+        assert sched.running
+        assert sched.checked_ms == DUE  # stale, as Settings will say
+    finally:
+        await sched.stop()
+    assert not sched.running
+
+
+async def test_one_schedule_that_breaks_does_not_stop_the_others(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(id="bad00001", next_due_ms=DUE - 1))
+    await store.create(schedule(id="bad00002", next_due_ms=DUE - 1))
+    await store.create(schedule())
+    enqueue, get = store.enqueue, store.get
+
+    async def enqueue_but_one(schedule_id: str, *a: Any) -> bool:
+        if schedule_id == "bad00001":
+            raise RuntimeError("row")
+        return await enqueue(schedule_id, *a)
+
+    async def get_but_one(schedule_id: str) -> Schedule | None:
+        if schedule_id == "bad00002":
+            raise RuntimeError("row")
+        return await get(schedule_id)
+
+    store.enqueue = enqueue_but_one  # type: ignore[method-assign]
+    store.get = get_but_one  # type: ignore[method-assign]
+    sched, door, _ = make(store, DUE)
+    await sched.tick()
+    assert [n.source_id for n in door.notices] == ["a1b2c3d4"]
+    assert [r.status for r in await store.runs("bad00002")] == ["failed"]
+    assert sched.checked_ms == DUE and door.flushes == 1
+
+
+async def test_stopped_while_finishing_a_run_it_is_never_run_twice(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(kind="ask"))
+    finish = store.finish
+
+    async def stopped(*a: Any, **kw: Any) -> bool:
+        raise asyncio.CancelledError  # the server stopped right here
+
+    store.finish = stopped  # type: ignore[method-assign]
+    asks = Asks("Done.")
+    sched, door, _ = make(store, DUE, asks)
+    try:
+        await sched.tick()
+    except asyncio.CancelledError:
+        pass
+    store.finish = finish  # type: ignore[method-assign]
+    after, _, _ = make(store, DUE + MINUTE, asks)  # the next process
+    await after.tick()
+    assert asks.calls == 1 and len(door.notices) == 1
+    assert len(await store.held("local")) == 1
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "delivered" and run.result_notice == door.notices[0].id
+
+
+async def test_an_empty_reply_is_a_failure(store: SqliteScheduleStore) -> None:
+    await store.create(schedule(kind="ask"))
+    sched, door, _ = make(store, DUE, Asks("  \n "))
+    await sched.tick()
+    (n,) = door.notices
+    assert n.kind == "failed" and n.text is None
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "failed" and run.detail == "no reply"
+
+
+async def test_a_timeout_inside_the_ask_is_not_the_ask_timing_out(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(kind="ask"))
+    sched, _, _ = make(store, DUE, Asks(TimeoutError()))
+    await sched.tick()
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "failed" and run.detail == "TimeoutError"
+
+
+async def test_an_interrupted_ask_past_the_hour_is_missed(store: SqliteScheduleStore) -> None:
+    await store.create(schedule(kind="ask"))
+    await store.enqueue("a1b2c3d4", DUE, None, 120.0, DUE)
+    await store.claim("the-old-process", DUE, 0)
+    asks = Asks("never")
+    sched, door, _ = make(store, DUE + 61 * MINUTE, asks)
+    await sched.tick()
+    assert asks.calls == 0 and [n.kind for n in door.notices] == ["missed"]
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "missed" and run.detail == "interrupted"
+
+
+async def test_an_interrupted_reminder_is_delivered_once_more(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule())
+    await store.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
+    await store.claim("the-old-process", DUE, 0)
+    sched, door, _ = make(store, DUE + 3 * 60 * MINUTE)
+    await sched.tick()
+    (n,) = door.notices
+    assert n.kind == "reminder" and n.late
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "late" and run.attempts == 2
+
+
+async def test_a_repeat_that_can_no_longer_be_worked_out_runs_once_and_ends(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(zone="Nowhere/Gone", repeat=Repeat(every="day")))
+    sched, door, clock = make(store, DUE)
+    await sched.tick()
+    assert len(door.notices) == 1
+    s = await store.get("a1b2c3d4")
+    assert s is not None and s.status == "done" and s.next_due_ms is None
+    clock.advance(24 * 60 * MINUTE)
+    await sched.tick()
+    assert len(door.notices) == 1
+
+
+async def test_start_again_after_the_loop_ended(store: SqliteScheduleStore) -> None:
+    sched, _, _ = make(store, DUE, tick_s=0)
+    sched.start()
+    assert sched.running
     await sched.stop()
-    assert sched.checked_ms == DUE  # stale, as Settings will say
+    sched.start()
+    try:
+        assert sched.running
+    finally:
+        await sched.stop()
+
+
+async def test_two_ticks_at_once_take_turns(store: SqliteScheduleStore) -> None:
+    await store.create(schedule())
+    sched, door, _ = make(store, DUE)
+    await asyncio.gather(sched.tick(), sched.tick())
+    assert len(door.notices) == 1 and door.flushes == 2

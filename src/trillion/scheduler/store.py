@@ -152,6 +152,26 @@ class ScheduleStore(Protocol):
         now_ms: int,
     ) -> Notice: ...
 
+    async def finish_with_notice(
+        self,
+        run_id: int,
+        status: RunStatus,
+        now_ms: int,
+        *,
+        detail: str | None = None,
+        owner_id: str,
+        source_id: str,
+        kind: NoticeKind,
+        title: str,
+        text: str | None,
+        due_ms: int,
+        late: bool,
+    ) -> Notice | None:
+        """Finish a running (or interrupted) run and write its notice, together, so a
+        crash between the two can never leave a run to be tried again with its notice
+        already written. None, and nothing written, if the run was not running."""
+        ...
+
     async def notice(self, notice_id: str) -> Notice | None: ...
 
     async def held(self, owner_id: str) -> list[Notice]:
@@ -160,6 +180,10 @@ class ScheduleStore(Protocol):
 
     async def mark_delivered(self, notice_id: str, to: str, now_ms: int) -> bool:
         """Only a held notice can be delivered, so each is delivered once."""
+        ...
+
+    async def unmark_delivered(self, notice_id: str, to: str) -> bool:
+        """Hold a notice again that `to` could not take. Only that page's delivery."""
         ...
 
     async def mark_notified(self, notice_id: str, now_ms: int) -> None: ...

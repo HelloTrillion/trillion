@@ -14,7 +14,6 @@ import os
 import shutil
 import subprocess
 import sys
-import unicodedata
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -59,9 +58,16 @@ Run = Callable[..., Any]
 Which = Callable[[str], str | None]
 
 
+# Format characters that are part of the words: joiners, direction marks, and the
+# tag characters of flag emoji. Other ones (bidi overrides and isolates, zero-width
+# spaces, BOMs) only change how text looks, so they go.
+_FORMAT_KEPT = frozenset("\u200c\u200d\u200e\u200f\u061c") | frozenset(
+    chr(c) for c in range(0xE0020, 0xE0080)
+)
+
+
 def _keep(c: str) -> bool:
-    # Format characters (zero-width joiners, direction marks) are part of the words.
-    return c.isprintable() or c.isspace() or unicodedata.category(c) == "Cf"
+    return c.isprintable() or c.isspace() or c in _FORMAT_KEPT
 
 
 def cut(text: str, *, markup: bool = False) -> str:

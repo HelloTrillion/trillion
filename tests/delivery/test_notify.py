@@ -142,3 +142,17 @@ def test_format_characters_are_kept() -> None:
     text = f"{family} ‏שלום‎ ok"
     assert n.cut(text) == text
     assert n.cut("a\x00b\x1bc") == "abc"  # control characters still go
+
+
+@pytest.mark.parametrize(
+    "mark", ["‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨", "⁩", "​", "⁠", "﻿", "￹", "￺", "￻", "­"]
+)
+def test_other_format_characters_are_dropped(mark: str) -> None:
+    assert n.cut(f"a{mark}b") == "ab"
+
+
+def test_the_kept_format_characters_are_only_the_allowed_ones() -> None:
+    flag = "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f"
+    kept = f"a‌b‍c‎d‏e؜f {flag}"
+    assert n.cut(kept) == kept
+    assert n.cut("a‮b") == "ab"

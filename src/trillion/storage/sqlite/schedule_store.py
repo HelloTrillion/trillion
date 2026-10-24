@@ -319,6 +319,57 @@ class SqliteScheduleStore:
             )
         return n
 
+    async def finish_with_notice(
+        self,
+        run_id: int,
+        status: RunStatus,
+        now_ms: int,
+        *,
+        detail: str | None = None,
+        owner_id: str,
+        source_id: str,
+        kind: NoticeKind,
+        title: str,
+        text: str | None,
+        due_ms: int,
+        late: bool,
+    ) -> Notice | None:
+        n = Notice(
+            id=uuid.uuid4().hex,
+            owner_id=owner_id,
+            source_id=source_id,
+            kind=kind,
+            title=title,
+            text=text,
+            due_ms=due_ms,
+            late=late,
+            created_ms=now_ms,
+            status="held",
+            delivered_ms=None,
+            delivered_to=None,
+            notified_ms=None,
+        )
+        async with self._tx() as conn:
+            # The write lock is held from BEGIN IMMEDIATE: what this reads stays true.
+            async with conn.execute(
+                "SELECT 1 FROM task_runs WHERE id = ? AND status IN ('running', 'interrupted')",
+                (run_id,),
+            ) as cur:
+                if await cur.fetchone() is None:
+                    return None
+            await conn.execute(
+                "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
+                " due_ms, late, created_ms, status) VALUES (?, ?, 'schedule', ?, ?, ?, ?, ?, ?,"
+                " ?, 'held')",
+                (n.id, owner_id, source_id, kind, title, text, due_ms, int(late), now_ms),
+            )
+            await conn.execute(
+                "UPDATE task_runs SET status = ?, finished_ms = ?,"
+                " detail = COALESCE(?, detail), result_notice = ? WHERE id = ?",
+                (status, now_ms, detail, n.id, run_id),
+            )
+        return n
+
     async def notice(self, notice_id: str) -> Notice | None:
         async with self._conn.execute("SELECT * FROM notices WHERE id = ?", (notice_id,)) as cur:
             row = await cur.fetchone()
@@ -338,6 +389,15 @@ class SqliteScheduleStore:
                 "UPDATE notices SET status = 'delivered', delivered_ms = ?, delivered_to = ?"
                 " WHERE id = ? AND status = 'held'",
                 (now_ms, to, notice_id),
+            )
+            return cur.rowcount == 1
+
+    async def unmark_delivered(self, notice_id: str, to: str) -> bool:
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE notices SET status = 'held', delivered_ms = NULL, delivered_to = NULL"
+                " WHERE id = ? AND status = 'delivered' AND delivered_to = ?",
+                (notice_id, to),
             )
             return cur.rowcount == 1
 
