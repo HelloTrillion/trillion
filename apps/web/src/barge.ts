@@ -99,6 +99,43 @@ export class BargeDetector {
   }
 }
 
+/** What the page knows when the core closes listening (`mic.stop`). */
+export interface TurnEnd {
+  /** Why listening ended, as `mic.stop` says. */
+  readonly reason: unknown;
+  readonly micOn: boolean;
+  readonly bargeOn: boolean;
+  readonly linkReady: boolean;
+  readonly listening: boolean;
+  /** Her voice is played on this page (not off, not the computer's own voice). */
+  readonly coreVoice: boolean;
+  readonly onboarding: boolean;
+  /** The user has cut in and the core has not answered it yet. */
+  readonly cutIn: boolean;
+}
+
+/** After a spoken turn, the microphone stays open and watches for the user while she
+ * answers, rather than closing now and opening again at her first sound: on a Mac,
+ * opening or closing an echo-cancelled microphone reconfigures the audio device and
+ * glitches her first words, and the gap in between would hear nobody. Only when a
+ * reply is coming (the words were heard) and barge-in may watch it. */
+export function holdForReply(t: TurnEnd): boolean {
+  return (
+    (t.reason === 'end' || t.reason === 'too_long') &&
+    t.micOn &&
+    t.bargeOn &&
+    t.linkReady &&
+    t.listening &&
+    t.coreVoice &&
+    !t.onboarding &&
+    !t.cutIn
+  );
+}
+
+/** Held for her reply this long without a sound from her, the microphone closes: a
+ * reply that turns out silent, a long tool, an error. */
+export const HOLD_MS = 15_000;
+
 /** The last few frames before the user was noticed, so their first word is kept. */
 export class Preroll {
   private frames: ArrayBuffer[] = [];

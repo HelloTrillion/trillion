@@ -8,7 +8,7 @@ import { icon } from './icons';
 import { createConnected } from './connected';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
-import { BargeDetector, Preroll, frameLevel } from './barge';
+import { BargeDetector, HOLD_MS, Preroll, frameLevel, holdForReply } from './barge';
 import { createMicrophones } from './microphone';
 import { createNamesSettings } from './names';
 import {
@@ -170,6 +170,44 @@ let overlapping = false;
 let cutIn = false;
 const detector = new BargeDetector();
 const preroll = new Preroll();
+// The microphone was kept open from the user's turn and her reply has not sounded yet.
+let awaitingHer = false;
+let holdTimer: ReturnType<typeof setTimeout> | null = null;
+// Counts each new watch, so a late "close soon" never closes a newer one.
+let watchGen = 0;
+
+function endHold(): void {
+  awaitingHer = false;
+  if (holdTimer !== null) clearTimeout(holdTimer);
+  holdTimer = null;
+}
+
+/** Wait for her reply with the microphone open, but not forever. */
+function armHold(): void {
+  endHold();
+  awaitingHer = true;
+  holdTimer = setTimeout(() => {
+    holdTimer = null;
+    if (!awaitingHer || voice.active) return;
+    awaitingHer = false;
+    stopWatching();
+  }, HOLD_MS);
+}
+
+/** Listening is over and her reply is coming: the open microphone goes on watching
+ * instead of closing (see holdForReply). Until she sounds, her level is 0, so the
+ * detector hears the room, and the user going on talking counts as cutting in. Its
+ * warm-up runs here as at any start: it learns the room just after the user stopped,
+ * and decides nothing for half a second. That is never deafer than before, when the
+ * microphone was closed until her first sound, and it starts over then anyway. */
+function holdForHer(): void {
+  micMode = 'watch';
+  bargeHeld = null;
+  detector.reset();
+  preroll.drain();
+  watchGen++;
+  armHold();
+}
 
 function canWatch(): boolean {
   return (
@@ -184,7 +222,23 @@ function canWatch(): boolean {
 }
 
 function startWatching(): void {
+  const held = awaitingHer;
+  endHold();
+  if (held && micMode === 'watch' && mic.on) {
+    if (!canWatch()) {
+      stopWatching();
+      return;
+    }
+    // Already open since the user's turn: not opened again, which is what glitched
+    // her first words. Only started over for her voice, so the warm-up learns her
+    // echo from her first sound, as it did when the microphone opened then. Not while
+    // the user's first words are held: they are cutting in.
+    if (!bargeHeld) detector.reset();
+    watchGen++;
+    return;
+  }
   if (mic.on || !canWatch()) return;
+  watchGen++;
   micMode = 'watch';
   bargeHeld = null;
   detector.reset();
@@ -195,6 +249,7 @@ function startWatching(): void {
 /** Close a watching microphone, unless the user has just cut in. */
 function stopWatching(): void {
   if (micMode !== 'watch' || bargeHeld || overlapping) return;
+  endHold();
   mic.stop();
   micMode = 'send';
 }
@@ -227,8 +282,9 @@ function watchFrame(pcm: ArrayBuffer): void {
 /** A watching microphone closes a moment after she has finished, unless the core has
  * opened it for a follow-up by then. */
 function stopWatchingSoon(): void {
+  const gen = watchGen;
   setTimeout(() => {
-    if (micMode === 'watch' && !view.mic) stopWatching();
+    if (gen === watchGen && micMode === 'watch' && !view.mic) stopWatching();
   }, 1500);
 }
 
@@ -239,6 +295,8 @@ const voice = createVoice({
   },
   onEnded: (turn, playedMs) => {
     send({ type: 'playback.ended', turn_id: turn, played_ms: playedMs });
+    // A turn that ended without a sound from her ends the wait for one too.
+    endHold();
     // After a spoken turn the core opens the microphone for a follow-up, and the
     // watching one simply carries on as it. Otherwise it closes.
     stopWatchingSoon();
@@ -258,6 +316,7 @@ const mic = createMic({
   onSetup: (setup) => send({ type: 'mic.opened', ...setup }),
   device: savedMic,
   onProblem: (problem) => {
+    endHold();
     if (overlapping) {
       // Unheard, the user cannot be talking over her any more: she comes back up and
       // carries on. The core hears nothing more and lets her, so nothing is stopped.
@@ -824,8 +883,10 @@ function connect(): void {
         micMode = 'watch';
         detector.reset();
         preroll.drain();
-        // She may have finished while they spoke; then the watching ends as usual.
-        if (!voice.active) stopWatchingSoon();
+        // Not started yet: it waits for her again. Finished while they spoke: the
+        // watching ends as usual.
+        if (!voice.active && awaitingHer) armHold();
+        else if (!voice.active) stopWatchingSoon();
       }
       overlapping = false;
       // Answered: she carries on, and the microphone goes back to watching.
@@ -834,6 +895,7 @@ function connect(): void {
     if (msg.type === 'transcript.final') spokeLast = true;
     // The core opens and closes the microphone; the page only ever follows (VOI-15d).
     if (msg.type === 'mic.start') {
+      endHold();
       if (overlapping) {
         // It was an interruption: the microphone is already sending, so it carries on.
         // Whatever of her is still playing stops, if nothing has stopped it yet.
@@ -860,13 +922,35 @@ function connect(): void {
       voice.duck(false);
       overlapping = false;
     }
-    if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening') || stuck) {
+    const hold =
+      msg.type === 'mic.stop' &&
+      holdForReply({
+        reason: msg['reason'],
+        micOn: mic.on,
+        bargeOn,
+        linkReady: view.link === 'ready',
+        listening: view.listening !== null,
+        coreVoice: view.speech?.where === 'core',
+        onboarding: active(ob),
+        cutIn: cutIn || overlapping || bargeHeld !== null,
+      });
+    if (hold) {
+      holdForHer();
+    } else if (msg.type === 'mic.stop' || (msg.type === 'error' && msg['code'] === 'listening') || stuck) {
+      endHold();
       mic.stop();
       micMode = 'send';
       bargeHeld = null;
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
+    // The turn is over and she never made a sound (no words heard, a reply only
+    // written, an error): the microphone held for her closes as after a reply.
+    const over = msg.type === 'turn.complete' || (msg.type === 'state' && (view.orb === 'idle' || view.orb === 'error'));
+    if (over && awaitingHer && !voice.active) {
+      endHold();
+      stopWatchingSoon();
+    }
     if (view.draft !== null) takeDraft(view.draft);
     if (msg.type === 'session' || msg.type === 'turn.complete') void refreshUsage();
     if (msg.type === 'session' || msg.type === 'speech') voice.configure(view.speech);
@@ -899,6 +983,7 @@ function connect(): void {
     if (socket !== ws) return;
     socket = null;
     voice.stop();
+    endHold();
     mic.stop();
     micMode = 'send';
     bargeHeld = null;
@@ -956,6 +1041,7 @@ input.addEventListener('input', () => {
 });
 const interrupt = (): void => {
   voice.stop();
+  endHold();
   mic.stop();
   micMode = 'send';
   bargeHeld = null;

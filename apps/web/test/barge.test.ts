@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BargeDetector, FRAME_S, Preroll, frameLevel } from '../src/barge';
+import { BargeDetector, FRAME_S, Preroll, type TurnEnd, frameLevel, holdForReply } from '../src/barge';
 
 /** Feed frames; the frame index at which it triggered, or -1. */
 function run(d: BargeDetector, frames: readonly (readonly [mic: number, her: number])[]): number {
@@ -95,5 +95,54 @@ describe('the frames before it noticed', () => {
     expect(frameLevel(new Int16Array(960).buffer)).toBe(0);
     expect(frameLevel(new Int16Array(960).fill(16384).buffer)).toBeCloseTo(0.5, 3);
     expect(frameLevel(new ArrayBuffer(0))).toBe(0);
+  });
+});
+
+describe('after a spoken turn: the microphone stays open for her reply, or closes', () => {
+  const spoken: TurnEnd = {
+    reason: 'end',
+    micOn: true,
+    bargeOn: true,
+    linkReady: true,
+    listening: true,
+    coreVoice: true,
+    onboarding: false,
+    cutIn: false,
+  };
+
+  it('stays open when words were heard and barge-in may watch her answer', () => {
+    expect(holdForReply(spoken)).toBe(true);
+    // Cut off at the longest turn: still answered.
+    expect(holdForReply({ ...spoken, reason: 'too_long' })).toBe(true);
+  });
+
+  it('closes when no reply is coming', () => {
+    for (const reason of ['nothing', 'inaudible', 'cancelled', 'failed', undefined]) {
+      expect(holdForReply({ ...spoken, reason })).toBe(false);
+    }
+  });
+
+  it('closes when barge-in could not watch her', () => {
+    expect(holdForReply({ ...spoken, bargeOn: false })).toBe(false);
+    expect(holdForReply({ ...spoken, linkReady: false })).toBe(false);
+    expect(holdForReply({ ...spoken, listening: false })).toBe(false);
+    // Her voice off, or the computer's own: nothing to watch, or no level to compare.
+    expect(holdForReply({ ...spoken, coreVoice: false })).toBe(false);
+    expect(holdForReply({ ...spoken, onboarding: true })).toBe(false);
+  });
+
+  it('closes when nothing is open, or a cut-in is still unanswered', () => {
+    expect(holdForReply({ ...spoken, micOn: false })).toBe(false);
+    expect(holdForReply({ ...spoken, cutIn: true })).toBe(false);
+  });
+});
+
+describe('barge-in: before her reply sounds', () => {
+  it('notices the user going on talking once the warm-up has learned the quiet room', () => {
+    const d = new BargeDetector();
+    const quiet = Array.from({ length: 8 }, () => [0.003, 0] as const);
+    const talking = Array.from({ length: seconds(1) }, () => [0.06, 0] as const);
+    // Warm-up (8 frames) plus a quarter of a second held.
+    expect(run(d, [...quiet, ...talking])).toBe(8 + 3);
   });
 });

@@ -106,6 +106,7 @@ A **draft** is a real turn started early, with a closed **gate**.
   - The page sends `{type: "overlap"}` and then the held pre-roll audio, as `barge` does today.
 - **Otherwise:** it sends `barge`, as today.
 - **On `overlap.over`:** the gain ramps back to 1, and watching for barge-in continues.
+- **One microphone, not two** (*as built after live testing*): after a spoken turn, `mic.stop{reason: end | too_long}` no longer closes the microphone when barge-in could watch her reply (`holdForReply` in `barge.ts`). It switches to watching and stays open until her first sound, when the detector starts over for her echo. Opening an echo-cancelled microphone again at her first sound reconfigured the audio device on a Mac and glitched her first words. Before she sounds, the detector hears the room (her level is 0), so the user going on talking cuts in as above. The held microphone closes as a watching one does, and also when the turn ends without a sound from her, or after 15 s of waiting.
 
 **The session**, on `overlap`:
 
