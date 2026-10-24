@@ -54,6 +54,8 @@ NEAR_WORD_S = 0.25
 ROOM_DEFAULT = 0.002
 
 
+# Punctuation that never starts what the user said, once her words before it are gone.
+_LEADING = "-\u2013\u2014\u2026.,;: "
 # Which of these words to keep as the user's (#102): one answer per word.
 Judge = Callable[[Sequence[Word]], Sequence[bool]]
 
@@ -228,11 +230,26 @@ class Listener:
         up with them, so punctuation stays ("Tuesday?")."""
         if self._judge is None or not text:
             return text
-        keep = self._judge(words)
+        keep = list(self._judge(words))
+        if all(keep):
+            return text
         tokens = text.split()
-        if len(tokens) == len(words):
-            return " ".join(t for t, k in zip(tokens, keep, strict=True) if k)
-        return " ".join(w.text for w, k in zip(words, keep, strict=True) if k)
+        wordy = [i for i, t in enumerate(tokens) if words_of(t)]
+        if len(wordy) != len(words):
+            return " ".join(w.text for w, k in zip(words, keep, strict=True) if k)
+        kept: list[str] = []
+        at = -1  # the word last passed, by its place in `words`
+        for token in tokens:
+            if words_of(token):
+                at += 1
+                if keep[at]:
+                    kept.append(token)
+            # Punctuation alone ("--", "…") stays only between two words kept.
+            elif 0 <= at < len(keep) - 1 and keep[at] and keep[at + 1]:
+                kept.append(token)
+        said = " ".join(kept)
+        # And never leads what they said.
+        return said.lstrip(_LEADING)
 
     def _this_turn(self) -> str:
         return self._kept(self._raw_turn(), self.turn_words())
@@ -357,7 +374,8 @@ class Listener:
         at = max(_UNTIMED_HALF_S, self.sent_s - UNTIMED_LAG_S)
         lo, hi = at - _UNTIMED_HALF_S, at + _UNTIMED_HALF_S
         out: list[Word] = []
-        for i, token in enumerate(text.split()):
+        # Punctuation alone ("--") is not a word, and has no time.
+        for i, token in enumerate(t for t in text.split() if words_of(t)):
             prior = before[i] if i < len(before) else None
             if prior is not None and words_of(prior.text) == words_of(token):
                 out.append(prior)

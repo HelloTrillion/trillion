@@ -443,6 +443,34 @@ async def test_a_judge_keeps_only_their_words_spelled_as_heard() -> None:
     await listener.abandon()
 
 
+@pytest.mark.parametrize(
+    ("said", "theirs", "expected"),
+    [
+        # Live: her "five" left out, its dash kept: "-- What about Tuesday?".
+        ("five -- What about Tuesday?", {"What", "about", "Tuesday"}, "What about Tuesday?"),
+        ("five… what about Tuesday?", {"what", "about", "Tuesday"}, "what about Tuesday?"),
+        ("Skip that -- three hundred.", {"Skip", "that"}, "Skip that"),
+        ("Skip that -- please.", {"Skip", "that", "please"}, "Skip that -- please."),
+        ("ask, then what", {"then", "what"}, "then what"),
+    ],
+)
+async def test_punctuation_goes_with_the_words_left_out(
+    said: str, theirs: set[str], expected: str
+) -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    tokens = [t for t in said.split() if any(c.isalnum() for c in t)]
+    words = tuple(
+        Word(text=t.strip(".,?…"), start_s=i * 0.3, end_s=i * 0.3 + 0.2)
+        for i, t in enumerate(tokens)
+    )
+    stt.stream.say(said, final=False, words=words)
+    await reported(listener, said)
+    listener.hear(judge=lambda ws: [w.text in theirs for w in ws])
+    assert listener.text() == expected
+    await listener.abandon()
+
+
 async def test_words_without_times_are_placed_at_their_report_less_the_lag() -> None:
     stt = FakeSTT(turns=True)
     listener = await watcher(stt)
