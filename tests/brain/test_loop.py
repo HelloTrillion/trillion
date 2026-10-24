@@ -367,3 +367,17 @@ async def test_a_given_first_call_that_ends_in_text_never_calls_the_model(run: R
     assert provider.calls == []
     assert done.stop == "end"
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="Hi."),))]
+
+
+async def test_a_given_first_call_that_fails_midway_ends_the_turn_like_a_real_call(
+    run: Run,
+) -> None:
+    async def dies() -> AsyncIterator[ModelEvent]:
+        yield TextDelta(text="So far")
+        raise ProviderError("rate_limited")
+
+    provider = ScriptedProvider(say("unused"))
+    done = await run.go(provider, first=dies())
+    assert provider.calls == []
+    assert done.stop == "provider_error" and done.error_kind == "rate_limited"
+    assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="So far"),))]
