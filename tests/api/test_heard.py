@@ -13,7 +13,7 @@ from tests.api.test_drafts import judging
 from tests.api.test_listening import hearing, speak
 from tests.api.test_session import Page, idle
 from tests.api.test_session_notices import voiced
-from tests.brain.fakes import ScriptedProvider, say, use
+from tests.brain.fakes import ScriptedProvider, is_naming, say, use
 from tests.voice.audio import room, tone
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
@@ -45,6 +45,10 @@ class Halting(ScriptedProvider):
         self._text = text
 
     async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
+        if is_naming(kw["system"]):  # naming is not a turn
+            async for ev in super().stream(**kw):
+                yield ev
+            return
         if self._replies:
             async for ev in super().stream(**kw):
                 yield ev

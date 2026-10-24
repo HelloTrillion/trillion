@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
-from tests.brain.fakes import ScriptedProvider, say, use
+from tests.brain.fakes import ScriptedProvider, is_naming, say, use
 from trillion import paths
 from trillion.api.app import CLOSE_FORBIDDEN, CLOSE_UNAUTHENTICATED, create_app
 from trillion.api.runtime import Runtime, open_runtime
@@ -348,6 +348,10 @@ def test_a_provider_failure_is_named_and_the_orb_shows_it(make: Any) -> None:
 def test_an_interrupt_stops_the_reply_and_keeps_what_was_said(make: Any) -> None:
     class Slow(ScriptedProvider):
         async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
+            if is_naming(kw["system"]):  # naming is not a turn
+                async for ev in super().stream(**kw):
+                    yield ev
+                return
             self.calls.append((kw["system"], list(kw["messages"])))
             yield TextDelta(text="Well")
             await asyncio.sleep(30)
