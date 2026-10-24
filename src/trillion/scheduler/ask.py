@@ -11,14 +11,30 @@ writes is recorded as read, not as the user's words (MEM-5).
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trillion.brain.loop import LoopEvent, ReplyDelta, ToolEnded, ToolStarted, run_turn
-from trillion.brain.types import ContextBlock, ModelProvider, Msg, SystemBlock, TextBlock
+from trillion.brain.loop import (
+    CallTimed,
+    LoopEvent,
+    ReplyDelta,
+    ToolEnded,
+    ToolStarted,
+    TurnDone,
+    run_turn,
+)
+from trillion.brain.types import (
+    ContextBlock,
+    ModelProvider,
+    Msg,
+    SystemBlock,
+    TextBlock,
+    Usage,
+)
 from trillion.persona.prompt import Identity, scheduled, volatile_context
 from trillion.scheduler.runner import AskFailed, NoModel
 from trillion.scheduler.store import Schedule
@@ -27,6 +43,8 @@ from trillion.spine.registry import ToolRegistry
 from trillion.spine.router import Router
 from trillion.spine.untrusted import is_outside
 from trillion.storage.sqlite.conversation_store import Kind, SqliteConversationStore
+
+logger = logging.getLogger(__name__)
 
 # A provider that can't be reached or refuses the key before saying anything: the
 # ask waits, blocked, for the model to come back (TESTING §4.2).
@@ -66,7 +84,6 @@ class Asker:
         if provider is None:
             raise NoModel
         conversation = uuid.uuid4().hex
-        await self._conversations.create(conversation, self._owner, self._clock(), "scheduled")
         tools = self._registry.unattended()
         system = [
             *await asyncio.to_thread(self._system),
@@ -81,11 +98,38 @@ class Asker:
                 TextBlock(text=schedule.body),
             ),
         )
-        await self._conversations.append(conversation, self._owner, "user", ask, self._clock())
         roots = self._roots()
         outside = False
         began = False
         last: list[str] = []
+        pricing = provider.pricing()
+        spent = Usage()
+        cost: float | None = 0.0 if pricing is not None else None
+        created = False
+
+        async def ensure() -> None:
+            # Kept only once something happens in it: an ask blocked on every tick for an
+            # hour leaves no empty conversation behind each time.
+            nonlocal created
+            if not created:
+                now_ms = self._clock()
+                await self._conversations.create(conversation, self._owner, now_ms, "scheduled")
+                await self._conversations.append(conversation, self._owner, "user", ask, now_ms)
+                created = True
+
+        async def settle(usage: Usage, cost_usd: float | None) -> None:
+            if not created and usage == Usage():
+                return
+            await ensure()
+            await self._conversations.record_usage(
+                owner_id=self._owner,
+                conversation_id=conversation,
+                provider=provider.name,
+                model=provider.model,
+                usage=usage,
+                cost_usd=cost_usd,
+                now_ms=self._clock(),
+            )
 
         def ctx(call_id: str) -> ToolContext:
             return ToolContext(
@@ -99,8 +143,13 @@ class Asker:
             )
 
         async def emit(ev: LoopEvent) -> None:
-            nonlocal outside, began
-            if isinstance(ev, ReplyDelta):
+            nonlocal outside, began, spent, cost
+            if isinstance(ev, CallTimed):
+                # Counted as it is spent, so a run cut off still records what it used.
+                spent = spent + ev.usage
+                if pricing is not None and cost is not None:
+                    cost += pricing.cost(ev.usage)
+            elif isinstance(ev, ReplyDelta):
                 began = True
                 last.append(ev.text)
             elif isinstance(ev, ToolStarted):
@@ -108,31 +157,39 @@ class Asker:
                 began = True
                 last.clear()
             elif isinstance(ev, ToolEnded) and ev.response.status == "succeeded":
-                outside = outside or is_outside(ev.name, tools.definition(ev.name))
+                # The live registry: a server connected after the view was taken still
+                # runs by name, and what it returns is still someone else's words.
+                d = self._registry.definition(ev.name) or tools.definition(ev.name)
+                outside = outside or is_outside(ev.name, d)
 
         async def save(msg: Msg) -> None:
+            await ensure()
             kind: Kind = "assistant" if msg.role == "assistant" else "tool_results"
             await self._conversations.append(conversation, self._owner, kind, msg, self._clock())
 
-        done = await run_turn(
-            provider=provider,
-            router=self._router,
-            registry=tools,
-            system=system,
-            history=[ask],
-            ctx=ctx,
-            emit=emit,
-            save=save,
-        )
-        await self._conversations.record_usage(
-            owner_id=self._owner,
-            conversation_id=conversation,
-            provider=provider.name,
-            model=provider.model,
-            usage=done.usage,
-            cost_usd=done.cost_usd,
-            now_ms=self._clock(),
-        )
+        done: TurnDone
+        try:
+            done = await run_turn(
+                provider=provider,
+                router=self._router,
+                registry=tools,
+                system=system,
+                history=[ask],
+                ctx=ctx,
+                emit=emit,
+                save=save,
+            )
+        except BaseException:
+            # Timed out, cancelled or broken: what it spent is recorded all the same, and
+            # a second cancellation cannot cut the write short.
+            try:
+                await asyncio.shield(settle(spent, cost))
+            except Exception as e:
+                logger.warning(
+                    "usage of timed ask %s not recorded: %s", schedule.id, type(e).__name__
+                )
+            raise
+        await settle(done.usage, done.cost_usd)
         if done.stop == "provider_error":
             if not began and done.error_kind in _UNAVAILABLE:
                 raise NoModel

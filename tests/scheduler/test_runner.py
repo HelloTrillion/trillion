@@ -187,24 +187,42 @@ async def test_a_failure_says_why_in_a_few_words(store: SqliteScheduleStore) -> 
     assert door.notices[0].kind == "failed"
 
 
-async def test_a_restart_mid_run_runs_it_once_more_and_records_it(
+async def test_a_restart_mid_run_runs_a_reminder_once_more_and_records_it(
     store: SqliteScheduleStore,
 ) -> None:
-    await store.create(schedule(kind="ask"))
-    await store.enqueue("a1b2c3d4", DUE, None, 120.0, DUE)
+    await store.create(schedule())
+    await store.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
     assert await store.claim("the-old-process", DUE, 0) is not None  # then it crashed
-    asks = Asks("Here it is.")
-    sched, door, _ = make(store, DUE + MINUTE, asks)
+    sched, door, _ = make(store, DUE + MINUTE)
     await sched.tick()
-    assert asks.calls == 1 and [n.text for n in door.notices] == ["Here it is."]
+    assert [n.text for n in door.notices] == ["Time to call the dentist."]
     (run,) = await store.runs("a1b2c3d4")
     assert run.status == "delivered" and run.attempts == 2
     assert run.detail == "interrupted; tried again"
 
 
-async def test_a_run_interrupted_twice_is_missed(store: SqliteScheduleStore) -> None:
+async def test_a_timed_ask_interrupted_mid_run_is_failed_not_run_again(
+    store: SqliteScheduleStore,
+) -> None:
+    # Its tools may already have done something the user can't undo.
     await store.create(schedule(kind="ask"))
     await store.enqueue("a1b2c3d4", DUE, None, 120.0, DUE)
+    assert await store.claim("the-old-process", DUE, 0) is not None  # then it crashed
+    asks = Asks("never")
+    sched, door, _ = make(store, DUE + MINUTE, asks)
+    await sched.tick()
+    assert asks.calls == 0
+    (n,) = door.notices
+    assert n.kind == "failed" and n.text is None
+    (run,) = await store.runs("a1b2c3d4")
+    assert run.status == "failed" and run.detail == "interrupted" and run.attempts == 1
+    await sched.tick()
+    assert asks.calls == 0 and len(door.notices) == 1
+
+
+async def test_a_run_interrupted_twice_is_missed(store: SqliteScheduleStore) -> None:
+    await store.create(schedule())
+    await store.enqueue("a1b2c3d4", DUE, None, 10.0, DUE)
     await store.claim("first", DUE, 0)
     await store.reclaim("second", DUE)
     (run,) = await store.runs("a1b2c3d4")
@@ -304,7 +322,7 @@ async def test_stopped_after_the_notice_is_written_it_is_never_run_twice(
     assert run.status == "delivered" and run.result_notice == held.id
 
 
-async def test_stopped_while_the_notice_is_written_nothing_is_kept_and_it_runs_again(
+async def test_stopped_while_the_notice_is_written_nothing_is_kept_and_it_is_not_run_again(
     store: SqliteScheduleStore,
 ) -> None:
     await store.create(schedule(kind="ask"))
@@ -330,10 +348,11 @@ async def test_stopped_while_the_notice_is_written_nothing_is_kept_and_it_runs_a
     assert run.status == "running"
     after, door, _ = make(store, DUE + MINUTE, asks, worker="w2")
     await after.tick()
-    assert asks.calls == 2 and [n.text for n in door.notices] == ["Done."]
+    # It ran once already; it is reported as not finished, never run a second time.
+    assert asks.calls == 1 and [(n.kind, n.text) for n in door.notices] == [("failed", None)]
     assert len(await store.held("local")) == 1
     (run,) = await store.runs("a1b2c3d4")
-    assert run.status == "delivered" and run.attempts == 2
+    assert run.status == "failed" and run.detail == "interrupted" and run.attempts == 1
 
 
 async def test_an_empty_reply_is_a_failure(store: SqliteScheduleStore) -> None:
@@ -356,16 +375,16 @@ async def test_a_timeout_inside_the_ask_is_not_the_ask_timing_out(
     assert run.status == "failed" and run.detail == "TimeoutError"
 
 
-async def test_an_interrupted_ask_past_the_hour_is_missed(store: SqliteScheduleStore) -> None:
+async def test_an_interrupted_ask_past_the_hour_is_failed(store: SqliteScheduleStore) -> None:
     await store.create(schedule(kind="ask"))
     await store.enqueue("a1b2c3d4", DUE, None, 120.0, DUE)
     await store.claim("the-old-process", DUE, 0)
     asks = Asks("never")
     sched, door, _ = make(store, DUE + 61 * MINUTE, asks)
     await sched.tick()
-    assert asks.calls == 0 and [n.kind for n in door.notices] == ["missed"]
+    assert asks.calls == 0 and [n.kind for n in door.notices] == ["failed"]
     (run,) = await store.runs("a1b2c3d4")
-    assert run.status == "missed" and run.detail == "interrupted"
+    assert run.status == "failed" and run.detail == "interrupted"
 
 
 async def test_an_interrupted_reminder_is_delivered_once_more(

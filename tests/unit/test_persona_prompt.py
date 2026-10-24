@@ -132,3 +132,11 @@ def test_a_timed_ask_is_told_the_user_is_away() -> None:
     text = scheduled(Identity(agent_name="Nova", user_name="Sam"))
     assert "Sam asked for this earlier" in text and "{user_name}" not in text
     assert "say plainly what you would do" in text
+
+
+def test_a_zone_whose_abbreviation_is_its_name_is_said_once() -> None:
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 10, 24, 16, 0, tzinfo=ZoneInfo("UTC"))
+    text = volatile_context(now, [], zone="UTC")
+    assert "now: Saturday 2026-10-24 16:00 UTC\n" in text and "(UTC)" not in text

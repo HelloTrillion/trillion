@@ -7,7 +7,8 @@ one more than an hour late is reported missed instead of run stale, one with no
 model waits as blocked, and one that fails is reported and never silently retried.
 
 Every tick also reclaims runs a crashed process left running, and runs of its own
-past their timeout: each is tried once more, or reported missed. One schedule or run
+past their timeout: a reminder is tried once more, or reported missed; a timed ask,
+whose tools may already have acted, is reported failed and never run again. One schedule or run
 that breaks is logged and skipped, never allowed to hold up the rest.
 
 The runner never touches a surface. It writes notices and tells the door (SUR-9).
@@ -184,11 +185,12 @@ class Scheduler:
         s = await self._store.get(run.schedule_id)
         if s is None or s.status == "cancelled":
             await self._store.finish(run.id, "cancelled", now, detail="cancelled")
-        elif run.attempts < MAX_ATTEMPTS and (
-            s.kind == "reminder" or now - run.due_ms <= ASK_WINDOW_MS
-        ):
-            # Unattended tools never ask and only do what the user can undo, so a
-            # second attempt is safe. It is recorded as one.
+        elif s.kind == "ask":
+            # Never run again: unattended tools never ask, but a write the user let run
+            # without asking need not be one they can undo, and it may have happened.
+            await self._notice(run, s, "failed", None, "failed", "interrupted")
+        elif run.attempts < MAX_ATTEMPTS:
+            # A reminder runs no tools: a second attempt is safe, and recorded as one.
             await self._store.requeue(run.id, "interrupted; tried again")
         else:
             await self._notice(run, s, "missed", None, "missed", "interrupted")

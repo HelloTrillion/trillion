@@ -207,7 +207,9 @@ def volatile_context(
     `zone` is the user's timezone by name, so she can work out a time for a reminder
     in it (AGT-9); `now` is already in that zone."""
     when = now.strftime("%A %Y-%m-%d %H:%M %Z").strip()
-    lines = [f"now: {when} ({zone})" if zone else f"now: {when}"]
+    # "UTC (UTC)" says nothing twice: a zone already named by its abbreviation is left.
+    named = zone and zone != now.strftime("%Z")
+    lines = [f"now: {when} ({zone})" if named else f"now: {when}"]
     lines.extend(f"waiting for an answer: {p.pending_id}: {p.summary}" for p in pending)
     if spoken is not None:
         # How this one message arrived (PER-3, #40). It rides here, with the message,

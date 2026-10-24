@@ -4050,17 +4050,18 @@ async def test_a_socket_that_fails_after_the_save_loses_nothing(rt: Runtime) -> 
 - [ ] **Step 2: Run to see them fail**
 
 Run: `uv run pytest tests/api/test_session_notices.py -q`
-Expected: `ImportError: cannot import name 'local_zone' from 'trillion.api.runtime'`.
+Expected: `ImportError: cannot import name 'NOTICE_TURNS' from 'trillion.api.session'`. (`local_zone`, `Runtime.zone()` and the user's zone in `_save_input` landed in Task 7, so `test_she_works_out_times_in_the_users_own_zone` already passes.)
 
 - [ ] **Step 3: Implement the runtime**
 
 `src/trillion/api/runtime.py`:
 
-- Imports: add `contextlib` and `logging` to the standard ones; change `from trillion.brain.types import ModelProvider` to `from trillion.brain.types import ModelProvider, SystemBlock`; and add
+> `local_zone()`, `Runtime.zone()`, `from trillion.scheduler import when` and `contextlib` landed in Task 7; they are not added again here.
+
+- Imports: add `logging` to the standard ones; change `from trillion.brain.types import ModelProvider` to `from trillion.brain.types import ModelProvider, SystemBlock`; and add
 
 ```python
 from trillion.delivery.door import Door
-from trillion.scheduler import when
 from trillion.scheduler.ask import Asker
 from trillion.scheduler.runner import Scheduler
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -4077,20 +4078,6 @@ from trillion.tools.schedule import (
 ```
 
 - Before `OWNER = "local"`: `logger = logging.getLogger(__name__)`.
-
-- After `_now_ms`:
-
-```python
-def local_zone(env: Mapping[str, str] | None = None) -> str | None:
-    """This computer's timezone as an IANA name, when it can be told: TZ, then where
-    /etc/localtime points. None where neither says (Windows keeps its own names)."""
-    names = [(os.environ if env is None else env).get("TZ", "").removeprefix(":")]
-    with contextlib.suppress(OSError):
-        target = os.path.realpath("/etc/localtime")
-        if "zoneinfo/" in target:
-            names.append(target.split("zoneinfo/", 1)[1])
-    return next((n for n in names if n and when.known(n)), None)
-```
 
 - Fields, after `skills_on`:
 
@@ -4118,11 +4105,6 @@ def local_zone(env: Mapping[str, str] | None = None) -> str | None:
 - Methods, before `_mcp_fact`:
 
 ```python
-    def zone(self) -> str | None:
-        """The user's timezone: the one they gave (USER.md), else this computer's (AGT-9)."""
-        chosen = self.profile.timezone if self.profile is not None else ""
-        return chosen if chosen and when.known(chosen) else local_zone(self.env)
-
     def system(self) -> list[SystemBlock]:
         """The system block a turn gets, read now: rules, folders and the skills that are
         on. Skills that can't be read leave it without them, logged by kind only."""
@@ -4198,7 +4180,7 @@ The clocks are lambdas so a test that replaces `rt.clock` moves all of them.
 
 `src/trillion/api/session.py`:
 
-- Imports: `Sequence` from `collections.abc`; `from zoneinfo import ZoneInfo`; `from trillion.delivery.door import Delivery, Facts, NotFree, free`.
+- Imports: `Sequence` from `collections.abc`; `from trillion.delivery.door import Delivery, Facts, NotFree, free`.
 
 - After `SURFACE = "web"`:
 
@@ -4254,20 +4236,7 @@ NOTICE_TURNS = 1 << 30
 
 - In `_one_turn`, after `await speaker.finish()`: `self._spoken = (turn, rt.clock())`; in its `except asyncio.CancelledError`, after `await speaker.stop()`: `self._spoken = None`.
 
-- In `_save_input`, the `volatile_context(...)` call becomes:
-
-```python
-        # The user's own clock, so "at four" means four where they are (AGT-9).
-        zone = self._rt.zone()
-        context = volatile_context(
-            datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
-            pending,
-            self._remembered(text) if kind == "user" else "",
-            # Said aloud: she is told it is a transcript, and that she will be heard (#40).
-            spoken=self._rt.identity if spoken else None,
-            zone=zone or "",
-        )
-```
+- (The user's zone in `_save_input`'s `volatile_context(...)`, and the `ZoneInfo` import, landed in Task 7.)
 
 - `_state` gains the free hook, and the notice methods follow it:
 

@@ -559,9 +559,12 @@ class Router:
         if not await self._known(ctx.owner_id):
             return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
+        h = args_hash({"pending_id": pending_id})
+        if ctx.via == "schedule":
+            refusal = _refused(Refusal.UNATTENDED, _UNATTENDED)
+            return await self._audit(ctx, start, "represent", h, "meta", "represent", refusal)
         a = await self._store.get_pending(pending_id)
         if a is None or a.owner_id != ctx.owner_id:
-            h = args_hash({"pending_id": pending_id})
             return await self._audit(
                 ctx, start, "represent", h, "meta", "represent", _refused(Refusal.NOT_FOUND)
             )
@@ -569,8 +572,6 @@ class Router:
         return await self._audit_resolution(a, ctx, start, response, decision="represent")
 
     async def _represent(self, a: PendingAction, ctx: ToolContext, now: int) -> RouterResponse:
-        if ctx.via == "schedule":
-            return _refused(Refusal.UNATTENDED, _UNATTENDED)
         if a.session_id != ctx.session_id:
             return _refused(Refusal.WRONG_SESSION)
         a = await self._expire_if_due(a, now, ctx)

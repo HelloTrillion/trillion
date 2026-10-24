@@ -3,8 +3,9 @@ never ask, what tools return still wrapped, and no model means blocked (AGT-9, D
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,14 @@ from tests.brain.fakes import ScriptedProvider, say, use
 from tests.scheduler.conftest import schedule
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.brain.types import ModelEvent, ProviderError, ToolResultBlock, ToolSchema
+from trillion.connectors.mcp.config import ServerConfig
+from trillion.connectors.mcp.tool import McpTool, Offered, Outcome
 from trillion.persona.prompt import system_blocks
 from trillion.scheduler.ask import Asker
 from trillion.scheduler.runner import AskFailed, NoModel
 from trillion.secrets.store import MemoryStore
 from trillion.spine.confirm import Status
+from trillion.spine.contract import JSON, Risk
 
 
 class Recording(ScriptedProvider):
@@ -30,6 +34,36 @@ class Recording(ScriptedProvider):
 
     async def stream(self, *, tools: Sequence[ToolSchema], **kw: Any) -> AsyncIterator[ModelEvent]:
         self.offered.append([t.name for t in tools])
+        async for ev in super().stream(tools=tools, **kw):
+            yield ev
+
+
+class Hangs(Recording):
+    """Answers its script, then never answers again, saying when it got there."""
+
+    def __init__(self, *replies: list[ModelEvent] | Exception) -> None:
+        super().__init__(*replies)
+        self.waiting = asyncio.Event()
+
+    async def stream(self, *, tools: Sequence[ToolSchema], **kw: Any) -> AsyncIterator[ModelEvent]:
+        if not self._replies:
+            self.waiting.set()
+            await asyncio.Event().wait()
+        async for ev in super().stream(tools=tools, **kw):
+            yield ev
+
+
+class Connects(Recording):
+    """Runs `connect` when it is first asked: a server that connects mid-run."""
+
+    def __init__(self, connect: Callable[[], None], *replies: list[ModelEvent]) -> None:
+        super().__init__(*replies)
+        self.connect: Callable[[], None] | None = connect
+
+    async def stream(self, *, tools: Sequence[ToolSchema], **kw: Any) -> AsyncIterator[ModelEvent]:
+        if self.connect is not None:
+            self.connect, connect = None, self.connect
+            connect()
         async for ev in super().stream(tools=tools, **kw):
             yield ev
 
@@ -67,6 +101,12 @@ async def scheduled_conversation(rt: Runtime) -> str:
     ) as cur:
         (row,) = await cur.fetchall()
     return str(row[0])
+
+
+async def count(rt: Runtime, sql: str) -> int:
+    async with rt.conversations._conn.execute(sql) as cur:
+        (row,) = await cur.fetchall()
+    return int(row[0])
 
 
 async def tool_results(rt: Runtime) -> list[dict[str, Any]]:
@@ -160,3 +200,53 @@ async def test_a_model_that_fails_otherwise_is_a_failure(rt: Runtime) -> None:
         await asker(rt, Recording(ProviderError("rate_limited")))(schedule(kind="ask"))
     with pytest.raises(AskFailed, match="no reply"):
         await asker(rt, Recording([]))(schedule(kind="ask"))
+
+
+async def test_a_server_connected_mid_run_is_still_outside(rt: Runtime) -> None:
+    async def call(name: str, args: JSON, timeout: float) -> Outcome:
+        return Outcome(ok=True, text="The user takes their coffee black.")
+
+    def connect() -> None:
+        server = ServerConfig(
+            name="late", transport="stdio", command="x", risks={"read": Risk.READ}
+        )
+        offered = Offered(name="read", description="read", input_schema={"type": "object"})
+        rt.registry.register(McpTool(server, offered, "mcp_late_read", call), module="trillion.mcp")
+
+    remember = {"kind": "personal", "text": "Coffee black.", "moves": False, "said_by": "user"}
+    provider = Connects(
+        connect,
+        use("mcp_late_read", {}, "c1"),
+        use("memory_write", remember, "c2"),
+        say("Noted."),
+    )
+    assert await asker(rt, provider)(schedule(kind="ask")) == "Noted."
+    assert "mcp_late_read" not in provider.offered[0]  # not in the view taken at the start
+    read, written = await tool_results(rt)
+    assert read["status"] == "succeeded"
+    assert "something you read this turn" in written["content"]
+
+
+async def test_a_blocked_ask_leaves_nothing_behind(rt: Runtime) -> None:
+    for _ in range(3):
+        with pytest.raises(NoModel):
+            await asker(rt, Recording(ProviderError("unreachable")))(schedule(kind="ask"))
+        with pytest.raises(NoModel):
+            await asker(rt, None)(schedule(kind="ask"))
+    assert await count(rt, "SELECT COUNT(*) FROM conversations WHERE kind = 'scheduled'") == 0
+    assert await count(rt, "SELECT COUNT(*) FROM messages") == 0
+    assert await count(rt, "SELECT COUNT(*) FROM usage") == 0
+
+
+async def test_what_an_ask_cut_off_had_spent_is_still_recorded(rt: Runtime) -> None:
+    provider = Hangs(use("memory_recall", {"query": "email"}))
+    task = asyncio.create_task(asker(rt, provider)(schedule(kind="ask")))
+    await provider.waiting.wait()
+    task.cancel()  # as the runner's timeout does
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    conversation = await scheduled_conversation(rt)
+    async with rt.conversations._conn.execute(
+        "SELECT input_tokens, output_tokens FROM usage WHERE conversation_id = ?", (conversation,)
+    ) as cur:
+        assert [tuple(r) for r in await cur.fetchall()] == [(10, 5)]

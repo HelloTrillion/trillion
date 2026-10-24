@@ -204,6 +204,16 @@ async def test_an_unattended_run_settles_no_card(spine: Spine) -> None:
         assert resolved.reason is Refusal.UNATTENDED
     again = await spine.router.represent(card.pending_id, spine.ctx(via="schedule"))
     assert again.reason is Refusal.UNATTENDED
+    # Refused before anything is looked up, as resolve() is: an id tells it nothing.
+    for decision in ("confirm", "cancel"):
+        nothing = await spine.router.resolve(
+            "no-such-card",
+            decision,  # type: ignore[arg-type]
+            spine.ctx(via="schedule"),
+        )
+        assert nothing.reason is Refusal.UNATTENDED
+    missing = await spine.router.represent("no-such-card", spine.ctx(via="schedule"))
+    assert missing.reason is Refusal.UNATTENDED
     assert (await spine.store.get_pending(card.pending_id)).status is Status.PROPOSED  # type: ignore[union-attr]
     assert spine.slow.executions == 0
     assert len(await spine.store.list_by_status(Status.PROPOSED)) == 1  # no second card

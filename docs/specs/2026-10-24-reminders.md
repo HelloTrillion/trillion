@@ -103,9 +103,8 @@ An async store over the shared connection, like `SqliteConversationStore`:
      - It timed out or raised: `failed`, a notice with no text, and `detail` saying why.
      - It is never retried silently (AGT-8).
 4. **Reclaim at startup:** a run left `running` by a previous process is `interrupted`.
-   - It is enqueued once more, attempt 2, if it is still within the late window.
-   - Otherwise it becomes `missed`.
-   - Unattended tools never ask, and every tool they have only reads or writes something the user can undo. A second attempt is safe, and the second attempt is recorded.
+   - A reminder runs no tools: it is enqueued once more, attempt 2, and the second attempt is recorded. Interrupted again, it becomes `missed`.
+   - A timed ask is never run again: it becomes `failed`, with `detail` "interrupted" and a notice with no text. Unattended tools never ask, but a write the user let run without asking (an MCP tool set to "write", say) need not be one they can undo, and it may already have happened.
 
 The runner never touches a surface. It only writes notices (SUR-9).
 
@@ -209,7 +208,7 @@ All with a fake clock and fake providers.
   - a timed ask 30 min late runs, and one 2 h late is missed;
   - no model: blocked, then runs once the model is back, or is missed after an hour;
   - timeout: failed, with no retry;
-  - a restart mid-run: interrupted, then run once more and recorded;
+  - a restart mid-run: a reminder is interrupted, then run once more and recorded; a timed ask is interrupted, then failed, and not run again;
   - cancel removes queued runs.
 - **ask:**
   - the unattended view lists no gated tool and no "asks first" MCP or Google tool;
