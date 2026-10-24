@@ -26,7 +26,7 @@ She has a face. An orb of noise-displaced light breathes while idle, turns gold 
 
 ### 2. The Voice
 
-Sub-second turn-taking, a wake word, barge-in, and a microphone that is already warm when you start speaking, so your first syllable is never clipped. With Deepgram you can pause mid-thought without being cut off, and say "yeah" over her without stopping her; anything else stops her and she listens. "Start thinking before I finish" (Settings → Hearing, on by default) lets her begin her answer early, at the cost of some extra model calls. Under that sits a personality with actual opinions: brief, dry, deadpan. She pressure-tests your plan in one question instead of five bullet points, and she never opens with "Great question!"
+Sub-second turn-taking, a wake word, barge-in, and a microphone that is already warm when you start speaking, so your first syllable is never clipped. With Deepgram you can pause mid-thought without being cut off, and say "yeah" over her without stopping her; anything else stops her and she listens. "Start thinking before I finish" (Settings → Hearing, on by default) lets her begin her answer early, at the cost of some extra model calls. Usage counts a draft once the provider reports it; one cut short before then isn't counted, though the provider may still bill its input. Under that sits a personality with actual opinions: brief, dry, deadpan. She pressure-tests your plan in one question instead of five bullet points, and she never opens with "Great question!"
 
 ### 3. The Spine
 

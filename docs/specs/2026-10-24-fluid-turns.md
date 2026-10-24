@@ -83,12 +83,14 @@ A **draft** is a real turn started early, with a closed **gate**.
   - **What runs:** the draft runs only the model's **first call**, with the same system prompt, history, tools and token limit a confirmed turn would send. It records each event (text, tool calls, the end) as it arrives and does nothing else.
   - **Holding:** nothing reaches the page, the speaker, the history or a tool, because none of those is in the draft. A first call that ends in a tool call simply ends there; the call is not run.
   - **Where it lives:** `Session._draft`, separate from `_task`. The microphone is still open, so the door already counts the session as busy (VOI-17). Nothing about notices changes.
-- **On `resumed`:** the draft is cancelled and listening carries on. Its usage so far is recorded, so `/api/usage` stays honest.
+- **On `resumed`:** the draft is cancelled and listening carries on.
+- **Its cost:** a draft's usage is recorded once the provider reports it, at the end of the call. A draft cut short before then (the usual case on `resumed`) isn't counted, though the provider may still bill its input.
 - **On `done`**, the draft is used when the words match (compared ignoring case, spacing and punctuation), and nothing has changed since it started (the same history length and summary, and no tap's note waiting):
   1. The draft's message is committed and the turn counter moves, exactly as today (VOI-15a).
   2. The turn runs as usual, except that `run_turn` takes the draft's recorded events, and then its live ones, as its first call (`brain/loop.py`: `run_turn(..., first=...)`) instead of calling the model again.
   3. So the held text reaches the speaker and page in order, and a tool call it asked for is dispatched by the confirmed turn, with that turn's number and context (SPN-2, MEM-5).
-- **The words differ, or something changed:** the draft is cancelled, its usage recorded, and the turn starts normally.
+- **The words differ, or something changed:** the draft is cancelled and the turn starts normally.
+- **The system prompt changed** (a rule or skill turned on or off while it ran): the turn, which reads the prompt anyway, compares it with the one the draft sent and lets the draft go.
 - **If the draft failed** (a provider error before it was used), it is dropped and the confirmed turn starts normally. A draft's failure is never shown.
 - **In the trace,** a turn records `draft: used | dropped | none`. A dropped draft's text is never kept anywhere.
 
@@ -129,7 +131,14 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
   - With no sentence heard, only the marker is kept, so the history still shows she began.
 - **Typed turns and muted voice** keep the full text, as today.
 - **Earlier rounds of the same turn** (text before a tool call) are saved as they are now.
-- **The page** receives `interrupted` with `kept`, the round's kept text, and replaces the bubble's text with it.
+- **The page** receives `interrupted` with `kept`, the round's kept text, and replaces the bubble's text with it. With nothing kept, it shows the marker, as a reload does.
+
+**Talked over after it was written:**
+
+- Her last spoken reply, already saved, is trimmed to what was heard when the user cuts in (a barge, an overlap that interrupts, or Stop) while it still plays.
+- Only while the model has never been sent it: anything saved after it, or a draft that read it, blocks the trim.
+- The store amends only the conversation's last assistant row (`amend_tail`), the documented exception to append-only (`scripts/check_one_writer.py`).
+- The provider's raw turn is dropped with it, so the next request misses the prompt cache once.
 
 ## Errors and edge cases
 
@@ -154,7 +163,8 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
   - a draft held at a tool call, dispatched only after the turn is confirmed, with the confirmed turn's number;
   - a failed draft;
   - the switch turned off;
-  - usage recorded for a dropped draft.
+  - usage recorded for a dropped draft that had finished;
+  - a draft dropped when the system prompt changed.
 - **`tests/voice/test_overlap.py`:** `decide` on acknowledgements, interruptions, echo, silence, the time limits and words in another language.
 - **`tests/api/test_overlap_session.py`:**
   - carry on: the reply is untouched and nothing is saved;
@@ -165,7 +175,8 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
   - an interrupted spoken reply saved to the heard sentence;
   - nothing heard;
   - typed and muted replies unchanged;
-  - `kept` sent to the page.
+  - `kept` sent to the page;
+  - a reply already saved, talked over while it plays, trimmed to what was heard, and never once a draft has read it (a draft that never started leaves it trimmable).
 - **Web:** ducking and restoring the gain; `overlap` vs `barge` by capability; `playback.sentence` reporting; replacing the bubble with `kept`.
 - **Live check:** with the user's Deepgram key and audio stubbed so nothing plays aloud:
   - a mid-sentence pause no longer cuts the turn;
