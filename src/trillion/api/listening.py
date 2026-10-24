@@ -22,6 +22,7 @@ from trillion.voice.endpoint import (
     leads_on,
     sounds_finished,
 )
+from trillion.voice.overlap import keys
 from trillion.voice.types import Heard, STTProvider, STTStream, VoiceError
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,10 @@ BATCH_WRAP_UP_S = 60.0
 _MAX_BACKLOG = 16_000 * 2 * 10
 # The window that reopens after she speaks waits this long for a first word (VOI-8).
 FOLLOW_UP_S = 3.0
-# A recognizer reports a word about this long after it was said.
+# A recognizer reports a word about this long after it was said, and never sooner
+# than the shorter time.
 REPORT_LAG_S = 0.4
+MIN_LAG_S = 0.15
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -81,8 +84,9 @@ class Listener:
         # The recognizer said its current turn is over; its next words start another.
         self._turn_ended = False
         # Words at the start of the recognizer's current turn already judged and let go.
-        # Its reports repeat the whole turn so far, so they are skipped, not deleted.
-        self._skip = 0
+        # Its reports repeat the whole turn so far, so they are skipped, not deleted, and
+        # matched as words, not counted: it may revise them ("or writes" to "Skip that").
+        self._forgotten: tuple[str, ...] = ()
         # When the user's first words were said (the loop's clock), once listening, and
         # whether a voice starting was heard then, or only the report is to go by.
         self.began: float | None = None
@@ -142,9 +146,21 @@ class Listener:
     def _raw_turn(self) -> str:
         return " ".join(p for p in (*self._finals, self._interim) if p).strip()
 
+    def _skipped(self, tokens: list[str]) -> int:
+        """How many of the turn's words, from its start, are still the ones let go."""
+        n = 0
+        for heard, gone in zip(keys(" ".join(tokens)), self._forgotten, strict=False):
+            if heard != gone:
+                break
+            n += 1
+        return n
+
     def _this_turn(self) -> str:
         said = self._raw_turn()
-        return " ".join(said.split()[self._skip :]) if self._skip else said
+        if not self._forgotten:
+            return said
+        tokens = said.split()
+        return " ".join(tokens[self._skipped(tokens) :])
 
     @property
     def turn_done(self) -> bool:
@@ -156,6 +172,11 @@ class Listener:
         """The recognizer's current turn has words and has not ended."""
         return bool(self._raw_turn()) and not self._turn_ended
 
+    def whole_turn(self) -> str:
+        """The recognizer's current turn as it reports it, words let go included (and
+        words held, when it ended on one that leads on)."""
+        return " ".join(p for p in (*self._held, self._raw_turn()) if p)
+
     def turn_text(self) -> str:
         """The words of the recognizer's current turn, less any forgotten. A turn it
         has ended stays current until its next words arrive."""
@@ -164,10 +185,13 @@ class Listener:
     def forget(self, words: int | None = None) -> None:
         """Let go of words already judged (VOI-9): this many more from the start of the
         current turn, or, with none given, everything heard so far."""
+        tokens = self._raw_turn().split()
         if words is None:
             self._held = []
-            words = len(self._this_turn().split())
-        self._skip += words
+            upto = len(tokens)
+        else:
+            upto = self._skipped(tokens) + words
+        self._forgotten = keys(" ".join(tokens[:upto]))
 
     def hear(self, *, patience_s: float = NOTHING_AFTER_S) -> None:
         """Stop watching: from here this is listening to the user, with fresh rules for
@@ -191,11 +215,12 @@ class Listener:
 
     def _placed(self, seen: float) -> tuple[float, bool]:
         """When words first reported at `seen` were said: the last voice to start at
-        least the recognizer's lag before then (not the first since some point: a click
-        before them must not count), and True; else the report less the lag, False."""
-        cutoff = seen - REPORT_LAG_S
+        least the recognizer's shortest lag before then (the last, not the first since
+        some point: a click before them must not count; and a fast report must not skip
+        the user's own start), and True; else the report less its usual lag, False."""
+        cutoff = seen - MIN_LAG_S
         start = next((t for t in reversed(self._starts) if t <= cutoff), None)
-        return (start, True) if start is not None else (cutoff, False)
+        return (start, True) if start is not None else (seen - REPORT_LAG_S, False)
 
     def turn_began(self) -> tuple[float, bool] | None:
         """When the recognizer's current turn was said (see `_placed`), if it has words."""
@@ -262,7 +287,7 @@ class Listener:
             # listening; the local rules end it if quiet goes on.
             added, self._finals = [self._this_turn()], []
             self._held.extend(a for a in added if a)
-            self._skip = 0
+            self._forgotten = ()
             self._holding = True
             self._rules.hold()
             return bool(added[0])
@@ -279,7 +304,7 @@ class Listener:
                 if heard.text and heard.turn != "done" and self._turn_ended:
                     # The recognizer's next turn. Only words held from the last are kept.
                     self._turn_ended = False
-                    self._finals, self._interim, self._skip = [], "", 0
+                    self._finals, self._interim, self._forgotten = [], "", ()
                     self._turn_seen = None
                 if heard.text and self._turn_seen is None:
                     self._turn_seen = self._now()

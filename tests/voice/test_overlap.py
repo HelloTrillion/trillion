@@ -327,3 +327,67 @@ def test_short_real_cut_ins_stop_her(cand: str, after: str, done: bool) -> None:
 def test_two_words_of_theirs_not_yet_ended_wait_then_carry_on() -> None:
     assert confirm("skip that", "", done=False, elapsed_s=0.5, playing=PLATFORM) == "wait"
     assert confirm("skip that", "", done=False, elapsed_s=1.1, playing=PLATFORM) == "carry_on"
+
+
+# ── Her own stop words by stem; the user's first word kept (live, 8% echo) ──
+
+STOPPED = ("Stopped. For real this time,", "here is the plan.")
+
+
+def test_her_stop_words_by_stem_are_hers() -> None:
+    """Live: her "Stopped." came back as "Stop." and stopped her."""
+    assert judge_watch("Stop.", STOPPED) == "echo"
+    assert confirm("stop", "", done=True, elapsed_s=0.2, playing=STOPPED) != "interrupt"
+    assert judge_watch("wait", ("I was waiting for you.",)) == "echo"
+    assert judge_watch("stopped", ("Stop the timer.",)) != "candidate"
+    # "no" only as itself: "not" and "now" are other words.
+    assert judge_watch("no", ("Not now.",)) == "candidate"
+    # Her own stop word no longer keeps her echo as theirs.
+    assert echo_of("Stop for real this time", STOPPED, early=False) == ""
+
+
+def test_a_stop_word_she_is_not_saying_still_stops_her() -> None:
+    playing = ("Let me check the times.",)
+    assert judge_watch("stop", playing) == "candidate"
+    assert confirm("stop", "", done=False, elapsed_s=0.1, playing=playing) == "interrupt"
+
+
+def test_a_word_of_theirs_is_not_folded_into_her_echo_by_one_word_of_hers() -> None:
+    playing = ("Tea was found in ancient China, and that is the story.",)
+    # "skip" then her "that": not enough of her after it to call "skip" hers.
+    assert echo_through("skip that", playing) == 0
+    assert echo_through("ancient skip that", playing) == 1
+    # A misheard word inside a run of hers still is.
+    assert echo_through("found in anshent china and", playing) == 5
+
+
+def test_her_stop_word_trailing_their_turn_is_taken_off() -> None:
+    playing = ("No, the train leaves at six.",)
+    assert echo_of("Skip that. No.", playing, early=False) == "Skip that."
+    assert echo_of("No, skip that.", playing, early=False) == "No, skip that."
+
+
+def test_three_words_of_theirs_must_be_half_of_what_was_heard() -> None:
+    # Her echo with three misheard words in it is not the user.
+    cand, after = "or writes properly", "this time tame we start"
+    assert confirm(cand, after, done=False, elapsed_s=0.5, playing=ALRIGHT) == "wait"
+
+
+def test_an_ended_turn_of_two_counts_only_if_the_whole_turn_is_not_hers() -> None:
+    """The recognizer ends echo turns at her pauses: the whole turn, her words it let go
+    included, must be less than half hers."""
+    assert (
+        confirm("skip that", "", done=True, elapsed_s=0.3, playing=PLATFORM, turn="skip that")
+        == "interrupt"
+    )
+    assert (
+        confirm(
+            "skip that",
+            "",
+            done=True,
+            elapsed_s=0.3,
+            playing=PLATFORM,
+            turn="we leave at six from skip that",
+        )
+        == "wait"
+    )

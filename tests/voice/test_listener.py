@@ -455,3 +455,28 @@ async def test_a_watch_knows_whether_the_recognizer_turn_is_still_going() -> Non
     await asyncio.sleep(0.01)
     assert listener.began is not None
     await listener.abandon()
+
+
+async def reported(listener: Listener, text: str) -> None:
+    """Wait until the recognizer's report has been read."""
+    for _ in range(400):
+        if listener.whole_turn() == text:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"never read: {text!r}")
+
+
+async def test_forgotten_words_are_matched_not_counted_when_the_recognizer_revises() -> None:
+    """Live: "Skip that." lost "skip" after the turn was revised under a count."""
+    stt = FakeSTT(turns=True)
+    listener = await watcher(stt)
+    stt.stream.say("or writes", final=False)
+    await reported(listener, "or writes")
+    listener.forget()
+    stt.stream.say("Skip that.", final=False)  # the recognizer revised its turn
+    await reported(listener, "Skip that.")
+    assert listener.turn_text() == "Skip that."
+    stt.stream.say("or writes skip that", final=False)
+    await reported(listener, "or writes skip that")
+    assert listener.turn_text() == "skip that"
+    await listener.abandon()

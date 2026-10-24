@@ -800,3 +800,80 @@ async def test_short_real_cut_ins_stop_her(rt: Runtime, words: str) -> None:
     await page.until("transcript.final", 2)
     assert page.all("transcript.final")[-1]["text"] == words
     await session.close()
+
+
+# ── Live at 8% echo: her own stop word, and the user's first word ────────
+
+
+async def test_her_stop_word_coming_back_does_not_stop_her(rt: Runtime) -> None:
+    """Live: her "Stopped. For real this time," came back as "Stop." and stopped her."""
+    stt, _ = judging(rt, say("Stopped. For real this time, here is the plan."), say("Ok."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+    await watching(session)
+    stt.stream.say("Stop.", final=True, turn="done")
+    await speak(session, tone(0.2) + room(1.2))
+    assert not page.all("interrupted") and session._turn == 1
+    await session.close()
+
+
+async def test_a_stop_word_she_is_not_saying_stops_her(rt: Runtime) -> None:
+    stt, _ = judging(rt, say("Let me check the times. One moment."), say("Ok."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+    await watching(session)
+    stt.stream.say("stop", final=False)
+    await speak(session, tone(0.2))
+    await page.until("interrupted")
+    await session.close()
+
+
+async def test_their_first_word_survives_the_recognizer_revising_its_turn(rt: Runtime) -> None:
+    """Live: "Skip that." was saved as "that. No.": words let go after a carry-on were
+    skipped by count when the recognizer revised its turn."""
+    stt, _ = judging(rt, say("Tea was found in ancient China. That is the story."), say("Ok."))
+    voiced(rt)
+    page, session = await asked(rt, stt)
+    await page.until("turn.complete")
+    await idle(session)
+    await played(session, page, 1)
+    await watching(session)
+    stt.stream.say("or writes", final=False)  # her echo, misheard: a candidate
+    await speak(session, tone(0.2))
+    await page.until("overlap.duck")
+    await speak(session, tone(1.2))  # nothing more: she carries on, those let go
+    await page.until("overlap.over")
+    # The same recognizer turn, revised: the user's words, "skip" first and alone.
+    stt.stream.say("Skip", final=False)
+    await speak(session, tone(0.1))
+    stt.stream.say("Skip that", final=False)
+    await speak(session, tone(0.1))
+    assert not page.all("interrupted")
+    stt.stream.say("Skip that one please", final=False)
+    await speak(session, tone(0.1))
+    await page.until("interrupted")
+    await until(lambda: session._listener is not None or len(page.all("transcript.final")) > 1)
+    stt.stream.say("Skip that one please.", final=True, turn="done")
+    await speak(session, room(0.2))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "Skip that one please."
+    await session.close()
+
+
+async def test_a_fast_report_of_their_reply_is_still_theirs(rt: Runtime) -> None:
+    stt, page, session = await leave(rt)
+    await speak(session, tone(0.3) + room(0.2))  # her echo, at her end
+    await asyncio.sleep(0.5)
+    await speak(session, tone(0.3))  # the user, half a second later
+    await asyncio.sleep(0.25)  # reported fast
+    stt.stream.say("Six?", final=True, turn="done")
+    await speak(session, room(0.2))
+    await page.until("transcript.final", 2)
+    assert page.all("transcript.final")[-1]["text"] == "Six?" and session._turn == 2
+    await session.close()

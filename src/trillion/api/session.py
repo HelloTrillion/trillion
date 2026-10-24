@@ -646,6 +646,7 @@ class Session:
                         done=done or listener.turn_done,
                         elapsed_s=elapsed,
                         playing=self._her_playing(ov),
+                        turn=listener.whole_turn(),
                     )
                 else:
                     decision = decide(

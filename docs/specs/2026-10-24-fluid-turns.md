@@ -162,20 +162,26 @@ long as she speaks, and the core decides by the words.
   itself; the recognizer's turns come and go. Nothing heard is shown, and no draft
   starts. `Listener.turn_text()` is the words of the recognizer's current turn;
   `Listener.forget()` lets go of words already judged (the recognizer repeats the
-  whole turn in each report, so they are skipped, not deleted).
+  whole turn in each report, so they are skipped, not deleted). They are matched as
+  words, not counted (*after the fourth live run*): the recognizer revises its turn,
+  and skipping a count had "Skip that." saved as "that. No.".
 - **Echo by words** (`voice/overlap.py`, `judge_watch(words, playing)` →
   `"nothing" | "echo" | "candidate"`, pure): words are her echo when at least 60% of
   them are in what she is saying now: the sentence being heard, the one before **and
   the next one** (her audio runs ahead of its reports), each as she wrote it and as it
   was sent to be said. Numbers and money are spelled out on both sides ("$5" and "five
   dollars", "10:30" and "ten thirty", "2026" and "twenty twenty-six"). Stop words get no say here, so her own "No, the
-  train…" coming back does not stop her. Otherwise a candidate takes two words that are
+  train…" coming back does not stop her. A stop word is hers in another form too
+  (*after the fourth live run*): her "Stopped." came back as "Stop." and stopped her,
+  over and over, so "stop" matches "stopped", "wait" matches "waiting", and so on (the
+  same first three letters or more, either way); "no" only matches "no". Otherwise a candidate takes two words that are
   not hers (fillers aside) or one stop word: each report adds about a word, and one
   misheard word of hers ("noon" as "new") is not the user.
 - **What is weighed** (*after review*): the words not yet judged, with up to four judged
   words before them (`judged_prefix`), so a single new word never stands alone. Echo
-  is judged up to its last word of hers (`echo_through`); a word of theirs after it
-  waits for more. Words the recognizer has revised are judged again from the start.
+  is judged up to its last word of hers (`echo_through`), taking in a word not hers
+  only when two of hers follow it (a misheard word inside her sentence); "skip" then
+  her "that" leaves "skip" to be judged, so the user's first word is not lost. Words the recognizer has revised are judged again from the start.
 - **A candidate: duck, then confirm** (*as built after the third live run*). Her
   "Alright, properly this time." came back as "or writes properly this": two words not
   hers, so a candidate, and deciding stopped her at once on her own echo. Now a
@@ -184,11 +190,12 @@ long as she speaks, and the core decides by the words.
   - **Interrupt at once:** a stop word ("stop", "wait", "no", "hold on" and the like)
     that is not in what she is saying now.
   - **Interrupt on three:** three words that are not hers (acknowledgements and
-    fillers aside), before and after the duck together ("what about" then "Tuesday").
-    A misheard fragment of her is a word or two.
+    fillers aside), before and after the duck together ("what about" then "Tuesday"),
+    in words at least half theirs. A misheard fragment of her is a word or two.
   - **Interrupt on an ended two:** two such words that the recognizer has ended a turn
-    on ("skip that", "go back"), in words less than half hers. The live fragment "or
-    writes properly this" is half hers, so it does not.
+    on ("skip that", "go back"), when that whole turn, her words it let go included,
+    is less than half hers: it ends turns of her echo at her pauses too. The live
+    fragment "or writes properly this" is half hers, so it does not.
   - **Carry on (acknowledgement):** words not hers that are all acknowledgements or
     fillers ("um", "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s.
   - **Carry on (not confirmed):** nothing more by `CONFIRM_S` (1 s) after the duck: her
@@ -196,7 +203,8 @@ long as she speaks, and the core decides by the words.
     second are not heard either, and are said again; that is the margin over her own
     misheard echo.
   - **Wait:** anything else.
-  - Her own stop word ("No, the train…") never stops her.
+  - Her own stop word ("No, the train…", "Stopped") never stops her, and one of hers
+    at the end of their turn ("Skip that. No.") is taken off it.
 - The old `overlap` (the page ducked her itself) still goes to `decide` as before.
 - **On `carry_on`:** `overlap.over` is sent, the words are forgotten and the listener
   goes back to watching. Nothing is saved, and the turn counter does not move.
@@ -238,7 +246,11 @@ long as she speaks, and the core decides by the words.
   within 0.3 s of her end is "as she stopped". When no start was heard (her echo can
   be too quiet to clear the bar), words first reported within 1.2 s of her end are.
   While a watch is in its grace, words that are all hers and said as she stopped are
-  marked as her echo and let go with it. That covers a
+  marked as her echo and let go with it. A voice start counts when it is at least
+  0.15 s before the report (the recognizer's shortest lag), so a fast report does not
+  skip the user's own start. Accepted trade-off: a reply of one or two words that is
+  exactly her final words, started within 0.3 s of her end with no new voice start
+  heard, is taken for her echo. That covers a
   window opened without a watch, a watch promoted by Speak or `barge`, and an
   interruption. No draft starts in that time, and the words shown while listening
   leave her words out too.
@@ -304,6 +316,9 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 - **Overlap while her reply is only text** (voice muted): there is nothing to duck, and the page does not watch for barge-in (as today).
 - **A tap on an approval card during a draft:** taps belong to confirmed turns. A draft holds no card, because cards come from tools and a draft stops before tools.
 - **Privacy:** Nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only whether a draft was used or dropped, and overlap phases are logged by name only. With hearing that judges turns and barge-in on, the microphone goes to the hearing service while she speaks after a spoken turn (D9); Settings → Hearing says so.
+- **Her echo loud, with no echo cancelling** (output fed back at 35%): out of scope.
+  Her misheard echo can then outweigh the user's words ("Skip that." became "Tea found
+  in ancient --"). At about 8%, near what echo cancelling leaves, it holds.
 - **Talking right after a turn ends, before her reply starts:** while the recognizer is still handing over the user's last words, nothing is judged; once they are saved, words that are not hers are a candidate (nothing of hers is playing yet) and stop her reply as usual, becoming the next turn. A barge or Speak in that moment still cancels the turn being collected, as before.
 - **Her own words come back after she stops:** for 3 s, three or more of her words in her order are taken off the front of the user's turn, and a turn that is only, or mostly, such a run is dropped with the "unheard" notice. A user who repeats three or more of her words in her order straight after her is not heard, which is the price of never answering herself; short replies that reuse her words are heard.
 
