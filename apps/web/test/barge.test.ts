@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BargeDetector, FRAME_S, Preroll, type TurnEnd, frameLevel, holdForReply, watchMode, watchTitle } from '../src/barge';
+import { BargeDetector, FRAME_S, Preroll, type TurnEnd, frameLevel, holdForReply, watchMode, watchTitle, afterOver } from '../src/barge';
 
 /** Feed frames; the frame index at which it triggered, or -1. */
 function run(d: BargeDetector, frames: readonly (readonly [mic: number, her: number])[]): number {
@@ -204,5 +204,14 @@ describe('how the microphone watches while she speaks', () => {
   it('says what is sent', () => {
     expect(watchTitle('stream')).toBe('Listening for you to cut in.');
     expect(watchTitle('local')).toBe('Listening for you to cut in. Nothing is sent.');
+  });
+});
+
+describe('a streaming watch, when the core says she carries on', () => {
+  it('closes when the watch is over, stops when asked meanwhile, else keeps streaming', () => {
+    expect(afterOver({ end: true, pending: false, canWatch: true })).toBe('close');
+    expect(afterOver({ end: false, pending: true, canWatch: true })).toBe('stop');
+    expect(afterOver({ end: false, pending: false, canWatch: false })).toBe('stop');
+    expect(afterOver({ end: false, pending: false, canWatch: true })).toBe('keep');
   });
 });

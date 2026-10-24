@@ -8,7 +8,7 @@ import { icon } from './icons';
 import { createConnected } from './connected';
 import { createListeningSettings } from './listening';
 import { createMic } from './mic';
-import { BargeDetector, HOLD_MS, Preroll, frameLevel, holdForReply, watchMode, watchTitle } from './barge';
+import { BargeDetector, HOLD_MS, Preroll, afterOver, frameLevel, holdForReply, watchMode, watchTitle } from './barge';
 import { createMicrophones } from './microphone';
 import { createNamesSettings } from './names';
 import {
@@ -165,6 +165,8 @@ let bargeOn = savedBarge();
 let micMode: 'send' | 'watch' = 'send';
 // Watching by streaming to the core (`overlap.watch`): the core ends it.
 let streamWatch = false;
+// Asked to stop watching while the core was deciding: done once it has answered.
+let unwatchPending = false;
 let bargeHeld: ArrayBuffer[] | null = null;
 // She is ducked and the core is deciding: every frame goes to it as heard.
 let overlapping = false;
@@ -292,8 +294,12 @@ function startWatching(): void {
 /** Close a watching microphone, unless the user has just cut in. */
 function stopWatching(): void {
   if (streamWatch) {
-    // The core is deciding whether they cut in: it answers, and that closes it or not.
-    if (overlapping) return;
+    // The core is deciding whether they cut in: once it answers, this closes it.
+    if (overlapping) {
+      unwatchPending = true;
+      return;
+    }
+    unwatchPending = false;
     streamWatch = false;
     send({ type: 'overlap.unwatch' });
     endHold();
@@ -345,7 +351,9 @@ function watchFrame(pcm: ArrayBuffer): void {
 function stopWatchingSoon(): void {
   const gen = watchGen;
   setTimeout(() => {
-    if (gen === watchGen && (micMode === 'watch' || streamWatch) && !view.mic) stopWatching();
+    // Streaming, the core ends the watch: it goes on hearing her last words come back
+    // for a moment after she ends, then opens the window or closes it.
+    if (gen === watchGen && micMode === 'watch' && !view.mic) stopWatching();
   }, 1500);
 }
 
@@ -971,16 +979,21 @@ function connect(): void {
       voice.duck(false);
       overlapping = false;
       cutIn = false;
-      if (msg['end'] === true) {
+      const next = afterOver({ end: msg['end'] === true, pending: unwatchPending, canWatch: canWatch() });
+      if (next === 'close') {
         // The watch is over without them: the microphone closes, unless it is the
         // user's turn by now.
         streamWatch = false;
+        unwatchPending = false;
         endHold();
         if (!view.mic) {
           mic.stop();
           micMode = 'send';
         }
         render();
+      } else if (next === 'stop') {
+        // Asked to stop while the core decided (the switch turned off, the hold over).
+        stopWatching();
       }
     } else if (msg.type === 'overlap.over') {
       // She carries on (or could not be stopped in time, which comes with `busy`):
@@ -1005,6 +1018,7 @@ function connect(): void {
       endHold();
       // The watch became the user's turn: the same microphone carries on as it.
       streamWatch = false;
+      unwatchPending = false;
       if (overlapping) {
         // It was an interruption: the microphone is already sending, so it carries on.
         // Whatever of her is still playing stops, if nothing has stopped it yet.
@@ -1100,6 +1114,7 @@ function connect(): void {
     overlapping = false;
     cutIn = false;
     streamWatch = false;
+    unwatchPending = false;
     if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
     setTimeout(connect, retryMs);
@@ -1159,6 +1174,7 @@ const interrupt = (): void => {
   overlapping = false;
   cutIn = false;
   streamWatch = false;
+  unwatchPending = false;
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);

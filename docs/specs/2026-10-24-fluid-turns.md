@@ -125,6 +125,12 @@ long as she speaks, and the core decides by the words.
     closes unless it is already the user's turn.
   - `interrupted` / `audio.stop`: she stops, as before; the microphone stays as it is,
     because the core is making it the user's turn (`mic.start` follows) or ends it.
+    The page sets no timer of its own then: if the core sends neither, frames go on
+    arriving and the core drops them (no watch or listener is open to take them).
+  - The page's own 1.5 s close after her end does not apply: the core keeps hearing
+    her last words come back for a moment, then opens the window or ends the watch.
+  - Asked to stop while the core is deciding (the switch turned off, its hold over),
+    the page stops once the core answers `overlap.over` (`afterOver` in `barge.ts`).
   - `mic.start`: the stream simply carries on as the user's turn.
   - When the page stops watching itself (its 15 s hold without a sound from her, the
     switch turned off, the microphone failing), it sends `{type: "overlap.unwatch"}`.
@@ -150,8 +156,8 @@ long as she speaks, and the core decides by the words.
 - **When:** a reply is coming or being heard: a running turn (including the moment
   right after the user's turn, before her reply starts), her last spoken reply still
   playing (`_tail`), or her sound not yet reported played. Hearing must judge turns,
-  a model must be set, and no listening may be open. Otherwise it answers
-  `overlap.over` with `end: true`.
+  a model and a voice must be set, her voice must not be off, and no listening may be
+  open. Otherwise it answers `overlap.over` with `end: true`.
 - **Watching:** a `Listener` in watch mode streams every frame and never ends by
   itself; the recognizer's turns come and go. Nothing heard is shown, and no draft
   starts. `Listener.turn_text()` is the words of the recognizer's current turn;
@@ -160,21 +166,28 @@ long as she speaks, and the core decides by the words.
 - **Echo by words** (`voice/overlap.py`, `judge_watch(words, playing)` →
   `"nothing" | "echo" | "candidate"`, pure): words are her echo when at least 60% of
   them are in what she is saying now: the sentence being heard, the one before **and
-  the next one**, because her audio runs ahead of its reports. Stop words get no say
-  here, so her own "No, the train…" coming back does not stop her. Only the words not
-  already judged are weighed (`judged_prefix`): her echo grows within one recognizer
-  turn, and the user's first words after it count on their own. Words the recognizer
-  has revised are judged again from the start.
+  the next one** (her audio runs ahead of its reports), each as she wrote it and as it
+  was sent to be said. Numbers and money are spelled out on both sides ("$5" and "five
+  dollars", "10:30" and "ten thirty"). Stop words get no say here, so her own "No, the
+  train…" coming back does not stop her. Otherwise a candidate takes two words that are
+  not hers (fillers aside) or one stop word: each report adds about a word, and one
+  misheard word of hers ("noon" as "new") is not the user.
+- **What is weighed** (*after review*): the words not yet judged, with up to four judged
+  words before them (`judged_prefix`), so a single new word never stands alone. Echo
+  is judged up to its last word of hers (`echo_through`); a word of theirs after it
+  waits for more. Words the recognizer has revised are judged again from the start.
 - **A candidate** (words that are not hers): the page is sent `overlap.duck`, the
   echo judged before them is forgotten, and the decision clock starts at that moment.
-  From there `decide` runs exactly as before:
+  From there `decide` runs as before, except that her words among theirs are left out
+  first (`drop_hers`; stop words never are), so "yeah" with her echo after it is still
+  an acknowledgement:
   - **Echo:** words that all appear in the sentence she is playing, or the one before,
     are ignored, except stop words ("stop", "wait", "no", "hold on" and the like),
     which always count as the user.
   - **Interrupt:** any word not in the acknowledgement list is an interruption, as soon
     as it is heard.
-  - **Carry on (acknowledgement):** words that are all acknowledgements, three at most,
-    and either `done` or 1.2 s passed.
+  - **Carry on (acknowledgement):** words that are all acknowledgements or fillers ("um",
+    "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s passed.
   - **Carry on (no words):** no words by 1.5 s means a cough or a door.
   - **Wait:** anything else, until the 1.5 s limit.
 - **On `carry_on`:** `overlap.over` is sent, the words are forgotten and the listener
@@ -186,12 +199,31 @@ long as she speaks, and the core decides by the words.
   is not.
 - **Her reply heard to the end** (`playback.ended`) while only watching, after a spoken
   turn: the watch listener becomes the follow-up window (`FOLLOW_UP_S`,
-  `mic.start{follow_up: true}`), its echo forgotten, on the same recognizer
-  connection. Heard to the end while deciding: carrying on does the same.
+  `mic.start{follow_up: true}`) on the same recognizer connection, but not at once
+  (*as built after the talking-to-herself loop*). The recognizer reports her last
+  sentence up to a second after `playback.ended`; promoted at once, that echo became
+  the user's next turn, and she answered herself in a loop. So the watch goes on
+  judging, with her last two sentences added to what she is saying, for
+  `ECHO_GRACE_S` (2 s) and until any recognizer turn that began over her has ended.
+  Words that are a candidate meanwhile are the user's turn at once (no duck, she has
+  finished), with her echo before them left out; otherwise the window opens with
+  everything heard let go. Heard to the end while deciding: carrying on does the same.
+- **Her last words, after she stops** (every path): when she is heard to the end, or
+  stopped by a cut-in, the session keeps what she was last saying (`_her_end`). A
+  spoken turn whose first words came within `ECHO_AFTER_S` (3 s) of that has her words
+  in front taken off (`strip_hers`, two or more of them), and is dropped quietly if
+  nothing else is left or it is still mostly (60%) hers. That covers a window opened
+  without a watch, a watch promoted by Speak or `barge`, and an interruption. No draft
+  starts in that time, and the words shown while listening leave her words out too.
+- **While the user's words are still being saved** (the recognizer handing over its
+  last words after their turn): the watch does not judge. A cut-in then would cancel
+  the turn collecting them and lose them; once they are saved, what the user went on
+  saying is judged, and stops her as usual.
 - **The watch ends** (`overlap.over` with `end: true`) when her turn ends with nothing
   of hers left to hear (a reply only written, an error), when nothing of hers has
-  started playing for 15 s (`WATCH_HOLD_S`), when no audio arrives for 3 s, when the
-  recognizer fails, on `overlap.unwatch`, a typed message or new settings; and quietly
+  started playing or been sent for 15 s (`WATCH_HOLD_S`), when no audio arrives for 3 s, when the
+  recognizer fails, on `overlap.unwatch`, a typed message or new settings (watching or
+  deciding); and quietly
   on Stop or a closed session.
 - **Other messages while watching:** a `barge` stops her now, and the watch becomes
   the turn; `listen.start` (Speak) over her finished reply does the same, with nothing
@@ -245,7 +277,8 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
 - **Overlap while her reply is only text** (voice muted): there is nothing to duck, and the page does not watch for barge-in (as today).
 - **A tap on an approval card during a draft:** taps belong to confirmed turns. A draft holds no card, because cards come from tools and a draft stops before tools.
 - **Privacy:** Nothing heard is logged, as today. Draft text and overlap words are never logged; traces record only whether a draft was used or dropped, and overlap phases are logged by name only. With hearing that judges turns and barge-in on, the microphone goes to the hearing service while she speaks after a spoken turn (D9); Settings → Hearing says so.
-- **Talking right after a turn ends, before her reply starts:** words that are not hers are a candidate at once (nothing of hers is playing yet), and an interruption cancels the turn being started, as a barge would.
+- **Talking right after a turn ends, before her reply starts:** while the recognizer is still handing over the user's last words, nothing is judged; once they are saved, words that are not hers are a candidate (nothing of hers is playing yet) and stop her reply as usual, becoming the next turn. A barge or Speak in that moment still cancels the turn being collected, as before.
+- **Her own words come back after she stops:** taken off the front of the user's turn for 3 s, and a turn that is only, or mostly, her words is dropped. A user who answers within 3 s with mostly her own words ("tell me what you need" after "Tell me what you need.") is not heard, which is the price of never answering herself.
 
 ## Testing
 

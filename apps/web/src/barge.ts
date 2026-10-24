@@ -171,6 +171,14 @@ export function watchTitle(mode: WatchMode): string {
   return mode === 'stream' ? 'Listening for you to cut in.' : 'Listening for you to cut in. Nothing is sent.';
 }
 
+/** What a streaming watch does when the core says `overlap.over`: `close` when the
+ * watch is over (`end`); `stop` when the page asked to stop while the core decided, or
+ * can no longer watch (the switch off, its own microphone turn); else `keep` streaming. */
+export function afterOver(o: { end: boolean; pending: boolean; canWatch: boolean }): 'close' | 'stop' | 'keep' {
+  if (o.end) return 'close';
+  return o.pending || !o.canWatch ? 'stop' : 'keep';
+}
+
 /** Held for her reply this long without a sound from her, the microphone closes: a
  * reply that turns out silent, a long tool, an error. */
 export const HOLD_MS = 15_000;
