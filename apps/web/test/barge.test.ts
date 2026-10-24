@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BargeDetector, FRAME_S, Preroll, type TurnEnd, frameLevel, holdForReply } from '../src/barge';
+import { BargeDetector, FRAME_S, Preroll, type TurnEnd, frameLevel, holdForReply, watchMode, watchTitle } from '../src/barge';
 
 /** Feed frames; the frame index at which it triggered, or -1. */
 function run(d: BargeDetector, frames: readonly (readonly [mic: number, her: number])[]): number {
@@ -148,5 +148,61 @@ describe('barge-in: before her reply sounds', () => {
     const talking = Array.from({ length: seconds(1) }, () => [0.06, 0] as const);
     // Warm-up (8 frames) plus a quarter of a second held.
     expect(run(d, [...quiet, ...talking])).toBe(8 + 3);
+  });
+});
+
+describe('barge-in: the user talking under the bar does not deafen it', () => {
+  it('keeps the bar where her echo put it while the user talks quietly over her', () => {
+    const d = new BargeDetector();
+    const her = 0.12;
+    // Her echo, learned: 30% of her comes back.
+    expect(run(d, Array.from({ length: seconds(2) }, () => [0.3 * her, her] as const))).toBe(-1);
+    const bar = d.threshold(her);
+    // The user talking just under the bar for five seconds.
+    const under = Array.from({ length: seconds(5) }, () => [0.9 * bar, her] as const);
+    expect(run(d, under)).toBe(-1);
+    expect(d.threshold(her)).toBeLessThan(bar * 1.1);
+    // So a little louder is them, at once.
+    expect(run(d, Array.from({ length: 6 }, () => [1.2 * bar, her] as const))).toBe(3);
+  });
+
+  it('keeps the room level where it was while the user talks under the bar between her sentences', () => {
+    const d = new BargeDetector();
+    run(d, Array.from({ length: seconds(1) }, () => [0.003, 0] as const));
+    const bar = d.threshold(0);
+    expect(run(d, Array.from({ length: seconds(5) }, () => [0.9 * bar, 0] as const))).toBe(-1);
+    expect(d.threshold(0)).toBeLessThan(bar * 1.1);
+  });
+
+  it('still follows her echo when it really grows, slowly', () => {
+    const d = new BargeDetector();
+    const her = 0.12;
+    run(d, Array.from({ length: seconds(2) }, () => [0.1 * her, her] as const));
+    const before = d.threshold(her);
+    // The speakers turned up: much more of her comes back, for a long while.
+    run(d, Array.from({ length: seconds(30) }, () => [Math.min(0.9 * d.threshold(her), 0.3 * her), her] as const));
+    expect(d.threshold(her)).toBeGreaterThan(before);
+  });
+});
+
+describe('the pre-roll', () => {
+  it('keeps two seconds by default, so the first words are not lost', () => {
+    const p = new Preroll();
+    for (let i = 0; i < 100; i++) p.push(new Int16Array([i]).buffer as ArrayBuffer);
+    const kept = p.drain();
+    expect(kept.length * FRAME_S).toBeGreaterThanOrEqual(1.95);
+    expect(kept.length * FRAME_S).toBeLessThanOrEqual(2.05);
+  });
+});
+
+describe('how the microphone watches while she speaks', () => {
+  it('streams to the core when the hearing judges turns, and measures here otherwise', () => {
+    expect(watchMode(true)).toBe('stream');
+    expect(watchMode(false)).toBe('local');
+  });
+
+  it('says what is sent', () => {
+    expect(watchTitle('stream')).toBe('Listening for you to cut in.');
+    expect(watchTitle('local')).toBe('Listening for you to cut in. Nothing is sent.');
   });
 });
