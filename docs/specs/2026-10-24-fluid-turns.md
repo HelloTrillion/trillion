@@ -26,7 +26,7 @@ a radio. This spec makes three changes, Deepgram first:
 | D6 | **Acknowledgements are a short English list.** In any other language every word counts as an interruption. | Wrong in the safe direction: the user is heard. |
 | D7 | **Hearing that cannot give words mid-speech keeps today's barge-in.** With local Whisper or OpenAI, a voice over hers stops her at once, as now. | There are no words to judge with. |
 | D8 | **An interrupted spoken reply is kept up to the sentence being heard,** then "…" and the existing interrupted marker. Text she wrote but never said is dropped from the conversation, the screen and her memory. | The record matches what happened. |
-| D9 | **With hearing that judges turns, the microphone streams to it while she speaks, and her echo is told from the user by the words** (*as built after the second live test*). The page's loudness detector is used only for hearing that cannot judge turns. | What the user chose. Over speakers, the detector missed the user or lost their first words (see §3). |
+| D9 | **With hearing that judges turns, the microphone streams to it while she speaks, and her echo is told from the user by the words** (*as built after the second live test*; since #102, by when each word was said: `docs/specs/2026-10-24-echo-timing.md`). The page's loudness detector is used only for hearing that cannot judge turns. | What the user chose. Over speakers, the detector missed the user or lost their first words (see §3). |
 
 ## What the user sees
 
@@ -111,7 +111,8 @@ words were lost:
 - only 600 ms before the detection was kept, so earlier words were gone.
 
 So, with hearing that judges turns, the microphone now streams to the recognizer for as
-long as she speaks, and the core decides by the words.
+long as she speaks, and the core decides whose the words are (since #102, by when each
+word was said: `docs/specs/2026-10-24-echo-timing.md`).
 
 **The page** (`apps/web/src/main.ts`, `barge.ts`):
 
@@ -156,120 +157,44 @@ long as she speaks, and the core decides by the words.
 - **When:** a reply is coming or being heard: a running turn (including the moment
   right after the user's turn, before her reply starts), her last spoken reply still
   playing (`_tail`), or her sound not yet reported played. Hearing must judge turns,
-  a model and a voice must be set, her voice must not be off, and no listening may be
-  open. Otherwise it answers `overlap.over` with `end: true`.
+  a model and a voice made in the core must be set (#102: her echo is told apart by
+  her own audio), her voice must not be off, and no listening may be open.
+  Otherwise it answers `overlap.over` with `end: true`.
 - **Watching:** a `Listener` in watch mode streams every frame and never ends by
   itself; the recognizer's turns come and go. Nothing heard is shown, and no draft
-  starts. `Listener.turn_text()` is the words of the recognizer's current turn;
-  `Listener.forget()` lets go of words already judged (the recognizer repeats the
-  whole turn in each report, so they are skipped, not deleted). They are matched as
-  words, not counted (*after the fourth live run*): the recognizer revises its turn,
-  and skipping a count had "Skip that." saved as "that. No.".
-- **Echo by words** (`voice/overlap.py`, `judge_watch(words, playing)` →
-  `"nothing" | "echo" | "candidate"`, pure): words are her echo when at least 60% of
-  them are in what she is saying now: the sentence being heard, the one before **and
-  the next one** (her audio runs ahead of its reports), each as she wrote it and as it
-  was sent to be said. Numbers and money are spelled out on both sides ("$5" and "five
-  dollars", "10:30" and "ten thirty", "2026" and "twenty twenty-six"). Stop words get no say here, so her own "No, the
-  train…" coming back does not stop her. A stop word is hers in another form too
-  (*after the fourth live run*): her "Stopped." came back as "Stop." and stopped her,
-  over and over, so a stop word is hers when a word of hers starts with it ("stop" and
-  her "stopped", "wait" and her "waiting"), not the other way (her "can" does not make
-  the user's "cancel" hers); "no" only matches "no". So a user's "stop" right after she
-  said "we stopped at the station" counts as hers, and does not stop her. Otherwise a candidate takes two words that are
-  not hers (fillers aside) or one stop word: each report adds about a word, and one
-  misheard word of hers ("noon" as "new") is not the user.
-- **What is weighed** (*after review*): the words not yet judged, with up to four judged
-  words before them (`judged_prefix`), so a single new word never stands alone. Echo
-  is judged up to its last word of hers (`echo_through`), taking in a word not hers
-  only when two of hers follow it (a misheard word inside her sentence); "skip" then
-  her "that" leaves "skip" to be judged, so the user's first word is not lost. Words the recognizer has revised are judged again from the start.
-- **A candidate: duck, then confirm** (*as built after the third live run*). Her
-  "Alright, properly this time." came back as "or writes properly this": two words not
-  hers, so a candidate, and deciding stopped her at once on her own echo. Now a
-  candidate only ducks her: the page is sent `overlap.duck`, the echo judged before it
-  is forgotten, and the clock starts. `confirm(candidate, after, …)` (pure) decides:
-  - **Interrupt at once:** a stop word ("stop", "wait", "no", "hold on" and the like)
-    that is not in what she is saying now.
-  - **Interrupt on three:** three words that are not hers (acknowledgements and
-    fillers aside), before and after the duck together ("what about" then "Tuesday"),
-    in words at least half theirs. A misheard fragment of her is a word or two.
+  starts.
+- **Whose words** (*replaced after the sixth live run*): each word heard is judged
+  hers or the user's by when it was said, what she was saying then and how loud the
+  microphone was: see `docs/specs/2026-10-24-echo-timing.md`. That replaced the
+  rules here that judged echo by the words alone (`judge_watch`, `echo_of`,
+  `late_echo`, the grace after her end and the voice onsets), which misheard echo
+  kept defeating.
+- **A word of theirs: duck, then confirm.** Any word judged theirs that is not a
+  filler ducks her (`overlap.duck`), and `confirm(candidate, after, …)` (pure)
+  decides from their words only:
+  - **Interrupt at once:** a stop word ("stop", "wait", "no", "hold on" and the like).
+  - **Interrupt on three:** three words (acknowledgements and fillers aside), before
+    and after the duck together ("what about" then "Tuesday").
   - **Interrupt on an ended two:** two such words that the recognizer has ended a turn
-    on ("skip that", "go back"), when that whole turn, her words it let go included,
-    is less than half hers: it ends turns of her echo at her pauses too. The live
-    fragment "or writes properly this" is half hers, so it does not.
-  - **Carry on (acknowledgement):** words not hers that are all acknowledgements or
-    fillers ("um", "uh", "hmm", "erm"), three at most, and either `done` or 1.2 s.
-  - **Carry on (not confirmed):** nothing more by `CONFIRM_S` (1 s) after the duck: her
-    echo, misheard. Two words of theirs without a stop word, over her speaking on
-    (so the recognizer does not end their turn), may carry on too, and are said again;
-    three words or a stop word stop her. That is the margin over her own misheard
-    echo.
+    on ("skip that", "go back").
+  - **Carry on (acknowledgement):** words that are all acknowledgements or fillers,
+    three at most, and either `done` or 1.2 s.
+  - **Carry on (not confirmed):** nothing more by `CONFIRM_S` (1 s) after the duck.
   - **Wait:** anything else.
-  - Her own stop word ("No, the train…", "Stopped") never stops her, and one of hers
-    at the end of their turn ("Skip that. No.") is taken off it.
 - The old `overlap` (the page ducked her itself) still goes to `decide` as before.
-- **On `carry_on`:** `overlap.over` is sent, the words are forgotten and the listener
-  goes back to watching. Nothing is saved, and the turn counter does not move.
+- **On `carry_on`:** `overlap.over` is sent, the words heard so far are dealt with
+  (only what is said after counts) and the listener goes back to watching. Nothing is
+  saved, and the turn counter does not move.
 - **On `interrupt`:** the reply is stopped as `_on_barge` stops it (VOI-15c: approved
   work finishes and is recorded), her saved reply is trimmed to what was heard (§4),
   and the same listener goes on as the user's turn with normal patience
-  (`mic.start{follow_up: false}`). The candidate's words and the words that confirmed
-  them are kept; her echo before them is not, and her words at the front of the turn
-  are taken off as below.
-- **Her reply heard to the end** (`playback.ended`) while only watching, after a spoken
-  turn: the watch listener becomes the follow-up window (`FOLLOW_UP_S`,
-  `mic.start{follow_up: true}`) on the same recognizer connection, but not at once
-  (*as built after the talking-to-herself loop*). The recognizer reports her last
-  sentence up to a second after `playback.ended`; promoted at once, that echo became
-  the user's next turn, and she answered herself in a loop. So the watch goes on
-  judging, with her last two sentences added to what she is saying, for
-  `ECHO_GRACE_S` (2 s) and until any recognizer turn that began over her has ended.
-  Any word of theirs meanwhile (one is enough once she has ended: "Yes.", "Thursday.")
-  is the user's turn at once (no duck, she has finished), with her echo judged while
-  she spoke left out. Words that are all hers ("Six?" after "…leave at six?") are kept
-  too, and left to the turn's own check below. Otherwise the window opens when the
-  grace is over, keeping what was heard since she ended. Heard to the end while
-  deciding: carrying on does the same.
-- **Her last words, after she stops** (every path): when she is heard to the end, or
-  stopped by a cut-in, the session keeps what she was last saying (`_her_end`). A
-  spoken turn whose first words were said within `ECHO_AFTER_S` (3 s) of that is
-  checked by `echo_of`, only on evidence: three or more of her words in her order are
-  her echo (in front, taken off; a turn mostly her, all of it); one or two words are
-  hers only when they are exactly her final words, said as she stopped (below).
-  Anything with a stop word in it is always the user's. A reply that reuses her words
-  ("Six?", "Tea." after "Coffee or tea?") is theirs. When a turn is dropped, the usual
-  "unheard" notice says so.
-- **A voice of theirs, not only words** (*after the fifth live run*): her final
-  "ask." came back, misheard, as "ass.", and a one-word reply after her end was a
-  turn. Words alone cannot tell her misheard echo from a reply, so after she is heard
-  to the end, words count only if a voice started (`Onsets`, above the room's level)
-  at least 0.2 s after her end and before the last of them was reported: her echo has
-  died away by then. With no such voice, every word heard is her echo: let go by the
-  watch, and dropped by the turn's check without the "unheard" notice, since nothing
-  of the user's was heard.
-- **Her late echo after a cut-in** (*after the fifth live run*): "Skip that." was saved
-  as "Skip that. -- three hundred.": her words, still coming back as she was stopped.
-  The listener notes how many words it had at the cut-in; her words (current, previous
-  and next sentence, stems for stop words) that follow those within 1.5 s are taken
-  out, up to the first word that is not hers (`late_echo`).
-- **When words were said** (*after the third review*): a recognizer reports words
-  0.5 to 1 s after they were said, so the report time is not enough. Each listener
-  notes where voices start in the audio (`Onsets`, by loudness, timed by when the frame
-  arrived). Words were said at the last voice start at least the recognizer's lag
-  (0.4 s) before they were first reported: the last, not the first, so a click or
-  reverb just after her end does not make the user's "Six." look like her echo. Said
-  within 0.3 s of her end is "as she stopped". When no start was heard (her echo can
-  be too quiet to clear the bar), words first reported within 1.2 s of her end are.
-  While a watch is in its grace, words that are all hers and said as she stopped are
-  marked as her echo and let go with it. A voice start counts when it is at least
-  0.15 s before the report (the recognizer's shortest lag), so a fast report does not
-  skip the user's own start. Accepted trade-off: a reply of one or two words that is
-  exactly her final words, started within 0.3 s of her end with no new voice start
-  heard, is taken for her echo. That covers a
-  window opened without a watch, a watch promoted by Speak or `barge`, and an
-  interruption. No draft starts in that time, and the words shown while listening
-  leave her words out too.
+  (`mic.start{follow_up: false}`). The turn is their words, in order: her echo
+  before, between or after them is left out.
+- **Her reply heard to the end** while only watching, after a spoken turn: the watch
+  listener becomes the follow-up window (`FOLLOW_UP_S`, `mic.start{follow_up: true}`)
+  on the same recognizer connection once her end has passed on the recognizer's
+  clock, or at once when the page has said she ended and words of theirs are heard.
+  Her echo reported late is left out of the turn.
 - **While the user's words are still being saved** (the recognizer handing over its
   last words after their turn): the watch does not judge. A cut-in then would cancel
   the turn collecting them and lose them; once they are saved, what the user went on
@@ -354,8 +279,8 @@ The acknowledgement list is "yeah", "yes", "yep", "mm-hm", "mhm", "uh-huh", "rig
   - the switch turned off;
   - usage recorded for a dropped draft that had finished;
   - a draft dropped when the system prompt changed.
-- **`tests/voice/test_overlap.py`:** `decide` on acknowledgements, interruptions, echo, silence, the time limits and words in another language; `judge_watch` on her echo (misheard too), her own "No, …", the user's words amid her echo, acknowledgements; `judged_prefix`.
-- **`tests/voice/test_listener.py`:** watch mode streams and never ends, one recognizer turn at a time; `forget`; `hear` (a turn already done is done); back to `watch`; a watch as a follow-up window.
+- **`tests/voice/test_overlap.py`:** `decide` on acknowledgements, interruptions, echo, silence, the time limits and words in another language; `confirm` on their words. Whose a word is: `tests/voice/test_whose.py` (echo-timing spec).
+- **`tests/voice/test_listener.py`:** watch mode streams and never ends, one recognizer turn at a time; `hear` with a judge keeping only their words (a turn already done is done); back to `watch`; a watch as a follow-up window.
 - **`tests/api/test_overlap_session.py`:**
   - carry on: the reply is untouched and nothing is saved;
   - interrupt: the reply stops and the same listener becomes the turn;

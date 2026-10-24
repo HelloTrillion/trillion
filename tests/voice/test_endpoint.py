@@ -292,14 +292,3 @@ def test_new_words_after_a_held_done_leave_the_end_to_the_recognizer() -> None:
     rules.hold()
     rules.heard(final=False, has_text=True)
     assert rules.audio(room(4.0)) is None
-
-
-def test_onsets_are_found_by_loudness_with_how_long_ago_they_began() -> None:
-    from trillion.voice.endpoint import Onsets
-
-    o = Onsets()
-    found = [o.audio(f) for f in frames(room(0.5) + tone(0.3) + room(0.5) + tone(0.3))]
-    starts = [(i, ago) for i, ago in enumerate(found) if ago is not None]
-    assert len(starts) == 2  # one per voice, not one per frame
-    # Noticed after its onset, and said how long ago it began.
-    assert all(0.0 < ago <= 0.13 for _, ago in starts)

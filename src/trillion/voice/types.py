@@ -57,6 +57,19 @@ CAPTURE = AudioFormat(sample_rate=16_000)
 
 
 @dataclass(frozen=True, kw_only=True)
+class Word:
+    """One word and when it was said, in seconds of audio since the stream opened."""
+
+    text: str
+    start_s: float
+    end_s: float
+
+    @property
+    def mid_s(self) -> float:
+        return (self.start_s + self.end_s) / 2
+
+
+@dataclass(frozen=True, kw_only=True)
 class Heard:
     """Words a recognizer made out of the audio so far.
 
@@ -73,6 +86,8 @@ class Heard:
     # "resumed" (they carried on after a maybe) or "done" (over; `text` is the whole
     # turn). None from recognizers that leave the decision to the listener.
     turn: Literal["maybe", "resumed", "done"] | None = None
+    # The current turn's words with times, from recognizers that report them (#102).
+    words: tuple[Word, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -108,6 +123,8 @@ class STTProvider(Protocol):
     streaming: bool
     # True when the recognizer itself decides that the user has finished (VOI-12).
     turns: bool
+    # True when `Heard.words` carries times.
+    word_times: bool
 
     async def open(self, *, choice: str) -> STTStream:
         """Start listening. Raises VoiceError if it cannot."""

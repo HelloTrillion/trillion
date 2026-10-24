@@ -12,7 +12,7 @@ from trillion.api import listening
 from trillion.api.listening import Listener, Utterance
 from trillion.voice.endpoint import HELD_QUIET_S
 from trillion.voice.overlap import decide
-from trillion.voice.types import VoiceError
+from trillion.voice.types import VoiceError, Word
 
 
 async def feed(listener: Listener, pcm: bytes) -> str | None:
@@ -360,29 +360,6 @@ async def test_watching_hears_one_recognizer_turn_at_a_time_and_never_ends() -> 
     await listener.abandon()
 
 
-async def test_forgotten_words_stay_forgotten_as_the_turn_grows() -> None:
-    stt = FakeSTT(turns=True)
-    listener = await watcher(stt)
-    stt.stream.say("we could leave", final=False)
-    await asyncio.sleep(0.01)
-    listener.forget(2)
-    assert listener.turn_text() == "leave"
-    stt.stream.say("we could leave at six wait", final=False)
-    await asyncio.sleep(0.01)
-    assert listener.turn_text() == "leave at six wait"
-    listener.forget()
-    assert listener.turn_text() == "" and listener.text() == ""
-    stt.stream.say("we could leave at six wait what", final=False)
-    await asyncio.sleep(0.01)
-    assert listener.turn_text() == "what"
-    # The recognizer's next turn starts afresh.
-    stt.stream.say("we could leave at six wait what", final=True, turn="done")
-    stt.stream.say("hello", final=False)
-    await asyncio.sleep(0.01)
-    assert listener.turn_text() == "hello"
-    await listener.abandon()
-
-
 async def test_hearing_after_watching_ends_on_the_turn_and_keeps_its_words() -> None:
     stt = FakeSTT(turns=True)
     listener = await watcher(stt)
@@ -418,7 +395,7 @@ async def test_back_to_watching_after_a_decided_turn() -> None:
     listener.hear()
     assert await feed(listener, room(0.1)) == "end"
     listener.watch()
-    assert listener.watching and listener.verdict is None and listener.text() == ""
+    assert listener.watching and listener.verdict is None
     assert await feed(listener, tone(1.0)) is None
     stt.stream.say("next words", final=False)
     await asyncio.sleep(0.01)
@@ -431,52 +408,243 @@ async def test_a_watch_becomes_a_patient_follow_up_window() -> None:
     listener = await watcher(stt)
     stt.stream.say("of course", final=False)
     await asyncio.sleep(0.01)
-    listener.forget()
-    listener.hear(patience_s=3.0)
+    # Her echo, judged not theirs: the window waits for their words.
+    listener.hear(patience_s=3.0, judge=lambda words: [False] * len(words))
+    assert listener.text() == "" and listener.raw_text() == "of course"
     assert await feed(listener, room(3.1)) == "nothing"
-    await listener.abandon()
-
-
-async def test_a_watch_knows_whether_the_recognizer_turn_is_still_going() -> None:
-    stt = FakeSTT(turns=True)
-    listener = await watcher(stt)
-    assert not listener.turn_open and listener.began is None
-    stt.stream.say("third thing", final=False)
-    await asyncio.sleep(0.01)
-    assert listener.turn_open
-    listener.forget()
-    assert listener.turn_open  # let go of, but the recognizer's turn goes on
-    stt.stream.say("third thing to know", final=True, turn="done")
-    await asyncio.sleep(0.01)
-    assert not listener.turn_open
-    assert listener.began is None  # nothing heard as the user yet
-    listener.hear()
-    stt.stream.say("hello", final=False)
-    await asyncio.sleep(0.01)
-    assert listener.began is not None
     await listener.abandon()
 
 
 async def reported(listener: Listener, text: str) -> None:
     """Wait until the recognizer's report has been read."""
     for _ in range(400):
-        if listener.whole_turn() == text:
+        if listener.raw_text() == text:
             return
         await asyncio.sleep(0.005)
     raise AssertionError(f"never read: {text!r}")
 
 
-async def test_forgotten_words_are_matched_not_counted_when_the_recognizer_revises() -> None:
-    """Live: "Skip that." lost "skip" after the turn was revised under a count."""
+async def test_a_judge_keeps_only_their_words_spelled_as_heard() -> None:
+    """Heard over her (#102): her echo before, between or after their words is left out,
+    and their words keep the recognizer's punctuation."""
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    said = "or writes What about Tuesday? the rest"
+    words = tuple(
+        Word(text=t.strip("?"), start_s=i * 0.3, end_s=i * 0.3 + 0.2)
+        for i, t in enumerate(said.split())
+    )
+    stt.stream.say(said, final=False, words=words)
+    await reported(listener, said)
+    theirs = {"What", "about", "Tuesday"}
+    listener.hear(judge=lambda ws: [w.text in theirs for w in ws])
+    assert listener.text() == "What about Tuesday?"
+    assert listener.raw_text() == said
+    await listener.abandon()
+
+
+@pytest.mark.parametrize(
+    ("said", "theirs", "expected"),
+    [
+        # Live: her "five" left out, its dash kept: "-- What about Tuesday?".
+        ("five -- What about Tuesday?", {"What", "about", "Tuesday"}, "What about Tuesday?"),
+        ("five… what about Tuesday?", {"what", "about", "Tuesday"}, "what about Tuesday?"),
+        ("Skip that -- three hundred.", {"Skip", "that"}, "Skip that"),
+        ("Skip that -- please.", {"Skip", "that", "please"}, "Skip that -- please."),
+        ("ask, then what", {"then", "what"}, "then what"),
+    ],
+)
+async def test_punctuation_goes_with_the_words_left_out(
+    said: str, theirs: set[str], expected: str
+) -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    tokens = [t for t in said.split() if any(c.isalnum() for c in t)]
+    words = tuple(
+        Word(text=t.strip(".,?…"), start_s=i * 0.3, end_s=i * 0.3 + 0.2)
+        for i, t in enumerate(tokens)
+    )
+    stt.stream.say(said, final=False, words=words)
+    await reported(listener, said)
+    listener.hear(judge=lambda ws: [w.text in theirs for w in ws])
+    assert listener.text() == expected
+    await listener.abandon()
+
+
+async def test_words_without_times_are_placed_at_their_report_less_the_lag() -> None:
     stt = FakeSTT(turns=True)
     listener = await watcher(stt)
-    stt.stream.say("or writes", final=False)
-    await reported(listener, "or writes")
-    listener.forget()
-    stt.stream.say("Skip that.", final=False)  # the recognizer revised its turn
-    await reported(listener, "Skip that.")
-    assert listener.turn_text() == "Skip that."
-    stt.stream.say("or writes skip that", final=False)
-    await reported(listener, "or writes skip that")
-    assert listener.turn_text() == "skip that"
+    await feed(listener, tone(2.0))
+    stt.stream.say("skip", final=False)
+    await reported(listener, "skip")
+    (skip,) = listener.turn_words()
+    assert skip.mid_s == pytest.approx(2.0 - listening.UNTIMED_LAG_S, abs=0.07)
+    await feed(listener, tone(1.0))
+    stt.stream.say("skip that", final=False)
+    await reported(listener, "skip that")
+    # The word already placed keeps its time; the new one is placed by its report.
+    first, that = listener.turn_words()
+    assert first == skip
+    assert that.mid_s == pytest.approx(3.0 - listening.UNTIMED_LAG_S, abs=0.07)
+    await listener.abandon()
+
+
+# ── The recognizer's clock, mic levels and timed words (#102) ────────────
+
+
+async def test_audio_sent_counts_the_backlog_on_the_recognizers_clock() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    stt.opening.clear()
+    listener = Listener(stt, "en", on_partial=nothing, watch=True)
+    starting = asyncio.create_task(listener.start())
+    await asyncio.sleep(0)
+    await feed(listener, tone(0.3))
+    assert listener.sent_s == 0.0  # kept, not yet sent
+    stt.opening.set()
+    await starting
+    await feed(listener, room(0.5))
+    assert listener.sent_s == pytest.approx(0.8)
+    assert listener.sent_s == len(stt.stream.audio) / 32_000
+    await listener.abandon()
+
+
+async def test_mic_level_is_the_loudness_of_audio_sent_over_a_span() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    await feed(listener, room(1.0) + tone(0.5))
+    loud, quiet = listener.mic_level(1.1, 1.4), listener.mic_level(0.2, 0.8)
+    assert loud == pytest.approx(0.2 / 2**0.5, rel=0.05)
+    assert quiet < 0.002 and loud > 50 * quiet
+    assert listener.mic_level(5.0, 6.0) == 0.0  # nothing sent then
+    await listener.abandon()
+
+
+async def test_mic_levels_are_kept_for_thirty_seconds() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    await feed(listener, tone(1.0) + room(31.0))
+    assert listener.mic_level(0.0, 1.0) == 0.0  # let go
+    assert listener.mic_level(31.0, 32.0) > 0.0
+    await listener.abandon()
+
+
+async def test_turn_words_are_the_latest_of_the_recognizers_turn() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    assert listener.turn_words() == ()
+    we = Word(text="we", start_s=0.5, end_s=0.7)
+    could = Word(text="could", start_s=0.7, end_s=0.9)
+    stt.stream.say("we", final=False, words=(we,))
+    await reported(listener, "we")
+    assert listener.turn_words() == (we,)
+    stt.stream.say("we could", final=False, words=(we, could))  # the whole turn again
+    await reported(listener, "we could")
+    assert listener.turn_words() == (we, could)
+    stt.stream.say("We could.", final=True, turn="done", words=(we, could))
+    await reported(listener, "We could.")
+    assert listener.turn_words() == (we, could)  # the finished turn's, until the next
+    stt.stream.say("hm", final=False)  # the next turn, its words not timed
+    await reported(listener, "hm")
+    assert [w.text for w in listener.turn_words()] == ["hm"]  # placed by its report
+    await listener.abandon()
+
+
+async def test_a_done_without_words_keeps_the_turns_words() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    yes = Word(text="yes", start_s=1.0, end_s=1.2)
+    stt.stream.say("yes", final=False, words=(yes,))
+    await reported(listener, "yes")
+    stt.stream.say("", final=True, turn="done")
+    for _ in range(100):
+        if listener.turn_done:
+            break
+        await asyncio.sleep(0.005)
+    assert listener.turn_done and listener.turn_words() == (yes,)
+    await listener.abandon()
+
+
+async def test_room_level_is_the_quiet_with_no_words_near() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    assert listener.room_level() == 0.002  # nothing known yet
+    await feed(listener, room(1.0) + tone(2.0))
+    assert listener.room_level() > 0.1  # the voice, with no words to place it
+    words = (Word(text="a", start_s=1.0, end_s=2.0), Word(text="b", start_s=2.0, end_s=3.0))
+    stt.stream.say("a b", final=False, words=words)
+    await reported(listener, "a b")
+    assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
+    # Her playback can be left out too.
+    assert listener.room_level(busy=[(0.0, 1.0)]) == 0.002
+    await listener.abandon()
+
+
+async def test_levels_land_in_order_while_the_backlog_is_still_being_sent() -> None:
+    """A frame that arrives while the backlog's send is still waiting comes after it."""
+    release = asyncio.Event()
+
+    class Slow(FakeSTT):
+        async def open(self, *, choice: str):  # type: ignore[no-untyped-def]
+            stream = await super().open(choice=choice)
+            send, first = stream.send, [True]
+
+            async def slow(pcm: bytes) -> None:
+                if first[0]:
+                    first[0] = False
+                    await release.wait()
+                await send(pcm)
+
+            stream.send = slow  # type: ignore[method-assign]
+            return stream
+
+    stt = Slow(turns=True, word_times=True)
+    stt.opening.clear()
+    listener = Listener(stt, "en", on_partial=nothing, watch=True)
+    starting = asyncio.create_task(listener.start())
+    await asyncio.sleep(0)
+    await listener.audio(room(0.3))  # kept until connected
+    stt.opening.set()
+    await asyncio.sleep(0.01)  # the backlog's send is now waiting
+    later = asyncio.create_task(listener.audio(tone(0.1)))
+    await asyncio.sleep(0.01)
+    release.set()
+    await starting
+    await later
+    assert listener.sent_s == pytest.approx(0.4)
+    assert listener.mic_level(0.0, 0.3) < 0.002
+    assert listener.mic_level(0.3, 0.4) > 0.1
+    await listener.abandon()
+
+
+async def test_segment_style_turn_words_join_finals_and_the_latest_interim() -> None:
+    stt = FakeSTT(word_times=True)
+    listener = await watcher(stt)
+    a = Word(text="remind", start_s=0.2, end_s=0.4)
+    b = Word(text="me", start_s=0.4, end_s=0.5)
+    c = Word(text="to", start_s=0.6, end_s=0.7)
+    d = Word(text="call", start_s=0.7, end_s=0.9)
+    stt.stream.say("remind", final=True, words=(a,))
+    stt.stream.say("me", final=True, words=(b,))
+    stt.stream.say("to", final=False, words=(c,))
+    await reported(listener, "remind me to")
+    assert listener.turn_words() == (a, b, c)
+    stt.stream.say("to call", final=False, words=(c, d))  # the interim replaced
+    await reported(listener, "remind me to call")
+    assert listener.turn_words() == (a, b, c, d)
+    await listener.abandon()
+
+
+async def test_room_level_leaves_out_earlier_turns_words() -> None:
+    stt = FakeSTT(turns=True, word_times=True)
+    listener = await watcher(stt)
+    await feed(listener, room(1.0) + tone(2.0) + room(1.0))
+    first = (Word(text="a", start_s=1.0, end_s=2.0),)
+    stt.stream.say("a", final=True, turn="done", words=first)
+    await reported(listener, "a")
+    stt.stream.say("b", final=False, words=(Word(text="b", start_s=2.0, end_s=3.0),))
+    await reported(listener, "b")
+    stt.stream.say("b", final=True, turn="done")
+    stt.stream.say("c", final=False)  # now "a" is two turns back
+    await reported(listener, "c")
+    assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
     await listener.abandon()

@@ -16,13 +16,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import struct
+import sys
+from array import array
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trillion.persona.prompt import degraded
 from trillion.voice.sentences import SentenceSplitter
 from trillion.voice.speakable import speakable
+from trillion.voice.timeline import WINDOW_S
 from trillion.voice.types import TTSProvider, VoiceError
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,9 @@ RETRY_S = 0.5
 
 SendJson = Callable[..., Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
+# Her audio for a sentence as it is sent: seq, as written, as said, loudness per 20 ms.
+OnAudio = Callable[[int, str, str, list[float]], None]
+_DEFAULT_RATE = 16_000
 
 
 def frame(turn: int, sentence: int, pcm: bytes) -> bytes:
@@ -55,12 +62,18 @@ class Speaker:
         turn: int,
         send: SendJson,
         send_bytes: SendBytes,
+        on_audio: OnAudio | None = None,
     ) -> None:
         self._provider = provider
         self._voice = voice
         self._turn = turn
         self._send = send
         self._send_bytes = send_bytes
+        self._on_audio = on_audio
+        fmt = provider.output_format
+        rate = fmt.sample_rate * fmt.channels if fmt is not None else _DEFAULT_RATE
+        # Bytes of PCM16 in one loudness window.
+        self._window_bytes = 2 * max(1, round(rate * WINDOW_S))
         # Her voice starts at the first natural pause, not the first full stop.
         self._splitter = SentenceSplitter(clause_first=True)
         self._count = 0
@@ -72,8 +85,7 @@ class Speaker:
         # What she wrote for each sentence sent, by its number: the history keeps her
         # words, not the spoken form of them (D8).
         self._said: list[tuple[int, str]] = []
-        # And what was sent to be said, which an echo of her repeats.
-        self._spoken: dict[int, str] = {}
+        self._written_by: dict[int, str] = {}
         # This round's text as she wrote it, and where in it each sentence sent ends:
         # what was heard is kept as written, line breaks and all. A round ends when a
         # tool runs, and what came before it is saved whole.
@@ -117,26 +129,10 @@ class Speaker:
         heard = [end for n, end in self._ends.items() if n <= self._heard_seq]
         return self._written[: max(heard)] if heard else ""
 
-    def playing(self, *, ahead: int = 0, spoken: bool = False) -> tuple[str, ...]:
-        """The sentence being heard and the one before: what an echo of her would say.
-        With `ahead`, that many after it too: her audio runs ahead of its reports. With
-        `spoken`, each as it was sent to be said as well ("five dollars" for "$5")."""
+    def playing(self) -> tuple[str, ...]:
+        """The sentence being heard and the one before: what an echo of her would say."""
         heard = self._heard_seq
-        return self._forms([n for n, _ in self._said if heard - 1 <= n <= heard + ahead], spoken)
-
-    def _forms(self, seqs: list[int], spoken: bool) -> tuple[str, ...]:
-        written = dict(self._said)
-        out: list[str] = []
-        for n in seqs:
-            out.append(written[n])
-            if spoken and self._spoken.get(n, written[n]) != written[n]:
-                out.append(self._spoken[n])
-        return tuple(out)
-
-    def last(self, n: int = 2) -> tuple[str, ...]:
-        """Her final sentences sent to be played, written and as said: what an echo of
-        her end would say."""
-        return self._forms([seq for seq, _ in self._said[-n:]], True)
+        return tuple(self._written_by[n] for n, _ in self._said if heard - 1 <= n <= heard)
 
     async def finish(self) -> None:
         """The reply is complete. Returns once every sentence has been sent. Its last
@@ -179,7 +175,7 @@ class Speaker:
             return
         self._count += 1
         self._said.append((self._count, sentence))
-        self._spoken[self._count] = text
+        self._written_by[self._count] = sentence
         self._ends[self._count] = end
         await self._send("reply.sentence", turn=self._turn, seq=self._count, text=text)
         if self._provider.where != "core":
@@ -196,16 +192,20 @@ class Speaker:
             seq, text = item
             if self._failed:
                 continue
+            written = self._written_by.get(seq, text)
             for attempt in (1, 2):
                 sent = False
+                loud = _Loudness(self._window_bytes)
                 try:
                     pending = b""
                     async for chunk in self._provider.synthesize(text, voice=self._voice):
                         pending += chunk
                         while len(pending) >= _FRAME_BYTES:
+                            self._report(seq, written, text, loud.feed(pending[:_FRAME_BYTES]))
                             await self._send_bytes(frame(self._turn, seq, pending[:_FRAME_BYTES]))
                             pending = pending[_FRAME_BYTES:]
                             sent = True
+                    self._report(seq, written, text, loud.feed(pending) + loud.flush())
                     if pending:
                         await self._send_bytes(frame(self._turn, seq, pending))
                     break
@@ -226,6 +226,10 @@ class Speaker:
                     await self._fail("internal")
                     break
 
+    def _report(self, seq: int, written: str, spoken: str, levels: list[float]) -> None:
+        if self._on_audio is not None and levels:
+            self._on_audio(seq, written, spoken, levels)
+
     async def _fail(self, kind: str) -> None:
         if self._failed:
             return
@@ -233,6 +237,35 @@ class Speaker:
         logger.warning("speech provider %s failed: %s", self._provider.name, kind)
         # The reply itself is unaffected: it keeps arriving as text.
         await self._send("error", code="speech", kind=kind, sentence=degraded("voice", kind))
+
+
+class _Loudness:
+    """Her loudness per window of PCM16 (0 to 1), carrying a part window between
+    pieces of one sentence."""
+
+    def __init__(self, window_bytes: int) -> None:
+        self._window = window_bytes
+        self._carry = b""
+
+    def feed(self, pcm: bytes) -> list[float]:
+        data = self._carry + pcm
+        whole = len(data) - len(data) % self._window
+        self._carry = data[whole:]
+        return [_rms(data[i : i + self._window]) for i in range(0, whole, self._window)]
+
+    def flush(self) -> list[float]:
+        """The sentence's last part window, if any."""
+        rest, self._carry = self._carry, b""
+        return [_rms(rest)] if len(rest) >= 2 else []
+
+
+def _rms(pcm: bytes) -> float:
+    samples = array("h", pcm[: len(pcm) - len(pcm) % 2])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768
 
 
 def describe(

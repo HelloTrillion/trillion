@@ -36,7 +36,7 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
 
 
 def judging(rt: Runtime, *replies: Any) -> tuple[FakeSTT, Gated]:
-    stt = FakeSTT(turns=True)
+    stt = FakeSTT(turns=True, word_times=True)
     rt.stt = stt
     rt.listening = ListenSettings(kind="deepgram", choice="en")
     provider = Gated(*replies)

@@ -28,7 +28,7 @@ from trillion.voice.models import ModelFile, ModelPack
 from trillion.voice.providers import deepgram
 from trillion.voice.providers.deepgram import Deepgram
 from trillion.voice.providers.whisper import PACKS, LocalWhisper
-from trillion.voice.types import Heard, STTProvider, VoiceError
+from trillion.voice.types import Heard, STTProvider, VoiceError, Word
 
 SAMPLE_KEY = "listen-" + "test" * 5
 SAID = "write a note saying hi"
@@ -42,9 +42,17 @@ PACK = ModelPack(
 )
 
 
-def turn_info(event: str, text: str) -> str:
-    return json.dumps({"type": "TurnInfo", "event": event, "turn_index": 0,
-                       "transcript": text, "words": [], "end_of_turn_confidence": 0.9})  # fmt: skip
+def turn_info(event: str, text: str, words: list[object] | None = None) -> str:
+    return json.dumps(
+        {
+            "type": "TurnInfo",
+            "event": event,
+            "turn_index": 0,
+            "transcript": text,
+            "words": words or [],
+            "end_of_turn_confidence": 0.9,
+        }
+    )
 
 
 class FakeSocket:
@@ -377,3 +385,25 @@ def test_deepgram_error_message_is_a_failure_with_only_its_code() -> None:
     with pytest.raises(VoiceError) as e:
         deepgram.parse(raw)
     assert e.value.kind == "provider_unavailable" and "secret" not in str(e.value)
+
+
+def test_deepgram_reports_when_each_word_was_said() -> None:
+    words: list[object] = [
+        {"word": "wait", "start": 2.0, "end": 2.4, "confidence": 0.9},
+        {"word": "stop", "start": 2.4, "end": 2.88, "confidence": 0.9},
+        {"word": "bad", "start": "x", "end": 3.0},
+        {"word": "bool", "start": True, "end": 3.0},
+        {"word": "missing", "start": 3.0},
+        {"word": "nan", "start": float("nan"), "end": 3.0},
+        {"word": "inf", "start": 3.0, "end": float("inf")},
+        {"word": "backwards", "start": 3.0, "end": 2.5},
+        "junk",
+    ]
+    heard = deepgram.parse(turn_info("Update", "wait stop", words))
+    assert heard is not None
+    assert heard.words == (
+        Word(text="wait", start_s=2.0, end_s=2.4),
+        Word(text="stop", start_s=2.4, end_s=2.88),
+    )
+    assert Deepgram(api_key=lambda: "k").word_times is True
+    assert LocalWhisper().word_times is False
