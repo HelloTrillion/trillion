@@ -46,7 +46,13 @@ def words(about: str) -> list[str]:
 
 
 # How a decision arrived, in the words she should use.
-_VIA = {"tap": "a tap on the card", "voice": "spoken", "text": "typed", "channel": "a message"}
+_VIA = {
+    "tap": "a tap on the card",
+    "voice": "spoken",
+    "text": "typed",
+    "channel": "a message",
+    "ask": "a tap on a widget",
+}
 _OUTCOME = {
     Status.SUCCEEDED: "done",
     Status.FAILED: "failed",

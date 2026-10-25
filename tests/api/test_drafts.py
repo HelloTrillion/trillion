@@ -384,5 +384,5 @@ async def test_a_board_change_from_the_page_drops_the_draft(rt: Runtime) -> None
     _, sent = provider.calls[1]
     context = str(sent[-1].blocks[0].text)  # type: ignore[union-attr]
     assert 'Board (open): "October": w1 stat "Total".' in context
-    assert "note" not in context
+    assert "w2 note" not in context and "Milk" not in context
     await session.close()

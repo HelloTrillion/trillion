@@ -1,0 +1,1145 @@
+{
+  "widgets": [
+    {
+      "id": "k1",
+      "type": "stat",
+      "size": "medium",
+      "title": "October spend",
+      "source": {
+        "name": "Bank",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Where did the extra go?"
+      ],
+      "blocks": [
+        {
+          "type": "value",
+          "value": "$3,840",
+          "label": "Spent so far",
+          "delta": "+12% vs September",
+          "hint": "With 6 days to go, on course for about $4,500",
+          "tone": "attention"
+        }
+      ]
+    },
+    {
+      "id": "k2",
+      "type": "chart",
+      "size": "medium",
+      "title": "Spend by week, October",
+      "source": {
+        "name": "Bank",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "chart",
+          "kind": "bar",
+          "x": [
+            "Sep 28",
+            "Oct 5",
+            "Oct 12",
+            "Oct 19"
+          ],
+          "series": [
+            {
+              "name": "This year",
+              "values": [
+                910,
+                760,
+                1240,
+                930
+              ]
+            },
+            {
+              "name": "Last year",
+              "values": [
+                820,
+                790,
+                880,
+                850
+              ]
+            }
+          ],
+          "unit": "$"
+        }
+      ]
+    },
+    {
+      "id": "k3",
+      "type": "list",
+      "size": "medium",
+      "title": "Before the trip to Maple Park",
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Book the train",
+              "detail": "Friday 8:10 am, two seats",
+              "done": true
+            },
+            {
+              "title": "Ask Jo to water the plants",
+              "meta": "Thu"
+            },
+            {
+              "title": "Pick up the rain jackets",
+              "detail": "From the Elm Street office"
+            },
+            {
+              "title": "Print the cabin booking",
+              "meta": "Fri"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k4",
+      "type": "table",
+      "size": "medium",
+      "title": "Unpaid invoices",
+      "source": {
+        "name": "Invoices",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Draft a reminder to Maple Park"
+      ],
+      "blocks": [
+        {
+          "type": "table",
+          "columns": [
+            "Client",
+            "Amount",
+            "Due",
+            "Days late"
+          ],
+          "rows": [
+            [
+              "Maple Park Dental",
+              "$1,200",
+              "Oct 10",
+              15
+            ],
+            [
+              "Alex Rivera Design",
+              "$850",
+              "Oct 18",
+              7
+            ],
+            [
+              "Elm Street Bakery",
+              "$420",
+              "Oct 31",
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k5",
+      "type": "note",
+      "size": "medium",
+      "title": "What we agreed with Sam",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Sam takes the **client call** on Tuesdays from now on.\n- Jo writes the weekly summary\n- Alex owns the budget sheet\nReview it all again on Nov 30."
+        }
+      ]
+    },
+    {
+      "id": "k6",
+      "type": "timeline",
+      "size": "medium",
+      "title": "Monday, Oct 26",
+      "source": {
+        "name": "Calendar",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "timeline",
+          "events": [
+            {
+              "title": "Standup",
+              "start": "09:00",
+              "end": "09:15"
+            },
+            {
+              "title": "Design review with Sam",
+              "start": "10:30",
+              "end": "11:30",
+              "meta": "Room 2"
+            },
+            {
+              "title": "Lunch with Jo",
+              "start": "12:30",
+              "end": "13:30",
+              "meta": "Maple Park"
+            },
+            {
+              "title": "Budget call",
+              "start": "15:00",
+              "end": "15:30"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k7",
+      "type": "compare",
+      "size": "medium",
+      "title": "Two flats near Maple Park",
+      "asks": [
+        "Book a viewing"
+      ],
+      "blocks": [
+        {
+          "type": "columns",
+          "columns": [
+            [
+              {
+                "type": "value",
+                "value": "Elm Street, 2 bed"
+              },
+              {
+                "type": "meter",
+                "value": 6,
+                "max": 10,
+                "label": "Price"
+              },
+              {
+                "type": "meter",
+                "value": 9,
+                "max": 10,
+                "label": "Light"
+              },
+              {
+                "type": "meter",
+                "value": 7,
+                "max": 10,
+                "label": "Commute"
+              },
+              {
+                "type": "chips",
+                "items": [
+                  "$1,950 a month",
+                  "Top floor"
+                ]
+              },
+              {
+                "type": "text",
+                "text": "No lift, but a balcony."
+              }
+            ],
+            [
+              {
+                "type": "value",
+                "value": "Park Road, 2 bed",
+                "label": "Her pick"
+              },
+              {
+                "type": "meter",
+                "value": 8,
+                "max": 10,
+                "label": "Price"
+              },
+              {
+                "type": "meter",
+                "value": 5,
+                "max": 10,
+                "label": "Light"
+              },
+              {
+                "type": "meter",
+                "value": 9,
+                "max": 10,
+                "label": "Commute"
+              },
+              {
+                "type": "chips",
+                "items": [
+                  "$1,780 a month",
+                  "Ground floor"
+                ]
+              },
+              {
+                "type": "text",
+                "text": "Six minutes to the station."
+              }
+            ]
+          ]
+        },
+        {
+          "type": "text",
+          "text": "It is $170 a month cheaper and the shorter commute matters every day."
+        }
+      ]
+    },
+    {
+      "id": "k8",
+      "type": "next_up",
+      "size": "small",
+      "title": "Next up",
+      "source": {
+        "name": "Calendar",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Prep me for this"
+      ],
+      "blocks": [
+        {
+          "type": "time",
+          "at": "2026-10-26T10:30",
+          "end": "2026-10-26T11:30",
+          "label": "Design review"
+        },
+        {
+          "type": "people",
+          "names": [
+            "Sam",
+            "Jo",
+            "Alex"
+          ]
+        },
+        {
+          "type": "chips",
+          "items": [
+            "Maple Park room 2"
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Sam wants a decision on the new header."
+        }
+      ]
+    },
+    {
+      "id": "k9",
+      "type": "free_time",
+      "size": "medium",
+      "title": "Free for an hour or more this week",
+      "source": {
+        "name": "Calendar",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Hold Friday afternoon"
+      ],
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Tue 27 Oct",
+              "detail": "9:00–10:30 am, 2:00–3:00 pm"
+            },
+            {
+              "title": "Wed 28 Oct",
+              "detail": "11:00 am–12:30 pm"
+            },
+            {
+              "title": "Fri 30 Oct",
+              "detail": "1:00–5:00 pm"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k10",
+      "type": "inbox",
+      "size": "medium",
+      "title": "Email since this morning",
+      "source": {
+        "name": "Email",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "value",
+          "value": "14",
+          "label": "Unread",
+          "hint": "3 need a reply"
+        },
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Sam",
+              "detail": "Header options for Monday",
+              "person": "Sam",
+              "status": "attention",
+              "when": "2026-10-25T08:12"
+            },
+            {
+              "title": "Jo",
+              "detail": "Invoice 214 is overdue",
+              "person": "Jo",
+              "status": "bad",
+              "when": "2026-10-25T07:40"
+            },
+            {
+              "title": "Alex",
+              "detail": "Slides for Thursday",
+              "person": "Alex",
+              "when": "2026-10-24T18:05"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k11",
+      "type": "thread",
+      "size": "medium",
+      "title": "Sam needs an answer",
+      "source": {
+        "name": "Email",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Draft a reply"
+      ],
+      "blocks": [
+        {
+          "type": "person",
+          "name": "Sam",
+          "detail": "Header options for Monday"
+        },
+        {
+          "type": "text",
+          "text": "Pick one of the two header designs so the build can start Monday."
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Due",
+              "value": "Mon 26 Oct"
+            }
+          ]
+        },
+        {
+          "type": "quote",
+          "text": "Both are in the shared folder. I lean towards B, but it needs a new photo and that adds a day.",
+          "when": "2026-10-25T08:12"
+        }
+      ]
+    },
+    {
+      "id": "k12",
+      "type": "mentions",
+      "size": "wide",
+      "title": "Mentions since Friday",
+      "source": {
+        "name": "Chat",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "rows",
+          "label": "#launch",
+          "items": [
+            {
+              "title": "Jo",
+              "detail": "Can you sign off the launch post by Tuesday?",
+              "person": "Jo",
+              "when": "2026-10-24T16:20"
+            },
+            {
+              "title": "Alex",
+              "detail": "Numbers for the Elm Street office are in the sheet.",
+              "person": "Alex",
+              "when": "2026-10-24T17:02"
+            }
+          ]
+        },
+        {
+          "type": "rows",
+          "label": "#design",
+          "items": [
+            {
+              "title": "Sam",
+              "detail": "Header B needs your call before Monday.",
+              "person": "Sam",
+              "when": "2026-10-25T08:15"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k13",
+      "type": "files",
+      "size": "medium",
+      "title": "Edited this week",
+      "source": {
+        "name": "Drive",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Q4 budget",
+              "detail": "by Alex",
+              "when": "2026-10-24T17:00",
+              "chip": "Sheet"
+            },
+            {
+              "title": "Launch post draft",
+              "detail": "by Jo",
+              "when": "2026-10-24T11:30",
+              "chip": "Doc"
+            },
+            {
+              "title": "Header options",
+              "detail": "by Sam",
+              "when": "2026-10-23T15:45",
+              "chip": "Slides"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k14",
+      "type": "quote",
+      "size": "small",
+      "title": "What the client said",
+      "source": {
+        "name": "Email",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "quote",
+          "text": "The new checkout is the first one our customers have praised without being asked.",
+          "by": "Maple Park Dental",
+          "when": "2026-10-22"
+        }
+      ]
+    },
+    {
+      "id": "k15",
+      "type": "plan",
+      "size": "medium",
+      "title": "Move to the Elm Street office",
+      "asks": [
+        "Who is free on Nov 16?"
+      ],
+      "blocks": [
+        {
+          "type": "meter",
+          "value": 2,
+          "max": 5,
+          "label": "2 of 5 done"
+        },
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Sign the lease",
+              "done": true
+            },
+            {
+              "title": "Book the movers",
+              "detail": "Nov 14, 8:00 am",
+              "done": true
+            },
+            {
+              "title": "Tell the bank the new address",
+              "done": false
+            },
+            {
+              "title": "Set up the internet",
+              "detail": "Needs someone in on Nov 16",
+              "done": false
+            },
+            {
+              "title": "Update the website footer",
+              "done": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k16",
+      "type": "decision",
+      "size": "wide",
+      "title": "Which venue for the team day",
+      "blocks": [
+        {
+          "type": "table",
+          "columns": [
+            "Option",
+            "Price",
+            "Space",
+            "Getting there",
+            "Total"
+          ],
+          "rows": [
+            [
+              "Maple Park Hall",
+              7,
+              8,
+              9,
+              24
+            ],
+            [
+              "Elm Street loft",
+              9,
+              6,
+              7,
+              22
+            ],
+            [
+              "The Boathouse",
+              5,
+              9,
+              6,
+              20
+            ]
+          ],
+          "highlight": 0
+        },
+        {
+          "type": "text",
+          "text": "Best total, and everyone can walk there from the station."
+        }
+      ]
+    },
+    {
+      "id": "k17",
+      "type": "facts",
+      "size": "small",
+      "title": "Flight to the conference",
+      "source": {
+        "name": "Email",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Departs",
+              "value": "Thu Nov 19, 7:45 am"
+            },
+            {
+              "label": "Flight",
+              "value": "TR 214"
+            },
+            {
+              "label": "Seat",
+              "value": "14C, aisle"
+            },
+            {
+              "label": "Booking",
+              "value": "K7Q2LM"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k18",
+      "type": "callout",
+      "size": "small",
+      "title": "Rent goes up in December",
+      "source": {
+        "name": "Email",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Update the direct debit"
+      ],
+      "blocks": [
+        {
+          "type": "text",
+          "text": "From Dec 1 the Elm Street rent is $2,050, up $100. The current direct debit will fall short.",
+          "tone": "attention"
+        }
+      ]
+    },
+    {
+      "id": "k19",
+      "type": "goal",
+      "size": "small",
+      "title": "Holiday fund",
+      "source": {
+        "name": "Bank",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "meter",
+          "value": 4200,
+          "max": 6000,
+          "label": "Saved",
+          "shape": "ring"
+        },
+        {
+          "type": "value",
+          "value": "$4,200",
+          "hint": "of $6,000 by Nov 30"
+        }
+      ]
+    },
+    {
+      "id": "k20",
+      "type": "sources",
+      "size": "medium",
+      "title": "Where the venue figures came from",
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Maple Park Hall prices",
+              "detail": "Weekday rate, up to 40 people",
+              "meta": "maplepark.example"
+            },
+            {
+              "title": "Elm Street loft booking",
+              "meta": "elmstreet.example"
+            },
+            {
+              "title": "The Boathouse events",
+              "detail": "Prices from 2025, may be out of date",
+              "meta": "boathouse.example"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k21",
+      "type": "custom",
+      "size": "medium",
+      "title": "Who's on call this week",
+      "source": {
+        "name": "Rota",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Sam",
+              "detail": "Mon to Wed, until 6:00 pm",
+              "person": "Sam",
+              "chip": "Primary"
+            },
+            {
+              "title": "Jo",
+              "detail": "Thu and Fri",
+              "person": "Jo",
+              "chip": "Primary"
+            },
+            {
+              "title": "Alex",
+              "detail": "All week",
+              "person": "Alex",
+              "chip": "Backup"
+            }
+          ]
+        },
+        {
+          "type": "status",
+          "tone": "good",
+          "text": "No open incidents"
+        }
+      ]
+    },
+    {
+      "id": "k22",
+      "type": "custom",
+      "size": "medium",
+      "title": "Two offices, October",
+      "source": {
+        "name": "Sales",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Why is Maple Park down?"
+      ],
+      "blocks": [
+        {
+          "type": "columns",
+          "columns": [
+            [
+              {
+                "type": "value",
+                "value": "$12,400",
+                "label": "Elm Street office"
+              },
+              {
+                "type": "sparkline",
+                "values": [
+                  9800,
+                  10400,
+                  11100,
+                  12400
+                ]
+              },
+              {
+                "type": "facts",
+                "items": [
+                  {
+                    "label": "vs September",
+                    "value": "+12%"
+                  }
+                ]
+              }
+            ],
+            [
+              {
+                "type": "value",
+                "value": "$9,100",
+                "label": "Maple Park"
+              },
+              {
+                "type": "sparkline",
+                "values": [
+                  9900,
+                  9600,
+                  9300,
+                  9100
+                ],
+                "tone": "bad"
+              },
+              {
+                "type": "facts",
+                "items": [
+                  {
+                    "label": "vs September",
+                    "value": "-2%"
+                  }
+                ]
+              }
+            ]
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Elm Street has grown four months running; Maple Park has slipped."
+        }
+      ]
+    }
+  ],
+  "blocks": [
+    {
+      "id": "k23",
+      "type": "custom",
+      "size": "medium",
+      "title": "value",
+      "blocks": [
+        {
+          "type": "value",
+          "value": "$3,840",
+          "label": "Spent in October",
+          "delta": "+12%",
+          "tone": "attention"
+        }
+      ]
+    },
+    {
+      "id": "k24",
+      "type": "custom",
+      "size": "medium",
+      "title": "sparkline",
+      "blocks": [
+        {
+          "type": "sparkline",
+          "values": [
+            12,
+            14,
+            13,
+            17,
+            16,
+            19,
+            22
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k25",
+      "type": "custom",
+      "size": "medium",
+      "title": "meter",
+      "blocks": [
+        {
+          "type": "meter",
+          "value": 3,
+          "max": 5,
+          "label": "3 of 5 done"
+        }
+      ]
+    },
+    {
+      "id": "k26",
+      "type": "custom",
+      "size": "medium",
+      "title": "time",
+      "blocks": [
+        {
+          "type": "time",
+          "at": "2026-10-26T10:30",
+          "end": "2026-10-26T11:30",
+          "label": "Design review"
+        }
+      ]
+    },
+    {
+      "id": "k27",
+      "type": "custom",
+      "size": "medium",
+      "title": "chart",
+      "blocks": [
+        {
+          "type": "chart",
+          "kind": "line",
+          "x": [
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct"
+          ],
+          "series": [
+            {
+              "name": "Visitors",
+              "values": [
+                1200,
+                1350,
+                1310,
+                1620
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k28",
+      "type": "custom",
+      "size": "medium",
+      "title": "table",
+      "blocks": [
+        {
+          "type": "table",
+          "columns": [
+            "Office",
+            "October"
+          ],
+          "rows": [
+            [
+              "Elm Street",
+              "$12,400"
+            ],
+            [
+              "Maple Park",
+              "$9,100"
+            ]
+          ],
+          "highlight": 0
+        }
+      ]
+    },
+    {
+      "id": "k29",
+      "type": "custom",
+      "size": "medium",
+      "title": "timeline",
+      "blocks": [
+        {
+          "type": "timeline",
+          "events": [
+            {
+              "title": "Standup",
+              "start": "09:00",
+              "end": "09:15"
+            },
+            {
+              "title": "Lunch with Jo",
+              "start": "12:30",
+              "end": "13:30"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k30",
+      "type": "custom",
+      "size": "medium",
+      "title": "rows",
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Sam",
+              "detail": "Header options",
+              "person": "Sam",
+              "when": "2026-10-25T08:12"
+            },
+            {
+              "title": "Book the movers",
+              "status": "good",
+              "meta": "Nov 14"
+            },
+            {
+              "title": "Rain jackets",
+              "chip": "Elm Street"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k31",
+      "type": "custom",
+      "size": "medium",
+      "title": "person",
+      "blocks": [
+        {
+          "type": "person",
+          "name": "Sam",
+          "detail": "Design lead"
+        }
+      ]
+    },
+    {
+      "id": "k32",
+      "type": "custom",
+      "size": "medium",
+      "title": "people",
+      "blocks": [
+        {
+          "type": "people",
+          "names": [
+            "Sam",
+            "Jo",
+            "Alex",
+            "Maple Park team"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k33",
+      "type": "custom",
+      "size": "medium",
+      "title": "status",
+      "blocks": [
+        {
+          "type": "status",
+          "tone": "attention",
+          "text": "Two invoices are late"
+        }
+      ]
+    },
+    {
+      "id": "k34",
+      "type": "custom",
+      "size": "medium",
+      "title": "chips",
+      "blocks": [
+        {
+          "type": "chips",
+          "items": [
+            "Top floor",
+            "Balcony",
+            "$1,950 a month"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k35",
+      "type": "custom",
+      "size": "medium",
+      "title": "text",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Sam takes the **client call** on Tuesdays.\n- Jo writes the summary"
+        }
+      ]
+    },
+    {
+      "id": "k36",
+      "type": "custom",
+      "size": "medium",
+      "title": "quote",
+      "blocks": [
+        {
+          "type": "quote",
+          "text": "Best checkout we have used.",
+          "by": "Maple Park Dental"
+        }
+      ]
+    },
+    {
+      "id": "k37",
+      "type": "custom",
+      "size": "medium",
+      "title": "facts",
+      "blocks": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Seat",
+              "value": "14C"
+            },
+            {
+              "label": "Flight",
+              "value": "TR 214"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k38",
+      "type": "custom",
+      "size": "medium",
+      "title": "columns",
+      "blocks": [
+        {
+          "type": "columns",
+          "columns": [
+            [
+              {
+                "type": "value",
+                "value": "$12,400",
+                "label": "Elm Street office"
+              }
+            ],
+            [
+              {
+                "type": "value",
+                "value": "$9,100",
+                "label": "Maple Park"
+              }
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

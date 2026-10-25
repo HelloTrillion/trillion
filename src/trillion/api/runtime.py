@@ -297,8 +297,10 @@ class Runtime:
                 " says so"
             ),
             "board": (
-                "workspace_show puts typed widgets (stat, chart, list, table, note, timeline,"
-                " compare) on a board in the workspace beside this conversation; "
+                "workspace_show puts widgets on a board in the workspace beside this"
+                " conversation: numbers, charts, lists, tables, notes, an agenda, comparisons,"
+                " next up, free time, inbox, threads, mentions, files, plans, decisions, goals,"
+                " sources, or a custom card built from blocks; "
                 "workspace_update, workspace_remove and workspace_close change it. They run at"
                 " once, the board is kept with the conversation, and they are only there"
                 " while the user has the page open"
@@ -594,6 +596,7 @@ async def open_runtime(
         rt.send_board,
         clock=lambda: rt.clock(),
         owner=OWNER,
+        zone=lambda: rt.zone(),
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)

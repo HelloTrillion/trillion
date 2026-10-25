@@ -12,7 +12,7 @@ from typing import Any
 from trillion.spine.contract import JSON, BaseTool, Risk, ToolContext, ToolDefinition, ToolResult
 from trillion.workspace.board import BoardError, describe
 from trillion.workspace.kit import MAX_WIDGETS
-from trillion.workspace.schema import widget_schema
+from trillion.workspace.schema import type_cards, widget_schema
 from trillion.workspace.service import Boards, BoardSaveError
 
 SHOW, UPDATE, REMOVE, CLOSE = (
@@ -89,7 +89,7 @@ class WorkspaceShow(_BoardTool):
         "charts, comparisons, plans, anything with more than three items. Opens the board. "
         "mode 'replace' (default) clears what was there; 'add' appends, "
         f"{MAX_WIDGETS} widgets at most. No widgets reopens the board as it was. Say one "
-        "short line about it; never read the board aloud.",
+        "short line about it; never read the board aloud.\n" + type_cards(),
         {
             "title": {"type": "string", "description": "The board's title."},
             "widgets": {"type": "array", "items": widget_schema()},
@@ -113,7 +113,8 @@ class WorkspaceUpdate(_BoardTool):
     definition = _definition(
         UPDATE,
         "Change one widget on your board in place, keeping its id and position: give the "
-        "whole widget as it should now be, for example the same chart as a bar chart.",
+        "whole widget as it should now be, for example the same chart as a bar chart. "
+        "Its fields are as for workspace_show.",
         {
             "id": {"type": "string", "description": "The widget's id, e.g. 'w2'."},
             "widget": widget_schema(),

@@ -7,8 +7,9 @@ import pytest
 
 from trillion.workspace import board as b
 from trillion.workspace.board import BoardError
-from trillion.workspace.kit import MAX_WIDGETS, validate_widget
+from trillion.workspace.kit import MAX_WIDGETS
 from trillion.workspace.schema import widget_schema
+from trillion.workspace.widgets import validate_widget
 
 STAT = {"type": "stat", "label": "Total", "value": "$41.20"}
 CHART = {
@@ -164,7 +165,9 @@ def test_display_strings_still_refuse_bools_and_nan():
 def test_unknown_type():
     assert refused({"type": "map"}) == (
         "widget 1: unknown type 'map'; "
-        "use one of stat, chart, list, table, note, timeline, compare."
+        "use one of stat, chart, list, table, note, timeline, compare, next_up, free_time, "
+        "inbox, thread, mentions, files, quote, plan, decision, facts, callout, goal, sources, "
+        "custom."
     )
 
 
@@ -189,7 +192,8 @@ def test_bad_size_and_tone():
         "widget 1 (stat): size must be one of small, medium, wide, full, not 'huge'."
     )
     assert refused({**STAT, "tone": "sideways"}) == (
-        "widget 1 (stat): tone must be one of up, down, neutral, not 'sideways'."
+        "widget 1 (stat): tone must be one of good, bad, attention, neutral, up, down, "
+        "not 'sideways'."
     )
 
 
@@ -367,12 +371,6 @@ def test_schema_lists_the_kit():
     for name, prop in schema["properties"].items():
         if "enum" in prop:
             assert prop["type"] == "string", name
-    for name in ("label", "unit", "pick", "reason"):
-        assert schema["properties"][name]["description"].split(":")[0] in (
-            "Stat",
-            "Chart",
-            "Compare",
-        )
 
 
 # Board edits

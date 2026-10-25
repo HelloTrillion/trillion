@@ -92,3 +92,13 @@ def test_confirm_tool_has_no_argument_fields_but_the_id():
         assert set(schema["properties"]) == {"pending_id"}
         assert schema["additionalProperties"] is False
         assert schema["required"] == ["pending_id"]
+
+
+def test_a_tap_on_a_widget_ask_can_never_approve():
+    # A page she read could make her write an ask that says "Yes, go ahead" (D5).
+    refused = decide(action(), "confirm", ctx(via="ask"), NOW)
+    assert refused == Rejection(Refusal.ASK, "a tap on a widget can't approve; use the card")
+
+
+def test_a_tap_on_a_widget_ask_can_still_cancel():
+    assert decide(action(), "cancel", ctx(via="ask"), NOW) is Status.REJECTED

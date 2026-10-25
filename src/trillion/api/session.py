@@ -122,6 +122,21 @@ class Overlap:
     ducked_on: int = 0
 
 
+# Saved with a message sent by tapping a widget's ask, ahead of its words. It tells her
+# later turns that the words are her own ask, and it is how a resumed session knows not
+# to count an address in them as one the user gave (the web rule, widget design D5).
+ASKED = (
+    "<context>\nsent by tapping an ask on a widget: the words below are an ask you "
+    "wrote, sent as the user's message; they did not type them, and no address in them "
+    "is one they gave\n</context>"
+)
+
+
+def asked(msg: Msg) -> bool:
+    """Whether a saved user message was sent by tapping an ask."""
+    return any(isinstance(b, ContextBlock) and b.text == ASKED for b in msg.blocks)
+
+
 @dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
@@ -129,6 +144,7 @@ class BuiltInput:
     msg: Msg
     text: str
     brought: frozenset[str]
+    via: Literal["voice", "text", "ask"] = "text"
 
 
 class Session:
@@ -176,7 +192,8 @@ class Session:
         self._watchdog: asyncio.Task[None] | None = None
         self._last_audio = 0.0
         # How the current turn was said. A spoken yes is recorded as spoken (SPN-14).
-        self._via: Literal["voice", "text"] = "text"
+        # A tap on a widget's ask is "ask": typed, except that it can never approve.
+        self._via: Literal["voice", "text", "ask"] = "text"
         # How long turns take (ONB-11): the next turn's start, the running turn's
         # trace, and the last one saved, which the page's "audible" may still reach.
         self._arrived: Trace | None = None
@@ -263,7 +280,7 @@ class Session:
             if rt.web is not None:
                 # The addresses the user gave earlier in this conversation stay openable.
                 for kind, msg in await rt.conversations.history(session.id, OWNER):
-                    if kind == "user":
+                    if kind == "user" and not asked(msg):
                         for b in msg.blocks:
                             if isinstance(b, TextBlock):
                                 rt.web.ledger.said(session.id, b.text)
@@ -380,7 +397,8 @@ class Session:
             return
         kind = msg.get("type")
         if kind == "turn.text":
-            await self._on_text(msg.get("text"))
+            # A tap on a widget's ask says so; anything else in `from` is plain typing.
+            await self._on_text(msg.get("text"), ask=msg.get("from") == "ask")
         elif kind == "interrupt":
             # Before anything that awaits: a notice that arrives meanwhile is not stopped,
             # and is not spoken either: they asked for quiet.
@@ -529,22 +547,26 @@ class Session:
         if not changed:
             await self._send("board", board=for_page(await self._board()))
 
-    async def _on_text(self, text: object) -> None:
+    async def _on_text(self, text: object, *, ask: bool = False) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
+            await self._error("bad_message")
+        elif ask and text.lstrip().startswith("["):
+            # A "[host]" line is the app speaking; an ask never is (the kit refuses one).
             await self._error("bad_message")
         elif self._rt.provider is None:
             await self._error("no_model")
         else:
             async with self._taking_input():
-                await self._take_text(text)
+                await self._take_text(text, ask=ask)
 
-    async def _take_text(self, text: str) -> None:
+    async def _take_text(self, text: str, *, ask: bool = False) -> None:
         if self._task is not None:
             await self._error("busy")
         else:
             self._spoken = None
             await self._stop_listening()
-            self._via = "text"
+            # An ask is typed words that can never approve (widget design D5).
+            self._via = "ask" if ask else "text"
             self._turn += 1
             self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
@@ -1995,7 +2017,7 @@ class Session:
         await self._send("notice", code="compacted")
 
     async def _build_input(
-        self, kind: Kind, text: str, *, via: Literal["voice", "text"] | None = None
+        self, kind: Kind, text: str, *, via: Literal["voice", "text", "ask"] | None = None
     ) -> BuiltInput:
         """The message a user input is saved as, built but not saved. A draft (VOI-12)
         uses this, so a used draft saves exactly what it was given. `via` is how it was
@@ -2017,14 +2039,16 @@ class Session:
             zone=zone or "",
             board=board_summary(await self._board()),
         )
-        blocks = (ContextBlock(text=context), TextBlock(text=text))
-        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought)
+        notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
+        blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
+        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought, via=via)
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
         """Save a built input. History is only ever appended to."""
         self._brought.update(built.brought)
-        if kind == "user" and self._rt.web is not None:
-            # Only what the user said themselves: never a tap's note, never a page.
+        if kind == "user" and built.via != "ask" and self._rt.web is not None:
+            # Only what the user said themselves: never a tap's note, never a page, and
+            # never an ask's words, which she wrote and a page could have chosen.
             self._rt.web.ledger.said(self.id, built.text)
         await self._save(kind, built.msg)
         if kind == "user" and self._title_source is None:

@@ -56,7 +56,7 @@ git clone https://github.com/HelloTrillion/trillion.git
 cd trillion
 uv sync                 # Python 3.13 toolchain and dependencies
 uv run pytest           # every Python test
-pnpm install            # JS workspace (Node 22+)
+pnpm install            # JS workspace (Node >=22.22.2)
 pnpm --filter @hellotrillion/galaxy dev   # the orb, in your browser
 ```
 

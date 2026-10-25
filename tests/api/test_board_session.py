@@ -60,6 +60,9 @@ async def test_her_board_reaches_the_page_and_comes_back_on_reopen(rt: Runtime) 
     assert board["title"] == "October spend" and board["open"] is True
     assert [w["id"] for w in board["widgets"]] == ["w1", "w2"]
     assert "next_id" not in board  # the counter is the server's own
+    # The page draws blocks; what she wrote stays on the server.
+    assert board["widgets"][0]["blocks"] == [{"type": "value", "value": "$41.20", "label": "Total"}]
+    assert board["widgets"][1]["blocks"][0]["type"] == "rows" and "items" not in board["widgets"][1]
 
     # A second page opening the conversation gets it as it was left.
     again = Page(rt)

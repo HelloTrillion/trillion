@@ -10,8 +10,9 @@ from typing import Any, Literal, Protocol
 
 JSON = Mapping[str, Any]
 # "schedule" is a timed ask running with nobody there (AGT-9): it can never raise or
-# settle a card.
-Via = Literal["voice", "text", "tap", "channel", "schedule"]
+# settle a card. "ask" is a turn started by tapping a widget's ask: typed words in
+# every way but one, they can never approve (its words may come from a page she read).
+Via = Literal["voice", "text", "tap", "channel", "schedule", "ask"]
 Effect = Literal["confirmed", "none", "unknown"]
 
 
