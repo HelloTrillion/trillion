@@ -121,7 +121,7 @@ export function countdown(at: Date | string, end: Date | string | undefined, now
 
 /**
  * From one time to another, shortly: "2:30–3:00 pm", "11:30 am–12:15 pm", across days
- * "Tue 3:00 pm–Wed 9:00 am". With no end, the time alone. Days alone: "Oct 28–30", "Oct 28–Nov 2".
+ * "Tue 3:00 pm–Wed 9:00 am" (more than six days apart, "Oct 27 3:00 pm–Nov 5 9:00 am"). With no end, the time alone. Days alone: "Oct 28–30", "Oct 28–Nov 2".
  */
 export function range(at: Date | string, end?: Date | string): string {
   const a = toDate(at);
@@ -133,7 +133,12 @@ export function range(at: Date | string, end?: Date | string): string {
     return a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear() ? `${first}–${b.getDate()}` : `${first}–${MONTHS[b.getMonth()]} ${b.getDate()}`;
   }
   if (!b) return clock(a);
-  if (dayStart(a) !== dayStart(b)) return `${DAYS[a.getDay()]} ${clock(a)}–${DAYS[b.getDay()]} ${clock(b)}`;
+  if (dayStart(a) !== dayStart(b)) {
+    // Within the week a weekday is clear; further apart, two Tuesdays would not be.
+    const far = Math.abs(dayGap(b, a)) > 6;
+    const day = (d: Date): string => (far ? `${MONTHS[d.getMonth()]} ${d.getDate()}` : (DAYS[d.getDay()] ?? ''));
+    return `${day(a)} ${clock(a)}–${day(b)} ${clock(b)}`;
+  }
   const sameHalf = a.getHours() < 12 === b.getHours() < 12;
   const left = sameHalf ? clock(a).replace(/ [ap]m$/, '') : clock(a);
   return `${left}–${clock(b)}`;

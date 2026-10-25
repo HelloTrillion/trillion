@@ -2,7 +2,7 @@
   "name": "trillion-workspace",
   "private": true,
   "packageManager": "pnpm@9.15.0",
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=22.22.2" },
   "scripts": {
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test"

@@ -1,23 +1,208 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { chartSpecOf } from '../src/blocks';
 import { layoutChart } from '../src/chart';
 import {
+  TICK_MS,
+  asksOf,
   boardTitle,
-  chartHeight,
-  chartSpecOf,
   buttonAction,
-  chartSummary,
+  chartHeight,
+  createBoardView,
+  hasChart,
   planRows,
-  pointWords,
   revive,
   rowTemplate,
-  layoutTimeline,
-  minutesOf,
-  nearestIndex,
-  parseNote,
-  runs,
+  sourceWords,
   spans,
-  toneOf,
 } from '../src/board';
+import { type Board, type Widget } from '../src/view';
+
+// Sunday 25 October 2026, 2:05 pm, local.
+const NOW = new Date(2026, 9, 25, 14, 5);
+
+beforeAll(() => {
+  // jsdom measures nothing; the charts only need something to observe with.
+  globalThis.ResizeObserver ??= class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  document.body.replaceChildren();
+});
+
+const board = (...widgets: Widget[]): Board => ({ title: 'Today', open: true, widgets });
+const meeting: Widget = {
+  id: 'w1',
+  type: 'meeting',
+  size: 'medium',
+  title: 'Next meeting',
+  blocks: [
+    { type: 'time', label: 'Design review', at: '2026-10-25T14:30', end: '2026-10-25T15:00' },
+    { type: 'people', names: ['Sam', 'Jo'] },
+  ],
+  source: { name: 'Calendar', at: '2026-10-25T14:03' },
+  asks: ['Prep me for this', 'Move it to tomorrow'],
+};
+
+function mount(over: Partial<Parameters<typeof createBoardView>[0]> = {}, withAsks = true) {
+  let now = NOW;
+  const asked: string[] = [];
+  const view = createBoardView({
+    onRemove: () => {},
+    onShowcase: () => {},
+    ...(withAsks ? { onAsk: (text: string) => void asked.push(text) } : {}),
+    now: () => now,
+    ...over,
+  });
+  document.body.append(view.el);
+  return { view, asked, setNow: (d: Date) => (now = d) };
+}
+
+describe('the board', () => {
+  it('draws a card as its title, its blocks and a foot with its source and age', () => {
+    const { view } = mount();
+    view.draw(board(meeting));
+    const card = view.el.querySelector<HTMLElement>('.bd-card');
+    expect(card?.getAttribute('aria-label')).toBe('Next meeting');
+    expect(card?.querySelector('.bd-card-title')?.textContent).toBe('Next meeting');
+    // The blocks sit in the body, in a column that gives them the card's width.
+    expect(card?.querySelector('.bd-card-body > .bk')).not.toBeNull();
+    expect(card?.querySelector('.bk-time-when')?.textContent).toBe('in 25 min');
+    expect(card?.querySelector('.bd-card-foot .bd-source')?.textContent).toBe('Calendar · 2 min ago');
+    // The foot comes last: title, blocks, then where it came from.
+    expect(card?.lastElementChild?.classList.contains('bd-card-foot')).toBe(true);
+  });
+
+  it('draws no source without one, and no foot at all with neither source nor asks', () => {
+    const { view } = mount();
+    view.draw(board({ ...meeting, source: undefined }, { id: 'w2', type: 'note', size: 'small', title: 'Bring', blocks: [{ type: 'text', text: 'Fruit' }] }));
+    const [first, second] = [...view.el.querySelectorAll('.bd-card')];
+    expect(first?.querySelector('.bd-source')).toBeNull();
+    expect(first?.querySelectorAll('.bd-ask')).toHaveLength(2);
+    expect(second?.querySelector('.bd-card-foot')).toBeNull();
+  });
+
+  it('sends exactly the words of an ask that is tapped', () => {
+    const { view, asked } = mount();
+    view.draw(board(meeting));
+    const asks = [...view.el.querySelectorAll<HTMLButtonElement>('.bd-ask')];
+    expect(asks.map((a) => a.textContent)).toEqual(['Prep me for this↗', 'Move it to tomorrow↗']);
+    expect(asks[0]?.querySelector('.bd-ask-arrow')?.getAttribute('aria-hidden')).toBe('true');
+    asks[0]?.click();
+    expect(asked).toEqual(['Prep me for this']);
+  });
+
+  it('draws no asks when nothing would send them', () => {
+    const { view } = mount({}, false);
+    view.draw(board(meeting));
+    expect(view.el.querySelector('.bd-ask')).toBeNull();
+    expect(view.el.querySelector('.bd-source')?.textContent).toBe('Calendar · 2 min ago');
+  });
+
+  it('hides the asks while an approval waits, and shows them again after', () => {
+    const strip = document.createElement('div');
+    const { view } = mount({ approvals: strip });
+    view.draw(board(meeting), { any: true, waiting: true, from: 'Trillion' });
+    expect(view.el.classList.contains('bd-asks-off')).toBe(true);
+    view.draw(board(meeting), { any: true, waiting: false, from: 'Trillion' });
+    expect(view.el.classList.contains('bd-asks-off')).toBe(false);
+    // Waiting in the conversation rather than on the board.
+    view.draw(board(meeting), { any: false, waiting: false, from: 'Trillion', asksOff: true });
+    expect(view.el.classList.contains('bd-asks-off')).toBe(true);
+    view.draw(board(meeting));
+    expect(view.el.classList.contains('bd-asks-off')).toBe(false);
+  });
+
+  it('brings every time and age up to date once a minute, with one timer for the board', () => {
+    vi.useFakeTimers();
+    const { view, setNow } = mount();
+    view.draw(board(meeting, { ...meeting, id: 'w2' }));
+    expect(vi.getTimerCount()).toBe(1);
+    setNow(new Date(2026, 9, 25, 14, 20));
+    vi.advanceTimersByTime(TICK_MS);
+    expect([...view.el.querySelectorAll('.bk-time-when')].map((t) => t.textContent)).toEqual(['in 10 min', 'in 10 min']);
+    expect([...view.el.querySelectorAll('.bd-source')].map((t) => t.textContent)).toEqual(['Calendar · 17 min ago', 'Calendar · 17 min ago']);
+    // Drawn again, still one timer.
+    view.draw(board(meeting));
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('stops its timer when it is put away', () => {
+    vi.useFakeTimers();
+    const { view } = mount();
+    view.draw(board(meeting));
+    expect(vi.getTimerCount()).toBe(1);
+    view.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('draws a widget from before blocks with an empty body, and the rest of the board', () => {
+    const { view } = mount();
+    const old: Widget = { id: 'old', type: 'stat', size: 'small', title: 'Spend', value: '$1,240' };
+    expect(() => view.draw(board(old, meeting))).not.toThrow();
+    const cards = [...view.el.querySelectorAll('.bd-card')];
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.querySelector('.bd-card-body .bk')?.children).toHaveLength(0);
+    expect(cards[0]?.querySelector('.bd-card-title')?.textContent).toBe('Spend');
+    expect(cards[1]?.querySelector('.bk-time')).not.toBeNull();
+  });
+
+  it('keeps an unchanged card in place, and redraws a changed one', () => {
+    const { view } = mount();
+    view.draw(board(meeting));
+    const before = view.el.querySelector('.bd-card');
+    view.draw(board(meeting));
+    expect(view.el.querySelector('.bd-card')).toBe(before);
+    view.draw(board({ ...meeting, title: 'Later meeting' }));
+    expect(view.el.querySelector('.bd-card')).not.toBe(before);
+    expect(view.el.querySelector('.bd-card-title')?.textContent).toBe('Later meeting');
+  });
+
+  it('shows her words as text, never as elements', () => {
+    const { view } = mount();
+    const evil = '<img src=x onerror=alert(1)>';
+    view.draw(board({ ...meeting, title: evil, source: { name: evil, at: '2026-10-25T14:03' }, asks: [evil] }));
+    expect(view.el.querySelectorAll('img')).toHaveLength(0);
+    expect(view.el.querySelector('.bd-card-title')?.textContent).toBe(evil);
+  });
+});
+
+describe('sourceWords', () => {
+  it('names the source and how old it is, or nothing without a name', () => {
+    expect(sourceWords({ name: 'Calendar', at: '2026-10-25T14:03' }, NOW)).toBe('Calendar · 2 min ago');
+    expect(sourceWords({ name: 'Inbox', at: 'whenever' }, NOW)).toBe('Inbox');
+    expect(sourceWords({ name: ' ', at: '2026-10-25T14:03' }, NOW)).toBe('');
+    expect(sourceWords(undefined, NOW)).toBe('');
+    expect(sourceWords(['Calendar'], NOW)).toBe('');
+  });
+});
+
+describe('asksOf', () => {
+  it('keeps at most two asks, and only words', () => {
+    expect(asksOf(['Prep me for this', 3, ' ', 'Move it', 'Cancel it'])).toEqual(['Prep me for this', 'Move it']);
+    expect(asksOf('Prep me')).toEqual([]);
+    expect(asksOf(undefined)).toEqual([]);
+  });
+});
+
+describe('hasChart', () => {
+  it('finds a line, bar or area chart at the top or in a column, and not a donut', () => {
+    expect(hasChart([{ type: 'value' }, { type: 'chart', kind: 'bar' }])).toBe(true);
+    expect(hasChart([{ type: 'columns', columns: [[{ type: 'chart', kind: 'line' }], []] }])).toBe(true);
+    expect(hasChart([{ type: 'chart', kind: 'donut' }])).toBe(false);
+    expect(hasChart(undefined)).toBe(false);
+  });
+
+  it('lets a row whose widget holds a chart block take the spare height', () => {
+    expect(planRows([{ size: 'wide', type: 'spend', blocks: [{ type: 'chart', kind: 'area' }] }], 6).rows).toEqual(['grow']);
+    expect(planRows([{ size: 'wide', type: 'spend', blocks: [{ type: 'value' }] }], 6).rows).toEqual(['fit']);
+  });
+});
 
 describe('spans', () => {
   it('fills a row of six with any mix that adds up, and a row of two on a narrower workspace', () => {
@@ -34,127 +219,6 @@ describe('boardTitle', () => {
     expect(boardTitle({ title: 'October spend', open: true, widgets: [] })).toBe('October spend');
     expect(boardTitle({ title: '  ', open: true, widgets: [] })).toBe('Board');
     expect(boardTitle(null)).toBe('Board');
-  });
-});
-
-describe('toneOf', () => {
-  it('keeps the tone she gave, else reads the sign of the delta', () => {
-    expect(toneOf('down', '+12%')).toBe('down');
-    expect(toneOf(undefined, '+12%')).toBe('up');
-    expect(toneOf(undefined, '-3')).toBe('down');
-    expect(toneOf(undefined, '−3')).toBe('down');
-    expect(toneOf('loud', 'flat')).toBe('neutral');
-  });
-});
-
-describe('parseNote', () => {
-  it('splits paragraphs on blank lines and keeps line breaks within one', () => {
-    expect(parseNote('One\ntwo\n\nThree')).toEqual([
-      { kind: 'paragraph', lines: [[{ text: 'One', bold: false }], [{ text: 'two', bold: false }]] },
-      { kind: 'paragraph', lines: [[{ text: 'Three', bold: false }]] },
-    ]);
-  });
-
-  it('turns "- " lines into a list, between paragraphs', () => {
-    const blocks = parseNote('Bring:\n- a blanket\n- **fruit**\nThat is all.');
-    expect(blocks.map((b) => b.kind)).toEqual(['paragraph', 'list', 'paragraph']);
-    expect(blocks[1]).toEqual({
-      kind: 'list',
-      items: [[{ text: 'a blanket', bold: false }], [{ text: 'fruit', bold: true }]],
-    });
-  });
-
-  it('treats markup as text: nothing but bold means anything', () => {
-    expect(parseNote('<b>hi</b> [x](y)')).toEqual([{ kind: 'paragraph', lines: [[{ text: '<b>hi</b> [x](y)', bold: false }]] }]);
-    expect(parseNote('-not a bullet')[0]?.kind).toBe('paragraph');
-    expect(parseNote('\n\n  \n')).toEqual([]);
-  });
-});
-
-describe('runs', () => {
-  it('finds bold parts and leaves a lone pair of stars as written', () => {
-    expect(runs('a **b** c **d**')).toEqual([
-      { text: 'a ', bold: false },
-      { text: 'b', bold: true },
-      { text: ' c ', bold: false },
-      { text: 'd', bold: true },
-    ]);
-    expect(runs('5 ** 2')).toEqual([{ text: '5 ** 2', bold: false }]);
-  });
-});
-
-describe('minutesOf', () => {
-  it('reads HH:MM and nothing else', () => {
-    expect(minutesOf('09:30')).toBe(570);
-    expect(minutesOf('7:05')).toBe(425);
-    expect(minutesOf('24:00')).toBeNull();
-    expect(minutesOf('9.30')).toBeNull();
-    expect(minutesOf(930)).toBeNull();
-  });
-});
-
-describe('layoutTimeline', () => {
-  it('runs from the hour before the first event to the hour after the last', () => {
-    const t = layoutTimeline([{ start: '09:30', end: '10:15' }, { start: '12:00', end: '13:40' }]);
-    expect(t.from).toBe(9 * 60);
-    expect(t.to).toBe(14 * 60);
-    expect(t.hours).toEqual([9, 10, 11, 12, 13]);
-    expect(t.items[0]).toMatchObject({ index: 0, lane: 0, left: 10, width: 15 });
-  });
-
-  it('puts overlapping events in separate lanes and reuses a lane once it is free', () => {
-    const t = layoutTimeline([
-      { start: '09:00', end: '11:00' },
-      { start: '10:00', end: '10:30' },
-      { start: '11:00', end: '12:00' },
-    ]);
-    expect(t.items.map((i) => i.lane)).toEqual([0, 1, 0]);
-    expect(t.lanes).toBe(2);
-  });
-
-  it('gives an event without an end half an hour, skips bad times, and thins the hour labels', () => {
-    const t = layoutTimeline([{ start: '06:00' }, { start: 'noon' }, { start: '21:00', end: '20:00' }]);
-    expect(t.items.map((i) => [i.index, i.end - i.start])).toEqual([
-      [0, 30],
-      [2, 30],
-    ]);
-    expect(t.hours.length).toBeLessThanOrEqual(7);
-    expect(layoutTimeline([])).toEqual({ from: 0, to: 0, hours: [], lanes: 0, items: [] });
-  });
-});
-
-describe('nearestIndex', () => {
-  it('finds the closest x', () => {
-    expect(nearestIndex([10, 20, 30], 24)).toBe(1);
-    expect(nearestIndex([10, 20, 30], -5)).toBe(0);
-    expect(nearestIndex([], 3)).toBe(-1);
-  });
-});
-
-describe('chartSpecOf', () => {
-  it('reads a chart widget, defaulting what is missing', () => {
-    expect(chartSpecOf({ kind: 'bar', x: ['a', 'b'], series: [{ name: 'S', values: [1, 'x'] }], unit: '$' })).toEqual({
-      kind: 'bar',
-      x: ['a', 'b'],
-      series: [{ name: 'S', values: [1, 0] }],
-      unit: '$',
-    });
-    expect(chartSpecOf({ kind: 'pie' })).toEqual({ kind: 'line', x: [], series: [] });
-  });
-});
-
-describe('chartSummary', () => {
-  it('says what the chart shows', () => {
-    const spec = chartSpecOf({ kind: 'line', x: ['Oct 1', 'Oct 31'], series: [{ name: 'Spend', values: [1, 2] }] });
-    expect(chartSummary(spec, 'Daily spend')).toBe('Line chart, Daily spend, Oct 1 to Oct 31. Spend: low 1, high 2, last 2.');
-    expect(chartSummary(chartSpecOf({ kind: 'bar' }), '')).toBe('Bar chart: no data.');
-    const two = chartSpecOf({ kind: 'bar', x: ['Q1', 'Q2', 'Q3'], series: [{ name: 'A', values: [5, 1, 3] }, { name: 'B', values: [2, 8, 4] }], unit: '$' });
-    expect(chartSummary(two, '')).toBe('Bar chart, Q1 to Q3. A: low $1, high $5, last $3. B: low $2, high $8, last $4.');
-  });
-
-  it('says one point in words for the arrow keys', () => {
-    const spec = chartSpecOf({ kind: 'line', x: ['Mon', 'Tue'], series: [{ name: 'Steps', values: [4200, 5100] }] });
-    expect(pointWords(spec, 1)).toBe('Tue: Steps 5.1k');
   });
 });
 

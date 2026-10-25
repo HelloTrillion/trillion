@@ -105,9 +105,9 @@ export function runs(line: string): Run[] {
 }
 
 /** A note's text as blocks: paragraphs split by blank lines, `- ` lines as bullets, `**bold**`. */
-export function parseNote(text: string): NoteBlock[] {
+export function parseNote(written: string): NoteBlock[] {
   const blocks: NoteBlock[] = [];
-  for (const chunk of text.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/)) {
+  for (const chunk of written.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/)) {
     let lines: Run[][] = [];
     let items: Run[][] = [];
     const flushLines = (): void => {
@@ -238,13 +238,13 @@ export function chartSummary(spec: ChartSpec, title: string): string {
   if (values.length === 0) return `${head}: no data.`;
   const first = spec.x[0];
   const last = spec.x[spec.x.length - 1];
-  const range = first && last && spec.x.length > 1 ? `, ${first} to ${last}` : '';
+  const across = first && last && spec.x.length > 1 ? `, ${first} to ${last}` : '';
   const each = values.map((sr) => {
     const v = (n: number): string => formatValue(n, spec.unit, 2);
     const end = sr.values[sr.values.length - 1] ?? 0;
     return `${sr.name || 'Values'}: low ${v(Math.min(...sr.values))}, high ${v(Math.max(...sr.values))}, last ${v(end)}`;
   });
-  return `${head}${range}. ${each.join('. ')}.`;
+  return `${head}${across}. ${each.join('. ')}.`;
 }
 
 /** One point of a chart in words, for a screen reader moving through it with the arrow keys. */
@@ -477,10 +477,10 @@ export function donut(spec: ChartSpec, title: string, body: HTMLElement): Dispos
   body.append(wrap);
 
   // Pointing at a slice or its legend row lights both, and the centre names it.
-  const rows = [...legend.children] as HTMLElement[];
+  const entries = [...legend.children] as HTMLElement[];
   const light = (k: number): void => {
     slices.forEach((p, i) => p.toggleAttribute('data-dim', k >= 0 && i !== k));
-    rows.forEach((r, i) => r.toggleAttribute('data-hot', i === k));
+    entries.forEach((r, i) => r.toggleAttribute('data-hot', i === k));
     const e = L.legend[k];
     big.textContent = e ? (e.value ?? '') : (d?.total ?? '');
     small.textContent = e ? `${e.name} · ${e.percent ?? 0}%` : 'Total';
@@ -489,7 +489,7 @@ export function donut(spec: ChartSpec, title: string, body: HTMLElement): Dispos
     p.addEventListener('pointerenter', () => light(i));
     p.addEventListener('pointerleave', () => light(-1));
   });
-  rows.forEach((r, i) => {
+  entries.forEach((r, i) => {
     r.addEventListener('pointerenter', () => light(i));
     r.addEventListener('pointerleave', () => light(-1));
   });
@@ -501,12 +501,12 @@ export function drawTable(columnsIn: unknown, rowsIn: unknown, highlight?: unkno
   const scroll = h('div', 'bd-table-wrap');
   scroll.tabIndex = 0;
   const t = h('table', 'bd-table');
-  const columns = Array.isArray(columnsIn) ? (columnsIn as unknown[]).map(str) : [];
-  const rows = Array.isArray(rowsIn) ? (rowsIn as unknown[]).filter(Array.isArray) : [];
+  const heads = Array.isArray(columnsIn) ? (columnsIn as unknown[]).map(str) : [];
+  const lines = Array.isArray(rowsIn) ? (rowsIn as unknown[]).filter(Array.isArray) : [];
   // A column of numbers lines up on the right.
-  const numeric = columns.map((_, c) => rows.length > 0 && rows.every((r) => typeof (r as unknown[])[c] === 'number'));
+  const numeric = heads.map((_, c) => lines.length > 0 && lines.every((r) => typeof (r as unknown[])[c] === 'number'));
   const head = h('tr');
-  columns.forEach((c, i) => {
+  heads.forEach((c, i) => {
     const th = h('th', numeric[i] ? 'bd-num' : '', c);
     th.scope = 'col';
     head.append(th);
@@ -514,15 +514,16 @@ export function drawTable(columnsIn: unknown, rowsIn: unknown, highlight?: unkno
   const thead = h('thead');
   thead.append(head);
   const tbody = h('tbody');
-  rows.forEach((r, k) => {
+  lines.forEach((r, k) => {
     const tr = h('tr');
-    if (k === highlight) {
-      tr.className = 'bk-hl';
-      tr.setAttribute('aria-current', 'true');
-    }
-    columns.forEach((_, i) => {
+    const picked = k === highlight;
+    if (picked) tr.className = 'bk-hl';
+    heads.forEach((_, i) => {
       const v = (r as unknown[])[i];
-      tr.append(h('td', numeric[i] ? 'bd-num' : '', typeof v === 'number' ? v.toLocaleString() : str(v)));
+      const td = h('td', numeric[i] ? 'bd-num' : '', typeof v === 'number' ? v.toLocaleString() : str(v));
+      // The tint says it to the eye; this says it to a screen reader.
+      if (picked && i === 0) td.append(hidden(' (her pick)'));
+      tr.append(td);
     });
     tbody.append(tr);
   });
@@ -532,9 +533,9 @@ export function drawTable(columnsIn: unknown, rowsIn: unknown, highlight?: unkno
 }
 
 /** A note's text: paragraphs, `- ` bullets and `**bold**`, and nothing else. */
-export function drawNote(text: string): HTMLElement {
+export function drawNote(written: string): HTMLElement {
   const box = h('div', 'bd-note');
-  for (const b of parseNote(text)) {
+  for (const b of parseNote(written)) {
     if (b.kind === 'paragraph') {
       const p = h('p');
       b.lines.forEach((line, i) => {
@@ -591,11 +592,11 @@ export function drawTimeline(eventsIn: unknown, body: HTMLElement): void {
   events.forEach((e, i) => {
     const li = h('li');
     li.append(swatch(i % 5), h('span', 'bd-when', when(e)));
-    const text = h('div', 'bd-item-text');
-    text.append(h('strong', '', str(e['title'])));
+    const words = h('div', 'bd-item-text');
+    words.append(h('strong', '', str(e['title'])));
     const meta = str(e['meta']);
-    if (meta) text.append(h('span', 'bd-sub', meta));
-    li.append(text);
+    if (meta) words.append(h('span', 'bd-sub', meta));
+    li.append(words);
     ol.append(li);
   });
   body.append(ol);
@@ -610,6 +611,8 @@ export interface DrawOptions {
   readonly now: Date;
   /** The least height of a line, bar or area chart, in CSS px. */
   readonly chartHeight?: number;
+  /** The card's title, for what a chart says to a screen reader. */
+  readonly title?: string;
 }
 
 export interface DrawnBlocks {
@@ -622,6 +625,7 @@ export interface DrawnBlocks {
 
 interface Ctx {
   readonly chartHeight: number;
+  readonly title: string;
   readonly disposers: Dispose[];
 }
 
@@ -733,12 +737,13 @@ function meter(b: Rec): HTMLElement {
   box.setAttribute('aria-valuemax', String(max));
   box.setAttribute('aria-valuenow', String(Math.min(max, Math.max(0, num(b['value'])))));
   box.setAttribute('aria-valuetext', `${pct}%`);
-  if (label) box.setAttribute('aria-label', label);
+  box.setAttribute('aria-label', label || 'Progress');
   if (ring) {
     const fig = h('div', 'bk-ring');
     const svg = s('svg', { class: 'bk-ring-svg', viewBox: '0 0 36 36', 'aria-hidden': 'true' });
     svg.append(s('circle', { class: 'bk-ring-track', cx: 18, cy: 18, r: RING }));
-    svg.append(s('circle', { class: 'bk-ring-fill', cx: 18, cy: 18, r: RING, 'stroke-dasharray': `${pct} 100`, transform: 'rotate(-90 18 18)' }));
+    // At 0% a round cap would still draw a dot: no fill at all.
+    if (pct > 0) svg.append(s('circle', { class: 'bk-ring-fill', cx: 18, cy: 18, r: RING, 'stroke-dasharray': `${pct} 100`, transform: 'rotate(-90 18 18)' }));
     fig.append(svg, h('span', 'bk-ring-num', `${pct}%`));
     box.append(fig);
     if (label) box.append(h('p', 'bk-meter-label', label));
@@ -774,7 +779,7 @@ function time(b: Rec, now: Date): HTMLElement {
 function chartBlock(b: Rec, now: Date, ctx: Ctx): HTMLElement {
   const box = h('div', 'bk-chart');
   const spec = chartSpecOf(b);
-  ctx.disposers.push(spec.kind === 'donut' ? donut(spec, '', box) : cartesian(spec, '', ctx.chartHeight, box));
+  ctx.disposers.push(spec.kind === 'donut' ? donut(spec, ctx.title, box) : cartesian(spec, ctx.title, ctx.chartHeight, box));
   return box;
 }
 
@@ -800,25 +805,25 @@ function rows(b: Rec, now: Date): HTMLElement {
     const done = it['done'];
     if (done === true) li.dataset['done'] = '';
     // On the left: who, else how it stands, else whether it's done.
-    const person = str(it['person']);
-    const status = it['status'];
-    if (person) li.append(avatar(person));
-    else if (status !== undefined) li.append(dot(toneOfBlock(status)));
+    const who = str(it['person']);
+    const standing = it['status'];
+    if (who) li.append(avatar(who));
+    else if (standing !== undefined) li.append(dot(toneOfBlock(standing)));
     else if (typeof done === 'boolean') {
       const mark = h('span', 'bk-check');
       mark.setAttribute('aria-hidden', 'true');
       if (done) mark.append(icon('check', 11));
       li.append(mark);
     }
-    const text = h('div', 'bk-row-text');
+    const words = h('div', 'bk-row-text');
     const title = h('strong', 'bk-row-title', str(it['title']));
     if (done === true) title.prepend(hidden('Done: '));
-    const word = status !== undefined ? TONE_WORDS[toneOfBlock(status)] : '';
+    const word = standing !== undefined ? TONE_WORDS[toneOfBlock(standing)] : '';
     if (word) title.prepend(hidden(`${word}: `));
-    text.append(title);
-    const detail = [person, str(it['detail'])].filter(Boolean).join(' · ');
-    if (detail) text.append(h('span', 'bk-row-detail', detail));
-    li.append(text);
+    words.append(title);
+    const detail = [who, str(it['detail'])].filter(Boolean).join(' · ');
+    if (detail) words.append(h('span', 'bk-row-detail', detail));
+    li.append(words);
     // On the right, one of: when, meta, a chip.
     const when = str(it['when']);
     const meta = str(it['meta']);
@@ -837,11 +842,11 @@ function rows(b: Rec, now: Date): HTMLElement {
 function person(b: Rec): HTMLElement {
   const name = str(b['name']);
   const box = h('div', 'bk-person');
-  const text = h('div', 'bk-person-text');
-  text.append(h('strong', 'bk-person-name', name));
+  const words = h('div', 'bk-person-text');
+  words.append(h('strong', 'bk-person-name', name));
   const detail = str(b['detail']);
-  if (detail) text.append(h('span', 'bk-person-detail', detail));
-  box.append(avatar(name, 'md'), text);
+  if (detail) words.append(h('span', 'bk-person-detail', detail));
+  box.append(avatar(name, 'md'), words);
   return box;
 }
 
@@ -862,7 +867,10 @@ function people(b: Rec): HTMLElement {
 function status(b: Rec): HTMLElement {
   const tone = toneOfBlock(b['tone']);
   const p = h('p', `bk-status ${toneClass(tone)}`);
-  p.append(dot(tone), h('span', 'bk-status-text', str(b['text'])));
+  const words = h('span', 'bk-status-text', str(b['text']));
+  // The dot's colour, in words, as rows say it.
+  if (TONE_WORDS[tone]) words.prepend(hidden(`${TONE_WORDS[tone]}: `));
+  p.append(dot(tone), words);
   return p;
 }
 
@@ -963,8 +971,9 @@ function drawInto(parent: HTMLElement, blocks: readonly unknown[], now: Date, ct
       const el = draw(b, now, ctx, i === hero);
       el.dataset['block'] = kind as string;
       parent.append(el);
-    } catch {
+    } catch (err) {
       // One block that cannot be drawn must not take the rest of the card with it.
+      console.warn(`A ${String(kind)} block could not be drawn`, err);
     }
   });
 }
@@ -972,7 +981,7 @@ function drawInto(parent: HTMLElement, blocks: readonly unknown[], now: Date, ct
 /** A card's blocks, drawn at `now`: the order as given, the first top-level value as the hero. */
 export function drawBlocks(blocks: readonly unknown[], opts: DrawOptions): DrawnBlocks {
   const el = h('div', 'bk');
-  const ctx: Ctx = { chartHeight: opts.chartHeight ?? 160, disposers: [] };
+  const ctx: Ctx = { chartHeight: opts.chartHeight ?? 160, title: opts.title ?? '', disposers: [] };
   const list = Array.isArray(blocks) ? blocks : [];
   drawInto(el, list, opts.now, ctx, heroIndex(list), false);
   return {

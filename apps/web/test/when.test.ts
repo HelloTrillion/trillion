@@ -81,6 +81,8 @@ describe('range', () => {
 
   it('names both days across days', () => {
     expect(range(local(27, 15), local(28, 9))).toBe('Tue 3:00 pm–Wed 9:00 am');
+    // More than six days apart, a weekday would be ambiguous: dates.
+    expect(range(local(27, 15), new Date(2026, 10, 5, 9))).toBe('Oct 27 3:00 pm–Nov 5 9:00 am');
   });
 
   it('is the time alone without an end, and days for dates', () => {

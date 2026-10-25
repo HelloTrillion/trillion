@@ -1,23 +1,14 @@
 /**
- * Her board, drawn in the workspace: one glass card per widget from the kit, laid out in a grid
- * that follows the workspace's width. Everything she put there may quote a page she read
- * (SPN-5), so every piece of text is set with textContent and nothing is ever parsed as HTML.
+ * Her board, drawn in the workspace: one glass card per widget, laid out in a grid that follows
+ * the workspace's width. Each card is its title, its blocks (blocks.ts), and a quiet foot: where
+ * it came from and how long ago, and up to two asks she offers as the obvious next question.
+ * Everything she put there may quote a page she read (SPN-5), so every piece of text is set with
+ * textContent and nothing is ever parsed as HTML.
  */
-import {
-  type Dispose,
-  cartesian,
-  chartSpecOf,
-  donut,
-  drawNote,
-  drawTable,
-  drawTimeline,
-  h,
-  nothing,
-  records,
-  str,
-} from './blocks';
+import { type DrawnBlocks, drawBlocks, h, records, str } from './blocks';
 import { icon } from './icons';
 import { type Board, type Widget, type WidgetSize } from './view';
+import { age } from './when';
 
 // ── Pure helpers ────────────────────────────────────────────────────────
 
@@ -49,12 +40,24 @@ export interface RowPlan {
   readonly rows: readonly RowFit[];
 }
 
+/** Whether a widget's blocks hold a line, bar or area chart (one that fills spare height), at the top or in a column. */
+export function hasChart(blocks: unknown): boolean {
+  return records(blocks).some(
+    (b) =>
+      (b['type'] === 'chart' && b['kind'] !== 'donut') ||
+      (b['type'] === 'columns' && Array.isArray(b['columns']) && (b['columns'] as unknown[]).some((c) => hasChart(c))),
+  );
+}
+
 /**
  * Widgets laid out in rows of `columns`, in her order. A widget that does not fit what is left
  * of a row starts the next one, and the last widget of a row widens to fill it, so a row never
  * has a hole and a widget alone takes the whole width.
  */
-export function planRows(widgets: readonly { readonly size: WidgetSize; readonly type: string }[], columns: number): RowPlan {
+export function planRows(
+  widgets: readonly { readonly size: WidgetSize; readonly type: string; readonly blocks?: unknown }[],
+  columns: number,
+): RowPlan {
   const cols = Math.max(1, Math.floor(columns));
   const out: number[] = [];
   const rows: RowFit[] = [];
@@ -73,7 +76,7 @@ export function planRows(widgets: readonly { readonly size: WidgetSize; readonly
     if (used + want > cols) end();
     out.push(want);
     used += want;
-    grow ||= w.type === 'chart';
+    grow ||= w.type === 'chart' || hasChart(w.blocks);
     if (used === cols) end();
   }
   end();
@@ -96,170 +99,67 @@ export function boardTitle(board: Board | null): string {
   return board?.title.trim() || 'Board';
 }
 
-// Pure helpers that moved into blocks.ts with the drawing they serve, still reachable from here.
-export {
-  type NoteBlock,
-  type PlacedEvent,
-  type Run,
-  type TimelineLayout,
-  chartSpecOf,
-  chartSummary,
-  layoutTimeline,
-  minutesOf,
-  nearestIndex,
-  parseNote,
-  pointWords,
-  runs,
-} from './blocks';
-
-export type Tone = 'up' | 'down' | 'neutral';
-
-/** A stat's tone: the one she gave, else read from the sign of its delta. */
-export function toneOf(tone: unknown, delta: string): Tone {
-  if (tone === 'up' || tone === 'down' || tone === 'neutral') return tone;
-  const d = delta.trim();
-  if (d.startsWith('+') || d.startsWith('▲')) return 'up';
-  if (d.startsWith('-') || d.startsWith('−') || d.startsWith('▼')) return 'down';
-  return 'neutral';
+/** A card's foot: where it came from and how long ago ("Calendar · 2 min ago"); empty with no source. */
+export function sourceWords(source: unknown, now: Date): string {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return '';
+  const r = source as Record<string, unknown>;
+  const name = str(r['name']).trim();
+  if (!name) return '';
+  const when = age(str(r['at']), now);
+  return when ? `${name} · ${when}` : name;
 }
 
-
-
-// Stat ──
-
-function stat(w: Widget, body: HTMLElement): Dispose {
-  const value = h('p', 'bd-stat-value', str(w['value']));
-  body.append(value);
-  const delta = str(w['delta']);
-  const hint = str(w['hint']);
-  if (delta || hint) {
-    const foot = h('p', 'bd-stat-foot');
-    if (delta) {
-      const chip = h('span', 'bd-delta', delta);
-      chip.dataset['tone'] = toneOf(w['tone'], delta);
-      foot.append(chip);
-    }
-    if (hint) foot.append(h('span', 'bd-hint', hint));
-    body.append(foot);
-  }
-  return nothing;
+/** At most two asks, each her words as given; anything that is not words is left out. */
+export function asksOf(asks: unknown): string[] {
+  if (!Array.isArray(asks)) return [];
+  return (asks as unknown[])
+    .filter((a): a is string => typeof a === 'string' && a.trim() !== '')
+    .map((a) => a.trim())
+    .slice(0, 2);
 }
 
-// Chart ──
+/** How often the times on the board are brought up to date. */
+export const TICK_MS = 60_000;
 
-
-function chart(w: Widget, body: HTMLElement): Dispose {
-  const spec = chartSpecOf(w);
-  const title = str(w['title']);
-  return spec.kind === 'donut' ? donut(spec, title, body) : cartesian(spec, title, chartHeight(w.size), body);
+/**
+ * A card kept from the last draw is live again: a removal that never came back (refused, or lost
+ * with the connection) leaves it as it was, not dimmed with a dead ×.
+ */
+export function revive(card: Pick<HTMLElement, 'removeAttribute' | 'querySelector'>): void {
+  card.removeAttribute('data-leaving');
+  const x = card.querySelector<HTMLButtonElement>('.bd-x');
+  if (x) x.disabled = false;
 }
 
+// ── Drawing ─────────────────────────────────────────────────────────────
 
-// List ──
-
-function list(w: Widget, body: HTMLElement): Dispose {
-  const ul = h('ul', 'bd-list');
-  for (const it of records(w['items'])) {
-    const li = h('li', 'bd-item');
-    const done = it['done'] === true;
-    if (done) li.dataset['done'] = '';
-    const mark = h('span', 'bd-mark');
-    mark.setAttribute('aria-hidden', 'true');
-    if (done) mark.append(icon('check', 12));
-    const text = h('div', 'bd-item-text');
-    const t = h('strong', '', str(it['title']));
-    text.append(t);
-    if (done) t.prepend(h('span', 'visually-hidden', 'Done: '));
-    const sub = str(it['subtitle']);
-    if (sub) text.append(h('span', 'bd-sub', sub));
-    li.append(mark, text);
-    const meta = str(it['meta']);
-    if (meta) li.append(h('span', 'bd-meta', meta));
-    ul.append(li);
-  }
-  body.append(ul);
-  return nothing;
+export interface BoardOptions {
+  /** The user took a widget off. */
+  readonly onRemove: (id: string) => void;
+  /** The empty state's link to the sample preview. */
+  readonly onShowcase: () => void;
+  /** The strip of approvals (approvals.ts), pinned above her widgets when there are any. */
+  readonly approvals?: HTMLElement;
+  /** The user tapped one of a card's asks: send exactly its words as their turn. Without it, no asks are drawn. */
+  readonly onAsk?: (text: string) => void;
+  /** The clock; tests set it. */
+  readonly now?: () => Date;
 }
 
-// Table ──
-
-function table(w: Widget, body: HTMLElement): Dispose {
-  body.append(drawTable(w['columns'], w['rows']));
-  return nothing;
+interface Card {
+  readonly el: HTMLElement;
+  tick(now: Date): void;
+  dispose(): void;
 }
 
-// Note ──
+const NO_BLOCKS: Omit<DrawnBlocks, 'el'> = { tick: () => {}, dispose: () => {} };
 
-function note(w: Widget, body: HTMLElement): Dispose {
-  body.append(drawNote(str(w['text'])));
-  return nothing;
-}
-
-// Timeline ──
-
-function timeline(w: Widget, body: HTMLElement): Dispose {
-  drawTimeline(w['events'], body);
-  return nothing;
-}
-
-// Compare ──
-
-function compare(w: Widget, body: HTMLElement): Dispose {
-  const pick = str(w['pick']);
-  const grid = h('div', 'bd-options');
-  for (const o of records(w['options'])) {
-    const name = str(o['name']);
-    const card = h('article', 'bd-option');
-    const top = h('div', 'bd-option-top');
-    top.append(h('h4', 'bd-option-name', name));
-    if (pick && name === pick) {
-      card.dataset['pick'] = '';
-      top.append(h('span', 'bd-pick', 'Her pick'));
-    }
-    card.append(top);
-    const metrics = records(o['metrics']);
-    if (metrics.length) {
-      const dl = h('dl', 'bd-bars');
-      for (const m of metrics) {
-        const score = typeof m['score'] === 'number' && Number.isFinite(m['score']) ? Math.min(10, Math.max(0, m['score'])) : 0;
-        const dd = h('dd');
-        dd.title = `${score} of 10`;
-        const fill = h('i');
-        fill.style.setProperty('--v', String(score / 10));
-        dd.append(fill, h('span', 'visually-hidden', `${score} of 10`));
-        dl.append(h('dt', '', str(m['label'])), dd);
-      }
-      card.append(dl);
-    }
-    const tags = Array.isArray(o['tags']) ? (o['tags'] as unknown[]).map(str).filter(Boolean) : [];
-    if (tags.length) {
-      const row = h('div', 'bd-tags');
-      for (const t of tags) row.append(h('span', 'bd-tag', t));
-      card.append(row);
-    }
-    const n = str(o['note']);
-    if (n) card.append(h('p', 'bd-sub', n));
-    grid.append(card);
-  }
-  body.append(grid);
-  const reason = str(w['reason']);
-  if (reason) body.append(h('p', 'bd-reason', reason));
-  return nothing;
-}
-
-const DRAW: Readonly<Record<string, (w: Widget, body: HTMLElement) => Dispose>> = { stat, chart, list, table, note, timeline, compare };
-
-/** The name a card goes by: its title, or for a stat its label. */
-function nameOf(w: Widget): string {
-  return str(w['title']) || (w.type === 'stat' ? str(w['label']) : '');
-}
-
-function card(w: Widget, onRemove: (id: string) => void): { el: HTMLElement; dispose: Dispose } {
-  // The type is an attribute, not a class: a class named for it (bd-list, bd-table) would also be its parts'.
+function card(w: Widget, now: Date, opts: BoardOptions): Card {
+  // The type is an attribute, not a class: a class named for it would also be its parts'.
   const el = h('section', 'bd-card');
   el.dataset['type'] = w.type;
   el.dataset['size'] = w.size;
-  const name = nameOf(w);
+  const name = str(w['title']);
   const head = h('header', 'bd-card-head');
   if (name) {
     head.append(h('h3', 'bd-card-title', name));
@@ -273,28 +173,64 @@ function card(w: Widget, onRemove: (id: string) => void): { el: HTMLElement; dis
   x.addEventListener('click', () => {
     el.dataset['leaving'] = '';
     x.disabled = true;
-    onRemove(w.id);
+    opts.onRemove(w.id);
   });
   head.append(x);
+  // A stretched column, so the blocks inside measure the card's own width.
   const body = h('div', 'bd-card-body');
   el.append(head, body);
-  let dispose = nothing;
+  let blocks: Omit<DrawnBlocks, 'el'> = NO_BLOCKS;
   try {
-    dispose = (DRAW[w.type] ?? (() => nothing))(w, body);
-  } catch {
+    // A widget from before blocks (an old page cache, a server error) has none: its body is empty.
+    const raw = w['blocks'];
+    const drawn = drawBlocks(Array.isArray(raw) ? (raw as unknown[]) : [], { now, chartHeight: chartHeight(w.size), title: name });
+    body.append(drawn.el);
+    blocks = drawn;
+  } catch (err) {
     // A widget the page cannot draw must not take the rest of the board with it.
+    console.warn(`A ${w.type} widget could not be drawn`, err);
     body.replaceChildren(h('p', 'bd-sub', 'This could not be shown.'));
   }
-  return { el, dispose };
-}
 
-export interface BoardOptions {
-  /** The user took a widget off. */
-  readonly onRemove: (id: string) => void;
-  /** The empty state's link to the sample preview. */
-  readonly onShowcase: () => void;
-  /** The strip of approvals (approvals.ts), pinned above her widgets when there are any. */
-  readonly approvals?: HTMLElement;
+  // The foot: where it came from on the left, her asks on the right; it wraps on a narrow card.
+  const source = sourceWords(w['source'], now);
+  const asks = opts.onAsk ? asksOf(w['asks']) : [];
+  let from: HTMLElement | null = null;
+  if (source || asks.length) {
+    const foot = h('footer', 'bd-card-foot');
+    if (source) {
+      from = h('p', 'bd-source', source);
+      foot.append(from);
+    }
+    if (asks.length) {
+      const list = h('ul', 'bd-asks');
+      list.setAttribute('aria-label', 'Ask about this');
+      for (const text of asks) {
+        const li = h('li');
+        const ask = h('button', 'bd-ask', text);
+        ask.type = 'button';
+        const arrow = h('span', 'bd-ask-arrow', '↗');
+        arrow.setAttribute('aria-hidden', 'true');
+        ask.append(arrow);
+        ask.addEventListener('click', () => opts.onAsk?.(text));
+        li.append(ask);
+        list.append(li);
+      }
+      foot.append(list);
+    }
+    el.append(foot);
+  }
+  return {
+    el,
+    tick(at) {
+      blocks.tick(at);
+      if (from) {
+        const words = sourceWords(w['source'], at);
+        if (from.textContent !== words) from.textContent = words;
+      }
+    },
+    dispose: () => blocks.dispose(),
+  };
 }
 
 /** What the approvals strip holds: any card at all, and whether one is waiting for the user. */
@@ -303,6 +239,8 @@ export interface Pinned {
   readonly waiting: boolean;
   /** Her name, for the label over her widgets while an approval waits. */
   readonly from: string;
+  /** An approval waits anywhere, in the conversation too: the cards' asks are hidden. */
+  readonly asksOff?: boolean;
 }
 
 const NOTHING_PINNED: Pinned = { any: false, waiting: false, from: '' };
@@ -324,24 +262,16 @@ export interface BoardView {
   readonly el: HTMLElement;
   /**
    * Draw `board` (or the empty state), keeping what has not changed and the scroll position.
-   * With approvals pinned, they go above her widgets and the board is not empty without them.
+   * With approvals pinned, they go above her widgets and the board is not empty without them;
+   * while one waits, the cards' asks are hidden.
    */
   draw(board: Board | null, pinned?: Pinned): void;
-  /** The board is no longer shown: stop watching card sizes. The next draw starts afresh. */
+  /** The board is no longer shown: stop watching card sizes and the clock. The next draw starts afresh. */
   dispose(): void;
 }
 
-/**
- * A card kept from the last draw is live again: a removal that never came back (refused, or lost
- * with the connection) leaves it as it was, not dimmed with a dead ×.
- */
-export function revive(card: Pick<HTMLElement, 'removeAttribute' | 'querySelector'>): void {
-  card.removeAttribute('data-leaving');
-  const x = card.querySelector<HTMLButtonElement>('.bd-x');
-  if (x) x.disabled = false;
-}
-
 export function createBoardView(opts: BoardOptions): BoardView {
+  const clock = opts.now ?? ((): Date => new Date());
   const el = h('div', 'bd');
   el.tabIndex = -1;
   const grid = h('div', 'bd-grid');
@@ -349,7 +279,14 @@ export function createBoardView(opts: BoardOptions): BoardView {
   const from = h('h3', 'bd-from');
   let emptyEl: HTMLElement | null = null;
   // By id: what it was drawn from, so an unchanged widget keeps its element (and its hover).
-  let drawn = new Map<string, { key: string; el: HTMLElement; dispose: Dispose }>();
+  let drawn = new Map<string, { key: string; card: Card }>();
+  // One clock for the whole board: every card's times and ages move on together.
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  function tick(): void {
+    const at = clock();
+    for (const d of drawn.values()) d.card.tick(at);
+  }
 
   function empty(): HTMLElement {
     const box = h('div', 'bd-empty bd-new');
@@ -368,7 +305,9 @@ export function createBoardView(opts: BoardOptions): BoardView {
   }
 
   function dispose(): void {
-    for (const d of drawn.values()) d.dispose();
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+    for (const d of drawn.values()) d.card.dispose();
     drawn = new Map();
     grid.replaceChildren();
     emptyEl = null;
@@ -381,34 +320,38 @@ export function createBoardView(opts: BoardOptions): BoardView {
       // Opening afresh: every card arrives. Already open: only new ones do.
       const fresh = !el.isConnected;
       if (fresh) dispose();
+      timer ??= setInterval(tick, TICK_MS);
+      const now = clock();
       const scroller = el.closest('.workspace-body');
       const top = scroller?.scrollTop ?? 0;
       const active = document.activeElement;
       const focused = active instanceof HTMLElement && el.contains(active) ? active : null;
       const widgets = board?.widgets ?? [];
-      const next = new Map<string, { key: string; el: HTMLElement; dispose: Dispose }>();
+      const next = new Map<string, { key: string; card: Card }>();
       const cards: HTMLElement[] = [];
       let arriving = 0;
       for (const w of widgets) {
         const key = JSON.stringify(w);
         const old = drawn.get(w.id);
         if (old && old.key === key) {
-          old.el.classList.remove('bd-new');
-          revive(old.el);
+          old.card.el.classList.remove('bd-new');
+          revive(old.card.el);
           next.set(w.id, old);
-          cards.push(old.el);
+          cards.push(old.card.el);
           continue;
         }
-        const c = card(w, opts.onRemove);
+        const c = card(w, now, opts);
         if (!old) {
           c.el.classList.add('bd-new');
           c.el.style.setProperty('--i', String(arriving++));
         }
-        next.set(w.id, { key, ...c });
+        next.set(w.id, { key, card: c });
         cards.push(c.el);
       }
-      for (const [id, old] of drawn) if (next.get(id) !== old) old.dispose();
+      for (const [id, old] of drawn) if (next.get(id) !== old) old.card.dispose();
       drawn = next;
+      // A tap on a widget can't approve: while an approval waits, there is nothing to tap.
+      el.classList.toggle('bd-asks-off', pinned.waiting || pinned.asksOff === true);
       layoutRows(widgets, cards, grid);
       if (cards.length) {
         // In place: what went is taken out, and only new, changed or moved cards are put in, so an

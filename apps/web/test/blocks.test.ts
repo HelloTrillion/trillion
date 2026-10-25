@@ -1,6 +1,24 @@
 // @vitest-environment jsdom
-import { beforeAll, describe, expect, it } from 'vitest';
-import { BLOCK_TYPES, deltaTone, drawBlocks, heroIndex, initials, peopleWords, percentOf, tintOf, toneClass } from '../src/blocks';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  BLOCK_TYPES,
+  chartSpecOf,
+  chartSummary,
+  deltaTone,
+  drawBlocks,
+  heroIndex,
+  initials,
+  layoutTimeline,
+  minutesOf,
+  nearestIndex,
+  parseNote,
+  peopleWords,
+  percentOf,
+  pointWords,
+  runs,
+  tintOf,
+  toneClass,
+} from '../src/blocks';
 
 // Sunday 25 October 2026, 2:05 pm, local.
 const NOW = new Date(2026, 9, 25, 14, 5);
@@ -118,6 +136,15 @@ describe('drawBlocks', () => {
     expect(ring?.querySelector('.bk-ring-fill')?.getAttribute('stroke-dasharray')).toBe('100 100');
   });
 
+  it('names a meter without a label, and draws no fill for an empty ring', () => {
+    const el = draw({ type: 'meter', value: 1, max: 4 }, { type: 'meter', value: 0, max: 10, shape: 'ring' });
+    const [bar, ring] = [...el.querySelectorAll<HTMLElement>('.bk-meter')];
+    expect(bar?.getAttribute('aria-label')).toBe('Progress');
+    expect(ring?.querySelector('.bk-ring-num')?.textContent).toBe('0%');
+    expect(ring?.querySelector('.bk-ring-fill')).toBeNull();
+    expect(ring?.querySelector('.bk-ring-track')).not.toBeNull();
+  });
+
   it('draws a time as its label, a countdown and its range', () => {
     const el = draw({ type: 'time', label: 'Design review', at: '2026-10-25T14:30', end: '2026-10-25T15:00' });
     expect(texts(el, '.bk-time-label')).toEqual(['Design review']);
@@ -134,13 +161,16 @@ describe('drawBlocks', () => {
         { type: 'table', columns: ['Option', 'Total'], rows: [['Maple Park', 31], ['Riverside', 27]], highlight: 0 },
         { type: 'timeline', events: [{ title: 'Standup', start: '09:00', end: '09:15', meta: 'Room 2' }] },
       ],
-      { now: NOW },
+      { now: NOW, title: 'Calls this week' },
     );
     const el = drawn.el;
-    expect(el.querySelector('.bd-plot')?.getAttribute('aria-label')).toContain('Bar chart');
+    expect(el.querySelector('.bd-plot')?.getAttribute('aria-label')).toContain('Bar chart, Calls this week');
     expect(texts(el, '.bd-legend-name')).toEqual(['Rent', 'Food']);
     expect(texts(el, 'th')).toEqual(['Option', 'Total']);
-    expect(texts(el, 'tr.bk-hl td')).toEqual(['Maple Park', '31']);
+    // Her pick is tinted, and said in words rather than as the page's current item.
+    expect(texts(el, 'tr.bk-hl td')).toEqual(['Maple Park (her pick)', '31']);
+    expect(el.querySelector('tr.bk-hl td .visually-hidden')?.textContent).toBe(' (her pick)');
+    expect(el.querySelector('[aria-current]')).toBeNull();
     expect(texts(el, '.bd-agenda .bd-when')).toEqual(['09:00–09:15']);
     expect(texts(el, '.bd-agenda .bd-sub')).toEqual(['Room 2']);
     drawn.dispose();
@@ -187,7 +217,9 @@ describe('drawBlocks', () => {
     expect(el.querySelectorAll('.bk-stack .bk-avatar')).toHaveLength(4);
     expect(texts(el, '.bk-people-names')).toEqual(['Sam, Jo and 4 more']);
     expect(el.querySelector('.bk-status')?.classList.contains('bk-bad')).toBe(true);
-    expect(texts(el, '.bk-status-text')).toEqual(['Payment failed']);
+    // The dot's colour in words, as rows say it.
+    expect(texts(el, '.bk-status-text')).toEqual(['Problem: Payment failed']);
+    expect(el.querySelector('.bk-status-text .visually-hidden')?.textContent).toBe('Problem: ');
     expect(texts(el, '.bk-chips .bk-chip')).toEqual(['Maple Park room 2', 'Hybrid']);
   });
 
@@ -222,6 +254,16 @@ describe('drawBlocks', () => {
     const el = draw({ type: 'hologram', text: 'from a newer server' }, 'junk', null, { type: 'status', tone: 'good', text: 'Fine' }, { type: 'toString' });
     expect(el.children).toHaveLength(1);
     expect((el.children[0] as HTMLElement).dataset['block']).toBe('status');
+  });
+
+  it('says which block could not be drawn, and draws the rest', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // A value whose label throws when read.
+    const bad = { type: 'value', get label(): string { throw new Error('boom'); } };
+    const el = draw(bad, { type: 'status', text: 'Fine' });
+    expect(el.children).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('value'), expect.any(Error));
+    warn.mockRestore();
   });
 
   it('shows markup as text, never as elements', () => {
@@ -264,5 +306,116 @@ describe('drawBlocks', () => {
     expect([...BLOCK_TYPES].sort()).toEqual(
       ['value', 'sparkline', 'meter', 'time', 'chart', 'table', 'timeline', 'rows', 'person', 'people', 'status', 'chips', 'text', 'quote', 'facts', 'columns'].sort(),
     );
+  });
+});
+
+describe('parseNote', () => {
+  it('splits paragraphs on blank lines and keeps line breaks within one', () => {
+    expect(parseNote('One\ntwo\n\nThree')).toEqual([
+      { kind: 'paragraph', lines: [[{ text: 'One', bold: false }], [{ text: 'two', bold: false }]] },
+      { kind: 'paragraph', lines: [[{ text: 'Three', bold: false }]] },
+    ]);
+  });
+
+  it('turns "- " lines into a list, between paragraphs', () => {
+    const blocks = parseNote('Bring:\n- a blanket\n- **fruit**\nThat is all.');
+    expect(blocks.map((b) => b.kind)).toEqual(['paragraph', 'list', 'paragraph']);
+    expect(blocks[1]).toEqual({
+      kind: 'list',
+      items: [[{ text: 'a blanket', bold: false }], [{ text: 'fruit', bold: true }]],
+    });
+  });
+
+  it('treats markup as text: nothing but bold means anything', () => {
+    expect(parseNote('<b>hi</b> [x](y)')).toEqual([{ kind: 'paragraph', lines: [[{ text: '<b>hi</b> [x](y)', bold: false }]] }]);
+    expect(parseNote('-not a bullet')[0]?.kind).toBe('paragraph');
+    expect(parseNote('\n\n  \n')).toEqual([]);
+  });
+});
+
+describe('runs', () => {
+  it('finds bold parts and leaves a lone pair of stars as written', () => {
+    expect(runs('a **b** c **d**')).toEqual([
+      { text: 'a ', bold: false },
+      { text: 'b', bold: true },
+      { text: ' c ', bold: false },
+      { text: 'd', bold: true },
+    ]);
+    expect(runs('5 ** 2')).toEqual([{ text: '5 ** 2', bold: false }]);
+  });
+});
+
+describe('minutesOf', () => {
+  it('reads HH:MM and nothing else', () => {
+    expect(minutesOf('09:30')).toBe(570);
+    expect(minutesOf('7:05')).toBe(425);
+    expect(minutesOf('24:00')).toBeNull();
+    expect(minutesOf('9.30')).toBeNull();
+    expect(minutesOf(930)).toBeNull();
+  });
+});
+
+describe('layoutTimeline', () => {
+  it('runs from the hour before the first event to the hour after the last', () => {
+    const t = layoutTimeline([{ start: '09:30', end: '10:15' }, { start: '12:00', end: '13:40' }]);
+    expect(t.from).toBe(9 * 60);
+    expect(t.to).toBe(14 * 60);
+    expect(t.hours).toEqual([9, 10, 11, 12, 13]);
+    expect(t.items[0]).toMatchObject({ index: 0, lane: 0, left: 10, width: 15 });
+  });
+
+  it('puts overlapping events in separate lanes and reuses a lane once it is free', () => {
+    const t = layoutTimeline([
+      { start: '09:00', end: '11:00' },
+      { start: '10:00', end: '10:30' },
+      { start: '11:00', end: '12:00' },
+    ]);
+    expect(t.items.map((i) => i.lane)).toEqual([0, 1, 0]);
+    expect(t.lanes).toBe(2);
+  });
+
+  it('gives an event without an end half an hour, skips bad times, and thins the hour labels', () => {
+    const t = layoutTimeline([{ start: '06:00' }, { start: 'noon' }, { start: '21:00', end: '20:00' }]);
+    expect(t.items.map((i) => [i.index, i.end - i.start])).toEqual([
+      [0, 30],
+      [2, 30],
+    ]);
+    expect(t.hours.length).toBeLessThanOrEqual(7);
+    expect(layoutTimeline([])).toEqual({ from: 0, to: 0, hours: [], lanes: 0, items: [] });
+  });
+});
+
+describe('nearestIndex', () => {
+  it('finds the closest x', () => {
+    expect(nearestIndex([10, 20, 30], 24)).toBe(1);
+    expect(nearestIndex([10, 20, 30], -5)).toBe(0);
+    expect(nearestIndex([], 3)).toBe(-1);
+  });
+});
+
+describe('chartSpecOf', () => {
+  it('reads a chart widget, defaulting what is missing', () => {
+    expect(chartSpecOf({ kind: 'bar', x: ['a', 'b'], series: [{ name: 'S', values: [1, 'x'] }], unit: '$' })).toEqual({
+      kind: 'bar',
+      x: ['a', 'b'],
+      series: [{ name: 'S', values: [1, 0] }],
+      unit: '$',
+    });
+    expect(chartSpecOf({ kind: 'pie' })).toEqual({ kind: 'line', x: [], series: [] });
+  });
+});
+
+describe('chartSummary', () => {
+  it('says what the chart shows', () => {
+    const spec = chartSpecOf({ kind: 'line', x: ['Oct 1', 'Oct 31'], series: [{ name: 'Spend', values: [1, 2] }] });
+    expect(chartSummary(spec, 'Daily spend')).toBe('Line chart, Daily spend, Oct 1 to Oct 31. Spend: low 1, high 2, last 2.');
+    expect(chartSummary(chartSpecOf({ kind: 'bar' }), '')).toBe('Bar chart: no data.');
+    const two = chartSpecOf({ kind: 'bar', x: ['Q1', 'Q2', 'Q3'], series: [{ name: 'A', values: [5, 1, 3] }, { name: 'B', values: [2, 8, 4] }], unit: '$' });
+    expect(chartSummary(two, '')).toBe('Bar chart, Q1 to Q3. A: low $1, high $5, last $3. B: low $2, high $8, last $4.');
+  });
+
+  it('says one point in words for the arrow keys', () => {
+    const spec = chartSpecOf({ kind: 'line', x: ['Mon', 'Tue'], series: [{ name: 'Steps', values: [4200, 5100] }] });
+    expect(pointWords(spec, 1)).toBe('Tue: Steps 5.1k');
   });
 });

@@ -685,6 +685,8 @@ const LINK_TEXT: Readonly<Record<View['link'], string>> = {
 };
 
 let rendered: readonly Entry[] = [];
+// An approval is waiting somewhere (on the board or in the conversation): her board's asks are hidden.
+let asksOff = false;
 
 // Shown under the conversation while she works and no text is arriving. The status
 // in the sidebar's head already announces it to screen readers, so this one stays silent.
@@ -725,6 +727,11 @@ function render(): void {
   // The board follows its approvals, and the core records a card as delivered only once it is
   // really on screen (SPN-17).
   approvals.sync();
+  const off = view.entries.some((e) => e.kind === 'card' && e.status === 'waiting');
+  if (off !== asksOff) {
+    asksOff = off;
+    if (workspace.showing === 'board') showBoard();
+  }
 
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
@@ -1352,15 +1359,27 @@ function submit(): void {
     if (text && view.link === 'ready') reply(text);
     return;
   }
-  if (!text || view.busy || view.link !== 'ready') return;
+  sendTurn(text, undefined, () => {
+    input.value = '';
+    input.style.height = '';
+  });
+}
+
+/**
+ * A typed turn, from the ask bar or an ask tapped on her board (`from: "ask"`, which the core
+ * never lets approve anything). False when it cannot go now: nothing to say, she is busy, or the
+ * link is down.
+ */
+function sendTurn(text: string, from?: 'ask', sending?: () => void): boolean {
+  if (!text || view.busy || view.link !== 'ready') return false;
   voice.unlock(); // sending is a click or a key press, which is what lets a browser play sound
   voice.stop();
   spokeLast = false; // a typed conversation: the microphone stays closed while she answers
   stopWatching();
-  send({ type: 'turn.text', text });
-  input.value = '';
-  input.style.height = '';
+  send(from ? { type: 'turn.text', text, from } : { type: 'turn.text', text });
+  sending?.();
   apply(sent(view, text));
+  return true;
 }
 
 form.addEventListener('submit', (ev) => {
@@ -1511,13 +1530,20 @@ const boardView = createBoardView({
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
   approvals: approvals.strip.el,
+  // Exactly the ask's words, as the user's message. Hidden while any approval waits (asksOff).
+  onAsk: (text) => void sendTurn(text, 'ask'),
 });
 function showBoard(): void {
   boardChip.hidden = true;
   const pinned = approvals.pinned();
   approvals.strip.draw(pinned.items);
   // A board she put away is not drawn under an approval that opened it.
-  boardView.draw(view.board?.open ? view.board : null, { any: pinned.items.length > 0, waiting: pinned.waiting, from: view.agentName });
+  boardView.draw(view.board?.open ? view.board : null, {
+    any: pinned.items.length > 0,
+    waiting: pinned.waiting,
+    from: view.agentName,
+    asksOff: asksOff || pinned.waiting,
+  });
   // Already showing: this only changes the title; the cards were redrawn in place.
   workspace.open(boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
