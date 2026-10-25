@@ -81,8 +81,9 @@ def widget_schema() -> dict[str, Any]:
     s, n, o = {"type": "string"}, {"type": "number"}, {"type": "object"}
     # Her source is a name; {name} is taken too.
     so = {"type": ["string", "object"]}
-    # Display text a model may well give as a number ("value": 26). The kit writes it
-    # as text, so the schema must not refuse it first.
+    # Display text a model may well give as a number ("value": 26), and a count or goal
+    # it may give as text ("unread": "12"). The kit takes both, so the schema must not
+    # refuse either first.
     sn = {"type": ["string", "number"]}
 
     def arr(items: dict[str, Any], text: str | None = None) -> dict[str, Any]:
@@ -139,8 +140,8 @@ def widget_schema() -> dict[str, Any]:
         "people": arr(sn),
         "note": s,
         "slots": arr(o),
-        "unread": n,
-        "needs_reply": n,
+        "unread": sn,
+        "needs_reply": sn,
         "threads": arr(o),
         "from": s,
         "subject": s,
@@ -154,7 +155,7 @@ def widget_schema() -> dict[str, Any]:
         "steps": arr(o),
         "criteria": arr(sn),
         "scores": arr(arr(n), "One row per option, a score 0-10 per criterion."),
-        "target": n,
+        "target": sn,
         "blocks": arr(obj({"type": s}, ["type"]), "custom: see workspace_show."),
     }
     # Every field may be null: small local models send null for a field they leave out,

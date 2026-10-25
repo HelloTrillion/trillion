@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from trillion.workspace import board as edits
+from trillion.workspace.blocks import day_in, on_day
 from trillion.workspace.board import Board, BoardError, Mode
 from trillion.workspace.recipes import expand_board
 
@@ -67,8 +68,11 @@ class Boards:
         *,
         clock: Callable[[], int],
         owner: str,
+        zone: Callable[[], str | None] = lambda: None,
     ) -> None:
         self._store = store
+        # The user's timezone, so a bare "9:12" she writes is on their today.
+        self._zone = zone
         self._conversations = conversations
         self._send_to = send_to
         self._clock = clock
@@ -89,7 +93,8 @@ class Boards:
             if not await self._conversations.exists(conversation_id, self._owner):
                 raise BoardError("there is no open conversation to put a board in.")
             old = await self._store.get(conversation_id, self._owner)
-            new = edit(old)
+            with on_day(day_in(self._zone())):
+                new = edit(old)
             now = self._clock()
             _stamp(new, now)
             try:

@@ -132,6 +132,9 @@ LENIENT: list[dict[str, Any]] = [
     # One ask in the singular, as small models write it; the kit reads it as asks.
     {"type": "thread", "from": "Jo", "subject": "Venue", "ask": "Sign?"},
     {"type": "inbox", "unread": 3, "ask": "Draft a reply to Sam"},
+    # Counts and goals written as text.
+    {"type": "inbox", "unread": "12", "needs_reply": "3"},
+    {"type": "goal", "label": "Savings", "value": "4,200", "target": "6000"},
     {
         "type": "chart",
         "kind": "line",

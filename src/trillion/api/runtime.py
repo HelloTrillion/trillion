@@ -596,6 +596,7 @@ async def open_runtime(
         rt.send_board,
         clock=lambda: rt.clock(),
         owner=OWNER,
+        zone=lambda: rt.zone(),
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)

@@ -59,6 +59,8 @@ MAX_CRITERIA = MAX_COLUMNS - 2
 
 # Starts like an ISO date (2026-…), so it must be one; anything else is words.
 _DATE = re.compile(r"^\d{4}-\d")
+# A number written as text, as small models often send one: "12", "4,200", "2.5".
+_NUMERIC = re.compile(r"^-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$")
 # A free-time slot written with Z or an offset.
 _ZONED = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 
@@ -138,6 +140,18 @@ def asks(raw: Mapping[str, Any], where: str) -> list[str] | None:
     if len(kept) > MAX_ASKS:
         raise fail(where, f"{len(kept)} asks, {MAX_ASKS} at most")
     return kept or None
+
+
+def _numbers(raw: Mapping[str, Any], *keys: str) -> Mapping[str, Any]:
+    """The widget with each of `keys` that is a number written as text ("12") read as
+    the number. Anything else is left for the field's own check to refuse."""
+    out = dict(raw)
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, str) and _NUMERIC.match(value.strip()):
+            plain = value.strip().replace(",", "")
+            out[key] = float(plain) if "." in plain else int(plain)
+    return out
 
 
 def _done(raw: Mapping[str, Any], where: str) -> bool | None:
@@ -225,6 +239,7 @@ def _free_time(raw: Mapping[str, Any], where: str) -> Widget:
 
 
 def _inbox(raw: Mapping[str, Any], where: str) -> Widget:
+    raw = _numbers(raw, "unread", "needs_reply")
     out: Widget = {"unread": _whole(raw, "unread", where)}
     put(out, "needs_reply", _whole(raw, "needs_reply", where, need=False))
     if raw.get("threads"):
@@ -369,6 +384,7 @@ def _callout(raw: Mapping[str, Any], where: str) -> Widget:
 
 
 def _goal(raw: Mapping[str, Any], where: str) -> Widget:
+    raw = _numbers(raw, "value", "target")
     out: Widget = {
         "label": text_field(raw, "label", where, LABEL, loose=True),
         "value": number_field(raw, "value", where),

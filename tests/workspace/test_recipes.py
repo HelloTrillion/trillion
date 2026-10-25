@@ -409,6 +409,14 @@ def test_inbox_counts():
         "widget 1 (inbox): unread must be a whole number, 0 or more, not 2.5."
     )
     assert refused({"type": "inbox"}) == "widget 1 (inbox): unread is required."
+    # A count written as text is the count; words are still refused.
+    inbox = validate_widget({"type": "inbox", "unread": " 12 ", "needs_reply": "3"}, 1)
+    assert (inbox["unread"], inbox["needs_reply"]) == (12, 3)
+    assert refused({"type": "inbox", "unread": "a dozen"}) == (
+        "widget 1 (inbox): unread must be a whole number, 0 or more, not 'a dozen'."
+    )
+    goal = validate_widget({"type": "goal", "label": "S", "value": "4,200", "target": "6000.5"}, 1)
+    assert (goal["value"], goal["target"]) == (4200, 6000.5)
     bad_flag = {"type": "inbox", "unread": 1, "threads": [{"from": "a", "subject": "b", "flag": 1}]}
     assert refused(bad_flag) == (
         "widget 1 (inbox): thread 1: flag must be one of good, bad, attention, neutral, not 1."

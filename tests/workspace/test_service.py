@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 from trillion.workspace import service
+from trillion.workspace.blocks import day_in
 from trillion.workspace.board import Board, BoardError
 from trillion.workspace.service import Boards, BoardSaveError, for_page
 
@@ -231,3 +233,22 @@ async def test_the_page_gets_blocks_and_the_saved_board_is_as_she_wrote_it(s: Se
     assert await s.saved() == saved == board and "blocks" not in saved["widgets"][0]
     assert s.pages.sent[-1][1] == page
     assert for_page(None) is None
+
+
+async def test_a_bare_clock_time_is_on_the_users_today(s: Setup) -> None:
+    # A day apart at every moment: the date must come from the zone, not the server.
+    days = []
+    for zone in ("Pacific/Kiritimati", "Pacific/Pago_Pago"):
+        boards = Boards(
+            s.store, s.chats, s.pages, clock=lambda: 0, owner=OWNER, zone=lambda z=zone: z
+        )
+        widget = {"type": "next_up", "event": "Design review", "start": "9:12"}
+        board = await boards.show("c1", None, [widget])
+        start = board["widgets"][0]["start"]
+        assert start == f"{day_in(zone).isoformat()}T09:12"
+        days.append(start)
+    assert days[0] != days[1]
+
+
+def test_an_unknown_zone_is_the_servers_day() -> None:
+    assert day_in("Not/AZone") == day_in(None) == date.today()

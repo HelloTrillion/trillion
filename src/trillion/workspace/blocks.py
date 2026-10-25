@@ -12,10 +12,13 @@ blocks run the kit's checks for those widgets, so a block and a widget never dis
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trillion.workspace.kit import (
     LABEL,
@@ -76,10 +79,37 @@ def tone_field(
     return str(value)
 
 
-def today() -> date:
-    """Today in the server's local time: the day a bare clock time is on. A function so
-    tests can fix it."""
+# The user's day, while a change from the board service is checked (`on_day`). Unset,
+# the server's own day is used.
+_DAY: ContextVar[date | None] = ContextVar("workspace_day", default=None)
+
+
+def day_in(zone: str | None) -> date:
+    """Today in the named timezone, or in the server's when there is none (or it is
+    not one this computer knows)."""
+    if zone:
+        try:
+            return datetime.now(ZoneInfo(zone)).date()
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
     return date.today()
+
+
+@contextmanager
+def on_day(day: date) -> Iterator[None]:
+    """Bare clock times checked inside are on `day`: the board service passes the
+    user's today, so "9:12" lands on their date, not the server's."""
+    token = _DAY.set(day)
+    try:
+        yield
+    finally:
+        _DAY.reset(token)
+
+
+def today() -> date:
+    """The day a bare clock time is on: the user's, inside `on_day`, else the server's.
+    A function so tests can fix it."""
+    return _DAY.get() or date.today()
 
 
 def clock_time(text: str) -> str | None:
@@ -101,8 +131,8 @@ def clock_time(text: str) -> str | None:
 
 
 def iso_field(raw: Mapping[str, Any], key: str, where: str, *, need: bool = False) -> str | None:
-    """An ISO 8601 date or time. A bare clock time ("9:12") is taken as today in the
-    server's local time, written without a zone, as the user's local times are."""
+    """An ISO 8601 date or time. A bare clock time ("9:12") is taken as today (the
+    user's day, see `today`), written without a zone, as the user's local times are."""
     value = text_field(raw, key, where, VALUE, need=need)
     if value is None:
         return None
