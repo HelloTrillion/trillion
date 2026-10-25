@@ -24,16 +24,18 @@ from trillion.workspace.kit import (
     TEXT,
     TITLE,
     VALUE,
-    _array,
-    _chart,
-    _fail,
-    _number,
-    _obj,
-    _put,
-    _str,
-    _table,
-    _timeline,
+    as_object,
+    check_chart,
+    check_table,
+    check_timeline,
+    fail,
+    finite_number,
+    list_field,
+    long_text,
+    put,
+    text_field,
 )
+from trillion.workspace.text import scrub
 
 Block = dict[str, Any]
 
@@ -46,70 +48,34 @@ MIN_SPARK, MAX_SPARK = 2, 60
 MAX_PEOPLE, MAX_CHIPS, MAX_FACTS = 8, 6, 10
 QUOTE = 600
 
-# Emoji and pictographs. Text symbols that carry data ($ € £ % ° → ✓ ★ ♥ ⚠ ▲) stay.
-# Astral: cards, enclosed symbols, flags, pictographs, skin tones, flag tag characters.
-_ASTRAL = r"\U0001f000-\U0001faff\U000e0020-\U000e007f"
-# Below U+FFFF only the characters that are emoji by default (Emoji_Presentation).
-_BMP_EMOJI = (
-    r"\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653"
-    r"\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea"
-    r"\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e"
-    r"\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55"
-)
-# Any other symbol is an emoji only when written with the emoji selector (❤️, ⚠️).
-_ONE = rf"(?:[{_ASTRAL}{_BMP_EMOJI}]|[\u00a9\u00ae\u2000-\u32ff]\ufe0f)\ufe0f?"
-# One emoji, or several joined (family, profession, flag-with-text); the joiners and
-# selectors go only with an emoji, so scripts that use a joiner keep theirs.
-_EMOJI = re.compile(rf"{_ONE}(?:\u200d{_ONE})*")
-# 1️⃣: the digit stays, the selector and keycap ring go.
-_KEYCAP = re.compile(r"(?<=[0-9#*])\ufe0f?\u20e3")
-_GAPS = re.compile(r"[ \t]{2,}")
-
 # ISO 8601: a date, or a date and time with optional seconds and a Z or offset.
 _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})?)?$")
 
 
-def strip_emoji(text: str) -> str:
-    """The text without emoji or pictographs (and the joiners and selectors inside them)."""
-    clean = _EMOJI.sub("", _KEYCAP.sub("", text))
-    return text if clean == text else _GAPS.sub(" ", clean)
-
-
-def _scrub(value: Any) -> Any:
-    """Every string in the block, however deep, without emoji."""
-    if isinstance(value, str):
-        return strip_emoji(value)
-    if isinstance(value, list):
-        return [_scrub(v) for v in value]
-    if isinstance(value, Mapping):
-        return {k: _scrub(v) for k, v in value.items()}
-    return value
-
-
 @dataclass
-class _Card:
+class Card:
     """What a whole card counts across its blocks."""
 
     items: int = 0
 
 
-def _tone(
+def tone_field(
     raw: Mapping[str, Any], where: str, *, need: bool = False, key: str = "tone"
 ) -> str | None:
     value = raw.get(key)
     if value is None:
         if need:
-            raise _fail(where, f"{key} is required ({', '.join(BLOCK_TONES)})")
+            raise fail(where, f"{key} is required ({', '.join(BLOCK_TONES)})")
         return None
     # The widgets' old words still work.
     value = {"up": "good", "down": "bad"}.get(value, value) if isinstance(value, str) else value
     if value not in BLOCK_TONES:
-        raise _fail(where, f"{key} must be one of {', '.join(BLOCK_TONES)}, not {value!r}")
+        raise fail(where, f"{key} must be one of {', '.join(BLOCK_TONES)}, not {value!r}")
     return str(value)
 
 
-def _when(raw: Mapping[str, Any], key: str, where: str, *, need: bool = False) -> str | None:
-    value = _str(raw, key, where, VALUE, need=need)
+def iso_field(raw: Mapping[str, Any], key: str, where: str, *, need: bool = False) -> str | None:
+    value = text_field(raw, key, where, VALUE, need=need)
     if value is None:
         return None
     ok = _ISO.match(value) is not None
@@ -119,84 +85,87 @@ def _when(raw: Mapping[str, Any], key: str, where: str, *, need: bool = False) -
         except ValueError:
             ok = False
     if not ok:
-        raise _fail(
+        raise fail(
             where,
             f"{key} {value!r} must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25",
         )
     return value
 
 
-def _before(end: str, start: str) -> bool:
+def ends_before(end: str, start: str) -> bool:
     """Whether end is earlier than start, when the two can be compared (both with an
     offset or both without; otherwise the zone is unknown and nothing is claimed)."""
     a, b = datetime.fromisoformat(end), datetime.fromisoformat(start)
     return (a.tzinfo is None) == (b.tzinfo is None) and a < b
 
 
-def _count(raw: Mapping[str, Any], key: str, where: str) -> float | int:
+def number_field(raw: Mapping[str, Any], key: str, where: str) -> float | int:
     if raw.get(key) is None:
-        raise _fail(where, f"{key} is required")
-    return _number(raw[key], f"{where}: {key}")
+        raise fail(where, f"{key} is required")
+    return finite_number(raw[key], f"{where}: {key}")
 
 
-def _words(
+def word_list(
     raw: Mapping[str, Any], key: str, where: str, limit: int, nouns: tuple[str, str], cap: int
 ) -> list[str]:
     """A list of short strings, as `names` or `items`."""
-    got = _array(raw, key, where, limit, nouns)
+    got = list_field(raw, key, where, limit, nouns)
     return [
-        cast(str, _str({nouns[0]: v}, nouns[0], f"{where}: {nouns[0]} {i}", cap, loose=True))
+        cast(str, text_field({nouns[0]: v}, nouns[0], f"{where}: {nouns[0]} {i}", cap, loose=True))
         for i, v in enumerate(got, 1)
     ]
 
 
-def _value(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"value": _str(raw, "value", where, VALUE, loose=True)}
-    _put(out, "label", _str(raw, "label", where, LABEL, need=False, loose=True))
-    _put(out, "delta", _str(raw, "delta", where, VALUE, need=False, loose=True))
-    _put(out, "hint", _str(raw, "hint", where, TEXT, need=False, loose=True))
-    _put(out, "tone", _tone(raw, where))
+def _value(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {"value": text_field(raw, "value", where, VALUE, loose=True)}
+    put(out, "label", text_field(raw, "label", where, LABEL, need=False, loose=True))
+    put(out, "delta", text_field(raw, "delta", where, VALUE, need=False, loose=True))
+    put(out, "hint", text_field(raw, "hint", where, TEXT, need=False, loose=True))
+    put(out, "tone", tone_field(raw, where))
     return out
 
 
-def _sparkline(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    values = _array(raw, "values", where, MAX_SPARK, ("value", "values"), low=MIN_SPARK)
-    out: Block = {"values": [_number(v, f"{where}: values") for v in values]}
-    _put(out, "tone", _tone(raw, where))
+def _sparkline(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    values = list_field(raw, "values", where, MAX_SPARK, ("value", "values"), low=MIN_SPARK)
+    out: Block = {"values": [finite_number(v, f"{where}: values") for v in values]}
+    put(out, "tone", tone_field(raw, where))
     return out
 
 
-def _meter(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"value": _count(raw, "value", where), "max": _count(raw, "max", where)}
+def _meter(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {
+        "value": number_field(raw, "value", where),
+        "max": number_field(raw, "max", where),
+    }
     if out["max"] <= 0:
-        raise _fail(where, f"max must be above 0, not {out['max']}")
-    _put(out, "label", _str(raw, "label", where, LABEL, need=False, loose=True))
+        raise fail(where, f"max must be above 0, not {out['max']}")
+    put(out, "label", text_field(raw, "label", where, LABEL, need=False, loose=True))
     shape = raw.get("shape")
     if shape is not None and shape not in SHAPES:
-        raise _fail(where, f"shape must be one of {', '.join(SHAPES)}, not {shape!r}")
-    _put(out, "shape", shape)
-    _put(out, "tone", _tone(raw, where))
+        raise fail(where, f"shape must be one of {', '.join(SHAPES)}, not {shape!r}")
+    put(out, "shape", shape)
+    put(out, "tone", tone_field(raw, where))
     return out
 
 
-def _time(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"at": _when(raw, "at", where, need=True)}
-    end = _when(raw, "end", where)
-    if end is not None and _before(end, out["at"]):
-        raise _fail(where, f"end {end} is before at {out['at']}")
-    _put(out, "end", end)
-    _put(out, "label", _str(raw, "label", where, LABEL, need=False))
+def _time(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {"at": iso_field(raw, "at", where, need=True)}
+    end = iso_field(raw, "end", where)
+    if end is not None and ends_before(end, out["at"]):
+        raise fail(where, f"end {end} is before at {out['at']}")
+    put(out, "end", end)
+    put(out, "label", text_field(raw, "label", where, LABEL, need=False))
     return out
 
 
-def _chart_block(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out = _chart(raw, where)
+def _chart_block(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out = check_chart(raw, where)
     out.pop("title", None)  # a card has one title; the block has none
     return out
 
 
-def _table_block(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out = _table(raw, where)
+def _table_block(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out = check_table(raw, where)
     out.pop("title", None)
     highlight = raw.get("highlight")
     if highlight is not None:
@@ -207,7 +176,7 @@ def _table_block(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
             or not 0 <= highlight < rows
         ):
             noun = "row" if rows == 1 else "rows"
-            raise _fail(
+            raise fail(
                 where,
                 f"highlight {highlight!r} is not a row; the table has {rows} {noun}"
                 " (0 is the first)",
@@ -216,109 +185,98 @@ def _table_block(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
     return out
 
 
-def _timeline_block(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out = _timeline(raw, where)
+def _timeline_block(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out = check_timeline(raw, where)
     out.pop("title", None)
     return out
 
 
 def _item(raw: Any, where: str) -> Block:
-    raw = _obj(raw, where)
-    out: Block = {"title": _str(raw, "title", where, TITLE)}
-    _put(out, "detail", _str(raw, "detail", where, TEXT, need=False))
-    _put(out, "person", _str(raw, "person", where, LABEL, need=False))
-    _put(out, "status", _tone(raw, where, key="status"))
-    _put(out, "when", _when(raw, "when", where))
-    _put(out, "meta", _str(raw, "meta", where, TEXT, need=False, loose=True))
-    _put(out, "chip", _str(raw, "chip", where, LABEL, need=False))
+    raw = as_object(raw, where)
+    out: Block = {"title": text_field(raw, "title", where, TITLE)}
+    put(out, "detail", text_field(raw, "detail", where, TEXT, need=False))
+    put(out, "person", text_field(raw, "person", where, LABEL, need=False))
+    put(out, "status", tone_field(raw, where, key="status"))
+    put(out, "when", iso_field(raw, "when", where))
+    put(out, "meta", text_field(raw, "meta", where, TEXT, need=False, loose=True))
+    put(out, "chip", text_field(raw, "chip", where, LABEL, need=False))
     done = raw.get("done")
     if done is not None and not isinstance(done, bool):
-        raise _fail(where, "done must be true or false")
-    _put(out, "done", done)
+        raise fail(where, "done must be true or false")
+    put(out, "done", done)
     return out
 
 
-def _rows(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
+def _rows(raw: Mapping[str, Any], where: str, card: Card) -> Block:
     out: Block = {}
-    _put(out, "label", _str(raw, "label", where, LABEL, need=False))
-    items = _array(raw, "items", where, MAX_ITEMS, ("item", "items"))
+    put(out, "label", text_field(raw, "label", where, LABEL, need=False))
+    items = list_field(raw, "items", where, MAX_ITEMS, ("item", "items"))
     card.items += len(items)
     if card.items > MAX_ITEMS:
-        raise _fail(where, f"{card.items} items across the card, {MAX_ITEMS} at most")
+        raise fail(where, f"{card.items} items across the card, {MAX_ITEMS} at most")
     out["items"] = [_item(item, f"{where}: item {i}") for i, item in enumerate(items, 1)]
     return out
 
 
-def _person(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"name": _str(raw, "name", where, LABEL)}
-    _put(out, "detail", _str(raw, "detail", where, TEXT, need=False))
+def _person(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {"name": text_field(raw, "name", where, LABEL)}
+    put(out, "detail", text_field(raw, "detail", where, TEXT, need=False))
     return out
 
 
-def _people(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    return {"names": _words(raw, "names", where, MAX_PEOPLE, ("name", "names"), LABEL)}
+def _people(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    return {"names": word_list(raw, "names", where, MAX_PEOPLE, ("name", "names"), LABEL)}
 
 
-def _status(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    return {"tone": _tone(raw, where, need=True), "text": _str(raw, "text", where, TEXT)}
+def _status(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    return {"tone": tone_field(raw, where, need=True), "text": text_field(raw, "text", where, TEXT)}
 
 
-def _chips(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"items": _words(raw, "items", where, MAX_CHIPS, ("item", "items"), LABEL)}
-    _put(out, "tone", _tone(raw, where))
+def _chips(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {"items": word_list(raw, "items", where, MAX_CHIPS, ("item", "items"), LABEL)}
+    put(out, "tone", tone_field(raw, where))
     return out
 
 
-def _long(raw: Mapping[str, Any], where: str, limit: int) -> str:
-    """Text that keeps its lines. Refused, not cut: a clipped paragraph would mislead."""
-    text = raw.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise _fail(where, "text is required")
-    text = "\n".join(line.strip() for line in text.strip().splitlines())
-    if len(text) > limit:
-        raise _fail(where, f"text is {len(text)} characters, {limit} at most")
-    return text
-
-
-def _text(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"text": _long(raw, where, NOTE)}
-    _put(out, "tone", _tone(raw, where))
+def _text(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {"text": long_text(raw, where, NOTE)}
+    put(out, "tone", tone_field(raw, where))
     return out
 
 
-def _quote(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    out: Block = {"text": _long(raw, where, QUOTE)}
-    _put(out, "by", _str(raw, "by", where, LABEL, need=False))
-    _put(out, "when", _when(raw, "when", where))
+def quote_block(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    out: Block = {"text": long_text(raw, where, QUOTE)}
+    put(out, "by", text_field(raw, "by", where, LABEL, need=False))
+    put(out, "when", iso_field(raw, "when", where))
     return out
 
 
-def _facts(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
+def facts_block(raw: Mapping[str, Any], where: str, card: Card) -> Block:
     items = []
-    for i, item in enumerate(_array(raw, "items", where, MAX_FACTS, ("item", "items")), 1):
+    for i, item in enumerate(list_field(raw, "items", where, MAX_FACTS, ("item", "items")), 1):
         at = f"{where}: item {i}"
-        item = _obj(item, at)
+        item = as_object(item, at)
         items.append(
             {
-                "label": _str(item, "label", at, LABEL, loose=True),
-                "value": _str(item, "value", at, VALUE, loose=True),
+                "label": text_field(item, "label", at, LABEL, loose=True),
+                "value": text_field(item, "value", at, VALUE, loose=True),
             }
         )
     return {"items": items}
 
 
-def _columns(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    columns = _array(raw, "columns", where, MAX_SPLIT, ("column", "columns"), low=MIN_SPLIT)
+def _columns(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    columns = list_field(raw, "columns", where, MAX_SPLIT, ("column", "columns"), low=MIN_SPLIT)
     drawn = []
     for i, column in enumerate(columns, 1):
         at = f"{where}: column {i}"
         if not isinstance(column, list):
-            raise _fail(where, f"column {i} must be a list of blocks")
+            raise fail(where, f"column {i} must be a list of blocks")
         drawn.append(_blocks(column, at, card, inside=True))
     return {"columns": drawn}
 
 
-_BLOCKS: dict[str, Callable[[Mapping[str, Any], str, _Card], Block]] = {
+_BLOCKS: dict[str, Callable[[Mapping[str, Any], str, Card], Block]] = {
     "value": _value,
     "sparkline": _sparkline,
     "meter": _meter,
@@ -332,34 +290,34 @@ _BLOCKS: dict[str, Callable[[Mapping[str, Any], str, _Card], Block]] = {
     "status": _status,
     "chips": _chips,
     "text": _text,
-    "quote": _quote,
-    "facts": _facts,
+    "quote": quote_block,
+    "facts": facts_block,
     "columns": _columns,
 }
 BLOCK_TYPES = tuple(_BLOCKS)
 
 
-def _blocks(raw: Any, where: str, card: _Card, *, inside: bool) -> list[Block]:
+def _blocks(raw: Any, where: str, card: Card, *, inside: bool) -> list[Block]:
     if not isinstance(raw, list):
-        raise _fail(where, "blocks must be a list")
-    listed = _array({"blocks": raw}, "blocks", where, MAX_BLOCKS, ("block", "blocks"))
+        raise fail(where, "blocks must be a list")
+    listed = list_field({"blocks": raw}, "blocks", where, MAX_BLOCKS, ("block", "blocks"))
     out = []
     for i, given in enumerate(listed, 1):
-        given = _obj(given, f"{where}: block {i}")
+        given = as_object(given, f"{where}: block {i}")
         kind = given.get("type")
         name = kind.strip().lower() if isinstance(kind, str) else kind
         build = _BLOCKS.get(name) if isinstance(name, str) else None
         if build is None:
             what = f"unknown type {kind!r}" if kind is not None else "no type"
-            raise _fail(f"{where}: block {i}", f"{what}; use one of {', '.join(BLOCK_TYPES)}")
+            raise fail(f"{where}: block {i}", f"{what}; use one of {', '.join(BLOCK_TYPES)}")
         at = f"{where}: block {i} ({name})"
         if inside and name == "columns":
-            raise _fail(at, "columns cannot hold columns")
-        out.append({"type": name, **build(_scrub(given), at, card)})
+            raise fail(at, "columns cannot hold columns")
+        out.append({"type": name, **build(scrub(given), at, card)})
     return out
 
 
 def validate_blocks(raw: Any, where: str) -> list[Block]:
     """The page-ready blocks of one card. `where` names the widget, as the kit does
     ("widget 2 (custom)"), and leads every message."""
-    return _blocks(raw, where, _Card(), inside=False)
+    return _blocks(raw, where, Card(), inside=False)

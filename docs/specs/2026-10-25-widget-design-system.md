@@ -95,7 +95,7 @@ What she writes, and what it becomes. Every recipe also takes `title?`, `size?`,
 | `timeline` | as today | `timeline` |
 | `compare` | as today | `columns`, one per option: `value` (name, label "Her pick" when picked), a `meter` per metric (max 10), `chips` (tags), `text` (note); then `text` (reason) |
 | `next_up` | `event`, `start`, `end?`, `where?`, `people[]?`, `note?` | `time`, `people`, `chips` (where), `text` (note) |
-| `free_time` | `slots[]` (`start`, `end`) | `rows`, one item per day ("Tue 28 Oct"), detail the slots ("9:00–10:30, 2:00–3:00 pm"), grouped by the date as written |
+| `free_time` | `slots[]` (`start`, `end`, local time, no offset) | `rows`, one item per day ("Tue 28 Oct"), detail the slots ("9:00–10:30 am, 2:00–3:00 pm"), grouped by the date as written |
 | `inbox` | `unread`, `needs_reply?`, `threads[]` (`from`, `subject`, `when?`, `flag?` tone) | `value` (unread, hint "3 need a reply"), `rows` |
 | `thread` | `from`, `subject`, `ask`, `due?`, `when?`, `excerpt?` | `person` (from, subject), `text` (ask), `facts` (Due), `quote` (excerpt) |
 | `mentions` | `groups[]` (`channel`, `items[]` (`from`, `text`, `when?`)) | one `rows` per group, labelled by channel |
@@ -171,8 +171,9 @@ colour; a card's footer is the source and its age.
 
 - `workspace/blocks.py` (new): block validation, pure.
 - `workspace/recipes.py` (new): one function per type, recipe input → blocks, pure.
-- `workspace/kit.py`: validates recipe inputs (new types, `source`, `asks`, emoji
-  stripping); keeps its leniency and messages.
+- `workspace/widgets.py` (new): `validate_widget`, the one way in: leniency, emoji
+  stripping (`workspace/text.py`), `source`, `asks`; today's types checked in
+  `workspace/kit.py`, the new ones in `workspace/recipe_kit.py`.
 - `workspace/schema.py`: the new fields, flat; the one-line cards.
 - `workspace/service.py`: stamps `source.at`; sends boards expanded.
 - `spine/contract.py` (`Via`), `spine/confirm.py` (refuse `ask`),

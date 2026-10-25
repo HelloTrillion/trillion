@@ -1,24 +1,29 @@
 """Recipes: a saved widget, as she wrote it, turned into the blocks the page draws (the
 widget design system spec, "Recipes").
 
-Pure, no I/O. The input is a widget `kit.validate_widget` already took, so nothing
+Pure, no I/O. The input is a widget `widgets.validate_widget` already took, so nothing
 here refuses; each type has one function that picks the blocks and the emphasis
 (the content is hers, the layout the system's). What a recipe writes is already in
 the blocks' own form, so `blocks.validate_blocks` would leave it unchanged.
 
-Times are shown as written: a free-time slot at 09:00 is "9:00" whatever its offset,
-because the user's clock is the one she read them from.
+Times are shown as written, with no zone conversion: free-time slots are in the user's
+local time (the kit refuses an offset), and a deadline is shown as its own date.
+`expand_board` never fails a whole board for one widget.
 """
 
 from __future__ import annotations
 
 import copy
+import logging
 from collections.abc import Callable
 from datetime import date
 from typing import Any
 
 from trillion.workspace.blocks import Block
 from trillion.workspace.kit import VALUE, Widget, cap
+from trillion.workspace.recipe_kit import is_date
+
+logger = logging.getLogger(__name__)
 
 Board = dict[str, Any]
 
@@ -55,17 +60,17 @@ def _clock(text: str) -> tuple[str, str]:
 
 
 def _span(start: str, end: str) -> str:
-    """9:00 to 10:30, 2:00 to 3:00 pm, 11:30 am to 12:15 pm, joined by an en dash. A
-    morning goes without "am", as people write free time; the afternoon says so."""
+    """9:00 to 10:30 am, 2:00 to 3:00 pm, 11:30 am to 12:15 pm, joined by an en dash:
+    the half of the day said once when both ends share it, as the page's ranges are."""
     (a, a_half), (b, b_half) = _clock(start), _clock(end)
     if a_half != b_half:
         return f"{a} {a_half}{_DASH}{b} {b_half}"
-    return f"{a}{_DASH}{b}" + (" pm" if b_half == "pm" else "")
+    return f"{a}{_DASH}{b} {b_half}"
 
 
 def _deadline(text: str) -> str:
     """An ISO date as 'Sat 31 Oct' (with ', 5:00 pm' when it has a time); words as written."""
-    if not text[:1].isdigit():
+    if not is_date(text):
         return text
     if "T" not in text:
         return _day(text)
@@ -75,7 +80,7 @@ def _deadline(text: str) -> str:
 
 def _by(text: str) -> str:
     """A goal's date as 'Nov 30'; words as written."""
-    if not text[:1].isdigit():
+    if not is_date(text):
         return text
     d = date.fromisoformat(text[:10])
     return f"{_MONTHS[d.month - 1]} {d.day}"
@@ -89,10 +94,12 @@ def _figure(n: float | int) -> str:
 
 
 def _amount(n: float | int, unit: str | None) -> str:
+    """'$4,200', '-$5', '42 km', '12%'."""
     if not unit:
         return _figure(n)
     if unit in _PREFIX:
-        return f"{unit}{_figure(n)}"
+        sign = "-" if n < 0 else ""
+        return f"{sign}{unit}{_figure(abs(n))}"
     return f"{_figure(n)}{'' if unit == '%' else ' '}{unit}"
 
 
@@ -204,8 +211,14 @@ def _thread(w: Widget) -> list[Block]:
         {"type": "person", "name": w["from"], "detail": w["subject"]},
         {"type": "text", "text": w["ask"]},
     ]
+    facts = []
     if "due" in w:
-        out.append({"type": "facts", "items": [{"label": "Due", "value": _deadline(w["due"])}]})
+        facts.append({"label": "Due", "value": _deadline(w["due"])})
+    # When it was sent rides on the excerpt; with none, it is a fact of its own.
+    if "when" in w and "excerpt" not in w:
+        facts.append({"label": "Sent", "value": _deadline(w["when"])})
+    if facts:
+        out.append({"type": "facts", "items": facts})
     if "excerpt" in w:
         out.append(_with({"type": "quote", "text": w["excerpt"]}, when=w.get("when")))
     return out
@@ -332,8 +345,20 @@ def expand(widget: Widget) -> list[Block]:
     return copy.deepcopy(_RECIPES[widget["type"]](widget))
 
 
+def _safe(widget: Widget) -> list[Block]:
+    """The widget's blocks, or none: a widget saved by an older kit, or a recipe bug,
+    must not take the whole board down on every send. The card still shows its title."""
+    try:
+        return expand(widget)
+    except Exception:
+        logger.warning(
+            "could not expand widget %s (%s)", widget.get("id"), widget.get("type"), exc_info=True
+        )
+        return []
+
+
 def expand_board(board: Board) -> Board:
     """The board as the page gets it: each widget its name, size, source and asks, and
     its blocks. The saved board is left as it was."""
-    widgets = [{**{k: w[k] for k in KEPT if k in w}, "blocks": expand(w)} for w in board["widgets"]]
+    widgets = [{**{k: w[k] for k in KEPT if k in w}, "blocks": _safe(w)} for w in board["widgets"]]
     return {**{k: v for k, v in board.items() if k != "widgets"}, "widgets": widgets}

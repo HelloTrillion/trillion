@@ -7,8 +7,9 @@ import pytest
 
 from trillion.workspace import board as b
 from trillion.workspace.board import BoardError
-from trillion.workspace.kit import MAX_WIDGETS, validate_widget
+from trillion.workspace.kit import MAX_WIDGETS
 from trillion.workspace.schema import widget_schema
+from trillion.workspace.widgets import validate_widget
 
 STAT = {"type": "stat", "label": "Total", "value": "$41.20"}
 CHART = {
@@ -191,7 +192,8 @@ def test_bad_size_and_tone():
         "widget 1 (stat): size must be one of small, medium, wide, full, not 'huge'."
     )
     assert refused({**STAT, "tone": "sideways"}) == (
-        "widget 1 (stat): tone must be one of up, down, neutral, not 'sideways'."
+        "widget 1 (stat): tone must be one of good, bad, attention, neutral, up, down, "
+        "not 'sideways'."
     )
 
 

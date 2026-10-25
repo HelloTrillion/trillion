@@ -3,8 +3,9 @@ from typing import Any
 
 import pytest
 
-from trillion.workspace.blocks import strip_emoji, validate_blocks
+from trillion.workspace.blocks import validate_blocks
 from trillion.workspace.kit import BoardError
+from trillion.workspace.text import strip_emoji
 
 WHERE = "widget 1 (custom)"
 

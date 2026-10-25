@@ -1,6 +1,6 @@
 """The kit as tool input: the JSON schema for one widget, for the workspace tools.
 
-Kept compact (the model reads it every turn) and loose on purpose: `kit.validate_widget`
+Kept compact (the model reads it every turn) and loose on purpose: `widgets.validate_widget`
 is what decides, and its messages tell the model what to fix.
 """
 
@@ -21,8 +21,8 @@ from trillion.workspace.kit import (
     NOTE,
     SIZES,
     TONES,
-    TYPES,
 )
+from trillion.workspace.widgets import TYPES
 
 
 def widget_schema() -> dict[str, Any]:

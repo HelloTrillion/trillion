@@ -34,10 +34,10 @@
 
 - [ ] Failing tests first:
   - `validate_widget` accepts every type in the spec's recipe table with minimal and full fields, including `custom` (via `validate_blocks`);
-  - `source` as a string becomes `{"name": …}` (≤30); an `at` she sends is dropped; `asks` capped at 2 and 40 characters, emoji stripped, empty ones dropped;
+  - `source` as a string becomes `{"name": …}` (≤30); an `at` she sends is dropped; `asks` refused over 2 or over 40 characters, emoji stripped, empty ones dropped;
   - emoji stripped from every string of every type;
   - the lenient names: `agenda`→`timeline`, `next`/`next_meeting`→`next_up`, `inbox_summary`/`email`→`inbox`, `checklist`/`steps`→`plan` (check the existing alias table first: `checklist` maps to `list` today; change it to `plan` and update its test), `callout`/`alert`/`banner`→`callout`, `goal`/`progress`→`goal`;
-  - `expand(widget) -> list[Block]` for every recipe gives exactly the spec's blocks (one test per recipe, asserting the block list), e.g. `plan` with 2 of 5 done → `meter {value: 2, max: 5, label: "2 of 5 done"}` then `rows`; `free_time` groups slots by date as written and formats `9:00–10:30` and `2:00–3:00 pm` style ranges; `decision` totals each option's scores and highlights the pick's row; `compare` keeps today's fields and becomes `columns` then `text`;
+  - `expand(widget) -> list[Block]` for every recipe gives exactly the spec's blocks (one test per recipe, asserting the block list), e.g. `plan` with 2 of 5 done → `meter {value: 2, max: 5, label: "2 of 5 done"}` then `rows`; `free_time` groups slots by date as written and formats `9:00–10:30 am` and `2:00–3:00 pm` style ranges; `decision` totals each option's scores and highlights the pick's row; `compare` keeps today's fields and becomes `columns` then `text`;
   - every block `expand` returns passes `validate_blocks` (property-style loop over the samples from Task 4 once they exist; for now over the recipe tests' inputs);
   - a board saved with today's seven types (copy a fixture from `tests/workspace/test_board.py`) validates and expands.
 - [ ] Implement: new validators in `kit.py` for the new types, `source`, `asks`; `recipes.py` with one function per type and `expand(widget)`, `expand_board(board)` (each widget gains `blocks` and keeps `id`, `type`, `size`, `title`, `source`, `asks`; recipe fields are not sent).

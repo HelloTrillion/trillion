@@ -13,7 +13,8 @@ import copy
 from collections.abc import Sequence
 from typing import Any, Literal
 
-from trillion.workspace.kit import MAX_WIDGETS, TITLE, BoardError, Widget, cap, validate_widget
+from trillion.workspace.kit import MAX_WIDGETS, TITLE, BoardError, Widget, cap
+from trillion.workspace.widgets import validate_widget
 
 __all__ = ["Board", "BoardError", "close", "describe", "remove", "show", "summary", "update"]
 

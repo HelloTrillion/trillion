@@ -1,14 +1,17 @@
 """Her widget types (recipes): what she may write, and the blocks each becomes."""
 
 import copy
+import logging
 from typing import Any
 
 import pytest
 
 from trillion.workspace import board as b
 from trillion.workspace.blocks import validate_blocks
-from trillion.workspace.kit import TYPES, BoardError, validate_widget
+from trillion.workspace.kit import BoardError
+from trillion.workspace.recipe_kit import is_date
 from trillion.workspace.recipes import expand, expand_board
+from trillion.workspace.widgets import TYPES, validate_widget
 
 # Today's seven, as a board saved before recipes holds them.
 OLD: list[dict[str, Any]] = [
@@ -70,7 +73,7 @@ FULL: list[dict[str, Any]] = [
         "slots": [
             {"start": "2026-10-28T14:00", "end": "2026-10-28T15:00"},
             {"start": "2026-10-28T09:00", "end": "2026-10-28T10:30"},
-            {"start": "2026-10-29T11:30-07:00", "end": "2026-10-29T12:15-07:00"},
+            {"start": "2026-10-29T11:30", "end": "2026-10-29T12:15"},
         ],
     },
     {
@@ -180,7 +183,10 @@ FULL: list[dict[str, Any]] = [
     },
 ]
 
-NEW = [w["type"] for w in MINIMAL]
+OLD_OF = {w["type"]: w for w in OLD}
+MIN_OF = {w["type"]: w for w in MINIMAL}
+FULL_OF = {w["type"]: w for w in FULL}
+NEW = list(MIN_OF)
 EVERY = OLD + MINIMAL + FULL
 
 
@@ -210,7 +216,12 @@ def test_each_recipe_accepted(raw):
 
 
 def test_full_fields_kept_and_extras_dropped():
-    raw = {**FULL[0], "colour": "red", "source": "Calendar", "asks": ["Prep me for this"]}
+    raw = {
+        **FULL_OF["next_up"],
+        "colour": "red",
+        "source": "Calendar",
+        "asks": ["Prep me for this"],
+    }
     assert validate_widget(raw, 1) == {
         "type": "next_up",
         "size": "small",
@@ -233,12 +244,12 @@ def test_default_sizes():
     for kind, size in sizes.items():
         want = "small" if kind in small else "wide" if kind in wide else "medium"
         assert size == want, kind
-    assert validate_widget({**MINIMAL[0], "size": "wide"}, 1)["size"] == "wide"
-    assert validate_widget(OLD[0], 1)["size"] == "medium"
+    assert validate_widget({**MIN_OF["next_up"], "size": "wide"}, 1)["size"] == "wide"
+    assert validate_widget(OLD_OF["stat"], 1)["size"] == "medium"
 
 
 def test_stat_takes_a_title_like_every_widget():
-    assert validate_widget({**OLD[0], "title": "October"}, 1)["title"] == "October"
+    assert validate_widget({**OLD_OF["stat"], "title": "October"}, 1)["title"] == "October"
 
 
 # Source and asks, on every type
@@ -251,7 +262,7 @@ def test_source_and_asks_on_every_type(raw):
 
 
 def test_source():
-    ok = MINIMAL[0]
+    ok = MIN_OF["next_up"]
     assert validate_widget({**ok, "source": {"name": "Gmail", "at": "2020-01-01T00:00:00Z"}}, 1)[
         "source"
     ] == {"name": "Gmail"}
@@ -267,7 +278,7 @@ def test_source():
 
 
 def test_asks():
-    ok = MINIMAL[0]
+    ok = MIN_OF["next_up"]
     out = validate_widget({**ok, "asks": ["  Prep me\nfor this ", " ", "🎉", "Move it"]}, 1)
     assert out["asks"] == ["Prep me for this", "Move it"]
     assert validate_widget({**ok, "asks": "Prep me"}, 1)["asks"] == ["Prep me"]
@@ -336,9 +347,9 @@ def test_a_checklist_is_a_plan_now():
 
 
 def test_types_read_from_telling_fields():
-    assert validate_widget({"slots": MINIMAL[1]["slots"]}, 1)["type"] == "free_time"
+    assert validate_widget({"slots": MIN_OF["free_time"]["slots"]}, 1)["type"] == "free_time"
     assert validate_widget({"steps": [{"title": "a"}]}, 1)["type"] == "plan"
-    decision = {k: v for k, v in MINIMAL[8].items() if k != "type"}
+    decision = {k: v for k, v in MIN_OF["decision"].items() if k != "type"}
     assert validate_widget(decision, 1)["type"] == "decision"
     assert validate_widget({"blocks": [{"type": "text", "text": "a"}]}, 1)["type"] == "custom"
 
@@ -347,10 +358,10 @@ def test_types_read_from_telling_fields():
 
 
 def test_time_fields_are_iso():
-    assert refused({**MINIMAL[0], "start": "3 pm"}) == (
+    assert refused({**MIN_OF["next_up"], "start": "3 pm"}) == (
         "widget 1 (next_up): start '3 pm' must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25."
     )
-    assert refused({**MINIMAL[0], "end": "2026-10-25T14:00"}) == (
+    assert refused({**MIN_OF["next_up"], "end": "2026-10-25T14:00"}) == (
         "widget 1 (next_up): end 2026-10-25T14:00 is before start 2026-10-25T14:30."
     )
     files = {"type": "files", "files": [{"name": "a", "edited": "yesterday"}]}
@@ -361,7 +372,7 @@ def test_time_fields_are_iso():
 
 
 def test_next_up_people_limit():
-    assert refused({**MINIMAL[0], "people": [f"P{i}" for i in range(9)]}) == (
+    assert refused({**MIN_OF["next_up"], "people": [f"P{i}" for i in range(9)]}) == (
         "widget 1 (next_up): 9 people, 8 at most."
     )
 
@@ -377,7 +388,7 @@ def test_free_time_slots():
         "widget 1 (free_time): slot 1: it ends on another day; give one slot per day."
     )
     assert refused(slot("2026-10-28T10:00", "2026-10-28T09:00")) == (
-        "widget 1 (free_time): slot 1: end 2026-10-28T09:00 is before start 2026-10-28T10:00."
+        "widget 1 (free_time): slot 1: end 2026-10-28T09:00 is not after start 2026-10-28T10:00."
     )
     assert refused({"type": "free_time", "slots": []}) == "widget 1 (free_time): slots is empty."
 
@@ -397,12 +408,12 @@ def test_inbox_counts():
 
 
 def test_thread_due():
-    out = validate_widget({**MINIMAL[3], "due": "2026-10-31"}, 1)
+    out = validate_widget({**MIN_OF["thread"], "due": "2026-10-31"}, 1)
     assert out["due"] == "2026-10-31"
-    assert refused({**MINIMAL[3], "due": "2026-13-01"}) == (
+    assert refused({**MIN_OF["thread"], "due": "2026-13-01"}) == (
         "widget 1 (thread): due '2026-13-01' must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25."
     )
-    assert refused({**MINIMAL[3], "excerpt": "x" * 601}) == (
+    assert refused({**MIN_OF["thread"], "excerpt": "x" * 601}) == (
         "widget 1 (thread): excerpt is 601 characters, 600 at most."
     )
 
@@ -422,7 +433,7 @@ def test_plan_done_is_true_or_false():
 
 
 def test_decision_shapes():
-    base = MINIMAL[8]
+    base = MIN_OF["decision"]
     assert refused({**base, "options": ["Hike"], "scores": [[8]]}) == (
         "widget 1 (decision): 1 option; a decision takes 2 to 8."
     )
@@ -454,10 +465,10 @@ def test_callout_and_goal_limits():
     assert refused({"type": "callout", "text": "a", "tone": "red"}) == (
         "widget 1 (callout): tone must be one of good, bad, attention, neutral, not 'red'."
     )
-    assert refused({**MINIMAL[11], "target": 0}) == (
+    assert refused({**MIN_OF["goal"], "target": 0}) == (
         "widget 1 (goal): target must be above 0, not 0."
     )
-    assert refused({**MINIMAL[11], "value": "lots"}) == (
+    assert refused({**MIN_OF["goal"], "value": "lots"}) == (
         "widget 1 (goal): value: 'lots' is not a number."
     )
 
@@ -473,7 +484,7 @@ def test_custom_runs_the_block_checks():
 
 
 def test_expand_stat():
-    raw = {**OLD[0], "delta": "+12%", "hint": "vs September", "tone": "up"}
+    raw = {**OLD_OF["stat"], "delta": "+12%", "hint": "vs September", "tone": "up"}
     assert blocks_of(raw) == [
         {
             "type": "value",
@@ -484,12 +495,12 @@ def test_expand_stat():
             "tone": "good",
         }
     ]
-    assert blocks_of({**OLD[0], "tone": "down"})[0]["tone"] == "bad"
-    assert blocks_of({**OLD[0], "tone": "neutral"})[0]["tone"] == "neutral"
+    assert blocks_of({**OLD_OF["stat"], "tone": "down"})[0]["tone"] == "bad"
+    assert blocks_of({**OLD_OF["stat"], "tone": "neutral"})[0]["tone"] == "neutral"
 
 
 def test_expand_chart_table_note_timeline():
-    assert blocks_of({**OLD[1], "unit": "$"}) == [
+    assert blocks_of({**OLD_OF["chart"], "unit": "$"}) == [
         {
             "type": "chart",
             "kind": "line",
@@ -498,11 +509,11 @@ def test_expand_chart_table_note_timeline():
             "unit": "$",
         }
     ]
-    assert blocks_of(OLD[3]) == [
+    assert blocks_of(OLD_OF["table"]) == [
         {"type": "table", "columns": ["Day", "Spend"], "rows": [["Mon", 3]]}
     ]
-    assert blocks_of(OLD[4]) == [{"type": "text", "text": "One thing."}]
-    assert blocks_of(OLD[5]) == [
+    assert blocks_of(OLD_OF["note"]) == [{"type": "text", "text": "One thing."}]
+    assert blocks_of(OLD_OF["timeline"]) == [
         {"type": "timeline", "events": [{"title": "Standup", "start": "09:30"}]}
     ]
 
@@ -551,7 +562,7 @@ def test_expand_compare():
 
 
 def test_expand_next_up():
-    assert blocks_of(FULL[0]) == [
+    assert blocks_of(FULL_OF["next_up"]) == [
         {
             "type": "time",
             "at": "2026-10-25T14:30",
@@ -562,17 +573,17 @@ def test_expand_next_up():
         {"type": "chips", "items": ["Maple Park room 2"]},
         {"type": "text", "text": "Bring the mockups."},
     ]
-    assert blocks_of(MINIMAL[0]) == [
+    assert blocks_of(MIN_OF["next_up"]) == [
         {"type": "time", "at": "2026-10-25T14:30", "label": "Design review"}
     ]
 
 
 def test_expand_free_time_groups_by_the_date_as_written():
-    assert blocks_of(FULL[1]) == [
+    assert blocks_of(FULL_OF["free_time"]) == [
         {
             "type": "rows",
             "items": [
-                {"title": "Wed 28 Oct", "detail": "9:00\u201310:30, 2:00\u20133:00 pm"},
+                {"title": "Wed 28 Oct", "detail": "9:00\u201310:30 am, 2:00\u20133:00 pm"},
                 {"title": "Thu 29 Oct", "detail": "11:30 am\u201312:15 pm"},
             ],
         }
@@ -582,11 +593,11 @@ def test_expand_free_time_groups_by_the_date_as_written():
 @pytest.mark.parametrize(
     ("start", "end", "shown"),
     [
-        ("09:00", "10:30", "9:00\u201310:30"),
+        ("09:00", "10:30", "9:00\u201310:30 am"),
         ("14:00", "15:00", "2:00\u20133:00 pm"),
         ("11:30", "12:15", "11:30 am\u201312:15 pm"),
         ("12:00", "12:45", "12:00\u201312:45 pm"),
-        ("00:30", "01:00", "12:30\u20131:00"),
+        ("00:30", "01:00", "12:30\u20131:00 am"),
         ("19:05", "21:00", "7:05\u20139:00 pm"),
     ],
 )
@@ -599,7 +610,7 @@ def test_free_time_ranges(start, end, shown):
 
 
 def test_expand_inbox():
-    assert blocks_of(FULL[2]) == [
+    assert blocks_of(FULL_OF["inbox"]) == [
         {"type": "value", "value": "12", "label": "Unread", "hint": "3 need a reply"},
         {
             "type": "rows",
@@ -615,13 +626,13 @@ def test_expand_inbox():
             ],
         },
     ]
-    assert blocks_of({**MINIMAL[2], "needs_reply": 1})[0]["hint"] == "1 needs a reply"
-    assert blocks_of({**MINIMAL[2], "needs_reply": 0})[0]["hint"] == "None need a reply"
-    assert blocks_of(MINIMAL[2]) == [{"type": "value", "value": "12", "label": "Unread"}]
+    assert blocks_of({**MIN_OF["inbox"], "needs_reply": 1})[0]["hint"] == "1 needs a reply"
+    assert blocks_of({**MIN_OF["inbox"], "needs_reply": 0})[0]["hint"] == "None need a reply"
+    assert blocks_of(MIN_OF["inbox"]) == [{"type": "value", "value": "12", "label": "Unread"}]
 
 
 def test_expand_thread():
-    assert blocks_of(FULL[3]) == [
+    assert blocks_of(FULL_OF["thread"]) == [
         {"type": "person", "name": "Jo", "detail": "Venue contract"},
         {"type": "text", "text": "Can you sign the contract?"},
         {"type": "facts", "items": [{"label": "Due", "value": "Friday"}]},
@@ -631,17 +642,17 @@ def test_expand_thread():
             "when": "2026-10-24T16:00",
         },
     ]
-    due = {**MINIMAL[3], "due": "2026-10-31"}
+    due = {**MIN_OF["thread"], "due": "2026-10-31"}
     assert blocks_of(due)[2] == {
         "type": "facts",
         "items": [{"label": "Due", "value": "Sat 31 Oct"}],
     }
-    due = {**MINIMAL[3], "due": "2026-10-31T17:00"}
+    due = {**MIN_OF["thread"], "due": "2026-10-31T17:00"}
     assert blocks_of(due)[2]["items"][0]["value"] == "Sat 31 Oct, 5:00 pm"
 
 
 def test_expand_mentions():
-    assert blocks_of(FULL[4]) == [
+    assert blocks_of(FULL_OF["mentions"]) == [
         {
             "type": "rows",
             "label": "#launch",
@@ -664,7 +675,7 @@ def test_expand_mentions():
 
 
 def test_expand_files():
-    assert blocks_of(FULL[5]) == [
+    assert blocks_of(FULL_OF["files"]) == [
         {
             "type": "rows",
             "items": [
@@ -676,10 +687,10 @@ def test_expand_files():
 
 
 def test_expand_quote_and_facts():
-    assert blocks_of(FULL[6]) == [
+    assert blocks_of(FULL_OF["quote"]) == [
         {"type": "quote", "text": "See you there.", "by": "Jo", "when": "2026-10-20"}
     ]
-    assert blocks_of(FULL[9]) == [
+    assert blocks_of(FULL_OF["facts"]) == [
         {
             "type": "facts",
             "items": [{"label": "Plan", "value": "Pro"}, {"label": "Seats", "value": "5"}],
@@ -688,7 +699,7 @@ def test_expand_quote_and_facts():
 
 
 def test_expand_plan():
-    assert blocks_of(FULL[7]) == [
+    assert blocks_of(FULL_OF["plan"]) == [
         {"type": "meter", "value": 2, "max": 5, "label": "2 of 5 done"},
         {
             "type": "rows",
@@ -704,7 +715,7 @@ def test_expand_plan():
 
 
 def test_expand_decision():
-    assert blocks_of(FULL[8]) == [
+    assert blocks_of(FULL_OF["decision"]) == [
         {
             "type": "table",
             "columns": ["Option", "Fun", "Cost", "Total"],
@@ -713,44 +724,44 @@ def test_expand_decision():
         },
         {"type": "text", "text": "Cheaper and still fun."},
     ]
-    assert blocks_of(MINIMAL[8]) == [
+    assert blocks_of(MIN_OF["decision"]) == [
         {
             "type": "table",
             "columns": ["Option", "Fun", "Total"],
             "rows": [["Hike", 8, 8], ["Museum", 6, 6]],
         }
     ]
-    tenths = {**MINIMAL[8], "criteria": ["A", "B"], "scores": [[0.1, 0.2], [1, 2]]}
+    tenths = {**MIN_OF["decision"], "criteria": ["A", "B"], "scores": [[0.1, 0.2], [1, 2]]}
     assert blocks_of(tenths)[0]["rows"][0][-1] == 0.3
 
 
 def test_expand_callout():
-    assert blocks_of(FULL[10]) == [
+    assert blocks_of(FULL_OF["callout"]) == [
         {"type": "text", "text": "Rent is due tomorrow.", "tone": "attention"}
     ]
-    assert blocks_of(MINIMAL[10]) == [
+    assert blocks_of(MIN_OF["callout"]) == [
         {"type": "text", "text": "Rent is due tomorrow.", "tone": "neutral"}
     ]
-    assert blocks_of({**MINIMAL[10], "tone": "down"})[0]["tone"] == "bad"
+    assert blocks_of({**MIN_OF["callout"], "tone": "down"})[0]["tone"] == "bad"
 
 
 def test_expand_goal():
-    assert blocks_of(FULL[11]) == [
+    assert blocks_of(FULL_OF["goal"]) == [
         {"type": "meter", "value": 4200, "max": 6000, "label": "Savings", "shape": "ring"},
         {"type": "value", "value": "$4,200", "hint": "of $6,000 by Nov 30"},
     ]
-    km = {**MINIMAL[11], "value": 42.5, "target": 100, "unit": "km", "by": "the end of the year"}
+    km = {**MIN_OF["goal"], "value": 42.5, "target": 100, "unit": "km", "by": "the end of the year"}
     assert blocks_of(km)[1] == {
         "type": "value",
         "value": "42.5 km",
         "hint": "of 100 km by the end of the year",
     }
-    assert blocks_of({**MINIMAL[11], "unit": "%"})[1]["value"] == "4,200%"
-    assert blocks_of({**MINIMAL[11], "unit": "€"})[1]["hint"] == "of €6,000"
+    assert blocks_of({**MIN_OF["goal"], "unit": "%"})[1]["value"] == "4,200%"
+    assert blocks_of({**MIN_OF["goal"], "unit": "€"})[1]["hint"] == "of €6,000"
 
 
 def test_expand_sources():
-    assert blocks_of(FULL[12]) == [
+    assert blocks_of(FULL_OF["sources"]) == [
         {
             "type": "rows",
             "items": [
@@ -762,7 +773,7 @@ def test_expand_sources():
 
 
 def test_expand_custom():
-    assert blocks_of(FULL[13]) == [
+    assert blocks_of(FULL_OF["custom"]) == [
         {"type": "rows", "items": [{"title": "Sam", "person": "Sam", "chip": "Primary"}]},
         {"type": "chips", "items": ["Pager"]},
     ]
@@ -777,7 +788,7 @@ def test_every_expansion_is_valid_blocks(raw):
 
 
 def test_expand_does_not_share_lists_with_the_widget():
-    widget = validate_widget(OLD[1], 1)
+    widget = validate_widget(OLD_OF["chart"], 1)
     expand(widget)[0]["x"].append("Oct 3")
     assert widget["x"] == ["Oct 1", "Oct 2"]
 
@@ -798,13 +809,15 @@ def test_board_saved_with_todays_types_validates_and_expands():
         "type": "chart",
         "size": "medium",
         "title": "Daily spend",
-        "blocks": blocks_of(OLD[1]),
+        "blocks": blocks_of(OLD_OF["chart"]),
     }
     assert "blocks" not in saved["widgets"][0]
 
 
 def test_expanded_widget_keeps_its_name_and_drops_recipe_fields():
-    saved = b.show(None, "Day", [{**FULL[0], "source": "Calendar", "asks": ["Prep me for this"]}])
+    saved = b.show(
+        None, "Day", [{**FULL_OF["next_up"], "source": "Calendar", "asks": ["Prep me for this"]}]
+    )
     assert expand_board(saved)["widgets"][0] == {
         "id": "w1",
         "type": "next_up",
@@ -812,7 +825,7 @@ def test_expanded_widget_keeps_its_name_and_drops_recipe_fields():
         "title": "Next up",
         "source": {"name": "Calendar"},
         "asks": ["Prep me for this"],
-        "blocks": blocks_of(FULL[0]),
+        "blocks": blocks_of(FULL_OF["next_up"]),
     }
 
 
@@ -820,9 +833,145 @@ def test_summary_names_the_new_types():
     board = b.show(
         None,
         "Today",
-        [MINIMAL[0], FULL[7], MINIMAL[11], MINIMAL[3], FULL[13], MINIMAL[2]],
+        [
+            MIN_OF["next_up"],
+            FULL_OF["plan"],
+            MIN_OF["goal"],
+            MIN_OF["thread"],
+            FULL_OF["custom"],
+            MIN_OF["inbox"],
+        ],
     )
     assert b.summary(board) == (
         'Board (open): "Today": w1 next up "Design review", w2 plan "Launch", '
         'w3 goal "Savings", w4 thread "Venue contract", w5 custom "Who\'s on call", w6 inbox.'
     )
+
+
+# Deadlines in words, even ones that start with a digit
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ({**MIN_OF["goal"], "unit": "$", "by": "30 Nov"}, "of $6,000 by 30 Nov"),
+        ({**MIN_OF["goal"], "by": "2027"}, "of 6,000 by 2027"),
+    ],
+)
+def test_goal_by_in_words_that_start_with_a_digit(raw, shown):
+    assert blocks_of(raw)[1]["hint"] == shown
+
+
+@pytest.mark.parametrize("due", ["2nd Friday", "5pm today", "30 Nov"])
+def test_thread_due_in_words_that_start_with_a_digit(due):
+    facts = blocks_of({**MIN_OF["thread"], "due": due})[2]
+    assert facts == {"type": "facts", "items": [{"label": "Due", "value": due}]}
+
+
+def test_is_date_is_the_one_rule():
+    assert is_date("2026-10-31") and is_date("2026-10-31T17:00")
+    assert not is_date("30 Nov") and not is_date("2nd Friday") and not is_date("2027")
+
+
+def test_one_bad_widget_does_not_take_the_board_down(caplog):
+    saved = b.show(None, "Day", [OLD_OF["stat"], MIN_OF["goal"]])
+    # As if saved by an older kit: a field the recipe cannot read.
+    saved["widgets"][1]["by"] = "2026-99-99"
+    with caplog.at_level(logging.WARNING, logger="trillion.workspace.recipes"):
+        sent = expand_board(saved)
+    assert sent["widgets"][0]["blocks"] == blocks_of(OLD_OF["stat"])
+    assert sent["widgets"][1] == {"id": "w2", "type": "goal", "size": "small", "blocks": []}
+    assert "could not expand widget w2 (goal)" in caplog.text
+
+
+# Near misses that follow the fields
+
+
+def test_an_alias_without_its_key_field_follows_the_fields():
+    out = validate_widget({"type": "checklist", "items": [{"title": "Milk", "done": True}]}, 1)
+    assert out == {"type": "list", "size": "medium", "items": [{"title": "Milk", "done": True}]}
+    assert validate_widget({"type": "progress", "label": "Done", "value": 3}, 1)["type"] == "stat"
+    assert validate_widget({"type": "checklist", "steps": [{"title": "a"}]}, 1)["type"] == "plan"
+
+
+@pytest.mark.parametrize(
+    "kind", ["inbox", "mentions", "files", "next_up", "goal", "thread", "free_time", "plan"]
+)
+def test_more_types_read_from_their_fields(kind):
+    untyped = {k: v for k, v in FULL_OF[kind].items() if k != "type"}
+    assert validate_widget(untyped, 1)["type"] == kind
+
+
+def test_inbox_read_from_threads_alone():
+    threads = FULL_OF["inbox"]["threads"]
+    assert refused({"threads": threads}) == "widget 1 (inbox): unread is required."
+
+
+# Options in the other shape
+
+
+def test_decision_takes_named_options():
+    named = {**MIN_OF["decision"], "options": [{"name": "Hike"}, {"name": "Museum"}]}
+    assert validate_widget(named, 1)["options"] == ["Hike", "Museum"]
+
+
+def test_decision_given_a_compares_options():
+    compared = {**MIN_OF["decision"], "options": OLD_OF["compare"]["options"]}
+    assert refused(compared) == (
+        "widget 1 (decision): option 1 has metrics, a compare's shape; a decision takes"
+        " options as names, criteria, and scores with one row per option."
+    )
+
+
+def test_compare_given_names():
+    assert refused({"type": "compare", "options": ["Hike", "Museum"]}) == (
+        "widget 1 (compare): option 1: an option is {name, metrics};"
+        " for options scored against criteria use decision."
+    )
+
+
+# Smaller rules
+
+
+@pytest.mark.parametrize(
+    ("tone", "drawn"),
+    [("up", "good"), ("down", "bad"), ("good", "good"), ("bad", "bad"), ("attention", "attention")],
+)
+def test_stat_tones(tone, drawn):
+    assert blocks_of({**OLD_OF["stat"], "tone": tone})[0]["tone"] == drawn
+
+
+def test_free_time_is_local_and_not_empty():
+    def slot(start: str, end: str) -> dict[str, Any]:
+        return {"type": "free_time", "slots": [{"start": start, "end": end}]}
+
+    local = (
+        "widget 1 (free_time): slot 1: write slots in the user's local time, like 2026-10-28T09:00."
+    )
+    assert refused(slot("2026-10-28T09:00Z", "2026-10-28T10:00Z")) == local
+    assert refused(slot("2026-10-28T09:00", "2026-10-28T10:00-07:00")) == local
+    assert refused(slot("2026-10-28T09:00", "2026-10-28T09:00")) == (
+        "widget 1 (free_time): slot 1: end 2026-10-28T09:00 is not after start 2026-10-28T09:00."
+    )
+
+
+def test_thread_when_without_an_excerpt_is_a_fact():
+    sent = {**MIN_OF["thread"], "due": "Friday", "when": "2026-10-24T16:00"}
+    assert blocks_of(sent)[2] == {
+        "type": "facts",
+        "items": [
+            {"label": "Due", "value": "Friday"},
+            {"label": "Sent", "value": "Sat 24 Oct, 4:00 pm"},
+        ],
+    }
+    assert "facts" not in [blk["type"] for blk in blocks_of(MIN_OF["thread"])]
+
+
+def test_goal_negative_amounts():
+    debt = {**MIN_OF["goal"], "value": -5, "unit": "$"}
+    assert blocks_of(debt)[1]["value"] == "-$5"
+    assert blocks_of({**debt, "unit": "km"})[1]["value"] == "-5 km"
+
+
+def test_note_lines_are_trimmed_like_a_text_block():
+    assert validate_widget({"type": "note", "text": "a  \n   - b"}, 1)["text"] == "a\n- b"

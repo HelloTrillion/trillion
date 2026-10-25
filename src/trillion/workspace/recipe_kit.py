@@ -4,11 +4,11 @@ spec, "Recipes").
 Pure, no I/O, and the kit's rules: what she wrote is checked and kept under the spec's
 field names, anything else dropped, and the first problem raises `BoardError` naming
 the widget, the field and the limit. `recipes.py` turns what is kept into blocks.
-`kit.validate_widget` is the one way in; this module is its second half, apart only
-because the new types are built on blocks, and blocks on the kit's helpers.
+`widgets.validate_widget` is the one way in.
 
 Times are ISO 8601, as in blocks. A thread's `due` and a goal's `by` may also be words
-("Friday"), kept as written: she often knows a deadline only as a day.
+("Friday", "30 Nov"), kept as written: she often knows a deadline only as a day.
+`is_date` is the one rule that tells the two apart, here and in `recipes.py`.
 """
 
 from __future__ import annotations
@@ -21,16 +21,15 @@ from trillion.workspace.blocks import (
     MAX_BLOCKS,
     MAX_PEOPLE,
     QUOTE,
-    _before,
-    _Card,
-    _count,
-    _facts,
-    _long,
-    _quote,
-    _tone,
-    _when,
-    _words,
+    Card,
+    ends_before,
+    facts_block,
+    iso_field,
+    number_field,
+    quote_block,
+    tone_field,
     validate_blocks,
+    word_list,
 )
 from trillion.workspace.kit import (
     LABEL,
@@ -40,11 +39,12 @@ from trillion.workspace.kit import (
     TITLE,
     VALUE,
     Widget,
-    _array,
-    _fail,
-    _obj,
-    _put,
-    _str,
+    as_object,
+    fail,
+    list_field,
+    long_text,
+    put,
+    text_field,
 )
 
 SOURCE = 30
@@ -55,8 +55,16 @@ CALLOUT = 200
 MIN_CHOICES, MAX_CHOICES = 2, 8
 MAX_CRITERIA = MAX_COLUMNS - 2
 
-# Looks like a date, so it must be one; anything else is a deadline in words.
-_DATEISH = re.compile(r"^\d{4}-\d")
+# Starts like an ISO date (2026-…), so it must be one; anything else is words.
+_DATE = re.compile(r"^\d{4}-\d")
+# A free-time slot written with Z or an offset.
+_ZONED = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+
+
+def is_date(text: str) -> bool:
+    """Whether a deadline is an ISO date (checked, then shown as a date) rather than
+    words (kept as written)."""
+    return _DATE.match(text) is not None
 
 
 def source(raw: Mapping[str, Any], where: str) -> Widget | None:
@@ -68,8 +76,10 @@ def source(raw: Mapping[str, Any], where: str) -> Widget | None:
     if isinstance(value, str):
         value = {"name": value}
     if not isinstance(value, Mapping):
-        raise _fail(where, 'source must be a name, like "Calendar", or {name}')
-    name = _str(value, "name", f"{where}: source", SOURCE, need=isinstance(raw["source"], Mapping))
+        raise fail(where, 'source must be a name, like "Calendar", or {name}')
+    name = text_field(
+        value, "name", f"{where}: source", SOURCE, need=isinstance(raw["source"], Mapping)
+    )
     return None if name is None else {"name": name}
 
 
@@ -82,25 +92,25 @@ def asks(raw: Mapping[str, Any], where: str) -> list[str] | None:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
-        raise _fail(where, "asks must be a list")
+        raise fail(where, "asks must be a list")
     kept = []
     for i, ask in enumerate(value, 1):
         if not isinstance(ask, str):
-            raise _fail(where, f"ask {i} must be a string")
+            raise fail(where, f"ask {i} must be a string")
         ask = " ".join(ask.split())
         if len(ask) > ASK:
-            raise _fail(where, f"ask {i} is {len(ask)} characters, {ASK} at most")
+            raise fail(where, f"ask {i} is {len(ask)} characters, {ASK} at most")
         if ask:
             kept.append(ask)
     if len(kept) > MAX_ASKS:
-        raise _fail(where, f"{len(kept)} asks, {MAX_ASKS} at most")
+        raise fail(where, f"{len(kept)} asks, {MAX_ASKS} at most")
     return kept or None
 
 
 def _done(raw: Mapping[str, Any], where: str) -> bool | None:
     done = raw.get("done")
     if done is not None and not isinstance(done, bool):
-        raise _fail(where, "done must be true or false")
+        raise fail(where, "done must be true or false")
     return done
 
 
@@ -108,32 +118,19 @@ def _whole(raw: Mapping[str, Any], key: str, where: str, *, need: bool = True) -
     value = raw.get(key)
     if value is None:
         if need:
-            raise _fail(where, f"{key} is required")
+            raise fail(where, f"{key} is required")
         return None
     whole = isinstance(value, int) or (isinstance(value, float) and value.is_integer())
     if isinstance(value, bool) or not whole or value < 0:
-        raise _fail(where, f"{key} must be a whole number, 0 or more, not {value!r}")
+        raise fail(where, f"{key} must be a whole number, 0 or more, not {value!r}")
     return int(value)
 
 
 def _day_or_words(raw: Mapping[str, Any], key: str, where: str) -> str | None:
-    value = _str(raw, key, where, VALUE, need=False)
-    if value is not None and _DATEISH.match(value):
-        return _when(raw, key, where)
+    value = text_field(raw, key, where, VALUE, need=False)
+    if value is not None and is_date(value):
+        return iso_field(raw, key, where)
     return value
-
-
-def _passage(raw: Mapping[str, Any], key: str, where: str, limit: int) -> str | None:
-    """Text that keeps its lines, as a block's; refused, not cut, when too long."""
-    text = raw.get(key)
-    if text is None:
-        return None
-    if not isinstance(text, str):
-        raise _fail(where, f"{key} must be a string")
-    text = "\n".join(line.strip() for line in text.strip().splitlines())
-    if len(text) > limit:
-        raise _fail(where, f"{key} is {len(text)} characters, {limit} at most")
-    return text or None
 
 
 def _list(
@@ -141,9 +138,9 @@ def _list(
 ) -> list[tuple[str, Mapping[str, Any]]]:
     """Each entry of a list of objects, with the words that name it ("slot 2")."""
     out = []
-    for i, entry in enumerate(_array(raw, key, where, limit, (noun, key)), 1):
+    for i, entry in enumerate(list_field(raw, key, where, limit, (noun, key)), 1):
         at = f"{where}: {noun} {i}"
-        out.append((at, _obj(entry, at)))
+        out.append((at, as_object(entry, at)))
     return out
 
 
@@ -152,48 +149,51 @@ def _list(
 
 def _next_up(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {
-        "event": _str(raw, "event", where, LABEL),
-        "start": _when(raw, "start", where, need=True),
+        "event": text_field(raw, "event", where, LABEL),
+        "start": iso_field(raw, "start", where, need=True),
     }
-    end = _when(raw, "end", where)
-    if end is not None and _before(end, out["start"]):
-        raise _fail(where, f"end {end} is before start {out['start']}")
-    _put(out, "end", end)
-    _put(out, "where", _str(raw, "where", where, LABEL, need=False))
+    end = iso_field(raw, "end", where)
+    if end is not None and ends_before(end, out["start"]):
+        raise fail(where, f"end {end} is before start {out['start']}")
+    put(out, "end", end)
+    put(out, "where", text_field(raw, "where", where, LABEL, need=False))
     if raw.get("people"):
-        out["people"] = _words(raw, "people", where, MAX_PEOPLE, ("person", "people"), LABEL)
-    _put(out, "note", _str(raw, "note", where, TEXT, need=False))
+        out["people"] = word_list(raw, "people", where, MAX_PEOPLE, ("person", "people"), LABEL)
+    put(out, "note", text_field(raw, "note", where, TEXT, need=False))
     return out
 
 
 def _free_time(raw: Mapping[str, Any], where: str) -> Widget:
     slots = []
     for at, slot in _list(raw, "slots", where, "slot"):
-        start = cast(str, _when(slot, "start", at, need=True))
-        end = cast(str, _when(slot, "end", at, need=True))
+        start = cast(str, iso_field(slot, "start", at, need=True))
+        end = cast(str, iso_field(slot, "end", at, need=True))
         if "T" not in start or "T" not in end:
-            raise _fail(at, "start and end need a time, like 2026-10-28T09:00")
+            raise fail(at, "start and end need a time, like 2026-10-28T09:00")
+        # Shown as written, so a zone would be shown wrong.
+        if _ZONED.search(start) or _ZONED.search(end):
+            raise fail(at, "write slots in the user's local time, like 2026-10-28T09:00")
         # Grouped by the day as written, so a slot belongs to one day.
         if start[:10] != end[:10]:
-            raise _fail(at, "it ends on another day; give one slot per day")
-        if end[11:16] < start[11:16]:
-            raise _fail(at, f"end {end} is before start {start}")
+            raise fail(at, "it ends on another day; give one slot per day")
+        if end[11:] <= start[11:]:
+            raise fail(at, f"end {end} is not after start {start}")
         slots.append({"start": start, "end": end})
     return {"slots": slots}
 
 
 def _inbox(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {"unread": _whole(raw, "unread", where)}
-    _put(out, "needs_reply", _whole(raw, "needs_reply", where, need=False))
+    put(out, "needs_reply", _whole(raw, "needs_reply", where, need=False))
     if raw.get("threads"):
         threads = []
         for at, thread in _list(raw, "threads", where, "thread"):
             one: Widget = {
-                "from": _str(thread, "from", at, LABEL),
-                "subject": _str(thread, "subject", at, TITLE),
+                "from": text_field(thread, "from", at, LABEL),
+                "subject": text_field(thread, "subject", at, TITLE),
             }
-            _put(one, "when", _when(thread, "when", at))
-            _put(one, "flag", _tone(thread, at, key="flag"))
+            put(one, "when", iso_field(thread, "when", at))
+            put(one, "flag", tone_field(thread, at, key="flag"))
             threads.append(one)
         out["threads"] = threads
     return out
@@ -201,13 +201,14 @@ def _inbox(raw: Mapping[str, Any], where: str) -> Widget:
 
 def _thread(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {
-        "from": _str(raw, "from", where, LABEL),
-        "subject": _str(raw, "subject", where, TITLE),
-        "ask": _str(raw, "ask", where, TEXT),
+        "from": text_field(raw, "from", where, LABEL),
+        "subject": text_field(raw, "subject", where, TITLE),
+        "ask": text_field(raw, "ask", where, TEXT),
     }
-    _put(out, "due", _day_or_words(raw, "due", where))
-    _put(out, "when", _when(raw, "when", where))
-    _put(out, "excerpt", _passage(raw, "excerpt", where, QUOTE))
+    put(out, "due", _day_or_words(raw, "due", where))
+    put(out, "when", iso_field(raw, "when", where))
+    if raw.get("excerpt") is not None:
+        out["excerpt"] = long_text(raw, where, QUOTE, key="excerpt")
     return out
 
 
@@ -217,59 +218,79 @@ def _mentions(raw: Mapping[str, Any], where: str) -> Widget:
         items = []
         for item_at, item in _list(group, "items", at, "item"):
             one: Widget = {
-                "from": _str(item, "from", item_at, LABEL),
-                "text": _str(item, "text", item_at, TEXT),
+                "from": text_field(item, "from", item_at, LABEL),
+                "text": text_field(item, "text", item_at, TEXT),
             }
-            _put(one, "when", _when(item, "when", item_at))
+            put(one, "when", iso_field(item, "when", item_at))
             items.append(one)
         total += len(items)
         if total > MAX_ITEMS:
-            raise _fail(where, f"{total} messages across the groups, {MAX_ITEMS} at most")
-        groups.append({"channel": _str(group, "channel", at, LABEL), "items": items})
+            raise fail(where, f"{total} messages across the groups, {MAX_ITEMS} at most")
+        groups.append({"channel": text_field(group, "channel", at, LABEL), "items": items})
     return {"groups": groups}
 
 
 def _files(raw: Mapping[str, Any], where: str) -> Widget:
     files = []
     for at, file in _list(raw, "files", where, "file"):
-        one: Widget = {"name": _str(file, "name", at, TITLE)}
-        _put(one, "kind", _str(file, "kind", at, LABEL, need=False))
-        _put(one, "edited", _when(file, "edited", at))
-        _put(one, "by", _str(file, "by", at, LABEL, need=False))
+        one: Widget = {"name": text_field(file, "name", at, TITLE)}
+        put(one, "kind", text_field(file, "kind", at, LABEL, need=False))
+        put(one, "edited", iso_field(file, "edited", at))
+        put(one, "by", text_field(file, "by", at, LABEL, need=False))
         files.append(one)
     return {"files": files}
 
 
 def _quote_recipe(raw: Mapping[str, Any], where: str) -> Widget:
-    return _quote(raw, where, _Card())
+    return quote_block(raw, where, Card())
 
 
 def _plan(raw: Mapping[str, Any], where: str) -> Widget:
     steps = []
     for at, step in _list(raw, "steps", where, "step"):
-        one: Widget = {"title": _str(step, "title", at, TITLE)}
-        _put(one, "done", _done(step, at))
-        _put(one, "detail", _str(step, "detail", at, TEXT, need=False))
+        one: Widget = {"title": text_field(step, "title", at, TITLE)}
+        put(one, "done", _done(step, at))
+        put(one, "detail", text_field(step, "detail", at, TEXT, need=False))
         steps.append(one)
     return {"steps": steps}
 
 
+def _choices(raw: Mapping[str, Any], where: str) -> Mapping[str, Any]:
+    """Options as names. `{name}` objects are taken; a compare's options are not."""
+    given = raw.get("options")
+    if not isinstance(given, list):
+        return raw
+    names = []
+    for i, option in enumerate(given, 1):
+        if isinstance(option, Mapping):
+            if "metrics" in option:
+                raise fail(
+                    where,
+                    f"option {i} has metrics, a compare's shape; a decision takes options as"
+                    " names, criteria, and scores with one row per option",
+                )
+            option = option.get("name")
+        names.append(option)
+    return {**raw, "options": names}
+
+
 def _decision(raw: Mapping[str, Any], where: str) -> Widget:
+    raw = _choices(raw, where)
     given = raw.get("options")
     if isinstance(given, list) and not MIN_CHOICES <= len(given) <= MAX_CHOICES:
         noun = "option" if len(given) == 1 else "options"
-        raise _fail(where, f"{len(given)} {noun}; a decision takes {MIN_CHOICES} to {MAX_CHOICES}")
-    options = _words(raw, "options", where, MAX_CHOICES, ("option", "options"), LABEL)
+        raise fail(where, f"{len(given)} {noun}; a decision takes {MIN_CHOICES} to {MAX_CHOICES}")
+    options = word_list(raw, "options", where, MAX_CHOICES, ("option", "options"), LABEL)
     twice = sorted({o for o in options if options.count(o) > 1})
     if twice:
-        raise _fail(where, f"option {twice[0]!r} is named twice; names must differ")
-    criteria = _words(raw, "criteria", where, MAX_CRITERIA, ("criterion", "criteria"), LABEL)
+        raise fail(where, f"option {twice[0]!r} is named twice; names must differ")
+    criteria = word_list(raw, "criteria", where, MAX_CRITERIA, ("criterion", "criteria"), LABEL)
     scores = raw.get("scores")
     if not isinstance(scores, list):
-        raise _fail(where, "scores must be a list")
+        raise fail(where, "scores must be a list")
     if len(scores) != len(options):
         rows = "row" if len(scores) == 1 else "rows"
-        raise _fail(
+        raise fail(
             where,
             f"scores has {len(scores)} {rows} but there are {len(options)} options;"
             " give one row per option",
@@ -280,43 +301,41 @@ def _decision(raw: Mapping[str, Any], where: str) -> Widget:
         if not isinstance(row, list) or len(row) != len(criteria):
             got = f"has {len(row)} scores" if isinstance(row, list) else "is not a list"
             there = "is 1 criterion" if len(criteria) == 1 else f"are {len(criteria)} criteria"
-            raise _fail(where, f"{at} {got} but there {there}")
+            raise fail(where, f"{at} {got} but there {there}")
         for criterion, score in zip(criteria, row, strict=True):
             bad = isinstance(score, bool) or not isinstance(score, (int, float))
             if bad or not 0 <= score <= 10:
-                raise _fail(
-                    where, f"{at}: {criterion} must be a number from 0 to 10, not {score!r}"
-                )
+                raise fail(where, f"{at}: {criterion} must be a number from 0 to 10, not {score!r}")
         table.append(list(row))
     out: Widget = {"options": options, "criteria": criteria, "scores": table}
-    pick = _str(raw, "pick", where, LABEL, need=False)
+    pick = text_field(raw, "pick", where, LABEL, need=False)
     if pick is not None and pick not in options:
-        raise _fail(where, f"pick {pick!r} is not an option; use one of {', '.join(options)}")
-    _put(out, "pick", pick)
-    _put(out, "reason", _str(raw, "reason", where, TEXT, need=False))
+        raise fail(where, f"pick {pick!r} is not an option; use one of {', '.join(options)}")
+    put(out, "pick", pick)
+    put(out, "reason", text_field(raw, "reason", where, TEXT, need=False))
     return out
 
 
 def _facts_recipe(raw: Mapping[str, Any], where: str) -> Widget:
-    return _facts(raw, where, _Card())
+    return facts_block(raw, where, Card())
 
 
 def _callout(raw: Mapping[str, Any], where: str) -> Widget:
-    out: Widget = {"text": _long(raw, where, CALLOUT)}
-    _put(out, "tone", _tone(raw, where))
+    out: Widget = {"text": long_text(raw, where, CALLOUT)}
+    put(out, "tone", tone_field(raw, where))
     return out
 
 
 def _goal(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {
-        "label": _str(raw, "label", where, LABEL, loose=True),
-        "value": _count(raw, "value", where),
-        "target": _count(raw, "target", where),
+        "label": text_field(raw, "label", where, LABEL, loose=True),
+        "value": number_field(raw, "value", where),
+        "target": number_field(raw, "target", where),
     }
     if out["target"] <= 0:
-        raise _fail(where, f"target must be above 0, not {out['target']}")
-    _put(out, "unit", _str(raw, "unit", where, VALUE, need=False))
-    _put(out, "by", _day_or_words(raw, "by", where))
+        raise fail(where, f"target must be above 0, not {out['target']}")
+    put(out, "unit", text_field(raw, "unit", where, VALUE, need=False))
+    put(out, "by", _day_or_words(raw, "by", where))
     return out
 
 
@@ -324,10 +343,10 @@ def _sources(raw: Mapping[str, Any], where: str) -> Widget:
     items = []
     for at, item in _list(raw, "items", where, "item"):
         one: Widget = {
-            "title": _str(item, "title", at, TITLE),
-            "site": _str(item, "site", at, LABEL),
+            "title": text_field(item, "title", at, TITLE),
+            "site": text_field(item, "site", at, LABEL),
         }
-        _put(one, "note", _str(item, "note", at, TEXT, need=False))
+        put(one, "note", text_field(item, "note", at, TEXT, need=False))
         items.append(one)
     return {"items": items}
 
