@@ -19,6 +19,7 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -64,8 +65,18 @@ class ServerState:
 
 
 class McpServers:
-    def __init__(self, registry: ToolRegistry, secrets: SecretStore, logs: Path) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        secrets: SecretStore,
+        logs: Path,
+        *,
+        changed: Callable[[], None] | None = None,
+    ) -> None:
         self._registry = registry
+        # Told whenever the servers listed change (added, turned on or off, retuned,
+        # removed), so what depends on which connectors there are can follow.
+        self._changed = changed
         self._secrets = secrets
         self._logs = logs
         self.states: dict[str, ServerState] = {}
@@ -80,6 +91,11 @@ class McpServers:
         self.problems = dict(loaded.problems)
         for server in loaded.servers:
             self._launch(server)
+        self._tell()
+
+    def _tell(self) -> None:
+        if self._changed is not None:
+            self._changed()
 
     def _launch(self, server: ServerConfig) -> ServerState:
         state = ServerState(config=server)
@@ -106,7 +122,9 @@ class McpServers:
         """Connect a server now, replacing one of the same name. No restart needed."""
         await self.disconnect(server.name)
         self.problems.pop(server.name, None)
-        return self._launch(server)
+        state = self._launch(server)
+        self._tell()
+        return state
 
     async def disconnect(self, name: str) -> None:
         """Close a server's connection and take its tools away."""
@@ -122,11 +140,13 @@ class McpServers:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await state.task
         self._unregister(state)
+        self._tell()
 
     async def remove(self, name: str) -> None:
         await self.disconnect(name)
         self.states.pop(name, None)
         self.problems.pop(name, None)
+        self._tell()
 
     def retune(self, server: ServerConfig) -> None:
         """Apply new per-tool choices to a connected server without reconnecting."""
@@ -137,6 +157,7 @@ class McpServers:
         if state.status == "connected":
             self._unregister(state)
             self._register(state, state.offered)
+        self._tell()
 
     async def stop(self) -> None:
         for name in list(self.states):

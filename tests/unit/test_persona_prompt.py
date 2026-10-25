@@ -196,3 +196,13 @@ def test_she_is_told_a_tap_on_a_widget_cannot_approve() -> None:
     text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
     assert 'If the answer is "ask", tell them to tap Approve on the card' in text
     assert "a tap on a widget can't approve" in text
+
+
+def test_she_is_told_connectors_add_widgets_and_to_name_them() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 25, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "workspace tool" in text and "use what it lists" in text
+        assert "by the connector's name" in text and "Stripe" in text and "Linear" in text
+        assert "\u2014" not in text and "\u2013" not in text

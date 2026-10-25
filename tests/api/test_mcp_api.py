@@ -230,3 +230,65 @@ def test_after_signing_in_the_tab_closes_itself_and_links_back_to_the_card() -> 
     nonce = page.headers["content-security-policy"].split("'nonce-")[1].split("'")[0]
     assert f'nonce="{nonce}"' in text  # only this page's own script may run
     assert "window.close" not in bytes(_page("Expired", "Try again.").body).decode()
+
+
+# ── What the workspace tools tell her (widget packs) ─────────────────────
+
+
+def _told(app: App) -> str:
+    d = app.rt.registry.definition("workspace_show")
+    assert d is not None
+    return d.description
+
+
+def _fixture_entry(name: str) -> dict[str, Any]:
+    return {
+        "command": sys.executable,
+        "args": ["-m", "tests.mcp.fixture_server"],
+        "env": {"PYTHONPATH": str(ROOT), "FIXTURE_TOKEN": f"keychain:mcp/{name}/fixture_token"},
+        "title": "Stripe",
+        "catalog": "stripe",
+    }
+
+
+def test_with_no_servers_she_is_told_the_core_widgets_only(make: Any) -> None:
+    app: App = make()
+    assert "stat" in _told(app) and "transactions" not in _told(app)
+
+
+def test_a_money_connector_listed_at_start_tells_her_its_widgets(make: Any) -> None:
+    paths.mcp_config_path().parent.mkdir(parents=True, exist_ok=True)
+    off = {**_fixture_entry("stripe"), "disabled": True}
+    paths.mcp_config_path().write_text(json.dumps({"mcpServers": {"stripe": off}}))
+    assert "transactions" not in _told(make())
+    on = _fixture_entry("stripe")
+    paths.mcp_config_path().write_text(json.dumps({"mcpServers": {"stripe": on}}))
+    # Configured and on is enough: she is told before it has finished connecting.
+    assert "transactions" in _told(make())
+
+
+def test_adding_turning_off_and_removing_a_money_connector_changes_what_she_is_told(
+    make: Any, monkeypatch: Any
+) -> None:
+    from trillion.connectors.mcp import catalog
+
+    def build(entry: Any, name: str, values: dict[str, str]) -> Any:
+        # The local fixture in place of the real Stripe server, kept as Stripe.
+        token = "a-pasted-token-of-32-characters!"  # noqa: S105
+        return _fixture_entry(name), {f"mcp/{name}/fixture_token": token}
+
+    monkeypatch.setattr(catalog, "build", build)
+    app: App = make()
+    added = app.client.post(f"{PATH}/servers", json={"catalog": "stripe"}, headers=app.auth)
+    assert added.status_code == 200, added.text
+    assert "transactions" in _told(app)
+    # The other workspace tools take the same widgets.
+    update = app.rt.registry.definition("workspace_update")
+    assert update is not None and "transactions" in json.dumps(update.input_schema)
+    app.client.patch(f"{PATH}/servers/stripe", json={"disabled": True}, headers=app.auth)
+    assert "transactions" not in _told(app)
+    app.client.patch(f"{PATH}/servers/stripe", json={"disabled": False}, headers=app.auth)
+    assert "transactions" in _told(app)
+    gone = app.client.delete(f"{PATH}/servers/stripe", headers={**app.auth, **JSON})
+    assert gone.status_code == 200
+    assert "transactions" not in _told(app) and "stat" in _told(app)

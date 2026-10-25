@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -73,6 +74,20 @@ async def test_arguments_that_break_the_schema_are_refused(spine: Spine) -> None
     extra = await spine.call("spend_money", {"amount_cents": 1, "to": "anyone"})
     assert extra.reason is Refusal.INVALID_ARGS
     assert spine.spend.calls == []
+
+
+async def test_the_router_uses_a_redefined_tool_s_schema(spine: Spine) -> None:
+    """What a tool is told it may take (the workspace tools' widget types) can change
+    while Trillion runs; the router checks calls against the new definition."""
+    assert (await spine.call("plain_reader", {"q": "x"})).reason is Refusal.INVALID_ARGS
+    old = spine.registry.definition("plain_reader")
+    assert old is not None
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    spine.registry.redefine(
+        "plain_reader",
+        dataclasses.replace(old, input_schema={**schema, "additionalProperties": False}),
+    )
+    assert (await spine.call("plain_reader", {"q": "x"})).status == "succeeded"
 
 
 async def test_confirm_with_a_bad_pending_id_is_refused(spine: Spine) -> None:

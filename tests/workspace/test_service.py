@@ -252,3 +252,16 @@ async def test_a_bare_clock_time_is_on_the_users_today(s: Setup) -> None:
 
 def test_an_unknown_zone_is_the_servers_day() -> None:
     assert day_in("Not/AZone") == day_in(None) == date.today()
+
+
+def test_the_page_says_today_on_the_users_day() -> None:
+    zone = next(z for z in ("Pacific/Kiritimati", "Pacific/Pago_Pago") if day_in(z) != date.today())
+    due = {
+        "type": "due_soon",
+        "items": [{"title": "Send the deck", "due": day_in(zone).isoformat()}],
+    }
+    board = {"title": None, "open": True, "next_id": 2, "widgets": [{"id": "w1", **due}]}
+    page = for_page(board, zone)
+    assert page is not None and page["widgets"][0]["blocks"][0]["label"] == "Today"
+    server = for_page(board)
+    assert server is not None and server["widgets"][0]["blocks"][0]["label"] != "Today"

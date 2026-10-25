@@ -40,12 +40,15 @@ class BoardSaveError(BoardError):
     """The edit was fine; the database refused it."""
 
 
-def for_page(board: Board | None) -> Board | None:
+def for_page(board: Board | None, zone: str | None = None) -> Board | None:
     """The board as the page draws it: every widget expanded into blocks, and without
-    the id counter, which is the server's own. The saved board is left as it was."""
+    the id counter, which is the server's own. Expanded on today in `zone` (the
+    user's), so "Today" in a due-soon card is their day, not the server's. The saved
+    board is left as it was."""
     if board is None:
         return None
-    return expand_board({k: v for k, v in board.items() if k != "next_id"})
+    with on_day(day_in(zone)):
+        return expand_board({k: v for k, v in board.items() if k != "next_id"})
 
 
 def _stamp(board: Board, now_ms: int) -> None:
@@ -93,14 +96,12 @@ class Boards:
             if not await self._conversations.exists(conversation_id, self._owner):
                 raise BoardError("there is no open conversation to put a board in.")
             old = await self._store.get(conversation_id, self._owner)
-            day = day_in(self._zone())
-            with on_day(day):
+            zone = self._zone()
+            with on_day(day_in(zone)):
                 new = edit(old)
             now = self._clock()
             _stamp(new, now)
-            # Expanded on the user's day too: "Today" in a due-soon card is theirs.
-            with on_day(day):
-                page = for_page(new)
+            page = for_page(new, zone)
             try:
                 await self._store.put(conversation_id, self._owner, new, now)
             except Exception as e:
