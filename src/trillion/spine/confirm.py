@@ -58,6 +58,8 @@ class Refusal(StrEnum):
     UNKNOWN_OWNER = "unknown_owner"
     # A timed ask running unattended: nobody is there to see a card or answer one (D5).
     UNATTENDED = "unattended"
+    # A tap on a widget's ask: she wrote its words, maybe from a page she read.
+    ASK = "ask"
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,8 @@ def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Sta
         return Rejection(Refusal.EXPIRED, "re-present it to ask again")
     if event == "cancel":
         return Status.REJECTED
+    if ctx.via == "ask":
+        return Rejection(Refusal.ASK, "a tap on a widget can't approve; use the card")
     if ctx.via == "channel":
         return Rejection(Refusal.CHANNEL, "a channel message can never close a gate")
     if ctx.turn <= a.created_turn:
