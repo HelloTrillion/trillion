@@ -155,6 +155,11 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.7.12 | Reload the page while an approval is waiting | The card comes back, still waiting, with the countdown running from the real expiry. |
 | 2.7.13 | Trigger a tap-only approval (a spend or irreversible action) | The card shows "Tap to approve: a spoken yes isn't enough for this" and no "Or just say yes" hint; saying yes does not approve it. |
 | 2.7.14 | After 2.7.9 and 2.7.12, check the delivery record for each card | Exactly one delivery stamp per card, whichever surface showed it first; a reload does not add another. |
+| 2.7.15 | Open `#kit`. Switch light and dark, narrow and wide | Every block and widget draws, legible in both themes, with no sideways scroll when narrow. |
+| 2.7.16 | Ask her for a next-up card ("a design review with Sam at 3 pm in Maple Park room 2") and wait a few minutes | A card with a countdown that ticks down each minute, then "started" when the time passes. |
+| 2.7.17 | Tap an ask at the foot of a card | The ask's exact words appear as your message and she answers it. |
+| 2.7.18 | With an approval card waiting (2.7.9), look at the other cards | Asks are hidden until the approval is decided. |
+| 2.7.19 | Tap an ask whose words request an action that needs approval (for example "Create a file in the shared folder") | The turn starts, the approval card appears on the board, and nothing runs until you tap Approve on the card. The ask itself approves nothing. |
 
 ## 3. Brain, persona and memory
 
