@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SIDEBAR } from '../src/layout';
-import { NUDGE, higher, nudged, savedRest, savedWidth } from '../src/sidebar';
+import { NUDGE, higher, nudged, revealForCard, savedRest, savedWidth } from '../src/sidebar';
 
 describe('savedWidth', () => {
   it('starts at the initial width when nothing was stored', () => {
@@ -57,5 +57,19 @@ describe('higher', () => {
     expect(higher('half', 'full')).toBe('full');
     expect(higher('full', 'half')).toBe('full');
     expect(higher('half', 'half')).toBe('half');
+  });
+});
+
+describe('revealForCard', () => {
+  it('shows a hidden desktop sidebar', () => {
+    expect(revealForCard(false, true)).toEqual({ unhide: true, raise: null });
+  });
+
+  it('leaves a shown desktop sidebar as it is', () => {
+    expect(revealForCard(false, false)).toEqual({ unhide: false, raise: null });
+  });
+
+  it('raises a phone sheet to half, never unhiding', () => {
+    expect(revealForCard(true, false)).toEqual({ unhide: false, raise: 'half' });
   });
 });

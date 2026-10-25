@@ -44,7 +44,7 @@ import {
 } from './prefs';
 import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
-import { createSidebar } from './sidebar';
+import { createSidebar, revealForCard } from './sidebar';
 import { createThreads, escapeAction, listPath } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
@@ -174,6 +174,8 @@ const workspace = createWorkspace({
   sheetTop: () => sidebar.sheetTop(),
   hold: (open) => sidebar.hold(open),
   place: (rect, animate) => galaxy.setStage(rect, { animate }),
+  // A caption never sits over the workspace.
+  changed: () => showCaptions(),
   fallback: () => (sidebar.hidden ? showSidebarBtn : null),
 });
 const captions = createCaptions($('captions'));
@@ -183,10 +185,14 @@ function placeCaptions(): void {
 }
 placeCaptions();
 addEventListener('resize', placeCaptions);
+/** Captions show only while the sidebar is hidden and the workspace closed. */
+function showCaptions(): void {
+  captions.update(captionOf(view), sidebar.hidden && !workspace.isOpen);
+}
 sidebar.onChange((animate) => {
   workspace.layout(animate);
   placeCaptions();
-  captions.update(captionOf(view), sidebar.hidden && !workspace.isOpen);
+  showCaptions();
 });
 // A hidden sidebar is inert and so silent: its news is read out here instead (SUR-6).
 const announceEl = $('announce');
@@ -669,7 +675,7 @@ function render(): void {
   if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
-  captions.update(captionOf(view), sidebar.hidden && !workspace.isOpen);
+  showCaptions();
 
   // The core records a card as delivered only once it is really on screen (SPN-17).
   for (const e of view.entries) {
@@ -1106,9 +1112,9 @@ function connect(): void {
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     if (msg.type === 'confirm.request') {
-      if (sidebar.hidden) sidebar.setHidden(false);
-      // On a phone a collapsed sheet shows only the ask bar: raise it so the card is seen.
-      sidebar.raise('half');
+      const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
+      if (reveal.unhide) sidebar.setHidden(false);
+      if (reveal.raise) sidebar.raise(reveal.raise);
     }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {

@@ -130,7 +130,7 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 
 | # | Scenario | Passes when |
 |---|---|---|
-| 2.6.1 | Start a reply, then pick another conversation from the thread list (⌘⇧K) before it finishes | The other conversation opens at once; the first reply is saved with its first conversation, not shown in the second. Going back shows it complete. |
+| 2.6.1 | Start a reply, then pick another conversation from the thread list (⌘⇧K) before it finishes | The other conversation opens at once; the first reply is saved with its first conversation, not shown in the second. Switching interrupts her: going back shows what she had said, marked interrupted. |
 | 2.6.2 | Open Settings (the gear), then type in the Ask bar | The orb docks small, keeps its states and reactions (processing, speaking), and Settings stays open. Closing it (Esc or the orb) sends the orb back and focus returns to the gear. |
 | 2.6.3 | Rename a conversation, delete it, press Undo within eight seconds | The new title shows; the row leaves and comes back in place with its messages. |
 | 2.6.4 | Hide the sidebar (⌘\), then ask something | Her words appear under the orb; a screen reader hears the reply and her status once. |

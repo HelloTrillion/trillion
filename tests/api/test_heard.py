@@ -139,8 +139,9 @@ async def test_a_reply_cut_off_before_a_word_was_heard_does_not_name_it(rt: Runt
     assert provider.naming_calls == 0
 
     await session.handle({"type": "turn.text", "text": "move the dentist to monday"})
-    await page.until("conversation.title")
-    assert page.all("conversation.title")[0]["title"] == "Moving the dentist"
+    await page.until("conversation.title", 2)
+    # The first is the user's first words; hers follows.
+    assert page.all("conversation.title")[-1]["title"] == "Moving the dentist"
     assert provider.naming_calls == 1
     await session.close()
 

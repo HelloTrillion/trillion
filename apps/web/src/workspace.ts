@@ -18,6 +18,8 @@ export interface WorkspaceDeps {
   /** Told when it opens and closes: a phone's sheet gets out of its way while it is open. */
   readonly hold: (open: boolean) => void;
   readonly place: (rect: StageRect, animate: boolean) => void;
+  /** Told once it has opened or closed, with `isOpen` already current. */
+  readonly changed: () => void;
   /** Where focus goes on close when where it came from can no longer take it. */
   readonly fallback: () => HTMLElement | null;
 }
@@ -108,6 +110,7 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
     d.hold(false);
     layout();
     state.close();
+    d.changed();
     // Focus came from somewhere now gone or inert (a hidden sidebar): go to the fallback.
     const usable = back !== null && back.isConnected && back.closest('[inert], [hidden]') === null;
     (usable ? back : back && d.fallback())?.focus();
@@ -134,6 +137,7 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
       d.dock.hidden = false;
       if (opening) d.hold(true);
       layout();
+      if (opening) d.changed();
     },
     close,
     get isOpen() {

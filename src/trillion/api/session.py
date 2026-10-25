@@ -1607,6 +1607,8 @@ class Session:
         """The user's first message and her answer to it: her last words before the
         next input, so the answer and not a "Let me check." before a tool call. A
         reply cut off before any word is no answer; the next one with words is."""
+        # The live history: after compaction on a resumed long conversation, this is
+        # the oldest exchange still in it, not the very first one.
         said: Msg | None = None
         answer: str | None = None
         for m, k in zip(self._history, self._kinds, strict=True):
@@ -1979,6 +1981,16 @@ class Session:
             # Only what the user said themselves: never a tap's note, never a page.
             self._rt.web.ledger.said(self.id, built.text)
         await self._save(kind, built.msg)
+        if kind == "user" and self._title_source is None:
+            await self._show_first_words()
+
+    async def _show_first_words(self) -> None:
+        """The store titled the conversation with the user's first words: the page
+        shows them now, not only once she has named it (D4). Her name replaces them."""
+        title, source = await self._rt.conversations.title_of(self.id, OWNER)
+        if title is not None and source == "words":
+            self._title_source = "words"
+            await self._broadcast_title(title)
 
     async def _save_input(self, kind: Kind, text: str) -> None:
         """A user input, with the context it was said in. Both are saved together and

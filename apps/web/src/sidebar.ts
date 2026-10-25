@@ -42,6 +42,16 @@ export const savedRest = (raw: string | null): Rest => RESTS.find((r) => r === r
 /** `rest` raised to at least `to`; a sheet already higher stays where it is. */
 export const higher = (rest: Rest, to: Rest): Rest => (RESTS.indexOf(rest) >= RESTS.indexOf(to) ? rest : to);
 
+/**
+ * What a card arriving asks of the sidebar, so the card is seen: a hidden desktop sidebar
+ * is shown; on a phone, where a collapsed sheet shows only the Ask bar, the sheet rises to
+ * at least half.
+ */
+export function revealForCard(phone: boolean, hidden: boolean): { unhide: boolean; raise: Rest | null } {
+  if (phone) return { unhide: false, raise: 'half' };
+  return { unhide: hidden, raise: null };
+}
+
 function read(key: string): string | null {
   try {
     return localStorage.getItem(key);

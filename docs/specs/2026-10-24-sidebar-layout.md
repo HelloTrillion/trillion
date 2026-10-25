@@ -36,8 +36,8 @@ is empty, and the sidebar can be hidden entirely.
   - A search box (focused on open), then conversations newest first, grouped "Today", "Yesterday", "Previous 7 days", "Older".
   - Each row: the title, and the time of its last message. The open one is marked.
   - A row's menu (⋯, or right-click) has **Rename** (edit in place, Enter saves, Escape cancels) and **Delete**.
-  - Delete removes the row and shows "Conversation deleted · Undo" for 8 seconds. Deleting the open conversation starts a new one.
-  - Search matches titles and the words of messages, case-insensitive. No match reads "No conversations match".
+  - Delete removes the row and shows "Conversation deleted · Undo" for 8 seconds. A second delete within those 8 seconds replaces the first one's Undo: one toast, for the latest. Deleting the open conversation starts a new one.
+  - Search matches titles and the words of messages, ignoring case for ASCII letters only (SQLite `LIKE`). No match reads "No conversations match".
   - Conversations with no messages are not listed.
   - The list loads 50 at a time; scrolling to the end loads more.
 - **Hiding the sidebar.** Its button, or ⌘\\, hides it completely; a small button at the top-left brings it back. Remembered per device. While it is hidden, **captions** show under the orb: the line she is saying, and what she is hearing while the user speaks, two lines at most, fading after 4 seconds of quiet. Her approval cards still need to be seen, so a card arriving while the sidebar is hidden opens it.
@@ -86,7 +86,7 @@ ALTER TABLE conversations ADD COLUMN title_source TEXT
     CHECK (title_source IN ('words', 'model', 'user'));
 -- Epoch ms of the newest message; NULL until the first one. Lists sort on it.
 ALTER TABLE conversations ADD COLUMN last_message_at INTEGER;
-CREATE INDEX conversations_by_recent ON conversations (owner_id, deleted_at, last_message_at DESC);
+CREATE INDEX conversations_by_recent ON conversations (owner_id, kind, deleted_at, last_message_at DESC);
 ```
 
 Existing rows are backfilled in the same migration: `last_message_at` from their
@@ -97,7 +97,7 @@ message with `title_source = 'words'`.
 
 - `append` / `append_many` also set `last_message_at`, and set a `'words'` title from the first user message when there is no title yet.
 - `set_title(conversation_id, owner_id, title, source)`: a `'model'` title never replaces a `'user'` one (checked in the `UPDATE`'s `WHERE`, so a rename racing the naming task cannot lose).
-- `list_chats(owner_id, *, query=None, before=None, limit=50)` (`before` is the last row shown, `(last_message_at, id)`, so equal times never skip a row) → rows of `id`, `title`, `last_message_at`, newest first, excluding deleted conversations and those with no messages. `query` matches `title`, or the `text` of a text block in a `user` or `assistant` message (`json_each` over `blocks_json`, so JSON keys never match), with `LIKE`, escaped, case-insensitive. Tool results are not searched.
+- `list_chats(owner_id, *, query=None, before=None, limit=50)` (`before` is the last row shown, `(last_message_at, id)`, so equal times never skip a row) → rows of `id`, `title`, `last_message_at`, newest first, excluding deleted conversations and those with no messages. `query` matches `title`, or the `text` of a text block in a `user` or `assistant` message (`json_each` over `blocks_json`, so JSON keys never match), with `LIKE`, escaped, case-insensitive for ASCII letters only. Tool results are not searched.
 - `delete(conversation_id, owner_id, now_ms)` sets `deleted_at`; `restore(conversation_id, owner_id)` clears it.
 - `exists` treats a deleted conversation as absent, so a stale tab cannot resume one.
 
@@ -128,6 +128,11 @@ last words before the user's next message. (A reply trimmed by a late barge afte
 naming has started may still lend it words she wrote but was not heard saying; the
 title is only a label.) On success it saves with `set_title(..., 'model')` and
 sends `conversation.title{id, title}` to every page open on that conversation.
+Before that, once the user's first message is saved, the same event carries the
+first-words title, so the title row shows it at once (D4); her title replaces it,
+and if naming fails the first words stay. A resumed long conversation is named
+from the oldest exchange still in the live history: after compaction that may not
+be the very first one.
 `session{id}` gains `title` (null for a new conversation).
 
 ### API: `api/conversations.py`
@@ -180,9 +185,9 @@ are unaffected. The Galaxy demo page gets controls for it.
 
 - **Store** (`tests/storage/`): titles from first words; a model title never overwrites a user one, including when they race; listing order, paging with `before`, search over titles and message text with `%` and `_` in the query; deleted and empty conversations not listed; restore; the migration backfills existing rows.
 - **Naming** (`tests/brain/test_title.py`, fake provider): cleaning; overlong, empty and failing answers give `None`; the conversation goes in wrapped; usage recorded.
-- **Session** (`tests/api/`): naming runs once after the first reply and not before; `conversation.title` reaches every page on that conversation; a resumed conversation with a title is not renamed; the next turn is not held up by a slow namer.
+- **Session** (`tests/api/`): the first words are sent as the title at once, and stay if naming fails; naming runs once after the first reply and not before; `conversation.title` reaches every page on that conversation; a resumed conversation with a title is not renamed; the next turn is not held up by a slow namer.
 - **API** (`tests/api/test_conversations.py`): each route, auth, 404 for another owner, rename to empty is refused, delete then resume starts a new conversation.
 - **`check_one_writer.py`** passes with the new columns listed.
-- **Galaxy** (`packages/galaxy/test/`): `setStage` places the orb's projected centre and size within a pixel; reduced motion jumps; the visual test gets a docked snapshot.
-- **Web** (vitest): thread grouping by day across midnight and timezones; the stage and dock rectangles for desktop, hidden sidebar and phone widths; captions only while the sidebar is hidden; a card arriving while it is hidden opens it.
+- **Galaxy** (`packages/galaxy/test/`): `setStage` places the orb's projected centre and size within a pixel; reduced motion jumps. A docked visual snapshot is deferred: the visual test covers the orb undocked only.
+- **Web** (vitest): thread grouping by day across midnight and timezones; the stage and dock rectangles for desktop, hidden sidebar and phone widths; captions only while the sidebar is hidden; a card arriving while it is hidden unhides it on desktop and raises the sheet to half on phones.
 - **Live** (preview on 7790, voice off per the no-sound rule): switch between three conversations; rename and delete with undo; a new conversation gets a model title after the first reply; open Settings and see the orb dock and keep reacting while typing a message; hide the sidebar and see captions; phone width.
