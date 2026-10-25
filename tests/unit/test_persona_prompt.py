@@ -146,3 +146,23 @@ def test_she_is_told_a_reminder_is_a_schedule_never_a_memory() -> None:
     text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
     assert "call reminder_set; never save a reminder as a memory" in text
     assert "ask_schedule" in text and "YYYY-MM-DDTHH:MM" in text
+
+
+def test_the_board_rides_with_the_message_as_untrusted_text() -> None:
+    now = datetime(2026, 10, 25, 9, 0, tzinfo=UTC)
+    line = 'Board (open): "October spend": w1 stat "Total".'
+    text = volatile_context(now, [], "<recalled/>", board=line)
+    context, rest = text.split("</context>\n", 1)
+    assert "Board" not in context
+    assert rest.startswith('<untrusted_tool_result tool="workspace">')
+    assert line in rest and rest.endswith("<recalled/>")
+    assert "untrusted" not in volatile_context(now, [])
+
+
+def test_she_is_told_how_to_use_the_board_in_both_modalities() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 25, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "board" in text and "workspace" in text
+        assert "\u2014" not in text and "\u2013" not in text

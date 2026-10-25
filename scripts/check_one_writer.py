@@ -73,6 +73,7 @@ NOT_DECISIONS: dict[str, str] = {
         for c in ("blocks_json", "raw_json")
     },
     "preferences.value_json": "a setting the user chose",
+    "boards.board_json": "what her board shows (SUR-1): it approves nothing",
     "memories.file_missing": "whether the file is on disk: read from the disk, not decided",
     **{
         f"schedules.{c}": "a reminder's own progress (AGT-4): it approves nothing"

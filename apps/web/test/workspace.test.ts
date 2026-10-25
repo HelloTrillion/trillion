@@ -46,4 +46,17 @@ describe('createShowing', () => {
     expect(s.isOpen).toBe(true);
     expect(heard).toEqual([]);
   });
+
+  it('tells listeners whether what closed was replaced or really closed', () => {
+    const s = createShowing();
+    const heard: [string | null, boolean][] = [];
+    s.onClose((id, replaced) => heard.push([id, replaced]));
+    s.show('board');
+    s.show('settings');
+    s.close();
+    expect(heard).toEqual([
+      ['board', true],
+      ['settings', false],
+    ]);
+  });
 });

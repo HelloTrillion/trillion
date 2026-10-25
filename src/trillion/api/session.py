@@ -65,6 +65,9 @@ from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
 from trillion.voice.types import VoiceError, Word
 from trillion.voice.whose import EchoShare, matched, whose
+from trillion.workspace.board import Board
+from trillion.workspace.board import summary as board_summary
+from trillion.workspace.service import for_page
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +290,8 @@ class Session:
         rt.by_conversation[session.id] = session
         try:
             await session._send("history", messages=shown)
+            # The conversation's board as it was left, open or closed (D3).
+            await session._send("board", board=for_page(await session._board()))
             for a in await session._open_actions():
                 await session._send_card(a.id)
             session._started = True
@@ -477,12 +482,51 @@ class Session:
             elif self._via == "voice" and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
             await self._offer()
+        elif kind in ("board.open", "board.close", "board.remove"):
+            await self._on_board(kind, msg.get("id"))
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
                 await self._rt.router.mark_delivered(pid, OWNER, SURFACE)
         else:
             await self._error("unknown_type")
+
+    async def _board(self) -> Board | None:
+        """The saved board, or None. A board that cannot be read never stops a turn."""
+        boards = self._rt.boards
+        if boards is None:
+            return None
+        try:
+            return await boards.current(self.id)
+        except Exception as e:
+            logger.warning("board not read: %s", type(e).__name__)
+            return None
+
+    async def _on_board(self, kind: str, widget_id: object) -> None:
+        """The user opened or closed the board, or took a widget off. It changes the
+        saved board, so her next turn sees what they see (D7). When nothing changed,
+        this page is sent the board as it really is, so a page that drew the change
+        ahead of time does not keep it."""
+        boards = self._rt.boards
+        if boards is None:
+            return
+        if kind == "board.remove" and not (isinstance(widget_id, str) and widget_id):
+            await self._error("bad_message")
+            return
+        # A draft carries the board as it was in its context: it can no longer be used.
+        await self._drop_draft()
+        try:
+            if kind == "board.open":
+                changed = await boards.user_open(self.id)
+            elif kind == "board.close":
+                changed = await boards.user_close(self.id)
+            else:
+                changed = await boards.user_remove(self.id, str(widget_id))
+        except Exception as e:
+            logger.warning("board edit failed: %s", type(e).__name__)
+            changed = False
+        if not changed:
+            await self._send("board", board=for_page(await self._board()))
 
     async def _on_text(self, text: object) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
@@ -1970,6 +2014,7 @@ class Session:
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
+            board=board_summary(await self._board()),
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
         return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought)
@@ -2198,6 +2243,10 @@ class Session:
             await self._raw_send_bytes(data)
         except Exception as e:
             logger.debug("send of audio failed: %s", type(e).__name__)
+
+    async def send(self, kind: str, /, **body: Any) -> None:
+        """A message to this page from outside its turns. Never raises."""
+        await self._send(kind, **body)
 
     async def _send(self, kind: str, /, **body: Any) -> None:
         """Never raises: a closed socket must not break a turn that is still recording."""

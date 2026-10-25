@@ -137,6 +137,19 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.6.5 | At phone width, pull the sheet between its rests and open Settings | The orb rests above the sheet at every rest; the sheet collapses while Settings is open and goes back after. |
 | 2.6.6 | Tab through the page with the keyboard alone | Sidebar head, title, new, messages, Ask bar, then the workspace when open; the thread list works with arrows, Enter and Escape. |
 
+### 2.7 Her board (SUR-1), by hand with Voice off
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.7.1 | Ask her to show a chart of something (for example "graph my week as a line chart") | The workspace opens with a titled board and a drawn chart; the orb docks small; she says one short line and does not read the board out. |
+| 2.7.2 | Say "take the list off", then hover another widget and click its × | Each widget leaves and the rest close up; she knows what is gone on her next turn (ask "what's on the board?"). |
+| 2.7.3 | Say "make it a bar chart" | The same widget changes in place, keeping its position. |
+| 2.7.4 | Close the board (its close button, Esc, the docked orb), then ask her to show it again, or press the sidebar's Workspace button | The orb returns on close; the board reopens as it was. With no board yet, the button shows "Ask her to show you something". |
+| 2.7.5 | Switch to another conversation, then back; then reload the page | Each conversation shows its own board (or none); after reload the board returns as it was, open or closed. |
+| 2.7.6 | With the board open, open Settings, then close Settings | Settings replaces the board while open; closing it brings the board back. |
+| 2.7.7 | Repeat 2.7.1 at phone width | Widgets stack in one column, the × is always visible, the chart fits without sideways scroll. |
+| 2.7.8 | Repeat 2.7.1 in the light theme | Cards, chart colours and text are legible and on-brand. |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)

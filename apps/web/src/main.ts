@@ -53,12 +53,14 @@ import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { openShowcase, showcaseScene } from './showcase';
+import { boardTitle, buttonAction, createBoardView } from './board';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
   type Entry,
   INITIAL,
   type ServerMsg,
+  boardOpen,
   type View,
   dueLabel,
   expire,
@@ -1258,6 +1260,7 @@ function connect(): void {
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
+    if (msg.type === 'board') onBoard();
     // The turn is over and she never made a sound (no words heard, a reply only
     // written, an error): the microphone held for her closes as after a reply.
     const over = msg.type === 'turn.complete' || (msg.type === 'state' && (view.orb === 'idle' || view.orb === 'error'));
@@ -1473,3 +1476,69 @@ addEventListener('hashchange', () => {
 render();
 connect();
 if (showcaseAt) openShowcase(workspace, showcaseAt);
+
+// Her board (her visual channel) in the workspace. It opens when she puts something up, unless
+// Settings is open: then it waits behind a chip in the sidebar.
+const boardChip = $<HTMLButtonElement>('board-chip');
+const boardView = createBoardView({
+  onRemove: (id) => send({ type: 'board.remove', id }),
+  onShowcase: () => openShowcase(workspace),
+});
+function showBoard(): void {
+  boardChip.hidden = true;
+  boardView.draw(view.board);
+  // Already showing: this only changes the title; the cards were redrawn in place.
+  workspace.open(boardTitle(view.board), boardView.el, 'board');
+  showWorkspaceState();
+}
+/** The user asked for the board: a saved one she had put away is open again, and she is told.
+ * One with nothing on it shows the empty state and tells her nothing (the core would refuse). */
+function openBoard(): void {
+  if (buttonAction(view.board) === 'reopen') {
+    send({ type: 'board.open' });
+    apply(boardOpen(view, true));
+  }
+  showBoard();
+}
+function onBoard(): void {
+  const board = view.board;
+  if (workspace.showing === 'board') {
+    if (board?.open) showBoard();
+    else workspace.close();
+    return;
+  }
+  if (!board?.open) boardChip.hidden = true;
+  else if (workspace.showing === 'settings') boardChip.hidden = false;
+  else showBoard();
+}
+boardChip.addEventListener('click', openBoard);
+workspace.onClose((id, replaced) => {
+  if (id === 'board') boardView.dispose();
+  // The user put it away (its close, Escape, the docked orb): she is told. Settings opened over it is not that.
+  if (id === 'board' && !replaced && view.board?.open) {
+    send({ type: 'board.close' });
+    apply(boardOpen(view, false));
+  }
+  // Whatever was opened over a board that is still up has closed: the board comes back. After this
+  // close has finished, so the workspace hands focus back before opening again.
+  if (id !== 'board' && !replaced && view.board?.open) {
+    queueMicrotask(() => {
+      if (!workspace.isOpen && view.board?.open) showBoard();
+    });
+  }
+});
+
+// One click to the workspace and its board, and one to close it again.
+const workspaceBtn = $<HTMLButtonElement>('workspace-btn');
+workspaceBtn.replaceChildren(icon('workspace', 18));
+function showWorkspaceState(): void {
+  const on = workspace.isOpen && (workspace.showing === 'board' || workspace.showing === 'showcase');
+  workspaceBtn.toggleAttribute('data-on', on);
+  workspaceBtn.setAttribute('aria-pressed', String(on));
+}
+workspaceBtn.addEventListener('click', () => {
+  if (workspace.isOpen && (workspace.showing === 'board' || workspace.showing === 'showcase')) workspace.close();
+  else openBoard();
+  showWorkspaceState();
+});
+workspace.onClose(showWorkspaceState);

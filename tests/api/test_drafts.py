@@ -364,3 +364,25 @@ async def test_a_system_prompt_changed_before_the_end_drops_the_draft(
     rows = await rt.conversations.usage_since("local", 0)
     assert [r["unpriced_turns"] for r in rows] == [2]  # the dropped draft's, and the turn's
     await session.close()
+
+
+async def test_a_board_change_from_the_page_drops_the_draft(rt: Runtime) -> None:
+    """The draft's context told her the board as it was; the turn's tells the new one."""
+    stt, provider = judging(rt, say("Drafted."), say("Answer."))
+    session, page = await start(rt)
+    assert rt.boards is not None
+    await rt.boards.show(session.id, "October", [{"type": "stat", "label": "Total", "value": "4"}])
+    await rt.boards.show(session.id, None, [{"type": "note", "text": "Milk"}], "add")
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: session._draft is not None and session._draft.finished)
+    await session.handle({"type": "board.remove", "id": "w2"})
+    assert session._draft is None
+    await finish(session, stt, "call the dentist")
+    assert len(provider.calls) == 2
+    assert [m["text"] for m in page.all("reply.delta")] == ["Answer."]
+    assert drafts() == ["dropped"]
+    _, sent = provider.calls[1]
+    context = str(sent[-1].blocks[0].text)  # type: ignore[union-attr]
+    assert 'Board (open): "October": w1 stat "Total".' in context
+    assert "note" not in context
+    await session.close()

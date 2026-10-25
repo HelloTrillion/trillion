@@ -36,8 +36,11 @@ export interface Workspace {
   readonly showing: string | null;
   /** Re-place the orb: the window, the sidebar or the workspace changed. */
   layout(animate?: boolean): void;
-  /** Called with the id of what closed, on close or when something else replaces it. */
-  onClose(listener: (id: string | null) => void): void;
+  /**
+   * Called with the id of what closed, on close or when something else replaces it;
+   * `replaced` tells the two apart.
+   */
+  onClose(listener: (id: string | null, replaced: boolean) => void): void;
 }
 
 /** What is shown and who hears it close, without the DOM. */
@@ -48,19 +51,19 @@ export interface Showing {
   show(id: string | null): void;
   /** Forget what is shown, then tell the listeners its id. False when nothing was shown. */
   close(): boolean;
-  onClose(listener: (id: string | null) => void): void;
+  onClose(listener: (id: string | null, replaced: boolean) => void): void;
 }
 
 export function createShowing(): Showing {
-  const listeners: ((id: string | null) => void)[] = [];
+  const listeners: ((id: string | null, replaced: boolean) => void)[] = [];
   let isOpen = false;
   let id: string | null = null;
-  function close(): boolean {
+  function close(replaced = false): boolean {
     if (!isOpen) return false;
     const was = id;
     isOpen = false;
     id = null;
-    for (const l of listeners) l(was);
+    for (const l of listeners) l(was, replaced);
     return true;
   }
   return {
@@ -71,11 +74,11 @@ export function createShowing(): Showing {
       return id;
     },
     show(next) {
-      close();
+      close(true);
       isOpen = true;
       id = next;
     },
-    close,
+    close: () => close(),
     onClose(listener) {
       listeners.push(listener);
     },

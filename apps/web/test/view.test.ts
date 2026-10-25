@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, busyOf, dueLabel, expire, localClock, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
+import { INITIAL, type View, boardOf, boardOpen, busyOf, dueLabel, expire, localClock, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -402,5 +402,40 @@ describe('notice speech never makes the page busy', () => {
     const v = feed([{ type: 'transcript.final', text: 'hello' }, { type: 'error', code: 'busy' }], ready);
     expect(v.entries).toEqual([{ kind: 'user', text: 'hello' }]);
     expect(v.draft).toBeNull();
+  });
+
+  it('keeps the board the core sends, and drops it for a new conversation', () => {
+    const board = { title: 'October spend', open: true, widgets: [{ id: 'w1', type: 'stat', size: 'small', label: 'Total', value: '$41' }] };
+    let v = feed([{ type: 'session', id: 'c1', agent_name: 'Nova', model: null }, { type: 'board', board }]);
+    expect(v.board).toEqual(board);
+    v = feed([{ type: 'board', board: { ...board, open: false } }], v);
+    expect(v.board?.open).toBe(false);
+    v = feed([{ type: 'session', id: 'c2', agent_name: 'Nova', model: null }], v);
+    expect(v.board).toBeNull();
+    v = feed([{ type: 'board', board: null }], v);
+    expect(v.board).toBeNull();
+  });
+});
+
+describe('boardOf', () => {
+  it('reads a board, sizing widgets medium unless they say otherwise', () => {
+    const b = boardOf({ title: 'T', open: true, widgets: [{ id: 'w1', type: 'note', text: 'hi' }, { id: 'w2', type: 'stat', size: 'wide' }] });
+    expect(b?.widgets.map((w) => [w.id, w.size])).toEqual([['w1', 'medium'], ['w2', 'wide']]);
+    expect(b?.widgets[0]?.['text']).toBe('hi');
+  });
+
+  it('is null for anything that is not a board, and skips widgets without an id or type', () => {
+    expect(boardOf(null)).toBeNull();
+    expect(boardOf('board')).toBeNull();
+    expect(boardOf([])).toBeNull();
+    const b = boardOf({ widgets: [null, { type: 'note' }, { id: 'w3' }, { id: 'w4', type: 'list', size: 'huge' }] });
+    expect(b).toEqual({ title: '', open: false, widgets: [{ id: 'w4', type: 'list', size: 'medium' }] });
+  });
+
+  it('follows the user opening or putting away a board at once', () => {
+    const v = reduce(INITIAL, { type: 'board', board: { title: 'T', open: false, widgets: [] } });
+    expect(boardOpen(v, true).board?.open).toBe(true);
+    expect(boardOpen(v, false)).toBe(v);
+    expect(boardOpen(INITIAL, true)).toBe(INITIAL);
   });
 });

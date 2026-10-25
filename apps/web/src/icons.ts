@@ -29,6 +29,8 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   send: ['M12 18.5V6', 'M6.5 11.5L12 6l5.5 5.5'],
   stop: ['M7.5 7.5h9v9h-9z'],
   check: ['M5.5 12.5l4 4l9-9'],
+  // Four tiles: the workspace and its widgets.
+  workspace: ['M4 4.5h7v7H4z', 'M13 4.5h7v4h-7z', 'M13 10.5h7v9h-7z', 'M4 13.5h7v6H4z'],
   search: ['M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 0 0 0-13z', 'M20 20l-4.8-4.8'],
 };
 

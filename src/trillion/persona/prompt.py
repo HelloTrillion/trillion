@@ -18,6 +18,7 @@ from typing import Literal
 
 from trillion import paths
 from trillion.brain.types import SystemBlock
+from trillion.spine.untrusted import wrap
 
 DEFAULT_AGENT_NAME = "Trillion"  # the brand is the default name (PER-1a)
 DEFAULT_USER_NAME = "the user"
@@ -196,6 +197,7 @@ def volatile_context(
     recalled: str = "",
     spoken: Identity | None = None,
     zone: str = "",
+    board: str = "",
 ) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
@@ -205,7 +207,11 @@ def volatile_context(
     what was once said is never promoted to something the host asserts (MEM-6b).
 
     `zone` is the user's timezone by name, so she can work out a time for a reminder
-    in it (AGT-9); `now` is already in that zone."""
+    in it (AGT-9); `now` is already in that zone.
+
+    `board` is the one-line summary of her board (SUR-1). It is wrapped as untrusted
+    here: its titles may quote a page she read. It rides with the message, never in the
+    cached block, and with no board nothing is added."""
     when = now.strftime("%A %Y-%m-%d %H:%M %Z").strip()
     # "UTC (UTC)" says nothing twice: a zone already named by its abbreviation is left.
     named = zone and zone != now.strftime("%Z")
@@ -216,4 +222,7 @@ def volatile_context(
         # so the cached block stays the same whether the user types or talks.
         lines.append(_fill(_prompt("voice.md"), spoken))
     context = "<context>\n" + "\n".join(lines) + "\n</context>"
-    return f"{context}\n{recalled}" if recalled else context
+    extra = [wrap("workspace", board)] if board else []
+    if recalled:
+        extra.append(recalled)
+    return "\n".join([context, *extra])
