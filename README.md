@@ -76,7 +76,7 @@ trillion run
 
 To upgrade later, download the newer file and run `uv tool install --force` with it.
 
-**From source**, to work on it: you need uv, Node 22+ and pnpm.
+**From source**, to work on it: you need uv, Node 22.22.2 or later and pnpm.
 
 ```bash
 uv sync

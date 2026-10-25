@@ -153,6 +153,10 @@ colour; a card's footer is the source and its age.
   refuses a confirm with `via == "ask"` (new refusal `ASK`: "a tap on a widget can't
   approve; use the card"). Cancelling is allowed.
 - While any approval card is waiting, asks are hidden.
+- An ask can't carry a web address (the kit refuses one; links go in `sources`), and
+  its words never count as an address the user gave: the session keeps them out of
+  the web ledger, and the saved message is marked as an ask so a resumed
+  conversation skips it too.
 
 ## Style guide
 

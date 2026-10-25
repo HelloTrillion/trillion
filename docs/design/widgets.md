@@ -35,7 +35,7 @@ Tones:
 
 ## Blocks
 
-Defined in `src/trillion/workspace/blocks.py`. Strings are trimmed and capped (labels 60, values 40, titles 80, other text 400) and emoji are removed. Unknown fields are dropped. A card holds at most 8 top-level blocks and 2 asks.
+Defined in `src/trillion/workspace/blocks.py`. Short strings are trimmed and capped, a long one cut with "…" (labels, names, chips and `by` 60; values, deltas and fact values 40; titles 80; details, hints, meta and status text 400), and emoji are removed. The paragraph texts are refused when too long rather than cut: `text` up to 2000 characters, `quote` up to 600. Unknown fields are dropped. A card holds at most 8 top-level blocks and 2 asks.
 
 | Block | Fields | Notes |
 |---|---|---|
@@ -51,7 +51,7 @@ Defined in `src/trillion/workspace/blocks.py`. Strings are trimmed and capped (l
 | `people` | `names[]` | Up to 8. An avatar stack, then "Sam, Jo and 2 more". |
 | `status` | `tone`, `text` | A dot and words. |
 | `chips` | `items[]`, `tone?` | Up to 6. |
-| `text` | `text`, `tone?` | Paragraphs, `- ` bullets, `**bold**`. A tone gives a tinted edge. |
+| `text` | `text`, `tone?` | Paragraphs, `- ` bullets, `**bold**`. Up to 2000 characters. A tone gives a tinted edge. |
 | `quote` | `text`, `by?`, `when?` | Up to 600 characters. |
 | `facts` | `items[]` (`label`, `value`) | Up to 10. |
 | `columns` | `columns[]`, each a list of blocks | 2 to 4 columns. Columns cannot hold columns. |
@@ -84,7 +84,7 @@ What she writes, and what it becomes. Every widget also takes `title?`, `size?`,
 | `sources` | `items[]` (`title`, `site`, `note?`) | `rows` |
 | `custom` | `blocks[]` | the blocks as given |
 
-Catalogue widgets get a default title when she gives none. A near-miss type name maps to the right widget ("agenda" is `timeline`, "checklist" is `plan`). Those aliases are in `widgets.py`. Times may be ISO 8601 or a bare clock time like "9:12", which means today.
+Catalogue widgets get a default title when she gives none. A near-miss type name maps to the right widget ("agenda" is `timeline`, "checklist" is `plan`). Those aliases are in `widgets.py`. Times may be ISO 8601 or a bare clock time like "9:12", which means today in the user's timezone. A count or goal written as text ("12", "4,200") is read as the number.
 
 ## Rules
 
@@ -105,7 +105,7 @@ A widget may carry up to two asks, 40 characters each. An ask is a quiet link at
 
 A tap can never approve. The turn runs with `via = "ask"`, and `confirm.decide` refuses a confirm from that source. A widget is text she wrote, so a tap on it is not the user agreeing to an action. Approvals are only the host-composed cards. Cancelling is allowed. While any approval card is waiting, asks are hidden.
 
-Asks are refused when too long, not cut, because a clipped ask would send different words.
+Asks are refused when too long, not cut, because a clipped ask would send different words. An ask can't hold a web address (links go in a `sources` widget) or start with "[" (a "[host]" line is the app speaking). Her ask is her words, not the user's: an address in one never counts as one the user gave, so `web_fetch` will not open it, even after the conversation is resumed.
 
 ## Adding a block or a widget
 
