@@ -149,6 +149,12 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.7.6 | With the board open, open Settings, then close Settings | Settings replaces the board while open; closing it brings the board back. |
 | 2.7.7 | Repeat 2.7.1 at phone width | Widgets stack in one column, the × is always visible, the chart fits without sideways scroll. |
 | 2.7.8 | Repeat 2.7.1 in the light theme | Cards, chart colours and text are legible and on-brand. |
+| 2.7.9 | Ask her to create a file in the shared folder | The board opens with an approval card at the top: friendly name ("Create a file"), the summary, a plain reason and a countdown. Her own widgets, if any, sit below under "From Trillion". The conversation shows only a chip. |
+| 2.7.10 | Tap Approve on one card, then Decline on another | Each shows its outcome for a few seconds, then collapses to a one-line row; the file exists only for the approved one. |
+| 2.7.11 | Open Settings while an approval is waiting | The full card shows in the conversation, with the board waiting behind; closing Settings does not show a second copy. |
+| 2.7.12 | Reload the page while an approval is waiting | The card comes back, still waiting, with the countdown running from the real expiry. |
+| 2.7.13 | Trigger a tap-only approval (a spend or irreversible action) | The card shows "Tap to approve: a spoken yes isn't enough for this" and no "Or just say yes" hint; saying yes does not approve it. |
+| 2.7.14 | After 2.7.9 and 2.7.12, check the delivery record for each card | Exactly one delivery stamp per card, whichever surface showed it first; a reload does not add another. |
 
 ## 3. Brain, persona and memory
 

@@ -56,6 +56,7 @@ from trillion.persona.prompt import (
     greeting,
     volatile_context,
 )
+from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
 from trillion.spine.untrusted import is_outside, wrap
@@ -2069,10 +2070,16 @@ class Session:
         a = await self._rt.spine_store.get_pending(pending_id)
         if a is None or a.owner_id != OWNER:
             return
+        reg = self._rt.registry
         await self._send(
             "confirm.request",
             pending_id=a.id,
             tool=a.tool,
+            # A friendly name and the reason it needs the user, both from the host.
+            tool_label=labels.tool_label(
+                a.tool, labels.connected(reg.definition(a.tool), reg.get(a.tool))
+            ),
+            reason=labels.reason(a.risk, a.recoverable),
             summary=a.summary,
             expires_at=a.expires_at,
             # Spend and anything unrecoverable can only be approved here, by a tap (SPN-14).

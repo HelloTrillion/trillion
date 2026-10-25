@@ -763,7 +763,19 @@ export interface BoardOptions {
   readonly onRemove: (id: string) => void;
   /** The empty state's link to the sample preview. */
   readonly onShowcase: () => void;
+  /** The strip of approvals (approvals.ts), pinned above her widgets when there are any. */
+  readonly approvals?: HTMLElement;
 }
+
+/** What the approvals strip holds: any card at all, and whether one is waiting for the user. */
+export interface Pinned {
+  readonly any: boolean;
+  readonly waiting: boolean;
+  /** Her name, for the label over her widgets while an approval waits. */
+  readonly from: string;
+}
+
+const NOTHING_PINNED: Pinned = { any: false, waiting: false, from: '' };
 
 /** Each card's span and each row's height, for a wide (6) and a middling (2) workspace, and one column. */
 function layoutRows(widgets: readonly Widget[], cards: readonly HTMLElement[], grid: HTMLElement): void {
@@ -780,8 +792,11 @@ function layoutRows(widgets: readonly Widget[], cards: readonly HTMLElement[], g
 
 export interface BoardView {
   readonly el: HTMLElement;
-  /** Draw `board` (or the empty state), keeping what has not changed and the scroll position. */
-  draw(board: Board | null): void;
+  /**
+   * Draw `board` (or the empty state), keeping what has not changed and the scroll position.
+   * With approvals pinned, they go above her widgets and the board is not empty without them.
+   */
+  draw(board: Board | null, pinned?: Pinned): void;
   /** The board is no longer shown: stop watching card sizes. The next draw starts afresh. */
   dispose(): void;
 }
@@ -800,6 +815,9 @@ export function createBoardView(opts: BoardOptions): BoardView {
   const el = h('div', 'bd');
   el.tabIndex = -1;
   const grid = h('div', 'bd-grid');
+  // Over her widgets while an approval waits: what follows is her context, not what is approved.
+  const from = h('h3', 'bd-from');
+  let emptyEl: HTMLElement | null = null;
   // By id: what it was drawn from, so an unchanged widget keeps its element (and its hover).
   let drawn = new Map<string, { key: string; el: HTMLElement; dispose: Dispose }>();
 
@@ -823,12 +841,13 @@ export function createBoardView(opts: BoardOptions): BoardView {
     for (const d of drawn.values()) d.dispose();
     drawn = new Map();
     grid.replaceChildren();
+    emptyEl = null;
   }
 
   return {
     el,
     dispose,
-    draw(board) {
+    draw(board, pinned = NOTHING_PINNED) {
       // Opening afresh: every card arrives. Already open: only new ones do.
       const fresh = !el.isConnected;
       if (fresh) dispose();
@@ -870,11 +889,30 @@ export function createBoardView(opts: BoardOptions): BoardView {
           const at = grid.children[i] ?? null;
           if (at !== c) grid.insertBefore(c, at);
         });
-        if (grid.parentElement !== el) el.replaceChildren(grid);
       } else {
         grid.replaceChildren();
-        el.replaceChildren(empty());
       }
+      const parts: HTMLElement[] = [];
+      if (pinned.any && opts.approvals) parts.push(opts.approvals);
+      if (cards.length) {
+        if (pinned.waiting) {
+          from.textContent = `From ${pinned.from}`;
+          parts.push(from);
+        }
+        parts.push(grid);
+      } else if (!pinned.any) {
+        emptyEl ??= empty();
+        parts.push(emptyEl);
+      }
+      // Shown again later, the empty state arrives afresh.
+      if (emptyEl && !parts.includes(emptyEl)) emptyEl = null;
+      // In place, so the strip and the grid stay attached (and keep focus) while what is beside them changes.
+      const keepParts = new Set(parts);
+      for (const child of [...el.children]) if (!keepParts.has(child as HTMLElement)) child.remove();
+      parts.forEach((p, i) => {
+        const at = el.children[i] ?? null;
+        if (at !== p) el.insertBefore(p, at);
+      });
       if (scroller) scroller.scrollTop = top;
       if (focused?.isConnected) {
         // A moved card lost focus on the way: it goes back where it was.

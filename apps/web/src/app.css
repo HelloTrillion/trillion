@@ -4524,3 +4524,288 @@ button.connected-danger {
 .side-title .usage-pill {
   max-width: 38%;
 }
+
+/* ── Approvals (approvals.ts): a pending action's card, pinned on her board ── */
+
+/* Newest first, above her widgets. Not a widget: only the host's words, and the only buttons that approve. */
+.ap-strip {
+  margin-bottom: 18px;
+}
+.ap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ap-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--color-amber) 13%, transparent), transparent 60%),
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 55%, transparent);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.22), inset 0 1px 0 var(--glass-edge);
+  animation: bd-rise 420ms ease-out both;
+  outline-offset: 3px;
+}
+/* After a decision, the edge says how it ended. */
+.ap-card[data-status='done'],
+.ap-card[data-status='working'] {
+  border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+}
+.ap-card[data-status='declined'],
+.ap-card[data-status='closed'],
+.ap-card[data-status='unknown'] {
+  border-color: var(--color-border);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+}
+.ap-card[data-status='failed'] {
+  border-color: color-mix(in srgb, var(--color-danger) 55%, transparent);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+}
+
+.ap-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+.ap-eyebrow {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-amber);
+}
+.ap-card:not([data-status='waiting']) .ap-eyebrow {
+  color: var(--color-text-2);
+}
+.ap-title {
+  margin: 2px 0 0;
+  font-size: clamp(18px, 2.6cqi, 23px);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+
+/* The countdown to expiry: the showcase's ring. */
+.ap-timer {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+}
+.ap-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  transform: rotate(-90deg);
+}
+.ap-ring-bg {
+  stroke: color-mix(in srgb, var(--color-text-0) 9%, transparent);
+  stroke-width: 3;
+}
+.ap-ring-arc {
+  stroke: var(--color-amber);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s linear, stroke 300ms;
+}
+.ap-timer[data-low] .ap-ring-arc {
+  stroke: var(--color-danger);
+}
+.ap-timer-text {
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The host's summary, in full: it wraps, never clips. */
+.ap-summary {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-bg-0) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text-0) 9%, transparent);
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.ap-reason {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-amber) 10%, transparent);
+  font-size: 13px;
+}
+.ap-card:not([data-status='waiting']) .ap-reason {
+  display: none;
+}
+
+.ap-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ap-actions button {
+  font-size: 14px;
+  padding: 8px 18px;
+}
+.ap-approve,
+.ap-approve:hover:not(:disabled) {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.ap-approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 85%, var(--color-text-0));
+}
+.ap-hint {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.ap-outcome {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  animation: bd-rise 400ms ease-out both;
+}
+.ap-card[data-status='done'] .ap-outcome,
+.ap-card[data-status='working'] .ap-outcome {
+  color: var(--color-accent);
+}
+.ap-card[data-status='failed'] .ap-outcome {
+  color: var(--color-danger);
+}
+
+/* Settled and seen: one line, until the user dismisses it. */
+.ap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  font-size: 13px;
+  animation: bd-rise 300ms ease-out both;
+}
+.ap-row::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-2);
+}
+.ap-row[data-status='done']::before {
+  background: var(--color-accent);
+}
+.ap-row[data-status='failed']::before {
+  background: var(--color-danger);
+}
+.ap-row-label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ap-row-outcome {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.ap-x,
+.ap-x:hover:not(:disabled) {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+}
+.ap-x:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text-0) 6%, transparent);
+  color: var(--color-text-0);
+}
+
+/* Over her widgets while an approval waits: what follows is her context, not what is approved. */
+.bd-from {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+}
+
+/* In the conversation: the card is on the board, and this jumps to it. */
+.ap-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-color: color-mix(in srgb, var(--color-amber) 55%, transparent);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  font-size: 12.5px;
+  text-align: left;
+}
+.ap-chip::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-amber);
+}
+.ap-chip-label {
+  overflow-wrap: anywhere;
+}
+.ap-chip-view {
+  flex: none;
+  font-weight: 600;
+  color: var(--color-amber);
+}
+.ap-chip-view::before {
+  content: '· ';
+  color: var(--color-text-2);
+  font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-card,
+  .ap-row,
+  .ap-outcome {
+    animation: none;
+  }
+  .ap-ring-arc {
+    transition: none;
+  }
+}

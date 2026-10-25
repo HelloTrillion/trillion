@@ -88,6 +88,17 @@ describe('view', () => {
     expect(v.entries[0]).toMatchObject({ status: 'waiting', summary: 'Create a.txt' });
   });
 
+  it("keeps the host's name for the tool and why it needs the user", () => {
+    const v = feed([{ ...card, tool: 'fs_write', tool_label: 'Change a file', reason: 'write' }]);
+    expect(v.entries[0]).toMatchObject({ toolLabel: 'Change a file', reason: 'write' });
+  });
+
+  it('falls back to the tool name, and no reason, when the core sent neither', () => {
+    expect(feed([{ ...card, tool: 'send_message' }]).entries[0]).toMatchObject({ toolLabel: 'Send message', reason: null });
+    expect(feed([{ ...card, tool: 'x', reason: 'nonsense' }]).entries[0]).toMatchObject({ reason: null });
+    expect(feed([card]).entries[0]).toMatchObject({ toolLabel: 'An action' });
+  });
+
   it.each([
     ['succeeded', '', 'done'],
     ['cancelled', '', 'declined'],

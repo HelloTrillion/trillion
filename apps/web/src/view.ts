@@ -8,6 +8,17 @@ const INTERRUPTED_MARK = '[interrupted]';
 
 export type Orb = 'idle' | 'arming' | 'listening' | 'processing' | 'speaking' | 'error';
 
+/** Why an action needs the user's OK, as the core classes it. */
+export type Reason = 'irreversible' | 'spend' | 'write' | 'read';
+const REASONS: readonly Reason[] = ['irreversible', 'spend', 'write', 'read'];
+
+/** The host's name for a tool, or its own name made readable when the core sent none. */
+export function labelOf(label: unknown, tool: unknown): string {
+  if (typeof label === 'string' && label.trim()) return label.trim();
+  const words = typeof tool === 'string' ? tool.replaceAll('_', ' ').trim() : '';
+  return words ? words[0]!.toUpperCase() + words.slice(1) : 'An action';
+}
+
 export type CardStatus = 'waiting' | 'working' | 'done' | 'declined' | 'failed' | 'unknown' | 'closed';
 
 /** What a reminder or timed ask left: her words, or a missed or failed one with none. */
@@ -25,6 +36,10 @@ export type Entry =
       readonly tapOnly: boolean;
       readonly status: CardStatus;
       readonly note: string;
+      /** The host's friendly name for the tool ("Send a message"). */
+      readonly toolLabel: string;
+      /** Why it needs the user, from the action's risk; null when the core did not say. */
+      readonly reason: Reason | null;
     }
   | { readonly kind: 'notice'; readonly text: string }
   | {
@@ -157,8 +172,11 @@ export type ServerMsg = { readonly type: string } & Readonly<Record<string, unkn
 
 const ORBS: readonly Orb[] = ['idle', 'arming', 'listening', 'processing', 'speaking', 'error'];
 
+/** The note on a card whose time ran out, here or in the core. */
+export const EXPIRED_NOTE = 'This expired before it was answered. Ask again.';
+
 const REFUSALS: Readonly<Record<string, string>> = {
-  expired: 'This expired before it was answered. Ask again.',
+  expired: EXPIRED_NOTE,
   precondition_changed: 'The target changed since you were asked, so nothing ran.',
   superseded: 'A newer request replaced this one.',
   wrong_session: 'This belongs to another session.',
@@ -464,6 +482,8 @@ function step(view: View, msg: ServerMsg): View {
             tapOnly: msg['tap_only'] === true,
             status: 'waiting',
             note: '',
+            toolLabel: labelOf(msg['tool_label'], msg['tool']),
+            reason: REASONS.find((r) => r === msg['reason']) ?? null,
           },
         ],
       };
