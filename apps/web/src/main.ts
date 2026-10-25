@@ -520,6 +520,14 @@ const approvals = createApprovals({
   showBoard: () => showBoard(),
   closeBoard: () => workspace.close(),
   hasWidgets: () => Boolean(view.board?.open && view.board.widgets.length > 0),
+  toConversation: () => {
+    const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
+    if (reveal.unhide) sidebar.setHidden(false);
+    if (reveal.raise) sidebar.raise(reveal.raise);
+    // The entries did not change, only where their cards are drawn: draw the conversation afresh.
+    rendered = [];
+    render();
+  },
 });
 
 // The first conversation, or a later change of names (ONB-3). Its lines are the

@@ -24,12 +24,14 @@ host's summary of the frozen action.
 - She says "I've drafted it. OK to send?" The board opens: at the top a glass card with an amber edge:
   - **Needs your OK** label, the tool's friendly name ("Send a message"), and a countdown ring to expiry;
   - the summary in full (it can be long; it wraps, never clips);
-  - the reason in plain words: "This can't be undone." / "This spends money." / "This changes a file." (from the risk class);
+  - the reason in plain words: "This can't be undone." / "This spends money." / "This makes a change." (from the risk class; a write may be a file, an email or a post; a read has no line);
   - **Approve** and **Decline**; under them "Or just say yes" when a spoken yes is allowed, or "Tap to approve: a spoken yes isn't enough for this" when `tap_only`.
 - Below it, any widgets she showed, under a small "From Trillion" heading.
 - In the conversation: a chip "Needs your OK: Send a message · View" that focuses the card on the board.
 - After a decision the card shows the outcome for 4 seconds ("Approved · done", "Declined", "Didn't go through: …", "Expired · she'll ask again"), then collapses to a one-line row in the strip that can be dismissed. If the board was opened only for the approval and has no widgets, it closes back to the orb.
-- Several approvals stack, newest first.
+- Several approvals stack: waiting cards oldest first, so a new one arrives below the ones already asking and never moves a button under the pointer; settled rows below them, newest first. A newly drawn card's buttons take a click only after 600 ms, and none once it has run out or after one press (until the outcome arrives).
+- Closing the board (its close, Escape, the docked orb) while a card waits moves that card back to the conversation as the full card, and the sidebar shows if it was hidden. It was already delivered, so `confirm.shown` is not sent again. Settings opened over the board is not a close: the board comes back after.
+- A board opened only for approvals closes after one has settled and every card has collapsed to a row, never because its cards went (a reconnect clears them until the core re-sends them). A re-sent card that was on the board opens the board again.
 - Phone: as today, the full card in the conversation, and the sheet rises to half.
 - Settings showing: the full card shows in the conversation, and the board waits behind the existing chip.
 
@@ -37,7 +39,7 @@ host's summary of the frozen action.
 
 ### Server (small)
 
-- `confirm.request` gains `tool_label` (a friendly name; from a small table keyed by tool name, falling back to the tool name with underscores as spaces; MCP/Google/Slack tools use their registry description's first words if no entry) and `reason` (`irreversible | spend | write | read`, from the pending action's risk and `recoverable`). The page turns `reason` into words.
+- `confirm.request` gains `tool_label` (a friendly name; from a small table keyed by tool name, falling back to the tool name with underscores as spaces; a connected server's tool with no entry is "<server>: <tool name>", never its description, which the server wrote) and `reason` (`irreversible | spend | write | read`, from the pending action's risk and `recoverable`). The page turns `reason` into words.
 - Prompt (`text.md`, `voice.md`): when she asks for approval on something with content, she shows that content on the board with the workspace tools (the drafted message, the options, what she checked), and never presents a widget as the approval itself.
 - Tests: the two new fields for a file write, a spend-like action and an unrecoverable one.
 

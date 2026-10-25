@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   OUTCOME_MS,
+  type Strip,
+  type StripItem,
   approvalsOf,
+  createApprovals,
   collapseAt,
   modeOf,
   outcomeWords,
@@ -34,9 +37,9 @@ describe('approvalsOf', () => {
     card('d'),
   ];
 
-  it('lists the cards on the board, newest first', () => {
-    const ids = approvalsOf(entries, new Set(['a', 'b', 'c']), new Set()).map((c) => c.pendingId);
-    expect(ids).toEqual(['c', 'b', 'a']);
+  it('lists waiting cards oldest first, so a new one arrives below, then settled ones newest first', () => {
+    const ids = approvalsOf(entries, new Set(['a', 'b', 'c', 'd']), new Set()).map((c) => c.pendingId);
+    expect(ids).toEqual(['b', 'd', 'c', 'a']);
   });
 
   it('leaves out the ones the user dismissed and the ones in the conversation', () => {
@@ -116,5 +119,146 @@ describe('ringLeft', () => {
     expect(ringLeft(0, 1000, 250)).toBe(0.75);
     expect(ringLeft(0, 1000, 2000)).toBe(0);
     expect(ringLeft(500, 500, 500)).toBe(0);
+  });
+});
+
+/** The wiring with a stand-in strip and workspace: what the page would do, without a DOM. */
+function harness(where = { phone: false, settingsShowing: false }) {
+  let entries: Entry[] = [];
+  let showing = false;
+  let drawn: StripItem[] = [];
+  const sent: Record<string, unknown>[] = [];
+  const calls = { show: 0, close: 0, toConversation: 0 };
+  const strip: Strip = {
+    el: {} as HTMLElement,
+    draw: (items) => {
+      drawn = [...items];
+    },
+    drawnFull: () => new Set(showing ? drawn.filter((i) => i.mode === 'ask').map((i) => i.card.pendingId) : []),
+    focus: () => true,
+    dispose: () => {
+      drawn = [];
+    },
+  };
+  const a = createApprovals({
+    send: (b) => sent.push(b),
+    entries: () => entries,
+    where: () => where,
+    boardShowing: () => showing,
+    showBoard: () => {
+      calls.show++;
+      showing = true;
+      strip.draw(a.pinned().items);
+    },
+    closeBoard: () => {
+      calls.close++;
+      showing = false;
+      a.closed(false);
+    },
+    hasWidgets: () => false,
+    toConversation: () => calls.toConversation++,
+    strip: () => strip,
+  });
+  return {
+    a,
+    sent,
+    calls,
+    showing: () => showing,
+    drawn: () => drawn,
+    /** A message from the core: decided before it is applied, synced after, as main.ts does. */
+    ask(id: string) {
+      const placed = a.request(id);
+      if (!entries.some((e) => e.kind === 'card' && e.pendingId === id)) entries = [...entries, card(id)];
+      a.sync();
+      return placed;
+    },
+    settle(id: string, status: CardStatus) {
+      entries = entries.map((e) => (e.kind === 'card' && e.pendingId === id ? { ...e, status } : e));
+      a.sync();
+    },
+    history() {
+      entries = [];
+      a.sync();
+    },
+    userCloses() {
+      showing = false;
+      a.closed(false);
+    },
+  };
+}
+
+describe('createApprovals', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('opens the board for a new card and stamps it once, when drawn there', () => {
+    const t = harness();
+    expect(t.ask('a')).toBe('board');
+    expect(t.showing()).toBe(true);
+    expect(t.a.onBoard('a')).toBe(true);
+    t.a.sync();
+    expect(t.sent).toEqual([{ type: 'confirm.shown', pending_id: 'a' }]);
+  });
+
+  it('keeps it in the conversation with Settings showing, stamped as drawn there', () => {
+    const t = harness({ phone: false, settingsShowing: true });
+    expect(t.ask('a')).toBe('conversation');
+    expect(t.showing()).toBe(false);
+    expect(t.sent).toEqual([{ type: 'confirm.shown', pending_id: 'a' }]);
+  });
+
+  it('closes a board opened only for approvals once the outcome has been seen', () => {
+    vi.useFakeTimers();
+    const t = harness();
+    t.ask('a');
+    t.settle('a', 'done');
+    expect(t.showing()).toBe(true);
+    vi.advanceTimersByTime(OUTCOME_MS + 50);
+    expect(t.calls.close).toBe(1);
+    expect(t.showing()).toBe(false);
+  });
+
+  it('survives a reconnect: the board stays while the cards are gone, and the re-sent card is on it', () => {
+    const t = harness();
+    t.ask('a');
+    t.history();
+    expect(t.calls.close).toBe(0);
+    expect(t.showing()).toBe(true);
+    expect(t.ask('a')).toBe('board');
+    expect(t.showing()).toBe(true);
+    expect(t.drawn().map((i) => i.card.pendingId)).toEqual(['a']);
+    expect(t.sent).toHaveLength(1);
+  });
+
+  it('opens the board again for a re-sent card when the board had closed meanwhile', () => {
+    const t = harness();
+    t.ask('a');
+    t.history();
+    t.userCloses();
+    const shows = t.calls.show;
+    expect(t.ask('a')).toBe('board');
+    expect(t.calls.show).toBe(shows + 1);
+    expect(t.showing()).toBe(true);
+  });
+
+  it('puts a waiting card back in the conversation when the user closes the board, without stamping again', () => {
+    const t = harness();
+    t.ask('a');
+    t.userCloses();
+    expect(t.a.onBoard('a')).toBe(false);
+    expect(t.calls.toConversation).toBe(1);
+    t.a.sync();
+    expect(t.sent).toHaveLength(1);
+    // Announced again later, it stays in the conversation.
+    expect(t.ask('a')).toBe('conversation');
+  });
+
+  it('starts afresh for another conversation', () => {
+    const t = harness();
+    t.ask('a');
+    t.a.reset();
+    expect(t.a.onBoard('a')).toBe(false);
+    expect(t.drawn()).toEqual([]);
   });
 });

@@ -906,8 +906,13 @@ export function createBoardView(opts: BoardOptions): BoardView {
       }
       // Shown again later, the empty state arrives afresh.
       if (emptyEl && !parts.includes(emptyEl)) emptyEl = null;
-      // Only when what is shown changed, so the strip and the grid are never detached for nothing.
-      if (parts.length !== el.children.length || parts.some((p, i) => el.children[i] !== p)) el.replaceChildren(...parts);
+      // In place, so the strip and the grid stay attached (and keep focus) while what is beside them changes.
+      const keepParts = new Set(parts);
+      for (const child of [...el.children]) if (!keepParts.has(child as HTMLElement)) child.remove();
+      parts.forEach((p, i) => {
+        const at = el.children[i] ?? null;
+        if (at !== p) el.insertBefore(p, at);
+      });
       if (scroller) scroller.scrollTop = top;
       if (focused?.isConnected) {
         // A moved card lost focus on the way: it goes back where it was.

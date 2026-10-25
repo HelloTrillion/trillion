@@ -11,11 +11,20 @@ export type Card = Extract<Entry, { kind: 'card' }>;
 
 // ── Pure helpers ────────────────────────────────────────────────────────
 
-/** The cards on the board, newest first: the ones placed there and not dismissed. */
+/**
+ * The cards on the board, placed there and not dismissed. Waiting ones first, oldest first, so a
+ * new card arrives below the ones already asking and never moves a button under the pointer;
+ * then the settled ones, newest first.
+ */
 export function approvalsOf(entries: readonly Entry[], onBoard: ReadonlySet<string>, dismissed: ReadonlySet<string>): Card[] {
-  const out: Card[] = [];
-  for (const e of entries) if (e.kind === 'card' && onBoard.has(e.pendingId) && !dismissed.has(e.pendingId)) out.unshift(e);
-  return out;
+  const asking: Card[] = [];
+  const settled: Card[] = [];
+  for (const e of entries) {
+    if (e.kind !== 'card' || !onBoard.has(e.pendingId) || dismissed.has(e.pendingId)) continue;
+    if (e.status === 'waiting') asking.push(e);
+    else settled.unshift(e);
+  }
+  return [...asking, ...settled];
 }
 
 /** How long an outcome stays on its card before it collapses to a row. */
@@ -131,11 +140,16 @@ export interface Strip {
   dispose(): void;
 }
 
+/** How long a newly drawn card's buttons wait before they take a click. */
+export const ARRIVE_MS = 600;
+
 const R = 18;
 const C = 2 * Math.PI * R;
 
 interface Drawn {
   readonly key: string;
+  /** What a screen reader is told when it appears. */
+  readonly said: string;
   readonly el: HTMLElement;
   readonly mode: Mode;
   /** Brings its countdown up to date. */
@@ -160,6 +174,22 @@ function askCard(it: StripItem, o: StripOptions): Drawn {
   titles.append(h('p', 'ap-eyebrow', it.mode === 'ask' ? 'Needs your OK' : 'Your OK'), title);
   head.append(titles);
 
+  const approve = h('button', 'ap-approve', 'Approve');
+  const decline = h('button', 'ap-decline', 'Decline');
+  // Not at once: a card that appears under a moving pointer is not approved by accident.
+  // Not once it has run out, and not twice: the outcome replaces the card when it comes.
+  let ready = false;
+  let pressed = false;
+  let over = false;
+  const enable = (): void => {
+    approve.disabled = decline.disabled = !ready || pressed || over;
+  };
+  setTimeout(() => {
+    ready = true;
+    enable();
+  }, ARRIVE_MS);
+  enable();
+
   let tick = (_now: number): void => {};
   if (it.mode === 'ask' && c.expiresAt > 0) {
     const arc = s('circle', { cx: 22, cy: 22, r: R, class: 'ap-ring-arc', 'stroke-dasharray': C.toFixed(2) });
@@ -176,6 +206,10 @@ function askCard(it: StripItem, o: StripOptions): Drawn {
       timer.setAttribute('aria-label', `${clock(left)} left to answer`);
       arc.setAttribute('stroke-dashoffset', ((1 - ringLeft(it.askedAt, c.expiresAt, now)) * C).toFixed(2));
       timer.toggleAttribute('data-low', left <= 60);
+      if (left <= 0 && !over) {
+        over = true;
+        enable();
+      }
     };
   }
 
@@ -185,12 +219,15 @@ function askCard(it: StripItem, o: StripOptions): Drawn {
 
   if (it.mode === 'ask') {
     const row = h('div', 'ap-actions');
-    const approve = h('button', 'ap-approve', 'Approve');
+    const press = (send: (id: string) => void) => (): void => {
+      pressed = true;
+      enable();
+      send(c.pendingId);
+    };
     approve.type = 'button';
-    approve.addEventListener('click', () => o.onApprove(c.pendingId));
-    const decline = h('button', 'ap-decline', 'Decline');
+    approve.addEventListener('click', press(o.onApprove));
     decline.type = 'button';
-    decline.addEventListener('click', () => o.onDecline(c.pendingId));
+    decline.addEventListener('click', press(o.onDecline));
     row.append(approve, decline, h('span', 'ap-hint', spokenHint(c.tapOnly)));
     el.append(row);
   } else {
@@ -199,7 +236,7 @@ function askCard(it: StripItem, o: StripOptions): Drawn {
     el.append(out);
   }
   tick(Date.now());
-  return { key: keyOf(it), el, mode: it.mode, tick };
+  return { key: keyOf(it), said: it.mode === 'ask' ? `Needs your OK: ${c.toolLabel}` : `${c.toolLabel}: ${outcomeWords(c.status, c.note)}`, el, mode: it.mode, tick };
 }
 
 function rowCard(it: StripItem, o: StripOptions): Drawn {
@@ -215,14 +252,21 @@ function rowCard(it: StripItem, o: StripOptions): Drawn {
   x.append(icon('close', 13));
   x.addEventListener('click', () => o.onDismiss(c.pendingId));
   el.append(x);
-  return { key: keyOf(it), el, mode: 'row', tick: () => {} };
+  return { key: keyOf(it), said: '', el, mode: 'row', tick: () => {} };
 }
 
 export function createApprovalStrip(o: StripOptions): Strip {
   const el = h('div', 'ap-strip');
   el.setAttribute('aria-label', 'Waiting for your OK');
   el.setAttribute('role', 'region');
+  // Always there, so what is said into it is heard: a new ask, and how each one ended.
+  const live = h('p', 'visually-hidden');
+  live.setAttribute('aria-live', 'polite');
+  const list = h('div', 'ap-list');
+  el.append(live, list);
   let drawn = new Map<string, Drawn>();
+  // What was last said of each card, kept across a close, so reopening repeats nothing.
+  const told = new Map<string, string>();
   let timer: ReturnType<typeof setInterval> | null = null;
 
   function ticking(on: boolean): void {
@@ -253,15 +297,26 @@ export function createApprovalStrip(o: StripOptions): Strip {
       }
       // In place, as the board does: an unchanged card is never detached.
       const keep = new Set(els);
-      for (const child of [...el.children]) if (!keep.has(child as HTMLElement)) child.remove();
+      for (const child of [...list.children]) if (!keep.has(child as HTMLElement)) child.remove();
       els.forEach((c, i) => {
-        const at = el.children[i] ?? null;
-        if (at !== c) el.insertBefore(c, at);
+        const at = list.children[i] ?? null;
+        if (at !== c) list.insertBefore(c, at);
       });
       drawn = next;
       ticking([...next.values()].some((d) => d.mode === 'ask'));
-      if (focusedId !== null && !(active instanceof Node && el.contains(active))) {
-        (next.get(focusedId)?.el ?? els[0])?.focus({ preventScroll: true });
+      // Said once it is in place, and only what has not been said of it before.
+      const say: string[] = [];
+      for (const [id, d] of next) {
+        if (d.said && told.get(id) !== d.said) {
+          told.set(id, d.said);
+          say.push(d.said);
+        }
+      }
+      if (say.length) live.textContent = say.join('. ');
+      if (focusedId !== null && !(active instanceof Node && list.contains(active))) {
+        // The last one dismissed: focus stays on the board rather than falling to the page.
+        const to = next.get(focusedId)?.el ?? els[0] ?? el.closest<HTMLElement>('.bd');
+        to?.focus({ preventScroll: true });
       }
     },
     drawnFull() {
@@ -280,7 +335,7 @@ export function createApprovalStrip(o: StripOptions): Strip {
     dispose() {
       ticking(false);
       drawn = new Map();
-      el.replaceChildren();
+      list.replaceChildren();
     },
   };
 }
@@ -298,6 +353,10 @@ export interface ApprovalsDeps {
   readonly closeBoard: () => void;
   /** Her widgets are up: the board stays for them. */
   readonly hasWidgets: () => boolean;
+  /** Cards waiting on a board the user closed are back in the conversation: show them there. */
+  readonly toConversation: () => void;
+  /** The strip; tests pass a stand-in. */
+  readonly strip?: (o: StripOptions) => Strip;
 }
 
 export interface Approvals {
@@ -328,14 +387,16 @@ export function createApprovals(d: ApprovalsDeps): Approvals {
   let askedAt = new Map<string, number>();
   let resolvedAt = new Map<string, number>();
   let stamped = new Set<string>();
-  // The board was opened for approvals alone: it closes again once they have all settled.
+  // The board was opened for approvals alone: it closes again once one has settled and all have
+  // been seen to. Never because the cards went (a reconnect clears them until the core re-sends).
   let openedFor = false;
+  let settledSinceOpen = false;
   let opening = false;
   let wake: ReturnType<typeof setTimeout> | null = null;
   // What the board last drew of the strip: it is redrawn only when that changes.
   let drawnSig = '';
 
-  const strip = createApprovalStrip({
+  const strip = (d.strip ?? createApprovalStrip)({
     onApprove: (id) => d.send({ type: 'confirm', pending_id: id }),
     onDecline: (id) => d.send({ type: 'cancel', pending_id: id }),
     onDismiss: (id) => {
@@ -353,7 +414,10 @@ export function createApprovals(d: ApprovalsDeps): Approvals {
   }
 
   function open(): void {
-    if (!d.boardShowing()) openedFor = !d.hasWidgets();
+    if (!d.boardShowing()) {
+      openedFor = !d.hasWidgets();
+      settledSinceOpen = false;
+    }
     d.showBoard();
   }
 
@@ -367,29 +431,39 @@ export function createApprovals(d: ApprovalsDeps): Approvals {
     }
   }
 
+  function stopWaking(): void {
+    if (wake !== null) clearTimeout(wake);
+    wake = null;
+  }
+
   function sync(): void {
     const now = Date.now();
     for (const e of d.entries()) {
       if (e.kind !== 'card' || !placed.has(e.pendingId)) continue;
       const settled = e.status !== 'waiting' && e.status !== 'working';
-      if (settled && !resolvedAt.has(e.pendingId)) resolvedAt.set(e.pendingId, now);
+      if (settled && !resolvedAt.has(e.pendingId)) {
+        resolvedAt.set(e.pendingId, now);
+        settledSinceOpen = true;
+      }
       // Back to waiting (it was never on screen): it asks again.
       if (!settled) resolvedAt.delete(e.pendingId);
     }
     const its = items(now);
-    const visible = its.some((it) => it.mode !== 'row');
     if (opening) {
       opening = false;
       if (its.some((it) => it.mode === 'ask') && !d.where().settingsShowing) open();
     } else if (d.boardShowing()) {
-      if (openedFor && !visible && !d.hasWidgets()) {
+      const seen = its.length > 0 && its.every((it) => it.mode === 'row');
+      if (openedFor && settledSinceOpen && seen && !d.hasWidgets()) {
         openedFor = false;
         d.closeBoard();
-      } else if (sigOf(its) !== drawnSig) d.showBoard();
+      } else if (sigOf(its) !== drawnSig && !(openedFor && its.length === 0)) {
+        // An approvals-only board with its cards gone for a moment (a reconnect) waits for them.
+        d.showBoard();
+      }
     }
     // Wake when the next outcome collapses to a row.
-    if (wake !== null) clearTimeout(wake);
-    wake = null;
+    stopWaking();
     const next = Math.min(...its.flatMap((it) => (it.mode === 'outcome' && resolvedAt.has(it.card.pendingId) ? [collapseAt(resolvedAt.get(it.card.pendingId)!)] : [])));
     if (Number.isFinite(next)) wake = setTimeout(sync, Math.max(0, next - now) + 20);
     stamp();
@@ -398,8 +472,12 @@ export function createApprovals(d: ApprovalsDeps): Approvals {
   return {
     strip,
     request(id) {
-      // Announced again (a reconnect): it stays where it was first put.
-      if (askedAt.has(id)) return placed.has(id) ? 'board' : 'conversation';
+      if (askedAt.has(id)) {
+        // Announced again (a reconnect): where it was first put, and the board opens for it again.
+        if (!placed.has(id)) return 'conversation';
+        opening = true;
+        return 'board';
+      }
       askedAt.set(id, Date.now());
       const where = placement(d.where());
       if (where === 'board') {
@@ -424,17 +502,28 @@ export function createApprovals(d: ApprovalsDeps): Approvals {
       stamp();
     },
     closed(replaced) {
-      if (!replaced) openedFor = false;
       strip.dispose();
       drawnSig = '';
+      if (replaced) return;
+      openedFor = false;
+      // Put away with a card still asking: it goes back to the conversation in full. It was
+      // delivered already, so it is not stamped again.
+      let moved = false;
+      for (const e of d.entries()) {
+        if (e.kind === 'card' && e.status === 'waiting' && placed.delete(e.pendingId)) moved = true;
+      }
+      if (moved) d.toConversation();
     },
     reset() {
+      stopWaking();
+      strip.dispose();
       placed = new Set();
       dismissed = new Set();
       askedAt = new Map();
       resolvedAt = new Map();
       stamped = new Set();
       openedFor = false;
+      settledSinceOpen = false;
       opening = false;
       drawnSig = '';
     },
