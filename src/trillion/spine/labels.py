@@ -6,6 +6,7 @@ or a server writes about itself reaches either."""
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from trillion.spine.contract import Risk, ToolDefinition
@@ -13,6 +14,7 @@ from trillion.spine.contract import Risk, ToolDefinition
 Reason = Literal["irreversible", "spend", "write", "read"]
 
 MAX_LABEL = 48
+_NOT_NAME = re.compile(r"[^A-Za-z0-9]+")
 
 LABELS: dict[str, str] = {
     "file_create": "Create a file",
@@ -63,7 +65,10 @@ def tool_label(name: str, mcp: tuple[str, str] | None = None) -> str:
     if mcp is None:
         return name.replace("_", " ")
     server, remote = mcp
-    label = " ".join(f"{server}: {remote.replace('_', ' ')}".split())
+    # The tool's name is the server's: kept to the letters and digits tool_name()
+    # allows, so it cannot read as a sentence ("Harmless lookup. Changes nothing").
+    tool = _NOT_NAME.sub(" ", remote).strip().lower() or name.replace("_", " ")
+    label = " ".join(f"{server}: {tool}".split())
     return label if len(label) <= MAX_LABEL else label[: MAX_LABEL - 1].rstrip() + "…"
 
 

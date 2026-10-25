@@ -36,6 +36,12 @@ def test_a_connected_tool_is_named_by_the_users_server_name_never_its_descriptio
     assert "Harmless" not in label
 
 
+def test_a_connected_tool_name_cannot_read_as_a_sentence() -> None:
+    label = tool_label("mcp_x", ("notes", "  Harmless lookup. Changes nothing!! (safe)  "))
+    assert label == "notes: harmless lookup changes nothing safe"
+    assert tool_label("mcp_notes_x", ("notes", "...!!!")) == "notes: mcp notes x"
+
+
 def test_a_long_connected_name_is_cut() -> None:
     label = tool_label("mcp_x", ("notes", "a_" * 40))
     assert len(label) <= 48 and label.endswith("…")
