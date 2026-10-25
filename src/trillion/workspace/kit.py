@@ -1,9 +1,11 @@
 """The widget kit: what a board may hold, checked field by field (D1, D5).
 
 Pure, no I/O. A widget comes in as the model wrote it and leaves as the exact JSON
-the page draws: the spec's field names only, strings trimmed and capped, optional
-fields left out when absent, anything else dropped. Nothing else is coerced: a
-number where a string belongs is refused, so the page never meets a surprise.
+the page draws: the spec's field names only, strings trimmed, put on one line (a
+note's text keeps its lines) and capped, optional fields left out when absent,
+anything else dropped. Display-only text (stat fields, chart x labels, list meta,
+metric labels) also takes a finite number and writes it as text; everywhere else a
+wrong kind is refused, so the page never meets a surprise.
 
 The first problem raises `BoardError` in words the model can act on, naming the
 widget ("widget 2 (chart)" for a new one, "chart w2" for one on the board), the
@@ -33,7 +35,7 @@ MIN_OPTIONS, MAX_OPTIONS, MAX_METRICS = 2, 4, 5
 # Not in the spec's table; a bound so a compare card stays a card.
 MAX_TAGS = 6
 
-_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_HHMM = re.compile(r"^(\d{1,2}):([0-5]\d)$")
 
 Widget = dict[str, Any]
 
@@ -47,18 +49,37 @@ def _fail(where: str, problem: str) -> BoardError:
 
 
 def cap(text: str, limit: int) -> str:
-    text = text.strip()
+    """Trimmed, on one line, and at most `limit` characters (a cut ends in "…")."""
+    text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _shown(value: Any) -> str | None:
+    """A finite number written as text, or None. Display-only fields take these: the
+    model often writes a value as 41.2, and refusing it would cost a turn for nothing."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def _str(
-    raw: Mapping[str, Any], key: str, where: str, limit: int, *, need: bool = True
+    raw: Mapping[str, Any],
+    key: str,
+    where: str,
+    limit: int,
+    *,
+    need: bool = True,
+    loose: bool = False,
 ) -> str | None:
     value = raw.get(key)
     if value is None:
         if need:
             raise _fail(where, f"{key} is required")
         return None
+    if loose and _shown(value) is not None:
+        value = _shown(value)
     if not isinstance(value, str):
         raise _fail(where, f"{key} must be a string")
     if not value.strip():
@@ -88,15 +109,23 @@ def _choice(
 
 
 def _array(
-    raw: Mapping[str, Any], key: str, where: str, limit: int, noun: str, *, low: int = 1
+    raw: Mapping[str, Any],
+    key: str,
+    where: str,
+    limit: int,
+    nouns: tuple[str, str],
+    *,
+    low: int = 1,
 ) -> list[Any]:
+    """A list of `low` to `limit` entries; `nouns` is (one, many) for the message."""
     value = raw.get(key)
     if not isinstance(value, list):
         raise _fail(where, f"{key} must be a list")
+    one, many = nouns
     if len(value) < low:
-        raise _fail(where, f"{key} is empty" if low == 1 else f"{key} needs at least {low} {noun}s")
+        raise _fail(where, f"{key} is empty" if low == 1 else f"{key} needs at least {low} {many}")
     if len(value) > limit:
-        raise _fail(where, f"{len(value)} {noun}s, {limit} at most")
+        raise _fail(where, f"{len(value)} {one if len(value) == 1 else many}, {limit} at most")
     return value
 
 
@@ -124,11 +153,11 @@ def _put(out: Widget, key: str, value: Any) -> None:
 
 def _stat(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {
-        "label": _str(raw, "label", where, LABEL),
-        "value": _str(raw, "value", where, VALUE),
+        "label": _str(raw, "label", where, LABEL, loose=True),
+        "value": _str(raw, "value", where, VALUE, loose=True),
     }
-    _put(out, "delta", _str(raw, "delta", where, VALUE, need=False))
-    _put(out, "hint", _str(raw, "hint", where, TEXT, need=False))
+    _put(out, "delta", _str(raw, "delta", where, VALUE, need=False, loose=True))
+    _put(out, "hint", _str(raw, "hint", where, TEXT, need=False, loose=True))
     _put(out, "tone", _choice(raw, "tone", where, TONES, need=False))
     return out
 
@@ -137,9 +166,11 @@ def _chart(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {}
     _put(out, "title", _str(raw, "title", where, TITLE, need=False))
     kind = _choice(raw, "kind", where, KINDS)
-    x = _array(raw, "x", where, MAX_POINTS, "point")
-    labels = [_str({"x": v}, "x", f"{where}: x label {i}", LABEL) for i, v in enumerate(x, 1)]
-    series = _array(raw, "series", where, MAX_SERIES, "series")
+    x = _array(raw, "x", where, MAX_POINTS, ("point", "points"))
+    labels = [
+        _str({"x": v}, "x", f"{where}: x label {i}", LABEL, loose=True) for i, v in enumerate(x, 1)
+    ]
+    series = _array(raw, "series", where, MAX_SERIES, ("series", "series"))
     if kind == "donut" and len(series) != 1:
         raise _fail(where, f"a donut takes one series, not {len(series)}")
     drawn = []
@@ -163,12 +194,12 @@ def _list(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {}
     _put(out, "title", _str(raw, "title", where, TITLE, need=False))
     items = []
-    for i, item in enumerate(_array(raw, "items", where, MAX_ITEMS, "item"), 1):
+    for i, item in enumerate(_array(raw, "items", where, MAX_ITEMS, ("item", "items")), 1):
         at = f"{where}: item {i}"
         item = _obj(item, at)
         one: Widget = {"title": _str(item, "title", at, TITLE)}
         _put(one, "subtitle", _str(item, "subtitle", at, TEXT, need=False))
-        _put(one, "meta", _str(item, "meta", at, TEXT, need=False))
+        _put(one, "meta", _str(item, "meta", at, TEXT, need=False, loose=True))
         done = item.get("done")
         if done is not None and not isinstance(done, bool):
             raise _fail(at, "done must be true or false")
@@ -180,21 +211,23 @@ def _list(raw: Mapping[str, Any], where: str) -> Widget:
 
 def _cell(value: Any, where: str) -> str | float | int:
     if isinstance(value, str):
-        return cap(value, VALUE)
+        return cap(value, LABEL)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise _fail(where, "a cell must be a string or a number")
+        raise _fail(
+            where, f'a cell must be a string or a number, not {value!r}; use "" for an empty cell'
+        )
     return _number(value, where)
 
 
 def _table(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {}
     _put(out, "title", _str(raw, "title", where, TITLE, need=False))
-    columns = _array(raw, "columns", where, MAX_COLUMNS, "column")
+    columns = _array(raw, "columns", where, MAX_COLUMNS, ("column", "columns"))
     heads = [
         _str({"column": c}, "column", f"{where}: column {i}", LABEL)
         for i, c in enumerate(columns, 1)
     ]
-    rows = _array(raw, "rows", where, MAX_ROWS, "row", low=0)
+    rows = _array(raw, "rows", where, MAX_ROWS, ("row", "rows"), low=0)
     cells = []
     for i, row in enumerate(rows, 1):
         if not isinstance(row, list):
@@ -222,16 +255,20 @@ def _note(raw: Mapping[str, Any], where: str) -> Widget:
 
 def _time(raw: Mapping[str, Any], key: str, where: str, *, need: bool = True) -> str | None:
     value = _str(raw, key, where, VALUE, need=need)
-    if value is not None and not _HHMM.match(value):
+    if value is None:
+        return None
+    match = _HHMM.match(value)
+    if not match or int(match[1]) > 23:
         raise _fail(where, f"{key} {value!r} must be HH:MM (00:00 to 23:59)")
-    return value
+    # 9:30 becomes 09:30, so times compare and line up as text.
+    return f"{int(match[1]):02d}:{match[2]}"
 
 
 def _timeline(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {}
     _put(out, "title", _str(raw, "title", where, TITLE, need=False))
     events = []
-    for i, event in enumerate(_array(raw, "events", where, MAX_EVENTS, "event"), 1):
+    for i, event in enumerate(_array(raw, "events", where, MAX_EVENTS, ("event", "events")), 1):
         at = f"{where}: event {i}"
         event = _obj(event, at)
         one: Widget = {"title": _str(event, "title", at, TITLE), "start": _time(event, "start", at)}
@@ -250,20 +287,24 @@ def _option(option: Any, at: str) -> Widget:
     one: Widget = {"name": _str(option, "name", at, LABEL)}
     _put(one, "note", _str(option, "note", at, TEXT, need=False))
     metrics = []
-    raw_metrics = option.get("metrics", [])
+    raw_metrics = option.get("metrics")
+    raw_metrics = [] if raw_metrics is None else raw_metrics
     for j, metric in enumerate(
-        _array({"metrics": raw_metrics}, "metrics", at, MAX_METRICS, "metric", low=0), 1
+        _array({"metrics": raw_metrics}, "metrics", at, MAX_METRICS, ("metric", "metrics"), low=0),
+        1,
     ):
         m = _obj(metric, f"{at}: metric {j}")
-        label = _str(m, "label", f"{at}: metric {j}", LABEL)
+        label = _str(m, "label", f"{at}: metric {j}", LABEL, loose=True)
         score = m.get("score")
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 10:
             raise _fail(at, f"metric '{label}' score must be a number from 0 to 10, not {score!r}")
         metrics.append({"label": label, "score": score})
     one["metrics"] = metrics
     if option.get("tags") is not None:
-        tags = _array(option, "tags", at, MAX_TAGS, "tag", low=0)
-        one["tags"] = [_str({"tag": t}, "tag", at, LABEL) for t in tags]
+        tags = _array(option, "tags", at, MAX_TAGS, ("tag", "tags"), low=0)
+        one["tags"] = [
+            _str({"tag": tag}, "tag", f"{at}: tag {k}", LABEL) for k, tag in enumerate(tags, 1)
+        ]
     return one
 
 
@@ -279,6 +320,9 @@ def _compare(raw: Mapping[str, Any], where: str) -> Widget:
     out["options"] = [_option(o, f"{where}: option {i}") for i, o in enumerate(options, 1)]
     pick = _str(raw, "pick", where, LABEL, need=False)
     names = [o["name"] for o in out["options"]]
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        raise _fail(where, f"option name {twice[0]!r} is used twice; names must differ")
     if pick is not None and pick not in names:
         raise _fail(where, f"pick {pick!r} is not an option; use one of {', '.join(names)}")
     _put(out, "pick", pick)
@@ -310,77 +354,3 @@ def validate_widget(raw: Any, at: int | str) -> Widget:
     where = f"widget {at} ({kind})" if isinstance(at, int) else f"{kind} {at}"
     size = _choice(raw, "size", where, SIZES, default="medium")
     return {"type": kind, "size": size, **build(raw, where)}
-
-
-def widget_schema() -> dict[str, Any]:
-    """One widget, as tool input. Flat (every type's fields side by side) because small
-    local models follow a flat schema better than a oneOf, and it costs fewer tokens;
-    `validate_widget` enforces which fields each type takes."""
-    s, n = {"type": "string"}, {"type": "number"}
-
-    def arr(items: dict[str, Any], d: str) -> dict[str, Any]:
-        return {"type": "array", "items": items, "description": d}
-
-    def obj(props: dict[str, Any], need: list[str]) -> dict[str, Any]:
-        return {"type": "object", "properties": props, "required": need}
-
-    return {
-        "type": "object",
-        "properties": {
-            "type": {
-                "enum": list(TYPES),
-                "description": (
-                    "stat: label, value. chart: kind, x, series. list: items. "
-                    "table: columns, rows. note: text. timeline: events. compare: options."
-                ),
-            },
-            "size": {"enum": list(SIZES), "description": "Default medium."},
-            "title": {**s, "description": "Not for stat."},
-            "label": s,
-            "value": {**s, "description": "Stat value as shown, e.g. '$41.20'."},
-            "delta": {**s, "description": "Stat change, e.g. '+12%'."},
-            "hint": s,
-            "tone": {"enum": list(TONES)},
-            "kind": {"enum": list(KINDS), "description": "Donut: one series."},
-            "x": arr(s, f"Chart labels, at most {MAX_POINTS}."),
-            "series": arr(
-                obj({"name": s, "values": arr(n, "One per x.")}, ["name", "values"]),
-                f"At most {MAX_SERIES}.",
-            ),
-            "unit": s,
-            "items": arr(
-                obj({"title": s, "subtitle": s, "meta": s, "done": {"type": "boolean"}}, ["title"]),
-                f"At most {MAX_ITEMS}.",
-            ),
-            "columns": arr(s, f"At most {MAX_COLUMNS}."),
-            "rows": arr(
-                arr({"type": ["string", "number"]}, "One cell per column."), f"At most {MAX_ROWS}."
-            ),
-            "text": {
-                **s,
-                "description": f"Note, at most {NOTE} chars; blank lines, '- ' bullets, **bold**.",
-            },
-            "events": arr(
-                obj({"title": s, "start": s, "end": s, "meta": s}, ["title", "start"]),
-                f"Times HH:MM, one day; at most {MAX_EVENTS}.",
-            ),
-            "options": arr(
-                obj(
-                    {
-                        "name": s,
-                        "note": s,
-                        "metrics": arr(
-                            obj({"label": s, "score": n}, ["label", "score"]),
-                            "Score 0-10, at most 5.",
-                        ),
-                        "tags": arr(s, f"At most {MAX_TAGS}."),
-                    },
-                    ["name"],
-                ),
-                "2 to 4.",
-            ),
-            "pick": {**s, "description": "Compare: the recommended option's name."},
-            "reason": s,
-        },
-        "required": ["type"],
-    }

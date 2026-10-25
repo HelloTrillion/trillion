@@ -1,11 +1,14 @@
 import math
+from collections.abc import Callable
+from typing import Any
 
 import jsonschema
 import pytest
 
 from trillion.workspace import board as b
 from trillion.workspace.board import BoardError
-from trillion.workspace.kit import MAX_WIDGETS, validate_widget, widget_schema
+from trillion.workspace.kit import MAX_WIDGETS, validate_widget
+from trillion.workspace.schema import widget_schema
 
 STAT = {"type": "stat", "label": "Total", "value": "$41.20"}
 CHART = {
@@ -29,13 +32,24 @@ COMPARE = {
 MINIMAL = [STAT, CHART, LIST, TABLE, NOTE, TIMELINE, COMPARE]
 
 
-def refused(raw: object, *parts: str) -> str:
+def refused(raw: object, at: int | str = 1) -> str:
     with pytest.raises(BoardError) as err:
-        validate_widget(raw, 1)
-    message = str(err.value)
-    for part in parts:
-        assert part in message, message
-    return message
+        validate_widget(raw, at)
+    return str(err.value)
+
+
+def error(call: Callable[[], object]) -> str:
+    with pytest.raises(BoardError) as err:
+        call()
+    return str(err.value)
+
+
+def series(*lengths: int) -> list[dict[str, object]]:
+    return [{"name": f"S{i}", "values": [1] * n} for i, n in enumerate(lengths, 1)]
+
+
+def compare(*names: str, **extra: object) -> dict[str, object]:
+    return {"type": "compare", "options": [{"name": n} for n in names], **extra}
 
 
 # The kit
@@ -112,98 +126,225 @@ def test_note_keeps_its_lines():
     assert validate_widget({**NOTE, "text": f"  {text}\n"}, 1)["text"] == text
 
 
+def test_strings_go_on_one_line():
+    out = validate_widget({**STAT, "label": "Total\n  spent\tin  October"}, 1)
+    assert out["label"] == "Total spent in October"
+    items = validate_widget({"type": "list", "items": [{"title": "a\n\nb"}]}, 1)
+    assert items["items"][0]["title"] == "a b"
+
+
+def test_display_strings_take_numbers():
+    stat = validate_widget({**STAT, "label": 2026, "value": 41.2, "delta": 3.0, "hint": -1}, 1)
+    assert (stat["label"], stat["value"], stat["delta"], stat["hint"]) == (
+        "2026",
+        "41.2",
+        "3",
+        "-1",
+    )
+    chart = validate_widget({**CHART, "x": [1, 2.5]}, 1)
+    assert chart["x"] == ["1", "2.5"]
+    items = validate_widget({"type": "list", "items": [{"title": "a", "meta": 3}]}, 1)
+    assert items["items"][0]["meta"] == "3"
+    metric = validate_widget(
+        compare(
+            "A",
+            "B",
+            options=[{"name": "A", "metrics": [{"label": 2024, "score": 5}]}, {"name": "B"}],
+        ),
+        1,
+    )
+    assert metric["options"][0]["metrics"] == [{"label": "2024", "score": 5}]
+
+
+def test_display_strings_still_refuse_bools_and_nan():
+    assert refused({**STAT, "value": True}) == "widget 1 (stat): value must be a string."
+    assert refused({**STAT, "value": math.nan}) == "widget 1 (stat): value must be a string."
+
+
 def test_unknown_type():
-    refused({"type": "map"}, "widget 1", "unknown type 'map'", "stat")
+    assert refused({"type": "map"}) == (
+        "widget 1: unknown type 'map'; "
+        "use one of stat, chart, list, table, note, timeline, compare."
+    )
 
 
 def test_not_an_object():
-    refused("chart", "widget 1", "object")
+    assert refused("chart") == "widget 1: must be an object."
 
 
 def test_missing_and_blank_required():
-    refused({"type": "stat", "value": "1"}, "widget 1 (stat)", "label")
-    refused({**STAT, "label": "   "}, "label")
+    assert refused({"type": "stat", "value": "1"}) == "widget 1 (stat): label is required."
+    assert refused({**STAT, "label": "   "}) == "widget 1 (stat): label is blank."
 
 
-def test_wrong_kinds_are_not_coerced():
-    refused({**STAT, "value": 41.2}, "value", "string")
-    refused({**LIST, "items": [{"title": "a", "done": "yes"}]}, "done", "true or false")
+def test_strict_fields_are_not_coerced():
+    assert refused({**CHART, "title": 7}) == "widget 1 (chart): title must be a string."
+    assert refused({**LIST, "items": [{"title": "a", "done": "yes"}]}) == (
+        "widget 1 (list): item 1: done must be true or false."
+    )
 
 
 def test_bad_size_and_tone():
-    refused({**STAT, "size": "huge"}, "size", "small")
-    refused({**STAT, "tone": "sideways"}, "tone")
+    assert refused({**STAT, "size": "huge"}) == (
+        "widget 1 (stat): size must be one of small, medium, wide, full, not 'huge'."
+    )
+    assert refused({**STAT, "tone": "sideways"}) == (
+        "widget 1 (stat): tone must be one of up, down, neutral, not 'sideways'."
+    )
 
 
-def test_chart_limits():
-    refused({**CHART, "kind": "pie"}, "kind")
-    six = [{"name": f"S{i}", "values": [1, 2]} for i in range(6)]
-    refused({**CHART, "series": six}, "6 series", "5")
-    refused(
-        {**CHART, "series": [{"name": "Spend", "values": [1] * 12}]},
-        "widget 1 (chart)",
-        "series 'Spend' has 12 values but x has 2",
+def test_chart_kind():
+    assert refused({**CHART, "kind": "pie"}) == (
+        "widget 1 (chart): kind must be one of line, bar, area, donut, not 'pie'."
     )
-    refused(
-        {
-            **CHART,
-            "x": [str(i) for i in range(201)],
-            "series": [{"name": "s", "values": [1] * 201}],
-        },
-        "200",
+
+
+def test_chart_series_count():
+    assert validate_widget({**CHART, "series": series(2, 2, 2, 2, 2)}, 1)
+    assert refused({**CHART, "series": series(2, 2, 2, 2, 2, 2)}) == (
+        "widget 1 (chart): 6 series, 5 at most."
     )
-    refused({**CHART, "series": [{"name": "s", "values": [1, math.nan]}]}, "finite")
-    refused({**CHART, "series": [{"name": "s", "values": [1, math.inf]}]}, "finite")
-    refused({**CHART, "series": [{"name": "s", "values": [1, True]}]}, "number")
-    two = [{"name": "a", "values": [1, 2]}, {"name": "b", "values": [1, 2]}]
-    refused({**CHART, "kind": "donut", "series": two}, "donut", "one series")
-    refused({**CHART, "series": []}, "series")
+    assert refused({**CHART, "series": []}) == "widget 1 (chart): series is empty."
+
+
+def test_chart_series_length():
+    assert refused({**CHART, "series": [{"name": "Spend", "values": [1] * 12}]}) == (
+        "widget 1 (chart): series 'Spend' has 12 values but x has 2."
+    )
+
+
+def test_chart_points_boundary():
+    x200 = [str(i) for i in range(200)]
+    assert len(validate_widget({**CHART, "x": x200, "series": series(200)}, 1)["x"]) == 200
+    assert refused({**CHART, "x": [*x200, "201"], "series": series(201)}) == (
+        "widget 1 (chart): 201 points, 200 at most."
+    )
+
+
+def test_chart_values_finite_numbers():
+    for bad in (math.nan, math.inf):
+        assert refused({**CHART, "series": [{"name": "s", "values": [1, bad]}]}) == (
+            "widget 1 (chart): series 's': values must be finite numbers."
+        )
+    assert refused({**CHART, "series": [{"name": "s", "values": [1, True]}]}) == (
+        "widget 1 (chart): series 's': True is not a number."
+    )
+
+
+def test_donut_takes_one_series():
+    assert refused({**CHART, "kind": "donut", "series": series(2, 2)}) == (
+        "widget 1 (chart): a donut takes one series, not 2."
+    )
 
 
 def test_list_limit():
-    refused({"type": "list", "items": [{"title": "x"}] * 31}, "31 items", "30")
+    assert refused({"type": "list", "items": [{"title": "x"}] * 31}) == (
+        "widget 1 (list): 31 items, 30 at most."
+    )
 
 
 def test_table_limits():
-    refused({**TABLE, "rows": [["Mon", 3, "extra"]]}, "row 1 has 3 cells but there are 2 columns")
-    refused({**TABLE, "columns": [str(i) for i in range(9)], "rows": []}, "9 columns", "8")
-    refused({**TABLE, "rows": [["Mon", 1]] * 51}, "51 rows", "50")
-    refused({**TABLE, "rows": [["Mon", None]]}, "cell")
-    refused({**TABLE, "rows": [["Mon", math.nan]]}, "finite")
+    assert refused({**TABLE, "rows": [["Mon", 3, "extra"]]}) == (
+        "widget 1 (table): row 1 has 3 cells but there are 2 columns."
+    )
+    assert refused({**TABLE, "columns": [str(i) for i in range(9)], "rows": []}) == (
+        "widget 1 (table): 9 columns, 8 at most."
+    )
+    assert refused({**TABLE, "rows": [["Mon", 1]] * 51}) == "widget 1 (table): 51 rows, 50 at most."
+    assert refused({**TABLE, "rows": [["Mon", None]]}) == (
+        "widget 1 (table): row 1: a cell must be a string or a number, not None; "
+        'use "" for an empty cell.'
+    )
+    assert refused({**TABLE, "rows": [["Mon", math.nan]]}) == (
+        "widget 1 (table): row 1: values must be finite numbers."
+    )
+
+
+def test_table_cells_capped_at_label_length():
+    cell = validate_widget({**TABLE, "rows": [["M" * 100, 1]]}, 1)["rows"][0][0]
+    assert len(cell) == 60 and cell.endswith("…")
 
 
 def test_note_limit():
-    refused({**NOTE, "text": "x" * 2001}, "widget 1 (note)", "2001", "2000")
+    assert refused({**NOTE, "text": "x" * 2001}) == (
+        "widget 1 (note): text is 2001 characters, 2000 at most."
+    )
     assert len(validate_widget({**NOTE, "text": "x" * 2000}, 1)["text"]) == 2000
 
 
-def test_timeline_limits():
-    refused({"type": "timeline", "events": [{"title": "a", "start": "9am"}]}, "event 1", "HH:MM")
-    refused({"type": "timeline", "events": [{"title": "a", "start": "24:00"}]}, "HH:MM")
-    refused(
-        {"type": "timeline", "events": [{"title": "a", "start": "10:00", "end": "09:00"}]}, "before"
+def test_timeline_times():
+    assert refused({"type": "timeline", "events": [{"title": "a", "start": "9am"}]}) == (
+        "widget 1 (timeline): event 1: start '9am' must be HH:MM (00:00 to 23:59)."
     )
-    refused(
-        {"type": "timeline", "events": [{"title": "a", "start": "10:00"}] * 21}, "21 events", "20"
+    assert refused({"type": "timeline", "events": [{"title": "a", "start": "24:00"}]}) == (
+        "widget 1 (timeline): event 1: start '24:00' must be HH:MM (00:00 to 23:59)."
+    )
+    assert (
+        refused({"type": "timeline", "events": [{"title": "a", "start": "10:00", "end": "9:00"}]})
+        == "widget 1 (timeline): event 1: end 09:00 is before start 10:00 (one day only)."
     )
 
 
-def test_compare_limits():
-    refused({**COMPARE, "options": COMPARE["options"][:1]}, "1 option", "2 to 4")
-    refused({**COMPARE, "options": COMPARE["options"] * 3}, "6 options", "2 to 4")
-    five = [{"label": str(i), "score": 1} for i in range(6)]
-    refused(
-        {**COMPARE, "options": [{"name": "a", "metrics": five}, {"name": "b"}]}, "6 metrics", "5"
+def test_timeline_pads_single_digit_hours():
+    out = validate_widget(
+        {"type": "timeline", "events": [{"title": "a", "start": "9:30", "end": "10:05"}]}, 1
+    )
+    assert out["events"][0]["start"] == "09:30" and out["events"][0]["end"] == "10:05"
+
+
+def test_timeline_limit():
+    assert refused({"type": "timeline", "events": [{"title": "a", "start": "10:00"}] * 21}) == (
+        "widget 1 (timeline): 21 events, 20 at most."
+    )
+
+
+def test_compare_option_count():
+    assert validate_widget(compare("A", "B", "C", "D"), 1)
+    assert refused(compare("A")) == "widget 1 (compare): 1 option; a compare takes 2 to 4."
+    assert refused(compare("A", "B", "C", "D", "E")) == (
+        "widget 1 (compare): 5 options; a compare takes 2 to 4."
+    )
+
+
+def test_compare_names_differ():
+    assert refused(compare("A", "A")) == (
+        "widget 1 (compare): option name 'A' is used twice; names must differ."
+    )
+
+
+def test_compare_metrics():
+    six = [{"label": str(i), "score": 1} for i in range(6)]
+    assert refused(compare("A", "B", options=[{"name": "A", "metrics": six}, {"name": "B"}])) == (
+        "widget 1 (compare): option 1: 6 metrics, 5 at most."
     )
     for score in (-1, 11, math.nan):
-        bad = [{"name": "a", "metrics": [{"label": "Fun", "score": score}]}, {"name": "b"}]
-        refused({**COMPARE, "options": bad}, "score", "0 to 10")
-    refused({**COMPARE, "pick": "Beach"}, "pick 'Beach'", "Hike")
+        bad = [{"name": "A", "metrics": [{"label": "Fun", "score": score}]}, {"name": "B"}]
+        assert refused(compare("A", "B", options=bad)) == (
+            "widget 1 (compare): option 1: "
+            f"metric 'Fun' score must be a number from 0 to 10, not {score!r}."
+        )
+    nulls = validate_widget(
+        compare("A", "B", options=[{"name": "A", "metrics": None}, {"name": "B"}]), 1
+    )
+    assert nulls["options"][0]["metrics"] == []
+
+
+def test_compare_tags():
+    assert refused(
+        compare("A", "B", options=[{"name": "A", "tags": ["ok", " "]}, {"name": "B"}])
+    ) == ("widget 1 (compare): option 1: tag 2: tag is blank.")
+
+
+def test_compare_pick():
+    assert refused({**COMPARE, "pick": "Beach"}) == (
+        "widget 1 (compare): pick 'Beach' is not an option; use one of Hike, Museum."
+    )
 
 
 def test_existing_widget_named_by_id():
-    with pytest.raises(BoardError, match=r"^chart w2: series 'Spend' has 1 values but x has 2"):
-        validate_widget({**CHART, "series": [{"name": "Spend", "values": [1]}]}, "w2")
+    assert refused({**CHART, "series": [{"name": "Spend", "values": [1]}]}, "w2") == (
+        "chart w2: series 'Spend' has 1 values but x has 2."
+    )
 
 
 def test_schema_lists_the_kit():
@@ -214,6 +355,15 @@ def test_schema_lists_the_kit():
     jsonschema.Draft202012Validator.check_schema(schema)
     for raw in MINIMAL:
         jsonschema.validate(raw, schema)
+    for name, prop in schema["properties"].items():
+        if "enum" in prop:
+            assert prop["type"] == "string", name
+    for name in ("label", "unit", "pick", "reason"):
+        assert schema["properties"][name]["description"].split(":")[0] in (
+            "Stat",
+            "Chart",
+            "Compare",
+        )
 
 
 # Board edits
@@ -224,6 +374,10 @@ def test_show_on_no_board_opens_it_with_ids():
     assert board["title"] == "October spend" and board["open"] is True
     assert [w["id"] for w in board["widgets"]] == ["w1", "w2"]
     assert board["next_id"] == 3
+
+
+def test_show_takes_a_tuple():
+    assert len(b.show(None, "A", (STAT, NOTE))["widgets"]) == 2
 
 
 def test_show_replace_and_add_never_reuse_ids():
@@ -242,12 +396,16 @@ def test_show_does_not_change_the_board_it_was_given():
     assert len(first["widgets"]) == 1
 
 
-def test_thirteenth_widget_refused():
+def test_twelve_widgets_fit_and_a_thirteenth_is_refused():
     board = b.show(None, "A", [STAT] * MAX_WIDGETS)
-    with pytest.raises(BoardError, match="13 widgets"):
+    assert len(board["widgets"]) == 12
+    message = "that makes 13 widgets; a board holds 12 at most. Remove some or replace them."
+    with pytest.raises(BoardError) as err:
         b.show(board, None, [NOTE], mode="add")
-    with pytest.raises(BoardError, match="13 widgets"):
+    assert str(err.value) == message
+    with pytest.raises(BoardError) as err:
         b.show(None, "A", [STAT] * 13)
+    assert str(err.value) == message
 
 
 def test_show_names_the_bad_widget_by_position():
@@ -256,8 +414,10 @@ def test_show_names_the_bad_widget_by_position():
 
 
 def test_bad_mode_refused():
-    with pytest.raises(BoardError, match="mode"):
-        b.show(None, "A", [STAT], mode="merge")
+    bad: Any = "merge"
+    assert error(lambda: b.show(None, "A", [STAT], mode=bad)) == (
+        "mode must be replace or add, not 'merge'."
+    )
 
 
 def test_update_keeps_id_and_position():
@@ -270,12 +430,14 @@ def test_update_keeps_id_and_position():
     assert board["next_id"] == 4
 
 
-def test_update_unknown_id():
-    board = b.show(None, "A", [STAT])
-    with pytest.raises(BoardError, match="no widget w9"):
+def test_update_unknown_id_names_the_ones_there():
+    board = b.remove(b.show(None, "A", [STAT, STAT, STAT, STAT]), ["w3"])
+    with pytest.raises(BoardError) as err:
         b.update(board, "w9", STAT)
-    with pytest.raises(BoardError, match="no widget"):
+    assert str(err.value) == "there is no widget w9 on the board; it has w1, w2, w4."
+    with pytest.raises(BoardError) as err:
         b.update(None, "w1", STAT)
+    assert str(err.value) == "there is no widget w1 on the board; it is empty."
 
 
 def test_remove_some_and_all():
@@ -291,8 +453,15 @@ def test_remove_some_and_all():
 
 def test_remove_unknown_id_changes_nothing():
     board = b.show(None, "A", [STAT])
-    with pytest.raises(BoardError, match="no widget w7"):
-        b.remove(board, ["w1", "w7"])
+    assert (
+        error(lambda: b.remove(board, ["w1", "w7"]))
+        == "there is no widget w7 on the board; it has w1."
+    )
+
+
+def test_remove_and_close_with_no_board():
+    assert error(lambda: b.remove(None, "all")) == "there is no board to remove from."
+    assert error(lambda: b.close(None)) == "there is no board to close."
 
 
 def test_close_and_reopen():
@@ -303,10 +472,9 @@ def test_close_and_reopen():
 
 
 def test_reopen_empty_board_refused():
-    with pytest.raises(BoardError, match="nothing"):
-        b.show(None, None, [])
-    with pytest.raises(BoardError, match="nothing"):
-        b.show(b.remove(b.show(None, "A", [STAT]), "all"), None, [])
+    message = "there is nothing on the board to show; give it widgets."
+    assert error(lambda: b.show(None, None, [])) == message
+    assert error(lambda: b.show(b.remove(b.show(None, "A", [STAT]), "all"), None, [])) == message
 
 
 # Summary
@@ -317,15 +485,22 @@ def test_summary():
     assert b.summary(board) == (
         'Board (open): "October spend": w1 stat "Total", w2 line chart "Daily spend".'
     )
-    assert b.summary(b.close(board)).startswith('Board (closed): "October spend": w1')
+    assert b.summary(b.close(board)) == (
+        'Board (closed): "October spend": w1 stat "Total", w2 line chart "Daily spend".'
+    )
     assert b.summary(None) == ""
 
 
 def test_summary_clips_titles_and_handles_untitled():
     board = b.show(None, "T" * 60, [LIST, {**NOTE, "title": "N" * 50}])
-    line = b.summary(board)
-    assert '"' + "T" * 39 + '…"' in line
-    assert 'w1 list, w2 note "' + "N" * 39 + '…".' in line
+    assert b.summary(board) == (
+        'Board (open): "' + "T" * 39 + '…": w1 list, w2 note "' + "N" * 39 + '…".'
+    )
+
+
+def test_summary_is_one_line():
+    board = b.show(None, "Two\nlines", [{**NOTE, "title": "a\nb", "text": "x\n\ny"}])
+    assert b.summary(board) == 'Board (open): "Two lines": w1 note "a b".'
 
 
 def test_summary_of_emptied_board():

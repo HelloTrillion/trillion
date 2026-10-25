@@ -31,21 +31,24 @@ def _copy(board: Board | None) -> Board:
 
 
 def _index(board: Board | None, widget_id: Any) -> int:
-    for i, widget in enumerate(board["widgets"] if board else []):
+    widgets = board["widgets"] if board else []
+    for i, widget in enumerate(widgets):
         if widget["id"] == widget_id:
             return i
-    raise BoardError(f"there is no widget {widget_id} on the board.")
+    has = f"it has {', '.join(w['id'] for w in widgets)}" if widgets else "it is empty"
+    raise BoardError(f"there is no widget {widget_id} on the board; {has}.")
 
 
 def show(
-    board: Board | None, title: str | None, widgets: Sequence[Any], mode: str = "replace"
+    board: Board | None, title: str | None, widgets: Sequence[Any], mode: Mode = "replace"
 ) -> Board:
     """Put widgets up and open the board. `replace` clears what was there; `add`
     appends. No widgets reopens the board as it was."""
     if mode not in ("replace", "add"):
         raise BoardError(f"mode must be replace or add, not {mode!r}.")
-    if not isinstance(widgets, list):
+    if isinstance(widgets, (str, bytes)) or not isinstance(widgets, Sequence):
         raise BoardError("widgets must be a list.")
+    widgets = list(widgets)
     out = _copy(board)
     if not widgets and not out["widgets"]:
         raise BoardError("there is nothing on the board to show; give it widgets.")
@@ -82,6 +85,8 @@ def update(board: Board | None, widget_id: str, widget: Any) -> Board:
 
 def remove(board: Board | None, ids: Sequence[str] | Literal["all"]) -> Board:
     """Take widgets off. Taking the last one off closes the board."""
+    if board is None:
+        raise BoardError("there is no board to remove from.")
     out = _copy(board)
     if ids == "all":
         out["widgets"] = []
