@@ -100,22 +100,30 @@ async def test_close_keeps_the_board(s: Setup) -> None:
 
 async def test_the_page_changes_the_saved_board(s: Setup) -> None:
     await s.boards.show("c1", "October", [STAT, LIST])
-    await s.boards.user_remove("c1", "w1")
+    assert await s.boards.user_remove("c1", "w1")
     saved = await s.saved()
     assert saved is not None and [w["id"] for w in saved["widgets"]] == ["w2"]
-    await s.boards.user_close("c1")
+    assert await s.boards.user_close("c1")
+    saved = await s.saved()
+    assert saved is not None and not saved["open"]
+    assert await s.boards.user_open("c1")
+    saved = await s.saved()
+    assert saved is not None and saved["open"] and [w["id"] for w in saved["widgets"]] == ["w2"]
+    assert not await s.boards.user_open("c1")  # already open
+    assert await s.boards.user_close("c1")
     saved = await s.saved()
     assert saved is not None and not saved["open"]
 
 
 async def test_the_page_naming_nothing_is_ignored(s: Setup) -> None:
-    await s.boards.user_close("c1")  # no board yet
-    await s.boards.user_remove("c1", "w1")
+    assert not await s.boards.user_close("c1")  # no board yet
+    assert not await s.boards.user_open("c1")
+    assert not await s.boards.user_remove("c1", "w1")
     assert await s.saved() is None
     await s.boards.show("c1", "October", [STAT])
     sent = len(s.pages.sent)
-    await s.boards.user_remove("c1", "w9")  # already gone
-    await s.boards.user_remove("nowhere", "w1")
+    assert not await s.boards.user_remove("c1", "w9")  # already gone
+    assert not await s.boards.user_remove("nowhere", "w1")
     assert len(s.pages.sent) == sent
 
 
@@ -127,6 +135,18 @@ async def test_a_failed_save_shows_nothing(s: Setup) -> None:
     with pytest.raises(BoardSaveError, match="could not be saved"):
         await s.boards.show("c1", "October", [STAT])
     assert s.pages.sent == []
+
+
+async def test_a_users_edit_that_cannot_be_saved_says_so(s: Setup) -> None:
+    await s.boards.show("c1", "October", [STAT])
+
+    async def broken(*_: Any) -> None:
+        raise OSError("disk full")
+
+    s.store.put = broken  # type: ignore[method-assign]
+    assert not await s.boards.user_remove("c1", "w1")
+    assert not await s.boards.user_close("c1")
+    assert not await s.boards.user_open("c1")
 
 
 async def test_pages_get_boards_in_the_order_they_were_saved(s: Setup) -> None:

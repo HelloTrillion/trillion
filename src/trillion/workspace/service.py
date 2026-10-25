@@ -119,16 +119,35 @@ class Boards:
 
     # ── The user's, from the page (D7) ───────────────────────────────────
 
-    async def user_close(self, conversation_id: str) -> None:
-        """A page closed the board. Nothing to close is not an error."""
+    async def user_close(self, conversation_id: str) -> bool:
+        """A page closed the board. False when nothing changed (no board, or it could
+        not be saved): the page then needs the board as it really is."""
         try:
             await self.close(conversation_id)
         except BoardError:
-            pass
+            return False
+        return True
 
-    async def user_remove(self, conversation_id: str, widget_id: str) -> None:
-        """A page took a widget off. An id that is not there (already gone) is ignored."""
+    async def user_open(self, conversation_id: str) -> bool:
+        """A page reopened the board as it was. False when nothing changed (no board,
+        already open, an empty one, or a failed save), as for `user_close`."""
+
+        def reopen(board: Board | None) -> Board:
+            if board is None or board["open"]:
+                raise BoardError("there is no closed board to open.")
+            return edits.show(board, None, [])
+
+        try:
+            await self._apply(conversation_id, reopen)
+        except BoardError:
+            return False
+        return True
+
+    async def user_remove(self, conversation_id: str, widget_id: str) -> bool:
+        """A page took a widget off. False when nothing changed (an id already gone, or
+        a failed save), as for `user_close`."""
         try:
             await self.remove(conversation_id, [widget_id])
         except BoardError:
-            pass
+            return False
+        return True

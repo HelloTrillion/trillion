@@ -72,7 +72,9 @@ async def test_her_board_reaches_the_page_and_comes_back_on_reopen(rt: Runtime) 
 
 
 async def test_the_pages_edits_change_the_saved_board_and_her_context(rt: Runtime) -> None:
-    provider = ScriptedProvider(show(STAT, LIST), say("It's up."), say("Done."), say("Ok."))
+    provider = ScriptedProvider(
+        show(STAT, LIST), say("It's up."), say("Done."), say("Ok."), say("Back.")
+    )
     rt.provider = provider
     page = Page(rt)
     s = await Session.start(rt, page.send, None)
@@ -89,10 +91,19 @@ async def test_the_pages_edits_change_the_saved_board_and_her_context(rt: Runtim
     assert 'Board (open): "October spend": w1 stat "Total".' in line
     assert "Biggest" not in line
 
+    # The message she was sent before the change is sent again byte for byte.
+    assert provider.calls[2][1][0] == provider.calls[0][1][0]
+
     await s.handle({"type": "board.close"})
     assert page.all("board")[-1]["board"]["open"] is False
     await turn(s, page, "bye", 3)
     assert "Board (closed)" in context_of(provider, 3)
+    assert provider.calls[3][1][:5] == provider.calls[2][1][:5]
+
+    await s.handle({"type": "board.open"})
+    assert page.all("board")[-1]["board"]["open"] is True
+    await turn(s, page, "again", 4)
+    assert 'Board (open): "October spend"' in context_of(provider, 4)
     await s.close()
 
 
@@ -106,13 +117,40 @@ async def test_no_board_no_line(rt: Runtime) -> None:
     await s.close()
 
 
-async def test_an_unknown_widget_or_an_empty_board_is_ignored(rt: Runtime) -> None:
+async def test_an_edit_that_changes_nothing_resends_the_board(rt: Runtime) -> None:
+    """The page may have drawn the change already: it is told the board as it is."""
     page = Page(rt)
     s = await Session.start(rt, page.send, None)
-    await s.handle({"type": "board.close"})
+    for kind in ("board.open", "board.close"):
+        await s.handle({"type": kind})
     await s.handle({"type": "board.remove", "id": "w9"})
-    assert page.all("board") == [{"type": "board", "board": None}]
+    assert page.all("board") == [{"type": "board", "board": None}] * 4
     assert page.all("error") == []
     await s.handle({"type": "board.remove"})
     assert page.all("error")[-1]["code"] == "bad_message"
+    await s.close()
+
+
+async def test_a_failed_edit_resends_the_saved_board(rt: Runtime) -> None:
+    rt.provider = ScriptedProvider(show(STAT, LIST), say("It's up."))
+    page = Page(rt)
+    s = await Session.start(rt, page.send, None)
+    await turn(s, page, "show me october", 1)
+    shown = page.all("board")[-1]["board"]
+
+    async def broken(*_: Any) -> None:
+        raise OSError("disk full")
+
+    rt.board_store.put = broken  # type: ignore[method-assign]
+    await s.handle({"type": "board.remove", "id": "w2"})
+    assert page.all("board")[-1]["board"] == shown
+
+    assert rt.boards is not None
+
+    async def worse(*_: Any) -> bool:
+        raise RuntimeError("unexpected")
+
+    rt.boards.user_close = worse  # type: ignore[method-assign]
+    await s.handle({"type": "board.close"})
+    assert page.all("board")[-1]["board"] == shown
     await s.close()

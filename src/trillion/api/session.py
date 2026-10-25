@@ -482,7 +482,7 @@ class Session:
             elif self._via == "voice" and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
             await self._offer()
-        elif kind in ("board.close", "board.remove"):
+        elif kind in ("board.open", "board.close", "board.remove"):
             await self._on_board(kind, msg.get("id"))
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
@@ -503,17 +503,30 @@ class Session:
             return None
 
     async def _on_board(self, kind: str, widget_id: object) -> None:
-        """The user closed the board or took a widget off. It changes the saved board,
-        so her next turn sees what they see (D7). An unknown id is ignored."""
+        """The user opened or closed the board, or took a widget off. It changes the
+        saved board, so her next turn sees what they see (D7). When nothing changed,
+        this page is sent the board as it really is, so a page that drew the change
+        ahead of time does not keep it."""
         boards = self._rt.boards
         if boards is None:
             return
-        if kind == "board.close":
-            await boards.user_close(self.id)
-        elif isinstance(widget_id, str) and widget_id:
-            await boards.user_remove(self.id, widget_id)
-        else:
+        if kind == "board.remove" and not (isinstance(widget_id, str) and widget_id):
             await self._error("bad_message")
+            return
+        # A draft carries the board as it was in its context: it can no longer be used.
+        await self._drop_draft()
+        try:
+            if kind == "board.open":
+                changed = await boards.user_open(self.id)
+            elif kind == "board.close":
+                changed = await boards.user_close(self.id)
+            else:
+                changed = await boards.user_remove(self.id, str(widget_id))
+        except Exception as e:
+            logger.warning("board edit failed: %s", type(e).__name__)
+            changed = False
+        if not changed:
+            await self._send("board", board=for_page(await self._board()))
 
     async def _on_text(self, text: object) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
