@@ -156,7 +156,8 @@ button:disabled {
 }
 
 .side-name {
-  min-width: 0;
+  /* Her name is short: it keeps its width, and the usage pill gives way instead. */
+  flex-shrink: 0;
   letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
@@ -391,6 +392,7 @@ button:disabled {
 }
 
 .status {
+  flex-shrink: 0;
   font-size: 13px;
   color: var(--color-accent);
   white-space: nowrap;
@@ -403,6 +405,7 @@ button:disabled {
   padding: 4px 10px;
   color: var(--color-text-1);
   /* Its full sentence is in the title; the pill itself shortens with an ellipsis. */
+  flex-shrink: 1;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
