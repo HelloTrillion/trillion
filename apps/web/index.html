@@ -36,8 +36,9 @@
         <button type="button" id="stop" hidden>Stop</button>
       </form>
       <p class="foot" id="foot"></p>
-      <div class="side-resize" id="side-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
+      <div class="side-resize" id="side-resize" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-label="Resize sidebar" tabindex="0"></div>
     </aside>
+    <div class="visually-hidden" id="announce" role="status" aria-live="polite"></div>
     <button type="button" class="icon-btn show-sidebar" id="show-sidebar" aria-label="Show sidebar" hidden></button>
     <div class="captions" id="captions" aria-hidden="true" hidden></div>
     <section class="workspace" id="workspace" role="region" aria-labelledby="workspace-title" hidden>

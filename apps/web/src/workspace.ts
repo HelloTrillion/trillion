@@ -14,6 +14,8 @@ export interface WorkspaceDeps {
   /** The sidebar's current width in CSS px, 0 when hidden. */
   readonly sidebarWidth: () => number;
   readonly place: (rect: StageRect, animate: boolean) => void;
+  /** Where focus goes on close when where it came from can no longer take it. */
+  readonly fallback: () => HTMLElement | null;
 }
 
 export interface Workspace {
@@ -46,7 +48,9 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
     d.body.replaceChildren();
     layout();
     for (const l of listeners) l();
-    back?.focus();
+    // Focus came from somewhere now gone or inert (a hidden sidebar): go to the fallback.
+    const usable = back !== null && back.isConnected && back.closest('[inert], [hidden]') === null;
+    (usable ? back : back && d.fallback())?.focus();
     back = null;
   }
 

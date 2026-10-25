@@ -29,6 +29,11 @@ describe('nudged', () => {
     expect(nudged(SIDEBAR.min, 'ArrowLeft')).toBe(SIDEBAR.min);
   });
 
+  it('goes to the ends for Home and End', () => {
+    expect(nudged(400, 'Home')).toBe(SIDEBAR.min);
+    expect(nudged(400, 'End')).toBe(SIDEBAR.max);
+  });
+
   it('ignores other keys', () => {
     expect(nudged(400, 'Enter')).toBeNull();
   });

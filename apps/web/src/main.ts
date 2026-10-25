@@ -42,6 +42,7 @@ import {
   savedTheme,
   shownTheme,
 } from './prefs';
+import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
 import { createSidebar } from './sidebar';
 import { type Api, createSettings } from './settings';
@@ -53,7 +54,6 @@ import { createWorkspace } from './workspace';
 import {
   type Entry,
   INITIAL,
-  STATE_TEXT,
   type ServerMsg,
   type View,
   dueLabel,
@@ -161,8 +161,18 @@ const workspace = createWorkspace({
   dock: $<HTMLButtonElement>('orb-dock'),
   sidebarWidth: () => sidebar.width(),
   place: (rect, animate) => galaxy.setStage(rect, { animate }),
+  fallback: () => (sidebar.hidden ? showSidebarBtn : null),
 });
-sidebar.onChange(() => workspace.layout());
+sidebar.onChange((animate) => workspace.layout(animate));
+// A hidden sidebar is inert and so silent: its news is read out here instead (SUR-6).
+const announceEl = $('announce');
+
+/** Put the cursor in the message box, showing the sidebar first if it is hidden. */
+function focusInput(): void {
+  // Showing it moves focus to its hide button, so this comes first.
+  sidebar.setHidden(false);
+  input.focus();
+}
 // The first placement is where the orb starts, not somewhere it glides to.
 workspace.layout(false);
 
@@ -643,13 +653,7 @@ function render(): void {
 
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
-  statusEl.textContent = ready
-    ? view.noticeSpeaking
-      ? 'Speaking'
-      : STATE_TEXT[view.orb]
-    : view.link === 'connecting'
-      ? 'Connecting'
-      : 'Offline';
+  statusEl.textContent = statusText(view);
   newBtn.hidden = !ready || view.entries.length === 0;
   agentNameEl.textContent = view.agentName;
   threadTitleEl.textContent = view.title ?? 'New conversation';
@@ -718,6 +722,10 @@ function apply(next: View): void {
   view = next;
   if (view.conversationId && view.conversationId !== before.conversationId) {
     store(CONVERSATION_KEY, view.conversationId);
+  }
+  if (sidebar.hidden) {
+    const line = announcement(before, view);
+    if (line) announceEl.textContent = line;
   }
   render();
 }
@@ -843,7 +851,7 @@ function introduce(current: Profile): void {
   ob = begin({ ...current, timezone: current.timezone || zone() });
   obAt = view.entries.length;
   render();
-  input.focus();
+  focusInput();
 }
 
 async function finish(): Promise<void> {
@@ -910,7 +918,7 @@ function reply(text: string): void {
     ob = next;
     render();
     after();
-    if (active(ob)) input.focus();
+    if (active(ob)) focusInput();
     return;
   }
   ob = answer(ob, text);
@@ -920,7 +928,7 @@ function reply(text: string): void {
     void api('POST', '/api/settings/persona/skip', {}).catch(() => undefined);
     after();
   }
-  if (active(ob)) input.focus();
+  if (active(ob)) focusInput();
 }
 
 /** Change names by talking: the same conversation as onboarding, from current answers. */
@@ -956,7 +964,7 @@ newBtn.addEventListener('click', () => {
   socket = null;
   old?.close();
   connect();
-  input.focus();
+  focusInput();
 });
 
 // ── Connection ───────────────────────────────────────────────────────────
@@ -1163,7 +1171,7 @@ function takeDraft(text: string): void {
     input.dispatchEvent(new Event('input'));
   }
   apply({ ...view, draft: null });
-  input.focus();
+  focusInput();
 }
 
 function submit(): void {
@@ -1266,7 +1274,7 @@ addEventListener('keydown', (ev) => {
       workspace.close();
     }
   }
-  if (ev.key === '\\' && primary(ev)) {
+  if (ev.key === '\\' && primary(ev) && !panel.isOpen) {
     ev.preventDefault();
     sidebar.toggle();
     return;
@@ -1280,7 +1288,7 @@ addEventListener('keydown', (ev) => {
   onTalk(talkKeys.down(keyOf(ev)), ev);
   if (ev.key.toLowerCase() === 'k' && primary(ev)) {
     ev.preventDefault();
-    input.focus();
+    focusInput();
   }
 });
 addEventListener('keyup', (ev) => onTalk(talkKeys.up({ code: ev.code }), ev));
