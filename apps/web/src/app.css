@@ -182,6 +182,182 @@ button:disabled {
   overflow-y: auto;
 }
 
+/* ── The thread list: it takes the transcript's place while open (SUR-1). ── */
+
+.side-body .threads {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.side-body .transcript[hidden],
+.side-body .threads[hidden],
+.threads-toast[hidden],
+.threads-status[hidden] {
+  display: none;
+}
+
+.threads-search input::-webkit-search-cancel-button {
+  cursor: default;
+}
+
+.threads-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px;
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+
+.threads-retry {
+  padding: 2px 10px;
+  font-size: 13px;
+}
+
+.threads-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-text-2) transparent;
+}
+
+.threads-group {
+  margin-top: 12px;
+}
+
+.threads-group:first-child {
+  margin-top: 0;
+}
+
+/* A row looks like a Settings link: lit on hover, brighter for the open conversation. */
+.thread-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-1);
+  font-size: 14px;
+  cursor: default;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.thread-row:hover {
+  background: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+  color: var(--color-text-0);
+}
+
+.thread-row[aria-selected='true'] {
+  background: color-mix(in srgb, var(--color-text-0) 6%, transparent);
+  color: var(--color-text-0);
+}
+
+.thread-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.thread-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.thread-more {
+  flex: none;
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+  line-height: 20px;
+  opacity: 0;
+}
+
+/* The ⋯ shows on the row the pointer or keyboard is on, and always on a touch screen. */
+.thread-row:hover .thread-more,
+.thread-row:focus-within .thread-more,
+.thread-row[aria-selected='true'] .thread-more {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .thread-more {
+    opacity: 1;
+  }
+}
+
+.thread-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font: inherit;
+}
+
+.thread-menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  right: 4px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-2);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
+}
+
+.thread-menu-item {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  font-size: 14px;
+}
+
+.thread-menu-item:hover,
+.thread-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-text-0) 8%, transparent);
+}
+
+/* At the bottom of the sidebar, just above the ask bar. */
+.threads-toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-2);
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+.threads-undo {
+  padding: 2px 10px;
+  font-size: 13px;
+}
+
 .thread-switch {
   flex: 1;
   min-width: 0;

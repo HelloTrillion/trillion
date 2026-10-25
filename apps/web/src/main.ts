@@ -29,7 +29,7 @@ import {
   saved,
 } from './onboarding';
 import { createPanel, type Surface } from './panel';
-import { primary, shortcut } from './platform';
+import { MAC, primary, shortcut } from './platform';
 import {
   type Theme as ThemeChoice,
   saveBarge,
@@ -45,6 +45,7 @@ import {
 import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
 import { createSidebar } from './sidebar';
+import { createThreads, listPath } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
@@ -131,6 +132,8 @@ const newBtn = $<HTMLButtonElement>('new');
 newBtn.replaceChildren(icon('edit', 18));
 const agentNameEl = $('agent-name');
 const threadTitleEl = $('thread-title');
+const threadSwitch = $<HTMLButtonElement>('thread-switch');
+const threadsEl = $('threads');
 const usageBtn = $<HTMLButtonElement>('usage');
 let usage: Usage | null = null;
 const micBtn = $<HTMLButtonElement>('mic');
@@ -972,9 +975,11 @@ function talkNames(): void {
   })();
 }
 
-newBtn.addEventListener('click', () => {
-  // Forget which conversation this tab was in; the core starts a fresh one on reconnect.
-  store(CONVERSATION_KEY, null);
+/** Open another conversation, or (null) a fresh one: reconnect and the core resumes it. */
+function switchTo(id: string | null): void {
+  // She stops first, so nothing of this conversation plays over the next one.
+  if (view.busy || voice.active || view.mic || mic.on) interrupt();
+  store(CONVERSATION_KEY, id);
   shown.clear();
   if (!active(ob)) ob = null;
   obAt = 0;
@@ -984,7 +989,58 @@ newBtn.addEventListener('click', () => {
   old?.close();
   connect();
   focusInput();
+}
+
+newBtn.addEventListener('click', () => {
+  threads.close();
+  switchTo(null);
 });
+
+// ── Thread list ──────────────────────────────────────────────────────────
+
+/** The body of a conversations call that answered, or a throw for one that did not. */
+async function okJson(r: Promise<Response>): Promise<unknown> {
+  const res = await r;
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+const succeeded = (r: Promise<Response>): Promise<boolean> => r.then((res) => res.ok).catch(() => false);
+const threadPath = (id: string): string => `/api/conversations/${encodeURIComponent(id)}`;
+
+const threads = createThreads({
+  root: threadsEl,
+  fetchPage: ({ q, before }) => okJson(api('GET', listPath(q, before))),
+  rename: (id, title) => succeeded(api('PATCH', threadPath(id), { title })),
+  remove: (id) => succeeded(api('DELETE', threadPath(id), {})),
+  restore: (id) => succeeded(api('POST', `${threadPath(id)}/restore`, {})),
+  current: () => view.conversationId,
+  pick: (id) => {
+    if (id !== view.conversationId) switchTo(id);
+    else focusInput();
+  },
+  deletedCurrent: () => switchTo(null),
+  now: () => Date.now(),
+});
+threads.onToggle((open) => {
+  threadSwitch.setAttribute('aria-expanded', String(open));
+  // Closed from inside the list (Escape): focus goes back to what opened it.
+  if (!open && threadsEl.contains(document.activeElement)) threadSwitch.focus();
+  transcriptEl.hidden = open;
+  threadsEl.hidden = !open;
+});
+threadSwitch.setAttribute('aria-controls', 'threads');
+threadSwitch.title = `Conversations (${MAC ? '⌘⇧K' : 'Ctrl+Shift+K'})`;
+
+function toggleThreads(): void {
+  if (threads.isOpen) {
+    threads.close();
+    return;
+  }
+  // Showing the sidebar moves focus to its hide button; opening the list then takes it.
+  sidebar.setHidden(false);
+  threads.open();
+}
+threadSwitch.addEventListener('click', toggleThreads);
 
 // ── Connection ───────────────────────────────────────────────────────────
 
@@ -1014,6 +1070,12 @@ function connect(): void {
     }
     if (typeof msg?.type !== 'string') return;
     if (msg.type === 'error' && msg['code'] === 'unauthenticated') store(TOKEN_KEY, null);
+    // This conversation was deleted (here or in another tab): the core has closed it, so start a new one.
+    if (msg.type === 'error' && msg['code'] === 'deleted') {
+      if (socket === ws) switchTo(null);
+      return;
+    }
+    if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
@@ -1267,11 +1329,11 @@ function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
     repeat: ev.repeat,
     inMessageBox: target === input,
     messageEmpty: input.value.trim() === '',
-    // Another field, a button, or Settings takes keys itself. With Settings open the message box
+    // Another field, a button, the thread list, or Settings takes keys itself. With Settings open the message box
     // in the sidebar still talks.
     inOtherControl:
       (panel.isOpen && (target === null || target.closest('#sidebar') === null)) ||
-      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable]') !== null),
+      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], [role="listbox"]') !== null),
   };
 }
 
@@ -1304,6 +1366,12 @@ addEventListener('keydown', (ev) => {
   if (ev.key === ',' && primary(ev) && !panel.isOpen) {
     ev.preventDefault();
     openSettings();
+    return;
+  }
+  // ⌘⇧K: the list of conversations. Before the talk keys and plain ⌘K, so it does only this.
+  if (ev.key.toLowerCase() === 'k' && primary(ev) && ev.shiftKey) {
+    ev.preventDefault();
+    toggleThreads();
     return;
   }
   onTalk(talkKeys.down(keyOf(ev)), ev);
