@@ -309,3 +309,26 @@ def test_every_featured_service_has_its_icon() -> None:
         assert icon.is_file(), e.id
         assert icon.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", e.id
     assert {p.stem for p in icons.glob("*.png")} == {e.id for e in catalog.ENTRIES}
+
+
+async def test_a_listener_that_fails_never_stops_a_change(
+    spine: Spine, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    told: list[int] = []
+
+    def fails() -> None:
+        told.append(1)
+        raise RuntimeError("listener broke")
+
+    servers = McpServers(spine.registry, MemoryStore(), tmp_path / "logs", changed=fails)
+    config = parse_server("notes", {**FIXTURE, "disabled": True})
+    state = await servers.connect(config)
+    assert state.status == "disabled" and len(told) == 1  # told once, not per step
+    servers.retune(config)
+    await servers.remove("notes")
+    assert "notes" not in servers.states and len(told) == 3
+    await servers.connect(config)
+    await servers.stop()
+    assert len(told) == 4  # stopping tells nothing
+    assert "MCP change not told: RuntimeError" in caplog.text
+    assert "listener broke" not in caplog.text

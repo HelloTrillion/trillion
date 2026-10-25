@@ -243,6 +243,9 @@ class Runtime:
     by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
+    # The widget types the workspace tools were last told, so an unchanged list is
+    # not built and validated again.
+    _told: list[str] | None = None
 
     def out_of_turn(self) -> int:
         """A fresh number for speech outside a turn, never reused in this process."""
@@ -367,7 +370,12 @@ class Runtime:
         moment, does not take a pack's widgets away from her."""
         states = self.mcp.states.values() if self.mcp is not None else []
         ids = [s.config.catalog for s in states if s.config.catalog and not s.config.disabled]
-        for name, definition in board_definitions(told(ids)).items():
+        types = told(ids)
+        # Most changes (a retune, a reconnect) leave the packs as they were.
+        if types == self._told:
+            return
+        self._told = types
+        for name, definition in board_definitions(types).items():
             if self.registry.definition(name) is not None:
                 self.registry.redefine(name, definition)
 

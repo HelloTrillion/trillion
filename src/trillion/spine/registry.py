@@ -103,8 +103,8 @@ class ToolRegistry:
 
     def redefine(self, name: str, definition: ToolDefinition) -> None:
         """Change what a registered tool says about itself, as when a connector changes
-        which widgets the workspace tools list. Validated like `register`, and never a
-        way to change how the router treats it: the risk and category stay."""
+        which widgets the workspace tools list. Validated like `register`; only the
+        description and input_schema may change."""
         tool, old = self._tools.get(name), self._definitions.get(name)
         if tool is None or old is None:
             raise RegistryError(f"{name}: not registered")
@@ -114,6 +114,15 @@ class ToolRegistry:
             raise RegistryError(f"{name}: a new definition may not change the risk")
         if definition.category != old.category:
             raise RegistryError(f"{name}: a new definition may not change the category")
+        # Only words and shape: how the router treats it (paths, trust, timeout,
+        # recovery) is settled once, at registration.
+        kept = dataclasses.replace(
+            definition, description=old.description, input_schema=old.input_schema
+        )
+        if kept != old:
+            raise RegistryError(
+                f"{name}: a new definition may change only its description and input_schema"
+            )
         validate(tool, self._modules[name], definition)
         self._definitions[name] = _snapshot(definition)
 

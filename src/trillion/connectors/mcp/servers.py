@@ -94,8 +94,14 @@ class McpServers:
         self._tell()
 
     def _tell(self) -> None:
-        if self._changed is not None:
+        if self._changed is None:
+            return
+        # What listens is not this module's to fail: a server is still connected,
+        # removed or stopped when it raises.
+        try:
             self._changed()
+        except Exception as e:
+            logger.warning("MCP change not told: %s", type(e).__name__)
 
     def _launch(self, server: ServerConfig) -> ServerState:
         state = ServerState(config=server)
@@ -120,7 +126,7 @@ class McpServers:
 
     async def connect(self, server: ServerConfig) -> ServerState:
         """Connect a server now, replacing one of the same name. No restart needed."""
-        await self.disconnect(server.name)
+        await self._disconnect(server.name)
         self.problems.pop(server.name, None)
         state = self._launch(server)
         self._tell()
@@ -128,6 +134,10 @@ class McpServers:
 
     async def disconnect(self, name: str) -> None:
         """Close a server's connection and take its tools away."""
+        await self._disconnect(name)
+        self._tell()
+
+    async def _disconnect(self, name: str) -> None:
         state = self.states.get(name)
         if state is None:
             return
@@ -140,10 +150,9 @@ class McpServers:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await state.task
         self._unregister(state)
-        self._tell()
 
     async def remove(self, name: str) -> None:
-        await self.disconnect(name)
+        await self._disconnect(name)
         self.states.pop(name, None)
         self.problems.pop(name, None)
         self._tell()
@@ -160,8 +169,9 @@ class McpServers:
         self._tell()
 
     async def stop(self) -> None:
+        # Nothing is told: Trillion is stopping, and the servers are still listed.
         for name in list(self.states):
-            await self.disconnect(name)
+            await self._disconnect(name)
 
     # ── One server ───────────────────────────────────────────────────────
 

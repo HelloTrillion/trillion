@@ -292,3 +292,47 @@ def test_adding_turning_off_and_removing_a_money_connector_changes_what_she_is_t
     gone = app.client.delete(f"{PATH}/servers/stripe", headers={**app.auth, **JSON})
     assert gone.status_code == 200
     assert "transactions" not in _told(app) and "stat" in _told(app)
+
+
+def test_retelling_follows_the_packs_and_skips_what_is_unchanged(make: Any) -> None:
+    app: App = make()
+    assert app.rt.mcp is not None
+    states = app.rt.mcp.states
+
+    def listed(*entries: tuple[str, str, bool]) -> None:
+        states.clear()
+        for name, catalog_id, disabled in entries:
+            config = parse_server(
+                name, {"url": "https://x.example/mcp", "catalog": catalog_id, "disabled": disabled}
+            )
+            states[name] = ServerState(config=config, status="connected")
+
+    # Money and work from their connectors; Gmail fills no pack; GitHub is turned off.
+    listed(("stripe", "stripe", False), ("linear", "linear", False), ("gmail", "gmail", False))
+    states["github"] = ServerState(
+        config=parse_server(
+            "github", {"url": "https://x.example", "catalog": "github", "disabled": True}
+        )
+    )
+    app.rt.registry.unregister("workspace_close")  # one not registered is skipped
+    app.rt.retell_workspace()
+    text = _told(app)
+    assert "transactions" in text and "kanban" in text
+    assert "deploys" not in text and "pipeline" not in text
+    assert app.rt.registry.definition("workspace_close") is None
+
+    calls: list[str] = []
+    real = app.rt.registry.redefine
+
+    def counted(name: str, definition: Any) -> None:
+        calls.append(name)
+        real(name, definition)
+
+    app.rt.registry.redefine = counted  # type: ignore[method-assign]
+    listed(("linear", "linear", False), ("stripe", "stripe", False))
+    app.rt.retell_workspace()
+    assert calls == []  # the same packs: nothing redefined
+    listed(("linear", "linear", False))
+    app.rt.retell_workspace()
+    assert calls == ["workspace_show", "workspace_update", "workspace_remove"]
+    assert "transactions" not in _told(app) and "kanban" in _told(app)
