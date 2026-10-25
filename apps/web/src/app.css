@@ -4077,6 +4077,9 @@ button.connected-danger {
   height: 168px;
 }
 .bd-donut-fig .bd-svg {
+  /* A donut is a chart card too, but its ring sits in its own box, not over the card. */
+  position: static;
+  inset: auto;
   width: 100%;
   height: 100%;
 }
