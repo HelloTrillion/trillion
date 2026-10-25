@@ -148,6 +148,11 @@ export function boardOf(raw: unknown): Board | null {
   return { title: typeof r['title'] === 'string' ? r['title'] : '', open: r['open'] === true, widgets };
 }
 
+/** The user opened or put away the board here: the page follows at once, before the core echoes it. */
+export function boardOpen(view: View, open: boolean): View {
+  return view.board && view.board.open !== open ? { ...view, board: { ...view.board, open } } : view;
+}
+
 export type ServerMsg = { readonly type: string } & Readonly<Record<string, unknown>>;
 
 const ORBS: readonly Orb[] = ['idle', 'arming', 'listening', 'processing', 'speaking', 'error'];

@@ -3722,6 +3722,8 @@ button.connected-danger {
 .bd-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  /* A later, smaller card fills a hole left by one too wide for the row, so the board stays tidy. */
+  grid-auto-flow: row dense;
   gap: 14px;
 }
 @container workspace (min-width: 600px) {

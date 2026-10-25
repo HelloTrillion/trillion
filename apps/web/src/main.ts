@@ -60,6 +60,7 @@ import {
   type Entry,
   INITIAL,
   type ServerMsg,
+  boardOpen,
   type View,
   dueLabel,
   expire,
@@ -1490,6 +1491,14 @@ function showBoard(): void {
   workspace.open(boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
 }
+/** The user asked for the board: a saved one she had put away is open again, and she is told. */
+function openBoard(): void {
+  if (view.board && !view.board.open) {
+    send({ type: 'board.open' });
+    apply(boardOpen(view, true));
+  }
+  showBoard();
+}
 function onBoard(): void {
   const board = view.board;
   if (workspace.showing === 'board') {
@@ -1501,10 +1510,20 @@ function onBoard(): void {
   else if (workspace.showing === 'settings') boardChip.hidden = false;
   else showBoard();
 }
-boardChip.addEventListener('click', showBoard);
-workspace.onClose((id) => {
-  // The user put it away (its close, Escape, the docked orb, or something else opened): she is told.
-  if (id === 'board' && view.board?.open) send({ type: 'board.close' });
+boardChip.addEventListener('click', openBoard);
+workspace.onClose((id, replaced) => {
+  // The user put it away (its close, Escape, the docked orb): she is told. Settings opened over it is not that.
+  if (id === 'board' && !replaced && view.board?.open) {
+    send({ type: 'board.close' });
+    apply(boardOpen(view, false));
+  }
+  // Whatever was opened over a board that is still up has closed: the board comes back. After this
+  // close has finished, so the workspace hands focus back before opening again.
+  if (id !== 'board' && !replaced && view.board?.open) {
+    queueMicrotask(() => {
+      if (!workspace.isOpen && view.board?.open) showBoard();
+    });
+  }
 });
 
 // One click to the workspace and its board, and one to close it again.
@@ -1517,7 +1536,7 @@ function showWorkspaceState(): void {
 }
 workspaceBtn.addEventListener('click', () => {
   if (workspace.isOpen && (workspace.showing === 'board' || workspace.showing === 'showcase')) workspace.close();
-  else showBoard();
+  else openBoard();
   showWorkspaceState();
 });
 workspace.onClose(showWorkspaceState);

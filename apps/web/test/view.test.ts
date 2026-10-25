@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, boardOf, busyOf, dueLabel, expire, localClock, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
+import { INITIAL, type View, boardOf, boardOpen, busyOf, dueLabel, expire, localClock, micFailed, quietLine, reduce, sent, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -430,5 +430,12 @@ describe('boardOf', () => {
     expect(boardOf([])).toBeNull();
     const b = boardOf({ widgets: [null, { type: 'note' }, { id: 'w3' }, { id: 'w4', type: 'list', size: 'huge' }] });
     expect(b).toEqual({ title: '', open: false, widgets: [{ id: 'w4', type: 'list', size: 'medium' }] });
+  });
+
+  it('follows the user opening or putting away a board at once', () => {
+    const v = reduce(INITIAL, { type: 'board', board: { title: 'T', open: false, widgets: [] } });
+    expect(boardOpen(v, true).board?.open).toBe(true);
+    expect(boardOpen(v, false)).toBe(v);
+    expect(boardOpen(INITIAL, true)).toBe(INITIAL);
   });
 });
