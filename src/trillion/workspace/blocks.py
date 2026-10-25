@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, cast
 
 from trillion.workspace.kit import (
@@ -50,6 +50,8 @@ QUOTE = 600
 
 # ISO 8601: a date, or a date and time with optional seconds and a Z or offset.
 _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})?)?$")
+# A time of day alone, as a model often writes one: 9:12, 09:12, 9:12 am, 3pm, 15:30.
+_CLOCK = re.compile(r"^(\d{1,2})(?::([0-5]\d))?\s*(?:([ap])\.?\s*m\.?)?$", re.IGNORECASE)
 
 
 @dataclass
@@ -74,10 +76,39 @@ def tone_field(
     return str(value)
 
 
+def today() -> date:
+    """Today in the server's local time: the day a bare clock time is on. A function so
+    tests can fix it."""
+    return date.today()
+
+
+def clock_time(text: str) -> str | None:
+    """A bare time of day as 24-hour HH:MM ("9:12 am" is 09:12, "3pm" is 15:00), or
+    None when the text is not one. A lone number ("9") is not a time."""
+    match = _CLOCK.match(text.strip())
+    if match is None:
+        return None
+    hour, minute, half = int(match[1]), int(match[2] or 0), (match[3] or "").lower()
+    if not match[2] and not half:
+        return None
+    if half:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if half == "p" else 0)
+    elif hour > 23:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 def iso_field(raw: Mapping[str, Any], key: str, where: str, *, need: bool = False) -> str | None:
+    """An ISO 8601 date or time. A bare clock time ("9:12") is taken as today in the
+    server's local time, written without a zone, as the user's local times are."""
     value = text_field(raw, key, where, VALUE, need=need)
     if value is None:
         return None
+    clock = clock_time(value)
+    if clock is not None:
+        return f"{today().isoformat()}T{clock}"
     ok = _ISO.match(value) is not None
     if ok:
         try:

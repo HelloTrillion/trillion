@@ -25,7 +25,7 @@ FIELDS = {
     "next_up": ("event", "start", "end", "where", "people", "note"),
     "free_time": ("slots",),
     "inbox": ("unread", "needs_reply", "threads"),
-    "thread": ("from", "subject", "ask", "due", "when", "excerpt"),
+    "thread": ("from", "subject", "request", "due", "when", "excerpt"),
     "mentions": ("groups",),
     "files": ("files",),
     "quote": ("text", "by", "when"),
@@ -128,7 +128,10 @@ LENIENT: list[dict[str, Any]] = [
     {"type": None, "steps": [{"title": "Book the room"}]},
     {"type": "callout", "text": "Rent is due tomorrow.", "tone": None},
     {"type": "inbox", "unread": 3, "needs_reply": None, "threads": None},
-    {"type": "thread", "from": "Jo", "subject": "Venue", "ask": "Sign?", "due": None},
+    {"type": "thread", "from": "Jo", "subject": "Venue", "request": "Sign?", "due": None},
+    # One ask in the singular, as small models write it; the kit reads it as asks.
+    {"type": "thread", "from": "Jo", "subject": "Venue", "ask": "Sign?"},
+    {"type": "inbox", "unread": 3, "ask": "Draft a reply to Sam"},
     {
         "type": "chart",
         "kind": "line",
@@ -144,6 +147,12 @@ def test_what_the_kit_takes_the_schema_takes(raw: dict[str, Any]) -> None:
     validate_widget(raw, 1)
     errors = list(Draft202012Validator(widget_schema()).iter_errors(raw))
     assert errors == [], [e.message for e in errors]
+
+
+def test_asks_is_advertised_and_ask_is_not() -> None:
+    props = widget_schema()["properties"]
+    assert "asks" in props and "ask" not in props
+    assert "request" in CARDS["thread"] and "ask" not in CARDS["thread"]
 
 
 def test_with_source_and_asks() -> None:

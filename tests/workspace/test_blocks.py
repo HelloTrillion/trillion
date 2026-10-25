@@ -1,8 +1,10 @@
 import copy
+from datetime import date
 from typing import Any
 
 import pytest
 
+from trillion.workspace import blocks
 from trillion.workspace.blocks import validate_blocks
 from trillion.workspace.kit import BoardError
 from trillion.workspace.text import strip_emoji
@@ -317,8 +319,11 @@ def test_iso_8601_accepted(stamp: str) -> None:
 @pytest.mark.parametrize(
     "stamp",
     [
-        "14:30",
         "tomorrow",
+        "9",
+        "25:00",
+        "13pm",
+        "9:60",
         "10/25/2026",
         "2026-10-25 14:30",
         "2026-13-01",
@@ -438,3 +443,29 @@ def test_input_is_not_changed() -> None:
     validate_blocks(MINIMAL[:8], WHERE)
     validate_blocks(MINIMAL[8:], WHERE)
     assert before == FULL + MINIMAL
+
+
+@pytest.mark.parametrize(
+    ("given", "stored"),
+    [
+        ("9:12", "2026-10-25T09:12"),
+        ("09:12", "2026-10-25T09:12"),
+        ("9:12 am", "2026-10-25T09:12"),
+        ("9:12 PM", "2026-10-25T21:12"),
+        ("3pm", "2026-10-25T15:00"),
+        ("3 p.m.", "2026-10-25T15:00"),
+        ("12am", "2026-10-25T00:00"),
+        ("12:30 pm", "2026-10-25T12:30"),
+        ("15:30", "2026-10-25T15:30"),
+        ("0:05", "2026-10-25T00:05"),
+    ],
+)
+def test_a_bare_clock_time_is_today(
+    monkeypatch: pytest.MonkeyPatch, given: str, stored: str
+) -> None:
+    monkeypatch.setattr(blocks, "today", lambda: date(2026, 10, 25))
+    assert one({"type": "time", "at": given})["at"] == stored
+    assert one({"type": "time", "at": "0:00", "end": given})["end"] == stored
+    assert one({"type": "quote", "text": "x", "when": given})["when"] == stored
+    got = one({"type": "rows", "items": [{"title": "a", "when": given}]})
+    assert got["items"][0]["when"] == stored

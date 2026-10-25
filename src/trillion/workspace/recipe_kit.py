@@ -22,6 +22,7 @@ from trillion.workspace.blocks import (
     MAX_PEOPLE,
     QUOTE,
     Card,
+    clock_time,
     ends_before,
     facts_block,
     iso_field,
@@ -81,6 +82,29 @@ def source(raw: Mapping[str, Any], where: str) -> Widget | None:
         value, "name", f"{where}: source", SOURCE, need=isinstance(raw["source"], Mapping)
     )
     return None if name is None else {"name": name}
+
+
+def asked(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The widget with a lone `ask` read as she meant it. Models write one ask in the
+    singular ("ask": "Draft a reply to Sam"); it is an entry of `asks`. On a thread an
+    `ask` with no `request` is what they want (as threads were first saved)."""
+    ask = raw.get("ask")
+    if ask is None:
+        return raw
+    rest = {k: v for k, v in raw.items() if k != "ask"}
+    if raw.get("type") == "thread" and raw.get("request") is None:
+        return {**rest, "request": ask}
+    extra = [ask] if isinstance(ask, str) else ask if isinstance(ask, list) else None
+    if extra is None:
+        return rest
+    given = raw.get("asks")
+    if given is None:
+        given = []
+    elif isinstance(given, str):
+        given = [given]
+    elif not isinstance(given, list):
+        return rest  # `asks` refuses its own shape
+    return {**rest, "asks": [*given, *extra]}
 
 
 def asks(raw: Mapping[str, Any], where: str) -> list[str] | None:
@@ -166,6 +190,15 @@ def _next_up(raw: Mapping[str, Any], where: str) -> Widget:
 def _free_time(raw: Mapping[str, Any], where: str) -> Widget:
     slots = []
     for at, slot in _list(raw, "slots", where, "slot"):
+        # A slot is on a day, and a bare time would put it on today without saying so.
+        for key in ("start", "end"):
+            given = slot.get(key)
+            if isinstance(given, str) and clock_time(given) is not None:
+                raise fail(
+                    at,
+                    f"{key} {given.strip()!r} has no date; a slot is on a day, so write it"
+                    " like 2026-10-28T09:00",
+                )
         start = cast(str, iso_field(slot, "start", at, need=True))
         end = cast(str, iso_field(slot, "end", at, need=True))
         if "T" not in start or "T" not in end:
@@ -203,7 +236,7 @@ def _thread(raw: Mapping[str, Any], where: str) -> Widget:
     out: Widget = {
         "from": text_field(raw, "from", where, LABEL),
         "subject": text_field(raw, "subject", where, TITLE),
-        "ask": text_field(raw, "ask", where, TEXT),
+        "request": text_field(raw, "request", where, TEXT),
     }
     put(out, "due", _day_or_words(raw, "due", where))
     put(out, "when", iso_field(raw, "when", where))

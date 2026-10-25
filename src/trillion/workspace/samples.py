@@ -163,7 +163,7 @@ SAMPLES: list[Sample] = [
         "title": "Sam needs an answer",
         "from": "Sam",
         "subject": "Header options for Monday",
-        "ask": "Pick one of the two header designs so the build can start Monday.",
+        "request": "Pick one of the two header designs so the build can start Monday.",
         "due": "2026-10-26",
         "when": "2026-10-25T08:12",
         "excerpt": (

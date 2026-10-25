@@ -207,9 +207,12 @@ def _inbox(w: Widget) -> list[Block]:
 
 
 def _thread(w: Widget) -> list[Block]:
+    # The subject once: under the sender, unless the card's title already says it.
+    subject = None if w.get("title") == w["subject"] else w["subject"]
     out: list[Block] = [
-        {"type": "person", "name": w["from"], "detail": w["subject"]},
-        {"type": "text", "text": w["ask"]},
+        _with({"type": "person", "name": w["from"]}, detail=subject),
+        # Threads saved before `request` was its name kept it as `ask`.
+        {"type": "text", "text": w.get("request", w.get("ask"))},
     ]
     facts = []
     if "due" in w:
@@ -299,7 +302,9 @@ def _goal(w: Widget) -> list[Block]:
     hint = f"of {_amount(w['target'], unit)}"
     if "by" in w:
         hint += f" by {_by(w['by'])}"
-    ring = {"type": "meter", "value": w["value"], "max": w["target"], "label": w["label"]}
+    # The label once: under the ring, unless the card's title already says it.
+    label = None if w.get("title") == w["label"] else w["label"]
+    ring = _with({"type": "meter", "value": w["value"], "max": w["target"]}, label=label)
     ring["shape"] = "ring"
     value = {"type": "value", "value": cap(_amount(w["value"], unit), VALUE), "hint": hint}
     return [ring, value]
@@ -339,10 +344,42 @@ _RECIPES: dict[str, Callable[[Widget], list[Block]]] = {
 }
 
 
+# What a card is called when she gave it no title. Types whose first block already
+# names them (a stat's label, a note's words, a chart) stay untitled.
+_TITLES = {
+    "next_up": "Next up",
+    "free_time": "Free time",
+    "inbox": "Inbox",
+    "mentions": "Mentions",
+    "files": "Files",
+    "plan": "Plan",
+    "decision": "Decision",
+    "sources": "Sources",
+    "facts": "Details",
+}
+# Or the widget's own field that names it.
+_TITLED_BY = {"goal": "label", "thread": "subject"}
+
+
+def title_of(widget: Widget) -> str | None:
+    """The card's title: hers, else the type's default. Not saved: a later kit may
+    choose better words, and the saved widget stays what she wrote."""
+    if widget.get("title"):
+        return str(widget["title"])
+    field = _TITLED_BY.get(widget["type"])
+    named = widget.get(field) if field else _TITLES.get(widget["type"])
+    return named if isinstance(named, str) and named else None
+
+
+def _titled(widget: Widget) -> Widget:
+    title = title_of(widget)
+    return widget if title is None or widget.get("title") == title else {**widget, "title": title}
+
+
 def expand(widget: Widget) -> list[Block]:
-    """The blocks a saved widget is drawn with. A copy: the page's widget never shares
-    a list with the saved board."""
-    return copy.deepcopy(_RECIPES[widget["type"]](widget))
+    """The blocks a saved widget is drawn with, under the title it is shown with. A
+    copy: the page's widget never shares a list with the saved board."""
+    return copy.deepcopy(_RECIPES[widget["type"]](_titled(widget)))
 
 
 def _safe(widget: Widget) -> list[Block]:
@@ -360,5 +397,8 @@ def _safe(widget: Widget) -> list[Block]:
 def expand_board(board: Board) -> Board:
     """The board as the page gets it: each widget its name, size, source and asks, and
     its blocks. The saved board is left as it was."""
-    widgets = [{**{k: w[k] for k in KEPT if k in w}, "blocks": _safe(w)} for w in board["widgets"]]
+    widgets = []
+    for w in board["widgets"]:
+        shown = _titled(w) if w.get("type") in _RECIPES else w
+        widgets.append({**{k: shown[k] for k in KEPT if k in shown}, "blocks": _safe(w)})
     return {**{k: v for k, v in board.items() if k != "widgets"}, "widgets": widgets}

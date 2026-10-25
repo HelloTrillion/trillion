@@ -2,10 +2,12 @@
 
 import copy
 import logging
+from datetime import date
 from typing import Any
 
 import pytest
 
+from trillion.workspace import blocks as blocks_mod
 from trillion.workspace import board as b
 from trillion.workspace.blocks import validate_blocks
 from trillion.workspace.kit import BoardError
@@ -40,7 +42,7 @@ MINIMAL: list[dict[str, Any]] = [
     {"type": "next_up", "event": "Design review", "start": "2026-10-25T14:30"},
     {"type": "free_time", "slots": [{"start": "2026-10-28T09:00", "end": "2026-10-28T10:30"}]},
     {"type": "inbox", "unread": 12},
-    {"type": "thread", "from": "Jo", "subject": "Venue contract", "ask": "Can you sign it?"},
+    {"type": "thread", "from": "Jo", "subject": "Venue contract", "request": "Can you sign it?"},
     {
         "type": "mentions",
         "groups": [{"channel": "#launch", "items": [{"from": "Alex", "text": "Copy ready?"}]}],
@@ -96,7 +98,7 @@ FULL: list[dict[str, Any]] = [
         "title": "Waiting on you",
         "from": "Jo",
         "subject": "Venue contract",
-        "ask": "Can you sign the contract?",
+        "request": "Can you sign the contract?",
         "due": "Friday",
         "when": "2026-10-24T16:00",
         "excerpt": "The venue needs it back by Friday to hold the date.",
@@ -358,8 +360,8 @@ def test_types_read_from_telling_fields():
 
 
 def test_time_fields_are_iso():
-    assert refused({**MIN_OF["next_up"], "start": "3 pm"}) == (
-        "widget 1 (next_up): start '3 pm' must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25."
+    assert refused({**MIN_OF["next_up"], "start": "soon"}) == (
+        "widget 1 (next_up): start 'soon' must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25."
     )
     assert refused({**MIN_OF["next_up"], "end": "2026-10-25T14:00"}) == (
         "widget 1 (next_up): end 2026-10-25T14:00 is before start 2026-10-25T14:30."
@@ -880,7 +882,14 @@ def test_one_bad_widget_does_not_take_the_board_down(caplog):
     with caplog.at_level(logging.WARNING, logger="trillion.workspace.recipes"):
         sent = expand_board(saved)
     assert sent["widgets"][0]["blocks"] == blocks_of(OLD_OF["stat"])
-    assert sent["widgets"][1] == {"id": "w2", "type": "goal", "size": "small", "blocks": []}
+    # The card still shows its title.
+    assert sent["widgets"][1] == {
+        "id": "w2",
+        "type": "goal",
+        "size": "small",
+        "title": "Savings",
+        "blocks": [],
+    }
     assert "could not expand widget w2 (goal)" in caplog.text
 
 
@@ -975,3 +984,122 @@ def test_goal_negative_amounts():
 
 def test_note_lines_are_trimmed_like_a_text_block():
     assert validate_widget({"type": "note", "text": "a  \n   - b"}, 1)["text"] == "a\n- b"
+
+
+# Default titles: what a card is called when she gave it none
+
+
+@pytest.mark.parametrize(
+    ("raw", "title"),
+    [
+        (MIN_OF["next_up"], "Next up"),
+        (MIN_OF["free_time"], "Free time"),
+        (MIN_OF["inbox"], "Inbox"),
+        (MIN_OF["mentions"], "Mentions"),
+        (MIN_OF["files"], "Files"),
+        (MIN_OF["plan"], "Plan"),
+        (MIN_OF["decision"], "Decision"),
+        (MIN_OF["sources"], "Sources"),
+        (MIN_OF["facts"], "Details"),
+        (MIN_OF["goal"], "Savings"),
+        (MIN_OF["thread"], "Venue contract"),
+    ],
+    ids=lambda v: v["type"] if isinstance(v, dict) else v,
+)
+def test_untitled_catalogue_widgets_get_a_title_when_sent(raw, title):
+    saved = b.show(None, "Day", [raw])
+    assert "title" not in saved["widgets"][0]  # the default is not saved
+    assert expand_board(saved)["widgets"][0]["title"] == title
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [*OLD, MIN_OF["quote"], MIN_OF["callout"], MIN_OF["custom"]],
+    ids=lambda w: w["type"],
+)
+def test_widgets_named_by_their_first_block_stay_untitled(raw):
+    if "title" in raw:
+        raw = {k: v for k, v in raw.items() if k != "title"}
+    assert "title" not in expand_board(b.show(None, "Day", [raw]))["widgets"][0]
+
+
+def test_her_title_wins_over_the_default():
+    saved = b.show(None, "Day", [{**MIN_OF["inbox"], "title": "Work mail"}])
+    assert expand_board(saved)["widgets"][0]["title"] == "Work mail"
+
+
+def test_a_title_from_a_field_is_not_said_twice():
+    # A thread titled by its subject does not repeat it under the sender.
+    assert blocks_of(MIN_OF["thread"])[0] == {"type": "person", "name": "Jo"}
+    # A goal titled by its label does not repeat it under the ring.
+    assert blocks_of(MIN_OF["goal"])[0] == {
+        "type": "meter",
+        "value": 4200,
+        "max": 6000,
+        "shape": "ring",
+    }
+
+
+# ask and asks
+
+
+def test_a_lone_ask_becomes_an_entry_of_asks():
+    inbox = validate_widget({**MIN_OF["inbox"], "ask": "Draft a reply to Sam"}, 1)
+    assert inbox["asks"] == ["Draft a reply to Sam"] and "ask" not in inbox
+    both = validate_widget({**MIN_OF["inbox"], "asks": "Who is first?", "ask": "Draft a reply"}, 1)
+    assert both["asks"] == ["Who is first?", "Draft a reply"]
+    listed = validate_widget({**MIN_OF["inbox"], "ask": ["Draft a reply"]}, 1)
+    assert listed["asks"] == ["Draft a reply"]
+    assert refused({**MIN_OF["inbox"], "asks": ["a", "b"], "ask": "c"}) == (
+        "widget 1 (inbox): 3 asks, 2 at most."
+    )
+
+
+def test_on_a_thread_a_lone_ask_is_the_request():
+    old = {"type": "thread", "from": "Jo", "subject": "Venue contract", "ask": "Can you sign it?"}
+    out = validate_widget(old, 1)
+    assert out["request"] == "Can you sign it?" and "ask" not in out and "asks" not in out
+    # With a request already, an ask is a tap like on any widget.
+    tapped = validate_widget({**MIN_OF["thread"], "ask": "Draft a reply"}, 1)
+    assert tapped["request"] == "Can you sign it?" and tapped["asks"] == ["Draft a reply"]
+    assert refused({"type": "thread", "from": "Jo", "subject": "x"}) == (
+        "widget 1 (thread): request is required."
+    )
+
+
+def test_a_thread_saved_with_ask_still_expands():
+    saved = {"type": "thread", "size": "medium", "from": "Jo", "subject": "S", "ask": "Sign it?"}
+    assert expand(saved)[1] == {"type": "text", "text": "Sign it?"}
+
+
+# Bare clock times are today
+
+
+@pytest.fixture
+def on_oct_25(monkeypatch):
+    monkeypatch.setattr(blocks_mod, "today", lambda: date(2026, 10, 25))
+
+
+@pytest.mark.usefixtures("on_oct_25")
+def test_bare_times_in_recipes_are_today():
+    out = validate_widget({**MIN_OF["next_up"], "start": "9:12", "end": "10am"}, 1)
+    assert (out["start"], out["end"]) == ("2026-10-25T09:12", "2026-10-25T10:00")
+    inbox = {"type": "inbox", "unread": 1, "threads": [{"from": "Sam", "subject": "Lease"}]}
+    inbox["threads"][0]["when"] = "9:12"
+    assert validate_widget(inbox, 1)["threads"][0]["when"] == "2026-10-25T09:12"
+    thread = validate_widget({**MIN_OF["thread"], "when": "3pm"}, 1)
+    assert thread["when"] == "2026-10-25T15:00"
+    files = validate_widget({"type": "files", "files": [{"name": "a", "edited": "15:30"}]}, 1)
+    assert files["files"][0]["edited"] == "2026-10-25T15:30"
+    mention = {"channel": "#a", "items": [{"from": "Jo", "text": "hi", "when": "09:05 am"}]}
+    got = validate_widget({"type": "mentions", "groups": [mention]}, 1)
+    assert got["groups"][0]["items"][0]["when"] == "2026-10-25T09:05"
+
+
+@pytest.mark.usefixtures("on_oct_25")
+def test_a_free_time_slot_needs_its_day():
+    raw = {"type": "free_time", "slots": [{"start": "9:00", "end": "2026-10-28T10:00"}]}
+    assert refused(raw) == (
+        "widget 1 (free_time): slot 1: start '9:00' has no date; a slot is on a day, so write it"
+        " like 2026-10-28T09:00."
+    )
