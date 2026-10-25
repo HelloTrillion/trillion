@@ -78,6 +78,18 @@ describe('the board', () => {
     expect(card?.lastElementChild?.classList.contains('bd-card-foot')).toBe(true);
   });
 
+  it('draws an untitled card with no title strip: the × floats and the blocks start at the top', () => {
+    const { view } = mount();
+    const { title: _, ...untitled } = meeting;
+    view.draw(board(untitled as Widget, { ...meeting, id: 'w2' }));
+    const [bare, titled] = [...view.el.querySelectorAll<HTMLElement>('.bd-card')];
+    expect(bare?.hasAttribute('data-untitled')).toBe(true);
+    expect(bare?.querySelector('.bd-card-title')).toBeNull();
+    expect(bare?.hasAttribute('aria-label')).toBe(false);
+    expect(bare?.querySelector('.bd-card-head .bd-x')?.getAttribute('aria-label')).toBe('Take this off the board');
+    expect(titled?.hasAttribute('data-untitled')).toBe(false);
+  });
+
   it('draws no source without one, and no foot at all with neither source nor asks', () => {
     const { view } = mount();
     view.draw(board({ ...meeting, source: undefined }, { id: 'w2', type: 'note', size: 'small', title: 'Bring', blocks: [{ type: 'text', text: 'Fruit' }] }));

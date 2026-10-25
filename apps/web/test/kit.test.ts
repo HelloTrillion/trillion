@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type Kit, NOTE_MS, RULES, blockName, createKit, isKit } from '../src/kit';
 import SAMPLES from '../src/kit/samples.json';
@@ -117,6 +119,31 @@ describe('the kit page', () => {
     expect(setTheme).toHaveBeenCalledWith('light');
     k.dispose();
     expect(restoreTheme).toHaveBeenCalledOnce();
+  });
+
+  it('slides the pill to the pressed side the moment it is clicked', () => {
+    const k = open();
+    for (const [group, values] of [
+      ['Theme', ['light', 'dark']],
+      ['Width', ['narrow', 'wide']],
+    ] as const) {
+      const sw = k.el.querySelector<HTMLElement>(`[aria-label="${group}"]`)!;
+      for (const v of [...values, ...values]) {
+        pick(k, group, v).click();
+        const pressed = [...sw.querySelectorAll('button')].findIndex((b) => b.getAttribute('aria-pressed') === 'true');
+        expect(pressed).toBe(values.indexOf(v as never));
+        expect(sw.style.getPropertyValue('--at')).toBe(String(pressed));
+      }
+    }
+  });
+
+  it('keeps the pressed side looking pressed under the pointer', () => {
+    // The pressed colour must not lose to the hover reset, which the just-clicked button is under.
+    const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8');
+    const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => ({ sel: m[1]!.trim(), body: m[2]! }));
+    const hovers = rules.filter((r) => r.sel.includes('.kit-switch-opt:hover'));
+    expect(hovers.length).toBeGreaterThan(0);
+    for (const r of hovers) expect(r.body).not.toMatch(/(^|[;\s])color:/);
   });
 
   it('switches between narrow and wide', () => {

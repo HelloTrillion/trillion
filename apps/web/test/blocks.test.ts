@@ -140,6 +140,9 @@ describe('drawBlocks', () => {
     const el = draw({ type: 'meter', value: 1, max: 4 }, { type: 'meter', value: 0, max: 10, shape: 'ring' });
     const [bar, ring] = [...el.querySelectorAll<HTMLElement>('.bk-meter')];
     expect(bar?.getAttribute('aria-label')).toBe('Progress');
+    // In a card, a meter with no label of its own is named by the card.
+    const titled = drawBlocks([{ type: 'meter', value: 1, max: 4, shape: 'ring' }], { now: NOW, title: 'Savings' }).el;
+    expect(titled.querySelector('.bk-meter')?.getAttribute('aria-label')).toBe('Savings');
     expect(ring?.querySelector('.bk-ring-num')?.textContent).toBe('0%');
     expect(ring?.querySelector('.bk-ring-fill')).toBeNull();
     expect(ring?.querySelector('.bk-ring-track')).not.toBeNull();
@@ -264,6 +267,25 @@ describe('drawBlocks', () => {
     expect(el.children).toHaveLength(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('value'), expect.any(Error));
     warn.mockRestore();
+  });
+
+  it('names the person on a row once: not again when the title already says it', () => {
+    const el = draw({
+      type: 'rows',
+      items: [
+        { title: 'Sam', person: 'Sam', detail: 'Lease' },
+        { title: 'Sam', person: 'Sam' },
+        { title: 'Sam Lee', person: 'sam', detail: 'Lease' },
+        { title: 'Call back', person: 'Sam', detail: 'Lease' },
+        { title: 'Call back', person: 'Sam' },
+      ],
+    });
+    const rows = [...el.querySelectorAll('.bk-row')];
+    expect(rows.map((r) => r.querySelector('.bk-row-detail')?.textContent ?? null)).toEqual(['Lease', null, 'Lease', 'Sam · Lease', 'Sam']);
+    // The avatar is hidden from screen readers; each row still says who, once.
+    expect(rows.map((r) => r.querySelector('.bk-avatar')?.getAttribute('aria-hidden'))).toEqual(['true', 'true', 'true', 'true', 'true']);
+    expect(rows.map((r) => (r.textContent?.match(/sam/gi) ?? []).length)).toEqual([1, 1, 1, 1, 1]);
+    expect(el.querySelectorAll('.bk-row .visually-hidden')).toHaveLength(0);
   });
 
   it('shows markup as text, never as elements', () => {

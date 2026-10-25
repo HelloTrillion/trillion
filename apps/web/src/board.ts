@@ -164,6 +164,9 @@ function card(w: Widget, now: Date, opts: BoardOptions): Card {
   if (name) {
     head.append(h('h3', 'bd-card-title', name));
     el.setAttribute('aria-label', name);
+  } else {
+    // No title: the head is only the ×, floated into the corner, so the blocks start at the top.
+    el.dataset['untitled'] = '';
   }
   const x = h('button', 'bd-x');
   x.type = 'button';

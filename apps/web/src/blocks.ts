@@ -726,7 +726,7 @@ function sparkline(b: Rec): HTMLElement {
 
 const RING = 15.9155; // a circle of circumference 100, so the dash is the percent
 
-function meter(b: Rec): HTMLElement {
+function meter(b: Rec, _now: Date, ctx: Ctx): HTMLElement {
   const max = num(b['max']);
   const pct = percentOf(num(b['value']), max);
   const label = str(b['label']);
@@ -737,7 +737,8 @@ function meter(b: Rec): HTMLElement {
   box.setAttribute('aria-valuemax', String(max));
   box.setAttribute('aria-valuenow', String(Math.min(max, Math.max(0, num(b['value'])))));
   box.setAttribute('aria-valuetext', `${pct}%`);
-  box.setAttribute('aria-label', label || 'Progress');
+  // With no label of its own, a meter is named by its card (a goal titled by its label).
+  box.setAttribute('aria-label', label || ctx.title || 'Progress');
   if (ring) {
     const fig = h('div', 'bk-ring');
     const svg = s('svg', { class: 'bk-ring-svg', viewBox: '0 0 36 36', 'aria-hidden': 'true' });
@@ -795,6 +796,13 @@ function timelineBlock(b: Rec): HTMLElement {
 
 // Rows ──
 
+const wordsOf = (text: string): string => ` ${text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `;
+
+/** Whether a row's title already names the person ("Sam", "Sam Lee" for Sam), so the row need not again. */
+export function saysName(title: string, name: string): boolean {
+  return name.trim() !== '' && wordsOf(title).includes(wordsOf(name));
+}
+
 function rows(b: Rec, now: Date): HTMLElement {
   const box = h('div', 'bk-rows-block');
   const label = str(b['label']);
@@ -821,7 +829,8 @@ function rows(b: Rec, now: Date): HTMLElement {
     const word = standing !== undefined ? TONE_WORDS[toneOfBlock(standing)] : '';
     if (word) title.prepend(hidden(`${word}: `));
     words.append(title);
-    const detail = [who, str(it['detail'])].filter(Boolean).join(' · ');
+    // Who, once: beside the detail only when the title does not already say it.
+    const detail = [saysName(str(it['title']), who) ? '' : who, str(it['detail'])].filter(Boolean).join(' · ');
     if (detail) words.append(h('span', 'bk-row-detail', detail));
     li.append(words);
     // On the right, one of: when, meta, a chip.
