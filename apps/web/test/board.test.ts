@@ -4,7 +4,12 @@ import {
   boardTitle,
   chartHeight,
   chartSpecOf,
+  buttonAction,
   chartSummary,
+  planRows,
+  pointWords,
+  revive,
+  rowTemplate,
   layoutTimeline,
   minutesOf,
   nearestIndex,
@@ -141,8 +146,15 @@ describe('chartSpecOf', () => {
 describe('chartSummary', () => {
   it('says what the chart shows', () => {
     const spec = chartSpecOf({ kind: 'line', x: ['Oct 1', 'Oct 31'], series: [{ name: 'Spend', values: [1, 2] }] });
-    expect(chartSummary(spec, 'Daily spend')).toBe('Line chart, Daily spend: Spend, from Oct 1 to Oct 31.');
+    expect(chartSummary(spec, 'Daily spend')).toBe('Line chart, Daily spend, Oct 1 to Oct 31. Spend: low 1, high 2, last 2.');
     expect(chartSummary(chartSpecOf({ kind: 'bar' }), '')).toBe('Bar chart: no data.');
+    const two = chartSpecOf({ kind: 'bar', x: ['Q1', 'Q2', 'Q3'], series: [{ name: 'A', values: [5, 1, 3] }, { name: 'B', values: [2, 8, 4] }], unit: '$' });
+    expect(chartSummary(two, '')).toBe('Bar chart, Q1 to Q3. A: low $1, high $5, last $3. B: low $2, high $8, last $4.');
+  });
+
+  it('says one point in words for the arrow keys', () => {
+    const spec = chartSpecOf({ kind: 'line', x: ['Mon', 'Tue'], series: [{ name: 'Steps', values: [4200, 5100] }] });
+    expect(pointWords(spec, 1)).toBe('Tue: Steps 5.1k');
   });
 });
 
@@ -166,5 +178,60 @@ describe('chartHeight', () => {
       // The x labels sit on a baseline 5px above the bottom: room for them under the plot.
       expect(height - 5 - L.plot.bottom).toBeGreaterThanOrEqual(11);
     }
+  });
+});
+
+describe('planRows', () => {
+  const w = (size: 'small' | 'medium' | 'wide' | 'full', type = 'list') => ({ size, type });
+
+  it('lets a widget alone fill the board', () => {
+    expect(planRows([w('small')], 6).spans).toEqual([6]);
+    expect(planRows([w('medium')], 2).spans).toEqual([2]);
+  });
+
+  it('keeps rows that already add up, and widens the last card of a row that does not', () => {
+    expect(planRows([w('medium'), w('medium')], 6).spans).toEqual([3, 3]);
+    expect(planRows([w('medium'), w('small')], 6).spans).toEqual([3, 3]);
+    expect(planRows([w('small'), w('small'), w('small')], 6).spans).toEqual([2, 2, 2]);
+    // A wide card does not fit beside a medium one: the medium widens, the wide starts a row and fills it.
+    expect(planRows([w('medium'), w('wide'), w('small')], 6).spans).toEqual([6, 4, 2]);
+  });
+
+  it('lets only rows with a chart take the spare height', () => {
+    const plan = planRows([w('small', 'stat'), w('small', 'stat'), w('small', 'stat'), w('wide', 'chart'), w('small', 'table')], 6);
+    expect(plan.spans).toEqual([2, 2, 2, 4, 2]);
+    expect(plan.rows).toEqual(['fit', 'grow']);
+    expect(rowTemplate(plan.rows)).toBe('auto minmax(min-content, 1fr)');
+  });
+
+  it('puts every widget in its own row in one column', () => {
+    const plan = planRows([w('full', 'chart'), w('small', 'note')], 1);
+    expect(plan.spans).toEqual([1, 1]);
+    expect(plan.rows).toEqual(['grow', 'fit']);
+    expect(rowTemplate([])).toBe('auto');
+  });
+});
+
+describe('buttonAction', () => {
+  const widget = { id: 'w1', type: 'note', size: 'medium' as const };
+  it('shows the empty state for no board or an empty one, and reopens only a closed board with widgets', () => {
+    expect(buttonAction(null)).toBe('empty');
+    expect(buttonAction({ title: 'T', open: false, widgets: [] })).toBe('empty');
+    expect(buttonAction({ title: 'T', open: false, widgets: [widget] })).toBe('reopen');
+    expect(buttonAction({ title: 'T', open: true, widgets: [widget] })).toBe('show');
+  });
+});
+
+describe('revive', () => {
+  it('undims a card whose removal never came back and gives its × back', () => {
+    const attrs = new Set(['data-leaving']);
+    const x = { disabled: true };
+    const card = {
+      removeAttribute: (n: string) => void attrs.delete(n),
+      querySelector: (q: string) => (q === '.bd-x' ? x : null),
+    };
+    revive(card as unknown as Parameters<typeof revive>[0]);
+    expect(attrs.has('data-leaving')).toBe(false);
+    expect(x.disabled).toBe(false);
   });
 });

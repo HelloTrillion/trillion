@@ -53,7 +53,7 @@ import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { openShowcase, showcaseScene } from './showcase';
-import { boardTitle, createBoardView } from './board';
+import { boardTitle, buttonAction, createBoardView } from './board';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
@@ -1491,9 +1491,10 @@ function showBoard(): void {
   workspace.open(boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
 }
-/** The user asked for the board: a saved one she had put away is open again, and she is told. */
+/** The user asked for the board: a saved one she had put away is open again, and she is told.
+ * One with nothing on it shows the empty state and tells her nothing (the core would refuse). */
 function openBoard(): void {
-  if (view.board && !view.board.open) {
+  if (buttonAction(view.board) === 'reopen') {
     send({ type: 'board.open' });
     apply(boardOpen(view, true));
   }
@@ -1512,6 +1513,7 @@ function onBoard(): void {
 }
 boardChip.addEventListener('click', openBoard);
 workspace.onClose((id, replaced) => {
+  if (id === 'board') boardView.dispose();
   // The user put it away (its close, Escape, the docked orb): she is told. Settings opened over it is not that.
   if (id === 'board' && !replaced && view.board?.open) {
     send({ type: 'board.close' });

@@ -3849,7 +3849,7 @@ button.connected-danger {
 
 /* Stat ── */
 
-.bd-stat .bd-card-body {
+.bd-card[data-type='stat'] .bd-card-body {
   justify-content: flex-end;
   gap: 8px;
 }
@@ -3889,7 +3889,7 @@ button.connected-danger {
 
 /* Chart ── */
 
-.bd-chart {
+.bd-plot {
   position: relative;
   /* Its height is set from the widget's size (chartHeight) and never shrinks. */
   flex: none;
@@ -3900,7 +3900,7 @@ button.connected-danger {
   display: block;
   overflow: hidden;
 }
-.bd-chart .bd-svg {
+.bd-plot .bd-svg {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -3937,7 +3937,7 @@ button.connected-danger {
   fill: var(--c);
   transition: opacity var(--motion-fast);
 }
-.bd-chart[data-hover] .bd-bar:not([data-hot]) {
+.bd-plot[data-hover] .bd-bar:not([data-hot]) {
   opacity: 0.45;
 }
 .bd-guide {
@@ -3946,7 +3946,7 @@ button.connected-danger {
   stroke-dasharray: 3 3;
   visibility: hidden;
 }
-.bd-chart[data-hover] .bd-guide {
+.bd-plot[data-hover] .bd-guide {
   visibility: visible;
 }
 .bd-dot {
@@ -4053,35 +4053,42 @@ button.connected-danger {
   font-variant-numeric: tabular-nums;
 }
 
-/* Ring and legend side by side in a card wide enough, the ring above the legend otherwise. */
+/*
+ * Ring and legend side by side in a card wide enough, the ring above the legend otherwise. The
+ * ring's cell grows with the card; the ring fits it, from 168px up to 320px, never overlapping.
+ */
 .bd-donut {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  justify-items: center;
+  grid-template-rows: minmax(168px, 1fr) auto;
   gap: 14px;
 }
 .bd-donut .bd-legend-values {
   width: 100%;
   min-width: 0;
+  align-self: center;
 }
 @container bd-card (min-width: 400px) {
   .bd-donut {
-    grid-template-columns: 168px minmax(0, 1fr);
-    justify-items: stretch;
-    align-items: center;
+    grid-template-columns: minmax(168px, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(168px, 1fr);
     gap: 20px;
   }
 }
 .bd-donut-fig {
-  width: 168px;
-  height: 168px;
+  position: relative;
+  min-width: 168px;
+  min-height: 168px;
 }
 .bd-donut-fig .bd-svg {
-  /* A donut is a chart card too, but its ring sits in its own box, not over the card. */
-  position: static;
-  inset: auto;
+  position: absolute;
+  inset: 0;
+  margin: auto;
   width: 100%;
   height: 100%;
+  max-width: 320px;
+  max-height: 320px;
 }
 .bd-slice {
   fill: var(--c);
@@ -4174,8 +4181,10 @@ button.connected-danger {
 /* Table ── */
 
 .bd-table-wrap {
+  /* A wide table scrolls inside its card, never past it. */
   overflow-x: auto;
-  margin: 0 -4px;
+  max-width: 100%;
+  min-width: 0;
   border-radius: var(--radius-sm);
 }
 .bd-table {
@@ -4477,6 +4486,11 @@ button.connected-danger {
   .bd *,
   .bd-new {
     animation: none !important;
+  }
+  .bd-card,
+  .bd-card[data-leaving] {
+    transition: none;
+    transform: none;
   }
 }
 

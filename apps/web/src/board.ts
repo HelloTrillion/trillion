@@ -24,9 +24,60 @@ export function spans(size: WidgetSize): { readonly wide: number; readonly mid: 
   }
 }
 
-/** How tall a chart is drawn in a card of each size, in CSS px. The card grows to hold it. */
+/** The least height a chart is drawn at in a card of each size, in CSS px; it grows with its card. */
 export function chartHeight(size: WidgetSize): number {
   return size === 'small' ? 150 : size === 'medium' ? 200 : 230;
+}
+
+export type RowFit = 'grow' | 'fit';
+
+export interface RowPlan {
+  /** Columns each widget takes, in order. Every row adds up to the full width. */
+  readonly spans: readonly number[];
+  /** Per row: one with a chart shares the spare height; the rest keep their natural height. */
+  readonly rows: readonly RowFit[];
+}
+
+/**
+ * Widgets laid out in rows of `columns`, in her order. A widget that does not fit what is left
+ * of a row starts the next one, and the last widget of a row widens to fill it, so a row never
+ * has a hole and a widget alone takes the whole width.
+ */
+export function planRows(widgets: readonly { readonly size: WidgetSize; readonly type: string }[], columns: number): RowPlan {
+  const cols = Math.max(1, Math.floor(columns));
+  const out: number[] = [];
+  const rows: RowFit[] = [];
+  let used = 0;
+  let grow = false;
+  const end = (): void => {
+    if (used === 0) return;
+    out[out.length - 1]! += cols - used;
+    rows.push(grow ? 'grow' : 'fit');
+    used = 0;
+    grow = false;
+  };
+  for (const w of widgets) {
+    const sp = spans(w.size);
+    const want = Math.min(cols, cols >= 6 ? sp.wide : cols >= 2 ? sp.mid : 1);
+    if (used + want > cols) end();
+    out.push(want);
+    used += want;
+    grow ||= w.type === 'chart';
+    if (used === cols) end();
+  }
+  end();
+  return { spans: out, rows };
+}
+
+/** A plan's rows as `grid-template-rows`. */
+export function rowTemplate(rows: readonly RowFit[]): string {
+  return rows.map((r) => (r === 'grow' ? 'minmax(min-content, 1fr)' : 'auto')).join(' ') || 'auto';
+}
+
+/** What the Workspace button does: the empty state for no widgets, and tells her only when it reopens one. */
+export function buttonAction(board: Board | null): 'empty' | 'reopen' | 'show' {
+  if (!board || board.widgets.length === 0) return 'empty';
+  return board.open ? 'show' : 'reopen';
 }
 
 /** The workspace's title for a board: hers, or a plain word when she gave none. */
@@ -197,12 +248,23 @@ export function chartSpecOf(w: Readonly<Record<string, unknown>>): ChartSpec {
 /** What a chart shows, in words, for a screen reader. */
 export function chartSummary(spec: ChartSpec, title: string): string {
   const head = title ? `${KIND_WORDS[spec.kind]}, ${title}` : KIND_WORDS[spec.kind];
-  const names = spec.series.map((s) => s.name).filter(Boolean);
-  if (spec.series.length === 0) return `${head}: no data.`;
+  const values = spec.series.filter((sr) => sr.values.length > 0);
+  if (values.length === 0) return `${head}: no data.`;
   const first = spec.x[0];
   const last = spec.x[spec.x.length - 1];
-  const range = first && last && spec.x.length > 1 ? `, from ${first} to ${last}` : '';
-  return `${head}: ${names.length ? names.join(', ') : 'one series'}${range}.`;
+  const range = first && last && spec.x.length > 1 ? `, ${first} to ${last}` : '';
+  const each = values.map((sr) => {
+    const v = (n: number): string => formatValue(n, spec.unit, 2);
+    const end = sr.values[sr.values.length - 1] ?? 0;
+    return `${sr.name || 'Values'}: low ${v(Math.min(...sr.values))}, high ${v(Math.max(...sr.values))}, last ${v(end)}`;
+  });
+  return `${head}${range}. ${each.join('. ')}.`;
+}
+
+/** One point of a chart in words, for a screen reader moving through it with the arrow keys. */
+export function pointWords(spec: ChartSpec, i: number): string {
+  const at = spec.x[i] ? `${spec.x[i]}: ` : '';
+  return at + spec.series.slice(0, 5).map((sr) => `${sr.name || 'Value'} ${formatValue(sr.values[i] ?? 0, spec.unit, 2)}`).join(', ');
 }
 
 // ── DOM ─────────────────────────────────────────────────────────────────
@@ -283,10 +345,10 @@ function legendOf(entries: ChartLayout['legend'], withValues: boolean): HTMLULis
   return ul;
 }
 
-function cartesian(spec: ChartSpec, title: string, boxHeight: number, body: HTMLElement): Dispose {
-  const box = h('div', 'bd-chart');
-  // A fixed height that never shrinks: the card grows to hold it, and the drawing fills it exactly.
-  box.style.height = `${boxHeight}px`;
+function cartesian(spec: ChartSpec, title: string, least: number, body: HTMLElement): Dispose {
+  const box = h('div', 'bd-plot');
+  // It fills what its card has to spare, never less than this; the drawing fills it exactly.
+  box.style.minHeight = `${least}px`;
   box.tabIndex = 0;
   box.setAttribute('role', 'img');
   box.setAttribute('aria-label', chartSummary(spec, title));
@@ -294,7 +356,10 @@ function cartesian(spec: ChartSpec, title: string, boxHeight: number, body: HTML
   const tip = h('div', 'bd-tip');
   tip.hidden = true;
   box.append(svg, tip);
-  body.append(box);
+  // What the arrow keys point at, read out (the chart itself is one image to a screen reader).
+  const said = h('p', 'visually-hidden');
+  said.setAttribute('aria-live', 'polite');
+  body.append(box, said);
   if (spec.series.length > 1) body.append(legendOf(layoutChart(spec, 1, 1).legend, false));
 
   let L: ChartLayout | null = null;
@@ -355,7 +420,7 @@ function cartesian(spec: ChartSpec, title: string, boxHeight: number, body: HTML
     }
   }
 
-  function point(i: number): void {
+  function point(i: number, speak = false): void {
     if (!L || L.empty || i < 0 || i >= xs.length) {
       hide();
       return;
@@ -380,6 +445,7 @@ function cartesian(spec: ChartSpec, title: string, boxHeight: number, body: HTML
       tip.append(row);
     });
     tip.hidden = false;
+    if (speak) said.textContent = pointWords(spec, i);
     const tw = tip.offsetWidth;
     // Beside the guide, on whichever side has room.
     const left = x + 12 + tw <= L.width ? x + 12 : Math.max(0, x - 12 - tw);
@@ -405,10 +471,10 @@ function cartesian(spec: ChartSpec, title: string, boxHeight: number, body: HTML
     const step = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
     if (ev.key === 'Home' || ev.key === 'End') {
       ev.preventDefault();
-      point(ev.key === 'Home' ? 0 : xs.length - 1);
+      point(ev.key === 'Home' ? 0 : xs.length - 1, true);
     } else if (step) {
       ev.preventDefault();
-      point(at < 0 ? (step > 0 ? 0 : xs.length - 1) : Math.min(xs.length - 1, Math.max(0, at + step)));
+      point(at < 0 ? (step > 0 ? 0 : xs.length - 1) : Math.min(xs.length - 1, Math.max(0, at + step)), true);
     }
   });
 
@@ -433,6 +499,7 @@ function donut(spec: ChartSpec, title: string, body: HTMLElement): Dispose {
   fig.setAttribute('role', 'img');
   const words = L.legend.map((e) => `${e.name} ${e.value ?? ''} (${e.percent ?? 0}%)`).join(', ');
   fig.setAttribute('aria-label', `${chartSummary(spec, title).replace(/\.$/, '')}${words ? `: ${words}` : ''}. Total ${L.donut?.total ?? ''}.`);
+  // Drawn once at its least size; the view box scales it to its cell, up to a cap (CSS).
   const svg = s('svg', { class: 'bd-svg', viewBox: `0 0 ${DONUT} ${DONUT}`, 'aria-hidden': 'true' });
   fig.append(svg);
   const d = L.donut;
@@ -658,10 +725,9 @@ function nameOf(w: Widget): string {
 }
 
 function card(w: Widget, onRemove: (id: string) => void): { el: HTMLElement; dispose: Dispose } {
-  const el = h('section', `bd-card bd-${w.type}`);
-  const sp = spans(w.size);
-  el.style.setProperty('--wide', String(sp.wide));
-  el.style.setProperty('--mid', String(sp.mid));
+  // The type is an attribute, not a class: a class named for it (bd-list, bd-table) would also be its parts'.
+  const el = h('section', 'bd-card');
+  el.dataset['type'] = w.type;
   el.dataset['size'] = w.size;
   const name = nameOf(w);
   const head = h('header', 'bd-card-head');
@@ -699,15 +765,41 @@ export interface BoardOptions {
   readonly onShowcase: () => void;
 }
 
+/** Each card's span and each row's height, for a wide (6) and a middling (2) workspace, and one column. */
+function layoutRows(widgets: readonly Widget[], cards: readonly HTMLElement[], grid: HTMLElement): void {
+  const wide = planRows(widgets, 6);
+  const mid = planRows(widgets, 2);
+  cards.forEach((c, i) => {
+    c.style.setProperty('--wide', String(wide.spans[i] ?? 6));
+    c.style.setProperty('--mid', String(mid.spans[i] ?? 2));
+  });
+  grid.style.setProperty('--rows-wide', rowTemplate(wide.rows));
+  grid.style.setProperty('--rows-mid', rowTemplate(mid.rows));
+  grid.style.setProperty('--rows-one', rowTemplate(planRows(widgets, 1).rows));
+}
+
 export interface BoardView {
   readonly el: HTMLElement;
   /** Draw `board` (or the empty state), keeping what has not changed and the scroll position. */
   draw(board: Board | null): void;
+  /** The board is no longer shown: stop watching card sizes. The next draw starts afresh. */
+  dispose(): void;
+}
+
+/**
+ * A card kept from the last draw is live again: a removal that never came back (refused, or lost
+ * with the connection) leaves it as it was, not dimmed with a dead ×.
+ */
+export function revive(card: Pick<HTMLElement, 'removeAttribute' | 'querySelector'>): void {
+  card.removeAttribute('data-leaving');
+  const x = card.querySelector<HTMLButtonElement>('.bd-x');
+  if (x) x.disabled = false;
 }
 
 export function createBoardView(opts: BoardOptions): BoardView {
   const el = h('div', 'bd');
   el.tabIndex = -1;
+  const grid = h('div', 'bd-grid');
   // By id: what it was drawn from, so an unchanged widget keeps its element (and its hover).
   let drawn = new Map<string, { key: string; el: HTMLElement; dispose: Dispose }>();
 
@@ -727,14 +819,23 @@ export function createBoardView(opts: BoardOptions): BoardView {
     return box;
   }
 
+  function dispose(): void {
+    for (const d of drawn.values()) d.dispose();
+    drawn = new Map();
+    grid.replaceChildren();
+  }
+
   return {
     el,
+    dispose,
     draw(board) {
       // Opening afresh: every card arrives. Already open: only new ones do.
       const fresh = !el.isConnected;
+      if (fresh) dispose();
       const scroller = el.closest('.workspace-body');
       const top = scroller?.scrollTop ?? 0;
-      const hadFocus = el.contains(document.activeElement);
+      const active = document.activeElement;
+      const focused = active instanceof HTMLElement && el.contains(active) ? active : null;
       const widgets = board?.widgets ?? [];
       const next = new Map<string, { key: string; el: HTMLElement; dispose: Dispose }>();
       const cards: HTMLElement[] = [];
@@ -742,14 +843,15 @@ export function createBoardView(opts: BoardOptions): BoardView {
       for (const w of widgets) {
         const key = JSON.stringify(w);
         const old = drawn.get(w.id);
-        if (!fresh && old && old.key === key) {
+        if (old && old.key === key) {
           old.el.classList.remove('bd-new');
+          revive(old.el);
           next.set(w.id, old);
           cards.push(old.el);
           continue;
         }
         const c = card(w, opts.onRemove);
-        if (fresh || !old) {
+        if (!old) {
           c.el.classList.add('bd-new');
           c.el.style.setProperty('--i', String(arriving++));
         }
@@ -758,16 +860,29 @@ export function createBoardView(opts: BoardOptions): BoardView {
       }
       for (const [id, old] of drawn) if (next.get(id) !== old) old.dispose();
       drawn = next;
+      layoutRows(widgets, cards, grid);
       if (cards.length) {
-        const grid = h('div', 'bd-grid');
-        grid.append(...cards);
-        el.replaceChildren(grid);
+        // In place: what went is taken out, and only new, changed or moved cards are put in, so an
+        // unchanged card is never detached (its focus and its scroll survive).
+        const keep = new Set(cards);
+        for (const child of [...grid.children]) if (!keep.has(child as HTMLElement)) child.remove();
+        cards.forEach((c, i) => {
+          const at = grid.children[i] ?? null;
+          if (at !== c) grid.insertBefore(c, at);
+        });
+        if (grid.parentElement !== el) el.replaceChildren(grid);
       } else {
+        grid.replaceChildren();
         el.replaceChildren(empty());
       }
       if (scroller) scroller.scrollTop = top;
-      // The card that had focus went (its × was pressed): focus stays on the board.
-      if (hadFocus && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+      if (focused?.isConnected) {
+        // A moved card lost focus on the way: it goes back where it was.
+        if (document.activeElement !== focused) focused.focus({ preventScroll: true });
+      } else if (focused) {
+        // The card that had focus went (its × was pressed): focus stays on the board.
+        el.focus({ preventScroll: true });
+      }
     },
   };
 }
