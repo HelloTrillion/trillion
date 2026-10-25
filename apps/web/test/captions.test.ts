@@ -38,9 +38,13 @@ describe('captionSpot', () => {
     const s = captionSpot(f);
     const orb = orbRect(f);
     expect(s.x).toBe(orb.x);
-    expect(s.top).toBeGreaterThan(orb.y);
+    expect(s.top).toBeCloseTo(orb.y + orb.size * 0.4);
+    expect(s.top).toBeGreaterThan(orb.y + orb.size * 0.19);
     expect(s.top).toBeLessThan(f.h);
     expect(s.width).toBeLessThanOrEqual(f.w - f.sidebar);
+  });
+  it('stays clear of the window bottom', () => {
+    expect(captionSpot({ ...f, h: 300 }).top).toBeLessThanOrEqual(300 - 72);
   });
   it('follows the orb when the sidebar hides', () => {
     expect(captionSpot({ ...f, sidebar: 0 }).x).toBe(600);

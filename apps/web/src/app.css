@@ -2099,14 +2099,20 @@ button.connected-danger {
   transform: translateX(-50%);
   text-align: center;
   font-size: 18px;
+  font-weight: 500;
   line-height: 1.4;
-  color: var(--color-text-1);
+  color: var(--color-text-0);
+  /* Over a busy galaxy, with no box behind it. */
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.8);
   pointer-events: none;
   overflow: hidden;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   animation: caption-in 200ms ease-out;
+}
+:root[data-theme='light'] .captions {
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.85);
 }
 .captions[hidden] {
   display: none;

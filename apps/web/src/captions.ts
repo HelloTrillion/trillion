@@ -20,12 +20,15 @@ export const tail = (text: string, max = 160): string =>
 
 export const CAPTION_MS = 4000;
 
-/** Where the captions sit: centred on the orb's resting place, just below it, in the stage. */
+/**
+ * Where the captions sit: centred on the orb's resting place, between its glow and its outer
+ * rings. The ring extent is nearly the stage's height, so its edge is no place to measure from.
+ */
 export function captionSpot(f: Frame): { x: number; top: number; width: number } {
   const orb = orbRect({ ...f, workspace: false });
   const left = f.phone ? 0 : f.sidebar;
   const width = Math.max(120, Math.min(640, f.w - left - 48));
-  return { x: orb.x, top: Math.min(orb.y + orb.size / 2, f.h - 72), width };
+  return { x: orb.x, top: Math.min(orb.y + orb.size * 0.4, f.h - 72), width };
 }
 
 export interface Captions {
