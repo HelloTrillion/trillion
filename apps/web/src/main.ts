@@ -54,6 +54,7 @@ import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView } from './board';
+import { createApprovals, outcomeWords } from './approvals';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
@@ -509,7 +510,17 @@ const mic = createMic({
 let retryMs = 1000;
 // The next try after the link dropped. Cleared by any connect, so two sockets never race.
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
-const shown = new Set<string>();
+// A pending action's card: pinned on her board when it can open there, else in the conversation
+// as always. It also tells the core when a full card is first on screen (SPN-17).
+const approvals = createApprovals({
+  send: (body) => send(body),
+  entries: () => view.entries,
+  where: () => ({ phone: isPhone(innerWidth), settingsShowing: workspace.showing === 'settings' }),
+  boardShowing: () => workspace.showing === 'board',
+  showBoard: () => showBoard(),
+  closeBoard: () => workspace.close(),
+  hasWidgets: () => Boolean(view.board?.open && view.board.widgets.length > 0),
+});
 
 // The first conversation, or a later change of names (ONB-3). Its lines are the
 // page's own, so they sit in the transcript where it began and survive a reconnect.
@@ -533,6 +544,8 @@ function entries(): readonly Entry[] {
           summary: l.text,
           expiresAt: 0,
           tapOnly: false,
+          toolLabel: 'Example',
+          reason: null,
           status: l.status,
           note: l.status === 'done' ? 'Approved. Nothing happened: this was an example.' : 'Declined. Nothing happened.',
         }
@@ -615,6 +628,15 @@ function renderEntry(e: Entry): HTMLElement {
       return box;
     }
     case 'card': {
+      if (approvals.onBoard(e.pendingId)) {
+        // Its full card is on the board: here, a line that jumps to it, then how it ended.
+        if (e.status !== 'waiting') return el('p', 'chip ap-chip-done', `${e.toolLabel}: ${outcomeWords(e.status, e.note)}`);
+        const chip = el('button', 'ap-chip');
+        chip.type = 'button';
+        chip.append(el('span', 'ap-chip-label', `Needs your OK: ${e.toolLabel}`), el('span', 'ap-chip-view', 'View'));
+        chip.addEventListener('click', () => approvals.view(e.pendingId));
+        return chip;
+      }
       const example = e.pendingId === EXAMPLE_CARD;
       const card = el('section', `card ${e.status}`);
       card.setAttribute('aria-label', example ? 'An example of an approval card' : 'Needs your approval');
@@ -692,13 +714,9 @@ function render(): void {
 
   showCaptions();
 
-  // The core records a card as delivered only once it is really on screen (SPN-17).
-  for (const e of view.entries) {
-    if (e.kind === 'card' && e.status === 'waiting' && !shown.has(e.pendingId) && e.pendingId !== EXAMPLE_CARD) {
-      shown.add(e.pendingId);
-      send({ type: 'confirm.shown', pending_id: e.pendingId });
-    }
-  }
+  // The board follows its approvals, and the core records a card as delivered only once it is
+  // really on screen (SPN-17).
+  approvals.sync();
 
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
@@ -1035,7 +1053,7 @@ function switchTo(id: string | null): void {
   if (view.busy) send({ type: 'interrupt' });
   quiet();
   store(CONVERSATION_KEY, id);
-  shown.clear();
+  approvals.reset();
   if (!active(ob)) ob = null;
   obAt = 0;
   apply({ ...INITIAL, link: 'connecting' });
@@ -1142,7 +1160,8 @@ function connect(): void {
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
-    if (msg.type === 'confirm.request') {
+    // On the board when it can open there; the board opens once the card is in the view.
+    if (msg.type === 'confirm.request' && approvals.request(String(msg['pending_id'] ?? '')) === 'conversation') {
       const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
       if (reveal.unhide) sidebar.setHidden(false);
       if (reveal.raise) sidebar.raise(reveal.raise);
@@ -1483,10 +1502,14 @@ const boardChip = $<HTMLButtonElement>('board-chip');
 const boardView = createBoardView({
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
+  approvals: approvals.strip.el,
 });
 function showBoard(): void {
   boardChip.hidden = true;
-  boardView.draw(view.board);
+  const pinned = approvals.pinned();
+  approvals.strip.draw(pinned.items);
+  // A board she put away is not drawn under an approval that opened it.
+  boardView.draw(view.board?.open ? view.board : null, { any: pinned.items.length > 0, waiting: pinned.waiting, from: view.agentName });
   // Already showing: this only changes the title; the cards were redrawn in place.
   workspace.open(boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
@@ -1503,7 +1526,7 @@ function openBoard(): void {
 function onBoard(): void {
   const board = view.board;
   if (workspace.showing === 'board') {
-    if (board?.open) showBoard();
+    if (board?.open || approvals.holds()) showBoard();
     else workspace.close();
     return;
   }
@@ -1513,7 +1536,10 @@ function onBoard(): void {
 }
 boardChip.addEventListener('click', openBoard);
 workspace.onClose((id, replaced) => {
-  if (id === 'board') boardView.dispose();
+  if (id === 'board') {
+    boardView.dispose();
+    approvals.closed(replaced);
+  }
   // The user put it away (its close, Escape, the docked orb): she is told. Settings opened over it is not that.
   if (id === 'board' && !replaced && view.board?.open) {
     send({ type: 'board.close' });
@@ -1521,9 +1547,9 @@ workspace.onClose((id, replaced) => {
   }
   // Whatever was opened over a board that is still up has closed: the board comes back. After this
   // close has finished, so the workspace hands focus back before opening again.
-  if (id !== 'board' && !replaced && view.board?.open) {
+  if (id !== 'board' && !replaced && (view.board?.open || approvals.holds())) {
     queueMicrotask(() => {
-      if (!workspace.isOpen && view.board?.open) showBoard();
+      if (!workspace.isOpen && (view.board?.open || approvals.holds())) showBoard();
     });
   }
 });
