@@ -171,6 +171,8 @@ const workspace = createWorkspace({
   close: workspaceCloseBtn,
   dock: $<HTMLButtonElement>('orb-dock'),
   sidebarWidth: () => sidebar.width(),
+  sheetTop: () => sidebar.sheetTop(),
+  hold: (open) => sidebar.hold(open),
   place: (rect, animate) => galaxy.setStage(rect, { animate }),
   fallback: () => (sidebar.hidden ? showSidebarBtn : null),
 });

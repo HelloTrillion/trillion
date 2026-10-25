@@ -13,6 +13,10 @@ export interface WorkspaceDeps {
   readonly dock: HTMLButtonElement;
   /** The sidebar's current width in CSS px, 0 when hidden. */
   readonly sidebarWidth: () => number;
+  /** The phone sheet's top edge now; the orb rests above it. */
+  readonly sheetTop: () => number;
+  /** Told when it opens and closes: a phone's sheet gets out of its way while it is open. */
+  readonly hold: (open: boolean) => void;
   readonly place: (rect: StageRect, animate: boolean) => void;
   /** Where focus goes on close when where it came from can no longer take it. */
   readonly fallback: () => HTMLElement | null;
@@ -84,7 +88,14 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
   function layout(animate = true): void {
     const w = innerWidth;
     d.place(
-      orbRect({ w, h: innerHeight, sidebar: d.sidebarWidth(), workspace: !d.region.hidden, phone: isPhone(w) }),
+      orbRect({
+        w,
+        h: innerHeight,
+        sidebar: d.sidebarWidth(),
+        workspace: !d.region.hidden,
+        phone: isPhone(w),
+        sheet: d.sheetTop(),
+      }),
       animate,
     );
   }
@@ -94,6 +105,7 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
     d.region.hidden = true;
     d.dock.hidden = true;
     d.body.replaceChildren();
+    d.hold(false);
     layout();
     state.close();
     // Focus came from somewhere now gone or inert (a hidden sidebar): go to the fallback.
@@ -112,13 +124,15 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
       d.title.textContent = title;
       // Already shown: moving it would lose focus and scroll.
       if (state.isOpen && d.body.firstElementChild === content) return;
-      if (!state.isOpen) back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const opening = !state.isOpen;
+      if (opening) back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       // Something else was open: it is taken away and closes first, as on a real close.
       else d.body.replaceChildren();
       state.show(id ?? null);
       d.body.replaceChildren(content);
       d.region.hidden = false;
       d.dock.hidden = false;
+      if (opening) d.hold(true);
       layout();
     },
     close,

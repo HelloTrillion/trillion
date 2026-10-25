@@ -15,6 +15,8 @@ export interface Frame {
   readonly sidebar: number;
   readonly workspace: boolean;
   readonly phone: boolean;
+  /** On a phone, the bottom sheet's top edge: the orb rests in the space above it. The window's height if left out. */
+  readonly sheet?: number;
 }
 
 export const isPhone = (width: number): boolean => width < PHONE_MAX;
@@ -25,10 +27,14 @@ export function orbRect(f: Frame): StageRect {
       ? { x: f.w / 2, y: DOCK.phoneInset + DOCK.phoneSize / 2, size: DOCK.phoneSize }
       : { x: f.w - DOCK.inset - DOCK.size / 2, y: f.h - DOCK.inset - DOCK.size / 2, size: DOCK.size };
   }
+  if (f.phone) {
+    // Above the sheet, sized to that space, but never smaller than its docked self.
+    const rest = defaultRect(f.w, Math.max(0, Math.min(f.h, f.sheet ?? f.h)));
+    return { ...rest, size: Math.max(DOCK.phoneSize, rest.size) };
+  }
   // At rest the orb is the galaxy's own centred one, moved over to sit in the stage.
-  const left = f.phone ? 0 : f.sidebar;
-  const rest = defaultRect(f.w - left, f.h);
-  return { ...rest, x: left + rest.x };
+  const rest = defaultRect(f.w - f.sidebar, f.h);
+  return { ...rest, x: f.sidebar + rest.x };
 }
 
 export const clampWidth = (px: number): number => Math.round(Math.min(SIDEBAR.max, Math.max(SIDEBAR.min, px)));

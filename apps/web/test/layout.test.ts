@@ -23,6 +23,25 @@ describe('orbRect', () => {
     expect(orbRect({ w: 390, h: 844, sidebar: 0, workspace: false, phone: true })).toEqual(defaultRect(390, 844));
   });
 
+  it('on a phone, rests centred in the space above the sheet, sized to it', () => {
+    expect(orbRect({ w: 390, h: 844, sidebar: 0, workspace: false, phone: true, sheet: 422 })).toEqual(defaultRect(390, 422));
+    const collapsed = orbRect({ w: 390, h: 844, sidebar: 0, workspace: false, phone: true, sheet: 774 });
+    expect(collapsed).toEqual(defaultRect(390, 774));
+  });
+
+  it('on a phone, never shrinks the resting orb below its docked size', () => {
+    const r = orbRect({ w: 390, h: 844, sidebar: 0, workspace: false, phone: true, sheet: SHEET.full });
+    expect(r.y).toBe(SHEET.full / 2);
+    expect(r.size).toBe(Math.max(DOCK.phoneSize, defaultRect(390, SHEET.full).size));
+    expect(orbRect({ w: 390, h: 844, sidebar: 0, workspace: false, phone: true, sheet: 0 }).size).toBe(DOCK.phoneSize);
+  });
+
+  it('on a phone, docks top centre whatever the sheet', () => {
+    expect(orbRect({ w: 390, h: 844, sidebar: 0, workspace: true, phone: true, sheet: 422 }).y).toBe(
+      DOCK.phoneInset + DOCK.phoneSize / 2,
+    );
+  });
+
   it('ignores the sidebar width on a phone', () => {
     expect(orbRect({ w: 390, h: 844, sidebar: 360, workspace: false, phone: true })).toEqual(defaultRect(390, 844));
   });

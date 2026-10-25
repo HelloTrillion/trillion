@@ -72,6 +72,13 @@ export interface Sidebar {
   toggle(): void;
   /** On a phone, raise the sheet to at least `rest`; on a desktop, nothing to do. */
   raise(rest: Rest): void;
+  /**
+   * While the workspace is open a phone's sheet is held collapsed, out of its way; let go, it goes
+   * back to the rest it was at, unless it was moved meanwhile.
+   */
+  hold(on: boolean): void;
+  /** The sheet's top edge as shown now, following a drag; the window's height on a desktop. */
+  sheetTop(): number;
   /** Called when it is shown, hidden or resized, or the window crosses into or out of phone width; `animate` is false while the edge is moved. */
   onChange(listener: (animate: boolean) => void): void;
 }
@@ -88,6 +95,10 @@ export function createSidebar(
   let hidden = read(HIDDEN_KEY) === '1';
   let rest = savedRest(read(REST_KEY));
   let phone = isPhone(innerWidth);
+  // The rest to go back to when the workspace lets go of the sheet.
+  let held: Rest | null = null;
+  // The sheet's top as last placed, live during a drag.
+  let shownTop = innerHeight;
   // The orb glides when the sidebar slides; it follows the edge exactly while dragged.
   const changed = (animate: boolean): void => listeners.forEach((l) => l(animate));
   const isHidden = (): boolean => hidden && !phone;
@@ -99,6 +110,7 @@ export function createSidebar(
   }
 
   function placeSheet(top: number): void {
+    shownTop = top;
     aside.style.setProperty('--sheet-top', `${top}px`);
   }
 
@@ -121,6 +133,7 @@ export function createSidebar(
       handle.setAttribute('aria-valuenow', String(RESTS.indexOf(rest)));
       handle.setAttribute('aria-valuetext', REST_TEXT[rest]);
     } else {
+      shownTop = innerHeight;
       delete aside.dataset['rest'];
       aside.style.removeProperty('--sheet-top');
       handle.setAttribute('aria-orientation', 'vertical');
@@ -141,10 +154,26 @@ export function createSidebar(
     (hidden ? show : hide).focus();
   }
 
+  // The orb rests above the sheet, so it glides with every change of rest.
   function setRest(next: Rest): void {
     rest = next;
+    held = null;
     write(REST_KEY, rest);
     apply();
+    changed(true);
+  }
+
+  function hold(on: boolean): void {
+    if (on === (held !== null)) return;
+    if (on) {
+      held = rest;
+      rest = 'collapsed';
+    } else {
+      rest = held ?? rest;
+      held = null;
+    }
+    apply();
+    changed(true);
   }
 
   let dragging: number | null = null;
@@ -166,6 +195,7 @@ export function createSidebar(
       if (sheet) {
         top = dragTop(e.clientY, grab, innerHeight, a);
         placeSheet(top);
+        changed(false);
         return;
       }
       const next = clampWidth(e.clientX);
@@ -222,7 +252,10 @@ export function createSidebar(
   // The ask bar grows with what is typed; a collapsed sheet grows with it.
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
-      if (phone && dragging === null) apply();
+      if (!phone || dragging !== null) return;
+      const before = shownTop;
+      apply();
+      if (shownTop !== before) changed(false);
     }).observe(ask);
   }
   apply();
@@ -237,6 +270,8 @@ export function createSidebar(
     raise: (to) => {
       if (phone && higher(rest, to) !== rest) setRest(to);
     },
+    hold,
+    sheetTop: () => (phone ? shownTop : innerHeight),
     onChange: (l) => listeners.push(l),
   };
 }
