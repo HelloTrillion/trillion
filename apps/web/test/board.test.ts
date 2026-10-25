@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { layoutChart } from '../src/chart';
 import {
   boardTitle,
+  chartHeight,
   chartSpecOf,
   chartSummary,
   layoutTimeline,
@@ -141,5 +143,28 @@ describe('chartSummary', () => {
     const spec = chartSpecOf({ kind: 'line', x: ['Oct 1', 'Oct 31'], series: [{ name: 'Spend', values: [1, 2] }] });
     expect(chartSummary(spec, 'Daily spend')).toBe('Line chart, Daily spend: Spend, from Oct 1 to Oct 31.');
     expect(chartSummary(chartSpecOf({ kind: 'bar' }), '')).toBe('Bar chart: no data.');
+  });
+});
+
+describe('chartHeight', () => {
+  it('gives every size a fixed height that the whole drawing fits inside', () => {
+    const spec = chartSpecOf({
+      kind: 'area',
+      x: Array.from({ length: 31 }, (_, i) => `Oct ${i + 1}`),
+      series: [{ name: 'Spend', values: Array.from({ length: 31 }, (_, i) => (i % 7) * 3.5) }],
+      unit: '$',
+    });
+    for (const size of ['small', 'medium', 'wide', 'full'] as const) {
+      const height = chartHeight(size);
+      expect(height).toBeGreaterThanOrEqual(150);
+      expect(height).toBeLessThanOrEqual(240);
+      const L = layoutChart(spec, 600, height);
+      expect(L.plot.top).toBeGreaterThanOrEqual(0);
+      expect(L.plot.bottom).toBeLessThanOrEqual(height);
+      for (const t of L.yTicks) expect(t.y).toBeLessThanOrEqual(height);
+      for (const p of L.series[0]?.points ?? []) expect(p.y).toBeLessThanOrEqual(L.plot.bottom + 0.01);
+      // The x labels sit on a baseline 5px above the bottom: room for them under the plot.
+      expect(height - 5 - L.plot.bottom).toBeGreaterThanOrEqual(11);
+    }
   });
 });

@@ -3757,6 +3757,9 @@ button.connected-danger {
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
   /* Each card is a container too, so what is inside fits the card rather than the window. */
   container: bd-card / inline-size;
+  /* Nothing a widget draws ever reaches into the next card. */
+  overflow: clip;
+  overflow-clip-margin: 4px;
   transition: opacity var(--motion-base), transform var(--motion-base);
 }
 .bd-card[data-leaving] {
@@ -3852,7 +3855,7 @@ button.connected-danger {
 }
 .bd-stat-value {
   margin: 0;
-  font-size: clamp(28px, 14cqi, 44px);
+  font-size: clamp(24px, 12cqi, 44px);
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1.05;
@@ -3888,24 +3891,20 @@ button.connected-danger {
 
 .bd-chart {
   position: relative;
-  height: 200px;
+  /* Its height is set from the widget's size (chartHeight) and never shrinks. */
+  flex: none;
   border-radius: var(--radius-sm);
-  outline-offset: 4px;
-}
-.bd-card[data-size='small'] .bd-chart {
-  height: 150px;
-}
-.bd-card[data-size='wide'] .bd-chart,
-.bd-card[data-size='full'] .bd-chart {
-  height: 230px;
+  outline-offset: 2px;
 }
 .bd-svg {
   display: block;
-  overflow: visible;
+  overflow: hidden;
 }
 .bd-chart .bd-svg {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
 }
 .bd-gridline {
   stroke: var(--bd-line);
@@ -4025,8 +4024,7 @@ button.connected-danger {
 }
 .bd-legend-values {
   flex-direction: column;
-  flex: 1;
-  min-width: 160px;
+  flex-wrap: nowrap;
   gap: 2px;
 }
 .bd-legend-values li {
@@ -4055,15 +4053,32 @@ button.connected-danger {
   font-variant-numeric: tabular-nums;
 }
 
+/* Ring and legend side by side in a card wide enough, the ring above the legend otherwise. */
 .bd-donut {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 14px;
+}
+.bd-donut .bd-legend-values {
+  width: 100%;
+  min-width: 0;
+}
+@container bd-card (min-width: 400px) {
+  .bd-donut {
+    grid-template-columns: 168px minmax(0, 1fr);
+    justify-items: stretch;
+    align-items: center;
+    gap: 20px;
+  }
 }
 .bd-donut-fig {
-  flex: none;
-  margin: 0 auto;
+  width: 168px;
+  height: 168px;
+}
+.bd-donut-fig .bd-svg {
+  width: 100%;
+  height: 100%;
 }
 .bd-slice {
   fill: var(--c);
@@ -4221,7 +4236,8 @@ button.connected-danger {
   --lanes: 1;
   position: relative;
   height: calc(var(--lanes) * 34px + 26px);
-  margin-top: 2px;
+  /* Room at the right for the last event and the last hour's label. */
+  margin: 2px 14px 0 0;
 }
 .bd-hour {
   position: absolute;

@@ -24,6 +24,11 @@ export function spans(size: WidgetSize): { readonly wide: number; readonly mid: 
   }
 }
 
+/** How tall a chart is drawn in a card of each size, in CSS px. The card grows to hold it. */
+export function chartHeight(size: WidgetSize): number {
+  return size === 'small' ? 150 : size === 'medium' ? 200 : 230;
+}
+
 /** The workspace's title for a board: hers, or a plain word when she gave none. */
 export function boardTitle(board: Board | null): string {
   return board?.title.trim() || 'Board';
@@ -261,7 +266,7 @@ const DONUT = 168;
 function chart(w: Widget, body: HTMLElement): Dispose {
   const spec = chartSpecOf(w);
   const title = str(w['title']);
-  return spec.kind === 'donut' ? donut(spec, title, body) : cartesian(spec, title, body);
+  return spec.kind === 'donut' ? donut(spec, title, body) : cartesian(spec, title, chartHeight(w.size), body);
 }
 
 function legendOf(entries: ChartLayout['legend'], withValues: boolean): HTMLUListElement {
@@ -278,8 +283,10 @@ function legendOf(entries: ChartLayout['legend'], withValues: boolean): HTMLULis
   return ul;
 }
 
-function cartesian(spec: ChartSpec, title: string, body: HTMLElement): Dispose {
+function cartesian(spec: ChartSpec, title: string, boxHeight: number, body: HTMLElement): Dispose {
   const box = h('div', 'bd-chart');
+  // A fixed height that never shrinks: the card grows to hold it, and the drawing fills it exactly.
+  box.style.height = `${boxHeight}px`;
   box.tabIndex = 0;
   box.setAttribute('role', 'img');
   box.setAttribute('aria-label', chartSummary(spec, title));
@@ -298,8 +305,7 @@ function cartesian(spec: ChartSpec, title: string, body: HTMLElement): Dispose {
 
   function paint(width: number, height: number): void {
     L = layoutChart(spec, width, height);
-    svg.setAttribute('width', String(width));
-    svg.setAttribute('height', String(height));
+    // Sized by CSS to the box; the view box is the box measured, so text stays its real size.
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.replaceChildren();
     at = -1;
@@ -427,7 +433,7 @@ function donut(spec: ChartSpec, title: string, body: HTMLElement): Dispose {
   fig.setAttribute('role', 'img');
   const words = L.legend.map((e) => `${e.name} ${e.value ?? ''} (${e.percent ?? 0}%)`).join(', ');
   fig.setAttribute('aria-label', `${chartSummary(spec, title).replace(/\.$/, '')}${words ? `: ${words}` : ''}. Total ${L.donut?.total ?? ''}.`);
-  const svg = s('svg', { class: 'bd-svg', width: DONUT, height: DONUT, viewBox: `0 0 ${DONUT} ${DONUT}`, 'aria-hidden': 'true' });
+  const svg = s('svg', { class: 'bd-svg', viewBox: `0 0 ${DONUT} ${DONUT}`, 'aria-hidden': 'true' });
   fig.append(svg);
   const d = L.donut;
   if (L.empty || !d) {
@@ -574,8 +580,9 @@ function timeline(w: Widget, body: HTMLElement): Dispose {
     const e = events[it.index];
     if (!e) continue;
     const b = h('div', `bd-event bd-c${it.index % 5}`);
-    b.style.left = `${it.left}%`;
-    b.style.width = `${it.width}%`;
+    // Never past the track's right edge, even at its smallest width.
+    b.style.width = `max(${it.width}%, 6px)`;
+    b.style.left = `min(${it.left}%, calc(100% - max(${it.width}%, 6px)))`;
     b.style.setProperty('--lane', String(it.lane));
     b.append(h('strong', '', str(e['title'])));
     b.title = `${str(e['title'])} · ${when(e)}`;
