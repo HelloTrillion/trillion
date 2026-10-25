@@ -114,27 +114,53 @@ button:disabled {
 
 :root {
   --sidebar-w: 360px;
+  /* Frosted glass: the galaxy shows through, blurred, with a faint sheen down the edge. */
+  --glass-fill: rgb(20 22 30 / 0.28);
+  --glass-sheen: rgb(255 255 255 / 0.09);
+  --glass-edge: rgb(255 255 255 / 0.12);
+  --glass-dense: rgb(20 22 30 / 0.62);
+}
+:root[data-theme='light'] {
+  --glass-fill: rgb(255 255 255 / 0.42);
+  --glass-sheen: rgb(255 255 255 / 0.35);
+  --glass-edge: rgb(255 255 255 / 0.6);
+  --glass-dense: rgb(255 255 255 / 0.7);
 }
 
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
   width: var(--sidebar-w);
+  --side-gap: 12px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px 12px 14px;
-  background: var(--color-surface-glass);
-  border-right: 1px solid var(--color-border);
-  backdrop-filter: blur(16px);
+  background:
+    linear-gradient(165deg, var(--glass-sheen), transparent 35%),
+    var(--glass-fill);
+  border-right: 1px solid var(--glass-edge);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
   z-index: 2;
   /* The orb's glide to its new place takes the same time, so they move together. */
   transition: transform 300ms ease;
 }
 
 .sidebar[data-hidden] {
-  transform: translateX(-100%);
+  transform: translateX(calc(-100% - var(--side-gap) * 2));
+}
+
+/* On a desktop the panel floats: rounded, inset from the window, lit along its top edge.
+   Its margin is SIDEBAR.gap in layout.ts. */
+@media (min-width: 768px) {
+  .sidebar {
+    inset: var(--side-gap) auto var(--side-gap) var(--side-gap);
+    border-radius: 22px;
+    border: 1px solid var(--glass-edge);
+    box-shadow: inset 0 1px 0 var(--glass-edge), 0 20px 50px rgb(0 0 0 / 0.35);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -482,15 +508,21 @@ button:disabled {
 /* ── Workspace ───────────────────────────────────────────────────────── */
 
 .workspace {
-  --ws-inset: 16px;
+  --ws-inset: 12px;
   position: fixed;
-  inset: var(--ws-inset) var(--ws-inset) var(--ws-inset) calc(var(--sidebar-w) + var(--ws-inset));
+  /* Beside the sidebar's floating panel and its margin (SIDEBAR.gap × 2 = 24px). */
+  inset: var(--ws-inset) var(--ws-inset) var(--ws-inset) calc(var(--sidebar-w) + 24px + var(--ws-inset));
   display: flex;
   flex-direction: column;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-glass);
-  backdrop-filter: blur(16px);
+  /* The same glass as the sidebar, a little denser so settings stay easy to read. */
+  border-radius: 22px;
+  border: 1px solid var(--glass-edge);
+  background:
+    linear-gradient(165deg, var(--glass-sheen), transparent 35%),
+    var(--glass-dense);
+  box-shadow: inset 0 1px 0 var(--glass-edge), 0 20px 50px rgb(0 0 0 / 0.35);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
   z-index: 1;
   overflow: hidden;
 }

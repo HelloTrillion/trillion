@@ -8,6 +8,7 @@ import {
   SIDEBAR,
   TAP_SLOP,
   clampWidth,
+  footprint,
   dragTop,
   isPhone,
   settle,
@@ -73,7 +74,7 @@ function write(key: string, value: string | null): void {
 const ENDS = ['pointerup', 'pointercancel', 'lostpointercapture'] as const;
 
 export interface Sidebar {
-  /** Its width in CSS px; 0 while hidden or on a phone. */
+  /** The room it takes in CSS px, its margin included; 0 while hidden or on a phone. */
   width(): number;
   /** Hidden on a desktop. A phone's sheet is never hidden, whatever the desktop chose. */
   readonly hidden: boolean;
@@ -208,7 +209,7 @@ export function createSidebar(
         changed(false);
         return;
       }
-      const next = clampWidth(e.clientX);
+      const next = clampWidth(e.clientX - SIDEBAR.gap);
       if (next === px) return;
       px = next;
       apply();
@@ -271,7 +272,7 @@ export function createSidebar(
   apply();
 
   return {
-    width: () => (isHidden() || phone ? 0 : px),
+    width: () => (isHidden() || phone ? 0 : footprint(px)),
     get hidden() {
       return isHidden();
     },

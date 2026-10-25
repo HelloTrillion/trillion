@@ -1,6 +1,6 @@
 import { defaultRect } from '@hellotrillion/galaxy';
 import { describe, expect, it } from 'vitest';
-import { DOCK, PHONE_MAX, SHEET, SIDEBAR, clampWidth, dragTop, isPhone, orbRect, settle, sheetTop, stepRest, tapped } from '../src/layout';
+import { DOCK, PHONE_MAX, SHEET, SIDEBAR, clampWidth, dragTop, footprint, isPhone, orbRect, settle, sheetTop, stepRest, tapped } from '../src/layout';
 
 describe('orbRect', () => {
   it('centres the orb right of the sidebar, sized as it is today', () => {
@@ -144,5 +144,11 @@ describe('tapped', () => {
     expect(tapped('collapsed')).toBe('half');
     expect(tapped('half')).toBe('full');
     expect(tapped('full')).toBe('collapsed');
+  });
+});
+
+describe('footprint', () => {
+  it('counts the floating panel and the margin on both sides of it', () => {
+    expect(footprint(SIDEBAR.initial)).toBe(SIDEBAR.initial + 2 * SIDEBAR.gap);
   });
 });

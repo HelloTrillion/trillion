@@ -5,7 +5,11 @@
 import { defaultRect, type StageRect } from '@hellotrillion/galaxy';
 
 export const PHONE_MAX = 768;
-export const SIDEBAR = { min: 300, max: 520, initial: 360 } as const;
+/** The sidebar's width, and the margin its glass panel floats in on a desktop. */
+export const SIDEBAR = { min: 300, max: 520, initial: 360, gap: 12 } as const;
+
+/** How much of the window a shown desktop sidebar takes: its panel and the margin round it. */
+export const footprint = (px: number): number => px + SIDEBAR.gap * 2;
 export const DOCK = { size: 96, inset: 24, phoneSize: 64, phoneInset: 12 } as const;
 
 export interface Frame {
