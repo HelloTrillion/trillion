@@ -97,7 +97,7 @@ What she writes, and what it becomes. Every recipe also takes `title?`, `size?`,
 | `next_up` | `event`, `start`, `end?`, `where?`, `people[]?`, `note?` | `time`, `people`, `chips` (where), `text` (note) |
 | `free_time` | `slots[]` (`start`, `end`, local time, no offset) | `rows`, one item per day ("Tue 28 Oct"), detail the slots ("9:00–10:30 am, 2:00–3:00 pm"), grouped by the date as written |
 | `inbox` | `unread`, `needs_reply?`, `threads[]` (`from`, `subject`, `when?`, `flag?` tone) | `value` (unread, hint "3 need a reply"), `rows` |
-| `thread` | `from`, `subject`, `ask`, `due?`, `when?`, `excerpt?` | `person` (from, subject), `text` (ask), `facts` (Due), `quote` (excerpt) |
+| `thread` | `from`, `subject`, `request`, `due?`, `when?`, `excerpt?` | `person` (from, subject), `text` (request), `facts` (Due), `quote` (excerpt) |
 | `mentions` | `groups[]` (`channel`, `items[]` (`from`, `text`, `when?`)) | one `rows` per group, labelled by channel |
 | `files` | `files[]` (`name`, `kind?`, `edited?`, `by?`) | `rows` (detail "by Sam", chip kind, when edited) |
 | `quote` | `text`, `by?`, `when?` | `quote` |
