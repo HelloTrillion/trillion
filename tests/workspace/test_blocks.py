@@ -1,3 +1,4 @@
+import copy
 from typing import Any
 
 import pytest
@@ -347,12 +348,11 @@ def test_strip_emoji_removes_pictographs() -> None:
 
 
 def test_strip_emoji_keeps_data_symbols() -> None:
-    kept = "$41.20 €5 £3 100% 20° a → b ✓ 3 \u00d7 4 \u2013 “q” é ñ 日本 Maple Park, Sam & Jo!"
+    kept = (
+        "★ ☆ ☐ ➜ ❶ ♥ ⚠ ♠ ✈ ☎ ▪ ⬆ ▶ "
+        "$41.20 €5 £3 100% 20° a → b ✓ 3 \u00d7 4 \u2013 “q” é ñ 日本 Maple Park, Sam & Jo!"
+    )
     assert strip_emoji(kept) == kept
-
-
-def test_strip_emoji_removes_leftover_selectors_and_joiners() -> None:
-    assert strip_emoji("a️b‍c︎") == "abc"
 
 
 def test_emoji_stripped_from_every_string_in_a_block() -> None:
@@ -376,3 +376,64 @@ def test_emoji_stripped_from_every_string_in_a_block() -> None:
 
 def test_a_string_of_only_emoji_is_blank() -> None:
     assert "blank" in refused([{"type": "status", "tone": "good", "text": "🎉"}])
+
+
+def test_emoji_selector_forms_are_removed_but_plain_symbols_stay() -> None:
+    assert strip_emoji("Love ❤️ it") == "Love it"
+    assert strip_emoji("Careful ⚠️ now") == "Careful now"
+    assert strip_emoji("☀️ Sunny") == " Sunny"
+    assert strip_emoji("Careful ⚠ now") == "Careful ⚠ now"
+    assert strip_emoji("★ ♥ ☐") == "★ ♥ ☐"
+
+
+def test_joiners_stay_in_scripts_that_use_them() -> None:
+    malayalam = "ന്\u200d"
+    assert strip_emoji(malayalam) == malayalam
+    assert strip_emoji("a\u200db") == "a\u200db"
+
+
+def test_refuses_a_non_number_meter_max() -> None:
+    assert "not a number" in refused([{"type": "meter", "value": 1, "max": "5"}])
+    assert "max is required" in refused([{"type": "meter", "value": 1}])
+
+
+def test_text_and_quote_of_only_emoji_are_refused() -> None:
+    assert "text is required" in refused([{"type": "text", "text": "🎉 🎉"}])
+    assert "text is required" in refused([{"type": "quote", "text": "🎉"}])
+
+
+def test_a_bullet_after_emoji_still_reads_as_one() -> None:
+    assert one({"type": "text", "text": "🎉 - b\n- c 🎉"})["text"] == "- b\n- c"
+
+
+def test_per_item_messages_use_the_singular() -> None:
+    assert "name 2: name is blank" in refused([{"type": "people", "names": ["Sam", " "]}])
+    assert "item 1: item is blank" in refused([{"type": "chips", "items": [""]}])
+
+
+def test_time_end_before_at_is_refused_when_comparable() -> None:
+    assert "end 2026-10-25T09:00 is before at 2026-10-25T10:00" in refused(
+        [{"type": "time", "at": "2026-10-25T10:00", "end": "2026-10-25T09:00"}]
+    )
+    assert "before" in refused(
+        [{"type": "time", "at": "2026-10-25T10:00Z", "end": "2026-10-25T09:00+00:00"}]
+    )
+    # A zone-less time and an absolute one cannot be compared.
+    assert one({"type": "time", "at": "2026-10-25T10:00", "end": "2026-10-25T09:00Z"})["end"]
+
+
+def test_full_fields_keep_their_values() -> None:
+    assert one(FULL[0]) == {**FULL[0], "tone": "good"}
+    assert one(FULL[2]) == FULL[2]
+    assert one(FULL[3]) == FULL[3]
+    assert one(FULL[7]) == FULL[7]
+    assert one(FULL[11]) == FULL[11]
+
+
+def test_input_is_not_changed() -> None:
+    before = copy.deepcopy(FULL + MINIMAL)
+    validate_blocks(FULL[:8], WHERE)
+    validate_blocks(FULL[8:], WHERE)
+    validate_blocks(MINIMAL[:8], WHERE)
+    validate_blocks(MINIMAL[8:], WHERE)
+    assert before == FULL + MINIMAL

@@ -15,7 +15,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from trillion.workspace.kit import (
     LABEL,
@@ -41,24 +41,28 @@ BLOCK_TONES = ("good", "bad", "attention", "neutral")
 SHAPES = ("bar", "ring")
 
 MAX_BLOCKS = 8
-MIN_COLUMNS, MAX_COLUMNS = 2, 4
+MIN_SPLIT, MAX_SPLIT = 2, 4  # side-by-side columns of a card, not a table's
 MIN_SPARK, MAX_SPARK = 2, 60
 MAX_PEOPLE, MAX_CHIPS, MAX_FACTS = 8, 6, 10
 QUOTE = 600
 
-# Emoji and pictographs. Text symbols that carry data ($ € £ % ° → ✓ ▲ ▼) stay.
-_EMOJI = re.compile(
-    "["
-    "\U0001f000-\U0001faff"  # cards, enclosed symbols, flags, pictographs, skin tones
-    "\U000e0020-\U000e007f"  # tag characters (flag sequences)
-    "☀-✒✙-➿"  # misc symbols and dingbats, except the ✓ ✗ family
-    "⬀-⯿"  # stars, big squares, circles
-    "⌚⌛⌨⏏⏩-⏺Ⓜ▪▫▶◀◻-◾"
-    "⤴⤵〰〽㊗㊙‼⁉"
-    "]"
+# Emoji and pictographs. Text symbols that carry data ($ € £ % ° → ✓ ★ ♥ ⚠ ▲) stay.
+# Astral: cards, enclosed symbols, flags, pictographs, skin tones, flag tag characters.
+_ASTRAL = r"\U0001f000-\U0001faff\U000e0020-\U000e007f"
+# Below U+FFFF only the characters that are emoji by default (Emoji_Presentation).
+_BMP_EMOJI = (
+    r"\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653"
+    r"\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea"
+    r"\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e"
+    r"\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55"
 )
-# What emoji leave behind: variation selectors, joiners, the keycap ring.
-_LEFTOVER = re.compile("[︎️‍⃣]")
+# Any other symbol is an emoji only when written with the emoji selector (❤️, ⚠️).
+_ONE = rf"(?:[{_ASTRAL}{_BMP_EMOJI}]|[\u00a9\u00ae\u2000-\u32ff]\ufe0f)\ufe0f?"
+# One emoji, or several joined (family, profession, flag-with-text); the joiners and
+# selectors go only with an emoji, so scripts that use a joiner keep theirs.
+_EMOJI = re.compile(rf"{_ONE}(?:\u200d{_ONE})*")
+# 1️⃣: the digit stays, the selector and keycap ring go.
+_KEYCAP = re.compile(r"(?<=[0-9#*])\ufe0f?\u20e3")
 _GAPS = re.compile(r"[ \t]{2,}")
 
 # ISO 8601: a date, or a date and time with optional seconds and a Z or offset.
@@ -66,8 +70,8 @@ _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\
 
 
 def strip_emoji(text: str) -> str:
-    """The text without emoji, pictographs or the joiners and selectors they leave."""
-    clean = _LEFTOVER.sub("", _EMOJI.sub("", text))
+    """The text without emoji or pictographs (and the joiners and selectors inside them)."""
+    clean = _EMOJI.sub("", _KEYCAP.sub("", text))
     return text if clean == text else _GAPS.sub(" ", clean)
 
 
@@ -122,6 +126,13 @@ def _when(raw: Mapping[str, Any], key: str, where: str, *, need: bool = False) -
     return value
 
 
+def _before(end: str, start: str) -> bool:
+    """Whether end is earlier than start, when the two can be compared (both with an
+    offset or both without; otherwise the zone is unknown and nothing is claimed)."""
+    a, b = datetime.fromisoformat(end), datetime.fromisoformat(start)
+    return (a.tzinfo is None) == (b.tzinfo is None) and a < b
+
+
 def _count(raw: Mapping[str, Any], key: str, where: str) -> float | int:
     if raw.get(key) is None:
         raise _fail(where, f"{key} is required")
@@ -134,7 +145,7 @@ def _words(
     """A list of short strings, as `names` or `items`."""
     got = _array(raw, key, where, limit, nouns)
     return [
-        str(_str({key: v}, key, f"{where}: {nouns[0]} {i}", cap, loose=True))
+        cast(str, _str({nouns[0]: v}, nouns[0], f"{where}: {nouns[0]} {i}", cap, loose=True))
         for i, v in enumerate(got, 1)
     ]
 
@@ -170,7 +181,10 @@ def _meter(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
 
 def _time(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
     out: Block = {"at": _when(raw, "at", where, need=True)}
-    _put(out, "end", _when(raw, "end", where))
+    end = _when(raw, "end", where)
+    if end is not None and _before(end, out["at"]):
+        raise _fail(where, f"end {end} is before at {out['at']}")
+    _put(out, "end", end)
     _put(out, "label", _str(raw, "label", where, LABEL, need=False))
     return out
 
@@ -260,7 +274,7 @@ def _long(raw: Mapping[str, Any], where: str, limit: int) -> str:
     text = raw.get("text")
     if not isinstance(text, str) or not text.strip():
         raise _fail(where, "text is required")
-    text = "\n".join(line.rstrip() for line in text.strip().splitlines())
+    text = "\n".join(line.strip() for line in text.strip().splitlines())
     if len(text) > limit:
         raise _fail(where, f"text is {len(text)} characters, {limit} at most")
     return text
@@ -294,7 +308,7 @@ def _facts(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
 
 
 def _columns(raw: Mapping[str, Any], where: str, card: _Card) -> Block:
-    columns = _array(raw, "columns", where, MAX_COLUMNS, ("column", "columns"), low=MIN_COLUMNS)
+    columns = _array(raw, "columns", where, MAX_SPLIT, ("column", "columns"), low=MIN_SPLIT)
     drawn = []
     for i, column in enumerate(columns, 1):
         at = f"{where}: column {i}"
