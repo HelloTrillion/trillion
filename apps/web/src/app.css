@@ -3675,6 +3675,790 @@ button.connected-danger {
   }
 }
 
+/* ── Her board (board.ts): the widgets she puts in the workspace ──────── */
+
+:root {
+  /* Chart series, in order: her teal first, then colours that stay apart on the galaxy. */
+  --chart-0: rgb(45 212 168);
+  --chart-1: rgb(167 139 250);
+  --chart-2: rgb(245 165 36);
+  --chart-3: rgb(232 143 179);
+  --chart-4: rgb(103 232 249);
+}
+:root[data-theme='light'] {
+  --chart-0: rgb(8 130 100);
+  --chart-1: rgb(112 84 214);
+  --chart-2: rgb(176 108 0);
+  --chart-3: rgb(196 64 120);
+  --chart-4: rgb(14 120 150);
+}
+
+.bd {
+  --bd-soft: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  --bd-line: color-mix(in srgb, var(--color-text-0) 9%, transparent);
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 18px 22px 28px;
+  box-sizing: border-box;
+  color: var(--color-text-0);
+  outline: none;
+}
+
+@media (min-width: 768px) {
+  /* The last row scrolls clear of the docked orb's hole in the bottom-right corner. */
+  .bd {
+    padding-bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px) + 12px);
+  }
+}
+
+.bd-c0 { --c: var(--chart-0); }
+.bd-c1 { --c: var(--chart-1); }
+.bd-c2 { --c: var(--chart-2); }
+.bd-c3 { --c: var(--chart-3); }
+.bd-c4 { --c: var(--chart-4); }
+.bd-cx { --c: var(--color-text-2); }
+
+/* One column on a narrow workspace, two in the middle, six on a wide one; a widget's size picks its span. */
+.bd-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+@container workspace (min-width: 600px) {
+  .bd-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .bd-card {
+    grid-column: span var(--mid, 1);
+  }
+}
+@container workspace (min-width: 940px) {
+  .bd-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .bd-card {
+    grid-column: span var(--wide, 3);
+  }
+}
+
+.bd-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  border: 1px solid var(--bd-line);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+  /* Each card is a container too, so what is inside fits the card rather than the window. */
+  container: bd-card / inline-size;
+  transition: opacity var(--motion-base), transform var(--motion-base);
+}
+.bd-card[data-leaving] {
+  opacity: 0.35;
+  transform: scale(0.985);
+  pointer-events: none;
+}
+
+/* New cards arrive one after another, rising a little. */
+.bd-new {
+  animation: bd-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+@keyframes bd-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.bd-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 10px;
+}
+.bd-card-title {
+  flex: 1;
+  min-width: 0;
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.bd-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The × shows on the card the pointer or keyboard is on, and always on a touch screen. */
+.bd-x,
+.bd-x:hover:not(:disabled) {
+  margin-left: auto;
+  margin-top: -4px;
+  margin-right: -6px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+  opacity: 0;
+  transition: opacity var(--motion-fast), background var(--motion-fast), color var(--motion-fast);
+}
+.bd-card:hover .bd-x,
+.bd-card:focus-within .bd-x {
+  opacity: 1;
+}
+.bd-x:hover:not(:disabled) {
+  background: var(--bd-soft);
+  color: var(--color-text-0);
+}
+@media (hover: none) {
+  .bd-x {
+    opacity: 1;
+  }
+}
+
+.bd-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+
+/* Stat ── */
+
+.bd-stat .bd-card-body {
+  justify-content: flex-end;
+  gap: 8px;
+}
+.bd-stat-value {
+  margin: 0;
+  font-size: clamp(28px, 14cqi, 44px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+.bd-stat-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.bd-delta {
+  --tone: var(--color-text-1);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+}
+.bd-delta[data-tone='up'] {
+  --tone: var(--color-accent);
+}
+.bd-delta[data-tone='down'] {
+  --tone: var(--color-danger);
+}
+.bd-hint {
+  color: var(--color-text-2);
+}
+
+/* Chart ── */
+
+.bd-chart {
+  position: relative;
+  height: 200px;
+  border-radius: var(--radius-sm);
+  outline-offset: 4px;
+}
+.bd-card[data-size='small'] .bd-chart {
+  height: 150px;
+}
+.bd-card[data-size='wide'] .bd-chart,
+.bd-card[data-size='full'] .bd-chart {
+  height: 230px;
+}
+.bd-svg {
+  display: block;
+  overflow: visible;
+}
+.bd-chart .bd-svg {
+  position: absolute;
+  inset: 0;
+}
+.bd-gridline {
+  stroke: var(--bd-line);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.bd-zero {
+  stroke: color-mix(in srgb, var(--color-text-0) 22%, transparent);
+}
+.bd-axis {
+  fill: var(--color-text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.bd-line {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.bd-area {
+  fill: var(--c);
+  fill-opacity: 0.16;
+}
+.bd-point {
+  fill: var(--c);
+}
+.bd-bar {
+  fill: var(--c);
+  transition: opacity var(--motion-fast);
+}
+.bd-chart[data-hover] .bd-bar:not([data-hot]) {
+  opacity: 0.45;
+}
+.bd-guide {
+  stroke: color-mix(in srgb, var(--color-text-0) 30%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  visibility: hidden;
+}
+.bd-chart[data-hover] .bd-guide {
+  visibility: visible;
+}
+.bd-dot {
+  fill: var(--c);
+  stroke: var(--color-bg-1);
+  stroke-width: 2;
+}
+
+.bd-tip {
+  position: absolute;
+  z-index: 1;
+  min-width: 110px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--glass-dense);
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  font-size: 12px;
+  pointer-events: none;
+}
+.bd-tip[hidden] {
+  display: none;
+}
+.bd-tip p {
+  margin: 0;
+}
+.bd-tip-head {
+  margin-bottom: 4px !important;
+  color: var(--color-text-1);
+}
+.bd-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bd-tip-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-1);
+}
+.bd-tip strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bd-sw {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--c);
+}
+
+.bd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.bd-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.bd-legend-values {
+  flex-direction: column;
+  flex: 1;
+  min-width: 160px;
+  gap: 2px;
+}
+.bd-legend-values li {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--motion-fast);
+}
+.bd-legend-values li[data-hot] {
+  background: var(--bd-soft);
+}
+.bd-legend-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bd-legend-value {
+  color: var(--color-text-0);
+  font-variant-numeric: tabular-nums;
+}
+.bd-legend-pct {
+  width: 3.2em;
+  text-align: right;
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.bd-donut {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 20px;
+}
+.bd-donut-fig {
+  flex: none;
+  margin: 0 auto;
+}
+.bd-slice {
+  fill: var(--c);
+  stroke: var(--color-bg-1);
+  stroke-width: 1.5;
+  transition: opacity var(--motion-fast);
+}
+.bd-slice[data-dim] {
+  opacity: 0.35;
+}
+.bd-ring-empty {
+  fill: var(--bd-soft);
+}
+.bd-donut-total {
+  fill: var(--color-text-0);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.bd-donut-label {
+  fill: var(--color-text-2);
+  font-size: 11px;
+}
+
+/* List ── */
+
+.bd-list,
+.bd-agenda {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.bd-item,
+.bd-agenda li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--bd-line);
+}
+.bd-item:first-child,
+.bd-agenda li:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+.bd-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--color-text-0) 25%, transparent);
+  color: var(--color-bg-0);
+}
+.bd-item[data-done] .bd-mark {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.bd-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.bd-item-text strong {
+  font-weight: 500;
+}
+.bd-item[data-done] .bd-item-text strong {
+  color: var(--color-text-2);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-text-2) 60%, transparent);
+}
+.bd-meta {
+  flex: none;
+  max-width: 40%;
+  font-size: 12px;
+  color: var(--color-text-2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Table ── */
+
+.bd-table-wrap {
+  overflow-x: auto;
+  margin: 0 -4px;
+  border-radius: var(--radius-sm);
+}
+.bd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.bd-table th,
+.bd-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--bd-line);
+  vertical-align: top;
+}
+.bd-table th {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+  white-space: nowrap;
+}
+.bd-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.bd-table tbody tr:hover td {
+  background: var(--bd-soft);
+}
+.bd-table .bd-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Note ── */
+
+.bd-note {
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.bd-note p,
+.bd-note ul {
+  margin: 0 0 10px;
+}
+.bd-note > :last-child {
+  margin-bottom: 0;
+}
+.bd-note ul {
+  padding-left: 20px;
+}
+.bd-note li + li {
+  margin-top: 3px;
+}
+.bd-note strong {
+  font-weight: 600;
+}
+
+/* Timeline ── */
+
+.bd-track {
+  --lanes: 1;
+  position: relative;
+  height: calc(var(--lanes) * 34px + 26px);
+  margin-top: 2px;
+}
+.bd-hour {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--color-text-2);
+  white-space: nowrap;
+}
+.bd-hour:first-child {
+  transform: none;
+}
+/* A faint rule up from each hour, behind the events. */
+.bd-hour::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  height: calc(var(--lanes) * 34px + 2px);
+  border-left: 1px solid var(--bd-line);
+}
+.bd-hour:first-child::before {
+  left: 0;
+}
+.bd-event {
+  position: absolute;
+  top: calc(var(--lane) * 34px);
+  height: 28px;
+  min-width: 6px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--c) 22%, transparent);
+  border-left: 3px solid var(--c);
+  font-size: 12px;
+}
+.bd-event strong {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bd-agenda .bd-sw {
+  margin-top: 5px;
+}
+.bd-when {
+  flex: none;
+  min-width: 5.5em;
+  font-size: 12.5px;
+  color: var(--color-text-1);
+  font-variant-numeric: tabular-nums;
+}
+/* A narrow card reads the day as rows only. */
+@container bd-card (max-width: 420px) {
+  .bd-track {
+    display: none;
+  }
+}
+
+/* Compare ── */
+
+.bd-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+.bd-option {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bd-soft);
+  border: 1px solid var(--bd-line);
+}
+.bd-option[data-pick] {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 25%, transparent), 0 12px 32px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.bd-option-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.bd-option-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.bd-pick {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.bd-bars {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 7px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+.bd-bars dt {
+  color: var(--color-text-1);
+}
+.bd-bars dd {
+  margin: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bd-soft);
+  overflow: hidden;
+}
+.bd-bars i {
+  display: block;
+  height: 100%;
+  width: calc(var(--v) * 100%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 55%, transparent), var(--color-accent));
+  transform-origin: left;
+}
+.bd-new .bd-bars i {
+  animation: bd-grow 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both 300ms;
+}
+@keyframes bd-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+.bd-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bd-tag {
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-size: 11.5px;
+  color: var(--color-text-1);
+  border: 1px solid var(--bd-line);
+}
+.bd-reason {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+/* The empty board ── */
+
+.bd-empty {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  max-width: 420px;
+  margin: 12vh auto 0;
+  padding: 0 8px;
+}
+.bd-empty-glow {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--color-accent) 70%, var(--color-text-0)), color-mix(in srgb, var(--color-accent) 25%, transparent) 60%, transparent 72%);
+  box-shadow: 0 0 40px color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+.bd-empty-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.bd-empty-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+.bd-link,
+.bd-link:hover:not(:disabled) {
+  margin-top: 4px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-accent);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.bd-link:hover:not(:disabled) {
+  text-decoration-color: currentColor;
+}
+
+/* In the sidebar while Settings is open: what she put up waits here. */
+.board-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  font-size: 12.5px;
+}
+.board-chip::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+.board-chip[hidden] {
+  display: none;
+}
+
+/* Still, for those who asked for less motion: no entrances, no growing bars. */
+@media (prefers-reduced-motion: reduce) {
+  .bd *,
+  .bd-new {
+    animation: none !important;
+  }
+}
+
 /* Beside the conversation's title, the usage numbers give way first: the title matters more. */
 .side-title .usage-pill {
   max-width: 38%;

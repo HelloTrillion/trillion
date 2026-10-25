@@ -88,6 +88,8 @@ export interface View {
   /** Text for the message box, once: a refused message, never lost. The page clears it. */
   readonly draft: string | null;
   readonly banner: string | null;
+  /** Her board for this conversation (the workspace's widgets), or null when she has made none. */
+  readonly board: Board | null;
 }
 
 export const INITIAL: View = {
@@ -110,7 +112,41 @@ export const INITIAL: View = {
   pending: null,
   draft: null,
   banner: null,
+  board: null,
 };
+
+export type WidgetSize = 'small' | 'medium' | 'wide' | 'full';
+
+/** One widget as the core sent it. The core validated it; the page still reads every field defensively. */
+export interface Widget {
+  readonly id: string;
+  readonly type: string;
+  readonly size: WidgetSize;
+  readonly [field: string]: unknown;
+}
+
+export interface Board {
+  readonly title: string;
+  readonly open: boolean;
+  readonly widgets: readonly Widget[];
+}
+
+const SIZES: readonly WidgetSize[] = ['small', 'medium', 'wide', 'full'];
+
+/** A board from a `board` message: null for none or for anything that is not one. */
+export function boardOf(raw: unknown): Board | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const widgets: Widget[] = [];
+  for (const w of Array.isArray(r['widgets']) ? (r['widgets'] as unknown[]) : []) {
+    if (typeof w !== 'object' || w === null || Array.isArray(w)) continue;
+    const f = w as Record<string, unknown>;
+    if (typeof f['id'] !== 'string' || !f['id'] || typeof f['type'] !== 'string') continue;
+    const size = SIZES.find((x) => x === f['size']) ?? 'medium';
+    widgets.push({ ...f, id: f['id'], type: f['type'], size });
+  }
+  return { title: typeof r['title'] === 'string' ? r['title'] : '', open: r['open'] === true, widgets };
+}
 
 export type ServerMsg = { readonly type: string } & Readonly<Record<string, unknown>>;
 
@@ -335,8 +371,12 @@ function step(view: View, msg: ServerMsg): View {
         held: [],
         pending: null,
         banner: null,
+        // Another conversation: its own board follows, if it has one.
+        board: null,
       };
     }
+    case 'board':
+      return { ...view, board: boardOf(msg['board']) };
     case 'model': {
       const model = msg['model'] as { model?: unknown } | null;
       return { ...view, model: model ? str(model.model) : null, banner: null };

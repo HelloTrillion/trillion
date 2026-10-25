@@ -53,6 +53,7 @@ import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { openShowcase, showcaseScene } from './showcase';
+import { boardTitle, createBoardView } from './board';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
@@ -1258,6 +1259,7 @@ function connect(): void {
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
+    if (msg.type === 'board') onBoard();
     // The turn is over and she never made a sound (no words heard, a reply only
     // written, an error): the microphone held for her closes as after a reply.
     const over = msg.type === 'turn.complete' || (msg.type === 'state' && (view.orb === 'idle' || view.orb === 'error'));
@@ -1474,17 +1476,48 @@ render();
 connect();
 if (showcaseAt) openShowcase(workspace, showcaseAt);
 
-// One click to the workspace and its widgets, and one to close it again.
+// Her board (her visual channel) in the workspace. It opens when she puts something up, unless
+// Settings is open: then it waits behind a chip in the sidebar.
+const boardChip = $<HTMLButtonElement>('board-chip');
+const boardView = createBoardView({
+  onRemove: (id) => send({ type: 'board.remove', id }),
+  onShowcase: () => openShowcase(workspace),
+});
+function showBoard(): void {
+  boardChip.hidden = true;
+  boardView.draw(view.board);
+  // Already showing: this only changes the title; the cards were redrawn in place.
+  workspace.open(boardTitle(view.board), boardView.el, 'board');
+  showWorkspaceState();
+}
+function onBoard(): void {
+  const board = view.board;
+  if (workspace.showing === 'board') {
+    if (board?.open) showBoard();
+    else workspace.close();
+    return;
+  }
+  if (!board?.open) boardChip.hidden = true;
+  else if (workspace.showing === 'settings') boardChip.hidden = false;
+  else showBoard();
+}
+boardChip.addEventListener('click', showBoard);
+workspace.onClose((id) => {
+  // The user put it away (its close, Escape, the docked orb, or something else opened): she is told.
+  if (id === 'board' && view.board?.open) send({ type: 'board.close' });
+});
+
+// One click to the workspace and its board, and one to close it again.
 const workspaceBtn = $<HTMLButtonElement>('workspace-btn');
 workspaceBtn.replaceChildren(icon('workspace', 18));
-const showWorkspaceState = (): void => {
-  const on = workspace.isOpen && workspace.showing === 'showcase';
+function showWorkspaceState(): void {
+  const on = workspace.isOpen && (workspace.showing === 'board' || workspace.showing === 'showcase');
   workspaceBtn.toggleAttribute('data-on', on);
   workspaceBtn.setAttribute('aria-pressed', String(on));
-};
+}
 workspaceBtn.addEventListener('click', () => {
-  if (workspace.isOpen && workspace.showing === 'showcase') workspace.close();
-  else openShowcase(workspace);
+  if (workspace.isOpen && (workspace.showing === 'board' || workspace.showing === 'showcase')) workspace.close();
+  else showBoard();
   showWorkspaceState();
 });
 workspace.onClose(showWorkspaceState);
