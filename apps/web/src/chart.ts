@@ -59,7 +59,9 @@ export function scale(domain: readonly [number, number], range: readonly [number
     const mid = (r0 + r1) / 2;
     return () => mid;
   }
-  return (v) => r0 + ((v - d0) / (d1 - d0)) * (r1 - r0);
+  // Halving first keeps huge values from overflowing; it costs no precision.
+  const span = d1 / 2 - d0 / 2;
+  return (v) => r0 + ((v / 2 - d0 / 2) / span) * (r1 - r0);
 }
 
 /** The nearest of 1, 2, 5 or 10 times a power of ten. */
@@ -88,15 +90,21 @@ export function niceTicks(min: number, max: number, count = 5, includeZero = tru
     lo -= pad;
     hi += pad;
   }
+  const span = hi - lo;
   const gaps = Math.max(1, Math.floor(count) - 1);
-  const step = niceStep((hi - lo) / gaps);
+  const step = niceStep(span / gaps);
+  if (!Number.isFinite(span) || !Number.isFinite(step) || step <= 0) {
+    return lo < hi ? [lo, hi] : [0, 1];
+  }
   const first = Math.floor(lo / step + 1e-9);
   const last = Math.ceil(hi / step - 1e-9);
-  // Whole multiples of the step, scaled once, so 0.1 + 0.2 noise never shows.
-  const decimals = Math.max(0, -Math.floor(Math.log10(step)));
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last - first > 200) {
+    return [lo, hi];
+  }
+  // Whole multiples of the step, trimmed to 12 digits, so 0.1 + 0.2 noise never shows.
   const out: number[] = [];
   for (let i = first; i <= last; i++) {
-    out.push(Number((i * step).toFixed(decimals)) + 0);
+    out.push(Number((i * step).toPrecision(12)) + 0);
   }
   return out;
 }
@@ -188,13 +196,18 @@ export function donutArcs(
   const innerR = Math.max(0, Math.min(inner, r));
   const arcs: Arc[] = [];
   let start = -Math.PI / 2;
+  let whole = false;
   safe.forEach((value, index) => {
     if (value <= 0) return;
     const fraction = value / total;
     if (fraction >= 0.9999) {
+      // The rest are too small to see; this slice is the whole ring.
+      arcs.length = 0;
       arcs.push({ index, value, fraction: 1, d: fullRing(cx, cy, r, innerR) });
+      whole = true;
       return;
     }
+    if (whole) return;
     const end = start + fraction * Math.PI * 2;
     const large = fraction > 0.5 ? 1 : 0;
     let d =
@@ -216,50 +229,79 @@ export function emptyRing(r: number, inner: number, cx = 0, cy = 0): string {
 
 const PREFIX_UNITS = new Set(['$', '€', '£', '¥']);
 
-function trimmed(v: number, digits: number): string {
-  return String(Number(v.toFixed(digits)));
-}
+const STEPS: [number, string][] = [
+  [1e12, 'T'],
+  [1e9, 'B'],
+  [1e6, 'M'],
+  [1e3, 'k'],
+  [1, ''],
+];
 
-/** Compact number: 1.2k, 3.4M, 0.0042. Never throws; non-finite gives a dash. */
-export function compact(v: number): string {
+/**
+ * Compact number: 1.2k, 3.4M, 0.0042. `digits` is the decimals kept on the
+ * scaled part (more when ticks need telling apart). Never throws; non-finite
+ * gives a dash.
+ */
+export function compact(v: number, digits = 1): string {
   if (!Number.isFinite(v)) return '–';
   const sign = v < 0 ? '-' : '';
   const a = Math.abs(v);
   if (a === 0) return '0';
-  const steps: [number, string][] = [
-    [1e12, 'T'],
-    [1e9, 'B'],
-    [1e6, 'M'],
-    [1e3, 'k'],
-  ];
-  for (let i = 0; i < steps.length; i++) {
-    const [size, suffix] = steps[i]!;
-    if (a >= size) {
-      let scaled = Number((a / size).toFixed(1));
-      // 999.96k rounds to 1000k; say 1M instead.
-      if (scaled >= 1000 && i > 0) return `${sign}1${steps[i - 1]![1]}`;
-      if (scaled >= 100) scaled = Math.round(scaled);
-      return `${sign}${scaled}${suffix}`;
-    }
+  const d = Math.min(Math.max(0, Math.floor(digits)), 8);
+  for (let i = 0; i < STEPS.length; i++) {
+    const [size, suffix] = STEPS[i]!;
+    if (a < size) continue;
+    let scaled = Number((a / size).toFixed(size === 1 ? Math.max(2, d) : d));
+    // 999.96k rounds to 1000k; say 1M instead.
+    if (scaled >= 1000 && i > 0) return `${sign}1${STEPS[i - 1]![1]}`;
+    if (d === 1 && size > 1 && scaled >= 100) scaled = Math.round(scaled);
+    return `${sign}${scaled}${suffix}`;
   }
-  if (a >= 1) return sign + trimmed(a, 2);
-  if (a >= 1e-6) return sign + String(Number(a.toPrecision(2)));
-  return sign + a.toExponential(0);
+  if (a >= 1e-6) return sign + String(Number(a.toPrecision(Math.max(2, d + 1))));
+  return sign + a.toExponential(Math.max(0, d - 1));
 }
 
 /**
  * A value with its unit: "$1.2k", "45%", "3.4 kWh", "21°C". Currency symbols go
  * in front; % and ° stick to the number; other units follow after a space.
  */
-export function formatValue(v: number, unit?: string): string {
+export function formatValue(v: number, unit?: string, digits = 1): string {
+  return withUnit(compact(v, digits), unit);
+}
+
+function withUnit(body: string, unit?: string): string {
   const u = (unit ?? '').trim();
-  const body = compact(v);
   if (!u || body === '–') return body;
   if (PREFIX_UNITS.has(u)) {
     return body.startsWith('-') ? `-${u}${body.slice(1)}` : `${u}${body}`;
   }
   if (u.startsWith('%') || u.startsWith('°')) return `${body}${u}`;
   return `${body} ${u}`;
+}
+
+/**
+ * Labels for axis ticks, with just enough precision that neighbours never
+ * read the same (1.5k, 1.55k, 1.6k rather than 1.5k, 1.5k, 1.6k).
+ */
+export function tickLabels(ticks: readonly number[], unit?: string): string[] {
+  let labels: string[] = [];
+  for (let d = 1; d <= 8; d++) {
+    labels = ticks.map((t) => formatValue(t, unit, d));
+    if (new Set(labels).size === labels.length) break;
+  }
+  return labels;
+}
+
+/** Whole percents of `shares` (which sum to 1) that add up to exactly 100. */
+export function percents(shares: readonly number[]): number[] {
+  const raw = shares.map((f) => Math.max(0, f) * 100);
+  const out = raw.map((v) => Math.floor(v));
+  let left = 100 - out.reduce((a, b) => a + b, 0);
+  const order = raw.map((v, i) => [v - Math.floor(v), i] as const).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; left > 0 && order.length > 0; k = (k + 1) % order.length, left--) {
+    out[order[k]![1]]! += 1;
+  }
+  return out;
 }
 
 // ---- layout ------------------------------------------------------------
@@ -274,6 +316,8 @@ export interface XLabel {
   readonly index: number;
   readonly x: number;
   readonly label: string;
+  /** Text-anchor to use, so the first and last labels do not clip. */
+  readonly anchor: 'start' | 'middle' | 'end';
 }
 
 export interface LaidSeries {
@@ -323,6 +367,41 @@ export interface ChartLayout {
 
 const LABEL_CHAR_W = 6;
 
+const MAX_SLICES = 8;
+
+interface Slice {
+  readonly name: string;
+  readonly value: number;
+  readonly other: boolean;
+}
+
+/** Positive values as slices; past 8, the smallest fold into one "Other". */
+function donutSlices(values: readonly number[], nameAt: (i: number) => string): Slice[] {
+  const all: Slice[] = [];
+  values.forEach((v, i) => {
+    if (v > 0) all.push({ name: nameAt(i), value: v, other: false });
+  });
+  if (all.length <= MAX_SLICES) return all;
+  const keep = new Set(
+    all
+      .map((sl, i) => [sl.value, i] as const)
+      .sort((p, q) => q[0] - p[0] || p[1] - q[1])
+      .slice(0, MAX_SLICES - 1)
+      .map(([, i]) => i),
+  );
+  const rest = all.filter((_, i) => !keep.has(i)).reduce((a, sl) => a + sl.value, 0);
+  return [...all.filter((_, i) => keep.has(i)), { name: 'Other', value: rest, other: true }];
+}
+
+/** Colours 0-4 in turn, adjusted so the last slice differs from the first. */
+function sliceColors(n: number): number[] {
+  const out = Array.from({ length: n }, (_, i) => i % MAX_SERIES);
+  if (n > 2 && out[n - 1] === out[0]) {
+    out[n - 1] = [0, 1, 2, 3, 4].find((c) => c !== out[n - 2] && c !== out[0])!;
+  }
+  return out;
+}
+
 /**
  * Everything the board needs to draw one chart in a `width` x `height` box.
  * Series beyond 5 and points beyond 200 are dropped; missing or non-finite
@@ -355,17 +434,25 @@ export function layoutChart(spec: ChartSpec, width: number, height: number): Cha
   };
 
   if (spec.kind === 'donut') {
-    const values = data[0] ?? [];
+    const slices = donutSlices(data[0] ?? [], labelAt);
     const cx = w / 2;
     const cy = h / 2;
     const r = Math.max(1, Math.min(w, h) / 2 - 2);
     const inner = r * 0.62;
-    const arcs = donutArcs(values, r, inner, cx, cy).map((a) => ({
-      ...a,
-      name: labelAt(a.index),
-      color: a.index % MAX_SERIES,
-    }));
-    const total = values.reduce((a, v) => a + (v > 0 ? v : 0), 0);
+    const drawn = donutArcs(
+      slices.map((sl) => sl.value),
+      r,
+      inner,
+      cx,
+      cy,
+    );
+    const colors = sliceColors(drawn.length);
+    const arcs: LaidArc[] = drawn.map((a, k) => {
+      const sl = slices[a.index]!;
+      return { ...a, name: sl.name, color: sl.other ? -1 : colors[k]! };
+    });
+    const total = slices.reduce((a, sl) => a + sl.value, 0);
+    const pct = percents(arcs.map((a) => a.fraction));
     return {
       ...base,
       empty: arcs.length === 0,
@@ -378,11 +465,11 @@ export function layoutChart(spec: ChartSpec, width: number, height: number): Cha
         ring: emptyRing(r, inner, cx, cy),
         total: formatValue(total, spec.unit),
       },
-      legend: arcs.map((a) => ({
+      legend: arcs.map((a, k) => ({
         name: a.name,
         color: a.color,
         value: formatValue(a.value, spec.unit),
-        percent: Math.round(a.fraction * 100),
+        percent: pct[k]!,
       })),
     };
   }
@@ -401,10 +488,16 @@ export function layoutChart(spec: ChartSpec, width: number, height: number): Cha
   const ticks = niceTicks(min, max, tickCount, !floats);
   const domain: [number, number] = [ticks[0]!, ticks[ticks.length - 1]!];
 
-  const labels = ticks.map((t) => formatValue(t, spec.unit));
+  const labels = tickLabels(ticks, spec.unit);
   const left = Math.min(w / 3, Math.max(...labels.map((l) => l.length)) * LABEL_CHAR_W + 10);
   const hasX = spec.x.length > 0;
-  const plot = { left, top: 8, right: w - 8, bottom: h - (hasX ? 22 : 8) };
+  const top = Math.min(8, h / 4);
+  const plot = {
+    left,
+    top,
+    right: Math.max(left + 1, w - 8),
+    bottom: Math.max(top + 1, h - (hasX ? 22 : 8)),
+  };
   const plotW = Math.max(1, plot.right - plot.left);
   const plotH = Math.max(1, plot.bottom - plot.top);
   const y = scale(domain, [plot.bottom, plot.top]);
@@ -417,12 +510,30 @@ export function layoutChart(spec: ChartSpec, width: number, height: number): Cha
   };
 
   const widest = Math.max(1, ...Array.from({ length: count }, (_, i) => labelAt(i).length));
-  const fit = Math.max(1, Math.floor(plotW / (widest * LABEL_CHAR_W + 12)));
+  const labelW = widest * LABEL_CHAR_W + 12;
+  const fit = Math.max(1, Math.floor(plotW / labelW));
   const every = Math.ceil(count / fit);
-  const xLabels: XLabel[] = [];
+  const shown: number[] = [];
   if (hasX) {
-    for (let i = 0; i < count; i += every) xLabels.push({ index: i, x: px(i), label: labelAt(i) });
+    for (let i = 0; i < count; i += every) shown.push(i);
+    // The last point is always named; it pushes out a neighbour that is too close.
+    if (shown[shown.length - 1] !== count - 1) {
+      if (count - 1 - shown[shown.length - 1]! < every) shown.pop();
+      shown.push(count - 1);
+    }
   }
+  const xLabels: XLabel[] = shown
+    .filter((i) => labelAt(i) !== '')
+    .map((i) => {
+      const x = px(i);
+      const half = (labelAt(i).length * LABEL_CHAR_W) / 2;
+      let anchor: XLabel['anchor'] = 'middle';
+      if (count > 1 && spec.kind !== 'bar') {
+        anchor = i === 0 ? 'start' : i === count - 1 ? 'end' : 'middle';
+      } else if (x - half < 0) anchor = 'start';
+      else if (x + half > w) anchor = 'end';
+      return { index: i, x, label: labelAt(i), anchor };
+    });
 
   const zeroY = Math.min(plot.bottom, Math.max(plot.top, y(0)));
   const laid: LaidSeries[] =

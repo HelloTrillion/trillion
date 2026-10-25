@@ -7,6 +7,8 @@ import {
   formatValue,
   layoutChart,
   linePath,
+  percents,
+  tickLabels,
   niceTicks,
   scale,
 } from '../src/chart';
@@ -146,7 +148,7 @@ describe('formatValue', () => {
 
   it('rolls over at the edges', () => {
     expect(formatValue(999_960)).toBe('1M');
-    expect(formatValue(999.999)).toBe('1000');
+    expect(formatValue(999.999)).toBe('1k');
   });
 
   it('handles very large, very small and bad numbers', () => {
@@ -268,5 +270,125 @@ describe('layoutChart', () => {
   it('treats bad numbers as zero', () => {
     const l = layoutChart({ kind: 'line', x: ['a', 'b'], series: [{ name: 's', values: [Number.NaN, 2] }] }, 300, 150);
     expect(l.series[0]!.line).not.toContain('NaN');
+  });
+});
+
+describe('review fixes', () => {
+  it('never repeats a y label on a floating line', () => {
+    for (const [lo, hi] of [[1520, 1580], [100.1, 100.9], [0.51, 0.53], [99_000, 99_900], [1e-120, 3e-120]]) {
+      const l = layoutChart(
+        { kind: 'line', x: ['a', 'b'], series: [{ name: 's', values: [lo!, hi!] }] },
+        300,
+        200,
+      );
+      const labels = l.yTicks.map((t) => t.label);
+      expect(new Set(labels).size).toBe(labels.length);
+    }
+    expect(tickLabels([1500, 1520, 1540], undefined)).toEqual(['1.5k', '1.52k', '1.54k']);
+  });
+
+  it('does not throw on tiny, huge or odd values', () => {
+    for (const v of [1e-120, 1e-320, 1e308, -1e308, Number.MAX_VALUE]) {
+      expect(() => niceTicks(0, v)).not.toThrow();
+      expect(() => niceTicks(v, v)).not.toThrow();
+      const l = layoutChart({ kind: 'bar', x: ['a', 'b'], series: [{ name: 's', values: [v, -v] }] }, 300, 200);
+      expect(l.rects.every((r) => Number.isFinite(r.y) && Number.isFinite(r.height))).toBe(true);
+    }
+    expect(niceTicks(-1e308, 1e308).every(Number.isFinite)).toBe(true);
+  });
+
+  it('keeps only the whole ring when one slice fills it', () => {
+    const arcs = donutArcs([1e9, 1, 1], 10, 5, 0, 0);
+    expect(arcs).toHaveLength(1);
+    expect(arcs[0]!.index).toBe(0);
+    expect(arcs[0]!.d).toBe(
+      'M10 0 A10 10 0 1 1 -10 0 A10 10 0 1 1 10 0 Z M5 0 A5 5 0 1 0 -5 0 A5 5 0 1 0 5 0 Z',
+    );
+    const l = layoutChart(
+      { kind: 'donut', x: ['a', 'b', 'c'], series: [{ name: 's', values: [1e9, 1, 1] }] },
+      200,
+      200,
+    );
+    expect(l.arcs).toHaveLength(1);
+    expect(l.legend).toEqual([{ name: 'a', color: 0, value: '1B', percent: 100 }]);
+  });
+
+  it('sets the large-arc flag on the inner edge too', () => {
+    const [big] = donutArcs([3, 1], 10, 5);
+    expect(big!.d).toContain('A5 5 0 1 0');
+    const [small] = donutArcs([1, 3], 10, 5);
+    expect(small!.d).toContain('A5 5 0 0 0');
+    expect(small!.d).toContain('A10 10 0 0 1');
+  });
+
+  it('spaces x labels, names the last and anchors the ends', () => {
+    const xs = Array.from({ length: 30 }, (_, i) => `Oct ${i + 1}`);
+    const l = layoutChart(
+      { kind: 'line', x: xs, series: [{ name: 'a', values: xs.map((_, i) => i) }] },
+      300,
+      150,
+    );
+    const idx = l.xLabels.map((t) => t.index);
+    expect(idx[0]).toBe(0);
+    expect(idx[idx.length - 1]).toBe(29);
+    expect(l.xLabels[0]!.anchor).toBe('start');
+    expect(l.xLabels[l.xLabels.length - 1]!.anchor).toBe('end');
+    for (let i = 1; i < l.xLabels.length; i++) {
+      expect(l.xLabels[i]!.x - l.xLabels[i - 1]!.x).toBeGreaterThanOrEqual(40);
+    }
+  });
+
+  it('leaves out empty x labels', () => {
+    const l = layoutChart(
+      { kind: 'line', x: ['a', '', 'c'], series: [{ name: 's', values: [1, 2, 3] }] },
+      300,
+      150,
+    );
+    expect(l.xLabels.map((t) => t.label)).toEqual(['a', 'c']);
+  });
+
+  it('keeps the plot the right way up in tiny boxes', () => {
+    for (const h of [1, 5, 20, 30]) {
+      const l = layoutChart({ kind: 'bar', x: ['a'], series: [{ name: 's', values: [3] }] }, 40, h);
+      expect(l.plot.bottom).toBeGreaterThan(l.plot.top);
+      expect(l.plot.right).toBeGreaterThan(l.plot.left);
+      expect(l.rects.every((r) => r.height >= 0)).toBe(true);
+    }
+  });
+
+  it('rounds donut percents to exactly 100', () => {
+    expect(percents([1 / 3, 1 / 3, 1 / 3]).reduce((a, b) => a + b, 0)).toBe(100);
+    const l = layoutChart(
+      { kind: 'donut', x: ['a', 'b', 'c'], series: [{ name: 's', values: [1, 1, 1] }] },
+      200,
+      200,
+    );
+    expect(l.legend.map((e) => e.percent)).toEqual([34, 33, 33]);
+  });
+
+  it('colours neighbours differently, including last next to first', () => {
+    const vals = [5, 4, 3, 2, 1, 1];
+    const l = layoutChart(
+      { kind: 'donut', x: vals.map((_, i) => `s${i}`), series: [{ name: 's', values: vals }] },
+      200,
+      200,
+    );
+    const c = l.arcs.map((a) => a.color);
+    for (let i = 0; i < c.length; i++) expect(c[i]).not.toBe(c[(i + 1) % c.length]);
+  });
+
+  it('rolls extra donut slices into Other', () => {
+    const vals = Array.from({ length: 12 }, (_, i) => i + 1);
+    const l = layoutChart(
+      { kind: 'donut', x: vals.map((v) => `s${v}`), series: [{ name: 's', values: vals }] },
+      200,
+      200,
+    );
+    expect(l.legend).toHaveLength(8);
+    const other = l.legend[7]!;
+    expect(other.name).toBe('Other');
+    expect(other.color).toBe(-1);
+    expect(l.legend.reduce((a, e) => a + e.percent!, 0)).toBe(100);
+    expect(l.legend.slice(0, 7).map((e) => e.name)).toEqual(['s6', 's7', 's8', 's9', 's10', 's11', 's12']);
   });
 });
