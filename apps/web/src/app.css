@@ -331,8 +331,8 @@ body[data-sidebar='hidden'] .workspace {
     pointer-events: none;
   }
 
-  /* The last controls scroll clear of the hole. */
-  .workspace-body {
+  /* The section's last controls scroll clear of the hole; the rail keeps the full height. */
+  .panel-body {
     padding-bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
   }
 }
