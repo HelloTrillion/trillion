@@ -41,6 +41,7 @@ from trillion.spine.registry import ToolRegistry
 from trillion.spine.router import Router
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
+from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -167,6 +168,8 @@ class Runtime:
     registry: ToolRegistry
     spine_store: SqliteSpineStore
     conversations: SqliteConversationStore
+    # Her board per conversation (SUR-1), saved beside the conversation.
+    board_store: SqliteBoardStore
     preferences: SqlitePreferences
     secrets: SecretStore
     memory: MemoryBook
@@ -467,6 +470,7 @@ async def open_runtime(
         registry=registry,
         spine_store=store,
         conversations=SqliteConversationStore(chat_conn),
+        board_store=SqliteBoardStore(chat_conn),
         preferences=preferences,
         secrets=keychain,
         memory=book,
