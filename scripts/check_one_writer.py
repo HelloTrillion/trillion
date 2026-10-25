@@ -45,6 +45,7 @@ BIRTHS: dict[str, str] = {
 APPEND_ONLY: dict[str, str] = {
     "decisions": f"{SPINE_STORE}._decision",
     "tool_audit": f"{SPINE_STORE}.append_audit",
+    "rule_events": f"{SPINE_STORE}.append_rule_event",
 }
 # The store methods that change a decision, and the only places that may call them.
 CALLERS: dict[str, frozenset[str]] = {

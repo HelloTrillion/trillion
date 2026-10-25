@@ -10,6 +10,7 @@ from typing import Any
 
 import aiosqlite
 
+from trillion.brain.standing import RuleEvent
 from trillion.spine.audit import AuditRecord
 from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.contract import Risk
@@ -340,6 +341,45 @@ class SqliteSpineStore:
                     r.at,
                 ),
             )
+
+    async def append_rule_event(self, owner_id: str, e: RuleEvent) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                "INSERT INTO rule_events (owner_id, rule_id, text, event, how, session_id, at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (owner_id, e.rule_id, e.text, e.event, e.how, e.session_id, e.at),
+            )
+
+    async def rule_events(
+        self, owner_id: str, *, since_ms: int, limit: int, words: Sequence[str] = ()
+    ) -> list[RuleEvent]:
+        """The owner's rules kept and dropped since a moment, newest first.
+
+        `words` narrows them as `recent` does, against the rule's text."""
+        marks = " OR ".join("text LIKE ? ESCAPE '\\'" for _ in words)
+        patterns = [
+            "%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            for w in words
+        ]
+        # Built only from constant pieces; every word is bound as a parameter.
+        async with self._conn.execute(
+            "SELECT rule_id, text, event, how, session_id, at FROM rule_events"  # noqa: S608
+            " WHERE owner_id = ? AND at >= ?"
+            + (f" AND ({marks})" if words else "")
+            + " ORDER BY at DESC, id DESC LIMIT ?",
+            (owner_id, since_ms, *patterns, limit),
+        ) as cur:
+            return [
+                RuleEvent(
+                    rule_id=str(r["rule_id"]),
+                    text=str(r["text"]),
+                    event="dropped" if r["event"] == "dropped" else "kept",
+                    how="said" if r["how"] == "said" else "card",
+                    session_id=str(r["session_id"]),
+                    at=int(r["at"]),
+                )
+                for r in await cur.fetchall()
+            ]
 
     async def list_audit(self) -> list[AuditRecord]:
         async with self._conn.execute(

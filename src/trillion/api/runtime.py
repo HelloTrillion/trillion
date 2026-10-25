@@ -50,7 +50,16 @@ from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
-from trillion.tools.rules import DROP, KEEP, RuleDrop, RuleKeep
+from trillion.tools.rules import (
+    DROP,
+    KEEP,
+    LIST_RULES,
+    NEVER,
+    RuleDrop,
+    RuleKeep,
+    RuleList,
+    RuleNever,
+)
 from trillion.tools.schedule import (
     ASK,
     CANCEL,
@@ -285,8 +294,9 @@ class Runtime:
                 "the user first. The user can read the files in their Trillion data folder"
             ),
             "standing rules": (
-                f"{len(self.rules.all())} kept. They are in your instructions on every turn; "
-                "rule_keep and rule_drop change them, and both ask the user first"
+                f"{len(self.rules.all())} kept. They are in your instructions on every turn. "
+                "rule_never keeps a plain 'never' at once; rule_keep keeps any other rule and "
+                "rule_drop drops one, and both ask the user first; rule_list lists them"
             ),
             "decision record": (
                 "every action that asked for the user's yes is recorded permanently: when it "
@@ -660,7 +670,7 @@ async def open_runtime(
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):
-        record.bind(store, OWNER, rt.clock)
+        record.bind(store, OWNER, rt.clock, rules=store)
     rt.boards = Boards(
         rt.board_store,
         rt.conversations,
@@ -690,10 +700,10 @@ async def open_runtime(
             board_tool, WorkspaceShow | WorkspaceUpdate | WorkspaceRemove | WorkspaceClose
         ):
             board_tool.bind(rt.boards, OWNER)
-    for name in (KEEP, DROP):
+    for name in (KEEP, DROP, NEVER, LIST_RULES):
         rule_tool = registry.get(name)
-        if isinstance(rule_tool, RuleKeep | RuleDrop):
-            rule_tool.bind(standing, OWNER)
+        if isinstance(rule_tool, RuleKeep | RuleDrop | RuleNever | RuleList):
+            rule_tool.bind(standing, OWNER, store, lambda: rt.clock())
     for name in (WRITE, RECALL, FORGET):
         tool = registry.get(name)
         if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):
