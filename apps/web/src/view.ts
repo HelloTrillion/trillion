@@ -65,6 +65,8 @@ export interface View {
   readonly conversationId: string | null;
   readonly agentName: string;
   readonly model: string | null;
+  /** The conversation's title, once it has one. */
+  readonly title: string | null;
   readonly speech: Speech | null;
   readonly listening: Listening | null;
   /** The core has the microphone open for this page. */
@@ -93,6 +95,7 @@ export const INITIAL: View = {
   conversationId: null,
   agentName: 'Trillion',
   model: null,
+  title: null,
   speech: null,
   listening: null,
   mic: false,
@@ -311,6 +314,8 @@ export function reduce(view: View, msg: ServerMsg): View {
 
 function step(view: View, msg: ServerMsg): View {
   switch (msg.type) {
+    case 'conversation.title':
+      return str(msg['id']) === view.conversationId ? { ...view, title: str(msg['title']) || null } : view;
     case 'session': {
       const model = msg['model'] as { provider?: unknown; model?: unknown } | null;
       return {
@@ -319,6 +324,7 @@ function step(view: View, msg: ServerMsg): View {
         conversationId: str(msg['id']) || null,
         agentName: str(msg['agent_name'], view.agentName),
         model: model ? str(model.model) : null,
+        title: typeof msg['title'] === 'string' ? msg['title'] : null,
         speech: speechOf(msg['speech']),
         listening: listeningOf(msg['listening']),
         mic: false,

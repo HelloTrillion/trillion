@@ -26,7 +26,9 @@ from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.api.trace import Trace, Via, ahead_ms
 from trillion.brain import compact
+from trillion.brain import title as naming
 from trillion.brain.loop import (
+    INTERRUPTED,
     CallTimed,
     LoopEvent,
     ReplyDelta,
@@ -37,7 +39,14 @@ from trillion.brain.loop import (
     run_turn,
     tool_schemas,
 )
-from trillion.brain.types import ContextBlock, Msg, ProviderError, TextBlock, Usage
+from trillion.brain.types import (
+    ContextBlock,
+    ModelProvider,
+    Msg,
+    ProviderError,
+    TextBlock,
+    Usage,
+)
 from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
 from trillion.persona.prompt import (
@@ -216,6 +225,10 @@ class Session:
         self._stopped = False
         # When the user last did something here. The live page is the latest (SUR-9).
         self.active_ms = rt.clock()
+        # Who named this conversation, if anyone, and her naming task (SUR-1). She
+        # names it once, after her first reply, and never over the user's own name.
+        self._title_source: str | None = None
+        self._naming: asyncio.Task[None] | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -256,9 +269,11 @@ class Session:
                 session._history.append(msg)
         else:
             await rt.conversations.create(session.id, OWNER, rt.clock())
+        title, session._title_source = await rt.conversations.title_of(session.id, OWNER)
         await session._send(
             "session",
             id=session.id,
+            title=title,
             protocol=PROTOCOL,
             agent_name=rt.identity.agent_name,
             onboarding=rt.onboarding(),
@@ -310,6 +325,18 @@ class Session:
         """The user renamed her or themselves. The page follows; the next turn uses it."""
         await self._send("identity", agent_name=self._rt.identity.agent_name)
 
+    async def renamed(self, title: str) -> None:
+        """The user named this conversation: hers will never replace it. A naming call
+        in flight is left to finish (its cost is recorded); the store refuses its title."""
+        self._title_source = "user"
+        await self._broadcast_title(title)
+
+    async def deleted(self) -> None:
+        """The conversation was deleted elsewhere. Say so, then stop for good; the
+        page starts a new one."""
+        await self._send("error", code="deleted")
+        await self.close()
+
     async def replaced(self) -> None:
         """This conversation was opened somewhere else. Say so, then stop for good."""
         await self._send("error", code="replaced")
@@ -334,6 +361,11 @@ class Session:
         using, self._using = self._using, None
         if using is not None:
             await self._let_go(using)
+        naming_task = self._naming
+        if naming_task is not None and not naming_task.done():
+            naming_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await naming_task
 
     # ── Incoming messages ────────────────────────────────────────────────
 
@@ -1554,7 +1586,70 @@ class Session:
             if using is not None:
                 # Already over unless the turn was cut short. Its usage is the turn's.
                 await using.cancel()
+        if not self._closed:
+            # However the turn ended: what counts is that a reply of hers was saved.
+            self._maybe_name()
         self._rest = final
+
+    # ── Naming (SUR-1) ───────────────────────────────────────────────────
+
+    def _maybe_name(self) -> None:
+        """After her first reply: name the conversation in the background, so the
+        next turn never waits on it."""
+        if self._naming is not None or self._title_source in ("model", "user"):
+            return
+        exchange = self._first_exchange()
+        if exchange is None or self._rt.provider is None:
+            return
+        self._naming = asyncio.create_task(self._name(*exchange))
+
+    def _first_exchange(self) -> tuple[Msg, Msg] | None:
+        """The user's first message and her answer to it: her last words before the
+        next input, so the answer and not a "Let me check." before a tool call. A
+        reply cut off before any word is no answer; the next one with words is."""
+        # The live history: after compaction on a resumed long conversation, this is
+        # the oldest exchange still in it, not the very first one.
+        said: Msg | None = None
+        answer: str | None = None
+        for m, k in zip(self._history, self._kinds, strict=True):
+            if k in ("user", "tap"):
+                if answer is not None:
+                    break
+                if k == "user" and said is None:
+                    said = m
+            elif k == "assistant" and said is not None:
+                text = "".join(b.text for b in m.blocks if isinstance(b, TextBlock))
+                # The mark an interrupted reply is saved with is not her words.
+                text = text.replace(INTERRUPTED.strip(), "").strip()
+                if text:
+                    answer = text
+        if said is None or answer is None:
+            return None
+        return said, Msg(role="assistant", blocks=(TextBlock(text=answer),))
+
+    async def _name(self, said: Msg, reply: Msg) -> None:
+        rt = self._rt
+        provider = rt.provider
+        if provider is None:
+            return
+        named, usage = await naming.name(provider, [said, reply])
+        try:
+            # Recorded even if the session closes meanwhile: the call was paid for.
+            await asyncio.shield(self._record_usage(provider, usage))
+            if named is None:
+                return
+            if await rt.conversations.set_title(self.id, OWNER, named, "model"):
+                self._title_source = "model"
+                await self._broadcast_title(named)
+        except Exception as e:
+            # Best effort: the first-words title stays. The class name only.
+            logger.warning("naming in session %s failed: %s", self.id, type(e).__name__)
+
+    async def _broadcast_title(self, text: str) -> None:
+        """Every page open on this conversation shows its new title."""
+        for s in list(self._rt.sessions):
+            if s.id == self.id:
+                await s._send("conversation.title", id=self.id, title=text)
 
     # ── Early thinking (VOI-12) ──────────────────────────────────────────
 
@@ -1641,9 +1736,12 @@ class Session:
         usage at the end of a call, so one stopped before then counts as nothing."""
         await draft.cancel()
         # The model it asked, which may no longer be the one in use.
-        provider = draft.provider
-        usage = draft.usage()
-        if provider is None or usage == Usage():
+        if draft.provider is not None:
+            await self._record_usage(draft.provider, draft.usage())
+
+    async def _record_usage(self, provider: ModelProvider, usage: Usage) -> None:
+        """Count a side call's cost against this conversation, unless it used nothing."""
+        if usage == Usage():
             return
         pricing = provider.pricing()
         await self._rt.conversations.record_usage(
@@ -1883,6 +1981,16 @@ class Session:
             # Only what the user said themselves: never a tap's note, never a page.
             self._rt.web.ledger.said(self.id, built.text)
         await self._save(kind, built.msg)
+        if kind == "user" and self._title_source is None:
+            await self._show_first_words()
+
+    async def _show_first_words(self) -> None:
+        """The store titled the conversation with the user's first words: the page
+        shows them now, not only once she has named it (D4). Her name replaces them."""
+        title, source = await self._rt.conversations.title_of(self.id, OWNER)
+        if title is not None and source == "words":
+            self._title_source = "words"
+            await self._broadcast_title(title)
 
     async def _save_input(self, kind: Kind, text: str) -> None:
         """A user input, with the context it was said in. Both are saved together and

@@ -28,8 +28,8 @@ import {
   placeholder,
   saved,
 } from './onboarding';
-import { createPanel } from './panel';
-import { primary, shortcut } from './platform';
+import { createPanel, type Surface } from './panel';
+import { MAC, primary, shortcut } from './platform';
 import {
   type Theme as ThemeChoice,
   saveBarge,
@@ -42,16 +42,22 @@ import {
   savedTheme,
   shownTheme,
 } from './prefs';
+import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
+import { createSidebar, revealForCard } from './sidebar';
+import { createThreads, escapeAction, listPath } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
+import { createWorkspace } from './workspace';
+import { openShowcase, showcaseScene } from './showcase';
+import { DOCK, isPhone } from './layout';
+import { captionOf, createCaptions } from './captions';
 import {
   type Entry,
   INITIAL,
-  STATE_TEXT,
   type ServerMsg,
   type View,
   dueLabel,
@@ -71,6 +77,8 @@ const CONVERSATION_KEY = 'trillion-conversation';
 const CORE = import.meta.env.DEV ? '127.0.0.1:7777' : location.host;
 const WS_URL = `ws://${CORE}/ws`;
 const API_URL = import.meta.env.DEV ? `http://${CORE}` : '';
+// A design preview of the workspace with sample content (#showcase). Read before the token is taken from the fragment.
+const showcaseAt = showcaseScene(location.search, location.hash);
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -123,8 +131,23 @@ const form = $<HTMLFormElement>('ask');
 const input = $<HTMLTextAreaElement>('input');
 const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
+// The ask bar's actions are icons, each named for readers and on hover.
+sendBtn.replaceChildren(icon('send', 18));
+sendBtn.setAttribute('aria-label', 'Send');
+sendBtn.title = 'Send (Enter)';
+stopBtn.replaceChildren(icon('stop', 16));
+stopBtn.setAttribute('aria-label', 'Stop');
+stopBtn.title = 'Stop her (Esc)';
+let micIcon = '';
 const footEl = $('foot');
 const newBtn = $<HTMLButtonElement>('new');
+newBtn.replaceChildren(icon('edit', 18));
+const agentNameEl = $('agent-name');
+const threadTitleEl = $('thread-title');
+const threadSwitch = $<HTMLButtonElement>('thread-switch');
+const threadsEl = $('threads');
+const historyBtn = $<HTMLButtonElement>('history');
+historyBtn.replaceChildren(icon('history', 18));
 const usageBtn = $<HTMLButtonElement>('usage');
 let usage: Usage | null = null;
 const micBtn = $<HTMLButtonElement>('mic');
@@ -138,6 +161,63 @@ let talkPrefs: TalkPrefs = savedTalk();
 const talkKeys = new TalkKeys(talkPrefs);
 let version = '';
 const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight.matches) });
+
+// The docked orb's size and place come from DOCK; the CSS (its button, the hole in the workspace) reads them here.
+document.documentElement.style.setProperty('--dock-size', `${DOCK.size}px`);
+document.documentElement.style.setProperty('--dock-inset', `${DOCK.inset}px`);
+document.documentElement.style.setProperty('--dock-phone-size', `${DOCK.phoneSize}px`);
+document.documentElement.style.setProperty('--dock-phone-inset', `${DOCK.phoneInset}px`);
+
+const showSidebarBtn = $<HTMLButtonElement>('show-sidebar');
+const hideSidebarBtn = $<HTMLButtonElement>('hide-sidebar');
+const workspaceCloseBtn = $<HTMLButtonElement>('workspace-close');
+showSidebarBtn.replaceChildren(icon('sidebar', 20));
+hideSidebarBtn.replaceChildren(icon('sidebar', 20));
+workspaceCloseBtn.replaceChildren(icon('close', 18));
+showSidebarBtn.title = `Show sidebar (${shortcut('\\')})`;
+hideSidebarBtn.title = `Hide sidebar (${shortcut('\\')})`;
+const sidebar = createSidebar($('sidebar'), $('side-resize'), showSidebarBtn, hideSidebarBtn, $('ask'));
+const workspace = createWorkspace({
+  region: $('workspace'),
+  title: $('workspace-title'),
+  body: $('workspace-body'),
+  close: workspaceCloseBtn,
+  dock: $<HTMLButtonElement>('orb-dock'),
+  sidebarWidth: () => sidebar.width(),
+  sheetTop: () => sidebar.sheetTop(),
+  hold: (open) => sidebar.hold(open),
+  place: (rect, animate) => galaxy.setStage(rect, { animate }),
+  // A caption never sits over the workspace.
+  changed: () => showCaptions(),
+  fallback: () => (sidebar.hidden ? showSidebarBtn : null),
+});
+const captions = createCaptions($('captions'));
+function placeCaptions(): void {
+  const w = innerWidth;
+  captions.place({ w, h: innerHeight, sidebar: sidebar.width(), workspace: false, phone: isPhone(w) });
+}
+placeCaptions();
+addEventListener('resize', placeCaptions);
+/** Captions show only while the sidebar is hidden and the workspace closed. */
+function showCaptions(): void {
+  captions.update(captionOf(view), sidebar.hidden && !workspace.isOpen);
+}
+sidebar.onChange((animate) => {
+  workspace.layout(animate);
+  placeCaptions();
+  showCaptions();
+});
+// A hidden sidebar is inert and so silent: its news is read out here instead (SUR-6).
+const announceEl = $('announce');
+
+/** Put the cursor in the message box, showing the sidebar first if it is hidden. */
+function focusInput(): void {
+  // Showing it moves focus to its hide button, so this comes first.
+  sidebar.setHidden(false);
+  input.focus();
+}
+// The first placement is where the orb starts, not somewhere it glides to.
+workspace.layout(false);
 
 function applyTheme(choice: ThemeChoice): void {
   themeChoice = choice;
@@ -425,6 +505,8 @@ const mic = createMic({
   attach: (node) => galaxy.attachAnalyser(node, 'mic'),
 });
 let retryMs = 1000;
+// The next try after the link dropped. Cleared by any connect, so two sockets never race.
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 const shown = new Set<string>();
 
 // The first conversation, or a later change of names (ONB-3). Its lines are the
@@ -573,7 +655,7 @@ const LINK_TEXT: Readonly<Record<View['link'], string>> = {
 let rendered: readonly Entry[] = [];
 
 // Shown under the conversation while she works and no text is arriving. The status
-// in the top bar already announces it to screen readers, so this one stays silent.
+// in the sidebar's head already announces it to screen readers, so this one stays silent.
 const thinkingEl = el('p', 'thinking', 'Thinking');
 thinkingEl.setAttribute('aria-hidden', 'true');
 // The words she has made out so far, while the user is still speaking.
@@ -606,6 +688,8 @@ function render(): void {
   if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
+  showCaptions();
+
   // The core records a card as delivered only once it is really on screen (SPN-17).
   for (const e of view.entries) {
     if (e.kind === 'card' && e.status === 'waiting' && !shown.has(e.pendingId) && e.pendingId !== EXAMPLE_CARD) {
@@ -616,14 +700,10 @@ function render(): void {
 
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
-  statusEl.textContent = ready
-    ? view.noticeSpeaking
-      ? 'Speaking'
-      : STATE_TEXT[view.orb]
-    : view.link === 'connecting'
-      ? 'Connecting'
-      : 'Offline';
+  statusEl.textContent = statusText(view);
   newBtn.hidden = !ready || view.entries.length === 0;
+  agentNameEl.textContent = view.agentName;
+  threadTitleEl.textContent = view.title ?? 'New conversation';
   const introducing = ready && active(ob);
   settingsBtn.hidden = !ready || introducing;
   settingsBtn.title = `Settings (${shortcut(',')})`;
@@ -649,21 +729,33 @@ function render(): void {
   const banner =
     linkText ||
     view.banner ||
-    (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model to get started (top right).' : '');
+    (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model in Settings to get started.' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
 
   // Introductions need no model: the app writes the names, not her.
   const canType = ready && (!noModel || introducing);
   input.disabled = !canType;
-  input.placeholder = introducing && ob ? placeholder(ob) : canType ? `Message ${view.agentName}` : '';
+  input.placeholder =
+    introducing && ob
+      ? placeholder(ob)
+      : !canType
+        ? ''
+        : view.entries.length
+          ? `Reply to ${view.agentName}`
+          : `Say hello to ${view.agentName}`;
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
   stopBtn.hidden = !(view.busy || voice.active || view.mic);
   // Watching for a cut-in is a microphone open too, so it shows, even while she answers.
   const watch = !view.mic && watching();
   micBtn.hidden = !canType || (view.busy && !watch) || introducing;
-  micBtn.textContent = view.mic ? 'Done' : watch ? 'Listening' : 'Speak';
+  // Speaking, the button finishes the turn: a tick. Otherwise it is the microphone.
+  const nextMic = view.mic ? 'check' : 'mic';
+  if (nextMic !== micIcon) {
+    micIcon = nextMic;
+    micBtn.replaceChildren(icon(nextMic, 18));
+  }
   micBtn.title = !view.listening
     ? 'Choose how she hears you'
     : view.mic
@@ -671,8 +763,7 @@ function render(): void {
       : watch
         ? watchTitle(streamWatch ? 'stream' : 'local')
         : 'Speak to her';
-  if (watch) micBtn.setAttribute('aria-label', micBtn.title);
-  else micBtn.removeAttribute('aria-label');
+  micBtn.setAttribute('aria-label', view.mic ? 'Done' : watch ? micBtn.title : 'Speak');
   micBtn.setAttribute('aria-pressed', String(view.mic));
   micBtn.classList.toggle('live', view.mic);
   micBtn.classList.toggle('watching', watch);
@@ -681,6 +772,7 @@ function render(): void {
     : view.grantedRoots.length
       ? `Files: ${view.grantedRoots.join(', ')}. Every change asks first.`
       : 'No folders are shared, so file tools are off. Start with: trillion run --grant <a folder>';
+  footEl.title = footEl.textContent;
 }
 
 function apply(next: View): void {
@@ -689,6 +781,10 @@ function apply(next: View): void {
   view = next;
   if (view.conversationId && view.conversationId !== before.conversationId) {
     store(CONVERSATION_KEY, view.conversationId);
+  }
+  if (sidebar.hidden) {
+    const line = announcement(before, view);
+    if (line) announceEl.textContent = line;
   }
   render();
 }
@@ -704,9 +800,23 @@ const api: Api = (method, path, body) =>
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-// One panel for every setting (Settings, top right). The model, voice and microphone
-// sections are the same modules that used to be separate dialogs.
-const panel = createPanel($<HTMLDialogElement>('settings-panel'));
+// One panel for every setting (Settings, at the top of the sidebar), drawn in the workspace while
+// the orb docks. The model, voice and microphone sections are the same modules that used to be
+// separate dialogs.
+const settingsSurface: Surface = {
+  get open() {
+    return workspace.showing === 'settings';
+  },
+  show: (content, title) => workspace.open(title, content, 'settings'),
+  close: () => {
+    if (workspace.showing === 'settings') workspace.close();
+  },
+  onClose: (l) =>
+    workspace.onClose((id) => {
+      if (id === 'settings') l();
+    }),
+};
+const panel = createPanel(settingsSurface);
 const settings = createSettings(panel.host('model'), api);
 const speechSettings = createSpeechSettings(panel.host('voice'), api);
 const listeningSettings = createListeningSettings(
@@ -814,7 +924,7 @@ function introduce(current: Profile): void {
   ob = begin({ ...current, timezone: current.timezone || zone() });
   obAt = view.entries.length;
   render();
-  input.focus();
+  focusInput();
 }
 
 async function finish(): Promise<void> {
@@ -881,7 +991,7 @@ function reply(text: string): void {
     ob = next;
     render();
     after();
-    if (active(ob)) input.focus();
+    if (active(ob)) focusInput();
     return;
   }
   ob = answer(ob, text);
@@ -891,7 +1001,7 @@ function reply(text: string): void {
     void api('POST', '/api/settings/persona/skip', {}).catch(() => undefined);
     after();
   }
-  if (active(ob)) input.focus();
+  if (active(ob)) focusInput();
 }
 
 /** Change names by talking: the same conversation as onboarding, from current answers. */
@@ -916,9 +1026,13 @@ function talkNames(): void {
   })();
 }
 
-newBtn.addEventListener('click', () => {
-  // Forget which conversation this tab was in; the core starts a fresh one on reconnect.
-  store(CONVERSATION_KEY, null);
+/** Open another conversation, or (null) a fresh one: reconnect and the core resumes it. */
+function switchTo(id: string | null): void {
+  // She stops first, so nothing of this conversation plays over the next one. Only a
+  // reply under way needs the core told; the rest is this page's to quiet.
+  if (view.busy) send({ type: 'interrupt' });
+  quiet();
+  store(CONVERSATION_KEY, id);
   shown.clear();
   if (!active(ob)) ob = null;
   obAt = 0;
@@ -927,12 +1041,71 @@ newBtn.addEventListener('click', () => {
   socket = null;
   old?.close();
   connect();
-  input.focus();
+  focusInput();
+}
+
+newBtn.addEventListener('click', () => {
+  threads.close();
+  switchTo(null);
 });
+
+// ── Thread list ──────────────────────────────────────────────────────────
+
+/** The body of a conversations call that answered, or a throw for one that did not. */
+async function okJson(r: Promise<Response>): Promise<unknown> {
+  const res = await r;
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+const succeeded = (r: Promise<Response>): Promise<boolean> => r.then((res) => res.ok).catch(() => false);
+const threadPath = (id: string): string => `/api/conversations/${encodeURIComponent(id)}`;
+
+const threads = createThreads({
+  root: threadsEl,
+  fetchPage: ({ q, before }) => okJson(api('GET', listPath(q, before))),
+  rename: (id, title) => succeeded(api('PATCH', threadPath(id), { title })),
+  remove: (id) => succeeded(api('DELETE', threadPath(id), {})),
+  restore: (id) => succeeded(api('POST', `${threadPath(id)}/restore`, {})),
+  current: () => view.conversationId,
+  pick: (id) => {
+    if (id !== view.conversationId) switchTo(id);
+    else focusInput();
+  },
+  deletedCurrent: () => switchTo(null),
+  now: () => Date.now(),
+});
+threads.onToggle((open) => {
+  threadSwitch.setAttribute('aria-expanded', String(open));
+  historyBtn.setAttribute('aria-expanded', String(open));
+  historyBtn.toggleAttribute('data-on', open);
+  // Closed from inside the list (Escape): focus goes back to what opened it.
+  if (!open && threadsEl.contains(document.activeElement)) threadSwitch.focus();
+  transcriptEl.hidden = open;
+  threadsEl.hidden = !open;
+});
+threadSwitch.setAttribute('aria-controls', 'threads');
+threadSwitch.title = `Conversations (${MAC ? '⌘⇧K' : 'Ctrl+Shift+K'})`;
+
+function toggleThreads(): void {
+  if (threads.isOpen) {
+    threads.close();
+    return;
+  }
+  // Showing the sidebar moves focus to its hide button; opening the list then takes it.
+  sidebar.setHidden(false);
+  // On a phone the list opens over the sheet at full height.
+  sidebar.raise('full');
+  threads.open();
+}
+threadSwitch.addEventListener('click', toggleThreads);
+historyBtn.addEventListener('click', toggleThreads);
+historyBtn.title = threadSwitch.title;
 
 // ── Connection ───────────────────────────────────────────────────────────
 
 function connect(): void {
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryTimer = null;
   const token = takeToken();
   if (!token) {
     apply({ ...view, link: 'unauthenticated' });
@@ -946,6 +1119,8 @@ function connect(): void {
   });
   ws.binaryType = 'arraybuffer';
   ws.addEventListener('message', (ev) => {
+    // A socket this page has moved on from (a switch, a reconnect) has nothing more to say.
+    if (socket !== ws) return;
     if (ev.data instanceof ArrayBuffer) {
       voice.audio(ev.data);
       return;
@@ -958,6 +1133,18 @@ function connect(): void {
     }
     if (typeof msg?.type !== 'string') return;
     if (msg.type === 'error' && msg['code'] === 'unauthenticated') store(TOKEN_KEY, null);
+    // This conversation was deleted (here or in another tab): the core has closed it, so start a new one.
+    if (msg.type === 'error' && msg['code'] === 'deleted') {
+      switchTo(null);
+      return;
+    }
+    if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
+    // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
+    if (msg.type === 'confirm.request') {
+      const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
+      if (reveal.unhide) sidebar.setHidden(false);
+      if (reveal.raise) sidebar.raise(reveal.raise);
+    }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
@@ -1109,18 +1296,10 @@ function connect(): void {
   ws.addEventListener('close', () => {
     if (socket !== ws) return;
     socket = null;
-    voice.stop();
-    endHold();
-    mic.stop();
-    micMode = 'send';
-    bargeHeld = null;
-    overlapping = false;
-    cutIn = false;
-    streamWatch = false;
-    unwatchPending = false;
+    quiet();
     if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
-    setTimeout(connect, retryMs);
+    retryTimer = setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10_000);
   });
 }
@@ -1134,7 +1313,7 @@ function takeDraft(text: string): void {
     input.dispatchEvent(new Event('input'));
   }
   apply({ ...view, draft: null });
-  input.focus();
+  focusInput();
 }
 
 function submit(): void {
@@ -1168,7 +1347,8 @@ input.addEventListener('input', () => {
   input.style.height = '';
   input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 });
-const interrupt = (): void => {
+/** Everything of hers on this page goes still: her voice, the microphone, any cut-in under way. */
+function quiet(): void {
   voice.stop();
   endHold();
   mic.stop();
@@ -1178,6 +1358,9 @@ const interrupt = (): void => {
   cutIn = false;
   streamWatch = false;
   unwatchPending = false;
+}
+const interrupt = (): void => {
+  quiet();
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);
@@ -1211,10 +1394,11 @@ function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
     repeat: ev.repeat,
     inMessageBox: target === input,
     messageEmpty: input.value.trim() === '',
-    // Another field, a button, or anything in Settings takes keys itself.
+    // Another field, a button, the thread list, or Settings takes keys itself. With Settings open the message box
+    // in the sidebar still talks.
     inOtherControl:
-      panel.isOpen ||
-      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], dialog') !== null),
+      (panel.isOpen && (target === null || target.closest('#sidebar') === null)) ||
+      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], [role="listbox"]') !== null),
   };
 }
 
@@ -1229,17 +1413,46 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
 }
 
 addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && (view.busy || voice.active || view.mic)) interrupt();
+  // One order for Escape (escapeAction). The thread list keeps only the Escapes it uses itself.
+  if (ev.key === 'Escape') {
+    const action = escapeAction({
+      busy: view.busy,
+      speaking: voice.active,
+      listening: view.mic,
+      listOpen: threads.isOpen,
+      workspaceOpen: workspace.isOpen,
+    });
+    if (action === 'interrupt') interrupt();
+    else if (action === 'list') {
+      ev.preventDefault();
+      threads.close();
+    } else if (action === 'workspace') {
+      ev.preventDefault();
+      workspace.close();
+    }
+  }
+  // The sidebar can come and go with Settings open; the workspace's left edge follows it.
+  if (ev.key === '\\' && primary(ev)) {
+    ev.preventDefault();
+    sidebar.toggle();
+    return;
+  }
   // The usual way to Settings: ⌘, on a Mac, Ctrl+, elsewhere. Not the other one.
   if (ev.key === ',' && primary(ev) && !panel.isOpen) {
     ev.preventDefault();
     openSettings();
     return;
   }
+  // ⌘⇧K: the list of conversations. Before the talk keys and plain ⌘K, so it does only this.
+  if (ev.key.toLowerCase() === 'k' && primary(ev) && ev.shiftKey) {
+    ev.preventDefault();
+    toggleThreads();
+    return;
+  }
   onTalk(talkKeys.down(keyOf(ev)), ev);
   if (ev.key.toLowerCase() === 'k' && primary(ev)) {
     ev.preventDefault();
-    input.focus();
+    focusInput();
   }
 });
 addEventListener('keyup', (ev) => onTalk(talkKeys.up({ code: ev.code }), ev));
@@ -1253,7 +1466,10 @@ addEventListener('hashchange', () => {
     apply({ ...view, link: 'connecting' });
     connect();
   }
+  const scene = showcaseScene('', location.hash);
+  if (scene) openShowcase(workspace, scene);
 });
 
 render();
 connect();
+if (showcaseAt) openShowcase(workspace, showcaseAt);

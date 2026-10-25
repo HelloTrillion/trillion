@@ -57,6 +57,7 @@ export function createNamesSettings(
 ): NamesSettings {
   let state: Persona | null = null;
   const form = el('form', 'settings');
+  form.addEventListener('submit', (ev) => ev.preventDefault());
   const title = el('h2', '', 'Names');
   title.id = 'names-title';
   host.setAttribute('aria-labelledby', title.id);
@@ -92,7 +93,7 @@ export function createNamesSettings(
   save.type = 'button';
   const talk = el('button', '', 'Change them by talking');
   talk.type = 'button';
-  const close = el('button', '', 'Close');
+  const close = el('button', 'settings-close', 'Close');
   close.type = 'button';
   actions.append(save, talk, close);
   form.append(

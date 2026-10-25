@@ -1,7 +1,8 @@
 import '../tokens.css';
 import './demo.css';
 import {
-  ORB_STATE_NAMES, STATE_LABELS, createGalaxy, type OrbStateName, type PerfMode, type Theme,
+  ORB_STATE_NAMES, STATE_LABELS, createGalaxy, defaultRect,
+  type OrbStateName, type PerfMode, type StageRect, type Theme,
 } from '../src/index';
 
 const byId = <T extends HTMLElement>(id: string): T => {
@@ -108,6 +109,32 @@ byId<HTMLButtonElement>('speak').addEventListener('click', async () => {
 });
 
 byId<HTMLButtonElement>('flare-btn').addEventListener('click', () => galaxy.flare());
+
+// Position: where a host might put the orb. The rect follows the window as it resizes.
+type Stage = 'centre' | 'panel' | 'docked';
+const stageRect = (stage: Stage): StageRect => {
+  const w = innerWidth;
+  const h = innerHeight;
+  if (stage === 'docked') return { x: w - 24 - 48, y: h - 24 - 48, size: 96 };
+  if (stage === 'panel') {
+    // The default look, centred in the right 70% of the window.
+    const r = defaultRect(w * 0.7, h);
+    return { x: w * 0.3 + r.x, y: r.y, size: r.size };
+  }
+  return defaultRect(w, h);
+};
+const stageButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-stage]')];
+let stage: Stage | null = null;
+for (const b of stageButtons) {
+  b.addEventListener('click', () => {
+    stage = (b.dataset['stage'] ?? 'centre') as Stage;
+    galaxy.setStage(stageRect(stage));
+    for (const o of stageButtons) o.setAttribute('aria-pressed', String(o === b));
+  });
+}
+addEventListener('resize', () => {
+  if (stage) galaxy.setStage(stageRect(stage), { animate: false });
+});
 
 const perfBtn = byId<HTMLButtonElement>('perf');
 const perfModes: PerfMode[] = ['auto', 'on', 'off'];

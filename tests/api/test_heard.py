@@ -13,7 +13,7 @@ from tests.api.test_drafts import judging
 from tests.api.test_listening import hearing, speak
 from tests.api.test_session import Page, idle
 from tests.api.test_session_notices import voiced
-from tests.brain.fakes import ScriptedProvider, say, use
+from tests.brain.fakes import ScriptedProvider, is_naming, say, use
 from tests.voice.audio import room, tone
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
@@ -45,6 +45,10 @@ class Halting(ScriptedProvider):
         self._text = text
 
     async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
+        if is_naming(kw["system"]):  # naming is not a turn
+            async for ev in super().stream(**kw):
+                yield ev
+            return
         if self._replies:
             async for ev in super().stream(**kw):
                 yield ev
@@ -105,6 +109,40 @@ async def test_a_spoken_reply_cut_off_before_a_sentence_was_heard_keeps_only_the
     assert page.all("interrupted")[-1]["kept"] == ""
     said = await last_said(rt, session)
     assert said[-1].blocks == (TextBlock(text=INTERRUPTED.strip()),)
+    await session.close()
+
+
+async def test_a_reply_cut_off_before_a_word_was_heard_does_not_name_it(rt: Runtime) -> None:
+    """Her mark alone is not a reply to name from (SUR-1); her next one with words is."""
+
+    class FirstHalts(ScriptedProvider):
+        async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
+            if not self.calls and not is_naming(kw["system"]):
+                self.calls.append((kw["system"], list(kw["messages"])))
+                yield TextDelta(text=REPLY)
+                await asyncio.sleep(30)
+            async for ev in super().stream(**kw):
+                yield ev
+
+    hearing(rt)
+    voiced(rt)
+    provider = FirstHalts(say("Monday at three."), say("Moving the dentist"), names=True)
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await page.until("reply.sentence", 2)
+    await session.handle({"type": "barge"})
+    said = await last_said(rt, session)
+    assert said[-1].blocks == (TextBlock(text=INTERRUPTED.strip()),)
+    await asyncio.sleep(0.05)
+    assert provider.naming_calls == 0
+
+    await session.handle({"type": "turn.text", "text": "move the dentist to monday"})
+    await page.until("conversation.title", 2)
+    # The first is the user's first words; hers follows.
+    assert page.all("conversation.title")[-1]["title"] == "Moving the dentist"
+    assert provider.naming_calls == 1
     await session.close()
 
 

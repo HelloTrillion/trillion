@@ -144,7 +144,7 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | GAL-2 | **One state machine**: `idle`, `arming`, `listening`, `processing`, `speaking` and `error`. Every visual parameter eases toward the state's target each frame. States are defined in exactly one place. | P0 |
 | GAL-3 | **Audio reactivity**: `attachAnalyser(node, role)` for mic and playback. Voice level comes from bins 10–60%, bass from the first 6 bins, and treble from bins at 65% and above. Attack 0.45, decay 0.08. Mic gain is ×2.4 with a floor of 0.10. A synthetic speech envelope is used when playback cannot be analysed. | P0 |
 | GAL-4 | The **Landscape**: a galaxy or nebula background that shares the orb's WebGL renderer, so there is one context rather than two. | P0 |
-| GAL-5 | **Public API**: `createGalaxy(canvas, opts)` → `{ setState, attachAnalyser, flare, addSatellite, removeSatellite, pulseArc, setPerfMode, setTheme, destroy }`. | P0 |
+| GAL-5 | **Public API**: `createGalaxy(canvas, opts)` → `{ setState, setStage, attachAnalyser, flare, addSatellite, removeSatellite, pulseArc, setPerfMode, setTheme, destroy }`. | P0 |
 | GAL-6 | **Performance mode**: automatic (FPS below 45 for 3s) and manual. Covers pixel ratio, noise detail and particle count. `prefers-reduced-motion` is honoured. | P0 |
 | GAL-7 | The **Constellation**: sub-agents orbit as satellites, each with an accent colour taken from the agent's manifest. They light up while working. | P1 |
 | GAL-8 | **Energy arcs**: when a tool runs, an arc goes from the orb to the tool's chip in the UI. | P1 |
@@ -356,7 +356,7 @@ The private build kept every key in a hosted secrets manager. **That is exactly 
 
 | ID | Requirement | Pri |
 |---|---|---|
-| SUR-1 | **Web app** (served by the core at `localhost:7777`): Galaxy, subtitle overlay, Ask bar (⌘K), threaded chat view, activity panel with "Needs you / Alerts / Activity" tiers, settings (General, Voice, Connectors, Agents, Privacy), confirmation card for pending actions. | P0 |
+| SUR-1 | **Web app** (served by the core at `localhost:7777`): Galaxy, subtitle overlay, Ask bar (⌘K), threaded chat view, activity panel with "Needs you / Alerts / Activity" tiers, settings (General, Voice, Connectors, Agents, Privacy), confirmation card for pending actions. The conversation sits in a left sidebar with a thread list (titles, search, rename, soft delete with undo); the orb owns the stage, and a workspace opens over it (Settings first) while the orb docks small. ⌘K is the Ask bar; ⌘⇧K the thread list; ⌘\ hides the sidebar. | P0 |
 | SUR-2 | **Desktop app (Tauri v2)** for macOS: bundles or launches the core; grants mic permission (`NSMicrophoneUsageDescription`); sends OAuth and pop-ups to the system browser; shows a splash orb until the core is healthy; menu-bar item; global push-to-talk hotkey. Signed and notarized. | P0 (unsigned dev build) / P1 (signed) |
 | SUR-3a | **Linux is a Phase 0 platform**, in the form self-hosters actually use: `trillion run` serves the web UI, which they open in a browser. No desktop shell required. CI runs the full suite on Ubuntu from the first commit, `trillion doctor` covers Linux audio (PipeWire/PulseAudio) and the Secret Service keychain, and the encrypted-file secret store (SEC-2) covers headless machines. | P0 |
 | SUR-3b | **Linux desktop build** (Tauri AppImage + `.deb`). | P1 |

@@ -7,20 +7,27 @@
   </head>
   <body>
     <canvas id="galaxy" aria-hidden="true"></canvas>
-    <header class="top">
-      <div class="brand">
-        <button type="button" id="open-settings" aria-haspopup="dialog" aria-label="Settings" hidden></button>
-        <strong>Trillion</strong>
+    <aside class="sidebar" id="sidebar" aria-label="Conversation">
+      <header class="side-head">
+        <button type="button" class="icon-btn" id="hide-sidebar" aria-label="Hide sidebar"></button>
+        <strong class="side-name" id="agent-name">Trillion</strong>
         <span class="status" id="status" role="status" aria-live="polite">Connecting</span>
-      </div>
-      <div class="top-right">
+        <span class="side-grow"></span>
+        <button type="button" class="icon-btn" id="history" aria-label="Past conversations" aria-expanded="false" aria-controls="threads"></button>
+        <button type="button" class="icon-btn" id="new" aria-label="New conversation" title="New conversation" hidden></button>
+        <button type="button" class="icon-btn" id="open-settings" aria-label="Settings" hidden></button>
+      </header>
+      <div class="side-title">
+        <button type="button" class="thread-switch" id="thread-switch" aria-haspopup="listbox" aria-expanded="false">
+          <span id="thread-title">New conversation</span>
+        </button>
         <button type="button" class="usage-pill" id="usage" hidden></button>
-        <button type="button" class="model" id="new" hidden>New conversation</button>
       </div>
-    </header>
-    <main class="stage">
-      <div class="banner" id="banner" role="alert" hidden></div>
-      <section class="transcript" id="transcript" role="log" aria-label="Conversation" aria-live="polite" tabindex="0"></section>
+      <div class="side-body">
+        <div class="banner" id="banner" role="alert" hidden></div>
+        <section class="transcript" id="transcript" role="log" aria-label="Messages" aria-live="polite" tabindex="0"></section>
+        <div class="threads" id="threads" hidden></div>
+      </div>
       <div class="choices" id="choices" role="group" aria-label="Quick replies" hidden></div>
       <form class="ask" id="ask">
         <label class="visually-hidden" for="input">Message</label>
@@ -30,8 +37,19 @@
         <button type="button" id="stop" hidden>Stop</button>
       </form>
       <p class="foot" id="foot"></p>
-    </main>
-    <dialog id="settings-panel" class="panel"></dialog>
+      <div class="side-resize" id="side-resize" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-label="Resize sidebar" tabindex="0"></div>
+    </aside>
+    <div class="visually-hidden" id="announce" role="status" aria-live="polite"></div>
+    <button type="button" class="icon-btn show-sidebar" id="show-sidebar" aria-label="Show sidebar" hidden></button>
+    <div class="captions" id="captions" aria-hidden="true" hidden></div>
+    <section class="workspace" id="workspace" role="region" aria-labelledby="workspace-title" hidden>
+      <header class="workspace-bar">
+        <h2 id="workspace-title"></h2>
+        <button type="button" class="icon-btn" id="workspace-close" aria-label="Close" title="Close (Esc)"></button>
+      </header>
+      <div class="workspace-body" id="workspace-body"></div>
+    </section>
+    <button type="button" class="orb-dock" id="orb-dock" aria-label="Close and return to the orb" hidden></button>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

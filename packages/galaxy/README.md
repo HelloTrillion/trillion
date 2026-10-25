@@ -41,10 +41,13 @@ const detachVoice = galaxy.attachAnalyser(playbackGainNode, 'playback');
 galaxy.setState('speaking');
 
 galaxy.flare();           // a brief surge of light
+galaxy.setStage({ x: 800, y: 300, size: 240 }); // the orb's centre and diameter in CSS px; it glides there
 galaxy.setTheme('light');
 galaxy.setPerfMode('on');
 galaxy.destroy();         // stops the loop and frees GPU resources
 ```
+
+`setStage(rect, { animate })` places the orb on the canvas by its centre and diameter (CSS pixels from the top left), and it keeps every state and reaction at that size; `animate: false` jumps, for a window being resized. `defaultRect(w, h)` is where it sits without one. `StageRect` is `{ x, y, size }`.
 
 `attachAnalyser` only taps the node: it never changes what is heard. When no playback analyser is attached, speaking falls back to a gentle synthetic pulse so the orb never looks dead.
 

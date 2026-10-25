@@ -13,7 +13,7 @@ from tests.api.test_drafts import judging
 from tests.api.test_listening import hearing, speak
 from tests.api.test_session import Gated, Page, idle
 from tests.api.test_session_notices import voiced
-from tests.brain.fakes import say, use
+from tests.brain.fakes import is_naming, say, use
 from tests.voice.audio import room, tone
 from tests.voice.fakes import FakeSTT
 from tests.voice.test_speaker import FakeVoice
@@ -422,6 +422,10 @@ class Writing(Gated):
     """Writes `ANSWER` and never finishes: the reply is still streaming."""
 
     async def stream(self, **kw: Any) -> AsyncIterator[Any]:
+        if is_naming(kw["system"]):  # naming is not a turn
+            async for ev in super().stream(**kw):
+                yield ev
+            return
         self.running += 1
         yield TextDelta(text=ANSWER)
         await asyncio.sleep(30)

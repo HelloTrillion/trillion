@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.brain.fakes import ScriptedProvider, say, use
+from tests.brain.fakes import ScriptedProvider, is_naming, say, use
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import Session
 from trillion.brain.types import ModelEvent
@@ -32,6 +32,10 @@ class Gated(ScriptedProvider):
         return self.gates[call]
 
     async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
+        if is_naming(kw["system"]):  # naming is not a turn: no gate, no count
+            async for ev in super().stream(**kw):
+                yield ev
+            return
         self.running += 1
         self.most_at_once = max(self.most_at_once, self.running)
         try:

@@ -63,7 +63,8 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   let busy = false;
 
   const form = el('form', 'settings');
-  form.method = 'dialog';
+  // Enter in a field never submits; the buttons do the work.
+  form.addEventListener('submit', (ev) => ev.preventDefault());
   const title = el('h2', '', 'Her voice');
   title.id = 'speech-title';
   dialog.setAttribute('aria-labelledby', title.id);
@@ -124,7 +125,7 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   const actions = el('div', 'settings-actions');
   const save = el('button', 'approve', 'Save');
   save.type = 'button';
-  const close = el('button', '', 'Close');
+  const close = el('button', 'settings-close', 'Close');
   close.type = 'button';
   actions.append(save, close);
   form.append(title, intro, choices, keyRow, urlRow, voiceRow, status, actions);

@@ -7,12 +7,15 @@ import { approach, stepParams } from './easing';
 import { Landscape } from './landscape/landscape';
 import { Orb } from './orb/orb';
 import { type PerfMode, PerfGovernor, motionScale, qualityFor } from './perf';
+import { ORB_DISTANCE, ORB_FOV, type StageRect, defaultRect, placeOrb, stepStage } from './stage';
 import { ORB_STATES, displayedState, type OrbParams, type OrbStateName } from './states';
 
 export { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS, displayedState } from './states';
 export type { OrbParams, OrbStateName } from './states';
 export type { AnalyserRole, Levels } from './audio/levels';
 export type { PerfMode } from './perf';
+export { defaultRect } from './stage';
+export type { StageRect } from './stage';
 
 export type Theme = 'dark' | 'light';
 
@@ -58,6 +61,10 @@ export interface Galaxy {
   pulseArc(targetId: string): void;
   setPerfMode(mode: PerfMode): void;
   setTheme(theme: Theme): void;
+  /** Place the orb: centre and diameter in CSS pixels. Eases there unless reduced
+   * motion is on or `animate` is false. Without a call it stays centred.
+   * Ignored unless x, y and size are all finite. */
+  setStage(rect: StageRect, opts?: { animate?: boolean }): void;
   destroy(): void;
 }
 
@@ -67,8 +74,8 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   const renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.autoClear = false;
   const orbScene = new Scene();
-  const orbCamera = new PerspectiveCamera(45, 1, 0.1, 100);
-  orbCamera.position.set(0, 0, 4.2);
+  const orbCamera = new PerspectiveCamera(ORB_FOV, 1, 0.1, 100);
+  orbCamera.position.set(0, 0, ORB_DISTANCE);
 
   const governor = new PerfGovernor(opts.perfMode ?? 'auto');
   const media = typeof matchMedia === 'function'
@@ -104,6 +111,11 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   let animClock = 0;
   let raf = 0;
   let destroyed = false;
+  // Null until the host calls setStage: the orb stays centred as before.
+  let stageTarget: StageRect | null = null;
+  let stage: StageRect | null = null;
+  let stageJump = false;
+  let stageDirty = false;
 
   const resize = (): void => {
     const w = canvas.clientWidth || 1;
@@ -113,6 +125,9 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     // Keep the orb the same share of the short side on portrait screens.
     orbCamera.zoom = Math.min(1, w / h);
     orbCamera.updateProjectionMatrix();
+    // Once placed, placeOrb owns the orb camera's zoom and lens shift.
+    if (stage) placeOrb(orbCamera, stage, w, h);
+    stageDirty = true;
     landscape.setAspect(w / h);
   };
   const observer = new ResizeObserver(resize);
@@ -183,6 +198,17 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
       pointScale: renderer.domElement.height / 2,
     });
 
+    if (stageTarget) {
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      // The first move glides from where the orb already is: centred.
+      const next = stepStage(stage ?? defaultRect(w, h), stageTarget, dt, stageJump || reduced);
+      if (next !== stage || stageDirty) placeOrb(orbCamera, next, w, h);
+      stage = next;
+      stageJump = false;
+      stageDirty = false;
+    }
+
     renderer.clear();
     landscape.render(renderer);
     renderer.clearDepth();
@@ -225,6 +251,14 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
       theme = next;
       landscape.setTheme(next === 'light');
       orb.setTheme(next === 'light');
+    },
+    setStage(rect, stageOpts) {
+      if (destroyed) return;
+      // A NaN or infinite value would blank the orb; keep the last good place.
+      if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y) || !Number.isFinite(rect.size)) return;
+      stageTarget = { x: rect.x, y: rect.y, size: rect.size };
+      if (stageOpts?.animate === false) stageJump = true;
+      stageDirty = true;
     },
     destroy() {
       if (destroyed) return;

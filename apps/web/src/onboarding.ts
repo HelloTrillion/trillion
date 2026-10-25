@@ -261,7 +261,7 @@ const after = (rung: Rung): Rung => LADDER[Math.min(LADDER.indexOf(rung) + 1, LA
 function finish(o: Onboarding, ready: Ready): Onboarding {
   return ready.model !== null
     ? add(o, { step: 'done', greet: true }, her('That was the last scripted line.'))
-    : add(o, { step: 'done' }, her("Pick a model when you're ready (top right) and I'll stop reading from a script."));
+    : add(o, { step: 'done' }, her("Pick a model when you're ready (in Settings) and I'll stop reading from a script."));
 }
 
 /** A click or a typed answer on the ladder or the example card. */
