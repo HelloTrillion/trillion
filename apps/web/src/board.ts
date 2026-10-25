@@ -3,9 +3,20 @@
  * that follows the workspace's width. Everything she put there may quote a page she read
  * (SPN-5), so every piece of text is set with textContent and nothing is ever parsed as HTML.
  */
-import { type ChartKind, type ChartSpec, type ChartLayout, formatValue, layoutChart } from './chart';
+import {
+  type Dispose,
+  cartesian,
+  chartSpecOf,
+  donut,
+  drawNote,
+  drawTable,
+  drawTimeline,
+  h,
+  nothing,
+  records,
+  str,
+} from './blocks';
 import { icon } from './icons';
-import { hourLabel } from './showcase';
 import { type Board, type Widget, type WidgetSize } from './view';
 
 // ── Pure helpers ────────────────────────────────────────────────────────
@@ -85,6 +96,22 @@ export function boardTitle(board: Board | null): string {
   return board?.title.trim() || 'Board';
 }
 
+// Pure helpers that moved into blocks.ts with the drawing they serve, still reachable from here.
+export {
+  type NoteBlock,
+  type PlacedEvent,
+  type Run,
+  type TimelineLayout,
+  chartSpecOf,
+  chartSummary,
+  layoutTimeline,
+  minutesOf,
+  nearestIndex,
+  parseNote,
+  pointWords,
+  runs,
+} from './blocks';
+
 export type Tone = 'up' | 'down' | 'neutral';
 
 /** A stat's tone: the one she gave, else read from the sign of its delta. */
@@ -96,210 +123,7 @@ export function toneOf(tone: unknown, delta: string): Tone {
   return 'neutral';
 }
 
-export interface Run {
-  readonly text: string;
-  readonly bold: boolean;
-}
 
-export type NoteBlock =
-  | { readonly kind: 'paragraph'; readonly lines: readonly (readonly Run[])[] }
-  | { readonly kind: 'list'; readonly items: readonly (readonly Run[])[] };
-
-/** A line's `**bold**` parts; an unmatched pair of stars stays as written. */
-export function runs(line: string): Run[] {
-  const out: Run[] = [];
-  let last = 0;
-  for (const m of line.matchAll(/\*\*(.+?)\*\*/g)) {
-    if (m.index > last) out.push({ text: line.slice(last, m.index), bold: false });
-    out.push({ text: m[1] ?? '', bold: true });
-    last = m.index + m[0].length;
-  }
-  if (last < line.length) out.push({ text: line.slice(last), bold: false });
-  return out;
-}
-
-/** A note's text as blocks: paragraphs split by blank lines, `- ` lines as bullets, `**bold**`. */
-export function parseNote(text: string): NoteBlock[] {
-  const blocks: NoteBlock[] = [];
-  for (const chunk of text.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/)) {
-    let lines: Run[][] = [];
-    let items: Run[][] = [];
-    const flushLines = (): void => {
-      if (lines.length) blocks.push({ kind: 'paragraph', lines });
-      lines = [];
-    };
-    const flushItems = (): void => {
-      if (items.length) blocks.push({ kind: 'list', items });
-      items = [];
-    };
-    for (const raw of chunk.split('\n')) {
-      const line = raw.trim();
-      if (!line) continue;
-      const bullet = /^- +(.*)$/.exec(line);
-      if (bullet) {
-        flushLines();
-        items.push(runs(bullet[1] ?? ''));
-      } else {
-        flushItems();
-        lines.push(runs(line));
-      }
-    }
-    flushLines();
-    flushItems();
-  }
-  return blocks;
-}
-
-/** "09:30" as minutes after midnight; null for anything else. */
-export function minutesOf(hhmm: unknown): number | null {
-  if (typeof hhmm !== 'string') return null;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
-  if (!m) return null;
-  const h = Number(m[1]);
-  const min = Number(m[2]);
-  return h < 24 && min < 60 ? h * 60 + min : null;
-}
-
-export interface PlacedEvent {
-  /** Position in the events she gave. */
-  readonly index: number;
-  readonly start: number;
-  readonly end: number;
-  /** Rows, so overlapping events never sit on each other. */
-  readonly lane: number;
-  /** Percent of the track. */
-  readonly left: number;
-  readonly width: number;
-}
-
-export interface TimelineLayout {
-  readonly from: number;
-  readonly to: number;
-  /** Hours (0-23) to label along the track. */
-  readonly hours: readonly number[];
-  readonly lanes: number;
-  readonly items: readonly PlacedEvent[];
-}
-
-/** An event with no end, or one that ends before it starts, is shown half an hour long. */
-const POINT_MINUTES = 30;
-
-/** Events on one day along a track from the hour before the first to the hour after the last. */
-export function layoutTimeline(events: readonly { readonly start: unknown; readonly end?: unknown }[]): TimelineLayout {
-  const timed = events.flatMap((e, index) => {
-    const start = minutesOf(e.start);
-    if (start === null) return [];
-    const end = minutesOf(e.end);
-    return [{ index, start, end: end !== null && end > start ? end : Math.min(start + POINT_MINUTES, 1440) }];
-  });
-  if (timed.length === 0) return { from: 0, to: 0, hours: [], lanes: 0, items: [] };
-  const from = Math.floor(Math.min(...timed.map((e) => e.start)) / 60) * 60;
-  const to = Math.max(from + 60, Math.ceil(Math.max(...timed.map((e) => e.end)) / 60) * 60);
-  const span = to - from;
-  const laneEnds: number[] = [];
-  const items = [...timed]
-    .sort((a, b) => a.start - b.start || a.index - b.index)
-    .map((e) => {
-      let lane = laneEnds.findIndex((end) => end <= e.start);
-      if (lane < 0) lane = laneEnds.push(e.end) - 1;
-      else laneEnds[lane] = e.end;
-      return { ...e, lane, left: ((e.start - from) / span) * 100, width: ((e.end - e.start) / span) * 100 };
-    })
-    .sort((a, b) => a.index - b.index);
-  const step = Math.max(1, Math.ceil(span / 60 / 6));
-  const hours: number[] = [];
-  for (let m = from; m < to; m += step * 60) hours.push(m / 60);
-  return { from, to, hours, lanes: laneEnds.length, items };
-}
-
-/** The index of the x nearest to `x`; -1 when there are none. */
-export function nearestIndex(xs: readonly number[], x: number): number {
-  let best = -1;
-  let gap = Infinity;
-  xs.forEach((v, i) => {
-    const d = Math.abs(v - x);
-    if (d < gap) {
-      gap = d;
-      best = i;
-    }
-  });
-  return best;
-}
-
-const KINDS: readonly ChartKind[] = ['line', 'bar', 'area', 'donut'];
-const KIND_WORDS: Readonly<Record<ChartKind, string>> = { line: 'Line chart', bar: 'Bar chart', area: 'Area chart', donut: 'Donut chart' };
-
-const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
-const records = (v: unknown): Record<string, unknown>[] =>
-  Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)) : [];
-
-/** A chart widget's fields as a spec for the chart maths. */
-export function chartSpecOf(w: Readonly<Record<string, unknown>>): ChartSpec {
-  const kind = KINDS.find((k) => k === w['kind']) ?? 'line';
-  const x = Array.isArray(w['x']) ? (w['x'] as unknown[]).map(str) : [];
-  const series = records(w['series']).map((s) => ({
-    name: str(s['name']),
-    values: Array.isArray(s['values']) ? (s['values'] as unknown[]).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)) : [],
-  }));
-  const unit = str(w['unit']);
-  return unit ? { kind, x, series, unit } : { kind, x, series };
-}
-
-/** What a chart shows, in words, for a screen reader. */
-export function chartSummary(spec: ChartSpec, title: string): string {
-  const head = title ? `${KIND_WORDS[spec.kind]}, ${title}` : KIND_WORDS[spec.kind];
-  const values = spec.series.filter((sr) => sr.values.length > 0);
-  if (values.length === 0) return `${head}: no data.`;
-  const first = spec.x[0];
-  const last = spec.x[spec.x.length - 1];
-  const range = first && last && spec.x.length > 1 ? `, ${first} to ${last}` : '';
-  const each = values.map((sr) => {
-    const v = (n: number): string => formatValue(n, spec.unit, 2);
-    const end = sr.values[sr.values.length - 1] ?? 0;
-    return `${sr.name || 'Values'}: low ${v(Math.min(...sr.values))}, high ${v(Math.max(...sr.values))}, last ${v(end)}`;
-  });
-  return `${head}${range}. ${each.join('. ')}.`;
-}
-
-/** One point of a chart in words, for a screen reader moving through it with the arrow keys. */
-export function pointWords(spec: ChartSpec, i: number): string {
-  const at = spec.x[i] ? `${spec.x[i]}: ` : '';
-  return at + spec.series.slice(0, 5).map((sr) => `${sr.name || 'Value'} ${formatValue(sr.values[i] ?? 0, spec.unit, 2)}`).join(', ');
-}
-
-// ── DOM ─────────────────────────────────────────────────────────────────
-
-function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
-  const el = document.createElement(tag);
-  if (cls) el.className = cls;
-  if (text !== undefined) el.textContent = text;
-  return el;
-}
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
-function s(tag: string, attrs: Record<string, string | number> = {}, text?: string): SVGElement {
-  const el = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
-  if (text !== undefined) el.textContent = text;
-  return el;
-}
-
-/** The class for chart colour 0-4; anything else (a donut's "Other") is neutral. */
-const colorClass = (c: number): string => (c >= 0 && c < 5 ? `bd-c${c}` : 'bd-cx');
-
-function swatch(color: number): HTMLElement {
-  const sw = h('i', `bd-sw ${colorClass(color)}`);
-  sw.setAttribute('aria-hidden', 'true');
-  return sw;
-}
-
-function runsInto(parent: HTMLElement, rs: readonly Run[]): void {
-  for (const r of rs) parent.append(r.bold ? h('strong', '', r.text) : document.createTextNode(r.text));
-}
-
-/** Something to stop when the widget leaves the board. */
-type Dispose = () => void;
-const nothing: Dispose = () => {};
 
 // Stat ──
 
@@ -323,7 +147,6 @@ function stat(w: Widget, body: HTMLElement): Dispose {
 
 // Chart ──
 
-const DONUT = 168;
 
 function chart(w: Widget, body: HTMLElement): Dispose {
   const spec = chartSpecOf(w);
@@ -331,212 +154,6 @@ function chart(w: Widget, body: HTMLElement): Dispose {
   return spec.kind === 'donut' ? donut(spec, title, body) : cartesian(spec, title, chartHeight(w.size), body);
 }
 
-function legendOf(entries: ChartLayout['legend'], withValues: boolean): HTMLUListElement {
-  const ul = h('ul', withValues ? 'bd-legend bd-legend-values' : 'bd-legend');
-  for (const e of entries) {
-    const li = h('li');
-    li.append(swatch(e.color), h('span', 'bd-legend-name', e.name || '–'));
-    if (withValues) {
-      li.append(h('span', 'bd-legend-value', e.value ?? ''));
-      if (e.percent !== undefined) li.append(h('span', 'bd-legend-pct', `${e.percent}%`));
-    }
-    ul.append(li);
-  }
-  return ul;
-}
-
-function cartesian(spec: ChartSpec, title: string, least: number, body: HTMLElement): Dispose {
-  const box = h('div', 'bd-plot');
-  // It fills what its card has to spare, never less than this; the drawing fills it exactly.
-  box.style.minHeight = `${least}px`;
-  box.tabIndex = 0;
-  box.setAttribute('role', 'img');
-  box.setAttribute('aria-label', chartSummary(spec, title));
-  const svg = s('svg', { class: 'bd-svg', 'aria-hidden': 'true' });
-  const tip = h('div', 'bd-tip');
-  tip.hidden = true;
-  box.append(svg, tip);
-  // What the arrow keys point at, read out (the chart itself is one image to a screen reader).
-  const said = h('p', 'visually-hidden');
-  said.setAttribute('aria-live', 'polite');
-  body.append(box, said);
-  if (spec.series.length > 1) body.append(legendOf(layoutChart(spec, 1, 1).legend, false));
-
-  let L: ChartLayout | null = null;
-  let xs: number[] = [];
-  let at = -1;
-  const guide = s('line', { class: 'bd-guide' });
-  const dots = s('g', { class: 'bd-dots' });
-
-  function paint(width: number, height: number): void {
-    L = layoutChart(spec, width, height);
-    // Sized by CSS to the box; the view box is the box measured, so text stays its real size.
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.replaceChildren();
-    at = -1;
-    tip.hidden = true;
-    if (L.empty) {
-      svg.append(s('text', { class: 'bd-axis', x: width / 2, y: height / 2, 'text-anchor': 'middle' }, 'No data yet'));
-      xs = [];
-      return;
-    }
-    const { plot } = L;
-    for (const t of L.yTicks) {
-      svg.append(s('line', { class: t.value === 0 ? 'bd-gridline bd-zero' : 'bd-gridline', x1: plot.left, x2: plot.right, y1: t.y, y2: t.y }));
-      svg.append(s('text', { class: 'bd-axis', x: plot.left - 8, y: t.y, dy: '0.32em', 'text-anchor': 'end' }, t.label));
-    }
-    for (const l of L.xLabels) {
-      svg.append(s('text', { class: 'bd-axis', x: l.x, y: height - 5, 'text-anchor': l.anchor }, l.label));
-    }
-    for (const r of L.rects) {
-      svg.append(
-        s('rect', {
-          class: `bd-bar ${colorClass(r.series)}`,
-          'data-i': r.index,
-          x: r.x,
-          y: r.y,
-          width: Math.max(0, r.width - 1),
-          height: r.height,
-          rx: Math.min(3, r.width / 3),
-        }),
-      );
-    }
-    for (const sr of L.series) if (sr.area) svg.append(s('path', { class: `bd-area ${colorClass(sr.color)}`, d: sr.area }));
-    for (const sr of L.series) {
-      svg.append(s('path', { class: `bd-line ${colorClass(sr.color)}`, d: sr.line }));
-      // Few points, or one alone, are easier to read as dots.
-      if (sr.points.length <= 12) {
-        for (const p of sr.points) svg.append(s('circle', { class: `bd-point ${colorClass(sr.color)}`, cx: p.x, cy: p.y, r: 2.5 }));
-      }
-    }
-    guide.setAttribute('y1', String(plot.top));
-    guide.setAttribute('y2', String(plot.bottom));
-    svg.append(guide, dots);
-    if (L.series[0]) xs = L.series[0].points.map((p) => p.x);
-    else {
-      const count = L.rects.filter((r) => r.series === 0).length;
-      const band = (plot.right - plot.left) / Math.max(1, count);
-      xs = Array.from({ length: count }, (_, i) => plot.left + band * (i + 0.5));
-    }
-  }
-
-  function point(i: number, speak = false): void {
-    if (!L || L.empty || i < 0 || i >= xs.length) {
-      hide();
-      return;
-    }
-    at = i;
-    const x = xs[i] ?? 0;
-    guide.setAttribute('x1', String(x));
-    guide.setAttribute('x2', String(x));
-    box.dataset['hover'] = '';
-    dots.replaceChildren();
-    for (const sr of L.series) {
-      const p = sr.points[i];
-      if (p) dots.append(s('circle', { class: `bd-dot ${colorClass(sr.color)}`, cx: p.x, cy: p.y, r: 4 }));
-    }
-    for (const r of svg.querySelectorAll<SVGRectElement>('.bd-bar')) r.toggleAttribute('data-hot', r.dataset['i'] === String(i));
-    const head = spec.x[i] ?? '';
-    tip.replaceChildren();
-    if (head) tip.append(h('p', 'bd-tip-head', head));
-    spec.series.slice(0, 5).forEach((sr, k) => {
-      const row = h('p', 'bd-tip-row');
-      row.append(swatch(k), h('span', 'bd-tip-name', sr.name), h('strong', '', formatValue(sr.values[i] ?? 0, spec.unit, 2)));
-      tip.append(row);
-    });
-    tip.hidden = false;
-    if (speak) said.textContent = pointWords(spec, i);
-    const tw = tip.offsetWidth;
-    // Beside the guide, on whichever side has room.
-    const left = x + 12 + tw <= L.width ? x + 12 : Math.max(0, x - 12 - tw);
-    tip.style.left = `${left}px`;
-    tip.style.top = `${L.plot.top}px`;
-  }
-
-  function hide(): void {
-    at = -1;
-    tip.hidden = true;
-    delete box.dataset['hover'];
-    dots.replaceChildren();
-    for (const r of svg.querySelectorAll('.bd-bar[data-hot]')) r.removeAttribute('data-hot');
-  }
-
-  box.addEventListener('pointermove', (ev) => {
-    const r = svg.getBoundingClientRect();
-    point(nearestIndex(xs, ev.clientX - r.left));
-  });
-  box.addEventListener('pointerleave', hide);
-  box.addEventListener('blur', hide);
-  box.addEventListener('keydown', (ev) => {
-    const step = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
-    if (ev.key === 'Home' || ev.key === 'End') {
-      ev.preventDefault();
-      point(ev.key === 'Home' ? 0 : xs.length - 1, true);
-    } else if (step) {
-      ev.preventDefault();
-      point(at < 0 ? (step > 0 ? 0 : xs.length - 1) : Math.min(xs.length - 1, Math.max(0, at + step)), true);
-    }
-  });
-
-  // Drawn at its real size, so text stays its real size; redrawn when the card resizes.
-  let last = '';
-  const ro = new ResizeObserver(([entry]) => {
-    if (!entry) return;
-    const width = Math.round(entry.contentRect.width);
-    const height = Math.round(entry.contentRect.height);
-    if (width < 2 || height < 2 || `${width}x${height}` === last) return;
-    last = `${width}x${height}`;
-    paint(width, height);
-  });
-  ro.observe(box);
-  return () => ro.disconnect();
-}
-
-function donut(spec: ChartSpec, title: string, body: HTMLElement): Dispose {
-  const L = layoutChart(spec, DONUT, DONUT);
-  const wrap = h('div', 'bd-donut');
-  const fig = h('div', 'bd-donut-fig');
-  fig.setAttribute('role', 'img');
-  const words = L.legend.map((e) => `${e.name} ${e.value ?? ''} (${e.percent ?? 0}%)`).join(', ');
-  fig.setAttribute('aria-label', `${chartSummary(spec, title).replace(/\.$/, '')}${words ? `: ${words}` : ''}. Total ${L.donut?.total ?? ''}.`);
-  // Drawn once at its least size; the view box scales it to its cell, up to a cap (CSS).
-  const svg = s('svg', { class: 'bd-svg', viewBox: `0 0 ${DONUT} ${DONUT}`, 'aria-hidden': 'true' });
-  fig.append(svg);
-  const d = L.donut;
-  if (L.empty || !d) {
-    if (d) svg.append(s('path', { class: 'bd-ring-empty', d: d.ring, 'fill-rule': 'evenodd' }));
-  }
-  const slices = L.arcs.map((a) => {
-    const p = s('path', { class: `bd-slice ${colorClass(a.color)}`, d: a.d, 'fill-rule': 'evenodd' });
-    svg.append(p);
-    return p;
-  });
-  const big = s('text', { class: 'bd-donut-total', x: DONUT / 2, y: DONUT / 2, 'text-anchor': 'middle' }, d?.total ?? '');
-  const small = s('text', { class: 'bd-donut-label', x: DONUT / 2, y: DONUT / 2 + 18, 'text-anchor': 'middle' }, 'Total');
-  svg.append(big, small);
-  const legend = legendOf(L.legend, true);
-  wrap.append(fig, legend);
-  body.append(wrap);
-
-  // Pointing at a slice or its legend row lights both, and the centre names it.
-  const rows = [...legend.children] as HTMLElement[];
-  const light = (k: number): void => {
-    slices.forEach((p, i) => p.toggleAttribute('data-dim', k >= 0 && i !== k));
-    rows.forEach((r, i) => r.toggleAttribute('data-hot', i === k));
-    const e = L.legend[k];
-    big.textContent = e ? (e.value ?? '') : (d?.total ?? '');
-    small.textContent = e ? `${e.name} · ${e.percent ?? 0}%` : 'Total';
-  };
-  slices.forEach((p, i) => {
-    p.addEventListener('pointerenter', () => light(i));
-    p.addEventListener('pointerleave', () => light(-1));
-  });
-  rows.forEach((r, i) => {
-    r.addEventListener('pointerenter', () => light(i));
-    r.addEventListener('pointerleave', () => light(-1));
-  });
-  return nothing;
-}
 
 // List ──
 
@@ -567,108 +184,21 @@ function list(w: Widget, body: HTMLElement): Dispose {
 // Table ──
 
 function table(w: Widget, body: HTMLElement): Dispose {
-  const scroll = h('div', 'bd-table-wrap');
-  scroll.tabIndex = 0;
-  const t = h('table', 'bd-table');
-  const columns = Array.isArray(w['columns']) ? (w['columns'] as unknown[]).map(str) : [];
-  const rows = Array.isArray(w['rows']) ? (w['rows'] as unknown[]).filter(Array.isArray) : [];
-  // A column of numbers lines up on the right.
-  const numeric = columns.map((_, c) => rows.length > 0 && rows.every((r) => typeof (r as unknown[])[c] === 'number'));
-  const head = h('tr');
-  columns.forEach((c, i) => {
-    const th = h('th', numeric[i] ? 'bd-num' : '', c);
-    th.scope = 'col';
-    head.append(th);
-  });
-  const thead = h('thead');
-  thead.append(head);
-  const tbody = h('tbody');
-  for (const r of rows) {
-    const tr = h('tr');
-    columns.forEach((_, i) => {
-      const v = (r as unknown[])[i];
-      tr.append(h('td', numeric[i] ? 'bd-num' : '', typeof v === 'number' ? v.toLocaleString() : str(v)));
-    });
-    tbody.append(tr);
-  }
-  t.append(thead, tbody);
-  scroll.append(t);
-  body.append(scroll);
+  body.append(drawTable(w['columns'], w['rows']));
   return nothing;
 }
 
 // Note ──
 
 function note(w: Widget, body: HTMLElement): Dispose {
-  const box = h('div', 'bd-note');
-  for (const b of parseNote(str(w['text']))) {
-    if (b.kind === 'paragraph') {
-      const p = h('p');
-      b.lines.forEach((line, i) => {
-        if (i > 0) p.append(h('br'));
-        runsInto(p, line);
-      });
-      box.append(p);
-    } else {
-      const ul = h('ul');
-      for (const item of b.items) {
-        const li = h('li');
-        runsInto(li, item);
-        ul.append(li);
-      }
-      box.append(ul);
-    }
-  }
-  body.append(box);
+  body.append(drawNote(str(w['text'])));
   return nothing;
 }
 
 // Timeline ──
 
 function timeline(w: Widget, body: HTMLElement): Dispose {
-  const events = records(w['events']);
-  const T = layoutTimeline(events.map((e) => ({ start: e['start'], end: e['end'] })));
-  const when = (e: Record<string, unknown>): string => {
-    const end = str(e['end']);
-    return end ? `${str(e['start'])}–${end}` : str(e['start']);
-  };
-
-  // A track for a card wide enough to read one; the agenda beneath says the same in rows.
-  const track = h('div', 'bd-track');
-  track.setAttribute('aria-hidden', 'true');
-  track.style.setProperty('--lanes', String(Math.max(1, T.lanes)));
-  const span = T.to - T.from;
-  for (const hr of T.hours) {
-    const tick = h('span', 'bd-hour', hourLabel(hr));
-    tick.style.left = `${((hr * 60 - T.from) / span) * 100}%`;
-    track.append(tick);
-  }
-  for (const it of T.items) {
-    const e = events[it.index];
-    if (!e) continue;
-    const b = h('div', `bd-event bd-c${it.index % 5}`);
-    // Never past the track's right edge, even at its smallest width.
-    b.style.width = `max(${it.width}%, 6px)`;
-    b.style.left = `min(${it.left}%, calc(100% - max(${it.width}%, 6px)))`;
-    b.style.setProperty('--lane', String(it.lane));
-    b.append(h('strong', '', str(e['title'])));
-    b.title = `${str(e['title'])} · ${when(e)}`;
-    track.append(b);
-  }
-  if (T.items.length) body.append(track);
-
-  const ol = h('ol', 'bd-agenda');
-  events.forEach((e, i) => {
-    const li = h('li');
-    li.append(swatch(i % 5), h('span', 'bd-when', when(e)));
-    const text = h('div', 'bd-item-text');
-    text.append(h('strong', '', str(e['title'])));
-    const meta = str(e['meta']);
-    if (meta) text.append(h('span', 'bd-sub', meta));
-    li.append(text);
-    ol.append(li);
-  });
-  body.append(ol);
+  drawTimeline(w['events'], body);
   return nothing;
 }
 

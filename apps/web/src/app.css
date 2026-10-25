@@ -4525,6 +4525,625 @@ button.connected-danger {
   max-width: 38%;
 }
 
+/* ── Widget kit (blocks.ts): the tokens and blocks every widget is drawn with ── */
+
+/*
+ * One scale for every card, built on the theme's colours, so a widget she makes looks as if it
+ * shipped with the app. She picks the content; these pick the emphasis. Tones carry a fill (dots,
+ * bars, edges), a text colour (words on or beside the fill) and a tint (the panel behind them).
+ */
+:root {
+  /* Type */
+  --w-hero: clamp(30px, 12cqi, 56px);
+  --w-value: 20px;
+  --w-title: 16px;
+  --w-body: 13.5px;
+  --w-label: 12px;
+  --w-meta: 12px;
+
+  /* Spacing */
+  --w-space-1: 4px;
+  --w-space-2: 8px;
+  --w-space-3: 12px;
+  --w-space-4: 16px;
+
+  /* Surfaces inside a card: a soft panel and a hairline. */
+  --w-soft: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  --w-line: color-mix(in srgb, var(--color-text-0) 9%, transparent);
+
+  /* Tones */
+  --w-good-fill: var(--color-accent);
+  --w-good-text: color-mix(in srgb, var(--color-accent) 88%, var(--color-text-0));
+  --w-good-tint: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  --w-bad-fill: var(--color-danger);
+  --w-bad-text: color-mix(in srgb, var(--color-danger) 72%, var(--color-text-0));
+  --w-bad-tint: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  --w-attention-fill: var(--color-amber);
+  --w-attention-text: color-mix(in srgb, var(--color-amber) 85%, var(--color-text-0));
+  --w-attention-tint: color-mix(in srgb, var(--color-amber) 14%, transparent);
+  --w-neutral-fill: var(--color-text-2);
+  --w-neutral-text: var(--color-text-1);
+  --w-neutral-tint: color-mix(in srgb, var(--color-text-0) 6%, transparent);
+
+  /* Avatar tints: the series colours at low strength, their letters at full. */
+  --w-tint-0: color-mix(in srgb, var(--chart-0) 22%, transparent);
+  --w-tint-1: color-mix(in srgb, var(--chart-1) 22%, transparent);
+  --w-tint-2: color-mix(in srgb, var(--chart-2) 22%, transparent);
+  --w-tint-3: color-mix(in srgb, var(--chart-3) 22%, transparent);
+  --w-tint-4: color-mix(in srgb, var(--chart-4) 22%, transparent);
+  --w-ink-0: color-mix(in srgb, var(--chart-0) 80%, var(--color-text-0));
+  --w-ink-1: color-mix(in srgb, var(--chart-1) 80%, var(--color-text-0));
+  --w-ink-2: color-mix(in srgb, var(--chart-2) 80%, var(--color-text-0));
+  --w-ink-3: color-mix(in srgb, var(--chart-3) 80%, var(--color-text-0));
+  --w-ink-4: color-mix(in srgb, var(--chart-4) 80%, var(--color-text-0));
+}
+:root[data-theme='light'] {
+  --w-soft: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+  --w-line: color-mix(in srgb, var(--color-text-0) 10%, transparent);
+  --w-good-text: var(--color-accent);
+  --w-good-tint: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  --w-bad-text: var(--color-danger);
+  --w-bad-tint: color-mix(in srgb, var(--color-danger) 9%, transparent);
+  --w-attention-text: var(--color-amber);
+  --w-attention-tint: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  --w-neutral-tint: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  --w-tint-0: color-mix(in srgb, var(--chart-0) 14%, transparent);
+  --w-tint-1: color-mix(in srgb, var(--chart-1) 14%, transparent);
+  --w-tint-2: color-mix(in srgb, var(--chart-2) 14%, transparent);
+  --w-tint-3: color-mix(in srgb, var(--chart-3) 14%, transparent);
+  --w-tint-4: color-mix(in srgb, var(--chart-4) 14%, transparent);
+  --w-ink-0: var(--chart-0);
+  --w-ink-1: var(--chart-1);
+  --w-ink-2: var(--chart-2);
+  --w-ink-3: var(--chart-3);
+  --w-ink-4: var(--chart-4);
+}
+
+/* A tone sets three colours for whatever wears it. With no tone, data takes the first series colour. */
+.bk-good {
+  --tone: var(--w-good-fill);
+  --tone-text: var(--w-good-text);
+  --tone-tint: var(--w-good-tint);
+}
+.bk-bad {
+  --tone: var(--w-bad-fill);
+  --tone-text: var(--w-bad-text);
+  --tone-tint: var(--w-bad-tint);
+}
+.bk-attention {
+  --tone: var(--w-attention-fill);
+  --tone-text: var(--w-attention-text);
+  --tone-tint: var(--w-attention-tint);
+}
+.bk-neutral {
+  --tone: var(--w-neutral-fill);
+  --tone-text: var(--w-neutral-text);
+  --tone-tint: var(--w-neutral-tint);
+}
+.bk-series {
+  --tone: var(--chart-0);
+  --tone-text: var(--w-ink-0);
+  --tone-tint: var(--w-tint-0);
+}
+
+/* The blocks of one card, top to bottom. The card's own width decides how columns sit. */
+.bk {
+  container: bk / inline-size;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--w-space-3);
+  min-width: 0;
+  font-size: var(--w-body);
+  color: var(--color-text-0);
+}
+.bk p,
+.bk ul,
+.bk dl,
+.bk dd,
+.bk figure,
+.bk blockquote {
+  margin: 0;
+}
+.bk ul {
+  padding: 0;
+  list-style: none;
+}
+/* A note keeps its own rhythm inside a card. */
+.bk .bd-note p,
+.bk .bd-note ul {
+  margin: 0 0 10px;
+}
+.bk .bd-note > :last-child {
+  margin-bottom: 0;
+}
+.bk .bd-note ul {
+  padding-left: 20px;
+  list-style: disc;
+}
+
+.bk-label {
+  font-size: var(--w-label);
+  font-weight: 500;
+  color: var(--color-text-2);
+}
+.bk-meta {
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Value: the hero leads the card; every other value is a quiet figure. */
+.bk-value {
+  display: flex;
+  flex-direction: column;
+  gap: var(--w-space-1);
+  min-width: 0;
+}
+.bk-num {
+  font-size: var(--w-value);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.bk-hero .bk-num {
+  font-size: var(--w-hero);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+.bk-hero {
+  gap: var(--w-space-2);
+}
+.bk-num.bk-good,
+.bk-num.bk-bad,
+.bk-num.bk-attention {
+  color: var(--tone-text);
+}
+.bk-value-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--w-space-1) var(--w-space-2);
+}
+.bk-delta {
+  padding: 2px var(--w-space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--w-meta);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--tone-text);
+  background: var(--tone-tint);
+}
+
+/* Sparkline */
+.bk-spark {
+  height: 36px;
+  min-width: 0;
+}
+.bk-spark-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.bk-spark-line {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.bk-spark-area {
+  fill: var(--tone);
+  fill-opacity: 0.12;
+}
+
+/* Meter: a bar with its percent, or a ring with the percent inside. */
+.bk-meter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bk-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--w-space-2);
+}
+.bk-meter-label {
+  min-width: 0;
+  font-size: var(--w-body);
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.bk-meter-num {
+  flex: none;
+  font-size: var(--w-meta);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.bk-meter-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--w-soft);
+  overflow: hidden;
+}
+.bk-meter-fill {
+  display: block;
+  height: 100%;
+  width: calc(var(--v, 0) * 100%);
+  border-radius: inherit;
+  background: var(--tone);
+  transform-origin: left;
+}
+.bd-new .bk-meter-fill {
+  animation: bd-grow 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both 300ms;
+}
+.bk-meter-ring {
+  display: flex;
+  align-items: center;
+  gap: var(--w-space-3);
+}
+.bk-ring {
+  position: relative;
+  flex: none;
+  width: 64px;
+  height: 64px;
+}
+.bk-ring-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.bk-ring-track,
+.bk-ring-fill {
+  fill: none;
+  stroke-width: 3.2;
+}
+.bk-ring-track {
+  stroke: var(--w-soft);
+}
+.bk-ring-fill {
+  stroke: var(--tone);
+  stroke-linecap: round;
+}
+.bk-ring-num {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Time: what, how soon, and when. */
+.bk-time {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bk-time-label {
+  font-size: var(--w-title);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.bk-time-when {
+  margin-top: 2px;
+  font-size: var(--w-body);
+  font-weight: 500;
+  color: var(--color-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chart and timeline fill what the card has to spare. */
+.bk-chart,
+.bk-timeline {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--w-space-3);
+  min-width: 0;
+}
+.bd-table tbody tr.bk-hl td {
+  background: var(--w-good-tint);
+}
+.bd-table tbody tr.bk-hl td:first-child {
+  font-weight: 600;
+}
+
+/* Rows: who or how it stands on the left, one fact on the right. */
+.bk-rows-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--w-space-1);
+}
+.bk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: var(--w-space-2) 0;
+  border-top: 1px solid var(--w-line);
+}
+.bk-row:first-child {
+  border-top: 0;
+}
+.bk-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-wrap: anywhere;
+}
+.bk-row-title {
+  font-weight: 500;
+}
+.bk-row-detail {
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+}
+.bk-row-trail {
+  flex: none;
+  max-width: 40%;
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.bk-row[data-done] .bk-row-title {
+  color: var(--color-text-2);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-text-2) 60%, transparent);
+}
+.bk-check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--color-text-0) 25%, transparent);
+  color: var(--color-bg-0);
+}
+.bk-row[data-done] .bk-check {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+/* A lead is centred on the title's line, with or without a detail beneath. */
+.bk-row:has(.bk-row-detail) {
+  align-items: flex-start;
+}
+.bk-row:has(.bk-row-detail) > .bk-avatar {
+  margin-top: 1px;
+}
+.bk-row:has(.bk-row-detail) > .bk-dot,
+.bk-row:has(.bk-row-detail) > .bk-check {
+  margin-top: 3px;
+}
+.bk-row:has(.bk-row-detail) > .bk-row-trail,
+.bk-row:has(.bk-row-detail) > .bk-chip {
+  margin-top: 1px;
+}
+
+/* People */
+.bk-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.bk-avatar-md {
+  width: 36px;
+  height: 36px;
+  font-size: 13px;
+}
+.bk-tint-0 { background: var(--w-tint-0); color: var(--w-ink-0); }
+.bk-tint-1 { background: var(--w-tint-1); color: var(--w-ink-1); }
+.bk-tint-2 { background: var(--w-tint-2); color: var(--w-ink-2); }
+.bk-tint-3 { background: var(--w-tint-3); color: var(--w-ink-3); }
+.bk-tint-4 { background: var(--w-tint-4); color: var(--w-ink-4); }
+.bk-person {
+  display: flex;
+  align-items: center;
+  gap: var(--w-space-3);
+  min-width: 0;
+}
+.bk-person-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-wrap: anywhere;
+}
+.bk-person-name {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.bk-person-detail {
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+}
+.bk-people {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.bk-stack {
+  flex: none;
+  display: flex;
+}
+/* Overlapping, each cut out of the one before by a ring of the card's own colour. */
+.bk-stack .bk-avatar {
+  box-shadow: 0 0 0 2px var(--color-bg-1);
+}
+.bk-stack .bk-avatar + .bk-avatar {
+  margin-left: -6px;
+}
+.bk-people-names {
+  min-width: 0;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+
+/* Status: a dot and words. A dot that asks for attention has a soft halo. */
+.bk-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.bk-dot.bk-bad,
+.bk-dot.bk-attention {
+  box-shadow: 0 0 0 3px var(--tone-tint);
+}
+.bk-status {
+  display: flex;
+  align-items: center;
+  gap: var(--w-space-2);
+  overflow-wrap: anywhere;
+}
+
+/* Chips: hairline when neutral, tinted with their tone's own text otherwise. */
+.bk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bk-chip {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--w-line);
+  font-size: var(--w-meta);
+  line-height: 1.35;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.bk-row-chip {
+  flex: none;
+  max-width: 40%;
+}
+.bk-chips:is(.bk-good, .bk-bad, .bk-attention) .bk-chip {
+  border-color: transparent;
+  background: var(--tone-tint);
+  color: var(--tone-text);
+}
+
+/* Text, and a callout: the tone's tint behind its own text, with an edge in its fill. */
+.bk-text {
+  font-size: 14px;
+}
+.bk-callout {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--tone);
+  background: var(--tone-tint);
+  color: var(--tone-text);
+}
+.bk-callout.bk-neutral {
+  color: var(--color-text-0);
+}
+
+/* Quote */
+.bk-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bk-quote-text {
+  padding-left: var(--w-space-3);
+  border-left: 2px solid var(--w-line);
+  font-size: 14.5px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.bk-quote figcaption {
+  padding-left: calc(var(--w-space-3) + 2px);
+}
+.bk-quote-by {
+  color: var(--color-text-1);
+  font-weight: 500;
+}
+
+/* Facts: label left, value right, a hairline between. */
+.bk-facts {
+  display: flex;
+  flex-direction: column;
+}
+.bk-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--w-space-3);
+  padding: 7px 0;
+  border-top: 1px solid var(--w-line);
+}
+.bk-fact:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.bk-fact dt {
+  min-width: 0;
+  font-size: 12.5px;
+}
+.bk-fact-value {
+  min-width: 0;
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Columns: side by side, each a soft panel; one above another in a narrow card. */
+.bk-columns {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  gap: var(--w-space-3);
+}
+.bk-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: var(--w-space-3) 14px;
+  border-radius: var(--radius-md);
+  background: var(--w-soft);
+  border: 1px solid var(--w-line);
+}
+@container bk (max-width: 420px) {
+  .bk-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bk * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* ── Approvals (approvals.ts): a pending action's card, pinned on her board ── */
 
 /* Newest first, above her widgets. Not a widget: only the host's words, and the only buttons that approve. */
