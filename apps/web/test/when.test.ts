@@ -41,6 +41,9 @@ describe('relative', () => {
   it('counts up from what just was, or what has started', () => {
     expect(relative(local(25, 14, 0), NOW)).toBe('5 min ago');
     expect(relative(local(25, 14, 0), NOW, true)).toBe('started 5 min ago');
+    // Past the first hour a plain past time reads as a clock time; a started one keeps counting.
+    expect(relative(local(25, 12, 0), NOW)).toBe('today 12:00 pm');
+    expect(relative(local(25, 12, 0), NOW, true)).toBe('started 2 h 5 min ago');
   });
 
   it('names the day and the time further off', () => {

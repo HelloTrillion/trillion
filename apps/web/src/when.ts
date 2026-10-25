@@ -99,7 +99,10 @@ export function relative(at: Date | string, now: Date, started = false): string 
   if (isDateOnly(at)) return dayWords(when, now);
   const diff = when.getTime() - now.getTime();
   if (Math.abs(diff) < MIN) return started && diff < 0 ? 'started just now' : 'now';
-  if (Math.abs(diff) < COUNT_HOURS * HOUR) return diff > 0 ? `in ${span(diff)}` : `${started ? 'started ' : ''}${span(diff)} ago`;
+  // Counting is for what is coming or under way. A plain past time counts only its
+  // first hour, then reads as a clock time, so a list of past times reads alike.
+  const counted = diff > 0 || started ? COUNT_HOURS * HOUR : HOUR;
+  if (Math.abs(diff) < counted) return diff > 0 ? `in ${span(diff)}` : `${started ? 'started ' : ''}${span(diff)} ago`;
   const gap = dayGap(when, now);
   if (Math.abs(gap) > 6) return dateWords(when, now);
   return `${started && diff < 0 ? 'started ' : ''}${dayWords(when, now)} ${clock(when)}`;

@@ -243,7 +243,7 @@ describe('drawBlocks', () => {
       { type: 'columns', columns: [[{ type: 'status', tone: 'good', text: 'Up' }], [{ type: 'chips', items: ['A'] }], [{ type: 'columns', columns: [[], []] }]] },
     );
     expect(texts(el, '.bk-quote-text')).toEqual(['Ship it Friday.']);
-    expect(el.querySelector('.bk-quote figcaption')?.textContent).toBe('Alex · 2 h ago');
+    expect(el.querySelector('.bk-quote figcaption')?.textContent).toBe('Alex · today 12:05 pm');
     expect(texts(el, '.bk-fact dt')).toEqual(['Due', 'Owner']);
     expect(texts(el, '.bk-fact dd')).toEqual(['Fri 30 Oct', 'Sam']);
     const cols = el.querySelector<HTMLElement>('.bk-columns');
