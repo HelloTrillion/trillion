@@ -13,7 +13,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from trillion.workspace import recipe_kit
+from trillion.workspace import pack_kit, recipe_kit
 from trillion.workspace.kit import (
     BUILDERS,
     KINDS,
@@ -28,7 +28,14 @@ from trillion.workspace.kit import (
 )
 from trillion.workspace.text import scrub
 
-TYPES = (*BUILDERS, *recipe_kit.RECIPES)
+# Her recipes: the core ones, then the packs', with custom (the fallback) last.
+_RECIPES = {
+    **{k: v for k, v in recipe_kit.RECIPES.items() if k != "custom"},
+    **pack_kit.PACK_RECIPES,
+    "custom": recipe_kit.RECIPES["custom"],
+}
+_SIZE = {**recipe_kit.SIZE, **pack_kit.PACK_SIZE}
+TYPES = (*BUILDERS, *_RECIPES)
 
 # Names a model reaches for instead of the kit's own: a chart kind given as the type,
 # or a near synonym. Small local models do this often, and the meaning is plain.
@@ -104,39 +111,42 @@ _ALIASES = {
 }
 # With no usable type, the fields say which widget it is, most telling first: a
 # decision has options too, and a goal a value.
-_BY_FIELD = (
-    ("blocks", "custom"),
-    ("series", "chart"),
-    ("metrics", "kpis"),
-    ("tasks", "tasks"),
-    ("current", "deal"),
-    ("stages", "pipeline"),
-    ("sent", "campaign"),
-    ("waiting", "support_queue"),
-    ("first_reply", "support_queue"),
-    ("open", "support_queue"),
-    ("issues", "errors"),
-    ("burndown", "sprint"),
-    ("done", "sprint"),
-    ("activity", "contact"),
-    ("company", "contact"),
-    ("role", "contact"),
-    ("criteria", "decision"),
-    ("options", "compare"),
-    ("slots", "free_time"),
-    ("steps", "plan"),
-    ("unread", "inbox"),
-    ("threads", "inbox"),
-    ("groups", "mentions"),
-    ("files", "files"),
-    ("event", "next_up"),
-    ("target", "goal"),
-    ("subject", "thread"),
-    ("events", "timeline"),
-    ("columns", "table"),
-    ("items", "list"),
-    ("value", "stat"),
-    ("text", "note"),
+_BY_FIELD: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("blocks",), "custom"),
+    (("series",), "chart"),
+    (("criteria",), "decision"),
+    (("options",), "compare"),
+    (("slots",), "free_time"),
+    (("steps",), "plan"),
+    (("unread",), "inbox"),
+    (("threads",), "inbox"),
+    (("groups",), "mentions"),
+    (("files",), "files"),
+    (("event",), "next_up"),
+    (("target",), "goal"),
+    # The packs' fields come after every phase 1 field but the loosest, so what phase 1
+    # read from the fields it still reads. A word models use for other things (done,
+    # current) tells only beside its partner.
+    (("metrics",), "kpis"),
+    (("tasks",), "tasks"),
+    (("current", "stages"), "deal"),
+    (("stages",), "pipeline"),
+    (("sent",), "campaign"),
+    (("waiting",), "support_queue"),
+    (("first_reply",), "support_queue"),
+    (("open",), "support_queue"),
+    (("issues",), "errors"),
+    (("burndown",), "sprint"),
+    (("done", "total"), "sprint"),
+    (("activity",), "contact"),
+    (("company",), "contact"),
+    (("role",), "contact"),
+    (("subject",), "thread"),
+    (("events",), "timeline"),
+    (("columns",), "table"),
+    (("items",), "list"),
+    (("value",), "stat"),
+    (("text",), "note"),
 )
 # The field each type cannot do without. A near synonym whose type lacks it but has
 # another type's field means that type: a "checklist" of items is a list.
@@ -183,9 +193,9 @@ _KEY = {
 }
 # A state word in an item says which kind of list it is.
 _STATES = (
-    ((*recipe_kit.CHECKED, *recipe_kit.CHECKED_WORDS), "checks"),
-    ((*recipe_kit.DEPLOYED, *recipe_kit.DEPLOYED_WORDS), "deploys"),
-    ((*recipe_kit.SERVING, *recipe_kit.SERVING_WORDS), "services"),
+    ((*pack_kit.CHECKED, *pack_kit.CHECKED_WORDS), "checks"),
+    ((*pack_kit.DEPLOYED, *pack_kit.DEPLOYED_WORDS), "deploys"),
+    ((*pack_kit.SERVING, *pack_kit.SERVING_WORDS), "services"),
 )
 
 
@@ -195,23 +205,26 @@ def _entries(raw: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
 
 
 def _by_items(raw: Mapping[str, Any]) -> str | None:
-    """Items shaped like a pack's: money, or states. Anything else stays a list, as
-    before the packs."""
+    """Items shaped like a pack's: money (an amount with who, due or when, and no title),
+    or a state word a pack knows. Anything else stays a list, as before the packs."""
     items = _entries(raw, "items")
-    if any("amount" in i for i in items):
-        if any("due" in i for i in items):
+    money = [
+        i for i in items if "amount" in i and "title" not in i and {"who", "due", "when"} & set(i)
+    ]
+    if money:
+        if any("due" in i for i in money):
             return "invoices"
-        return "transactions" if any("who" in i for i in items) else "payouts"
+        return "transactions" if any("who" in i for i in money) else "payouts"
     for item in items:
         state = item.get("state")
         if isinstance(state, str):
             word = " ".join(state.lower().replace("_", " ").replace("-", " ").split())
-            return next((kind for states, kind in _STATES if word in states), "checks")
+            return next((kind for states, kind in _STATES if word in states), None)
     return None
 
 
 def _by_field(raw: Mapping[str, Any]) -> str | None:
-    kind = next((kind for field, kind in _BY_FIELD if field in raw), None)
+    kind = next((kind for fields, kind in _BY_FIELD if all(f in raw for f in fields)), None)
     if kind == "table" and _entries(raw, "columns"):
         return "kanban"  # a table's columns are names; a kanban's are objects
     if kind == "list":
@@ -265,12 +278,12 @@ def validate_widget(raw: Any, at: int | str) -> Widget:
     kind = raw.get("type")
     build = None
     if isinstance(kind, str):
-        build = BUILDERS.get(kind) or recipe_kit.RECIPES.get(kind)
+        build = BUILDERS.get(kind) or _RECIPES.get(kind)
     if build is None:
         what = f"unknown type {kind!r}" if kind is not None else "no type"
         raise fail(named, f"{what}; use one of {', '.join(TYPES)}")
     where = f"widget {at} ({kind})" if isinstance(at, int) else f"{kind} {at}"
-    size = one_of(raw, "size", where, SIZES, default=recipe_kit.SIZE.get(kind, "medium"))
+    size = one_of(raw, "size", where, SIZES, default=_SIZE.get(kind, "medium"))
     out: Widget = {"type": kind, "size": size}
     # Every widget may have a title; today's types check theirs among their fields.
     put(out, "title", text_field(raw, "title", where, TITLE, need=False))

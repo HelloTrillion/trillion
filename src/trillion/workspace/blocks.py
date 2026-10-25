@@ -383,6 +383,9 @@ def current_step(raw: Mapping[str, Any], steps: list[str], where: str) -> str | 
         found = next((step for step in steps if step.casefold() == wanted), None)
         if found is not None:
             return found
+        # A position written as text ("2"), as small models send numbers.
+        if wanted.isascii() and wanted.isdigit() and int(wanted) < len(steps):
+            return int(wanted)
     elif not isinstance(current, bool) and isinstance(current, (int, float)):
         if float(current).is_integer() and 0 <= current < len(steps):
             return int(current)

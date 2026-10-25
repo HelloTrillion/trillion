@@ -792,3 +792,104 @@ def test_a_kanbans_columns_are_objects_and_a_tables_are_names() -> None:
 )
 def test_items_say_which_list_they_are(item: dict[str, Any], meant: str) -> None:
     assert validate_widget({"items": [item]}, 1)["type"] == meant
+
+
+# Guessing less: phase 1's readings stay, and an unsure guess stays what it was
+
+
+def test_a_goal_written_with_current_or_done_is_still_a_goal() -> None:
+    from trillion.workspace.widgets import _typed
+
+    assert _typed({"label": "Savings", "current": 4200, "target": 6000})["type"] == "goal"
+    assert _typed({"label": "Laps", "done": 12, "target": 20})["type"] == "goal"
+    # The partner is what makes it a deal or a sprint.
+    assert "type" not in _typed({"current": "Lead"})
+    assert "type" not in _typed({"done": 3})
+
+
+@pytest.mark.parametrize(
+    "item",
+    [{"title": "Fix the header", "state": "open"}, {"title": "Coffee", "amount": "$4"}],
+)
+def test_items_a_pack_does_not_know_stay_a_list(item: dict[str, Any]) -> None:
+    out = validate_widget({"items": [item]}, 1)
+    assert out == {"type": "list", "size": "medium", "items": [{"title": item["title"]}]}
+
+
+def test_an_amount_with_a_title_is_not_money() -> None:
+    item = {"title": "Coffee", "amount": "$4", "when": "2026-10-25"}
+    assert validate_widget({"items": [item]}, 1)["type"] == "list"
+
+
+def test_a_european_thousand_is_not_added_up_as_cents() -> None:
+    late = {"due": "Fri", "status": "overdue"}
+    raw = {
+        "type": "invoices",
+        "items": [
+            {"who": "Sam", "amount": "€1.200", **late},
+            {"who": "Jo", "amount": "€80", **late},
+        ],
+    }
+    assert blocks_of(raw)[0] == {"type": "value", "value": "2", "label": "Overdue"}
+
+
+@pytest.mark.parametrize(
+    ("kind", "item", "word", "meant"),
+    [
+        ("checks", {"title": "Lint"}, "completed", "passing"),
+        ("checks", {"title": "Lint"}, "timed_out", "failing"),
+        ("checks", {"title": "Lint"}, "skipped", "pending"),
+        ("checks", {"title": "Lint"}, "cancelled", "pending"),
+        ("checks", {"title": "Lint"}, "action_required", "pending"),
+        ("services", {"name": "API"}, "under_maintenance", "degraded"),
+        ("services", {"name": "API"}, "Maintenance", "degraded"),
+    ],
+)
+def test_more_state_words(kind: str, item: dict[str, Any], word: str, meant: str) -> None:
+    raw = {"type": kind, "items": [{**item, "state": word}]}
+    assert validate_widget(raw, 1)["items"][0]["state"] == meant
+
+
+@pytest.mark.parametrize(
+    ("word", "meant"),
+    [
+        ("requires_payment_method", "pending"),
+        ("requires_action", "pending"),
+        ("canceled", "failed"),
+        ("cancelled", "failed"),
+    ],
+)
+def test_more_payment_words(word: str, meant: str) -> None:
+    raw = {"type": "transactions", "items": [{"who": "Sam", "amount": "$5", "status": word}]}
+    assert validate_widget(raw, 1)["items"][0]["status"] == meant
+
+
+def test_due_soon_days_in_words_are_one_day_in_any_case() -> None:
+    raw = {
+        "type": "due_soon",
+        "items": [
+            {"title": "Plan the offsite", "due": "Next week"},
+            {"title": "Book the hall", "due": "next  week"},
+        ],
+    }
+    (rows,) = blocks_of(raw)
+    assert rows["label"] == "Next week"
+    assert [i["title"] for i in rows["items"]] == ["Plan the offsite", "Book the hall"]
+
+
+def test_support_queue_puts_the_oldest_first_by_the_time_itself() -> None:
+    raw = {
+        "type": "support_queue",
+        "open": 2,
+        "waiting": [
+            {"who": "Sam", "subject": "a", "since": "2026-10-25T08:00:00+02:00"},
+            {"who": "Jo", "subject": "b", "since": "2026-10-25T07:30:00Z"},
+        ],
+    }
+    # 08:00 at +02:00 is 06:00 UTC, before Jo's 07:30 UTC.
+    assert [i["title"] for i in blocks_of(raw)[1]["items"]] == ["Sam", "Jo"]
+
+
+def test_a_deals_current_may_be_a_position_written_as_text() -> None:
+    assert validate_widget({**MIN_OF["deal"], "current": "1"}, 1)["current"] == 1
+    assert "current '5' is not a step" in refused({**MIN_OF["deal"], "current": "5"})
