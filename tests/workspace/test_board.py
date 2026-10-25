@@ -371,12 +371,6 @@ def test_schema_lists_the_kit():
     for name, prop in schema["properties"].items():
         if "enum" in prop:
             assert prop["type"] == "string", name
-    for name in ("label", "unit", "pick", "reason"):
-        assert schema["properties"][name]["description"].split(":")[0] in (
-            "Stat",
-            "Chart",
-            "Compare",
-        )
 
 
 # Board edits

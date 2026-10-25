@@ -19,6 +19,8 @@ from trillion.spine.untrusted import wrap
 from trillion.storage.sqlite.board_store import BoardNotSaved
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.workspace import CLOSE, REMOVE, SHOW, UPDATE
+from trillion.workspace.blocks import BLOCK_TYPES
+from trillion.workspace.widgets import TYPES as TYPES_OF_WIDGET
 
 TOOLS = (SHOW, UPDATE, REMOVE, CLOSE)
 STAT = {"type": "stat", "label": "Total", "value": "$41.20"}
@@ -150,3 +152,48 @@ async def test_a_board_that_cannot_be_saved_is_reported(
     done = await call(rt, SHOW, {"widgets": [STAT]})
     assert done.status == "failed" and done.error_kind == "save_failed"
     assert "could not be saved" in done.content
+
+
+def _as_the_model_sees(name: str) -> dict[str, Any]:
+    """A tool as a provider sends it (anthropic.py; openai_compat.py is the same data)."""
+    d = ToolRegistry.discover().definition(name)
+    assert d is not None
+    return {"name": d.name, "description": d.description, "input_schema": dict(d.input_schema)}
+
+
+def test_show_carries_a_card_per_type() -> None:
+    text = _as_the_model_sees(SHOW)["description"]
+    assert "next_up: event, start, end?, where?, people[]?, note?" in text
+    for kind in TYPES_OF_WIDGET:
+        assert f"{kind}: " in text, kind
+    # The custom widget's blocks, by name.
+    for block in BLOCK_TYPES:
+        assert block in text, block
+
+
+def test_the_four_tools_stay_small() -> None:
+    size = len(json.dumps([_as_the_model_sees(name) for name in TOOLS]))
+    assert size < 12_000, size
+
+
+async def test_the_page_gets_blocks_and_her_source_is_stamped(rt: Runtime) -> None:
+    page = Page("c1")
+    rt.sessions.add(page)
+    widget = {
+        "type": "next_up",
+        "event": "Design review",
+        "start": "2026-10-25T14:30",
+        "source": {"name": "Calendar", "at": "1999-01-01T00:00:00Z"},
+        "asks": ["Prep me for this"],
+    }
+    done = await call(rt, SHOW, {"widgets": [widget]})
+    assert done.status == "succeeded"
+    ((_, body),) = page.got
+    (shown,) = body["board"]["widgets"]
+    assert shown["blocks"][0]["type"] == "time" and "event" not in shown
+    assert shown["asks"] == ["Prep me for this"]
+    assert shown["source"]["name"] == "Calendar"
+    assert shown["source"]["at"] != "1999-01-01T00:00:00Z"
+    assert shown["source"]["at"].endswith("Z")
+    stored = await saved(rt)
+    assert stored is not None and stored["widgets"][0]["event"] == "Design review"

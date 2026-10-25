@@ -33,7 +33,8 @@ class Pages:
 class Setup:
     def __init__(self, store: SqliteBoardStore, chats: SqliteConversationStore) -> None:
         self.store, self.chats, self.pages = store, chats, Pages()
-        self.boards = Boards(store, chats, self.pages, clock=lambda: 5000, owner=OWNER)
+        self.now = 5000
+        self.boards = Boards(store, chats, self.pages, clock=lambda: self.now, owner=OWNER)
 
     async def saved(self, cid: str = "c1") -> Board | None:
         return await self.store.get(cid, OWNER)
@@ -181,3 +182,52 @@ async def test_a_slow_page_cannot_hold_the_board(s: Setup, monkeypatch: pytest.M
     s.boards._send_to = stuck
     board = await s.boards.show("c1", "October", [STAT])
     assert await s.saved() == board
+
+
+FROM_CAL = {**STAT, "source": "Calendar"}
+# 2026-10-25T21:05:12Z, in the service's clock (ms).
+LATER = 1_792_962_312_000
+
+
+def _at(board: Board, widget_id: str) -> str:
+    (widget,) = [w for w in board["widgets"] if w["id"] == widget_id]
+    return str(widget["source"]["at"])
+
+
+async def test_source_is_stamped_by_the_service_clock(s: Setup) -> None:
+    s.now = LATER
+    sent = {**STAT, "source": {"name": "Calendar", "at": "1999-01-01T00:00:00Z"}}
+    board = await s.boards.show("c1", "October", [sent, STAT])
+    assert board["widgets"][0]["source"] == {"name": "Calendar", "at": "2026-10-25T21:05:12Z"}
+    assert "source" not in board["widgets"][1]
+    assert await s.saved() == board
+
+
+async def test_a_widget_kept_keeps_its_time_and_a_changed_one_is_restamped(s: Setup) -> None:
+    await s.boards.show("c1", "October", [FROM_CAL, FROM_CAL])
+    first = _at(await s.boards.show("c1", None, []), "w1")
+    s.now += 60_000
+    board = await s.boards.show("c1", None, [FROM_CAL], mode="add")
+    assert _at(board, "w1") == _at(board, "w2") == first
+    assert _at(board, "w3") != first
+    s.now += 60_000
+    board = await s.boards.update("c1", "w2", FROM_CAL)
+    assert _at(board, "w1") == first and _at(board, "w2") not in (first, _at(board, "w3"))
+    later = _at(board, "w2")
+    s.now += 60_000
+    board, _ = await s.boards.remove("c1", ["w1"])
+    assert _at(board, "w2") == later
+    assert later.endswith("Z")
+
+
+async def test_the_page_gets_blocks_and_the_saved_board_is_as_she_wrote_it(s: Setup) -> None:
+    board = await s.boards.show("c1", "October", [STAT])
+    saved = await s.saved()
+    page = for_page(saved)
+    assert page is not None and "next_id" not in page
+    (widget,) = page["widgets"]
+    assert widget["blocks"] == [{"type": "value", "value": "$41.20", "label": "Total"}]
+    assert "label" not in widget and widget["type"] == "stat"
+    assert await s.saved() == saved == board and "blocks" not in saved["widgets"][0]
+    assert s.pages.sent[-1][1] == page
+    assert for_page(None) is None

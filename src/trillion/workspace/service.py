@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from trillion.workspace import board as edits
 from trillion.workspace.board import Board, BoardError, Mode
+from trillion.workspace.recipes import expand_board
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +40,22 @@ class BoardSaveError(BoardError):
 
 
 def for_page(board: Board | None) -> Board | None:
-    """The board as the page draws it: the id counter is the server's own."""
+    """The board as the page draws it: every widget expanded into blocks, and without
+    the id counter, which is the server's own. The saved board is left as it was."""
     if board is None:
         return None
-    return {k: v for k, v in board.items() if k != "next_id"}
+    return expand_board({k: v for k, v in board.items() if k != "next_id"})
+
+
+def _stamp(board: Board, now_ms: int) -> None:
+    """When a widget's facts were put up is the server's to say: `validate_widget`
+    drops any `at` she sends, so a widget with a source and no `at` is new or changed
+    by this edit. A widget the edit left alone keeps its time."""
+    at = datetime.fromtimestamp(now_ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for widget in board["widgets"]:
+        source = widget.get("source")
+        if isinstance(source, dict) and "at" not in source:
+            source["at"] = at
 
 
 class Boards:
@@ -76,8 +90,10 @@ class Boards:
                 raise BoardError("there is no open conversation to put a board in.")
             old = await self._store.get(conversation_id, self._owner)
             new = edit(old)
+            now = self._clock()
+            _stamp(new, now)
             try:
-                await self._store.put(conversation_id, self._owner, new, self._clock())
+                await self._store.put(conversation_id, self._owner, new, now)
             except Exception as e:
                 logger.warning("board not saved: %s", type(e).__name__)
                 raise BoardSaveError("the board could not be saved.") from None
