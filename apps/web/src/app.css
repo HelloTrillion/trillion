@@ -110,40 +110,108 @@ button:disabled {
   outline-offset: 2px;
 }
 
-/* ── Top bar ─────────────────────────────────────────────────────────── */
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
 
-.top {
-  position: fixed;
-  inset: 0 0 auto;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+:root {
+  --sidebar-w: 360px;
 }
 
-.brand {
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-w);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 12px 14px;
+  background: var(--color-surface-glass);
+  border-right: 1px solid var(--color-border);
+  backdrop-filter: blur(16px);
+  z-index: 2;
+  /* The orb's glide to its new place takes the same time, so they move together. */
+  transition: transform 300ms ease;
+}
+
+.sidebar[data-hidden] {
+  transform: translateX(-100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
+}
+
+.side-head,
+.side-title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+}
+
+.side-name {
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-grow {
+  flex: 1;
+}
+
+.side-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-body .transcript,
+.side-body .threads {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.thread-switch {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+
+.side-resize {
+  position: absolute;
+  inset: 0 -4px 0 auto;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.side-resize:focus-visible {
+  outline-offset: -2px;
+}
+
+.show-sidebar {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
 }
 
 .status {
   font-size: 13px;
   color: var(--color-accent);
-}
-
-.top-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.model {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--color-text-1);
+  white-space: nowrap;
 }
 
 /* The first pill on the page. BRN-8 adds its warning state as a class here. */
@@ -154,21 +222,111 @@ button:disabled {
   color: var(--color-text-1);
 }
 
-/* ── Conversation ────────────────────────────────────────────────────── */
-
-.stage {
-  position: fixed;
-  inset: auto 0 0;
-  margin: 0 auto;
-  width: min(680px, calc(100vw - 32px));
-  padding-bottom: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* A round button that holds one icon: Settings, the sidebar, New conversation. */
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--color-text-1);
+  background: var(--color-surface-glass);
+  backdrop-filter: blur(12px);
 }
 
+.icon-btn:hover {
+  color: var(--color-text-0);
+}
+
+.icon-btn[hidden] {
+  display: none;
+}
+
+/* ── Workspace ───────────────────────────────────────────────────────── */
+
+.workspace {
+  position: fixed;
+  inset: 16px 16px 16px calc(var(--sidebar-w) + 16px);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-glass);
+  backdrop-filter: blur(16px);
+  z-index: 1;
+  overflow: hidden;
+}
+
+.workspace[hidden] {
+  display: none;
+}
+
+body[data-sidebar='hidden'] .workspace {
+  left: 16px;
+}
+
+.workspace-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.workspace-bar h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* An invisible button over the docked orb; the orb itself is drawn on the canvas. */
+.orb-dock {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: transparent;
+  border: 0;
+  z-index: 3;
+  cursor: pointer;
+}
+
+.orb-dock:hover:not(:disabled) {
+  background: transparent;
+}
+
+/* Until the phone sheet (SUR-1) lands, a phone keeps the conversation along the bottom. */
+@media (max-width: 767px) {
+  .sidebar {
+    inset: auto 0 0 0;
+    width: auto;
+    max-height: 60dvh;
+    border-right: 0;
+    border-top: 1px solid var(--color-border);
+  }
+  .sidebar[data-hidden] {
+    transform: translateY(100%);
+  }
+  .side-resize {
+    display: none;
+  }
+  .workspace {
+    left: 16px;
+  }
+}
+
+/* ── Conversation ────────────────────────────────────────────────────── */
+
 .transcript {
-  max-height: 44vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -176,8 +334,6 @@ button:disabled {
   padding: 4px 2px;
   scrollbar-width: thin;
   scrollbar-color: var(--color-text-2) transparent;
-  /* Older lines fade into the galaxy instead of ending at a hard edge. */
-  mask-image: linear-gradient(to bottom, transparent, black 48px);
 }
 
 .transcript > * {
@@ -363,13 +519,6 @@ button:disabled {
   min-height: 1.4em;
 }
 
-/* ── Model settings ──────────────────────────────────────────────────── */
-
-button.model {
-  background: var(--color-surface-glass);
-  backdrop-filter: blur(12px);
-}
-
 dialog {
   width: min(520px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
@@ -551,6 +700,10 @@ button.quiet {
   gap: 8px;
 }
 
+.choices[hidden] {
+  display: none;
+}
+
 .choice {
   padding: 6px 14px;
   border-radius: var(--radius-full);
@@ -569,21 +722,6 @@ button.quiet {
 }
 
 /* ── Settings: a screen of its own ───────────────────────────────────── */
-
-#open-settings {
-  display: inline-grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  color: var(--color-text-1);
-  background: var(--color-surface-glass);
-  backdrop-filter: blur(12px);
-}
-
-#open-settings:hover {
-  color: var(--color-text-0);
-}
 
 dialog.panel {
   width: 100vw;

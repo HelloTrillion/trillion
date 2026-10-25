@@ -43,11 +43,13 @@ import {
   shownTheme,
 } from './prefs';
 import { createReminders } from './reminders';
+import { createSidebar } from './sidebar';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
+import { createWorkspace } from './workspace';
 import {
   type Entry,
   INITIAL,
@@ -125,6 +127,9 @@ const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
 const footEl = $('foot');
 const newBtn = $<HTMLButtonElement>('new');
+newBtn.replaceChildren(icon('edit', 18));
+const agentNameEl = $('agent-name');
+const threadTitleEl = $('thread-title');
 const usageBtn = $<HTMLButtonElement>('usage');
 let usage: Usage | null = null;
 const micBtn = $<HTMLButtonElement>('mic');
@@ -138,6 +143,28 @@ let talkPrefs: TalkPrefs = savedTalk();
 const talkKeys = new TalkKeys(talkPrefs);
 let version = '';
 const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight.matches) });
+
+const showSidebarBtn = $<HTMLButtonElement>('show-sidebar');
+const hideSidebarBtn = $<HTMLButtonElement>('hide-sidebar');
+const workspaceCloseBtn = $<HTMLButtonElement>('workspace-close');
+showSidebarBtn.replaceChildren(icon('sidebar', 20));
+hideSidebarBtn.replaceChildren(icon('sidebar', 20));
+workspaceCloseBtn.replaceChildren(icon('close', 18));
+showSidebarBtn.title = `Show sidebar (${shortcut('\\')})`;
+hideSidebarBtn.title = `Hide sidebar (${shortcut('\\')})`;
+const sidebar = createSidebar($('sidebar'), $('side-resize'), showSidebarBtn, hideSidebarBtn);
+const workspace = createWorkspace({
+  region: $('workspace'),
+  title: $('workspace-title'),
+  body: $('workspace-body'),
+  close: workspaceCloseBtn,
+  dock: $<HTMLButtonElement>('orb-dock'),
+  sidebarWidth: () => sidebar.width(),
+  place: (rect, animate) => galaxy.setStage(rect, { animate }),
+});
+sidebar.onChange(() => workspace.layout());
+// The first placement is where the orb starts, not somewhere it glides to.
+workspace.layout(false);
 
 function applyTheme(choice: ThemeChoice): void {
   themeChoice = choice;
@@ -573,7 +600,7 @@ const LINK_TEXT: Readonly<Record<View['link'], string>> = {
 let rendered: readonly Entry[] = [];
 
 // Shown under the conversation while she works and no text is arriving. The status
-// in the top bar already announces it to screen readers, so this one stays silent.
+// in the sidebar's head already announces it to screen readers, so this one stays silent.
 const thinkingEl = el('p', 'thinking', 'Thinking');
 thinkingEl.setAttribute('aria-hidden', 'true');
 // The words she has made out so far, while the user is still speaking.
@@ -624,6 +651,8 @@ function render(): void {
       ? 'Connecting'
       : 'Offline';
   newBtn.hidden = !ready || view.entries.length === 0;
+  agentNameEl.textContent = view.agentName;
+  threadTitleEl.textContent = view.title ?? 'New conversation';
   const introducing = ready && active(ob);
   settingsBtn.hidden = !ready || introducing;
   settingsBtn.title = `Settings (${shortcut(',')})`;
@@ -649,7 +678,7 @@ function render(): void {
   const banner =
     linkText ||
     view.banner ||
-    (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model to get started (top right).' : '');
+    (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model in Settings to get started.' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
 
@@ -704,7 +733,7 @@ const api: Api = (method, path, body) =>
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-// One panel for every setting (Settings, top right). The model, voice and microphone
+// One panel for every setting (Settings, at the top of the sidebar). The model, voice and microphone
 // sections are the same modules that used to be separate dialogs.
 const panel = createPanel($<HTMLDialogElement>('settings-panel'));
 const settings = createSettings(panel.host('model'), api);
@@ -1229,7 +1258,19 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
 }
 
 addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && (view.busy || voice.active || view.mic)) interrupt();
+  // Escape stops her first; only when nothing is sounding or listening does it close.
+  if (ev.key === 'Escape') {
+    if (view.busy || voice.active || view.mic) interrupt();
+    else if (workspace.isOpen && !panel.isOpen) {
+      ev.preventDefault();
+      workspace.close();
+    }
+  }
+  if (ev.key === '\\' && primary(ev)) {
+    ev.preventDefault();
+    sidebar.toggle();
+    return;
+  }
   // The usual way to Settings: ⌘, on a Mac, Ctrl+, elsewhere. Not the other one.
   if (ev.key === ',' && primary(ev) && !panel.isOpen) {
     ev.preventDefault();

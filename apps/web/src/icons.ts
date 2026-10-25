@@ -1,4 +1,4 @@
-/** Line icons for Settings, built as SVG elements: no markup strings, no library. */
+/** Line icons for Settings and the sidebar, built as SVG elements: no markup strings, no library. */
 
 const PATHS: Readonly<Record<string, readonly string[]>> = {
   // A four-point star: what she is, against the galaxy.
@@ -19,6 +19,10 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   about: ['M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17z', 'M12 11v5.5', 'M12 7.8h.01'],
   close: ['M6.5 6.5l11 11M17.5 6.5l-11 11'],
   menu: ['M4 7h16M4 12h16M4 17h16'],
+  // A window with a panel down its left side: show or hide the sidebar.
+  sidebar: ['M3.5 5.5h17v13h-17z', 'M9.5 5.5v13'],
+  // A pencil: start a new conversation.
+  edit: ['M14.5 5.5l4 4L9 19H5v-4z', 'M12.5 7.5l4 4'],
   search: ['M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 0 0 0-13z', 'M20 20l-4.8-4.8'],
 };
 
