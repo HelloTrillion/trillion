@@ -554,23 +554,103 @@ body[data-sidebar='hidden'] .workspace {
   background: transparent;
 }
 
-/* Until the phone sheet (SUR-1) lands, a phone keeps the conversation along the bottom. */
+/*
+ * A phone: the sidebar is a bottom sheet over the orb, dragged by its handle between three
+ * rests (collapsed, half, full). sidebar.ts sets --sheet-top from layout.ts and --sheet-ask,
+ * the collapsed sheet's height. The sheet is never hidden here, so no hide or show button.
+ */
 @media (max-width: 767px) {
   .sidebar {
-    inset: auto 0 0 0;
+    inset: var(--sheet-top, auto) 0 0 0;
     width: auto;
-    max-height: 60dvh;
+    /* Room for the handle at the top. */
+    padding: 20px 12px calc(12px + env(safe-area-inset-bottom));
     border-right: 0;
     border-top: 1px solid var(--color-border);
+    border-radius: 16px 16px 0 0;
+    /* The ask bar stays at the bottom; what does not fit while dragged is cut off at the top. */
+    justify-content: flex-end;
+    overflow: hidden;
+    transform: none;
+    transition: top 300ms ease;
   }
-  .sidebar[data-hidden] {
-    transform: translateY(100%);
+  .sidebar[data-dragging] {
+    transition: none;
   }
-  .side-resize {
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar {
+      transition: none;
+    }
+  }
+  /* Collapsed is orb first: the ask bar only, until it is dragged up. */
+  .sidebar[data-rest='collapsed']:not([data-dragging]) > :not(.ask, .side-resize) {
     display: none;
   }
-  .workspace {
-    left: var(--ws-inset);
+  .side-resize {
+    inset: 0 0 auto 0;
+    width: auto;
+    height: 20px;
+    cursor: grab;
+  }
+  .side-resize:active {
+    cursor: grabbing;
+  }
+  /* The visible handle: a short bar centred in the top strip. */
+  .side-resize::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    margin-left: -18px;
+    border-radius: 2px;
+    background: var(--color-text-2);
+  }
+  #hide-sidebar,
+  .show-sidebar {
+    display: none;
+  }
+  /* Full screen above the collapsed sheet, with a round hole for the orb docked at the top. */
+  .workspace,
+  body[data-sidebar='hidden'] .workspace {
+    --hole-y: calc(var(--dock-phone-inset, 12px) + var(--dock-phone-size, 64px) / 2);
+    --hole-r: calc(var(--dock-phone-size, 64px) / 2 + 8px);
+    --dock-hole: radial-gradient(
+      circle at 50% var(--hole-y),
+      transparent var(--hole-r),
+      #000 calc(var(--hole-r) + 1px)
+    );
+    inset: 0 0 var(--sheet-ask, 0) 0;
+    border: 0;
+    border-radius: 0;
+    -webkit-mask: var(--dock-hole);
+    mask: var(--dock-hole);
+  }
+  .workspace::after {
+    content: '';
+    position: absolute;
+    top: calc(var(--hole-y) - var(--hole-r) - 2px);
+    left: calc(50% - var(--hole-r) - 2px);
+    width: calc(2 * var(--hole-r) + 4px);
+    height: calc(2 * var(--hole-r) + 4px);
+    border-radius: 50%;
+    border: 1px solid var(--color-border);
+    box-sizing: border-box;
+    pointer-events: none;
+  }
+  /* The bar starts below the docked orb. */
+  .workspace-bar {
+    padding-top: calc(2 * var(--dock-phone-inset, 12px) + var(--dock-phone-size, 64px));
+  }
+  .orb-dock {
+    top: var(--dock-phone-inset, 12px);
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    width: var(--dock-phone-size, 64px);
+    height: var(--dock-phone-size, 64px);
+    transform: translateX(-50%);
   }
 }
 

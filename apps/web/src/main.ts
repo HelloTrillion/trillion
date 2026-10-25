@@ -152,6 +152,8 @@ const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight
 // The docked orb's size and place come from DOCK; the CSS (its button, the hole in the workspace) reads them here.
 document.documentElement.style.setProperty('--dock-size', `${DOCK.size}px`);
 document.documentElement.style.setProperty('--dock-inset', `${DOCK.inset}px`);
+document.documentElement.style.setProperty('--dock-phone-size', `${DOCK.phoneSize}px`);
+document.documentElement.style.setProperty('--dock-phone-inset', `${DOCK.phoneInset}px`);
 
 const showSidebarBtn = $<HTMLButtonElement>('show-sidebar');
 const hideSidebarBtn = $<HTMLButtonElement>('hide-sidebar');
@@ -161,7 +163,7 @@ hideSidebarBtn.replaceChildren(icon('sidebar', 20));
 workspaceCloseBtn.replaceChildren(icon('close', 18));
 showSidebarBtn.title = `Show sidebar (${shortcut('\\')})`;
 hideSidebarBtn.title = `Hide sidebar (${shortcut('\\')})`;
-const sidebar = createSidebar($('sidebar'), $('side-resize'), showSidebarBtn, hideSidebarBtn);
+const sidebar = createSidebar($('sidebar'), $('side-resize'), showSidebarBtn, hideSidebarBtn, $('ask'));
 const workspace = createWorkspace({
   region: $('workspace'),
   title: $('workspace-title'),
@@ -1056,6 +1058,8 @@ function toggleThreads(): void {
   }
   // Showing the sidebar moves focus to its hide button; opening the list then takes it.
   sidebar.setHidden(false);
+  // On a phone the list opens over the sheet at full height.
+  sidebar.raise('full');
   threads.open();
 }
 threadSwitch.addEventListener('click', toggleThreads);
@@ -1099,7 +1103,11 @@ function connect(): void {
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
-    if (msg.type === 'confirm.request' && sidebar.hidden) sidebar.setHidden(false);
+    if (msg.type === 'confirm.request') {
+      if (sidebar.hidden) sidebar.setHidden(false);
+      // On a phone a collapsed sheet shows only the ask bar: raise it so the card is seen.
+      sidebar.raise('half');
+    }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));

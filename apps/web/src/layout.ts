@@ -32,3 +32,45 @@ export function orbRect(f: Frame): StageRect {
 }
 
 export const clampWidth = (px: number): number => Math.round(Math.min(SIDEBAR.max, Math.max(SIDEBAR.min, px)));
+
+/** The phone's bottom sheet: where it rests, lowest first. */
+export type Rest = 'collapsed' | 'half' | 'full';
+export const RESTS: readonly Rest[] = ['collapsed', 'half', 'full'];
+/** Full stops below the docked orb, so the orb and its button are never under the sheet. */
+export const SHEET = { full: DOCK.phoneInset * 2 + DOCK.phoneSize } as const;
+
+/**
+ * The sheet's top edge in px from the top of a window `h` tall, for each rest.
+ * Collapsed leaves the ask bar showing (the sheet's height then, `ask`).
+ */
+export function sheetTop(rest: Rest, h: number, ask: number): number {
+  return rest === 'full' ? SHEET.full : rest === 'half' ? Math.round(h / 2) : h - ask;
+}
+
+/** Where a drag that ended at `top` settles: the nearest rest. */
+export function settle(top: number, h: number, ask: number): Rest {
+  return RESTS.reduce((best, r) =>
+    Math.abs(sheetTop(r, h, ask) - top) < Math.abs(sheetTop(best, h, ask) - top) ? r : best,
+  );
+}
+
+/** The top while dragged: the grab point stays under the finger, between full and collapsed. */
+export function dragTop(pointerY: number, grab: number, h: number, ask: number): number {
+  return Math.min(sheetTop('collapsed', h, ask), Math.max(SHEET.full, pointerY - grab));
+}
+
+/** A drag shorter than this, in CSS px, is a tap on the handle. */
+export const TAP_SLOP = 6;
+
+/** The rest after a tap on the handle: one up, and from full back down to collapsed. */
+export const tapped = (rest: Rest): Rest => (rest === 'collapsed' ? 'half' : rest === 'half' ? 'full' : 'collapsed');
+
+/** The rest after a key on the handle (arrows step, Home and End go to the ends), or null for any other key. */
+export function stepRest(rest: Rest, key: string): Rest | null {
+  const i = RESTS.indexOf(rest);
+  if (key === 'ArrowUp') return RESTS[Math.min(RESTS.length - 1, i + 1)] ?? rest;
+  if (key === 'ArrowDown') return RESTS[Math.max(0, i - 1)] ?? rest;
+  if (key === 'Home') return 'collapsed';
+  if (key === 'End') return 'full';
+  return null;
+}

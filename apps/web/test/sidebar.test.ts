@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SIDEBAR } from '../src/layout';
-import { NUDGE, nudged, savedWidth } from '../src/sidebar';
+import { NUDGE, higher, nudged, savedRest, savedWidth } from '../src/sidebar';
 
 describe('savedWidth', () => {
   it('starts at the initial width when nothing was stored', () => {
@@ -36,5 +36,26 @@ describe('nudged', () => {
 
   it('ignores other keys', () => {
     expect(nudged(400, 'Enter')).toBeNull();
+  });
+});
+
+describe('savedRest', () => {
+  it('starts collapsed, orb first, when nothing or junk was stored', () => {
+    expect(savedRest(null)).toBe('collapsed');
+    expect(savedRest('tall')).toBe('collapsed');
+  });
+
+  it('keeps a stored rest', () => {
+    expect(savedRest('half')).toBe('half');
+    expect(savedRest('full')).toBe('full');
+  });
+});
+
+describe('higher', () => {
+  it('raises the sheet to a rest, never lowers it', () => {
+    expect(higher('collapsed', 'half')).toBe('half');
+    expect(higher('half', 'full')).toBe('full');
+    expect(higher('full', 'half')).toBe('full');
+    expect(higher('half', 'half')).toBe('half');
   });
 });
