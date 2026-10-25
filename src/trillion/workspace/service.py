@@ -17,6 +17,8 @@ from trillion.workspace.board import Board, BoardError, Mode
 
 logger = logging.getLogger(__name__)
 
+# How long the pages may take to be sent a board; it is saved either way.
+SEND_S = 2.0
 # Sends a board (as the page draws it, or None) to every page open on a conversation.
 SendTo = Callable[[str, Board | None], Awaitable[None]]
 
@@ -79,7 +81,12 @@ class Boards:
             except Exception as e:
                 logger.warning("board not saved: %s", type(e).__name__)
                 raise BoardSaveError("the board could not be saved.") from None
-        await self._send_to(conversation_id, for_page(new))
+            # Still inside the lock, so pages get boards in the order they were saved;
+            # bounded, so a slow page cannot hold every other change.
+            try:
+                await asyncio.wait_for(self._send_to(conversation_id, for_page(new)), SEND_S)
+            except TimeoutError:
+                logger.warning("board not sent: a page was too slow")
         return old, new
 
     # ── Hers, through the workspace tools ────────────────────────────────

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
+from trillion.workspace import service
 from trillion.workspace.board import Board, BoardError
 from trillion.workspace.service import Boards, BoardSaveError, for_page
 
@@ -125,3 +127,37 @@ async def test_a_failed_save_shows_nothing(s: Setup) -> None:
     with pytest.raises(BoardSaveError, match="could not be saved"):
         await s.boards.show("c1", "October", [STAT])
     assert s.pages.sent == []
+
+
+async def test_pages_get_boards_in_the_order_they_were_saved(s: Setup) -> None:
+    await s.boards.show("c1", "October", [STAT, LIST])
+    gate = asyncio.Event()
+    first = True
+
+    async def slow_then_fast(cid: str, board: Board | None) -> None:
+        nonlocal first
+        if first:
+            first = False
+            await gate.wait()
+        s.pages.sent.append((cid, board))
+
+    s.boards._send_to = slow_then_fast
+    removing = asyncio.create_task(s.boards.remove("c1", ["w1"]))
+    closing = asyncio.create_task(s.boards.close("c1"))
+    await asyncio.sleep(0.01)
+    gate.set()
+    await asyncio.gather(removing, closing)
+    last_two = [b for _, b in s.pages.sent[-2:]]
+    assert last_two[0] is not None and last_two[0]["open"]
+    assert last_two[1] is not None and not last_two[1]["open"]
+
+
+async def test_a_slow_page_cannot_hold_the_board(s: Setup, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service, "SEND_S", 0.01)
+
+    async def stuck(*_: Any) -> None:
+        await asyncio.sleep(10)
+
+    s.boards._send_to = stuck
+    board = await s.boards.show("c1", "October", [STAT])
+    assert await s.saved() == board

@@ -31,7 +31,7 @@ def _refused(message: str, kind: str = "invalid") -> ToolResult:
 
 
 def _named(widgets: list[dict[str, Any]]) -> str:
-    return ", ".join(describe(w, quote="'") for w in widgets)
+    return ", ".join(describe(w) for w in widgets)
 
 
 def _definition(
@@ -49,8 +49,8 @@ def _definition(
         risk=Risk.READ,
         category=CATEGORY,
         timeout_s=_TIMEOUT,
-        # The result is the server's own account of the board.
-        trusted_output=True,
+        # Wrapped as untrusted like any result: it quotes titles and labels she wrote,
+        # which may come from a page she read (SPN-5).
     )
 
 
@@ -130,14 +130,14 @@ class WorkspaceUpdate(_BoardTool):
 class WorkspaceRemove(_BoardTool):
     definition = _definition(
         REMOVE,
-        'Take widgets off your board, by id, or "all". Taking the last one off closes the board.',
+        'Take widgets off your board by id; ["all"] takes everything off. Taking the last one '
+        "off closes the board.",
         {
             "ids": {
-                "anyOf": [
-                    {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                    {"type": "string", "enum": ["all"]},
-                ],
-                "description": 'Widget ids such as ["w1", "w3"], or "all".',
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": 'Widget ids such as ["w1", "w3"]; ["all"] takes everything off.',
             }
         },
         ["ids"],
@@ -145,6 +145,8 @@ class WorkspaceRemove(_BoardTool):
 
     async def _run(self, boards: Boards, conversation_id: str, args: JSON) -> ToolResult:
         ids: Any = args.get("ids")
+        if ids == ["all"]:
+            ids = "all"
         board, gone = await boards.remove(conversation_id, ids)
         text = f"Taken off the board: {_named(gone)}."
         if not board["widgets"]:

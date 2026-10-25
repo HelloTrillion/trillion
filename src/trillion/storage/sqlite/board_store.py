@@ -12,6 +12,10 @@ from typing import Any
 import aiosqlite
 
 
+class BoardNotSaved(RuntimeError):
+    """The write changed nothing: the conversation's board is another owner's."""
+
+
 class SqliteBoardStore:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
@@ -28,7 +32,7 @@ class SqliteBoardStore:
         self, conversation_id: str, owner_id: str, board: dict[str, Any], now_ms: int
     ) -> None:
         # The owner check keeps one owner from overwriting another's board.
-        await self._conn.execute(
+        cur = await self._conn.execute(
             "INSERT INTO boards (conversation_id, owner_id, board_json, updated_at)"
             " VALUES (?, ?, ?, ?)"
             " ON CONFLICT(conversation_id) DO UPDATE SET"
@@ -36,3 +40,5 @@ class SqliteBoardStore:
             " WHERE boards.owner_id = excluded.owner_id",
             (conversation_id, owner_id, json.dumps(board, ensure_ascii=False), now_ms),
         )
+        if cur.rowcount != 1:
+            raise BoardNotSaved("the board belongs to another owner")

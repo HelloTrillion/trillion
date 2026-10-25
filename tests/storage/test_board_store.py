@@ -10,7 +10,7 @@ import pytest
 
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
-from trillion.storage.sqlite.board_store import SqliteBoardStore
+from trillion.storage.sqlite.board_store import BoardNotSaved, SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 
 OWNER = "local"
@@ -65,5 +65,6 @@ async def test_another_owner_cannot_overwrite_it(conn: aiosqlite.Connection) -> 
     await conn.execute("INSERT INTO owners (id, created_at) VALUES ('other', 0)")
     store = SqliteBoardStore(conn)
     await store.put("c1", OWNER, BOARD, 2000)
-    await store.put("c1", "other", {**BOARD, "title": "x"}, 3000)
+    with pytest.raises(BoardNotSaved):
+        await store.put("c1", "other", {**BOARD, "title": "x"}, 3000)
     assert await store.get("c1", OWNER) == BOARD

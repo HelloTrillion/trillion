@@ -15,6 +15,8 @@ from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import ToolCall, ToolContext
 from trillion.spine.registry import ToolRegistry
 from trillion.spine.router import RouterResponse
+from trillion.spine.untrusted import wrap
+from trillion.storage.sqlite.board_store import BoardNotSaved
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.workspace import CLOSE, REMOVE, SHOW, UPDATE
 
@@ -65,28 +67,28 @@ async def test_show_runs_at_once_and_names_the_ids(rt: Runtime) -> None:
     rt.sessions.update({here, elsewhere})
     done = await call(rt, SHOW, {"title": "October", "widgets": [STAT, CHART]})
     assert done.status == "succeeded" and done.pending_id is None
-    assert done.content == "Shown on the board: w1 stat 'Total', w2 line chart 'Daily spend'."
+    assert 'Shown on the board: w1 stat "Total", w2 line chart "Daily spend".' in done.content
     ((kind, body),) = here.got
     assert kind == "board" and body["board"]["title"] == "October"
     assert elsewhere.got == []
     added = await call(rt, SHOW, {"widgets": [STAT], "mode": "add"})
-    assert added.content == "Shown on the board: w3 stat 'Total'."
+    assert 'Shown on the board: w3 stat "Total".' in added.content
 
 
 async def test_update_remove_and_close(rt: Runtime) -> None:
     await call(rt, SHOW, {"title": "October", "widgets": [STAT, CHART]})
     done = await call(rt, UPDATE, {"id": "w2", "widget": {**CHART, "kind": "bar"}})
-    assert done.content == "Updated on the board: w2 bar chart 'Daily spend'."
+    assert 'Updated on the board: w2 bar chart "Daily spend".' in done.content
     done = await call(rt, REMOVE, {"ids": ["w1"]})
-    assert done.content == "Taken off the board: w1 stat 'Total'."
+    assert 'Taken off the board: w1 stat "Total".' in done.content
     done = await call(rt, CLOSE, {})
     assert done.status == "succeeded" and "kept" in done.content
     board = await saved(rt)
     assert board is not None and not board["open"] and len(board["widgets"]) == 1
     done = await call(rt, SHOW, {"widgets": []})
-    assert done.content == "The board is open again: w2 bar chart 'Daily spend'."
-    done = await call(rt, REMOVE, {"ids": "all"})
-    assert done.content.endswith("The board is empty and closed.")
+    assert 'The board is open again: w2 bar chart "Daily spend".' in done.content
+    done = await call(rt, REMOVE, {"ids": ["all"]})
+    assert "The board is empty and closed." in done.content
 
 
 async def test_a_refused_call_leaves_the_board_as_it_was(rt: Runtime) -> None:
@@ -111,7 +113,8 @@ def test_never_offered_unattended() -> None:
     registry = ToolRegistry.discover()
     for name in TOOLS:
         d = registry.definition(name)
-        assert d is not None and d.category == "workspace" and d.trusted_output
+        # Wrapped as untrusted: results quote titles that may come from a page (SPN-5).
+        assert d is not None and d.category == "workspace" and not d.trusted_output
         assert registry.unattended().definition(name) is None
 
 
@@ -130,3 +133,20 @@ async def test_describe_self_lists_them(rt: Runtime) -> None:
     for name in TOOLS:
         assert tools[name]["confirmation"] == "runs at once"
     assert "workspace_show" in report["board"]
+
+
+async def test_results_are_wrapped_as_untrusted(rt: Runtime) -> None:
+    done = await call(rt, SHOW, {"title": "October", "widgets": [STAT]})
+    assert done.content == wrap(SHOW, 'Shown on the board: w1 stat "Total".')
+
+
+async def test_a_board_that_cannot_be_saved_is_reported(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*_: Any) -> None:
+        raise BoardNotSaved("another owner's")
+
+    monkeypatch.setattr(rt.board_store, "put", broken)
+    done = await call(rt, SHOW, {"widgets": [STAT]})
+    assert done.status == "failed" and done.error_kind == "save_failed"
+    assert "could not be saved" in done.content
