@@ -579,7 +579,7 @@ body[data-sidebar='hidden'] .workspace {
     --dock-hole: radial-gradient(
       circle at calc(100% - var(--hole-at)) calc(100% - var(--hole-at)),
       transparent var(--hole-r),
-      #000 calc(var(--hole-r) + 1px)
+      black calc(var(--hole-r) + 1px)
     );
     -webkit-mask: var(--dock-hole);
     mask: var(--dock-hole);
@@ -692,7 +692,7 @@ body[data-sidebar='hidden'] .workspace {
     --dock-hole: radial-gradient(
       circle at 50% var(--hole-y),
       transparent var(--hole-r),
-      #000 calc(var(--hole-r) + 1px)
+      black calc(var(--hole-r) + 1px)
     );
     inset: 0 0 var(--sheet-ask, 0) 0;
     border: 0;
