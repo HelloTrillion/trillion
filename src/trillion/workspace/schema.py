@@ -6,6 +6,7 @@ is what decides, and its messages tell the model what to fix.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 from trillion.workspace.blocks import BLOCK_TONES, BLOCK_TYPES
@@ -36,8 +37,72 @@ CARDS = {
     "callout": "text, tone?",
     "goal": "label, value, target (numbers), unit?, by?",
     "sources": "items[{title, site, note?}]",
+    "kpis": "metrics[{label, value, delta?, tone?, trend[]?}] 2-4",
+    "tasks": "tasks[{title, status?, due?, owner?, priority?, done?}]",
+    "transactions": "items[{who, amount, what?, status? paid|failed|refunded|pending, when?}],"
+    " total?",
+    "invoices": "items[{who, amount, due, status? overdue|due|paid}]",
+    "breakdown": "items[{label, value number}], unit?",
+    "payouts": "items[{amount, when, note?}], total?",
+    "pipeline": "stages[{label, count, value?}] 2-6",
+    "deal": "name, amount?, stages[] names, current (a stage), owner?, next?, close?",
+    "contact": "name, role?, company?, facts[{label, value}]?, activity[{title, when?}]?",
+    "campaign": "sent, delivered?, opened?, clicked?, replied? (counts)",
+    "support_queue": "open (count), waiting[{who, subject, since}]?, first_reply?",
+    "checks": "items[{title, state passing|failing|running|pending, who?, when?}]",
+    "errors": "issues[{title, events, users?}], trend[]?",
+    "deploys": "items[{title, state ready|building|failed|cancelled, branch?, when?}]",
+    "services": "items[{name, state up|degraded|down, note?}]",
+    "kanban": "columns[{name, count?, items[] up to 5 titles}] 2-4",
+    "sprint": "done, total, name?, ends?, burndown[]?",
+    "due_soon": "items[{title, due, owner?}]",
     "custom": "blocks[]",
 }
+# Each type's own top-level fields: the schema lists a field only when a type she is
+# told about uses it. A field left out is still taken (the schema allows any field).
+FIELDS: dict[str, tuple[str, ...]] = {
+    "stat": ("label", "value", "delta", "hint", "tone"),
+    "chart": ("kind", "x", "series", "unit"),
+    "list": ("items",),
+    "table": ("columns", "rows"),
+    "note": ("text",),
+    "timeline": ("events",),
+    "compare": ("options", "pick", "reason"),
+    "next_up": ("event", "start", "end", "where", "people", "note"),
+    "free_time": ("slots",),
+    "inbox": ("unread", "needs_reply", "threads"),
+    "thread": ("from", "subject", "request", "due", "when", "excerpt"),
+    "mentions": ("groups",),
+    "files": ("files",),
+    "quote": ("text", "by", "when"),
+    "plan": ("steps",),
+    "decision": ("options", "criteria", "scores", "pick", "reason"),
+    "facts": ("items",),
+    "callout": ("text", "tone"),
+    "goal": ("label", "value", "target", "unit", "by"),
+    "sources": ("items",),
+    "kpis": ("metrics",),
+    "tasks": ("tasks",),
+    "transactions": ("items", "total"),
+    "invoices": ("items",),
+    "breakdown": ("items", "unit"),
+    "payouts": ("items", "total"),
+    "pipeline": ("stages",),
+    "deal": ("name", "amount", "stages", "current", "owner", "next", "close"),
+    "contact": ("name", "role", "company", "facts", "activity"),
+    "campaign": ("sent", "delivered", "opened", "clicked", "replied"),
+    "support_queue": ("open", "waiting", "first_reply"),
+    "checks": ("items",),
+    "errors": ("issues", "trend"),
+    "deploys": ("items",),
+    "services": ("items",),
+    "kanban": ("columns",),
+    "sprint": ("name", "done", "total", "ends", "burndown"),
+    "due_soon": ("items",),
+    "custom": ("blocks",),
+}
+# What every widget may carry.
+_COMMON = ("type", "size", "title", "source", "asks")
 # The blocks a custom widget arranges, with their fields.
 BLOCK_CARDS = {
     "value": "value, label?, delta?, hint?, tone?",
@@ -63,9 +128,15 @@ BLOCK_CARDS = {
 }
 
 
-def type_cards() -> str:
-    """The widget types, one line each, for the workspace tool's description."""
-    types = "\n".join(f"{kind}: {CARDS[kind]}" for kind in TYPES)
+def _listed(types: Collection[str]) -> list[str]:
+    """The told types in the kit's order, so custom, the fallback, comes last."""
+    return [kind for kind in TYPES if kind in types]
+
+
+def type_cards(types: Collection[str] = TYPES) -> str:
+    """The widget types she is told about, one line each, for the workspace tool's
+    description. Every block is listed: custom can always use them."""
+    types = "\n".join(f"{kind}: {CARDS[kind]}" for kind in _listed(types))
     blocks = "; ".join(f"{name} {{{BLOCK_CARDS[name]}}}" for name in BLOCK_TYPES)
     return (
         "Widget types (field? optional, field[] a list, others required):\n"
@@ -76,12 +147,14 @@ def type_cards() -> str:
     )
 
 
-def widget_schema() -> dict[str, Any]:
-    """One widget, as tool input. Flat (every type's fields side by side) because small
-    local models follow a flat schema better than a oneOf, and it costs fewer tokens;
-    `validate_widget` enforces which fields each type takes. Loose too: the router
-    checks input against this before the kit sees it, so it must never refuse a widget
-    the kit takes (a field shared by types takes every type's shape)."""
+def widget_schema(types: Collection[str] = TYPES) -> dict[str, Any]:
+    """One widget, as tool input, naming the fields of the `types` she is told about.
+    Flat (every type's fields side by side) because small local models follow a flat
+    schema better than a oneOf, and it costs fewer tokens; `validate_widget` enforces
+    which fields each type takes. Loose too: the router checks input against this
+    before the kit sees it, so it must never refuse a widget the kit takes, of any type,
+    told or not (a field shared by types takes every type's shape, and a field no told
+    type uses is left out, not refused)."""
     s, n, o = {"type": "string"}, {"type": "number"}, {"type": "object"}
     # Her source is a name; {name} is taken too.
     so = {"type": ["string", "object"]}
@@ -104,7 +177,7 @@ def widget_schema() -> dict[str, Any]:
     props: dict[str, Any] = {
         # No enums: a model's near miss ("line" for a chart) must reach the kit, which
         # reads what was meant or says exactly what to fix. The values are listed here.
-        "type": d(s, f"One of {', '.join(TYPES)}; fields per type in workspace_show."),
+        "type": d(s, f"One of {', '.join(_listed(types))}; fields per type in workspace_show."),
         "size": d(s, f"One of {', '.join(SIZES)}."),
         "title": s,
         "source": d(so, "Where its facts came from, e.g. 'Calendar'."),
@@ -127,7 +200,8 @@ def widget_schema() -> dict[str, Any]:
             "list: {title, subtitle?, meta?, done?}; facts: {label, value}; "
             "sources: {title, site, note?}.",
         ),
-        "columns": arr(s),
+        # A table's are names; a kanban's are {name, count?, items[]}.
+        "columns": arr({"type": ["string", "object"]}),
         "rows": arr(arr(sn)),
         "text": d(s, "Blank lines, '- ' bullets, **bold**."),
         "events": arr(o, "Times HH:MM, one day."),
@@ -161,10 +235,42 @@ def widget_schema() -> dict[str, Any]:
         "scores": arr(arr(n), "One row per option, a score 0-10 per criterion."),
         "target": sn,
         "blocks": arr(obj({"type": s}, ["type"]), "custom: see workspace_show."),
+        # The packs' fields. Counts may come as text ("12"), as elsewhere.
+        "metrics": arr(o),
+        "tasks": arr(o),
+        "total": sn,
+        "stages": arr({"type": ["string", "number", "object"]}),
+        "name": s,
+        "amount": sn,
+        "current": sn,
+        "owner": s,
+        "next": s,
+        "close": s,
+        "role": s,
+        "company": s,
+        "facts": arr(o),
+        "activity": arr(o),
+        "sent": sn,
+        "delivered": sn,
+        "opened": sn,
+        "clicked": sn,
+        "replied": sn,
+        "open": sn,
+        "waiting": arr(o),
+        "first_reply": sn,
+        "issues": arr(o),
+        "trend": arr(n),
+        "done": sn,
+        "ends": s,
+        "burndown": arr(n),
     }
+    named = set(_COMMON).union(*(FIELDS[kind] for kind in types if kind in FIELDS))
     # Every field may be null: small local models send null for a field they leave out,
     # and the kit reads None as absent. New dicts: the shapes above are shared.
-    return {"type": "object", "properties": {k: _nullable(v) for k, v in props.items()}}
+    return {
+        "type": "object",
+        "properties": {k: _nullable(v) for k, v in props.items() if k in named},
+    }
 
 
 def _nullable(prop: dict[str, Any]) -> dict[str, Any]:

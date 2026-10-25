@@ -178,7 +178,7 @@ def test_she_shows_what_an_approval_is_about_but_never_as_the_approval() -> None
 
 
 def test_she_is_taught_the_widget_rules_in_both_modalities() -> None:
-    from trillion.workspace.widgets import TYPES
+    from trillion.workspace.packs import PACKS
 
     ident = Identity(agent_name="Nova", user_name="Sam")
     typed = system_blocks(ident, "soul")[0].text
@@ -186,7 +186,9 @@ def test_she_is_taught_the_widget_rules_in_both_modalities() -> None:
     for text in (typed, spoken):
         assert "custom" in text and "source" in text
         assert "two at most" in text or "at most two asks" in text
-        assert all(kind in text for kind in TYPES)
+        # The core widgets; a pack's are listed in the workspace tool while it's connected.
+        assert all(kind in text for kind in PACKS["core"])
+        assert "transactions" not in text
         assert "\u2014" not in text and "\u2013" not in text
 
 

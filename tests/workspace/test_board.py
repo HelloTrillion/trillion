@@ -167,6 +167,8 @@ def test_unknown_type():
         "widget 1: unknown type 'map'; "
         "use one of stat, chart, list, table, note, timeline, compare, next_up, free_time, "
         "inbox, thread, mentions, files, quote, plan, decision, facts, callout, goal, sources, "
+        "kpis, tasks, transactions, invoices, breakdown, payouts, pipeline, deal, contact, "
+        "campaign, support_queue, checks, errors, deploys, services, kanban, sprint, due_soon, "
         "custom."
     )
 

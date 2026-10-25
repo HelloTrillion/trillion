@@ -93,10 +93,14 @@ class Boards:
             if not await self._conversations.exists(conversation_id, self._owner):
                 raise BoardError("there is no open conversation to put a board in.")
             old = await self._store.get(conversation_id, self._owner)
-            with on_day(day_in(self._zone())):
+            day = day_in(self._zone())
+            with on_day(day):
                 new = edit(old)
             now = self._clock()
             _stamp(new, now)
+            # Expanded on the user's day too: "Today" in a due-soon card is theirs.
+            with on_day(day):
+                page = for_page(new)
             try:
                 await self._store.put(conversation_id, self._owner, new, now)
             except Exception as e:
@@ -105,7 +109,7 @@ class Boards:
             # Still inside the lock, so pages get boards in the order they were saved;
             # bounded, so a slow page cannot hold every other change.
             try:
-                await asyncio.wait_for(self._send_to(conversation_id, for_page(new)), SEND_S)
+                await asyncio.wait_for(self._send_to(conversation_id, page), SEND_S)
             except TimeoutError:
                 logger.warning("board not sent: a page was too slow")
         return old, new

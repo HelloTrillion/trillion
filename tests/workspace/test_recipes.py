@@ -206,8 +206,48 @@ def blocks_of(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def test_every_recipe_is_a_kit_type():
-    assert set(NEW) | {w["type"] for w in OLD} == set(TYPES)
+    from tests.workspace.test_pack_widgets import MIN_OF as PACK_OF_MIN
+
+    assert set(NEW) | {w["type"] for w in OLD} | set(PACK_OF_MIN) == set(TYPES)
     assert {w["type"] for w in FULL} == set(NEW)
+
+
+# What phase 1 read from the fields alone, before the packs: the same now.
+PHASE_1_UNTYPED = {
+    "stat": "stat",
+    "chart": "chart",
+    "list": "list",
+    "table": "table",
+    "note": "note",
+    "timeline": "timeline",
+    "compare": "compare",
+    "next_up": "next_up",
+    "free_time": "free_time",
+    "inbox": "inbox",
+    "thread": "thread",
+    "mentions": "mentions",
+    "files": "files",
+    "quote": "note",
+    "plan": "plan",
+    "decision": "decision",
+    "facts": "list",
+    "callout": "note",
+    "goal": "goal",
+    "sources": "list",
+    "custom": "custom",
+}
+
+
+def test_phase_1_widgets_map_as_they_did():
+    from trillion.workspace.samples import SAMPLES
+    from trillion.workspace.widgets import _typed
+
+    phase_1 = [w for w in SAMPLES + EVERY if w["type"] in PHASE_1_UNTYPED]
+    assert {w["type"] for w in phase_1} == set(PHASE_1_UNTYPED)
+    for raw in phase_1:
+        untyped = {k: v for k, v in raw.items() if k != "type"}
+        assert _typed(untyped).get("type") == PHASE_1_UNTYPED[raw["type"]], raw
+        assert _typed(raw)["type"] == raw["type"]
 
 
 @pytest.mark.parametrize("raw", MINIMAL + FULL, ids=lambda w: w["type"])

@@ -12,6 +12,7 @@ from types import ModuleType
 import pytest
 
 from trillion.workspace.blocks import BLOCK_TYPES, validate_blocks
+from trillion.workspace.packs import PACK_OF_TYPE
 from trillion.workspace.samples import BLOCK_SAMPLES, SAMPLES
 from trillion.workspace.widgets import TYPES, validate_widget
 
@@ -58,3 +59,21 @@ def test_every_expanded_sample_has_blocks_the_kit_takes_unchanged(gen: ModuleTyp
             assert widget["source"]["at"] == "2026-10-25T09:00:00Z"
     ids = [w["id"] for w in doc["widgets"] + doc["blocks"]]
     assert ids == [f"k{n}" for n in range(1, len(ids) + 1)]
+
+
+def test_every_expanded_sample_names_its_pack(gen: ModuleType) -> None:
+    doc = json.loads(gen.render())
+    for widget in doc["widgets"] + doc["blocks"]:
+        assert widget["pack"] == PACK_OF_TYPE[widget["type"]], widget["id"]
+    packs = {w["pack"] for w in doc["widgets"]}
+    assert packs == {"core", "money", "customers", "building", "work"}
+
+
+def test_connector_samples_name_the_connector_by_its_catalogue_title() -> None:
+    from trillion.connectors.mcp.catalog import BY_ID
+    from trillion.workspace.packs import PACK_OF
+
+    titles = {BY_ID[i].title for i in PACK_OF}
+    for raw in SAMPLES:
+        if PACK_OF_TYPE[raw["type"]] != "core":
+            assert raw.get("source") in titles, raw["type"]

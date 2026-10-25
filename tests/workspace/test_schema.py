@@ -8,35 +8,13 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from tests.workspace.test_recipes import EVERY
+from tests.workspace import test_pack_widgets, test_recipes
 from trillion.workspace.blocks import BLOCK_TYPES
-from trillion.workspace.schema import BLOCK_CARDS, CARDS, widget_schema
+from trillion.workspace.packs import PACK_OF, PACKS, told
+from trillion.workspace.schema import BLOCK_CARDS, CARDS, FIELDS, type_cards, widget_schema
 from trillion.workspace.widgets import TYPES, validate_widget
 
-# Every field a recipe reads, by type; the flat schema must name each one.
-FIELDS = {
-    "stat": ("label", "value", "delta", "hint", "tone"),
-    "chart": ("kind", "x", "series", "unit"),
-    "list": ("items",),
-    "table": ("columns", "rows"),
-    "note": ("text",),
-    "timeline": ("events",),
-    "compare": ("options", "pick", "reason"),
-    "next_up": ("event", "start", "end", "where", "people", "note"),
-    "free_time": ("slots",),
-    "inbox": ("unread", "needs_reply", "threads"),
-    "thread": ("from", "subject", "request", "due", "when", "excerpt"),
-    "mentions": ("groups",),
-    "files": ("files",),
-    "quote": ("text", "by", "when"),
-    "plan": ("steps",),
-    "decision": ("options", "criteria", "scores", "pick", "reason"),
-    "facts": ("items",),
-    "callout": ("text", "tone"),
-    "goal": ("label", "value", "target", "unit", "by"),
-    "sources": ("items",),
-    "custom": ("blocks",),
-}
+EVERY = test_recipes.EVERY + test_pack_widgets.EVERY
 
 
 def _keys(node: Any) -> set[str]:
@@ -60,7 +38,45 @@ def test_every_type_is_named_and_has_its_fields() -> None:
 
 def test_a_card_for_every_type_and_block() -> None:
     assert list(CARDS) == list(TYPES)
+    assert list(FIELDS) == list(TYPES)
     assert list(BLOCK_CARDS) == list(BLOCK_TYPES)
+
+
+def test_only_the_told_types_and_their_fields_are_named() -> None:
+    core = widget_schema(told([]))["properties"]
+    assert "transactions" not in core["type"]["description"]
+    assert "kpis" in core["type"]["description"]
+    for field in ("who", "sent", "burndown", "issues", "current", "waiting"):
+        assert field not in core, field
+    # A field a core type shares with a pack keeps the shape both take.
+    assert "object" in core["columns"]["items"]["type"]
+    money = widget_schema(told(["stripe"]))["properties"]
+    assert "total" in money and "sent" not in money
+    assert set(widget_schema()["properties"]) == set(widget_schema(told(PACK_OF))["properties"])
+
+
+def test_the_cards_list_only_the_told_types_and_every_block() -> None:
+    core = type_cards(told([]))
+    assert "\ntasks: " in core and "\ntransactions: " not in core
+    assert core.rstrip(".").endswith(
+        "stages {steps[], current (a step or its index from 0), tone?}"
+    )
+    for block in BLOCK_TYPES:
+        assert f"{block} {{" in core, block
+    every = type_cards(told(PACK_OF))
+    for kinds in PACKS.values():
+        for kind in kinds:
+            assert f"\n{kind}: " in every, kind
+    # Custom, the fallback, comes last.
+    assert every.index("\ncustom: ") > every.index("\ndue_soon: ")
+
+
+@pytest.mark.parametrize("raw", test_pack_widgets.EVERY, ids=lambda w: w["type"])
+def test_a_pack_widget_passes_the_core_schema(raw: dict[str, Any]) -> None:
+    """She may write a pack's widget with no pack told (she was told the numbers, or a
+    board was saved earlier): the schema lists fewer fields, but refuses none."""
+    errors = list(Draft202012Validator(widget_schema(told([]))).iter_errors(raw))
+    assert errors == [], [e.message for e in errors]
 
 
 def test_still_flat() -> None:
