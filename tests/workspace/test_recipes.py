@@ -1,0 +1,828 @@
+"""Her widget types (recipes): what she may write, and the blocks each becomes."""
+
+import copy
+from typing import Any
+
+import pytest
+
+from trillion.workspace import board as b
+from trillion.workspace.blocks import validate_blocks
+from trillion.workspace.kit import TYPES, BoardError, validate_widget
+from trillion.workspace.recipes import expand, expand_board
+
+# Today's seven, as a board saved before recipes holds them.
+OLD: list[dict[str, Any]] = [
+    {"type": "stat", "label": "Total", "value": "$41.20"},
+    {
+        "type": "chart",
+        "title": "Daily spend",
+        "kind": "line",
+        "x": ["Oct 1", "Oct 2"],
+        "series": [{"name": "Spend", "values": [1.2, 3.4]}],
+    },
+    {"type": "list", "items": [{"title": "Milk"}]},
+    {"type": "table", "columns": ["Day", "Spend"], "rows": [["Mon", 3]]},
+    {"type": "note", "text": "One thing."},
+    {"type": "timeline", "events": [{"title": "Standup", "start": "09:30"}]},
+    {
+        "type": "compare",
+        "options": [
+            {"name": "Hike", "metrics": [{"label": "Fun", "score": 8}]},
+            {"name": "Museum", "metrics": [{"label": "Fun", "score": 6}]},
+        ],
+    },
+]
+
+MINIMAL: list[dict[str, Any]] = [
+    {"type": "next_up", "event": "Design review", "start": "2026-10-25T14:30"},
+    {"type": "free_time", "slots": [{"start": "2026-10-28T09:00", "end": "2026-10-28T10:30"}]},
+    {"type": "inbox", "unread": 12},
+    {"type": "thread", "from": "Jo", "subject": "Venue contract", "ask": "Can you sign it?"},
+    {
+        "type": "mentions",
+        "groups": [{"channel": "#launch", "items": [{"from": "Alex", "text": "Copy ready?"}]}],
+    },
+    {"type": "files", "files": [{"name": "Q4 plan"}]},
+    {"type": "quote", "text": "See you there."},
+    {"type": "plan", "steps": [{"title": "Book the room"}]},
+    {"type": "decision", "options": ["Hike", "Museum"], "criteria": ["Fun"], "scores": [[8], [6]]},
+    {"type": "facts", "items": [{"label": "Plan", "value": "Pro"}]},
+    {"type": "callout", "text": "Rent is due tomorrow."},
+    {"type": "goal", "label": "Savings", "value": 4200, "target": 6000},
+    {"type": "sources", "items": [{"title": "Rail pass guide", "site": "example.org"}]},
+    {"type": "custom", "blocks": [{"type": "text", "text": "Hello."}]},
+]
+
+FULL: list[dict[str, Any]] = [
+    {
+        "type": "next_up",
+        "title": "Next up",
+        "event": "Design review",
+        "start": "2026-10-25T14:30",
+        "end": "2026-10-25T15:00",
+        "where": "Maple Park room 2",
+        "people": ["Sam", "Jo"],
+        "note": "Bring the mockups.",
+    },
+    {
+        "type": "free_time",
+        "title": "Free this week",
+        "slots": [
+            {"start": "2026-10-28T14:00", "end": "2026-10-28T15:00"},
+            {"start": "2026-10-28T09:00", "end": "2026-10-28T10:30"},
+            {"start": "2026-10-29T11:30-07:00", "end": "2026-10-29T12:15-07:00"},
+        ],
+    },
+    {
+        "type": "inbox",
+        "title": "Inbox",
+        "unread": 12,
+        "needs_reply": 3,
+        "threads": [
+            {
+                "from": "Sam",
+                "subject": "Budget for Q4",
+                "when": "2026-10-25T08:10",
+                "flag": "attention",
+            },
+            {"from": "Jo", "subject": "Lunch?"},
+        ],
+    },
+    {
+        "type": "thread",
+        "title": "Waiting on you",
+        "from": "Jo",
+        "subject": "Venue contract",
+        "ask": "Can you sign the contract?",
+        "due": "Friday",
+        "when": "2026-10-24T16:00",
+        "excerpt": "The venue needs it back by Friday to hold the date.",
+    },
+    {
+        "type": "mentions",
+        "title": "Mentions",
+        "groups": [
+            {
+                "channel": "#launch",
+                "items": [
+                    {"from": "Alex", "text": "Can you check the copy?", "when": "2026-10-25T09:00"},
+                    {"from": "Sam", "text": "Shipping Friday."},
+                ],
+            },
+            {"channel": "#design", "items": [{"from": "Jo", "text": "New mockups are up."}]},
+        ],
+    },
+    {
+        "type": "files",
+        "title": "Recent files",
+        "files": [
+            {"name": "Q4 plan", "kind": "Doc", "edited": "2026-10-24T17:20", "by": "Sam"},
+            {"name": "Budget", "kind": "Sheet"},
+        ],
+    },
+    {
+        "type": "quote",
+        "title": "From Jo",
+        "text": "See you there.",
+        "by": "Jo",
+        "when": "2026-10-20",
+    },
+    {
+        "type": "plan",
+        "title": "Launch",
+        "steps": [
+            {"title": "Book the room", "done": True},
+            {"title": "Send invites", "done": True},
+            {"title": "Order food", "detail": "For 20 people"},
+            {"title": "Print badges", "done": False},
+            {"title": "Set up the room"},
+        ],
+    },
+    {
+        "type": "decision",
+        "title": "Saturday",
+        "options": ["Hike", "Museum"],
+        "criteria": ["Fun", "Cost"],
+        "scores": [[8, 6], [6, 9.5]],
+        "pick": "Museum",
+        "reason": "Cheaper and still fun.",
+    },
+    {
+        "type": "facts",
+        "title": "Your plan",
+        "items": [{"label": "Plan", "value": "Pro"}, {"label": "Seats", "value": 5}],
+    },
+    {"type": "callout", "title": "Heads up", "text": "Rent is due tomorrow.", "tone": "attention"},
+    {
+        "type": "goal",
+        "title": "Savings goal",
+        "label": "Savings",
+        "value": 4200,
+        "target": 6000,
+        "unit": "$",
+        "by": "2026-11-30",
+    },
+    {
+        "type": "sources",
+        "title": "Sources",
+        "items": [
+            {"title": "Rail pass guide", "site": "example.org", "note": "Prices for 2026"},
+            {"title": "Timetables", "site": "example.com"},
+        ],
+    },
+    {
+        "type": "custom",
+        "title": "Who's on call",
+        "blocks": [
+            {"type": "rows", "items": [{"title": "Sam", "person": "Sam", "chip": "Primary"}]},
+            {"type": "chips", "items": ["Pager"]},
+        ],
+    },
+]
+
+NEW = [w["type"] for w in MINIMAL]
+EVERY = OLD + MINIMAL + FULL
+
+
+def refused(raw: object, at: int | str = 1) -> str:
+    with pytest.raises(BoardError) as err:
+        validate_widget(raw, at)
+    return str(err.value)
+
+
+def blocks_of(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return expand(validate_widget(raw, 1))
+
+
+# The kit takes them
+
+
+def test_every_recipe_is_a_kit_type():
+    assert set(NEW) | {w["type"] for w in OLD} == set(TYPES)
+    assert {w["type"] for w in FULL} == set(NEW)
+
+
+@pytest.mark.parametrize("raw", MINIMAL + FULL, ids=lambda w: w["type"])
+def test_each_recipe_accepted(raw):
+    out = validate_widget(raw, 1)
+    assert out["type"] == raw["type"]
+    assert "id" not in out
+
+
+def test_full_fields_kept_and_extras_dropped():
+    raw = {**FULL[0], "colour": "red", "source": "Calendar", "asks": ["Prep me for this"]}
+    assert validate_widget(raw, 1) == {
+        "type": "next_up",
+        "size": "small",
+        "title": "Next up",
+        "event": "Design review",
+        "start": "2026-10-25T14:30",
+        "end": "2026-10-25T15:00",
+        "where": "Maple Park room 2",
+        "people": ["Sam", "Jo"],
+        "note": "Bring the mockups.",
+        "source": {"name": "Calendar"},
+        "asks": ["Prep me for this"],
+    }
+
+
+def test_default_sizes():
+    sizes = {w["type"]: validate_widget(w, 1)["size"] for w in MINIMAL}
+    small = {"next_up", "goal", "callout", "facts", "quote"}
+    wide = {"decision", "mentions"}
+    for kind, size in sizes.items():
+        want = "small" if kind in small else "wide" if kind in wide else "medium"
+        assert size == want, kind
+    assert validate_widget({**MINIMAL[0], "size": "wide"}, 1)["size"] == "wide"
+    assert validate_widget(OLD[0], 1)["size"] == "medium"
+
+
+def test_stat_takes_a_title_like_every_widget():
+    assert validate_widget({**OLD[0], "title": "October"}, 1)["title"] == "October"
+
+
+# Source and asks, on every type
+
+
+@pytest.mark.parametrize("raw", OLD + MINIMAL, ids=lambda w: w["type"])
+def test_source_and_asks_on_every_type(raw):
+    out = validate_widget({**raw, "source": "Calendar", "asks": ["Prep me for this"]}, 1)
+    assert out["source"] == {"name": "Calendar"} and out["asks"] == ["Prep me for this"]
+
+
+def test_source():
+    ok = MINIMAL[0]
+    assert validate_widget({**ok, "source": {"name": "Gmail", "at": "2020-01-01T00:00:00Z"}}, 1)[
+        "source"
+    ] == {"name": "Gmail"}
+    assert validate_widget({**ok, "source": "C" * 40}, 1)["source"] == {"name": "C" * 29 + "…"}
+    assert "source" not in validate_widget({**ok, "source": "  "}, 1)
+    assert "source" not in validate_widget({**ok, "source": None}, 1)
+    assert refused({**ok, "source": {"at": "now"}}) == (
+        "widget 1 (next_up): source: name is required."
+    )
+    assert refused({**ok, "source": 3}) == (
+        'widget 1 (next_up): source must be a name, like "Calendar", or {name}.'
+    )
+
+
+def test_asks():
+    ok = MINIMAL[0]
+    out = validate_widget({**ok, "asks": ["  Prep me\nfor this ", " ", "🎉", "Move it"]}, 1)
+    assert out["asks"] == ["Prep me for this", "Move it"]
+    assert validate_widget({**ok, "asks": "Prep me"}, 1)["asks"] == ["Prep me"]
+    assert "asks" not in validate_widget({**ok, "asks": []}, 1)
+    assert refused({**ok, "asks": ["a", "b", "c"]}) == "widget 1 (next_up): 3 asks, 2 at most."
+    assert refused({**ok, "asks": ["x" * 41]}) == (
+        "widget 1 (next_up): ask 1 is 41 characters, 40 at most."
+    )
+    assert refused({**ok, "asks": [3]}) == "widget 1 (next_up): ask 1 must be a string."
+    assert refused({**ok, "asks": {"a": 1}}) == "widget 1 (next_up): asks must be a list."
+
+
+# Emoji
+
+
+_KEEP_AS_IS = {"type", "kind", "size", "tone", "flag", "start", "end", "when", "edited", "by"}
+
+
+def _sprinkle(value: Any, key: str = "") -> Any:
+    """The widget with an emoji before every free-text string."""
+    if isinstance(value, str):
+        return value if key in _KEEP_AS_IS else f"🎉 {value}✨"
+    if isinstance(value, list):
+        return [_sprinkle(v, key) for v in value]
+    if isinstance(value, dict):
+        return {k: _sprinkle(v, k) for k, v in value.items()}
+    return value
+
+
+@pytest.mark.parametrize("raw", OLD + FULL, ids=lambda w: w["type"])
+def test_emoji_stripped_from_every_string(raw):
+    noisy = _sprinkle({**raw, "source": "Calendar", "asks": ["Prep me"]})
+    assert noisy != raw
+    clean = {**raw, "source": "Calendar", "asks": ["Prep me"]}
+    assert validate_widget(noisy, 1) == validate_widget(clean, 1)
+
+
+# Near misses
+
+
+@pytest.mark.parametrize(
+    ("given", "meant"),
+    [
+        ("agenda", "timeline"),
+        ("next", "next_up"),
+        ("next_meeting", "next_up"),
+        ("Next up", "next_up"),
+        ("next-up", "next_up"),
+        ("inbox_summary", "inbox"),
+        ("email", "inbox"),
+        ("checklist", "plan"),
+        ("steps", "plan"),
+        ("alert", "callout"),
+        ("banner", "callout"),
+        ("progress", "goal"),
+    ],
+)
+def test_near_miss_names(given, meant):
+    fixture = next(w for w in MINIMAL + OLD if w["type"] == meant)
+    assert validate_widget({**fixture, "type": given}, 1)["type"] == meant
+
+
+def test_a_checklist_is_a_plan_now():
+    out = validate_widget({"type": "checklist", "steps": [{"title": "Milk", "done": True}]}, 1)
+    assert out == {"type": "plan", "size": "medium", "steps": [{"title": "Milk", "done": True}]}
+
+
+def test_types_read_from_telling_fields():
+    assert validate_widget({"slots": MINIMAL[1]["slots"]}, 1)["type"] == "free_time"
+    assert validate_widget({"steps": [{"title": "a"}]}, 1)["type"] == "plan"
+    decision = {k: v for k, v in MINIMAL[8].items() if k != "type"}
+    assert validate_widget(decision, 1)["type"] == "decision"
+    assert validate_widget({"blocks": [{"type": "text", "text": "a"}]}, 1)["type"] == "custom"
+
+
+# Refusals name the widget, the field and the limit
+
+
+def test_time_fields_are_iso():
+    assert refused({**MINIMAL[0], "start": "3 pm"}) == (
+        "widget 1 (next_up): start '3 pm' must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25."
+    )
+    assert refused({**MINIMAL[0], "end": "2026-10-25T14:00"}) == (
+        "widget 1 (next_up): end 2026-10-25T14:00 is before start 2026-10-25T14:30."
+    )
+    files = {"type": "files", "files": [{"name": "a", "edited": "yesterday"}]}
+    assert refused(files) == (
+        "widget 1 (files): file 1: edited 'yesterday' must be ISO 8601, like 2026-10-25T14:30"
+        " or 2026-10-25."
+    )
+
+
+def test_next_up_people_limit():
+    assert refused({**MINIMAL[0], "people": [f"P{i}" for i in range(9)]}) == (
+        "widget 1 (next_up): 9 people, 8 at most."
+    )
+
+
+def test_free_time_slots():
+    def slot(start: str, end: str) -> dict[str, Any]:
+        return {"type": "free_time", "slots": [{"start": start, "end": end}]}
+
+    assert refused(slot("2026-10-28", "2026-10-28")) == (
+        "widget 1 (free_time): slot 1: start and end need a time, like 2026-10-28T09:00."
+    )
+    assert refused(slot("2026-10-28T22:00", "2026-10-29T01:00")) == (
+        "widget 1 (free_time): slot 1: it ends on another day; give one slot per day."
+    )
+    assert refused(slot("2026-10-28T10:00", "2026-10-28T09:00")) == (
+        "widget 1 (free_time): slot 1: end 2026-10-28T09:00 is before start 2026-10-28T10:00."
+    )
+    assert refused({"type": "free_time", "slots": []}) == "widget 1 (free_time): slots is empty."
+
+
+def test_inbox_counts():
+    assert refused({"type": "inbox", "unread": -1}) == (
+        "widget 1 (inbox): unread must be a whole number, 0 or more, not -1."
+    )
+    assert refused({"type": "inbox", "unread": 2.5}) == (
+        "widget 1 (inbox): unread must be a whole number, 0 or more, not 2.5."
+    )
+    assert refused({"type": "inbox"}) == "widget 1 (inbox): unread is required."
+    bad_flag = {"type": "inbox", "unread": 1, "threads": [{"from": "a", "subject": "b", "flag": 1}]}
+    assert refused(bad_flag) == (
+        "widget 1 (inbox): thread 1: flag must be one of good, bad, attention, neutral, not 1."
+    )
+
+
+def test_thread_due():
+    out = validate_widget({**MINIMAL[3], "due": "2026-10-31"}, 1)
+    assert out["due"] == "2026-10-31"
+    assert refused({**MINIMAL[3], "due": "2026-13-01"}) == (
+        "widget 1 (thread): due '2026-13-01' must be ISO 8601, like 2026-10-25T14:30 or 2026-10-25."
+    )
+    assert refused({**MINIMAL[3], "excerpt": "x" * 601}) == (
+        "widget 1 (thread): excerpt is 601 characters, 600 at most."
+    )
+
+
+def test_mentions_limit_across_groups():
+    items = [{"from": "a", "text": "b"}] * 16
+    groups = [{"channel": "#a", "items": items}, {"channel": "#b", "items": items}]
+    assert refused({"type": "mentions", "groups": groups}) == (
+        "widget 1 (mentions): 32 messages across the groups, 30 at most."
+    )
+
+
+def test_plan_done_is_true_or_false():
+    assert refused({"type": "plan", "steps": [{"title": "a", "done": "yes"}]}) == (
+        "widget 1 (plan): step 1: done must be true or false."
+    )
+
+
+def test_decision_shapes():
+    base = MINIMAL[8]
+    assert refused({**base, "options": ["Hike"], "scores": [[8]]}) == (
+        "widget 1 (decision): 1 option; a decision takes 2 to 8."
+    )
+    assert refused({**base, "options": ["Hike", "Hike"]}) == (
+        "widget 1 (decision): option 'Hike' is named twice; names must differ."
+    )
+    assert refused({**base, "criteria": [f"C{i}" for i in range(7)]}) == (
+        "widget 1 (decision): 7 criteria, 6 at most."
+    )
+    assert refused({**base, "scores": [[8]]}) == (
+        "widget 1 (decision): scores has 1 row but there are 2 options; give one row per option."
+    )
+    assert refused({**base, "scores": [[8], [6, 7]]}) == (
+        "widget 1 (decision): scores row 2 (Museum) has 2 scores but there is 1 criterion."
+    )
+    assert refused({**base, "scores": [[8], [11]]}) == (
+        "widget 1 (decision): scores row 2 (Museum): Fun must be a number from 0 to 10, not 11."
+    )
+    assert refused({**base, "scores": "high"}) == "widget 1 (decision): scores must be a list."
+    assert refused({**base, "pick": "Beach"}) == (
+        "widget 1 (decision): pick 'Beach' is not an option; use one of Hike, Museum."
+    )
+
+
+def test_callout_and_goal_limits():
+    assert refused({"type": "callout", "text": "x" * 201}) == (
+        "widget 1 (callout): text is 201 characters, 200 at most."
+    )
+    assert refused({"type": "callout", "text": "a", "tone": "red"}) == (
+        "widget 1 (callout): tone must be one of good, bad, attention, neutral, not 'red'."
+    )
+    assert refused({**MINIMAL[11], "target": 0}) == (
+        "widget 1 (goal): target must be above 0, not 0."
+    )
+    assert refused({**MINIMAL[11], "value": "lots"}) == (
+        "widget 1 (goal): value: 'lots' is not a number."
+    )
+
+
+def test_custom_runs_the_block_checks():
+    assert refused({"type": "custom", "blocks": [{"type": "meter", "value": 1, "max": 0}]}) == (
+        "widget 1 (custom): block 1 (meter): max must be above 0, not 0."
+    )
+    assert refused({"type": "custom"}, "w4") == "custom w4: blocks must be a list."
+
+
+# What each recipe becomes
+
+
+def test_expand_stat():
+    raw = {**OLD[0], "delta": "+12%", "hint": "vs September", "tone": "up"}
+    assert blocks_of(raw) == [
+        {
+            "type": "value",
+            "value": "$41.20",
+            "label": "Total",
+            "delta": "+12%",
+            "hint": "vs September",
+            "tone": "good",
+        }
+    ]
+    assert blocks_of({**OLD[0], "tone": "down"})[0]["tone"] == "bad"
+    assert blocks_of({**OLD[0], "tone": "neutral"})[0]["tone"] == "neutral"
+
+
+def test_expand_chart_table_note_timeline():
+    assert blocks_of({**OLD[1], "unit": "$"}) == [
+        {
+            "type": "chart",
+            "kind": "line",
+            "x": ["Oct 1", "Oct 2"],
+            "series": [{"name": "Spend", "values": [1.2, 3.4]}],
+            "unit": "$",
+        }
+    ]
+    assert blocks_of(OLD[3]) == [
+        {"type": "table", "columns": ["Day", "Spend"], "rows": [["Mon", 3]]}
+    ]
+    assert blocks_of(OLD[4]) == [{"type": "text", "text": "One thing."}]
+    assert blocks_of(OLD[5]) == [
+        {"type": "timeline", "events": [{"title": "Standup", "start": "09:30"}]}
+    ]
+
+
+def test_expand_list():
+    raw = {
+        "type": "list",
+        "items": [{"title": "Milk", "subtitle": "2 litres", "meta": 3, "done": True}],
+    }
+    assert blocks_of(raw) == [
+        {
+            "type": "rows",
+            "items": [{"title": "Milk", "detail": "2 litres", "meta": "3", "done": True}],
+        }
+    ]
+
+
+def test_expand_compare():
+    raw = {
+        "type": "compare",
+        "options": [
+            {"name": "Hike", "metrics": [{"label": "Fun", "score": 8}], "tags": ["Free"]},
+            {"name": "Museum", "metrics": [{"label": "Fun", "score": 6}], "note": "Indoors"},
+        ],
+        "pick": "Hike",
+        "reason": "Sunny all day.",
+    }
+    assert blocks_of(raw) == [
+        {
+            "type": "columns",
+            "columns": [
+                [
+                    {"type": "value", "value": "Hike", "label": "Her pick"},
+                    {"type": "meter", "value": 8, "max": 10, "label": "Fun"},
+                    {"type": "chips", "items": ["Free"]},
+                ],
+                [
+                    {"type": "value", "value": "Museum"},
+                    {"type": "meter", "value": 6, "max": 10, "label": "Fun"},
+                    {"type": "text", "text": "Indoors"},
+                ],
+            ],
+        },
+        {"type": "text", "text": "Sunny all day."},
+    ]
+
+
+def test_expand_next_up():
+    assert blocks_of(FULL[0]) == [
+        {
+            "type": "time",
+            "at": "2026-10-25T14:30",
+            "end": "2026-10-25T15:00",
+            "label": "Design review",
+        },
+        {"type": "people", "names": ["Sam", "Jo"]},
+        {"type": "chips", "items": ["Maple Park room 2"]},
+        {"type": "text", "text": "Bring the mockups."},
+    ]
+    assert blocks_of(MINIMAL[0]) == [
+        {"type": "time", "at": "2026-10-25T14:30", "label": "Design review"}
+    ]
+
+
+def test_expand_free_time_groups_by_the_date_as_written():
+    assert blocks_of(FULL[1]) == [
+        {
+            "type": "rows",
+            "items": [
+                {"title": "Wed 28 Oct", "detail": "9:00\u201310:30, 2:00\u20133:00 pm"},
+                {"title": "Thu 29 Oct", "detail": "11:30 am\u201312:15 pm"},
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "shown"),
+    [
+        ("09:00", "10:30", "9:00\u201310:30"),
+        ("14:00", "15:00", "2:00\u20133:00 pm"),
+        ("11:30", "12:15", "11:30 am\u201312:15 pm"),
+        ("12:00", "12:45", "12:00\u201312:45 pm"),
+        ("00:30", "01:00", "12:30\u20131:00"),
+        ("19:05", "21:00", "7:05\u20139:00 pm"),
+    ],
+)
+def test_free_time_ranges(start, end, shown):
+    raw = {
+        "type": "free_time",
+        "slots": [{"start": f"2026-10-28T{start}", "end": f"2026-10-28T{end}"}],
+    }
+    assert blocks_of(raw)[0]["items"][0]["detail"] == shown
+
+
+def test_expand_inbox():
+    assert blocks_of(FULL[2]) == [
+        {"type": "value", "value": "12", "label": "Unread", "hint": "3 need a reply"},
+        {
+            "type": "rows",
+            "items": [
+                {
+                    "title": "Sam",
+                    "detail": "Budget for Q4",
+                    "person": "Sam",
+                    "status": "attention",
+                    "when": "2026-10-25T08:10",
+                },
+                {"title": "Jo", "detail": "Lunch?", "person": "Jo"},
+            ],
+        },
+    ]
+    assert blocks_of({**MINIMAL[2], "needs_reply": 1})[0]["hint"] == "1 needs a reply"
+    assert blocks_of({**MINIMAL[2], "needs_reply": 0})[0]["hint"] == "None need a reply"
+    assert blocks_of(MINIMAL[2]) == [{"type": "value", "value": "12", "label": "Unread"}]
+
+
+def test_expand_thread():
+    assert blocks_of(FULL[3]) == [
+        {"type": "person", "name": "Jo", "detail": "Venue contract"},
+        {"type": "text", "text": "Can you sign the contract?"},
+        {"type": "facts", "items": [{"label": "Due", "value": "Friday"}]},
+        {
+            "type": "quote",
+            "text": "The venue needs it back by Friday to hold the date.",
+            "when": "2026-10-24T16:00",
+        },
+    ]
+    due = {**MINIMAL[3], "due": "2026-10-31"}
+    assert blocks_of(due)[2] == {
+        "type": "facts",
+        "items": [{"label": "Due", "value": "Sat 31 Oct"}],
+    }
+    due = {**MINIMAL[3], "due": "2026-10-31T17:00"}
+    assert blocks_of(due)[2]["items"][0]["value"] == "Sat 31 Oct, 5:00 pm"
+
+
+def test_expand_mentions():
+    assert blocks_of(FULL[4]) == [
+        {
+            "type": "rows",
+            "label": "#launch",
+            "items": [
+                {
+                    "title": "Alex",
+                    "detail": "Can you check the copy?",
+                    "person": "Alex",
+                    "when": "2026-10-25T09:00",
+                },
+                {"title": "Sam", "detail": "Shipping Friday.", "person": "Sam"},
+            ],
+        },
+        {
+            "type": "rows",
+            "label": "#design",
+            "items": [{"title": "Jo", "detail": "New mockups are up.", "person": "Jo"}],
+        },
+    ]
+
+
+def test_expand_files():
+    assert blocks_of(FULL[5]) == [
+        {
+            "type": "rows",
+            "items": [
+                {"title": "Q4 plan", "detail": "by Sam", "when": "2026-10-24T17:20", "chip": "Doc"},
+                {"title": "Budget", "chip": "Sheet"},
+            ],
+        }
+    ]
+
+
+def test_expand_quote_and_facts():
+    assert blocks_of(FULL[6]) == [
+        {"type": "quote", "text": "See you there.", "by": "Jo", "when": "2026-10-20"}
+    ]
+    assert blocks_of(FULL[9]) == [
+        {
+            "type": "facts",
+            "items": [{"label": "Plan", "value": "Pro"}, {"label": "Seats", "value": "5"}],
+        }
+    ]
+
+
+def test_expand_plan():
+    assert blocks_of(FULL[7]) == [
+        {"type": "meter", "value": 2, "max": 5, "label": "2 of 5 done"},
+        {
+            "type": "rows",
+            "items": [
+                {"title": "Book the room", "done": True},
+                {"title": "Send invites", "done": True},
+                {"title": "Order food", "detail": "For 20 people", "done": False},
+                {"title": "Print badges", "done": False},
+                {"title": "Set up the room", "done": False},
+            ],
+        },
+    ]
+
+
+def test_expand_decision():
+    assert blocks_of(FULL[8]) == [
+        {
+            "type": "table",
+            "columns": ["Option", "Fun", "Cost", "Total"],
+            "rows": [["Hike", 8, 6, 14], ["Museum", 6, 9.5, 15.5]],
+            "highlight": 1,
+        },
+        {"type": "text", "text": "Cheaper and still fun."},
+    ]
+    assert blocks_of(MINIMAL[8]) == [
+        {
+            "type": "table",
+            "columns": ["Option", "Fun", "Total"],
+            "rows": [["Hike", 8, 8], ["Museum", 6, 6]],
+        }
+    ]
+    tenths = {**MINIMAL[8], "criteria": ["A", "B"], "scores": [[0.1, 0.2], [1, 2]]}
+    assert blocks_of(tenths)[0]["rows"][0][-1] == 0.3
+
+
+def test_expand_callout():
+    assert blocks_of(FULL[10]) == [
+        {"type": "text", "text": "Rent is due tomorrow.", "tone": "attention"}
+    ]
+    assert blocks_of(MINIMAL[10]) == [
+        {"type": "text", "text": "Rent is due tomorrow.", "tone": "neutral"}
+    ]
+    assert blocks_of({**MINIMAL[10], "tone": "down"})[0]["tone"] == "bad"
+
+
+def test_expand_goal():
+    assert blocks_of(FULL[11]) == [
+        {"type": "meter", "value": 4200, "max": 6000, "label": "Savings", "shape": "ring"},
+        {"type": "value", "value": "$4,200", "hint": "of $6,000 by Nov 30"},
+    ]
+    km = {**MINIMAL[11], "value": 42.5, "target": 100, "unit": "km", "by": "the end of the year"}
+    assert blocks_of(km)[1] == {
+        "type": "value",
+        "value": "42.5 km",
+        "hint": "of 100 km by the end of the year",
+    }
+    assert blocks_of({**MINIMAL[11], "unit": "%"})[1]["value"] == "4,200%"
+    assert blocks_of({**MINIMAL[11], "unit": "€"})[1]["hint"] == "of €6,000"
+
+
+def test_expand_sources():
+    assert blocks_of(FULL[12]) == [
+        {
+            "type": "rows",
+            "items": [
+                {"title": "Rail pass guide", "detail": "Prices for 2026", "meta": "example.org"},
+                {"title": "Timetables", "meta": "example.com"},
+            ],
+        }
+    ]
+
+
+def test_expand_custom():
+    assert blocks_of(FULL[13]) == [
+        {"type": "rows", "items": [{"title": "Sam", "person": "Sam", "chip": "Primary"}]},
+        {"type": "chips", "items": ["Pager"]},
+    ]
+
+
+@pytest.mark.parametrize("raw", EVERY, ids=lambda w: w["type"])
+def test_every_expansion_is_valid_blocks(raw):
+    blocks = blocks_of(raw)
+    assert blocks
+    # Already in the blocks' own form: checking them changes nothing.
+    assert validate_blocks(copy.deepcopy(blocks), "widget 1") == blocks
+
+
+def test_expand_does_not_share_lists_with_the_widget():
+    widget = validate_widget(OLD[1], 1)
+    expand(widget)[0]["x"].append("Oct 3")
+    assert widget["x"] == ["Oct 1", "Oct 2"]
+
+
+# Boards
+
+
+def test_board_saved_with_todays_types_validates_and_expands():
+    saved = b.show(None, "October", OLD)
+    sent = expand_board(saved)
+    assert sent["title"] == "October" and sent["open"] is True
+    assert [w["id"] for w in sent["widgets"]] == [f"w{i}" for i in range(1, 8)]
+    for widget in sent["widgets"]:
+        assert set(widget) <= {"id", "type", "size", "title", "source", "asks", "blocks"}
+        assert validate_blocks(copy.deepcopy(widget["blocks"]), widget["id"]) == widget["blocks"]
+    assert sent["widgets"][1] == {
+        "id": "w2",
+        "type": "chart",
+        "size": "medium",
+        "title": "Daily spend",
+        "blocks": blocks_of(OLD[1]),
+    }
+    assert "blocks" not in saved["widgets"][0]
+
+
+def test_expanded_widget_keeps_its_name_and_drops_recipe_fields():
+    saved = b.show(None, "Day", [{**FULL[0], "source": "Calendar", "asks": ["Prep me for this"]}])
+    assert expand_board(saved)["widgets"][0] == {
+        "id": "w1",
+        "type": "next_up",
+        "size": "small",
+        "title": "Next up",
+        "source": {"name": "Calendar"},
+        "asks": ["Prep me for this"],
+        "blocks": blocks_of(FULL[0]),
+    }
+
+
+def test_summary_names_the_new_types():
+    board = b.show(
+        None,
+        "Today",
+        [MINIMAL[0], FULL[7], MINIMAL[11], MINIMAL[3], FULL[13], MINIMAL[2]],
+    )
+    assert b.summary(board) == (
+        'Board (open): "Today": w1 next up "Design review", w2 plan "Launch", '
+        'w3 goal "Savings", w4 thread "Venue contract", w5 custom "Who\'s on call", w6 inbox.'
+    )

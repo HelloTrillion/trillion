@@ -339,7 +339,25 @@ _TYPES: dict[str, Callable[[Mapping[str, Any], str], Widget]] = {
     "timeline": _timeline,
     "compare": _compare,
 }
-TYPES = tuple(_TYPES)
+# Today's seven, then the recipes built on blocks (`recipe_kit.RECIPES`, which a test
+# keeps in step with this list).
+TYPES = (
+    *_TYPES,
+    "next_up",
+    "free_time",
+    "inbox",
+    "thread",
+    "mentions",
+    "files",
+    "quote",
+    "plan",
+    "decision",
+    "facts",
+    "callout",
+    "goal",
+    "sources",
+    "custom",
+)
 
 
 # Names a model reaches for instead of the kit's own: a chart kind given as the type,
@@ -352,17 +370,29 @@ _ALIASES = {
     "number": "stat",
     "markdown": "note",
     "paragraph": "note",
-    "checklist": "list",
+    "checklist": "plan",
+    "steps": "plan",
     "bullets": "list",
     "grid": "table",
     "agenda": "timeline",
     "schedule": "timeline",
     "comparison": "compare",
+    "next": "next_up",
+    "next_meeting": "next_up",
+    "inbox_summary": "inbox",
+    "email": "inbox",
+    "alert": "callout",
+    "banner": "callout",
+    "progress": "goal",
 }
 # With no usable type, the fields say which widget it is, most telling first.
 _BY_FIELD = (
+    ("blocks", "custom"),
     ("series", "chart"),
+    ("criteria", "decision"),
     ("options", "compare"),
+    ("slots", "free_time"),
+    ("steps", "plan"),
     ("events", "timeline"),
     ("columns", "table"),
     ("items", "list"),
@@ -376,8 +406,9 @@ def _typed(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     chart of that kind, a near synonym becomes the kit's name, and a missing or unknown
     type is read from the fields. What cannot be read is left for the refusal."""
     given = raw.get("type")
-    name = given.strip().lower() if isinstance(given, str) else ""
-    if name in _TYPES:
+    # "Next up" and "next-up" mean next_up.
+    name = re.sub(r"[\s-]+", "_", given.strip().lower()) if isinstance(given, str) else ""
+    if name in TYPES:
         return raw if name == given else {**raw, "type": name}
     if name in KINDS or name == "pie":
         kind = "donut" if name == "pie" else name
@@ -395,15 +426,27 @@ def _typed(raw: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def validate_widget(raw: Any, at: int | str) -> Widget:
-    """The page-ready widget, without an id. `at` is the position in the call (1-based)
-    for a new widget, or the id of the widget it replaces."""
+    """The widget as it is saved, without an id. `at` is the position in the call
+    (1-based) for a new widget, or the id of the widget it replaces."""
+    # Imported here: the recipes are built on blocks, and blocks on this module.
+    from trillion.workspace import recipe_kit
+    from trillion.workspace.blocks import _scrub
+
     named = f"widget {at}" if isinstance(at, int) else at
-    raw = _typed(_obj(raw, named))
+    raw = _typed(_scrub(_obj(raw, named)))
     kind = raw.get("type")
-    build = _TYPES.get(kind) if isinstance(kind, str) else None
+    build = None
+    if isinstance(kind, str):
+        build = _TYPES.get(kind) or recipe_kit.RECIPES.get(kind)
     if build is None:
         what = f"unknown type {kind!r}" if kind is not None else "no type"
         raise _fail(named, f"{what}; use one of {', '.join(TYPES)}")
     where = f"widget {at} ({kind})" if isinstance(at, int) else f"{kind} {at}"
-    size = _choice(raw, "size", where, SIZES, default="medium")
-    return {"type": kind, "size": size, **build(raw, where)}
+    size = _choice(raw, "size", where, SIZES, default=recipe_kit.SIZE.get(kind, "medium"))
+    out: Widget = {"type": kind, "size": size}
+    # Every widget may have a title; today's types check theirs among their fields.
+    _put(out, "title", _str(raw, "title", where, TITLE, need=False))
+    out.update(build(raw, where))
+    _put(out, "source", recipe_kit.source(raw, where))
+    _put(out, "asks", recipe_kit.asks(raw, where))
+    return out

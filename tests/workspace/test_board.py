@@ -164,7 +164,9 @@ def test_display_strings_still_refuse_bools_and_nan():
 def test_unknown_type():
     assert refused({"type": "map"}) == (
         "widget 1: unknown type 'map'; "
-        "use one of stat, chart, list, table, note, timeline, compare."
+        "use one of stat, chart, list, table, note, timeline, compare, next_up, free_time, "
+        "inbox, thread, mentions, files, quote, plan, decision, facts, callout, goal, sources, "
+        "custom."
     )
 
 

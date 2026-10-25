@@ -114,10 +114,17 @@ def _clip(text: str) -> str:
     return text if len(text) <= CLIP else text[: CLIP - 1] + "…"
 
 
+# The field that names a widget best, when it is not the title.
+_NAMED_BY = {"stat": "label", "next_up": "event", "goal": "label", "thread": "subject"}
+
+
 def describe(widget: Widget, quote: str = '"') -> str:
-    """`w2 line chart "Daily spend"`: how a widget is named to her."""
-    kind = f"{widget['kind']} chart" if widget["type"] == "chart" else widget["type"]
-    name = widget.get("label") if widget["type"] == "stat" else widget.get("title")
+    """`w2 line chart "Daily spend"`, `w3 next up "Design review"`: how a widget is
+    named to her."""
+    kind = widget["type"].replace("_", " ")
+    if kind == "chart":
+        kind = f"{widget['kind']} chart"
+    name = widget.get(_NAMED_BY.get(widget["type"], "title")) or widget.get("title")
     named = f" {quote}{_clip(name)}{quote}" if name else ""
     return f"{widget['id']} {kind}{named}"
 
