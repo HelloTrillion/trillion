@@ -7,12 +7,14 @@ import { approach, stepParams } from './easing';
 import { Landscape } from './landscape/landscape';
 import { Orb } from './orb/orb';
 import { type PerfMode, PerfGovernor, motionScale, qualityFor } from './perf';
+import { ORB_DISTANCE, type StageRect, easeRect, placeOrb } from './stage';
 import { ORB_STATES, displayedState, type OrbParams, type OrbStateName } from './states';
 
 export { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS, displayedState } from './states';
 export type { OrbParams, OrbStateName } from './states';
 export type { AnalyserRole, Levels } from './audio/levels';
 export type { PerfMode } from './perf';
+export type { StageRect } from './stage';
 
 export type Theme = 'dark' | 'light';
 
@@ -58,6 +60,9 @@ export interface Galaxy {
   pulseArc(targetId: string): void;
   setPerfMode(mode: PerfMode): void;
   setTheme(theme: Theme): void;
+  /** Place the orb: centre and diameter in CSS pixels. Eases there unless reduced
+   * motion is on or `animate` is false. Without a call it stays centred. */
+  setStage(rect: StageRect, opts?: { animate?: boolean }): void;
   destroy(): void;
 }
 
@@ -68,7 +73,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   renderer.autoClear = false;
   const orbScene = new Scene();
   const orbCamera = new PerspectiveCamera(45, 1, 0.1, 100);
-  orbCamera.position.set(0, 0, 4.2);
+  orbCamera.position.set(0, 0, ORB_DISTANCE);
 
   const governor = new PerfGovernor(opts.perfMode ?? 'auto');
   const media = typeof matchMedia === 'function'
@@ -104,6 +109,11 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   let animClock = 0;
   let raf = 0;
   let destroyed = false;
+  // Null until the host calls setStage: the orb stays centred as before.
+  let stageTarget: StageRect | null = null;
+  let stage: StageRect | null = null;
+  let stageJump = false;
+  let stageDirty = false;
 
   const resize = (): void => {
     const w = canvas.clientWidth || 1;
@@ -113,6 +123,9 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     // Keep the orb the same share of the short side on portrait screens.
     orbCamera.zoom = Math.min(1, w / h);
     orbCamera.updateProjectionMatrix();
+    // Once placed, placeOrb owns the orb camera's zoom and lens shift.
+    if (stage) placeOrb(orbCamera, stage, w, h);
+    stageDirty = true;
     landscape.setAspect(w / h);
   };
   const observer = new ResizeObserver(resize);
@@ -183,6 +196,16 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
       pointScale: renderer.domElement.height / 2,
     });
 
+    if (stageTarget && (stageDirty || stage !== stageTarget)) {
+      stage = easeRect(stage ?? stageTarget, stageTarget, dt, stageJump || reduced);
+      // Snap the last fraction of a pixel so easing ends and the matrix work stops.
+      if (Math.abs(stage.x - stageTarget.x) < 0.1 && Math.abs(stage.y - stageTarget.y) < 0.1
+        && Math.abs(stage.size - stageTarget.size) < 0.1) stage = stageTarget;
+      stageJump = false;
+      stageDirty = false;
+      placeOrb(orbCamera, stage, canvas.clientWidth || 1, canvas.clientHeight || 1);
+    }
+
     renderer.clear();
     landscape.render(renderer);
     renderer.clearDepth();
@@ -225,6 +248,12 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
       theme = next;
       landscape.setTheme(next === 'light');
       orb.setTheme(next === 'light');
+    },
+    setStage(rect, stageOpts) {
+      if (destroyed) return;
+      stageTarget = { x: rect.x, y: rect.y, size: rect.size };
+      if (stageOpts?.animate === false) stageJump = true;
+      stageDirty = true;
     },
     destroy() {
       if (destroyed) return;

@@ -109,6 +109,29 @@ byId<HTMLButtonElement>('speak').addEventListener('click', async () => {
 
 byId<HTMLButtonElement>('flare-btn').addEventListener('click', () => galaxy.flare());
 
+// Position: where a host might put the orb. The rect follows the window as it resizes.
+type Stage = 'centre' | 'panel' | 'docked';
+const stageRect = (stage: Stage): { x: number; y: number; size: number } => {
+  const w = innerWidth;
+  const h = innerHeight;
+  if (stage === 'docked') return { x: w - 24 - 48, y: h - 24 - 48, size: 96 };
+  // Centred, the outer ring's face-on diameter is the short side (to within 1%).
+  if (stage === 'panel') return { x: w * 0.65, y: h / 2, size: Math.min(w * 0.7, h) };
+  return { x: w / 2, y: h / 2, size: Math.min(w, h) };
+};
+const stageButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-stage]')];
+let stage: Stage | null = null;
+for (const b of stageButtons) {
+  b.addEventListener('click', () => {
+    stage = (b.dataset['stage'] ?? 'centre') as Stage;
+    galaxy.setStage(stageRect(stage));
+    for (const o of stageButtons) o.setAttribute('aria-pressed', String(o === b));
+  });
+}
+addEventListener('resize', () => {
+  if (stage) galaxy.setStage(stageRect(stage), { animate: false });
+});
+
 const perfBtn = byId<HTMLButtonElement>('perf');
 const perfModes: PerfMode[] = ['auto', 'on', 'off'];
 let perfIndex = 0;
