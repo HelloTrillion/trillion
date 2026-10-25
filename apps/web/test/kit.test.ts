@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { type Kit, NOTE_MS, RULES, blockName, createKit, isKit } from '../src/kit';
+import { type Kit, NOTE_MS, RULES, blockName, createKit, isKit, widgetCaption } from '../src/kit';
 import SAMPLES from '../src/kit/samples.json';
 import { type Widget } from '../src/view';
 
@@ -68,7 +68,8 @@ describe('the kit page', () => {
     expect(w).toHaveLength(widgets.length);
     w.forEach((card, i) => {
       expect(card.dataset['type']).toBe(widgets[i]?.type);
-      expect(card.querySelector('.kit-cap')?.textContent).toBe(`${widgets[i]?.type} · ${widgets[i]?.size}`);
+      const pack = widgets[i]?.['pack'];
+      expect(card.querySelector('.kit-cap')?.textContent).toBe([widgets[i]?.type, pack, widgets[i]?.size].filter(Boolean).join(' · '));
     });
     const b = [...section(k, 'kit-blocks').querySelectorAll<HTMLElement>('.bd-card')];
     expect(b).toHaveLength(blocks.length);
@@ -78,6 +79,15 @@ describe('the kit page', () => {
     // Each widget's own title shows once, in its own card.
     const titles = [...k.el.querySelectorAll('.bd-card')].map((c) => c.getAttribute('aria-label'));
     expect(titles).toEqual([...widgets, ...blocks].map((x) => x['title']));
+  });
+
+  it('captions a sample with its pack between its type and size, when it has one', () => {
+    const pay: Widget = { id: 'p', type: 'transactions', size: 'medium', title: 'Payments', pack: 'money', blocks: [] };
+    const stat: Widget = { id: 's', type: 'stat', size: 'small', title: 'Spend', blocks: [] };
+    expect(widgetCaption(pay)).toBe('transactions · money · medium');
+    expect(widgetCaption(stat)).toBe('stat · small');
+    const k = open({ samples: { widgets: [pay, stat], blocks: [] } });
+    expect([...section(k, 'kit-widgets').querySelectorAll('.kit-cap')].map((c) => c.textContent)).toEqual(['transactions · money · medium', 'stat · small']);
   });
 
   it('lays the cards out in the board grid, with their sizes', () => {

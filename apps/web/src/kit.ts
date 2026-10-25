@@ -39,6 +39,12 @@ export function blockName(w: Widget): string {
   return typeof type === 'string' && type ? type : typeof w['title'] === 'string' ? w['title'] : w.type;
 }
 
+/** A widget sample's caption: its type, its pack when it has one, and its size ("transactions · money · medium"). */
+export function widgetCaption(w: Widget): string {
+  const pack = typeof w['pack'] === 'string' ? w['pack'].trim() : '';
+  return [w.type, pack, w.size].filter(Boolean).join(' · ');
+}
+
 /** How long a "Would ask" note stays. */
 export const NOTE_MS = 2400;
 
@@ -206,7 +212,7 @@ export function createKit(opts: KitOptions = {}): Kit {
   );
   el.append(page, note);
 
-  grid(widgetView, samples.widgets, (w) => `${w.type} · ${w.size}`);
+  grid(widgetView, samples.widgets, widgetCaption);
   grid(blockView, samples.blocks, blockName);
 
   let gone = false;

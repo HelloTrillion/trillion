@@ -246,9 +246,25 @@ const BADGE: Record<CatalogEntry['how'], string> = {
  * never tells 26 companies you did. */
 export const iconPath = (id: string): string => `apps/${encodeURIComponent(id)}.png`;
 
+/** A connected catalogue service, as the board needs it to show a card's source tile. */
+export interface SourceTile {
+  readonly id: string;
+  readonly title: string;
+  readonly color: string;
+  readonly glyph: string;
+}
+
+/** The catalogue services with a server set up and turned on: the ones whose numbers she can read. */
+export function sourceTiles(c: Connected | null): SourceTile[] {
+  if (!c?.catalog) return [];
+  // Set up and on, not only connected this second, so a slow start does not hide a tile.
+  const on = new Set(c.servers.filter((s) => s.catalog && !s.disabled).map((s) => s.catalog));
+  return c.catalog.filter((e) => on.has(e.id)).map(({ id, title, color, glyph }) => ({ id, title, color, glyph }));
+}
+
 /** A service's tile: its own icon, or its colour and a letter or two until (or if
- * not) the icon loads. */
-function mark(color: string, glyph: string, size: 'sm' | 'lg' = 'sm', id = ''): HTMLElement {
+ * not) the icon loads. `xs` is the size beside a card's source on the board. */
+export function mark(color: string, glyph: string, size: 'xs' | 'sm' | 'lg' = 'sm', id = ''): HTMLElement {
   const m = el('span', `connected-mark connected-mark-${size}`, glyph);
   m.style.background = color;
   m.style.color = inkFor(color);
@@ -273,7 +289,11 @@ function plainMark(size: 'sm' | 'lg' = 'sm'): HTMLElement {
   return m;
 }
 
-export function createConnected(host: Host, api: Api, changed: () => void): { open(): Promise<void>; reveal(key: string): void; summary(): string } {
+export function createConnected(
+  host: Host,
+  api: Api,
+  changed: () => void,
+): { open(): Promise<void>; reveal(key: string): void; summary(): string; load(): Promise<void>; tiles(): SourceTile[] } {
   let last: Connected | null = null;
   let g: GoogleState | null = null;
   let sl: SlackState | null = null;
@@ -1541,5 +1561,8 @@ export function createConnected(host: Host, api: Api, changed: () => void): { op
       }, 300);
     },
     summary: () => connectedSummary(last),
+    // The board's source tiles need the servers before Settings is ever opened.
+    load: async () => void (await load()),
+    tiles: () => sourceTiles(last),
   };
 }

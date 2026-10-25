@@ -2,9 +2,12 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   BLOCK_TYPES,
+  barShares,
   chartSpecOf,
   chartSummary,
+  currentStep,
   deltaTone,
+  funnelSteps,
   drawBlocks,
   heroIndex,
   initials,
@@ -326,8 +329,128 @@ describe('drawBlocks', () => {
 
   it('knows every block in the spec', () => {
     expect([...BLOCK_TYPES].sort()).toEqual(
-      ['value', 'sparkline', 'meter', 'time', 'chart', 'table', 'timeline', 'rows', 'person', 'people', 'status', 'chips', 'text', 'quote', 'facts', 'columns'].sort(),
+      [
+        'value',
+        'sparkline',
+        'meter',
+        'time',
+        'chart',
+        'table',
+        'timeline',
+        'rows',
+        'bars',
+        'funnel',
+        'stages',
+        'person',
+        'people',
+        'status',
+        'chips',
+        'text',
+        'quote',
+        'facts',
+        'columns',
+      ].sort(),
     );
+  });
+});
+
+describe('bars', () => {
+  it('scales each bar to the largest, writes the value with its unit, and shows a note', () => {
+    expect(barShares([50, 200, 100, 0])).toEqual([0.25, 1, 0.5, 0]);
+    expect(barShares([0, 0])).toEqual([0, 0]);
+    const el = draw({
+      type: 'bars',
+      unit: '$',
+      items: [
+        { label: 'Hosting', value: 1200, note: '3 invoices' },
+        { label: 'Design', value: 4800 },
+        { label: 'Travel', value: 0 },
+      ],
+    });
+    const fills = [...el.querySelectorAll<HTMLElement>('.bk-bar-fill')].map((f) => f.style.getPropertyValue('--v'));
+    expect(fills).toEqual(['0.25', '1', '0']);
+    expect(texts(el, '.bk-bar-label')).toEqual(['Hosting', 'Design', 'Travel']);
+    expect(texts(el, '.bk-bar-num')).toEqual(['$1.2k', '$4.8k', '$0']);
+    expect(texts(el, '.bk-bar-note')).toEqual(['3 invoices']);
+    // With no tone it takes the series colour; a tone colours every bar.
+    expect(el.querySelector('.bk-bars')?.classList.contains('bk-series')).toBe(true);
+    expect(draw({ type: 'bars', tone: 'bad', items: [{ label: 'a', value: 1 }] }).querySelector('.bk-bars')?.classList.contains('bk-bad')).toBe(true);
+  });
+});
+
+describe('funnel', () => {
+  it('says what moves on between stages, and nothing after a stage of 0', () => {
+    expect(funnelSteps([200, 110, 0, 0])).toEqual([55, 0, null, null]);
+    expect(funnelSteps([3, 1])).toEqual([33, null]);
+    const el = draw({
+      type: 'funnel',
+      stages: [
+        { label: 'Leads', count: 200, value: '$1.2M' },
+        { label: 'Qualified', count: 110 },
+        { label: 'Proposal', count: 0 },
+        { label: 'Won', count: 0 },
+      ],
+    });
+    const stages = [...el.querySelectorAll('.bk-funnel-stage')];
+    expect(stages.map((s) => s.querySelector('.bk-funnel-step')?.textContent ?? null)).toEqual(['55% move on', '0% move on', null, null]);
+    expect(texts(el, '.bk-funnel-count')).toEqual(['200', '110', '0', '0']);
+    expect(texts(el, '.bk-funnel-value')).toEqual(['$1.2M']);
+    // Widths from the first stage; a stage of 0 has no fill at all.
+    const fills = [...el.querySelectorAll<HTMLElement>('.bk-funnel-fill')];
+    expect(fills.map((f) => f.style.getPropertyValue('--v'))).toEqual(['1', '0.55', '0', '0']);
+    expect(fills.map((f) => f.hasAttribute('data-none'))).toEqual([false, false, true, true]);
+  });
+});
+
+describe('stages', () => {
+  const steps = ['Lead', 'Qualified', 'Proposal', 'Won'];
+  const states = (el: HTMLElement): (string | undefined)[] => [...el.querySelectorAll<HTMLElement>('.bk-step')].map((s) => s.dataset['state']);
+
+  it('draws done, current and open by label and by index, and says where it is', () => {
+    for (const current of ['Proposal', 'proposal', 2]) {
+      const el = draw({ type: 'stages', steps, current });
+      expect(states(el)).toEqual(['done', 'done', 'current', 'open']);
+      expect(el.querySelector('.bk-stages .visually-hidden')?.textContent).toBe('Step 3 of 4: Proposal');
+      expect(el.querySelectorAll('.bk-step[data-state="done"] svg')).toHaveLength(2);
+    }
+    expect(states(draw({ type: 'stages', steps, current: 0 }))).toEqual(['current', 'open', 'open', 'open']);
+  });
+
+  it('draws every step open when the current one is not among them', () => {
+    expect(currentStep(steps, 'Lost')).toBe(-1);
+    expect(currentStep(steps, 9)).toBe(-1);
+    const el = draw({ type: 'stages', steps, current: 'Lost' });
+    expect(states(el)).toEqual(['open', 'open', 'open', 'open']);
+    expect(el.querySelector('.bk-stages .visually-hidden')?.textContent).toBe('Steps: Lead, Qualified, Proposal, Won');
+  });
+
+  it('marks many steps, so a narrow card can name only the current one', () => {
+    expect(draw({ type: 'stages', steps, current: 1 }).querySelector<HTMLElement>('.bk-stages')?.dataset['many']).toBeUndefined();
+    const many = draw({ type: 'stages', steps: ['a', 'b', 'c', 'd', 'e'], current: 'c' });
+    expect(many.querySelector<HTMLElement>('.bk-stages')?.dataset['many']).toBe('');
+    expect(many.querySelector('.bk-stages-now')?.textContent).toBe('c · 3 of 5');
+  });
+});
+
+describe('rows with amounts', () => {
+  it('puts the amount on the right, toned, with its time under it, and no meta or chip', () => {
+    const el = draw({
+      type: 'rows',
+      items: [
+        { title: 'Website', person: 'Sam', amount: '$1,200', amount_tone: 'bad', when: '2026-10-25T14:00', meta: 'card', chip: 'new' },
+        { title: 'Retainer', amount: '$400' },
+      ],
+    });
+    const [first, second] = [...el.querySelectorAll('.bk-row')];
+    const end = first?.querySelector('.bk-row-end');
+    expect(end?.querySelector('.bk-row-amount')?.classList.contains('bk-bad')).toBe(true);
+    expect(end?.querySelector('.bk-row-amount')?.textContent).toBe('Problem: $1,200');
+    expect(end?.querySelector('time.bk-row-trail')?.textContent).toBe('5 min ago');
+    expect([...(end?.children ?? [])].map((c) => c.className)).toEqual(['bk-row-amount bk-bad', 'bk-row-trail']);
+    expect(first?.querySelector('.bk-chip')).toBeNull();
+    expect(first?.textContent).not.toContain('card');
+    expect(second?.querySelector('.bk-row-amount')?.textContent).toBe('$400');
+    expect(second?.querySelector('time')).toBeNull();
   });
 });
 

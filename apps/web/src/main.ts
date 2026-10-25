@@ -905,7 +905,11 @@ const appearance = createAppearance(
   },
 );
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
-const connected = createConnected(panel.host('connected'), api, () => panel.refresh());
+const connected = createConnected(panel.host('connected'), api, () => {
+  panel.refresh();
+  // A connector set up or removed puts its tile on, or takes it off, the cards that name it.
+  if (workspace.showing === 'board') showBoard();
+});
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
@@ -1558,6 +1562,7 @@ const boardView = createBoardView({
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
   approvals: approvals.strip.el,
+  connected: () => connected.tiles(),
   // Exactly the ask's words, as the user's message. Hidden while it could not go (asksOff).
   onAsk: (text) => {
     // Onboarding's conversation is the page's own: a tap never cuts into it.
@@ -1565,6 +1570,8 @@ const boardView = createBoardView({
     sendTurn(text, 'ask');
   },
 });
+// What is connected, for the cards' source tiles; Settings keeps it up to date from here on.
+void connected.load();
 function showBoard(): void {
   boardDraws++;
   boardChip.hidden = true;

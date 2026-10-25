@@ -1761,6 +1761,14 @@ button.quiet {
   border-radius: 11px;
   font-size: 16px;
 }
+/* Beside a card's source on the board: the same tile, the size of a line of small text. */
+.connected-mark-xs {
+  width: 16px;
+  height: 16px;
+  border-radius: 4.5px;
+  font-size: 8.5px;
+  letter-spacing: 0;
+}
 .connected-mark-lg {
   width: 64px;
   height: 64px;
@@ -3909,6 +3917,16 @@ button.connected-danger {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+/* With a connector's tile, the tile sits centred on the line of words beside it. */
+.bd-source:has(.connected-mark) {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 6px;
+}
+.bd-source-words {
+  min-width: 0;
+}
 .bd-asks {
   display: flex;
   flex-wrap: wrap;
@@ -4847,6 +4865,268 @@ button.connected-danger {
 .bk-row:has(.bk-row-detail) > .bk-row-trail,
 .bk-row:has(.bk-row-detail) > .bk-chip {
   margin-top: 1px;
+}
+/* An amount on the right, in the title's size, with its time under it as a detail sits under a title. */
+.bk-row-end {
+  flex: none;
+  max-width: 45%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  text-align: right;
+}
+.bk-row-amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
+}
+.bk-row-amount:is(.bk-good, .bk-bad, .bk-attention) {
+  color: var(--tone-text);
+}
+.bk-row-end .bk-row-trail {
+  max-width: none;
+}
+
+/* Bars: label and figure on a line, the bar under them, each scaled to the largest. */
+.bk-bars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--w-space-3);
+}
+.bk-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.bk-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--w-space-3);
+}
+.bk-bar-label {
+  min-width: 0;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.bk-bar-num {
+  flex: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.bk-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--w-soft);
+  overflow: hidden;
+}
+.bk-bar-fill {
+  display: block;
+  height: 100%;
+  width: calc(var(--v, 0) * 100%);
+  border-radius: inherit;
+  background: var(--tone);
+  transform-origin: left;
+}
+.bd-new .bk-bar-fill {
+  animation: bd-grow 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both 300ms;
+}
+.bk-bar-note {
+  margin-top: -2px;
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Funnel: a band per stage, its fill centred and narrowing with the count from the first stage.
+ * The words sit across the whole band, not inside the fill, so a small stage never crowds them;
+ * the fill is a tint, so they read on it in either theme. What moves on is said between bands.
+ */
+.bk-funnel {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bk-funnel-stage:not(:has(.bk-funnel-step)):not(:last-child) {
+  margin-bottom: 6px;
+}
+.bk-funnel-band {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--w-space-3);
+  min-height: 34px;
+  padding: 6px var(--w-space-3);
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  background: var(--w-soft);
+  overflow: hidden;
+}
+.bk-funnel-fill {
+  position: absolute;
+  inset: 0;
+  margin-inline: auto;
+  width: calc(var(--v, 0) * 100%);
+  /* A stage with anything in it always shows a sliver. */
+  min-width: 6px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--tone) 24%, transparent);
+}
+.bk-funnel-fill[data-none] {
+  display: none;
+}
+.bd-new .bk-funnel-fill {
+  animation: bd-grow 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both 300ms;
+}
+.bk-funnel-label,
+.bk-funnel-figures {
+  position: relative;
+  min-width: 0;
+}
+.bk-funnel-label {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.bk-funnel-figures {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: var(--w-space-2);
+  font-variant-numeric: tabular-nums;
+}
+.bk-funnel-count {
+  font-weight: 600;
+}
+.bk-funnel-value {
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+}
+.bk-funnel-step {
+  padding: 5px 0;
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Stages: dots joined by lines, labels under them. Done is filled, the current one ringed, the
+ * rest open. The lines stop short of each dot, so nothing shows through an open one on glass.
+ */
+.bk-stages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--w-space-2);
+}
+.bk-stages-track {
+  display: grid;
+  grid-template-columns: repeat(var(--steps, 2), minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bk-step {
+  --stage-line: color-mix(in srgb, var(--color-text-0) 14%, transparent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  text-align: center;
+}
+.bk-step::before,
+.bk-step::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--stage-line);
+}
+.bk-step::before {
+  left: 0;
+  right: calc(50% + 11px);
+}
+.bk-step::after {
+  left: calc(50% + 11px);
+  right: 0;
+}
+.bk-step:first-child::before,
+.bk-step:last-child::after {
+  display: none;
+}
+.bk-step[data-state='done']::before,
+.bk-step[data-state='done']::after,
+.bk-step[data-state='current']::before {
+  background: var(--tone);
+}
+.bk-step-dot {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--color-text-0) 25%, transparent);
+  color: var(--color-bg-0);
+}
+.bk-step[data-state='done'] .bk-step-dot {
+  border-color: var(--tone);
+  background: var(--tone);
+}
+.bk-step[data-state='current'] .bk-step-dot {
+  border: 2px solid var(--tone);
+  background: radial-gradient(circle, var(--tone) 0 2.5px, transparent 3px);
+  box-shadow: 0 0 0 4px var(--tone-tint);
+}
+.bk-step-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-width: 100%;
+  padding-inline: 2px;
+  box-sizing: border-box;
+  overflow: hidden;
+  font-size: var(--w-meta);
+  line-height: 1.3;
+  color: var(--color-text-2);
+  overflow-wrap: anywhere;
+}
+.bk-step[data-state='done'] .bk-step-label {
+  color: var(--color-text-1);
+}
+.bk-step[data-state='current'] .bk-step-label {
+  font-weight: 600;
+  color: var(--color-text-0);
+}
+.bk-stages-now {
+  display: none;
+  font-size: var(--w-meta);
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.bk-stages-now strong {
+  font-weight: 600;
+  color: var(--color-text-0);
+}
+/* Many steps in a narrow card: the dots alone, and the current step named under them. */
+@container bk (max-width: 380px) {
+  .bk-stages[data-many] .bk-step-label {
+    display: none;
+  }
+  .bk-stages[data-many] .bk-stages-now {
+    display: block;
+  }
 }
 
 /* People */
