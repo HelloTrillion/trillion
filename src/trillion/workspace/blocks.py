@@ -49,6 +49,9 @@ MAX_BLOCKS = 8
 MIN_SPLIT, MAX_SPLIT = 2, 4  # side-by-side columns of a card, not a table's
 MIN_SPARK, MAX_SPARK = 2, 60
 MAX_PEOPLE, MAX_CHIPS, MAX_FACTS = 8, 6, 10
+MAX_BARS = 10
+MIN_FUNNEL, MAX_FUNNEL = 2, 6
+MIN_STEPS, MAX_STEPS = 2, 7
 QUOTE = 600
 
 # ISO 8601: a date, or a date and time with optional seconds and a Z or offset.
@@ -166,6 +169,14 @@ def number_field(raw: Mapping[str, Any], key: str, where: str) -> float | int:
     return finite_number(raw[key], f"{where}: {key}")
 
 
+def count_field(raw: Mapping[str, Any], key: str, where: str) -> float | int:
+    """A finite number, 0 or more: a bar's length or a funnel's count."""
+    value = number_field(raw, key, where)
+    if value < 0:
+        raise fail(where, f"{key} must be 0 or more, not {value}")
+    return value
+
+
 def word_list(
     raw: Mapping[str, Any], key: str, where: str, limit: int, nouns: tuple[str, str], cap: int
 ) -> list[str]:
@@ -261,6 +272,9 @@ def _item(raw: Any, where: str) -> Block:
     put(out, "when", iso_field(raw, "when", where))
     put(out, "meta", text_field(raw, "meta", where, TEXT, need=False, loose=True))
     put(out, "chip", text_field(raw, "chip", where, LABEL, need=False))
+    # Money on the right, like a value; the page leaves meta and chip out beside it.
+    put(out, "amount", text_field(raw, "amount", where, VALUE, need=False, loose=True))
+    put(out, "amount_tone", tone_field(raw, where, key="amount_tone"))
     done = raw.get("done")
     if done is not None and not isinstance(done, bool):
         raise fail(where, "done must be true or false")
@@ -326,6 +340,66 @@ def facts_block(raw: Mapping[str, Any], where: str, card: Card) -> Block:
     return {"items": items}
 
 
+def _bars(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    items = []
+    for i, item in enumerate(list_field(raw, "items", where, MAX_BARS, ("item", "items")), 1):
+        at = f"{where}: item {i}"
+        item = as_object(item, at)
+        one: Block = {
+            "label": text_field(item, "label", at, LABEL, loose=True),
+            "value": count_field(item, "value", at),
+        }
+        put(one, "note", text_field(item, "note", at, LABEL, need=False, loose=True))
+        items.append(one)
+    out: Block = {"items": items}
+    put(out, "unit", text_field(raw, "unit", where, VALUE, need=False))
+    put(out, "tone", tone_field(raw, where))
+    return out
+
+
+def _funnel(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    given = list_field(raw, "stages", where, MAX_FUNNEL, ("stage", "stages"), low=MIN_FUNNEL)
+    stages = []
+    for i, stage in enumerate(given, 1):
+        at = f"{where}: stage {i}"
+        stage = as_object(stage, at)
+        one: Block = {
+            "label": text_field(stage, "label", at, LABEL, loose=True),
+            "count": count_field(stage, "count", at),
+        }
+        put(one, "value", text_field(stage, "value", at, VALUE, need=False, loose=True))
+        stages.append(one)
+    return {"stages": stages}
+
+
+def current_step(raw: Mapping[str, Any], steps: list[str], where: str) -> str | int:
+    """Where along the steps it is: a step's label (matched ignoring case and spaces, then
+    written as the step is) or its position counted from 0."""
+    current = raw.get("current")
+    if current is None:
+        raise fail(where, "current is required (a step's label or its position from 0)")
+    if isinstance(current, str):
+        wanted = " ".join(current.split()).casefold()
+        found = next((step for step in steps if step.casefold() == wanted), None)
+        if found is not None:
+            return found
+    elif not isinstance(current, bool) and isinstance(current, (int, float)):
+        if float(current).is_integer() and 0 <= current < len(steps):
+            return int(current)
+    raise fail(
+        where,
+        f"current {current!r} is not a step; use one of {', '.join(steps)}, or its position from 0",
+    )
+
+
+def _stages(raw: Mapping[str, Any], where: str, card: Card) -> Block:
+    given = list_field(raw, "steps", where, MAX_STEPS, ("step", "steps"), low=MIN_STEPS)
+    steps = word_list({"steps": given}, "steps", where, MAX_STEPS, ("step", "steps"), LABEL)
+    out: Block = {"steps": steps, "current": current_step(raw, steps, where)}
+    put(out, "tone", tone_field(raw, where))
+    return out
+
+
 def _columns(raw: Mapping[str, Any], where: str, card: Card) -> Block:
     columns = list_field(raw, "columns", where, MAX_SPLIT, ("column", "columns"), low=MIN_SPLIT)
     drawn = []
@@ -354,6 +428,9 @@ _BLOCKS: dict[str, Callable[[Mapping[str, Any], str, Card], Block]] = {
     "quote": quote_block,
     "facts": facts_block,
     "columns": _columns,
+    "bars": _bars,
+    "funnel": _funnel,
+    "stages": _stages,
 }
 BLOCK_TYPES = tuple(_BLOCKS)
 

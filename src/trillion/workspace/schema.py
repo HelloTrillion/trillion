@@ -47,7 +47,8 @@ BLOCK_CARDS = {
     "chart": "as the chart widget",
     "table": "columns[], rows[][], highlight?",
     "timeline": "events[] as the timeline widget",
-    "rows": "label?, items[{title, detail?, person?, status?, when?, meta?, chip?, done?}]",
+    "rows": "label?, items[{title, detail?, person?, status?, when?, meta?, chip?, done?, amount?,"
+    " amount_tone?}]",
     "person": "name, detail?",
     "people": "names[]",
     "status": "tone, text",
@@ -56,6 +57,9 @@ BLOCK_CARDS = {
     "quote": "text, by?, when?",
     "facts": "items[{label, value}]",
     "columns": "columns[[blocks]]",
+    "bars": "items[{label, value, note?}], unit?, tone?",
+    "funnel": "stages[{label, count, value?}]",
+    "stages": "steps[], current (a step or its index from 0), tone?",
 }
 
 

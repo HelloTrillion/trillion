@@ -1004,6 +1004,13 @@
             {
               "title": "Rain jackets",
               "chip": "Elm Street"
+            },
+            {
+              "title": "Maple Park Dental",
+              "detail": "Invoice 214",
+              "when": "2026-10-10",
+              "amount": "$1,200",
+              "amount_tone": "bad"
             }
           ]
         }
@@ -1138,6 +1145,88 @@
               }
             ]
           ]
+        }
+      ]
+    },
+    {
+      "id": "k39",
+      "type": "custom",
+      "size": "medium",
+      "title": "bars",
+      "blocks": [
+        {
+          "type": "bars",
+          "items": [
+            {
+              "label": "Rent",
+              "value": 1950
+            },
+            {
+              "label": "Groceries",
+              "value": 612,
+              "note": "Up $80 on September"
+            },
+            {
+              "label": "Travel",
+              "value": 245
+            },
+            {
+              "label": "Eating out",
+              "value": 180
+            }
+          ],
+          "unit": "$"
+        }
+      ]
+    },
+    {
+      "id": "k40",
+      "type": "custom",
+      "size": "medium",
+      "title": "funnel",
+      "blocks": [
+        {
+          "type": "funnel",
+          "stages": [
+            {
+              "label": "Leads",
+              "count": 48,
+              "value": "$212,000"
+            },
+            {
+              "label": "Qualified",
+              "count": 21,
+              "value": "$118,000"
+            },
+            {
+              "label": "Proposal",
+              "count": 9,
+              "value": "$64,500"
+            },
+            {
+              "label": "Won",
+              "count": 4,
+              "value": "$31,200"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k41",
+      "type": "custom",
+      "size": "medium",
+      "title": "stages",
+      "blocks": [
+        {
+          "type": "stages",
+          "steps": [
+            "Lead",
+            "Qualified",
+            "Proposal",
+            "Won"
+          ],
+          "current": "Proposal"
         }
       ]
     }

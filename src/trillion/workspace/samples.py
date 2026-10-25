@@ -390,6 +390,13 @@ _BLOCKS: list[Sample] = [
             },
             {"title": "Book the movers", "status": "good", "meta": "Nov 14"},
             {"title": "Rain jackets", "chip": "Elm Street"},
+            {
+                "title": "Maple Park Dental",
+                "detail": "Invoice 214",
+                "amount": "$1,200",
+                "amount_tone": "bad",
+                "when": "2026-10-10",
+            },
         ],
     },
     {"type": "person", "name": "Sam", "detail": "Design lead"},
@@ -409,6 +416,26 @@ _BLOCKS: list[Sample] = [
             [{"type": "value", "value": "$9,100", "label": "Maple Park"}],
         ],
     },
+    {
+        "type": "bars",
+        "items": [
+            {"label": "Rent", "value": 1950},
+            {"label": "Groceries", "value": 612, "note": "Up $80 on September"},
+            {"label": "Travel", "value": 245},
+            {"label": "Eating out", "value": 180},
+        ],
+        "unit": "$",
+    },
+    {
+        "type": "funnel",
+        "stages": [
+            {"label": "Leads", "count": 48, "value": "$212,000"},
+            {"label": "Qualified", "count": 21, "value": "$118,000"},
+            {"label": "Proposal", "count": 9, "value": "$64,500"},
+            {"label": "Won", "count": 4, "value": "$31,200"},
+        ],
+    },
+    {"type": "stages", "steps": ["Lead", "Qualified", "Proposal", "Won"], "current": "Proposal"},
 ]
 
 BLOCK_SAMPLES: list[Sample] = [
