@@ -160,6 +160,9 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.7.17 | Tap an ask at the foot of a card | The ask's exact words appear as your message and she answers it. |
 | 2.7.18 | With an approval card waiting (2.7.9), look at the other cards | Asks are hidden until the approval is decided. |
 | 2.7.19 | Tap an ask whose words request an action that needs approval (for example "Create a file in the shared folder") | The turn starts, the approval card appears on the board, and nothing runs until you tap Approve on the card. The ask itself approves nothing. |
+| 2.7.20 | In Settings, connect a catalogue server (for example Linear). Ask "what widgets can you show?", then "show my sprint board as a kanban" | She lists the work widgets (kanban, sprint, due soon) and builds a kanban without fuss. |
+| 2.7.21 | Remove that server. Ask "what widgets can you show?" again, then give her the numbers for a kanban | The work widgets are gone from her list. Told the numbers, she still builds the kanban, because the kit accepts every type. |
+| 2.7.22 | With a catalogue server connected (for example Stripe or Linear), ask for a card from it and look at the footer | The footer shows that service's tile (colour, letters and icon) before its name. A card whose source is not a connected service shows the name alone. |
 
 ## 3. Brain, persona and memory
 

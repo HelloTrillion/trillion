@@ -127,7 +127,7 @@ when it has `events`, `board`→`kanban`, `burndown`/`cycle`→`sprint`, `todo`/
 - Live refresh (phase 3).
 - Connector-specific fetching: she reads with the connector's own tools and writes
   the numbers, as in phase 1.
-- Logos: tiles use the catalogue's colour and letters only.
+- Logos of our own: tiles use the catalogue's colour, letters and the bundled icon Settings already shows.
 
 ## Testing
 
