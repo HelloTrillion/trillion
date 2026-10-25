@@ -27,6 +27,9 @@ _NO_BOARD = "the board is not available here: there is no page open to show it o
 
 
 def _refused(message: str, kind: str = "invalid") -> ToolResult:
+    # Said plainly first: a model that skims a refusal must not tell the user it worked.
+    if kind == "invalid":
+        message = f"Nothing was shown or changed. {message} Fix the call and try again."
     return ToolResult(ok=False, content=message, effect="none", error_kind=kind)
 
 

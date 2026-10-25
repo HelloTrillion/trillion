@@ -350,8 +350,17 @@ def test_existing_widget_named_by_id():
 def test_schema_lists_the_kit():
     schema = widget_schema()
     assert schema["type"] == "object"
-    assert set(schema["properties"]["type"]["enum"]) == {w["type"] for w in MINIMAL}
-    assert schema["required"] == ["type"]
+    # No enums and no required type: a near miss must reach the kit, which reads it.
+    described = schema["properties"]["type"]["description"]
+    assert all(w["type"] in described for w in MINIMAL)
+    assert "required" not in schema
+    near_misses = [
+        {"type": "line", "x": [1, 2], "series": [{"name": "s", "values": [1, 2]}]},
+        {"type": "text", "label": "Total", "value": 26},
+    ]
+    for raw in near_misses:
+        jsonschema.validate(raw, schema)
+        validate_widget(raw, 1)
     jsonschema.Draft202012Validator.check_schema(schema)
     for raw in MINIMAL:
         jsonschema.validate(raw, schema)
@@ -506,3 +515,35 @@ def test_summary_is_one_line():
 def test_summary_of_emptied_board():
     board = b.remove(b.show(None, "A", [STAT]), "all")
     assert b.summary(board) == 'Board (closed): "A": empty.'
+
+
+# ── What a model meant ──────────────────────────────────────────────────
+
+
+def test_a_chart_kind_given_as_the_type_is_a_chart_of_that_kind() -> None:
+    w = validate_widget(
+        {"type": "line", "x": ["a", "b"], "series": [{"name": "s", "values": [1, 2]}]}, 1
+    )
+    assert w["type"] == "chart" and w["kind"] == "line"
+    pie = validate_widget({"type": "Pie", "x": ["a"], "series": [{"name": "s", "values": [1]}]}, 1)
+    assert pie["type"] == "chart" and pie["kind"] == "donut"
+
+
+def test_near_synonyms_and_missing_types_are_read_from_the_fields() -> None:
+    assert (
+        validate_widget({"type": "text", "label": "Total", "value": "26 km"}, 1)["type"] == "stat"
+    )
+    assert validate_widget({"type": "text", "text": "Hello"}, 1)["type"] == "note"
+    assert validate_widget({"type": "KPI", "label": "Total", "value": 26}, 1)["type"] == "stat"
+    assert validate_widget({"items": [{"title": "Milk"}]}, 1)["type"] == "list"
+    assert (
+        validate_widget({"x": ["a"], "series": [{"name": "s", "values": [1]}], "kind": "bar"}, 1)[
+            "type"
+        ]
+        == "chart"
+    )
+
+
+def test_what_cannot_be_read_is_still_refused() -> None:
+    with pytest.raises(BoardError, match="widget 1: no type; use one of"):
+        validate_widget({"title": "?"}, 1)

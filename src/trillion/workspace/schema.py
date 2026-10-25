@@ -30,6 +30,9 @@ def widget_schema() -> dict[str, Any]:
     local models follow a flat schema better than a oneOf, and it costs fewer tokens;
     `validate_widget` enforces which fields each type takes."""
     s, n = {"type": "string"}, {"type": "number"}
+    # Display text a model may well give as a number ("value": 26). The kit writes it
+    # as text, so the schema must not refuse it first.
+    sn = {"type": ["string", "number"]}
 
     def arr(items: dict[str, Any], d: str) -> dict[str, Any]:
         return {"type": "array", "items": items, "description": d}
@@ -40,34 +43,34 @@ def widget_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
+            # No enums: a model's near miss ("line" for a chart) must reach the kit, which
+            # reads what was meant or says exactly what to fix. The values are listed here.
             "type": {
                 "type": "string",
-                "enum": list(TYPES),
                 "description": (
-                    "stat: label, value. chart: kind, x, series. list: items. "
-                    "table: columns, rows. note: text. timeline: events. compare: options."
+                    f"One of {', '.join(TYPES)}. stat: label, value. chart: kind, x, series. "
+                    "list: items. table: columns, rows. note: text. timeline: events. "
+                    "compare: options."
                 ),
             },
-            "size": {"type": "string", "enum": list(SIZES), "description": "Default medium."},
+            "size": {**s, "description": f"One of {', '.join(SIZES)}; default medium."},
             "title": {**s, "description": "Not for stat."},
-            "label": {**s, "description": "Stat: what the number is."},
-            "value": {**s, "description": "Stat: the number as shown, e.g. '$41.20'."},
-            "delta": {**s, "description": "Stat change, e.g. '+12%'."},
-            "hint": {**s, "description": "Stat: small print, e.g. 'vs September'."},
-            "tone": {"type": "string", "enum": list(TONES), "description": "Stat."},
-            "kind": {
-                "type": "string",
-                "enum": list(KINDS),
-                "description": "Chart. Donut: one series.",
-            },
-            "x": arr(s, f"Chart labels, at most {MAX_POINTS}."),
+            "label": {**sn, "description": "Stat: what the number is."},
+            "value": {**sn, "description": "Stat: the number as shown, e.g. '$41.20'."},
+            "delta": {**sn, "description": "Stat change, e.g. '+12%'."},
+            "hint": {**sn, "description": "Stat: small print, e.g. 'vs September'."},
+            "tone": {**s, "description": f"Stat: one of {', '.join(TONES)}."},
+            "kind": {**s, "description": f"Chart: one of {', '.join(KINDS)}. Donut: one series."},
+            "x": arr(sn, f"Chart labels, at most {MAX_POINTS}."),
             "series": arr(
                 obj({"name": s, "values": arr(n, "One per x.")}, ["name", "values"]),
                 f"At most {MAX_SERIES}.",
             ),
             "unit": {**s, "description": "Chart: unit of the values, e.g. '$'."},
             "items": arr(
-                obj({"title": s, "subtitle": s, "meta": s, "done": {"type": "boolean"}}, ["title"]),
+                obj(
+                    {"title": s, "subtitle": s, "meta": sn, "done": {"type": "boolean"}}, ["title"]
+                ),
                 f"At most {MAX_ITEMS}.",
             ),
             "columns": arr(s, f"At most {MAX_COLUMNS}."),
@@ -88,7 +91,7 @@ def widget_schema() -> dict[str, Any]:
                         "name": s,
                         "note": s,
                         "metrics": arr(
-                            obj({"label": s, "score": n}, ["label", "score"]),
+                            obj({"label": sn, "score": n}, ["label", "score"]),
                             f"Metric label and score 0-10; at most {MAX_METRICS}.",
                         ),
                         "tags": arr(s, f"At most {MAX_TAGS}."),
@@ -100,5 +103,4 @@ def widget_schema() -> dict[str, Any]:
             "pick": {**s, "description": "Compare: the recommended option's name."},
             "reason": {**s, "description": "Compare: why the pick."},
         },
-        "required": ["type"],
     }

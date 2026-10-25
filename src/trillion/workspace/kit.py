@@ -342,15 +342,68 @@ _TYPES: dict[str, Callable[[Mapping[str, Any], str], Widget]] = {
 TYPES = tuple(_TYPES)
 
 
+# Names a model reaches for instead of the kit's own: a chart kind given as the type,
+# or a near synonym. Small local models do this often, and the meaning is plain.
+_ALIASES = {
+    "pie": "chart",
+    "graph": "chart",
+    "metric": "stat",
+    "kpi": "stat",
+    "number": "stat",
+    "markdown": "note",
+    "paragraph": "note",
+    "checklist": "list",
+    "bullets": "list",
+    "grid": "table",
+    "agenda": "timeline",
+    "schedule": "timeline",
+    "comparison": "compare",
+}
+# With no usable type, the fields say which widget it is, most telling first.
+_BY_FIELD = (
+    ("series", "chart"),
+    ("options", "compare"),
+    ("events", "timeline"),
+    ("columns", "table"),
+    ("items", "list"),
+    ("value", "stat"),
+    ("text", "note"),
+)
+
+
+def _typed(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The widget with the type it means: a chart kind as its type ("line") becomes a
+    chart of that kind, a near synonym becomes the kit's name, and a missing or unknown
+    type is read from the fields. What cannot be read is left for the refusal."""
+    given = raw.get("type")
+    name = given.strip().lower() if isinstance(given, str) else ""
+    if name in _TYPES:
+        return raw if name == given else {**raw, "type": name}
+    if name in KINDS or name == "pie":
+        kind = "donut" if name == "pie" else name
+        return {**raw, "type": "chart", "kind": raw.get("kind") or kind}
+    if name == "text" and "value" in raw and "text" not in raw:
+        return {**raw, "type": "stat"}
+    if name in _ALIASES:
+        return {**raw, "type": _ALIASES[name]}
+    if name == "text":
+        return {**raw, "type": "note"}
+    for field, kind in _BY_FIELD:
+        if field in raw:
+            return {**raw, "type": kind}
+    return raw
+
+
 def validate_widget(raw: Any, at: int | str) -> Widget:
     """The page-ready widget, without an id. `at` is the position in the call (1-based)
     for a new widget, or the id of the widget it replaces."""
     named = f"widget {at}" if isinstance(at, int) else at
-    raw = _obj(raw, named)
+    raw = _typed(_obj(raw, named))
     kind = raw.get("type")
     build = _TYPES.get(kind) if isinstance(kind, str) else None
     if build is None:
-        raise _fail(named, f"unknown type {kind!r}; use one of {', '.join(TYPES)}")
+        what = f"unknown type {kind!r}" if kind is not None else "no type"
+        raise _fail(named, f"{what}; use one of {', '.join(TYPES)}")
     where = f"widget {at} ({kind})" if isinstance(at, int) else f"{kind} {at}"
     size = _choice(raw, "size", where, SIZES, default="medium")
     return {"type": kind, "size": size, **build(raw, where)}
