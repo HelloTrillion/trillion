@@ -175,3 +175,22 @@ def test_she_shows_what_an_approval_is_about_but_never_as_the_approval() -> None
     for text in (typed, spoken):
         assert "approval" in text and "never present a widget as the approval" in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_she_is_taught_the_widget_rules_in_both_modalities() -> None:
+    from trillion.workspace.widgets import TYPES
+
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 25, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "custom" in text and "source" in text
+        assert "two at most" in text or "at most two asks" in text
+        assert all(kind in text for kind in TYPES)
+        assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_she_is_told_a_tap_on_a_widget_cannot_approve() -> None:
+    text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
+    assert 'If the answer is "ask", tell them to tap Approve on the card' in text
+    assert "a tap on a widget can't approve" in text
