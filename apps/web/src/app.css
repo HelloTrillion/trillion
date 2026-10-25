@@ -5334,3 +5334,272 @@ button.connected-danger {
     transition: none;
   }
 }
+
+/* ── The widget style guide (#kit, kit.ts): every sample, drawn with the board's own cards ── */
+
+/* Its own scroll area over the galaxy, behind a veil so the cards read as they do in the workspace. */
+.kit {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background:
+    radial-gradient(120% 80% at 50% -10%, var(--glass-sheen), transparent 60%),
+    color-mix(in srgb, var(--color-bg-0) 62%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  color: var(--color-text-0);
+  outline: none;
+}
+
+/*
+ * The column every section sits in. It is named like the workspace, so the board's grid inside
+ * answers to its width exactly as it does there: six columns wide, two in the middle, one narrow.
+ */
+.kit-page {
+  container: workspace / inline-size;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 44px 32px 96px;
+  transition: max-width var(--motion-slow) cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+/* Narrow: a phone's width (380px inside a 16px gutter), to see the cards stack. */
+.kit-narrow .kit-page {
+  max-width: 412px;
+  padding-inline: 16px;
+}
+
+.kit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px 32px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--w-line);
+}
+.kit-head-words {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.kit-eyebrow,
+.kit-cap {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-2);
+}
+.kit-eyebrow {
+  text-transform: uppercase;
+}
+.kit-title {
+  margin: 6px 0 8px;
+  font-size: clamp(28px, 6cqi, 38px);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.kit-lede {
+  margin: 0;
+  max-width: 54ch;
+  color: var(--color-text-1);
+  font-size: 15px;
+}
+
+.kit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A two-way switch: the pressed side wears a soft pill that slides across. */
+.kit-switch {
+  --at: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px;
+  border-radius: var(--radius-full);
+  background: var(--w-soft);
+  border: 1px solid var(--w-line);
+}
+.kit-switch::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 2);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-text-0) 12%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-edge), 0 2px 8px rgb(0 0 0 / 0.18);
+  transform: translateX(calc(var(--at) * 100%));
+  transition: transform 320ms cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.kit-switch-opt,
+.kit-switch-opt:hover:not(:disabled) {
+  position: relative;
+  min-width: 68px;
+  border: 0;
+  background: transparent;
+  padding: 6px 14px;
+  color: var(--color-text-1);
+  font-weight: 500;
+}
+.kit-switch-opt[aria-pressed='true'] {
+  color: var(--color-text-0);
+}
+
+.kit-done {
+  padding: 7px 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--w-line);
+  color: var(--color-text-1);
+  font-size: 13px;
+  text-decoration: none;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.kit-done:hover {
+  color: var(--color-text-0);
+  border-color: var(--color-accent);
+}
+
+.kit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.kit-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+.kit-section-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.kit-section-lede {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+
+/* The board inside a section: no padding of its own (no orb to clear), and nothing to take off. */
+.kit .bd {
+  flex: none;
+  padding: 0;
+}
+.kit .bd-x {
+  display: none;
+}
+.kit-cap {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.kit-rules {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: kit-rule;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 40px;
+}
+@container workspace (min-width: 720px) {
+  .kit-rules {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.kit-rule {
+  counter-increment: kit-rule;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--w-line);
+  font-size: 14px;
+  color: var(--color-text-0);
+}
+.kit-rule::before {
+  content: counter(kit-rule, decimal-leading-zero);
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-accent);
+}
+.kit-motto {
+  margin: 8px 0 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--color-accent);
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--color-text-0);
+}
+
+/* What an ask would have sent: a quiet note at the foot of the window, for a moment. */
+.kit-note {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 21;
+  box-sizing: border-box;
+  max-width: calc(100vw - 32px);
+  margin: 0;
+  padding: 9px 16px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--glass-edge);
+  background:
+    linear-gradient(165deg, var(--glass-sheen), transparent 45%),
+    var(--glass-dense);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.3);
+  font-size: 13px;
+  color: var(--color-text-0);
+  overflow-wrap: anywhere;
+  transform: translateX(-50%);
+  animation: kit-note-in 220ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.kit-note[hidden] {
+  display: none;
+}
+@keyframes kit-note-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+
+@media (max-width: 600px) {
+  .kit-page {
+    gap: 40px;
+    padding: 28px 16px 72px;
+  }
+  .kit-controls {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kit-page,
+  .kit-switch::before {
+    transition: none;
+  }
+  .kit-note {
+    animation: none;
+  }
+}

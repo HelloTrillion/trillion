@@ -52,6 +52,7 @@ import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
+import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView } from './board';
 import { createApprovals, outcomeWords } from './approvals';
@@ -82,6 +83,8 @@ const WS_URL = `ws://${CORE}/ws`;
 const API_URL = import.meta.env.DEV ? `http://${CORE}` : '';
 // A design preview of the workspace with sample content (#showcase). Read before the token is taken from the fragment.
 const showcaseAt = showcaseScene(location.search, location.hash);
+// The widget style guide (#kit), likewise.
+const kitAt = isKit(location.hash);
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -1521,11 +1524,32 @@ addEventListener('hashchange', () => {
   }
   const scene = showcaseScene('', location.hash);
   if (scene) openShowcase(workspace, scene);
+  showKit(isKit(location.hash));
 });
+
+// The widget style guide, over the galaxy. Its theme switch turns the galaxy too; leaving puts hers back.
+let kit: Kit | null = null;
+function showKit(on: boolean): void {
+  if (on && !kit) {
+    kit = createKit({
+      setTheme: (t) => {
+        document.documentElement.dataset['theme'] = t;
+        galaxy.setTheme(t);
+      },
+      restoreTheme: () => applyTheme(themeChoice),
+    });
+    document.body.append(kit.el);
+    kit.el.focus({ preventScroll: true });
+  } else if (!on && kit) {
+    kit.dispose();
+    kit = null;
+  }
+}
 
 render();
 connect();
 if (showcaseAt) openShowcase(workspace, showcaseAt);
+if (kitAt) showKit(true);
 
 // Her board (her visual channel) in the workspace. It opens when she puts something up, unless
 // Settings is open: then it waits behind a chip in the sidebar.
