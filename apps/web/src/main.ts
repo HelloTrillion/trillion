@@ -131,6 +131,14 @@ const form = $<HTMLFormElement>('ask');
 const input = $<HTMLTextAreaElement>('input');
 const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
+// The ask bar's actions are icons, each named for readers and on hover.
+sendBtn.replaceChildren(icon('send', 18));
+sendBtn.setAttribute('aria-label', 'Send');
+sendBtn.title = 'Send (Enter)';
+stopBtn.replaceChildren(icon('stop', 16));
+stopBtn.setAttribute('aria-label', 'Stop');
+stopBtn.title = 'Stop her (Esc)';
+let micIcon = '';
 const footEl = $('foot');
 const newBtn = $<HTMLButtonElement>('new');
 newBtn.replaceChildren(icon('edit', 18));
@@ -728,14 +736,26 @@ function render(): void {
   // Introductions need no model: the app writes the names, not her.
   const canType = ready && (!noModel || introducing);
   input.disabled = !canType;
-  input.placeholder = introducing && ob ? placeholder(ob) : canType ? `Message ${view.agentName}` : '';
+  input.placeholder =
+    introducing && ob
+      ? placeholder(ob)
+      : !canType
+        ? ''
+        : view.entries.length
+          ? `Reply to ${view.agentName}`
+          : `Say hello to ${view.agentName}`;
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
   stopBtn.hidden = !(view.busy || voice.active || view.mic);
   // Watching for a cut-in is a microphone open too, so it shows, even while she answers.
   const watch = !view.mic && watching();
   micBtn.hidden = !canType || (view.busy && !watch) || introducing;
-  micBtn.textContent = view.mic ? 'Done' : watch ? 'Listening' : 'Speak';
+  // Speaking, the button finishes the turn: a tick. Otherwise it is the microphone.
+  const nextMic = view.mic ? 'check' : 'mic';
+  if (nextMic !== micIcon) {
+    micIcon = nextMic;
+    micBtn.replaceChildren(icon(nextMic, 18));
+  }
   micBtn.title = !view.listening
     ? 'Choose how she hears you'
     : view.mic
@@ -743,8 +763,7 @@ function render(): void {
       : watch
         ? watchTitle(streamWatch ? 'stream' : 'local')
         : 'Speak to her';
-  if (watch) micBtn.setAttribute('aria-label', micBtn.title);
-  else micBtn.removeAttribute('aria-label');
+  micBtn.setAttribute('aria-label', view.mic ? 'Done' : watch ? micBtn.title : 'Speak');
   micBtn.setAttribute('aria-pressed', String(view.mic));
   micBtn.classList.toggle('live', view.mic);
   micBtn.classList.toggle('watching', watch);

@@ -912,8 +912,8 @@ body[data-sidebar='hidden'] .workspace {
 .ask {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  padding: 8px;
+  gap: 4px;
+  padding: 6px 6px 6px 10px;
   border-radius: var(--radius-lg);
   background: var(--color-surface-glass);
   border: 1px solid var(--color-border);
@@ -922,18 +922,66 @@ body[data-sidebar='hidden'] .workspace {
 
 .ask textarea {
   flex: 1;
+  min-width: 0;
+  /* Auto-grow sets its height from scrollHeight, which counts the padding. */
+  box-sizing: border-box;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
   color: inherit;
   font: inherit;
-  padding: 6px 8px;
+  font-size: 15px;
+  line-height: 1.4;
+  padding: 7px 2px;
   max-height: 160px;
+}
+
+/* The ask bar's actions: small round icon buttons that never squeeze the text. */
+.ask button {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-1);
+}
+
+.ask button:hover:not(:disabled) {
+  color: var(--color-text-0);
+  background: var(--color-bg-2);
+}
+
+.ask button[hidden] {
+  display: none;
+}
+
+/* Send is the one filled button, and only lights up once there is something to send. */
+.ask #send:not(:disabled) {
+  background: var(--color-accent);
+  color: var(--color-bg-0);
+}
+
+.ask:has(textarea:placeholder-shown) #send {
+  background: transparent;
+  color: var(--color-text-2);
+}
+
+.ask #send:disabled {
+  opacity: 0.35;
 }
 
 .ask textarea::placeholder {
   color: var(--color-text-2);
+  font-size: 14px;
+  /* One line, however narrow the bar: it shortens rather than wraps. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ask:focus-within {

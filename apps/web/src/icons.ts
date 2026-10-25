@@ -25,6 +25,10 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   edit: ['M14.5 5.5l4 4L9 19H5v-4z', 'M12.5 7.5l4 4'],
   // A clock turning back: past conversations.
   history: ['M4.5 12a7.5 7.5 0 1 0 2.2-5.3', 'M4.5 4.5v3.5H8', 'M12 8v4.2l2.8 1.8'],
+  // The ask bar: send (an arrow up), stop (a square), done speaking (a tick).
+  send: ['M12 18.5V6', 'M6.5 11.5L12 6l5.5 5.5'],
+  stop: ['M7.5 7.5h9v9h-9z'],
+  check: ['M5.5 12.5l4 4l9-9'],
   search: ['M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 0 0 0-13z', 'M20 20l-4.8-4.8'],
 };
 
