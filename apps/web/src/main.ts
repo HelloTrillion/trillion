@@ -52,6 +52,7 @@ import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
+import { openShowcase, showcaseScene } from './showcase';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
@@ -76,6 +77,8 @@ const CONVERSATION_KEY = 'trillion-conversation';
 const CORE = import.meta.env.DEV ? '127.0.0.1:7777' : location.host;
 const WS_URL = `ws://${CORE}/ws`;
 const API_URL = import.meta.env.DEV ? `http://${CORE}` : '';
+// A design preview of the workspace with sample content (#showcase). Read before the token is taken from the fragment.
+const showcaseAt = showcaseScene(location.search, location.hash);
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -1444,7 +1447,10 @@ addEventListener('hashchange', () => {
     apply({ ...view, link: 'connecting' });
     connect();
   }
+  const scene = showcaseScene('', location.hash);
+  if (scene) openShowcase(workspace, scene);
 });
 
 render();
 connect();
+if (showcaseAt) openShowcase(workspace, showcaseAt);

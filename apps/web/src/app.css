@@ -2310,3 +2310,1300 @@ button.connected-danger {
     animation: none;
   }
 }
+
+/* ── Workspace preview (showcase.ts): a design sketch with sample content, opened by #showcase ── */
+
+.sc {
+  /* Her state colours, as the orb shows them. */
+  --sc-listen: var(--color-amber);
+  --sc-think: var(--mind-memory);
+  --sc-speak: var(--color-accent);
+  --sc-soft: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  --sc-line: color-mix(in srgb, var(--color-text-0) 9%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 18px 28px 32px;
+  color: var(--color-text-0);
+}
+
+@media (min-width: 768px) {
+  /* The last row scrolls clear of the docked orb's hole in the bottom-right corner. */
+  .sc {
+    padding-bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px) + 12px);
+  }
+}
+
+.sc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* A segmented control whose lit pill slides to the chosen scene. */
+.sc-switch {
+  --at: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 3px;
+  border-radius: var(--radius-full);
+  background: var(--sc-soft);
+  border: 1px solid var(--sc-line);
+  min-width: min(100%, 400px);
+}
+.sc-switch::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 4);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-text-0) 12%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-edge), 0 2px 8px rgb(0 0 0 / 0.18);
+  transform: translateX(calc(var(--at) * 100%));
+  transition: transform 320ms cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.sc-tab,
+.sc-tab:hover:not(:disabled) {
+  position: relative;
+  border: 0;
+  background: transparent;
+  padding: 7px 12px;
+  color: var(--color-text-1);
+  font-weight: 500;
+}
+.sc-tab[aria-selected='true'] {
+  color: var(--color-text-0);
+}
+
+.sc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  border: 1px dashed color-mix(in srgb, var(--color-text-2) 60%, transparent);
+  color: var(--color-text-2);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.sc-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sc-listen);
+}
+
+.sc-scene {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* Things arrive one after another, rising a little. */
+.sc-rise {
+  animation: sc-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+@keyframes sc-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.sc-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+}
+.sc-note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.sc-tile-title {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-1);
+}
+
+/* What she is saying: a speaking-teal wave and her words. */
+.sc-says {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 9px 16px 9px 12px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--sc-speak) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sc-speak) 22%, transparent);
+  font-size: 14px;
+}
+.sc-says-text {
+  quotes: '“' '”';
+  color: var(--color-text-0);
+}
+.sc-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  flex: none;
+}
+.sc-wave i {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--sc-speak);
+  transform: scaleY(0.35);
+  animation: sc-wave 1100ms ease-in-out infinite;
+  animation-delay: calc(var(--b) * -170ms);
+}
+@keyframes sc-wave {
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.sc-tile,
+.sc-sources,
+.sc-draft,
+.sc-checked,
+.sc-steps {
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  border: 1px solid var(--sc-line);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+}
+
+.sc-primary,
+.sc-secondary,
+.sc-quiet,
+.sc-mini {
+  font-weight: 500;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    transform var(--motion-fast);
+}
+.sc-primary,
+.sc-primary:hover:not(:disabled) {
+  background: var(--sc-speak);
+  border-color: transparent;
+  color: var(--color-bg-0);
+  padding: 9px 20px;
+}
+.sc-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--sc-speak) 35%, transparent);
+}
+.sc-secondary {
+  background: var(--sc-soft);
+  padding: 9px 18px;
+}
+.sc-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-1);
+  padding: 9px 14px;
+}
+
+/* Briefing ── */
+
+.sc-greeting {
+  margin: 4px 0 6px;
+  font-size: clamp(34px, 6cqi, 54px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  background: linear-gradient(100deg, var(--color-text-0) 30%, color-mix(in srgb, var(--sc-speak) 70%, var(--color-text-0)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.sc-lede {
+  margin: 0;
+  font-size: 16px;
+  color: var(--color-text-1);
+}
+
+.sc-day {
+  overflow-x: auto;
+  padding: 4px 2px 6px;
+}
+.sc-day-track {
+  position: relative;
+  min-width: 620px;
+  height: 128px;
+  border-radius: var(--radius-lg);
+  background:
+    repeating-linear-gradient(90deg, var(--sc-line) 0 1px, transparent 1px calc(100% / 15)),
+    color-mix(in srgb, var(--color-bg-1) 35%, transparent);
+  border: 1px solid var(--sc-line);
+  overflow: hidden;
+}
+.sc-day-hour {
+  position: absolute;
+  bottom: 8px;
+  transform: translateX(4px);
+  font-size: 11px;
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.sc-day-past {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-bg-0) 30%, transparent));
+  pointer-events: none;
+  transition: width 900ms linear;
+}
+.sc-event {
+  --c: var(--sc-speak);
+  position: absolute;
+  top: calc(12px + var(--lane) * 42px);
+  height: 36px;
+  min-width: 46px;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border-radius: 9px;
+  border-left: 3px solid var(--c);
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  transition: opacity 400ms, background 400ms, box-shadow 400ms;
+}
+.sc-event strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sc-event span {
+  color: var(--color-text-1);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sc-event-people {
+  --c: var(--mind-agents);
+}
+.sc-event-plan {
+  --c: var(--sc-listen);
+}
+.sc-event-task {
+  --c: var(--sc-think);
+}
+.sc-event-self {
+  --c: var(--mind-working);
+}
+.sc-event[data-past] {
+  opacity: 0.45;
+}
+.sc-event[data-now] {
+  background: color-mix(in srgb, var(--c) 28%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent), 0 0 22px color-mix(in srgb, var(--c) 30%, transparent);
+}
+.sc-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--sc-listen);
+  box-shadow: 0 0 12px var(--sc-listen);
+  transition: left 900ms linear;
+}
+.sc-now::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--sc-listen);
+}
+.sc-now-label {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--sc-listen);
+  color: var(--color-bg-0);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+}
+.sc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sc-need {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--sc-listen) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sc-listen) 20%, transparent);
+  transition: background 300ms, border-color 300ms;
+}
+.sc-need[data-done] {
+  background: color-mix(in srgb, var(--sc-speak) 8%, transparent);
+  border-color: color-mix(in srgb, var(--sc-speak) 20%, transparent);
+}
+.sc-need-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13.5px;
+}
+.sc-need-text span {
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.sc-mini,
+.sc-mini:disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  background: var(--sc-soft);
+  opacity: 1;
+}
+.sc-need[data-done] .sc-mini {
+  color: var(--sc-speak);
+  border-color: transparent;
+}
+
+.sc-weather-now {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sc-weather-art {
+  flex: none;
+  color: var(--sc-listen);
+}
+.sc-sun {
+  fill: var(--sc-listen);
+}
+.sc-rays {
+  transform-origin: 26px 24px;
+  animation: sc-spin 40s linear infinite;
+}
+.sc-cloud {
+  fill: color-mix(in srgb, var(--color-text-0) 82%, var(--color-bg-2));
+  animation: sc-drift 7s ease-in-out infinite alternate;
+}
+@keyframes sc-drift {
+  to {
+    transform: translateX(-4px);
+  }
+}
+.sc-temp {
+  display: flex;
+  flex-direction: column;
+}
+.sc-temp-big {
+  font-size: 40px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.sc-temp-range {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.sc-hours {
+  list-style: none;
+  margin: 14px 0 10px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  align-items: end;
+}
+.sc-hour {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sc-hour i {
+  width: 6px;
+  height: calc(8px + var(--t) * 30px);
+  border-radius: 3px;
+  background: linear-gradient(to top, color-mix(in srgb, var(--sc-listen) 30%, transparent), var(--sc-listen));
+}
+.sc-hour-rain i {
+  background: linear-gradient(to top, color-mix(in srgb, var(--mind-working) 30%, transparent), var(--mind-working));
+}
+.sc-hour small {
+  color: var(--color-text-2);
+}
+
+.sc-reminder {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+}
+.sc-when {
+  min-width: 62px;
+  font-size: 12px;
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.sc-check,
+.sc-check:hover:not(:disabled) {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--color-text-1) 60%, transparent);
+  background: transparent;
+  color: transparent;
+}
+.sc-check[aria-pressed='true'] {
+  background: var(--sc-speak);
+  border-color: var(--sc-speak);
+  color: var(--color-bg-0);
+}
+.sc-reminder[data-done] .sc-what {
+  color: var(--color-text-2);
+  text-decoration: line-through;
+}
+
+/* Working ── */
+
+.sc-task {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sc-task-title {
+  margin: 0;
+  font-size: clamp(26px, 4.2cqi, 38px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.sc-task-status {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--sc-think) 16%, transparent);
+  color: color-mix(in srgb, var(--sc-think) 75%, var(--color-text-0));
+  transition: background 400ms, color 400ms;
+}
+.sc-task-status[data-state='done'] {
+  background: color-mix(in srgb, var(--sc-speak) 16%, transparent);
+  color: var(--sc-speak);
+}
+
+.sc-work-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.sc-work-left,
+.sc-work-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Her helpers circle a small orb; the one at work glows and reaches in with a beam. */
+.sc-orbit {
+  position: relative;
+  width: min(100%, 300px);
+  aspect-ratio: 1;
+  margin: 0 auto;
+}
+.sc-core {
+  --c: var(--sc-think);
+  position: absolute;
+  inset: 37%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 34%, color-mix(in srgb, var(--c) 30%, white), var(--c) 45%, color-mix(in srgb, var(--c) 30%, transparent) 72%, transparent 74%);
+  box-shadow: 0 0 40px color-mix(in srgb, var(--c) 55%, transparent);
+  animation: sc-breathe 2600ms ease-in-out infinite;
+}
+.sc-core[data-state='done'] {
+  --c: var(--sc-speak);
+}
+.sc-core[data-state='idle'] {
+  --c: color-mix(in srgb, var(--color-text-1) 70%, var(--sc-speak));
+}
+@keyframes sc-breathe {
+  50% {
+    transform: scale(1.06);
+  }
+}
+.sc-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px dashed var(--sc-line);
+  transform: rotate(var(--a));
+  animation: sc-orbit var(--period, 22s) linear infinite;
+}
+.sc-ring-0 {
+  inset: 20%;
+  --period: 16s;
+  --c: var(--mind-working);
+}
+.sc-ring-1 {
+  inset: 9%;
+  --period: 24s;
+  --c: var(--mind-agents);
+}
+.sc-ring-2 {
+  inset: 0;
+  --period: 34s;
+  --c: var(--sc-listen);
+}
+@keyframes sc-orbit {
+  to {
+    transform: rotate(calc(var(--a) + 360deg));
+  }
+}
+.sc-sat {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--c) 55%, transparent);
+  transition: background 300ms, box-shadow 300ms, transform 300ms;
+}
+.sc-sat-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  padding: 2px 8px;
+  margin-top: -20px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--color-text-1);
+  background: color-mix(in srgb, var(--color-bg-1) 70%, transparent);
+  /* Counter-turned so the words stay upright while the ring turns. */
+  transform: rotate(calc(-1 * var(--a)));
+  animation: sc-counter var(--period, 22s) linear infinite;
+  transition: color 300ms;
+}
+@keyframes sc-counter {
+  to {
+    transform: rotate(calc(-1 * var(--a) - 360deg));
+  }
+}
+.sc-beam {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: linear-gradient(to bottom, var(--c), transparent);
+  opacity: 0;
+  transition: opacity 400ms;
+}
+.sc-ring[data-live] {
+  border-color: color-mix(in srgb, var(--c) 35%, transparent);
+}
+.sc-ring[data-live] .sc-beam {
+  opacity: 0.8;
+}
+.sc-ring[data-live] .sc-sat {
+  background: var(--c);
+  transform: scale(1.35);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--c) 20%, transparent), 0 0 18px var(--c);
+}
+.sc-ring[data-live] .sc-sat-label {
+  color: var(--color-text-0);
+  font-weight: 600;
+}
+
+.sc-steps {
+  list-style: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sc-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  color: var(--color-text-2);
+  transition: color 300ms, background 300ms;
+}
+.sc-step-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--color-text-2) 60%, transparent);
+  color: transparent;
+  transition: background 300ms, border-color 300ms, color 300ms;
+}
+.sc-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13.5px;
+}
+.sc-step-text strong {
+  font-weight: 500;
+}
+.sc-step-who {
+  font-size: 11.5px;
+}
+.sc-step[data-state='running'] {
+  color: var(--color-text-0);
+  background: color-mix(in srgb, var(--sc-think) 10%, transparent);
+}
+.sc-step[data-state='running'] .sc-step-mark {
+  border-color: var(--sc-think);
+  border-right-color: transparent;
+  animation: sc-spin 900ms linear infinite;
+}
+/* A shimmer passes over the step at work. */
+.sc-step[data-state='running']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--sc-think) 18%, transparent) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: sc-shimmer 1400ms linear infinite;
+  pointer-events: none;
+}
+@keyframes sc-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+.sc-step[data-state='done'] {
+  color: var(--color-text-1);
+}
+.sc-step[data-state='done'] .sc-step-mark {
+  background: var(--sc-speak);
+  border-color: var(--sc-speak);
+  color: var(--color-bg-0);
+  animation: sc-pop 360ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+@keyframes sc-pop {
+  from {
+    transform: scale(0.6);
+  }
+}
+@keyframes sc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 30px;
+}
+.sc-chips[data-empty]::before {
+  content: 'Gathering…';
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.sc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--radius-full);
+  font-size: 12.5px;
+  background: var(--sc-soft);
+  border: 1px solid var(--sc-line);
+  animation: sc-chip-in 380ms cubic-bezier(0.3, 1.4, 0.5, 1) both;
+}
+.sc-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sc-speak);
+}
+@keyframes sc-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+.sc-draft-text {
+  margin: 0;
+  min-height: 8.2em;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.sc-draft-text span:first-child::first-line {
+  font-weight: 600;
+  font-size: 15.5px;
+}
+.sc-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 1px;
+  vertical-align: -0.2em;
+  background: var(--sc-think);
+  opacity: 0;
+}
+.sc-draft[data-state='running'] .sc-caret {
+  opacity: 1;
+  animation: sc-blink 900ms steps(1) infinite;
+}
+@keyframes sc-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.sc-draft-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sc-line);
+}
+.sc-draft-foot .sc-primary {
+  animation: sc-chip-in 380ms ease-out both;
+}
+
+/* Decide ── */
+
+.sc-decide-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(220px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.sc-approve {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--sc-listen) 13%, transparent), transparent 60%),
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sc-listen) 30%, var(--sc-line));
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.22), inset 0 1px 0 var(--glass-edge);
+}
+.sc-approve-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+.sc-approve-icon {
+  width: 42px;
+  height: 42px;
+  padding: 10px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  color: var(--sc-listen);
+  background: color-mix(in srgb, var(--sc-listen) 14%, transparent);
+}
+.sc-approve-title {
+  margin: 2px 0 0;
+  font-size: clamp(20px, 3cqi, 26px);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.sc-timer {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+}
+.sc-timer-ring {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+.sc-ring-bg {
+  stroke: var(--sc-line);
+  stroke-width: 3;
+}
+.sc-ring-arc {
+  stroke: var(--sc-listen);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s linear, stroke 300ms;
+}
+.sc-timer[data-low] .sc-ring-arc {
+  stroke: var(--color-danger);
+}
+.sc-timer-text {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sc-message {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-bg-0) 30%, transparent);
+  border: 1px solid var(--sc-line);
+}
+.sc-message-to {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.sc-message-to span:last-child {
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+.sc-avatar {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-bg-0);
+  background: linear-gradient(135deg, var(--mind-agents), var(--sc-think));
+}
+.sc-bubble {
+  margin: 0 0 0 32px;
+  padding: 10px 14px;
+  border-radius: 16px 16px 16px 4px;
+  background: color-mix(in srgb, var(--sc-speak) 16%, transparent);
+  font-size: 14.5px;
+  line-height: 1.5;
+  outline-offset: 3px;
+}
+.sc-approve[data-editing] .sc-bubble {
+  outline: 2px dashed color-mix(in srgb, var(--sc-speak) 60%, transparent);
+}
+.sc-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--sc-listen) 10%, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.sc-risk p {
+  margin: 0;
+}
+.sc-risk-icon {
+  flex: none;
+  color: var(--sc-listen);
+}
+.sc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sc-voice-hint {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+  font-style: italic;
+}
+.sc-outcome {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 15px;
+}
+.sc-outcome p {
+  margin: 0;
+}
+.sc-approve[data-state] .sc-actions,
+.sc-approve[data-state] .sc-risk {
+  display: none;
+}
+.sc-approve[data-state] .sc-outcome {
+  display: flex;
+  animation: sc-rise 400ms ease-out both;
+}
+.sc-approve[data-state] .sc-message,
+.sc-approve[data-state] .sc-timer {
+  opacity: 0.5;
+}
+.sc-approve[data-state='sent'] {
+  border-color: color-mix(in srgb, var(--sc-speak) 45%, transparent);
+}
+.sc-approve[data-state='sent'] .sc-outcome p {
+  color: var(--sc-speak);
+}
+.sc-checked-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13.5px;
+}
+.sc-checked-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: sc-rise 420ms ease-out both;
+  animation-delay: calc(var(--i) * 110ms);
+}
+.sc-checked-list .sc-tick {
+  flex: none;
+  color: var(--sc-speak);
+}
+
+/* Compare ── */
+
+.sc-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+.sc-option {
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-1) 50%, transparent);
+  border: 1px solid var(--sc-line);
+  transition: transform 260ms, box-shadow 260ms, border-color 260ms;
+}
+.sc-option:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.22);
+}
+.sc-option[data-pick] {
+  border-color: color-mix(in srgb, var(--sc-speak) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sc-speak) 30%, transparent), 0 18px 44px color-mix(in srgb, var(--sc-speak) 14%, transparent);
+}
+.sc-option[data-chosen] {
+  border-color: var(--sc-listen);
+}
+
+/* Little landscapes drawn in CSS: sky, a sun, a far hill and a near one. */
+.sc-hero {
+  position: relative;
+  height: 136px;
+  overflow: hidden;
+  background: linear-gradient(to bottom, var(--sky1), var(--sky2));
+}
+.sc-hero i {
+  position: absolute;
+  border-radius: 50%;
+}
+.sc-hero-sun {
+  width: 38px;
+  height: 38px;
+  top: 22px;
+  right: 22%;
+  background: var(--sun);
+  box-shadow: 0 0 30px var(--sun);
+}
+.sc-hero-far {
+  width: 140%;
+  height: 120px;
+  left: -30%;
+  bottom: -62px;
+  background: var(--far);
+}
+.sc-hero-near {
+  width: 120%;
+  height: 110px;
+  right: -40%;
+  bottom: -70px;
+  background: var(--near);
+}
+.sc-hero-a {
+  --sky1: rgb(120 200 190);
+  --sky2: rgb(214 236 214);
+  --sun: rgb(255 232 160);
+  --far: rgb(76 150 112);
+  --near: rgb(40 112 84);
+}
+/* Maple Park's trees: two round canopies on the near hill. */
+.sc-hero-a .sc-hero-near::before,
+.sc-hero-a .sc-hero-near::after {
+  content: '';
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  top: -24px;
+  left: 18%;
+  border-radius: 50%;
+  background: rgb(30 92 66);
+}
+.sc-hero-a .sc-hero-near::after {
+  left: 27%;
+  top: -16px;
+  width: 26px;
+  height: 26px;
+}
+.sc-hero-b {
+  --sky1: rgb(130 170 230);
+  --sky2: rgb(200 220 245);
+  --sun: rgb(255 246 214);
+  --far: rgb(98 150 130);
+  --near: rgb(70 128 160);
+}
+/* Riverside's water: a bright band across the near ground. */
+.sc-hero-b .sc-hero-near {
+  height: 60px;
+  width: 160%;
+  left: -30%;
+  right: auto;
+  bottom: -26px;
+  background: linear-gradient(to bottom, rgb(150 200 235), rgb(70 128 160));
+}
+.sc-hero-c {
+  --sky1: rgb(240 160 110);
+  --sky2: rgb(250 214 150);
+  --sun: rgb(255 240 190);
+  --far: rgb(170 130 90);
+  --near: rgb(120 100 60);
+}
+.sc-hero-c .sc-hero-near {
+  width: 90%;
+  height: 160px;
+  right: -10%;
+  bottom: -110px;
+}
+.sc-pick-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(14 15 19);
+  background: rgb(255 255 255 / 0.82);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.sc-pick-badge::before {
+  content: '✦';
+  color: rgb(8 119 91);
+}
+.sc-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  padding: 16px;
+}
+.sc-option-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sc-option-name {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.sc-drive {
+  font-size: 12px;
+  color: var(--color-text-2);
+  white-space: nowrap;
+}
+.sc-bars {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 7px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+.sc-bars dt {
+  color: var(--color-text-1);
+}
+.sc-bars dd {
+  margin: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--sc-soft);
+  overflow: hidden;
+}
+.sc-bars i {
+  display: block;
+  height: 100%;
+  width: calc(var(--v) * 100%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--sc-speak) 55%, transparent), var(--sc-speak));
+  transform-origin: left;
+  animation: sc-grow 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both 300ms;
+}
+@keyframes sc-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+.sc-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sc-tag {
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-size: 11.5px;
+  color: var(--color-text-1);
+  border: 1px solid var(--sc-line);
+}
+.sc-reason {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--sc-speak) 12%, transparent);
+}
+.sc-choose {
+  margin-top: auto;
+  align-self: flex-start;
+}
+.sc-choose[aria-pressed='true'] {
+  border-color: var(--sc-listen);
+  color: var(--sc-listen);
+}
+
+/* A narrower workspace (a wide sidebar or a small window): one column. */
+@container workspace (max-width: 760px) {
+  .sc {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  .sc-work-grid,
+  .sc-decide-grid,
+  .sc-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sc-orbit {
+    width: min(100%, 240px);
+  }
+  .sc-hero {
+    height: 110px;
+  }
+  .sc-voice-hint {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
+@container workspace (max-width: 460px) {
+  .sc-switch {
+    min-width: 100%;
+  }
+  .sc-tab {
+    padding: 7px 4px;
+  }
+  .sc-says {
+    border-radius: var(--radius-lg);
+    align-items: flex-start;
+  }
+  .sc-approve {
+    padding: 18px;
+  }
+  .sc-approve-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .sc-approve-icon {
+    display: none;
+  }
+  .sc-bubble {
+    margin-left: 0;
+  }
+}
+
+/* Still, for those who asked for less motion: no loops, no entrances, no glides. */
+@media (prefers-reduced-motion: reduce) {
+  .sc *,
+  .sc *::before,
+  .sc *::after,
+  .sc-switch::before {
+    animation: none !important;
+    transition: none !important;
+  }
+}
