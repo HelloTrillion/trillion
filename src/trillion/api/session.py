@@ -65,6 +65,9 @@ from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
 from trillion.voice.types import VoiceError, Word
 from trillion.voice.whose import EchoShare, matched, whose
+from trillion.workspace.board import Board
+from trillion.workspace.board import summary as board_summary
+from trillion.workspace.service import for_page
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +290,8 @@ class Session:
         rt.by_conversation[session.id] = session
         try:
             await session._send("history", messages=shown)
+            # The conversation's board as it was left, open or closed (D3).
+            await session._send("board", board=for_page(await session._board()))
             for a in await session._open_actions():
                 await session._send_card(a.id)
             session._started = True
@@ -477,12 +482,38 @@ class Session:
             elif self._via == "voice" and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
             await self._offer()
+        elif kind in ("board.close", "board.remove"):
+            await self._on_board(kind, msg.get("id"))
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
                 await self._rt.router.mark_delivered(pid, OWNER, SURFACE)
         else:
             await self._error("unknown_type")
+
+    async def _board(self) -> Board | None:
+        """The saved board, or None. A board that cannot be read never stops a turn."""
+        boards = self._rt.boards
+        if boards is None:
+            return None
+        try:
+            return await boards.current(self.id)
+        except Exception as e:
+            logger.warning("board not read: %s", type(e).__name__)
+            return None
+
+    async def _on_board(self, kind: str, widget_id: object) -> None:
+        """The user closed the board or took a widget off. It changes the saved board,
+        so her next turn sees what they see (D7). An unknown id is ignored."""
+        boards = self._rt.boards
+        if boards is None:
+            return
+        if kind == "board.close":
+            await boards.user_close(self.id)
+        elif isinstance(widget_id, str) and widget_id:
+            await boards.user_remove(self.id, widget_id)
+        else:
+            await self._error("bad_message")
 
     async def _on_text(self, text: object) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
@@ -1970,6 +2001,7 @@ class Session:
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
+            board=board_summary(await self._board()),
         )
         blocks = (ContextBlock(text=context), TextBlock(text=text))
         return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought)
