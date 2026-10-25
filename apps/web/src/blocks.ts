@@ -91,12 +91,13 @@ export function barShares(values: readonly number[]): number[] {
 
 /**
  * What moves on from each funnel stage to the next, as a whole percent: the next count over this
- * one. Null after the last stage, and after a stage of 0 (nothing to move on from).
+ * one. Null after the last stage, after a stage of 0 (nothing to move on from), and before a
+ * larger stage (more than all moving on is not a funnel, so it says nothing).
  */
 export function funnelSteps(counts: readonly number[]): (number | null)[] {
   return counts.map((c, i) => {
     const next = counts[i + 1];
-    if (next === undefined || !(c > 0) || !Number.isFinite(next)) return null;
+    if (next === undefined || !(c > 0) || !Number.isFinite(next) || next > c) return null;
     return Math.round((Math.max(0, next) / c) * 100);
   });
 }
@@ -1029,8 +1030,8 @@ function stagesBlock(b: Rec): HTMLElement {
   const at = currentStep(steps, b['current']);
   const box = h('div', `bk-stages ${seriesOr(b['tone'])}`);
   box.style.setProperty('--steps', String(Math.max(1, steps.length)));
-  // Past four steps a narrow card names only the current one, under the track.
-  if (steps.length > 4) box.dataset['many'] = '';
+  // Many steps in a narrow card: only the current one is named, under the track (CSS decides when).
+  if (steps.length > 4) box.dataset['many'] = steps.length > 5 ? 'lots' : '';
   const ol = h('ol', 'bk-stages-track');
   ol.setAttribute('aria-hidden', 'true');
   steps.forEach((label, i) => {

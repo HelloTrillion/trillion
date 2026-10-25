@@ -382,6 +382,9 @@ describe('funnel', () => {
   it('says what moves on between stages, and nothing after a stage of 0', () => {
     expect(funnelSteps([200, 110, 0, 0])).toEqual([55, 0, null, null]);
     expect(funnelSteps([3, 1])).toEqual([33, null]);
+    // A larger stage next is not a funnel step: nothing is said.
+    expect(funnelSteps([40, 60, 30])).toEqual([null, 50, null]);
+    expect(funnelSteps([40, 40])).toEqual([100, null]);
     const el = draw({
       type: 'funnel',
       stages: [
@@ -429,6 +432,9 @@ describe('stages', () => {
     const many = draw({ type: 'stages', steps: ['a', 'b', 'c', 'd', 'e'], current: 'c' });
     expect(many.querySelector<HTMLElement>('.bk-stages')?.dataset['many']).toBe('');
     expect(many.querySelector('.bk-stages-now')?.textContent).toBe('c · 3 of 5');
+    // Six or seven are named only under the track up to a wider card.
+    const lots = draw({ type: 'stages', steps: ['a', 'b', 'c', 'd', 'e', 'f'], current: 5 });
+    expect(lots.querySelector<HTMLElement>('.bk-stages')?.dataset['many']).toBe('lots');
   });
 });
 

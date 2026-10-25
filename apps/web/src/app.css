@@ -5099,7 +5099,9 @@ button.connected-danger {
   font-size: var(--w-meta);
   line-height: 1.3;
   color: var(--color-text-2);
-  overflow-wrap: anywhere;
+  /* Whole words where they fit; a word too long for its column is hyphenated, not cut anywhere. */
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 .bk-step[data-state='done'] .bk-step-label {
   color: var(--color-text-1);
@@ -5125,6 +5127,15 @@ button.connected-danger {
     display: none;
   }
   .bk-stages[data-many] .bk-stages-now {
+    display: block;
+  }
+}
+/* Six or seven steps need more room still before their labels fit. */
+@container bk (max-width: 520px) {
+  .bk-stages[data-many='lots'] .bk-step-label {
+    display: none;
+  }
+  .bk-stages[data-many='lots'] .bk-stages-now {
     display: block;
   }
 }

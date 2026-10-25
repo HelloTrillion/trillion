@@ -254,12 +254,16 @@ export interface SourceTile {
   readonly glyph: string;
 }
 
-/** The catalogue services with a server set up and turned on: the ones whose numbers she can read. */
-export function sourceTiles(c: Connected | null): SourceTile[] {
+/**
+ * The catalogue services she can read: a server set up and turned on, or a Google service with an
+ * account signed in. Chat channels (Slack, Telegram) are not sources.
+ */
+export function sourceTiles(c: Connected | null, g: Pick<GoogleState, 'services'> | null = null): SourceTile[] {
   if (!c?.catalog) return [];
   // Set up and on, not only connected this second, so a slow start does not hide a tile.
   const on = new Set(c.servers.filter((s) => s.catalog && !s.disabled).map((s) => s.catalog));
-  return c.catalog.filter((e) => on.has(e.id)).map(({ id, title, color, glyph }) => ({ id, title, color, glyph }));
+  const google = (e: CatalogEntry): boolean => e.how === 'google' && !!e.service && (g?.services[e.service]?.accounts.length ?? 0) > 0;
+  return c.catalog.filter((e) => on.has(e.id) || google(e)).map(({ id, title, color, glyph }) => ({ id, title, color, glyph }));
 }
 
 /** A service's tile: its own icon, or its colour and a letter or two until (or if
@@ -1563,6 +1567,6 @@ export function createConnected(
     summary: () => connectedSummary(last),
     // The board's source tiles need the servers before Settings is ever opened.
     load: async () => void (await load()),
-    tiles: () => sourceTiles(last),
+    tiles: () => sourceTiles(last, g),
   };
 }

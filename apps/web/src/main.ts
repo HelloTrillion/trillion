@@ -1184,6 +1184,8 @@ function connect(): void {
       switchTo(null);
       return;
     }
+    // Let in (at start, after a reconnect, with a new token): what is connected now, for the cards' source tiles.
+    if (msg.type === 'session') void connected.load();
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
@@ -1570,8 +1572,6 @@ const boardView = createBoardView({
     sendTurn(text, 'ask');
   },
 });
-// What is connected, for the cards' source tiles; Settings keeps it up to date from here on.
-void connected.load();
 function showBoard(): void {
   boardDraws++;
   boardChip.hidden = true;
