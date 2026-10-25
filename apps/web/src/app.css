@@ -150,7 +150,13 @@ button:disabled {
   gap: 8px;
 }
 
+/* One row, the height of its icon buttons: what doesn't fit shrinks, never wraps. */
+.side-head {
+  height: 36px;
+}
+
 .side-name {
+  min-width: 0;
   letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
@@ -220,6 +226,11 @@ button:disabled {
   font-size: 12px;
   padding: 4px 10px;
   color: var(--color-text-1);
+  /* Its full sentence is in the title; the pill itself shortens with an ellipsis. */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* A round button that holds one icon: Settings, the sidebar, New conversation. */
