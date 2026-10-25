@@ -163,12 +163,14 @@ def _as_the_model_sees(name: str) -> dict[str, Any]:
 
 def test_show_carries_a_card_per_type() -> None:
     text = _as_the_model_sees(SHOW)["description"]
+    assert "Widget types (field? optional, field[] a list, others required):" in text
     assert "next_up: event, start, end?, where?, people[]?, note?" in text
+    assert text.count("custom: ") == 1
     for kind in TYPES_OF_WIDGET:
         assert f"{kind}: " in text, kind
     # The custom widget's blocks, by name.
     for block in BLOCK_TYPES:
-        assert block in text, block
+        assert f"{block} {{" in text, block
 
 
 def test_the_four_tools_stay_small() -> None:

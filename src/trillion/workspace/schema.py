@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trillion.workspace.blocks import BLOCK_TYPES
+from trillion.workspace.blocks import BLOCK_TONES, BLOCK_TYPES
 from trillion.workspace.kit import KINDS, SIZES, TONES
 from trillion.workspace.recipe_kit import MAX_ASKS
 from trillion.workspace.widgets import TYPES
@@ -25,8 +25,8 @@ CARDS = {
     "compare": "options[{name, metrics[{label, score 0-10}], tags[]?, note?}], pick?, reason?",
     "next_up": "event, start, end?, where?, people[]?, note?",
     "free_time": "slots[{start, end}] in local time, no offset",
-    "inbox": "unread, needs_reply?, threads[{from, subject, when?, flag? tone}]",
-    "thread": "from, subject, ask, due?, when?, excerpt?",
+    "inbox": "unread, needs_reply?, threads[{from, subject, when?, flag? (a tone)}]",
+    "thread": "from, subject, ask (what they want), due?, when?, excerpt?",
     "mentions": "groups[{channel, items[{from, text, when?}]}]",
     "files": "files[{name, kind?, edited?, by?}]",
     "quote": "text, by?, when?",
@@ -46,7 +46,7 @@ BLOCK_CARDS = {
     "time": "at, end?, label?",
     "chart": "as the chart widget",
     "table": "columns[], rows[][], highlight?",
-    "timeline": "events[]",
+    "timeline": "events[] as the timeline widget",
     "rows": "label?, items[{title, detail?, person?, status?, when?, meta?, chip?, done?}]",
     "person": "name, detail?",
     "people": "names[]",
@@ -64,10 +64,11 @@ def type_cards() -> str:
     types = "\n".join(f"{kind}: {CARDS[kind]}" for kind in TYPES)
     blocks = "; ".join(f"{name} {{{BLOCK_CARDS[name]}}}" for name in BLOCK_TYPES)
     return (
-        f"Widget types:\n{types}\nAny widget: title?, size?, source? (where its facts came "
-        f"from), asks[]? (at most {MAX_ASKS} short questions the user can tap to send). "
-        f"Times ISO 8601. Tones: good, bad, attention, neutral.\n"
-        f"custom: only when no type fits; blocks, each {{type, ...}}: {blocks}."
+        "Widget types (field? optional, field[] a list, others required):\n"
+        f"{types}\nAny widget: title?, size?, source? (where its facts came from), asks[]? "
+        f"(at most {MAX_ASKS} short questions the user can tap to send). Times ISO 8601. "
+        f"Tones: {', '.join(BLOCK_TONES)}.\n"
+        f"Blocks, for custom only when no type fits; each {{type, ...}}: {blocks}."
     )
 
 
@@ -95,63 +96,72 @@ def widget_schema() -> dict[str, Any]:
 
     # The cards in workspace_show's description say each type's shape, so the fields
     # here are mostly bare: the schema is sent twice (show and update), every turn.
-    return {
-        "type": "object",
-        "properties": {
-            # No enums: a model's near miss ("line" for a chart) must reach the kit, which
-            # reads what was meant or says exactly what to fix. The values are listed here.
-            "type": d(s, f"One of {', '.join(TYPES)}; fields per type in workspace_show."),
-            "size": d(s, f"One of {', '.join(SIZES)}."),
-            "title": s,
-            "source": d(so, "Where its facts came from, e.g. 'Calendar'."),
-            "asks": arr(s, f"At most {MAX_ASKS} questions the user can tap to send."),
-            "label": sn,
-            "value": d(sn, "Stat: as shown, e.g. '$41.20'. Goal: a number."),
-            "delta": sn,
-            "hint": sn,
-            "tone": d(s, f"One of {', '.join(TONES)}."),
-            "kind": d(s, f"Chart: one of {', '.join(KINDS)}. Donut: one series."),
-            "x": arr(sn),
-            "series": arr(obj({"name": s, "values": arr(n)}, ["name", "values"])),
-            "unit": s,
-            "items": arr(
-                o,
-                "list: {title, subtitle?, meta?, done?}; facts: {label, value}; "
-                "sources: {title, site, note?}.",
-            ),
-            "columns": arr(s),
-            "rows": arr(arr(sn)),
-            "text": d(s, "Blank lines, '- ' bullets, **bold**."),
-            "events": arr(o, "Times HH:MM, one day."),
-            "options": arr(
-                {"type": ["string", "object"]},
-                "decision: names. compare: {name, metrics[{label, score}], tags[]?, note?}.",
-            ),
-            "pick": d(s, "The recommended option's name."),
-            "reason": s,
-            "event": s,
-            "start": s,
-            "end": s,
-            "where": s,
-            "people": arr(s),
-            "note": s,
-            "slots": arr(o),
-            "unread": n,
-            "needs_reply": n,
-            "threads": arr(o),
-            "from": s,
-            "subject": s,
-            "ask": s,
-            "due": s,
-            "when": s,
-            "excerpt": s,
-            "groups": arr(o),
-            "files": arr(o),
-            "by": s,
-            "steps": arr(o),
-            "criteria": arr(s),
-            "scores": arr(arr(n), "One row per option, a score 0-10 per criterion."),
-            "target": n,
-            "blocks": arr(obj({"type": s}, ["type"]), "custom: see workspace_show."),
+    props: dict[str, Any] = {
+        # No enums: a model's near miss ("line" for a chart) must reach the kit, which
+        # reads what was meant or says exactly what to fix. The values are listed here.
+        "type": d(s, f"One of {', '.join(TYPES)}; fields per type in workspace_show."),
+        "size": d(s, f"One of {', '.join(SIZES)}."),
+        "title": s,
+        "source": d(so, "Where its facts came from, e.g. 'Calendar'."),
+        "asks": {
+            "type": ["array", "string"],
+            "items": s,
+            "description": f"At most {MAX_ASKS} questions the user can tap to send.",
         },
+        "label": sn,
+        "value": d(sn, "Stat: as shown, e.g. '$41.20'. Goal: a number."),
+        "delta": sn,
+        "hint": sn,
+        "tone": d(s, f"One of {', '.join(TONES)}."),
+        "kind": d(s, f"Chart: one of {', '.join(KINDS)}. Donut: one series."),
+        "x": arr(sn),
+        "series": arr(obj({"name": s, "values": arr(n)}, ["name", "values"])),
+        "unit": s,
+        "items": arr(
+            o,
+            "list: {title, subtitle?, meta?, done?}; facts: {label, value}; "
+            "sources: {title, site, note?}.",
+        ),
+        "columns": arr(s),
+        "rows": arr(arr(sn)),
+        "text": d(s, "Blank lines, '- ' bullets, **bold**."),
+        "events": arr(o, "Times HH:MM, one day."),
+        "options": arr(
+            {"type": ["string", "number", "object"]},
+            "decision: names. compare: {name, metrics[{label, score}], tags[]?, note?}.",
+        ),
+        "pick": d(s, "The recommended option's name."),
+        "reason": s,
+        "event": s,
+        "start": s,
+        "end": s,
+        "where": s,
+        "people": arr(sn),
+        "note": s,
+        "slots": arr(o),
+        "unread": n,
+        "needs_reply": n,
+        "threads": arr(o),
+        "from": s,
+        "subject": s,
+        "ask": s,
+        "due": s,
+        "when": s,
+        "excerpt": s,
+        "groups": arr(o),
+        "files": arr(o),
+        "by": s,
+        "steps": arr(o),
+        "criteria": arr(sn),
+        "scores": arr(arr(n), "One row per option, a score 0-10 per criterion."),
+        "target": n,
+        "blocks": arr(obj({"type": s}, ["type"]), "custom: see workspace_show."),
     }
+    # Every field may be null: small local models send null for a field they leave out,
+    # and the kit reads None as absent. New dicts: the shapes above are shared.
+    return {"type": "object", "properties": {k: _nullable(v) for k, v in props.items()}}
+
+
+def _nullable(prop: dict[str, Any]) -> dict[str, Any]:
+    kinds = prop["type"] if isinstance(prop["type"], list) else [prop["type"]]
+    return {**prop, "type": [*kinds, "null"]}

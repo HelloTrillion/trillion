@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator
 from tests.workspace.test_recipes import EVERY
 from trillion.workspace.blocks import BLOCK_TYPES
 from trillion.workspace.schema import BLOCK_CARDS, CARDS, widget_schema
-from trillion.workspace.widgets import TYPES
+from trillion.workspace.widgets import TYPES, validate_widget
 
 # Every field a recipe reads, by type; the flat schema must name each one.
 FIELDS = {
@@ -72,9 +72,9 @@ def test_still_flat() -> None:
 def test_common_fields() -> None:
     props = widget_schema()["properties"]
     assert "string" in props["source"]["type"]
-    assert props["asks"]["type"] == "array" and props["asks"]["items"] == {"type": "string"}
+    assert "array" in props["asks"]["type"] and props["asks"]["items"] == {"type": "string"}
     blocks = props["blocks"]
-    assert blocks["type"] == "array"
+    assert "array" in blocks["type"]
     item = blocks["items"]
     assert item["type"] == "object" and item["required"] == ["type"]
     assert item["properties"]["type"]["type"] == "string"
@@ -92,6 +92,56 @@ def test_shared_fields_say_their_shapes() -> None:
 def test_never_refuses_what_the_kit_takes(raw: dict[str, Any]) -> None:
     """The router checks tool input against the schema before the kit sees it, so a
     widget the kit takes must pass the schema too."""
+    errors = list(Draft202012Validator(widget_schema()).iter_errors(raw))
+    assert errors == [], [e.message for e in errors]
+
+
+# What small models send that the kit takes; the schema is checked first, so it must
+# take them too.
+LENIENT: list[dict[str, Any]] = [
+    {"type": "stat", "label": "Total", "value": "$41.20", "asks": "Why so high?"},
+    {"type": "stat", "label": 2026, "value": 26, "delta": None, "hint": None, "tone": None},
+    {
+        "type": "next_up",
+        "event": "Design review",
+        "start": "2026-10-25T14:30",
+        "people": ["Sam", 2],
+        "end": None,
+        "where": None,
+        "note": None,
+        "title": None,
+        "size": None,
+        "source": None,
+        "asks": None,
+    },
+    {"type": "decision", "options": [1, 2], "criteria": [2026, "Fun"], "scores": [[1, 2], [3, 4]]},
+    {
+        "type": "decision",
+        "options": ["Hike", {"name": "Museum"}],
+        "criteria": ["Fun"],
+        "scores": [[8], [6]],
+        "pick": None,
+        "reason": None,
+    },
+    {"type": "goal", "label": "Savings", "value": 4200, "target": 6000, "unit": None, "by": None},
+    {"event": "Design review", "start": "2026-10-25T14:30"},
+    {"type": None, "steps": [{"title": "Book the room"}]},
+    {"type": "callout", "text": "Rent is due tomorrow.", "tone": None},
+    {"type": "inbox", "unread": 3, "needs_reply": None, "threads": None},
+    {"type": "thread", "from": "Jo", "subject": "Venue", "ask": "Sign?", "due": None},
+    {
+        "type": "chart",
+        "kind": "line",
+        "x": ["Oct 1", 2],
+        "series": [{"name": "Spend", "values": [1, 2]}],
+        "unit": None,
+    },
+]
+
+
+@pytest.mark.parametrize("raw", LENIENT)
+def test_what_the_kit_takes_the_schema_takes(raw: dict[str, Any]) -> None:
+    validate_widget(raw, 1)
     errors = list(Draft202012Validator(widget_schema()).iter_errors(raw))
     assert errors == [], [e.message for e in errors]
 
