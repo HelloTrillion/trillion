@@ -2088,3 +2088,36 @@ button.connected-danger {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
+
+/* Captions: under the orb's resting place, only while the sidebar is hidden. */
+.captions {
+  position: fixed;
+  z-index: 2;
+  left: var(--cap-x, 50%);
+  top: var(--cap-top, 62%);
+  width: var(--cap-w, 560px);
+  transform: translateX(-50%);
+  text-align: center;
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--color-text-1);
+  pointer-events: none;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  animation: caption-in 200ms ease-out;
+}
+.captions[hidden] {
+  display: none;
+}
+@keyframes caption-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .captions {
+    animation: none;
+  }
+}

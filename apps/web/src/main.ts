@@ -52,7 +52,8 @@ import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
-import { DOCK } from './layout';
+import { DOCK, isPhone } from './layout';
+import { captionOf, createCaptions } from './captions';
 import {
   type Entry,
   INITIAL,
@@ -171,7 +172,18 @@ const workspace = createWorkspace({
   place: (rect, animate) => galaxy.setStage(rect, { animate }),
   fallback: () => (sidebar.hidden ? showSidebarBtn : null),
 });
-sidebar.onChange((animate) => workspace.layout(animate));
+const captions = createCaptions($('captions'));
+function placeCaptions(): void {
+  const w = innerWidth;
+  captions.place({ w, h: innerHeight, sidebar: sidebar.width(), workspace: false, phone: isPhone(w) });
+}
+placeCaptions();
+addEventListener('resize', placeCaptions);
+sidebar.onChange((animate) => {
+  workspace.layout(animate);
+  placeCaptions();
+  captions.update(captionOf(view), sidebar.hidden && !workspace.isOpen);
+});
 // A hidden sidebar is inert and so silent: its news is read out here instead (SUR-6).
 const announceEl = $('announce');
 
@@ -653,6 +665,8 @@ function render(): void {
   if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
 
+  captions.update(captionOf(view), sidebar.hidden && !workspace.isOpen);
+
   // The core records a card as delivered only once it is really on screen (SPN-17).
   for (const e of view.entries) {
     if (e.kind === 'card' && e.status === 'waiting' && !shown.has(e.pendingId) && e.pendingId !== EXAMPLE_CARD) {
@@ -1084,6 +1098,8 @@ function connect(): void {
       return;
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
+    // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
+    if (msg.type === 'confirm.request' && sidebar.hidden) sidebar.setHidden(false);
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
