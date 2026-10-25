@@ -49,6 +49,10 @@ reminder_set = "trillion.tools.schedule:ReminderSet"
 ask_schedule = "trillion.tools.schedule:AskSchedule"
 schedule_list = "trillion.tools.schedule:ScheduleList"
 schedule_cancel = "trillion.tools.schedule:ScheduleCancel"
+workspace_show = "trillion.tools.workspace:WorkspaceShow"
+workspace_update = "trillion.tools.workspace:WorkspaceUpdate"
+workspace_remove = "trillion.tools.workspace:WorkspaceRemove"
+workspace_close = "trillion.tools.workspace:WorkspaceClose"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]

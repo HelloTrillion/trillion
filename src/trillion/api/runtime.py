@@ -65,8 +65,20 @@ from trillion.tools.skills import FILE as SKILL_FILE
 from trillion.tools.skills import OPEN as SKILL_OPEN
 from trillion.tools.skills import SkillFile, SkillOpen
 from trillion.tools.web import FETCH, WebFetch
+from trillion.tools.workspace import CLOSE as BOARD_CLOSE
+from trillion.tools.workspace import REMOVE as BOARD_REMOVE
+from trillion.tools.workspace import SHOW as BOARD_SHOW
+from trillion.tools.workspace import UPDATE as BOARD_UPDATE
+from trillion.tools.workspace import (
+    WorkspaceClose,
+    WorkspaceRemove,
+    WorkspaceShow,
+    WorkspaceUpdate,
+)
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
+from trillion.workspace.board import Board
+from trillion.workspace.service import Boards
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +209,8 @@ class Runtime:
     # what they leave (SUR-9), and the loop that runs them. Started with the server.
     schedules: SqliteScheduleStore | None = None
     door: Door | None = None
+    # Her board per conversation: apply a change, save it, tell every page on it.
+    boards: Boards | None = None
     scheduler: Scheduler | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
@@ -282,11 +296,24 @@ class Runtime:
                 " while Trillion is running: one missed while it was not arrives late and"
                 " says so"
             ),
+            "board": (
+                "workspace_show puts typed widgets (stat, chart, list, table, note, timeline,"
+                " compare) on a board in the workspace beside this conversation; "
+                "workspace_update, workspace_remove and workspace_close change it. They run at"
+                " once, the board is kept with the conversation, and they are only there"
+                " while the user has the page open"
+            ),
             "talking on slack or telegram": (
                 "the user can let people message you on Slack or Telegram; there you only"
                 " answer, with no tools, and only people the user allowed"
             ),
         }
+
+    async def send_board(self, conversation_id: str, board: Board | None) -> None:
+        """Every page open on this conversation draws the board as it now is."""
+        for session in list(self.sessions):
+            if session.id == conversation_id:
+                await session.send("board", board=board)
 
     def zone(self) -> str | None:
         """The user's timezone: the one they gave (USER.md), else this computer's (AGT-9)."""
@@ -561,6 +588,19 @@ async def open_runtime(
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):
         record.bind(store, OWNER, rt.clock)
+    rt.boards = Boards(
+        rt.board_store,
+        rt.conversations,
+        rt.send_board,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+    )
+    for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
+        board_tool = registry.get(name)
+        if isinstance(
+            board_tool, WorkspaceShow | WorkspaceUpdate | WorkspaceRemove | WorkspaceClose
+        ):
+            board_tool.bind(rt.boards, OWNER)
     for name in (KEEP, DROP):
         rule_tool = registry.get(name)
         if isinstance(rule_tool, RuleKeep | RuleDrop):

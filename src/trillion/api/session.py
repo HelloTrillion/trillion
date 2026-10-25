@@ -2199,6 +2199,10 @@ class Session:
         except Exception as e:
             logger.debug("send of audio failed: %s", type(e).__name__)
 
+    async def send(self, kind: str, /, **body: Any) -> None:
+        """A message to this page from outside its turns. Never raises."""
+        await self._send(kind, **body)
+
     async def _send(self, kind: str, /, **body: Any) -> None:
         """Never raises: a closed socket must not break a turn that is still recording."""
         if self._closed:

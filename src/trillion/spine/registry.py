@@ -19,8 +19,8 @@ FIRST_PARTY_PACKAGE = "trillion.tools"
 # Top-level keywords that let arguments through that `properties` never names.
 _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
 # Families an unattended run never gets, whatever their risk: a run nobody watches does
-# not change what runs later (AGT-9).
-UNATTENDED_NEVER = frozenset({"schedule"})
+# not change what runs later (AGT-9), and has no page to show a board on (SUR-1).
+UNATTENDED_NEVER = frozenset({"schedule", "workspace"})
 
 
 class RegistryError(ValueError):
