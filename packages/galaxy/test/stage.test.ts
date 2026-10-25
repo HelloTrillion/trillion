@@ -1,9 +1,11 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { ORB_DISTANCE, ORB_EXTENT, easeRect, placeOrb } from '../src/stage';
+import {
+  ORB_DISTANCE, ORB_EXTENT, ORB_FOV, defaultRect, easeRect, placeOrb, stepStage,
+} from '../src/stage';
 
 function camera(w: number, h: number): PerspectiveCamera {
-  const c = new PerspectiveCamera(45, w / h, 0.1, 100);
+  const c = new PerspectiveCamera(ORB_FOV, w / h, 0.1, 100);
   c.position.set(0, 0, ORB_DISTANCE);
   c.updateMatrixWorld();
   return c;
@@ -62,5 +64,61 @@ describe('easeRect', () => {
     let r = { x: 0, y: 0, size: 100 };
     for (let i = 0; i < 18; i++) r = easeRect(r, to, 1 / 60, false);
     expect(r.x).toBeGreaterThan(97);
+  });
+});
+
+describe('defaultRect', () => {
+  // Today's default: centred, zoom min(1, w/h), no lens shift.
+  const diameter = (w: number, h: number): number => {
+    const c = camera(w, h);
+    c.zoom = Math.min(1, w / h);
+    c.updateProjectionMatrix();
+    const [left] = px(c, new Vector3(-ORB_EXTENT / 2, 0, 0), w, h);
+    const [right] = px(c, new Vector3(ORB_EXTENT / 2, 0, 0), w, h);
+    return right - left;
+  };
+
+  it('matches the projected default orb, landscape and portrait', () => {
+    for (const [w, h] of [[1200, 800], [390, 844]] as const) {
+      const r = defaultRect(w, h);
+      expect(r.x).toBe(w / 2);
+      expect(r.y).toBe(h / 2);
+      expect(r.size).toBeCloseTo(diameter(w, h), 1);
+    }
+  });
+
+  it('places exactly where the default does', () => {
+    const plain = camera(390, 844);
+    plain.zoom = 390 / 844;
+    plain.updateProjectionMatrix();
+    const placed = camera(390, 844);
+    placeOrb(placed, defaultRect(390, 844), 390, 844);
+    const p = new Vector3(1.75, 0.4, 0.3);
+    const [ax, ay] = px(plain, p, 390, 844);
+    const [bx, by] = px(placed, p, 390, 844);
+    expect(bx).toBeCloseTo(ax, 3);
+    expect(by).toBeCloseTo(ay, 3);
+  });
+});
+
+describe('stepStage', () => {
+  const to = { x: 100, y: 50, size: 200 };
+
+  it('jumps when told to', () => {
+    expect(stepStage({ x: 0, y: 0, size: 10 }, to, 1 / 60, true)).toBe(to);
+  });
+
+  it('snaps to the target once within 0.1 px', () => {
+    expect(stepStage({ x: 99.95, y: 50.05, size: 199.95 }, to, 1 / 60, false)).toBe(to);
+    const far = stepStage({ x: 99, y: 50, size: 200 }, to, 1 / 60, false);
+    expect(far).not.toBe(to);
+    expect(far.x).toBeGreaterThan(99);
+  });
+
+  it('returns the same object once settled', () => {
+    let r = { x: 0, y: 0, size: 10 };
+    for (let i = 0; i < 120; i++) r = stepStage(r, to, 1 / 60, false);
+    expect(r).toBe(to);
+    expect(stepStage(r, to, 1 / 60, false)).toBe(r);
   });
 });

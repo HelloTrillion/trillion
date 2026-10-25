@@ -7,13 +7,14 @@ import { approach, stepParams } from './easing';
 import { Landscape } from './landscape/landscape';
 import { Orb } from './orb/orb';
 import { type PerfMode, PerfGovernor, motionScale, qualityFor } from './perf';
-import { ORB_DISTANCE, type StageRect, easeRect, placeOrb } from './stage';
+import { ORB_DISTANCE, ORB_FOV, type StageRect, defaultRect, placeOrb, stepStage } from './stage';
 import { ORB_STATES, displayedState, type OrbParams, type OrbStateName } from './states';
 
 export { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS, displayedState } from './states';
 export type { OrbParams, OrbStateName } from './states';
 export type { AnalyserRole, Levels } from './audio/levels';
 export type { PerfMode } from './perf';
+export { defaultRect } from './stage';
 export type { StageRect } from './stage';
 
 export type Theme = 'dark' | 'light';
@@ -61,7 +62,8 @@ export interface Galaxy {
   setPerfMode(mode: PerfMode): void;
   setTheme(theme: Theme): void;
   /** Place the orb: centre and diameter in CSS pixels. Eases there unless reduced
-   * motion is on or `animate` is false. Without a call it stays centred. */
+   * motion is on or `animate` is false. Without a call it stays centred.
+   * Ignored unless x, y and size are all finite. */
   setStage(rect: StageRect, opts?: { animate?: boolean }): void;
   destroy(): void;
 }
@@ -72,7 +74,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   const renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.autoClear = false;
   const orbScene = new Scene();
-  const orbCamera = new PerspectiveCamera(45, 1, 0.1, 100);
+  const orbCamera = new PerspectiveCamera(ORB_FOV, 1, 0.1, 100);
   orbCamera.position.set(0, 0, ORB_DISTANCE);
 
   const governor = new PerfGovernor(opts.perfMode ?? 'auto');
@@ -196,14 +198,15 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
       pointScale: renderer.domElement.height / 2,
     });
 
-    if (stageTarget && (stageDirty || stage !== stageTarget)) {
-      stage = easeRect(stage ?? stageTarget, stageTarget, dt, stageJump || reduced);
-      // Snap the last fraction of a pixel so easing ends and the matrix work stops.
-      if (Math.abs(stage.x - stageTarget.x) < 0.1 && Math.abs(stage.y - stageTarget.y) < 0.1
-        && Math.abs(stage.size - stageTarget.size) < 0.1) stage = stageTarget;
+    if (stageTarget) {
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      // The first move glides from where the orb already is: centred.
+      const next = stepStage(stage ?? defaultRect(w, h), stageTarget, dt, stageJump || reduced);
+      if (next !== stage || stageDirty) placeOrb(orbCamera, next, w, h);
+      stage = next;
       stageJump = false;
       stageDirty = false;
-      placeOrb(orbCamera, stage, canvas.clientWidth || 1, canvas.clientHeight || 1);
     }
 
     renderer.clear();
@@ -251,6 +254,8 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     },
     setStage(rect, stageOpts) {
       if (destroyed) return;
+      // A NaN or infinite value would blank the orb; keep the last good place.
+      if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y) || !Number.isFinite(rect.size)) return;
       stageTarget = { x: rect.x, y: rect.y, size: rect.size };
       if (stageOpts?.animate === false) stageJump = true;
       stageDirty = true;
