@@ -135,6 +135,8 @@ const agentNameEl = $('agent-name');
 const threadTitleEl = $('thread-title');
 const threadSwitch = $<HTMLButtonElement>('thread-switch');
 const threadsEl = $('threads');
+const historyBtn = $<HTMLButtonElement>('history');
+historyBtn.replaceChildren(icon('history', 18));
 const usageBtn = $<HTMLButtonElement>('usage');
 let usage: Usage | null = null;
 const micBtn = $<HTMLButtonElement>('mic');
@@ -748,6 +750,7 @@ function render(): void {
     : view.grantedRoots.length
       ? `Files: ${view.grantedRoots.join(', ')}. Every change asks first.`
       : 'No folders are shared, so file tools are off. Start with: trillion run --grant <a folder>';
+  footEl.title = footEl.textContent;
 }
 
 function apply(next: View): void {
@@ -1051,6 +1054,8 @@ const threads = createThreads({
 });
 threads.onToggle((open) => {
   threadSwitch.setAttribute('aria-expanded', String(open));
+  historyBtn.setAttribute('aria-expanded', String(open));
+  historyBtn.toggleAttribute('data-on', open);
   // Closed from inside the list (Escape): focus goes back to what opened it.
   if (!open && threadsEl.contains(document.activeElement)) threadSwitch.focus();
   transcriptEl.hidden = open;
@@ -1071,6 +1076,8 @@ function toggleThreads(): void {
   threads.open();
 }
 threadSwitch.addEventListener('click', toggleThreads);
+historyBtn.addEventListener('click', toggleThreads);
+historyBtn.title = threadSwitch.title;
 
 // ── Connection ───────────────────────────────────────────────────────────
 

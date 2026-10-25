@@ -367,14 +367,44 @@ button:disabled {
 .thread-switch {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   border-color: transparent;
   background: transparent;
   color: var(--color-text-1);
   font-size: 13px;
+  padding: 4px 6px;
+}
+
+.thread-switch > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A small caret says the title opens the list. */
+.thread-switch::after {
+  content: '';
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin: -3px 2px 0 4px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.6;
+}
+
+.thread-switch[aria-expanded='true']::after {
+  transform: rotate(-135deg);
+  margin-top: 3px;
+}
+
+.thread-switch:hover {
+  color: var(--color-text-0);
+  background: var(--color-bg-2);
 }
 
 .side-resize {
@@ -406,9 +436,11 @@ button:disabled {
 /* The first pill on the page. BRN-8 adds its warning state as a class here. */
 .usage-pill {
   font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 4px 10px;
-  color: var(--color-text-1);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
   /* Its full sentence is in the title; the pill itself shortens with an ellipsis. */
   flex-shrink: 1;
   min-width: 0;
@@ -422,16 +454,25 @@ button:disabled {
   display: inline-grid;
   place-items: center;
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   color: var(--color-text-1);
-  background: var(--color-surface-glass);
-  backdrop-filter: blur(12px);
+  /* Quiet until wanted: no ring, no fill, until hovered or on. */
+  border-color: transparent;
+  background: transparent;
 }
 
-.icon-btn:hover {
+.icon-btn:hover,
+.icon-btn[data-on] {
   color: var(--color-text-0);
+  background: var(--color-bg-2);
+}
+
+/* The floating show-sidebar button sits on the galaxy, so it keeps a backing. */
+.show-sidebar {
+  background: var(--color-surface-glass);
+  backdrop-filter: blur(12px);
 }
 
 .icon-btn[hidden] {
@@ -660,7 +701,7 @@ body[data-sidebar='hidden'] .workspace {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
   padding: 4px 2px;
   scrollbar-width: thin;
   scrollbar-color: var(--color-text-2) transparent;
@@ -669,6 +710,22 @@ body[data-sidebar='hidden'] .workspace {
 .transcript > * {
   margin: 0;
   flex-shrink: 0;
+}
+
+/* Like any chat: a short conversation sits at the bottom, by the ask bar, and grows up. */
+.transcript > :first-child {
+  margin-top: auto;
+}
+
+/* Clicking into the log to scroll or select is not a reason to draw a box round it. */
+.transcript:focus {
+  outline: none;
+}
+
+.transcript:focus-visible {
+  outline: 1px solid var(--color-border);
+  outline-offset: 2px;
+  border-radius: var(--radius-lg);
 }
 
 .msg {
@@ -685,6 +742,16 @@ body[data-sidebar='hidden'] .workspace {
 .msg.user {
   align-self: flex-end;
   background: var(--color-bg-2);
+  border-color: transparent;
+}
+
+/* Her words are the page, not a card on it. */
+.msg.assistant {
+  max-width: 100%;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  backdrop-filter: none;
 }
 
 .msg .mark,
@@ -844,9 +911,13 @@ body[data-sidebar='hidden'] .workspace {
 .foot {
   margin: 0;
   text-align: center;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-2);
   min-height: 1.4em;
+  /* One quiet line; the whole note is in its title. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .settings {

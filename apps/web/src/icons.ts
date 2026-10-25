@@ -23,6 +23,8 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   sidebar: ['M3.5 5.5h17v13h-17z', 'M9.5 5.5v13'],
   // A pencil: start a new conversation.
   edit: ['M14.5 5.5l4 4L9 19H5v-4z', 'M12.5 7.5l4 4'],
+  // A clock turning back: past conversations.
+  history: ['M4.5 12a7.5 7.5 0 1 0 2.2-5.3', 'M4.5 4.5v3.5H8', 'M12 8v4.2l2.8 1.8'],
   search: ['M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 0 0 0-13z', 'M20 20l-4.8-4.8'],
 };
 

@@ -32,7 +32,7 @@ describe('index.html', () => {
 
   it('puts the sidebar before the workspace, so the tab order reads head, title, messages, ask bar, workspace', () => {
     const at = (s: string): number => html.indexOf(s);
-    const order = ['id="hide-sidebar"', 'id="thread-switch"', 'id="new"', 'id="transcript"', 'id="input"', 'id="workspace"'];
+    const order = ['id="hide-sidebar"', 'id="history"', 'id="new"', 'id="thread-switch"', 'id="transcript"', 'id="input"', 'id="workspace"'];
     expect(order.map(at)).toEqual([...order.map(at)].sort((a, b) => a - b));
     expect(order.every((s) => at(s) > 0)).toBe(true);
   });
