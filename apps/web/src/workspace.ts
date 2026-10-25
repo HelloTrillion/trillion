@@ -19,17 +19,24 @@ export interface WorkspaceDeps {
 }
 
 export interface Workspace {
-  /** Show `content` under `title`, in place of whatever was open. */
-  open(title: string, content: HTMLElement): void;
+  /**
+   * Show `content` under `title`, in place of whatever was open; `id` names what it is.
+   * Opening what is already shown only changes the title.
+   */
+  open(title: string, content: HTMLElement, id?: string): void;
   close(): void;
   readonly isOpen: boolean;
+  /** The id of what is shown, or null. */
+  readonly showing: string | null;
   /** Re-place the orb: the window, the sidebar or the workspace changed. */
   layout(animate?: boolean): void;
-  onClose(listener: () => void): void;
+  /** Called with the id of what closed, on close or when something else replaces it. */
+  onClose(listener: (id: string | null) => void): void;
 }
 
 export function createWorkspace(d: WorkspaceDeps): Workspace {
-  const listeners: (() => void)[] = [];
+  const listeners: ((id: string | null) => void)[] = [];
+  let showing: string | null = null;
   // Where focus was before it opened, to hand back on close.
   let back: HTMLElement | null = null;
 
@@ -46,8 +53,10 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
     d.region.hidden = true;
     d.dock.hidden = true;
     d.body.replaceChildren();
+    const was = showing;
+    showing = null;
     layout();
-    for (const l of listeners) l();
+    for (const l of listeners) l(was);
     // Focus came from somewhere now gone or inert (a hidden sidebar): go to the fallback.
     const usable = back !== null && back.isConnected && back.closest('[inert], [hidden]') === null;
     (usable ? back : back && d.fallback())?.focus();
@@ -60,9 +69,17 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
   addEventListener('resize', () => layout(false));
 
   return {
-    open(title, content) {
-      if (d.region.hidden) back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    open(title, content, id) {
       d.title.textContent = title;
+      // Already shown: moving it would lose focus and scroll.
+      if (!d.region.hidden && d.body.firstElementChild === content) return;
+      if (d.region.hidden) back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      else {
+        // Something else was open: it closes first, so it can tidy up.
+        const was = showing;
+        for (const l of listeners) l(was);
+      }
+      showing = id ?? null;
       d.body.replaceChildren(content);
       d.region.hidden = false;
       d.dock.hidden = false;
@@ -71,6 +88,9 @@ export function createWorkspace(d: WorkspaceDeps): Workspace {
     close,
     get isOpen() {
       return !d.region.hidden;
+    },
+    get showing() {
+      return showing;
     },
     layout,
     onClose(listener) {

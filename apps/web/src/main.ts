@@ -28,7 +28,7 @@ import {
   placeholder,
   saved,
 } from './onboarding';
-import { createPanel } from './panel';
+import { createPanel, type Surface } from './panel';
 import { primary, shortcut } from './platform';
 import {
   type Theme as ThemeChoice,
@@ -741,9 +741,23 @@ const api: Api = (method, path, body) =>
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-// One panel for every setting (Settings, at the top of the sidebar). The model, voice and microphone
-// sections are the same modules that used to be separate dialogs.
-const panel = createPanel($<HTMLDialogElement>('settings-panel'));
+// One panel for every setting (Settings, at the top of the sidebar), drawn in the workspace while
+// the orb docks. The model, voice and microphone sections are the same modules that used to be
+// separate dialogs.
+const settingsSurface: Surface = {
+  get open() {
+    return workspace.showing === 'settings';
+  },
+  show: (content, title) => workspace.open(title, content, 'settings'),
+  close: () => {
+    if (workspace.showing === 'settings') workspace.close();
+  },
+  onClose: (l) =>
+    workspace.onClose((id) => {
+      if (id === 'settings') l();
+    }),
+};
+const panel = createPanel(settingsSurface);
 const settings = createSettings(panel.host('model'), api);
 const speechSettings = createSpeechSettings(panel.host('voice'), api);
 const listeningSettings = createListeningSettings(
@@ -1248,9 +1262,10 @@ function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
     repeat: ev.repeat,
     inMessageBox: target === input,
     messageEmpty: input.value.trim() === '',
-    // Another field, a button, or anything in Settings takes keys itself.
+    // Another field, a button, or Settings takes keys itself. With Settings open the message box
+    // in the sidebar still talks.
     inOtherControl:
-      panel.isOpen ||
+      (panel.isOpen && (target === null || target.closest('#sidebar') === null)) ||
       (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], dialog') !== null),
   };
 }
@@ -1266,15 +1281,16 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
 }
 
 addEventListener('keydown', (ev) => {
-  // Escape stops her first; only when nothing is sounding or listening does it close.
+  // Escape stops her first; only when nothing is sounding or listening does it close the workspace.
   if (ev.key === 'Escape') {
     if (view.busy || voice.active || view.mic) interrupt();
-    else if (workspace.isOpen && !panel.isOpen) {
+    else if (workspace.isOpen) {
       ev.preventDefault();
       workspace.close();
     }
   }
-  if (ev.key === '\\' && primary(ev) && !panel.isOpen) {
+  // The sidebar can come and go with Settings open; the workspace's left edge follows it.
+  if (ev.key === '\\' && primary(ev)) {
     ev.preventDefault();
     sidebar.toggle();
     return;

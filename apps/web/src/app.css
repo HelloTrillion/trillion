@@ -295,6 +295,7 @@ body[data-sidebar='hidden'] .workspace {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  container: workspace / inline-size;
 }
 
 /* An invisible button over the docked orb; the orb itself is drawn on the canvas. */
@@ -732,42 +733,13 @@ button.quiet {
   border-color: var(--color-accent);
 }
 
-/* ── Settings: a screen of its own ───────────────────────────────────── */
+/* ── Settings, in the workspace ───────────────────────────────────────── */
 
-dialog.panel {
-  width: 100vw;
-  height: 100dvh;
-  max-width: none;
-  max-height: none;
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  /* Nearly opaque: the galaxy is a hint behind it, never competing with the text. */
-  background: color-mix(in srgb, var(--color-bg-0) 97%, transparent);
-  backdrop-filter: blur(28px) saturate(1.2);
-}
-
-dialog.panel::backdrop {
-  background: transparent;
-}
-
-dialog.panel[open] {
+.panel {
   display: grid;
-  grid-template-columns: 280px 1fr;
-  animation: panel-in var(--motion-base) ease-out;
-}
-
-@keyframes panel-in {
-  from {
-    opacity: 0;
-    transform: scale(0.985);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  dialog.panel[open] {
-    animation: none;
-  }
+  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
 }
 
 .panel-rail {
@@ -775,16 +747,9 @@ dialog.panel[open] {
   flex-direction: column;
   gap: 14px;
   min-height: 0;
-  padding: 28px 18px 18px;
+  padding: 18px;
   border-right: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-bg-1) 70%, transparent);
-}
-
-.panel-title {
-  margin: 0 8px;
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
 .panel-search {
@@ -911,43 +876,6 @@ dialog.panel[open] {
   min-height: 0;
 }
 
-.panel-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 28px;
-}
-
-.panel-crumb {
-  display: flex;
-  gap: 8px;
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-text-2);
-}
-
-.panel-crumb strong {
-  font-weight: 500;
-  color: var(--color-text-1);
-}
-
-.panel-close {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 10px;
-  border-color: transparent;
-  background: transparent;
-  color: var(--color-text-1);
-}
-
-.panel-close:hover:not(:disabled) {
-  border-color: transparent;
-  background: color-mix(in srgb, var(--color-text-0) 6%, transparent);
-  color: var(--color-text-0);
-}
-
-.panel-close kbd,
 .keycaps kbd {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -969,7 +897,7 @@ dialog.panel[open] {
 .panel-pane .settings {
   max-width: 680px;
   margin: 0 auto;
-  padding: 8px 32px 0;
+  padding: 24px 32px 0;
   gap: 16px;
 }
 
@@ -1104,8 +1032,9 @@ dialog.panel[open] {
   font-size: 13px;
 }
 
-@media (max-width: 720px) {
-  dialog.panel[open] {
+/* The workspace narrows with the sidebar as well as the window, so this asks the workspace. */
+@container workspace (max-width: 640px) {
+  .panel {
     /* minmax(0, …): the row of tabs scrolls inside the screen instead of widening it. */
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -1118,7 +1047,6 @@ dialog.panel[open] {
     border-bottom: 1px solid var(--color-border);
   }
 
-  .panel-title,
   .panel-search,
   .panel-group-label,
   .panel-link small,
@@ -1139,10 +1067,6 @@ dialog.panel[open] {
   .panel-link {
     width: auto;
     white-space: nowrap;
-  }
-
-  .panel-bar {
-    padding: 10px 16px;
   }
 
   .panel-pane .settings {

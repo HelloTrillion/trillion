@@ -1,7 +1,7 @@
 /**
- * Settings, as a screen of its own: a sidebar of sections in groups, with search, and
- * the chosen section in a wide column beside it. Escape or the close button returns
- * to the conversation.
+ * Settings: a rail of sections in groups, with search, and the chosen section in a
+ * wide column beside it. It is drawn on a `Surface` (the workspace); Escape, the
+ * surface's close button or the docked orb returns to the conversation.
  *
  * Each section is drawn by its own module. The model, voice and microphone modules
  * were written for a dialog of their own; here each gets a `Host` that looks like
@@ -11,7 +11,7 @@
 
 import { icon } from './icons';
 
-/** What a section needs from where it is drawn. A <dialog> already is one. */
+/** What a section needs from where it is drawn. It looks like a <dialog> on purpose. */
 export interface Host {
   readonly open: boolean;
   showModal(): void;
@@ -19,6 +19,15 @@ export interface Host {
   replaceChildren(...nodes: (Node | string)[]): void;
   setAttribute(name: string, value: string): void;
   addEventListener(type: 'close', listener: () => void): void;
+}
+
+/** Where Settings is drawn. The workspace provides one; so would a dialog. */
+export interface Surface {
+  readonly open: boolean;
+  /** Show `content` (the rail and the section column) under `title`. Showing it again only retitles. */
+  show(content: HTMLElement, title: string): void;
+  close(): void;
+  onClose(listener: () => void): void;
 }
 
 export interface SectionSpec {
@@ -55,12 +64,15 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
 /** The words a search compares against, folded so "Mic" finds "Microphone". */
 const fold = (s: string): string => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '');
 
-export function createPanel(dialog: HTMLDialogElement): Panel {
-  dialog.setAttribute('aria-label', 'Settings');
+/** Where you are, for the surface's title bar: "Settings / Voice". */
+export const crumb = (label: string): string => (label ? `Settings / ${label}` : 'Settings');
 
-  // The sidebar: title, search, and the groups of sections.
+export function createPanel(surface: Surface): Panel {
+  const root = el('div', 'panel');
+  root.setAttribute('aria-label', 'Settings');
+
+  // The rail: search and the groups of sections. The surface's bar says "Settings".
   const rail = el('aside', 'panel-rail');
-  const heading = el('h2', 'panel-title', 'Settings');
   const searchWrap = el('label', 'panel-search');
   const search = el('input');
   search.type = 'search';
@@ -73,22 +85,13 @@ export function createPanel(dialog: HTMLDialogElement): Panel {
   nav.setAttribute('aria-label', 'Settings sections');
   const nothing = el('p', 'panel-nothing', 'Nothing matches.');
   nothing.hidden = true;
-  rail.append(heading, searchWrap, nav, nothing);
+  rail.append(searchWrap, nav, nothing);
 
-  // The main column: where you are, a way back, and the section itself.
-  const main = el('main', 'panel-main');
-  const bar = el('header', 'panel-bar');
-  const crumb = el('p', 'panel-crumb');
-  const shut = el('button', 'panel-close');
-  shut.type = 'button';
-  shut.setAttribute('aria-label', 'Close settings');
-  shut.title = 'Close (Esc)';
-  shut.append(icon('close', 18), el('kbd', '', 'Esc'));
-  shut.addEventListener('click', () => dialog.close());
-  bar.append(crumb, shut);
+  // The main column: the section itself. Where you are and the way back are on the surface's bar.
+  const main = el('div', 'panel-main');
   const body = el('div', 'panel-body');
-  main.append(bar, body);
-  dialog.replaceChildren(rail, main);
+  main.append(body);
+  root.append(rail, main);
 
   const sections: SectionSpec[] = [];
   const groups = new Map<string, HTMLElement>();
@@ -122,14 +125,12 @@ export function createPanel(dialog: HTMLDialogElement): Panel {
       else link.removeAttribute('aria-current');
     }
     const s = sections.find((x) => x.id === id);
-    crumb.replaceChildren(el('span', '', 'Settings'), el('span', 'panel-crumb-sep', '/'), el('strong', '', s?.label ?? ''));
     refresh();
     body.scrollTop = 0;
-    if (!dialog.open) {
-      dialog.showModal();
-      // Start on the section shown, not on the close button.
-      links.get(id)?.focus();
-    }
+    const opening = !surface.open;
+    surface.show(root, crumb(s?.label ?? ''));
+    // Start on the section shown, not on the close button.
+    if (opening) links.get(id)?.focus();
   }
 
   function filter(): void {
@@ -155,7 +156,7 @@ export function createPanel(dialog: HTMLDialogElement): Panel {
     const first = sections.find((s) => !links.get(s.id)?.parentElement?.hidden);
     if (first) void first.open();
   });
-  dialog.addEventListener('close', () => {
+  surface.onClose(() => {
     search.value = '';
     filter();
   });
@@ -165,13 +166,13 @@ export function createPanel(dialog: HTMLDialogElement): Panel {
       const p = pane(id);
       return {
         get open() {
-          return dialog.open && current === id;
+          return surface.open && current === id;
         },
         showModal: () => show(id),
-        close: () => dialog.close(),
+        close: () => surface.close(),
         replaceChildren: (...nodes) => p.replaceChildren(...nodes),
         setAttribute: (name, value) => p.setAttribute(name, value),
-        addEventListener: (_type, listener) => dialog.addEventListener('close', listener),
+        addEventListener: (_type, listener) => surface.onClose(listener),
       };
     },
     add(section) {
@@ -203,7 +204,7 @@ export function createPanel(dialog: HTMLDialogElement): Panel {
     },
     refresh,
     get isOpen() {
-      return dialog.open;
+      return surface.open;
     },
   };
 }
