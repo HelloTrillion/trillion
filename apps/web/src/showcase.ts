@@ -55,6 +55,13 @@ export function clock(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** An hour of the day (0–23) for the timeline's axis: 7 am, 1 pm, Noon. */
+export function hourLabel(hr: number): string {
+  const n = ((hr % 24) + 24) % 24;
+  if (n === 12) return 'Noon';
+  return `${n % 12 || 12} ${n < 12 ? 'am' : 'pm'}`;
+}
+
 /** Minutes after midnight as a short time: 9:42, 12:30. */
 export function timeOfDay(minutes: number): string {
   const m = ((Math.round(minutes) % 1440) + 1440) % 1440;
@@ -162,8 +169,9 @@ function briefing(ctx: Ctx): HTMLElement {
   const day = stagger(h('section', 'sc-day'), 2);
   day.setAttribute('aria-label', 'Today');
   const track = h('div', 'sc-day-track');
-  for (let hr = 7; hr <= 22; hr += 3) {
-    const tick = h('span', 'sc-day-hour', hr === 12 ? 'Noon' : `${hr % 12 || 12}${hr < 12 ? ' am' : hr === 22 ? ' pm' : ''}`);
+  // Every label says am or pm; the last hour is the track's right edge, so it goes unlabelled.
+  for (let hr = 7; hr < 22; hr += 3) {
+    const tick = h('span', 'sc-day-hour', hourLabel(hr));
     tick.style.left = pct(hr * 60);
     track.append(tick);
   }
@@ -171,9 +179,13 @@ function briefing(ctx: Ctx): HTMLElement {
     const b = h('div', `sc-event sc-event-${e.kind}`);
     b.style.left = pct(e.at);
     b.style.width = `calc(${pct(e.to)} - ${pct(e.at)})`;
-    b.style.setProperty('--lane', String(i % 2));
-    b.append(h('strong', '', e.title), h('span', '', `${timeOfDay(e.at)}–${timeOfDay(e.to)}`));
-    b.title = e.title;
+    // Three lanes, so a block can be as wide as its title without meeting its neighbour.
+    b.style.setProperty('--lane', String(i % 3));
+    const when = `${timeOfDay(e.at)}–${timeOfDay(e.to)}`;
+    b.append(h('strong', '', e.title));
+    // A short block keeps its title whole; its time is on hover.
+    if (e.to - e.at >= 90) b.append(h('span', '', when));
+    b.title = `${e.title} · ${when}`;
     track.append(b);
     return { b, e };
   });
@@ -340,7 +352,6 @@ function working(ctx: Ctx): HTMLElement {
     return li;
   });
 
-  const side = h('div', 'sc-work-side');
   const sourcesBox = stagger(h('section', 'sc-sources'), 4);
   const chips = h('div', 'sc-chips');
   sourcesBox.append(h('h3', 'sc-tile-title', 'Sources'), chips);
@@ -355,11 +366,9 @@ function working(ctx: Ctx): HTMLElement {
   const draftFoot = h('div', 'sc-draft-foot');
   draftFoot.append(h('span', 'sc-note', 'Nothing goes to Sam until you say so.'), review);
   draft.append(h('h3', 'sc-tile-title', 'Draft plan'), draftText, draftFoot);
-  side.append(sourcesBox, draft);
 
-  const left = h('div', 'sc-work-left');
-  left.append(orbit, steps);
-  grid.append(left, side);
+  // Orbit and steps side by side, sources and the draft in a row beneath them.
+  grid.append(orbit, steps, sourcesBox, draft);
   root.append(task, grid);
 
   let shown: StepState[] = [];

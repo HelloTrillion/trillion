@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clock, showcaseScene, stepProgress, stepStates, timeOfDay } from '../src/showcase';
+import { clock, hourLabel, showcaseScene, stepProgress, stepStates, timeOfDay } from '../src/showcase';
 
 describe('showcaseScene', () => {
   it('opens on a bare flag in the fragment or the query', () => {
@@ -45,5 +45,13 @@ describe('clock and timeOfDay', () => {
     expect(timeOfDay(9 * 60 + 42)).toBe('9:42');
     expect(timeOfDay(12 * 60 + 30)).toBe('12:30');
     expect(timeOfDay(15 * 60 + 5)).toBe('3:05');
+  });
+});
+
+describe('hourLabel', () => {
+  it('says am or pm on every hour', () => {
+    expect([7, 10, 13, 16, 19].map(hourLabel)).toEqual(['7 am', '10 am', '1 pm', '4 pm', '7 pm']);
+    expect(hourLabel(12)).toBe('Noon');
+    expect(hourLabel(0)).toBe('12 am');
   });
 });
