@@ -7,6 +7,15 @@ const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
 const card = { type: 'confirm.request', pending_id: 'p1', summary: 'Create a.txt', expires_at: 1000, tap_only: false };
 
 describe('view', () => {
+  it('keeps the conversation title and follows a new one', () => {
+    let v = feed([{ type: 'session', id: 'c1', agent_name: 'Nova', model: null, title: null }]);
+    expect(v.title).toBeNull();
+    v = feed([{ type: 'conversation.title', id: 'c1', title: 'The trip' }], v);
+    expect(v.title).toBe('The trip');
+    v = feed([{ type: 'conversation.title', id: 'other', title: 'Not ours' }], v);
+    expect(v.title).toBe('The trip');
+  });
+
   it('becomes ready on session and keeps the model name', () => {
     const v = feed([{ type: 'session', id: 'c1', agent_name: 'Nova', model: { provider: 'x', model: 'm' }, granted_roots: ['/a'] }]);
     expect(v).toMatchObject({ link: 'ready', conversationId: 'c1', agentName: 'Nova', model: 'm', grantedRoots: ['/a'] });
