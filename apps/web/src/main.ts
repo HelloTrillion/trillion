@@ -51,6 +51,7 @@ import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
+import { DOCK } from './layout';
 import {
   type Entry,
   INITIAL,
@@ -143,6 +144,10 @@ let talkPrefs: TalkPrefs = savedTalk();
 const talkKeys = new TalkKeys(talkPrefs);
 let version = '';
 const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight.matches) });
+
+// The docked orb's size and place come from DOCK; the CSS (its button, the hole in the workspace) reads them here.
+document.documentElement.style.setProperty('--dock-size', `${DOCK.size}px`);
+document.documentElement.style.setProperty('--dock-inset', `${DOCK.inset}px`);
 
 const showSidebarBtn = $<HTMLButtonElement>('show-sidebar');
 const hideSidebarBtn = $<HTMLButtonElement>('hide-sidebar');

@@ -257,8 +257,9 @@ button:disabled {
 /* ── Workspace ───────────────────────────────────────────────────────── */
 
 .workspace {
+  --ws-inset: 16px;
   position: fixed;
-  inset: 16px 16px 16px calc(var(--sidebar-w) + 16px);
+  inset: var(--ws-inset) var(--ws-inset) var(--ws-inset) calc(var(--sidebar-w) + var(--ws-inset));
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-lg);
@@ -298,13 +299,51 @@ body[data-sidebar='hidden'] .workspace {
   container: workspace / inline-size;
 }
 
+/*
+ * The docked orb is drawn on the canvas behind the workspace, so the workspace has a round
+ * hole over it, with a faint ring at its edge. --dock-size and --dock-inset are set from
+ * DOCK (layout.ts) in main.ts; the fallbacks here are the same numbers.
+ */
+@media (min-width: 768px) {
+  .workspace {
+    /* The dock's centre from the workspace's bottom-right corner, and the hole a little wider than the orb. */
+    --hole-at: calc(var(--dock-inset, 24px) + var(--dock-size, 96px) / 2 - var(--ws-inset));
+    --hole-r: calc(var(--dock-size, 96px) / 2 + 8px);
+    --dock-hole: radial-gradient(
+      circle at calc(100% - var(--hole-at)) calc(100% - var(--hole-at)),
+      transparent var(--hole-r),
+      #000 calc(var(--hole-r) + 1px)
+    );
+    -webkit-mask: var(--dock-hole);
+    mask: var(--dock-hole);
+  }
+
+  .workspace::after {
+    content: '';
+    position: absolute;
+    right: calc(var(--hole-at) - var(--hole-r) - 2px);
+    bottom: calc(var(--hole-at) - var(--hole-r) - 2px);
+    width: calc(2 * var(--hole-r) + 4px);
+    height: calc(2 * var(--hole-r) + 4px);
+    border-radius: 50%;
+    border: 1px solid var(--color-border);
+    box-sizing: border-box;
+    pointer-events: none;
+  }
+
+  /* The last controls scroll clear of the hole. */
+  .workspace-body {
+    padding-bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
+  }
+}
+
 /* An invisible button over the docked orb; the orb itself is drawn on the canvas. */
 .orb-dock {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
-  width: 96px;
-  height: 96px;
+  right: var(--dock-inset, 24px);
+  bottom: var(--dock-inset, 24px);
+  width: var(--dock-size, 96px);
+  height: var(--dock-size, 96px);
   border-radius: 50%;
   background: transparent;
   border: 0;
