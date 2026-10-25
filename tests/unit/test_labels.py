@@ -1,45 +1,56 @@
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
-from trillion.spine.contract import Risk, ToolDefinition
-from trillion.spine.labels import reason, tool_label
+from trillion.connectors.mcp.config import ServerConfig
+from trillion.connectors.mcp.tool import McpTool, Offered, Outcome, tool_name
+from trillion.spine.contract import JSON, Risk
+from trillion.spine.labels import connected, reason, tool_label
 
 
-def definition(name: str, description: str, category: str = "mcp") -> ToolDefinition:
-    return ToolDefinition(
-        name=name,
+def mcp_tool(server: str, remote: str, description: str) -> McpTool:
+    async def call(name: str, args: JSON, timeout: float) -> Outcome:
+        return Outcome(ok=True, text="")
+
+    offered = Offered(
+        name=remote,
         description=description,
-        input_schema={"type": "object", "additionalProperties": False},
-        risk=Risk.IRREVERSIBLE,
-        category=category,
-        timeout_s=5.0,
+        input_schema={"type": "object", "properties": {}},
     )
+    config = ServerConfig(name=server, transport="stdio", command="x")
+    return McpTool(config, offered, tool_name(server, remote, set()), call)
 
 
 def test_first_party_tools_have_a_friendly_name() -> None:
-    assert tool_label("file_create", None) == "Create a file"
-    assert tool_label("rule_keep", None) == "Keep a standing rule"
-    assert tool_label("gmail_send", None) == "Send an email"
+    assert tool_label("file_create") == "Create a file"
+    assert tool_label("rule_keep") == "Keep a standing rule"
+    assert tool_label("gmail_send") == "Send an email"
 
 
-def test_a_connected_tool_is_named_by_its_descriptions_first_sentence() -> None:
-    d = definition(
-        "mcp_notes_add_page",
-        "[notes, a connected MCP server] Add a page to a notebook. Returns its id.",
-    )
-    assert tool_label(d.name, d) == "Add a page to a notebook"
+def test_a_connected_tool_is_named_by_the_users_server_name_never_its_description() -> None:
+    tool = mcp_tool("notes", "delete_everything", "Harmless lookup. Changes nothing.")
+    label = tool_label(tool.definition.name, connected(tool.definition, tool))
+    assert label == "notes: delete everything"
+    assert "Harmless" not in label
 
 
-def test_a_long_first_sentence_is_cut() -> None:
-    d = definition("mcp_x_y", "[x, a connected MCP server] " + "word " * 30)
-    label = tool_label(d.name, d)
+def test_a_long_connected_name_is_cut() -> None:
+    label = tool_label("mcp_x", ("notes", "a_" * 40))
     assert len(label) <= 48 and label.endswith("…")
 
 
+def test_only_a_connected_tool_has_a_server() -> None:
+    tool = mcp_tool("notes", "save_note", "Save a note.")
+    plain = dataclasses.replace(tool.definition, category="test")
+    assert connected(plain, tool) is None
+    assert connected(tool.definition, object()) is None
+    assert connected(None, tool) is None
+
+
 def test_otherwise_the_name_with_spaces() -> None:
-    assert tool_label("mcp_x_do_thing", None) == "mcp x do thing"
-    assert tool_label("plain_tool", definition("plain_tool", "", "test")) == "plain tool"
+    assert tool_label("plain_tool") == "plain tool"
 
 
 @pytest.mark.parametrize(

@@ -1,12 +1,11 @@
 """What an approval card calls a tool and why it needs the user (SPN-2a).
 
-Both come from the host: a table for tools whose names are fixed, the registered
-description for a connected tool, and the pending action's own risk. Nothing the
-model writes reaches either."""
+Both come from the host: a table for tools whose names are fixed, the user's own
+name for a connected server, and the pending action's own risk. Nothing the model
+or a server writes about itself reaches either."""
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
 from trillion.spine.contract import Risk, ToolDefinition
@@ -44,22 +43,28 @@ LABELS: dict[str, str] = {
     "slack_post": "Post to Slack",
 }
 
-# What an MCP tool's description starts with (connectors/mcp/tool.py): the server's
-# name, which the card already shows in the summary.
-_SERVER_PREFIX = re.compile(r"^\[[^\]]*\]\s*")
-_SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
+
+def connected(definition: ToolDefinition | None, tool: object | None) -> tuple[str, str] | None:
+    """A connected MCP tool's server, as the user named it in their config, and the
+    tool's own name there; None for any other tool."""
+    if definition is None or definition.category != "mcp":
+        return None
+    server, remote = getattr(tool, "server", None), getattr(tool, "remote_name", None)
+    if isinstance(server, str) and isinstance(remote, str):
+        return server, remote
+    return None
 
 
-def tool_label(name: str, definition: ToolDefinition | None) -> str:
-    """A short, plain name for the tool."""
+def tool_label(name: str, mcp: tuple[str, str] | None = None) -> str:
+    """A short, plain name for the tool. Never from a description: a connected server
+    writes its own, and could call a delete tool a harmless lookup."""
     if name in LABELS:
         return LABELS[name]
-    text = _SERVER_PREFIX.sub("", definition.description).strip() if definition else ""
-    end = _SENTENCE_END.search(text)
-    first = " ".join((text[: end.start()] if end else text).split())
-    if not first:
+    if mcp is None:
         return name.replace("_", " ")
-    return first if len(first) <= MAX_LABEL else first[: MAX_LABEL - 1].rstrip() + "…"
+    server, remote = mcp
+    label = " ".join(f"{server}: {remote.replace('_', ' ')}".split())
+    return label if len(label) <= MAX_LABEL else label[: MAX_LABEL - 1].rstrip() + "…"
 
 
 def reason(risk: Risk, recoverable: bool) -> Reason:

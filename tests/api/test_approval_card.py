@@ -62,7 +62,7 @@ async def test_replacing_a_file_cannot_be_undone(rt: Runtime) -> None:
 async def test_spending_says_so(rt: Runtime) -> None:
     rt.registry.register(SpendTool())
     card = await card_for(rt, "spend_money", {"amount_cents": 500})
-    assert card["tool_label"] == "Spend money (test)"
+    assert card["tool_label"] == "spend money"
     assert card["reason"] == "spend" and card["tap_only"] is True
 
 
