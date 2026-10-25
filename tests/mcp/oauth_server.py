@@ -1,13 +1,15 @@
 """A small MCP server that needs signing in, for the tests: its own OAuth service on
 the same address, which lets a new app register and approves every sign-in at once,
-as a person clicking Allow would. Tokens last `TTL` seconds, so a refresh can be
-tested.
+as a person clicking Allow would. Tokens from a sign-in last `TTL` seconds, so a
+refresh can be tested; a refreshed token lasts an hour, so the reconnect that refreshed
+it is never racing its next expiry on a slow machine.
 
 python -m tests.mcp.oauth_server PORT [TTL]
 """
 
 from __future__ import annotations
 
+import math
 import secrets
 import sys
 import time
@@ -26,6 +28,7 @@ from mcp.types import ToolAnnotations
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 TTL = int(sys.argv[2]) if len(sys.argv) > 2 else 3600
+REFRESHED_TTL = 3600
 BASE = f"http://127.0.0.1:{PORT}"
 
 
@@ -64,26 +67,29 @@ class Approving:
     ) -> AuthorizationCode | None:
         return self.codes.get(authorization_code)
 
-    def _tokens(self, client_id: str, scopes: list[str], resource: str | None) -> OAuthToken:
+    def _tokens(
+        self, client_id: str, scopes: list[str], resource: str | None, ttl: int
+    ) -> OAuthToken:
         access, refresh = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
         self.access[access] = AccessToken(
             token=access,
             client_id=client_id,
             scopes=scopes,
-            expires_at=int(time.time()) + TTL,
+            # Rounded up: rounded down, a 1-second token could expire as it is issued.
+            expires_at=math.ceil(time.time() + ttl),
             resource=resource,
         )
         self.refresh[refresh] = RefreshToken(
             token=refresh, client_id=client_id, scopes=scopes, resource=resource
         )
-        return OAuthToken(access_token=access, expires_in=TTL, refresh_token=refresh)
+        return OAuthToken(access_token=access, expires_in=ttl, refresh_token=refresh)
 
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
         self.codes.pop(authorization_code.code, None)
         return self._tokens(
-            client.client_id or "", authorization_code.scopes, authorization_code.resource
+            client.client_id or "", authorization_code.scopes, authorization_code.resource, TTL
         )
 
     async def load_refresh_token(
@@ -95,7 +101,9 @@ class Approving:
         self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
     ) -> OAuthToken:
         self.refresh.pop(refresh_token.token, None)
-        return self._tokens(client.client_id or "", refresh_token.scopes, refresh_token.resource)
+        return self._tokens(
+            client.client_id or "", refresh_token.scopes, refresh_token.resource, REFRESHED_TTL
+        )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         found = self.access.get(token)
