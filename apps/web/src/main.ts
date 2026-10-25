@@ -685,8 +685,11 @@ const LINK_TEXT: Readonly<Record<View['link'], string>> = {
 };
 
 let rendered: readonly Entry[] = [];
-// An approval is waiting somewhere (on the board or in the conversation): her board's asks are hidden.
+// Her board's asks are hidden while a tap could not go as a turn: an approval is waiting (on the
+// board or in the conversation), she is busy, or the link is down. Never a tap silently lost.
 let asksOff = false;
+// How many times the board has been drawn, so a render draws it at most once.
+let boardDraws = 0;
 
 // Shown under the conversation while she works and no text is arriving. The status
 // in the sidebar's head already announces it to screen readers, so this one stays silent.
@@ -726,12 +729,13 @@ function render(): void {
 
   // The board follows its approvals, and the core records a card as delivered only once it is
   // really on screen (SPN-17).
+  // Decided first, so a board that approvals.sync() redraws already has it.
+  const off = view.busy || view.link !== 'ready' || view.entries.some((e) => e.kind === 'card' && e.status === 'waiting');
+  const asksChanged = off !== asksOff;
+  asksOff = off;
+  const drawsBefore = boardDraws;
   approvals.sync();
-  const off = view.entries.some((e) => e.kind === 'card' && e.status === 'waiting');
-  if (off !== asksOff) {
-    asksOff = off;
-    if (workspace.showing === 'board') showBoard();
-  }
+  if (asksChanged && boardDraws === drawsBefore && workspace.showing === 'board') showBoard();
 
   const ready = view.link === 'ready';
   const linkText = LINK_TEXT[view.link];
@@ -1530,10 +1534,15 @@ const boardView = createBoardView({
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
   approvals: approvals.strip.el,
-  // Exactly the ask's words, as the user's message. Hidden while any approval waits (asksOff).
-  onAsk: (text) => void sendTurn(text, 'ask'),
+  // Exactly the ask's words, as the user's message. Hidden while it could not go (asksOff).
+  onAsk: (text) => {
+    // Onboarding's conversation is the page's own: a tap never cuts into it.
+    if (ob && active(ob)) return;
+    sendTurn(text, 'ask');
+  },
 });
 function showBoard(): void {
+  boardDraws++;
   boardChip.hidden = true;
   const pinned = approvals.pinned();
   approvals.strip.draw(pinned.items);

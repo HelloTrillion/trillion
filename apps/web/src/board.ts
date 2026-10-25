@@ -387,11 +387,15 @@ export function createBoardView(opts: BoardOptions): BoardView {
         if (at !== p) el.insertBefore(p, at);
       });
       if (scroller) scroller.scrollTop = top;
-      if (focused?.isConnected) {
-        // A moved card lost focus on the way: it goes back where it was.
-        if (document.activeElement !== focused) focused.focus({ preventScroll: true });
+      const askHidden = el.classList.contains('bd-asks-off') && focused?.closest('.bd-asks');
+      if (focused?.isConnected && !askHidden) {
+        // A moved card lost focus on the way: it goes back where it was, or to the board if it can't take it.
+        if (document.activeElement !== focused) {
+          focused.focus({ preventScroll: true });
+          if (document.activeElement !== focused) el.focus({ preventScroll: true });
+        }
       } else if (focused) {
-        // The card that had focus went (its × was pressed): focus stays on the board.
+        // The card that had focus went (its × was pressed), or the ask that had it is hidden: focus stays on the board.
         el.focus({ preventScroll: true });
       }
     },

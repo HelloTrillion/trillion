@@ -118,6 +118,15 @@ describe('the board', () => {
     expect(view.el.classList.contains('bd-asks-off')).toBe(false);
   });
 
+  it('moves focus from an ask that is hidden to the board', () => {
+    const { view } = mount();
+    view.draw(board(meeting));
+    view.el.querySelector<HTMLButtonElement>('.bd-ask')?.focus();
+    expect(document.activeElement?.classList.contains('bd-ask')).toBe(true);
+    view.draw(board(meeting), { any: false, waiting: false, from: 'Trillion', asksOff: true });
+    expect(document.activeElement).toBe(view.el);
+  });
+
   it('brings every time and age up to date once a minute, with one timer for the board', () => {
     vi.useFakeTimers();
     const { view, setNow } = mount();
