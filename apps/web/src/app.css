@@ -186,6 +186,8 @@ button:disabled {
 /* ── The thread list: it takes the transcript's place while open (SUR-1). ── */
 
 .side-body .threads {
+  /* The row menu is placed against it. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -193,9 +195,7 @@ button:disabled {
 }
 
 .side-body .transcript[hidden],
-.side-body .threads[hidden],
-.threads-toast[hidden],
-.threads-status[hidden] {
+.side-body .threads[hidden] {
   display: none;
 }
 
@@ -231,12 +231,17 @@ button:disabled {
   scrollbar-color: var(--color-text-2) transparent;
 }
 
-.threads-group {
+.threads-group + .threads-group {
   margin-top: 12px;
 }
 
-.threads-group:first-child {
-  margin-top: 0;
+.threads-group-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 /* A row looks like a Settings link: lit on hover, brighter for the open conversation. */
@@ -258,7 +263,7 @@ button:disabled {
   color: var(--color-text-0);
 }
 
-.thread-row[aria-selected='true'] {
+.thread-row[aria-current='true'] {
   background: color-mix(in srgb, var(--color-text-0) 6%, transparent);
   color: var(--color-text-0);
 }
@@ -294,7 +299,7 @@ button:disabled {
 /* The ⋯ shows on the row the pointer or keyboard is on, and always on a touch screen. */
 .thread-row:hover .thread-more,
 .thread-row:focus-within .thread-more,
-.thread-row[aria-selected='true'] .thread-more {
+.thread-row[aria-current='true'] .thread-more {
   opacity: 1;
 }
 

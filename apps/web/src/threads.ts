@@ -121,6 +121,20 @@ export function rowTime(at: number, now: number): string {
   return d.toLocaleDateString([], thisYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+/** What Escape does, in one order: she stops first, then the thread list closes, then the workspace. */
+export function escapeAction(s: {
+  readonly busy: boolean;
+  readonly speaking: boolean;
+  readonly listening: boolean;
+  readonly listOpen: boolean;
+  readonly workspaceOpen: boolean;
+}): 'interrupt' | 'list' | 'workspace' | null {
+  if (s.busy || s.speaking || s.listening) return 'interrupt';
+  if (s.listOpen) return 'list';
+  if (s.workspaceOpen) return 'workspace';
+  return null;
+}
+
 // ── The DOM part ─────────────────────────────────────────────────────────
 
 export interface ThreadsDeps {
@@ -139,6 +153,7 @@ export interface ThreadsDeps {
 
 export interface ThreadList {
   open(): void;
+  /** Escape is the page's to route (see escapeAction); it calls this. */
   close(): void;
   readonly isOpen: boolean;
   retitle(id: string, title: string): void;
@@ -148,6 +163,9 @@ export interface ThreadList {
 
 const SEARCH_MS = 200;
 const TOAST_MS = 8000;
+/** Left after the pointer or focus leaves a paused toast, at the least. */
+const TOAST_RESUME_MS = 2000;
+const MENU_ID = 'thread-menu';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -163,6 +181,24 @@ function button(cls: string, text: string): HTMLButtonElement {
   return b;
 }
 
+/** A live region's text, emptied first and set a moment later, so saying the same thing twice is heard twice. */
+function liveText(region: HTMLElement): (text: string) => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (text) => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    region.textContent = '';
+    if (text)
+      timer = setTimeout(() => {
+        timer = null;
+        region.textContent = text;
+      }, 50);
+  };
+}
+
+let uid = 0;
+const nextId = (what: string): string => `thread-${what}-${++uid}`;
+
 export function createThreads(d: ThreadsDeps): ThreadList {
   const { root } = d;
   const listeners: ((open: boolean) => void)[] = [];
@@ -175,7 +211,6 @@ export function createThreads(d: ThreadsDeps): ThreadList {
   let activeId: string | null = null;
   let renaming: string | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
-  let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   const searchWrap = el('label', 'panel-search threads-search');
   const search = el('input');
@@ -188,40 +223,52 @@ export function createThreads(d: ThreadsDeps): ThreadList {
   const list = el('ul', 'threads-list');
   list.setAttribute('role', 'listbox');
   list.setAttribute('aria-label', 'Conversations');
-  const status = el('p', 'threads-status');
-  status.setAttribute('role', 'status');
-  const statusText = el('span');
+
+  // Live regions stay in the page, only out of sight while empty, so what they say is heard.
+  const status = el('div', 'threads-status');
+  const statusLine = el('span');
+  statusLine.setAttribute('role', 'status');
+  const setStatus = liveText(statusLine);
   const retry = button('threads-retry', 'Retry');
   retry.hidden = true;
   retry.addEventListener('click', () => void load(false));
-  status.append(statusText, retry);
+  status.append(statusLine, retry);
   // The end of the list: once it scrolls into view, the next page loads.
   const sentinel = el('li', 'threads-sentinel');
   sentinel.setAttribute('role', 'presentation');
   root.append(searchWrap, status, list);
 
-  // After the list, not in it, so an Undo outlives closing the list.
-  const toast = el('div', 'threads-toast');
-  toast.setAttribute('role', 'status');
-  toast.hidden = true;
-  const toastText = el('span', '', 'Conversation deleted');
-  const undo = button('threads-undo', 'Undo');
-  toast.append(toastText, undo);
-  root.after(toast);
-
   function say(text: string, canRetry = false): void {
-    statusText.textContent = text;
+    setStatus(text);
     retry.hidden = !canRetry;
-    status.hidden = text === '';
+    status.classList.toggle('visually-hidden', text === '');
   }
   say('');
+
+  // After the list, not in it, so an Undo outlives closing the list.
+  const toast = el('div', 'threads-toast visually-hidden');
+  const toastLine = el('span');
+  toastLine.setAttribute('role', 'status');
+  const setToast = liveText(toastLine);
+  const undo = button('threads-undo', 'Undo');
+  undo.hidden = true;
+  toast.append(toastLine, undo);
+  root.after(toast);
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  let toastEnds = 0;
+  let toastPaused = false;
+  let toastShown = false;
+  let restoring = false;
 
   const observer =
     typeof IntersectionObserver === 'undefined'
       ? null
-      : new IntersectionObserver((seen) => {
-          if (seen.some((e) => e.isIntersecting) && more && !loading && isOpen) void load(true);
-        }, { root: list });
+      : new IntersectionObserver(
+          (seen) => {
+            if (seen.some((e) => e.isIntersecting) && more && !loading && isOpen) void load(true);
+          },
+          { root: list },
+        );
 
   async function load(next: boolean): Promise<void> {
     const mine = ++gen;
@@ -245,12 +292,16 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     draw();
   }
 
+  function rows(): HTMLLIElement[] {
+    return [...list.querySelectorAll<HTMLLIElement>('li[role="option"]')];
+  }
+
   function rowOf(id: string): HTMLLIElement | null {
-    for (const li of list.querySelectorAll<HTMLLIElement>('li[role="option"]')) if (li.dataset['id'] === id) return li;
-    return null;
+    return rows().find((li) => li.dataset['id'] === id) ?? null;
   }
 
   function draw(): void {
+    closeMenu(false);
     if (renaming) return; // a redraw would take the box from under the user's fingers
     const hadFocus = list.contains(document.activeElement);
     const current = d.current();
@@ -258,14 +309,22 @@ export function createThreads(d: ThreadsDeps): ThreadList {
       activeId = (threads.find((t) => t.id === current) ?? threads[0])?.id ?? null;
     }
     observer?.unobserve(sentinel);
-    const rows: HTMLLIElement[] = [];
+    const items: HTMLLIElement[] = [];
     for (const g of groupByDay(threads, d.now())) {
-      const label = el('li', 'panel-group-label threads-group', g.label);
+      const group = el('li', 'threads-group');
+      group.setAttribute('role', 'group');
+      const label = el('div', 'panel-group-label', g.label);
+      label.id = nextId('group');
       label.setAttribute('role', 'presentation');
-      rows.push(label, ...g.threads.map((t) => row(t, current)));
+      group.setAttribute('aria-labelledby', label.id);
+      const inner = el('ul', 'threads-group-rows');
+      inner.setAttribute('role', 'none');
+      inner.append(...g.threads.map((t) => row(t, current)));
+      group.append(label, inner);
+      items.push(group);
     }
-    if (more) rows.push(sentinel);
-    list.replaceChildren(...rows);
+    if (more) items.push(sentinel);
+    list.replaceChildren(...items);
     if (more) observer?.observe(sentinel);
     say(threads.length ? '' : search.value.trim() ? 'No conversations match' : 'No conversations yet');
     if (hadFocus) focusActive();
@@ -275,14 +334,20 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     const li = el('li', 'thread-row');
     li.setAttribute('role', 'option');
     li.dataset['id'] = t.id;
-    li.setAttribute('aria-selected', String(t.id === current));
+    // Selection follows the keyboard; the open conversation is marked as current.
+    li.setAttribute('aria-selected', String(t.id === activeId));
+    if (t.id === current) li.setAttribute('aria-current', 'true');
     li.tabIndex = t.id === activeId ? 0 : -1;
     const name = el('span', 'thread-name', untitled(t));
+    name.id = nextId('name');
     const when = el('small', 'thread-time', rowTime(t.lastMessageAt, d.now()));
+    when.id = nextId('time');
+    li.setAttribute('aria-labelledby', `${name.id} ${when.id}`);
     const dots = button('thread-more', '⋯');
     dots.tabIndex = -1;
     dots.setAttribute('aria-label', `More for ${untitled(t)}`);
     dots.setAttribute('aria-haspopup', 'menu');
+    dots.setAttribute('aria-expanded', 'false');
     dots.addEventListener('click', (ev) => {
       ev.stopPropagation();
       menu(t, li);
@@ -300,8 +365,10 @@ export function createThreads(d: ThreadsDeps): ThreadList {
 
   function setActive(id: string): void {
     activeId = id;
-    for (const li of list.querySelectorAll<HTMLLIElement>('li[role="option"]')) {
-      li.tabIndex = li.dataset['id'] === id ? 0 : -1;
+    for (const li of rows()) {
+      const on = li.dataset['id'] === id;
+      li.tabIndex = on ? 0 : -1;
+      li.setAttribute('aria-selected', String(on));
     }
     focusActive();
   }
@@ -317,20 +384,23 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     close();
   }
 
-  // ── The row menu ──
-  let openMenu: { box: HTMLElement; done: () => void } | null = null;
+  // ── The row menu: beside the list, not in it, placed at its row ──
+  let openMenu: { done: () => void } | null = null;
 
   function closeMenu(refocus: boolean): void {
     if (!openMenu) return;
-    openMenu.done();
+    const { done } = openMenu;
     openMenu = null;
+    done();
     if (refocus) focusActive();
   }
 
   function menu(t: Thread, li: HTMLLIElement): void {
     closeMenu(false);
-    activeId = t.id;
+    setActive(t.id);
+    const dots = li.querySelector<HTMLButtonElement>('.thread-more');
     const box = el('div', 'thread-menu');
+    box.id = MENU_ID;
     box.setAttribute('role', 'menu');
     box.setAttribute('aria-label', untitled(t));
     const items = [button('thread-menu-item', 'Rename'), button('thread-menu-item', 'Delete')];
@@ -339,41 +409,45 @@ export function createThreads(d: ThreadsDeps): ThreadList {
       item.tabIndex = -1;
     }
     const [renameItem, deleteItem] = items as [HTMLButtonElement, HTMLButtonElement];
-    renameItem.addEventListener('click', (ev) => {
-      ev.stopPropagation();
+    renameItem.addEventListener('click', () => {
       closeMenu(false);
       rename(t);
     });
-    deleteItem.addEventListener('click', (ev) => {
-      ev.stopPropagation();
+    deleteItem.addEventListener('click', () => {
       closeMenu(false);
       void remove(t.id);
     });
-    box.addEventListener('click', (ev) => ev.stopPropagation());
     box.addEventListener('keydown', (ev) => {
-      ev.stopPropagation();
       const at = items.indexOf(document.activeElement as HTMLButtonElement);
       if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
-        ev.preventDefault();
         items[(at + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
-      } else if (ev.key === 'Escape') {
-        ev.preventDefault();
+      } else if (ev.key === 'Escape' || ev.key === 'Tab') {
         closeMenu(true);
-      } else if (ev.key === 'Tab') {
-        ev.preventDefault();
-        closeMenu(true);
-      }
+      } else return;
+      ev.preventDefault();
+      ev.stopPropagation();
     });
     box.append(...items);
-    li.append(box);
+    const r = li.getBoundingClientRect();
+    const base = root.getBoundingClientRect();
+    box.style.top = `${r.bottom - base.top - 2}px`;
+    box.style.right = `${base.right - r.right + 4}px`;
+    root.append(box);
+    dots?.setAttribute('aria-expanded', 'true');
+    dots?.setAttribute('aria-controls', MENU_ID);
     const outside = (ev: Event): void => {
       if (!box.contains(ev.target as Node)) closeMenu(false);
     };
+    // Placed at its row, it would drift off it as the list scrolls: it closes instead.
+    const scrolled = (): void => closeMenu(false);
     document.addEventListener('pointerdown', outside, true);
+    list.addEventListener('scroll', scrolled, { passive: true });
     openMenu = {
-      box,
       done: () => {
         document.removeEventListener('pointerdown', outside, true);
+        list.removeEventListener('scroll', scrolled);
+        dots?.setAttribute('aria-expanded', 'false');
+        dots?.removeAttribute('aria-controls');
         box.remove();
       },
     };
@@ -404,29 +478,28 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     };
     box.addEventListener('click', (ev) => ev.stopPropagation());
     box.addEventListener('keydown', (ev) => {
-      ev.stopPropagation();
       if (ev.key === 'Escape') {
-        ev.preventDefault();
         cancel(true);
       } else if (ev.key === 'Enter' && !ev.isComposing) {
-        ev.preventDefault();
         const title = box.value.trim();
         if (!title || title === t.title) {
           cancel(true);
-          return;
+        } else {
+          end();
+          box.disabled = true;
+          void d
+            .rename(t.id, title)
+            .catch(() => false)
+            .then((ok) => {
+              if (ok) threads = retitle(threads, t.id, title);
+              draw();
+              if (!ok) say("Couldn't rename it");
+              focusActive();
+            });
         }
-        end();
-        box.disabled = true;
-        void d
-          .rename(t.id, title)
-          .catch(() => false)
-          .then((ok) => {
-            if (ok) threads = retitle(threads, t.id, title);
-            draw();
-            if (!ok) say("Couldn't rename it");
-            focusActive();
-          });
-      }
+      } else return;
+      ev.preventDefault();
+      ev.stopPropagation();
     });
     box.addEventListener('blur', () => cancel(false));
     name.replaceWith(box);
@@ -442,12 +515,18 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     threads = out.threads;
     activeId = threads[Math.min(out.index, threads.length - 1)]?.id ?? null;
     draw();
-    if (hadFocus) (activeId ? focusActive() : search.focus());
+    if (hadFocus) {
+      if (activeId) focusActive();
+      else search.focus();
+    }
     const ok = await d.remove(id).catch(() => false);
     if (!ok) {
       threads = putBack(threads, out.thread, out.index);
+      activeId = out.thread.id;
+      const focusHere = hadFocus && (list.contains(document.activeElement) || document.activeElement === search);
       draw();
       say("Couldn't delete it");
+      if (focusHere) focusActive();
       return;
     }
     showToast(id);
@@ -455,50 +534,86 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     if (id === d.current()) d.deletedCurrent();
   }
 
-  function showToast(id: string): void {
+  function armToast(ms: number): void {
     if (toastTimer !== null) clearTimeout(toastTimer);
-    toastText.textContent = 'Conversation deleted';
+    toastTimer = null;
+    toastEnds = Date.now() + ms;
+    // While the pointer or focus is on it, it waits, so Undo is not taken away mid-reach.
+    if (!toastPaused) toastTimer = setTimeout(hideToast, ms);
+  }
+
+  function showToast(id: string): void {
+    toastShown = true;
+    setToast('Conversation deleted');
     undo.hidden = false;
-    toast.hidden = false;
+    toast.classList.remove('visually-hidden');
     undo.onclick = () => {
+      // Waiting on the core: the toast stays until it answers.
       undo.hidden = true;
+      restoring = true;
+      if (toastTimer !== null) clearTimeout(toastTimer);
+      toastTimer = null;
       void d
         .restore(id)
         .catch(() => false)
         .then((ok) => {
+          restoring = false;
           if (ok) {
             hideToast();
             if (isOpen) void load(false);
           } else {
-            toastText.textContent = "Couldn't bring it back";
+            setToast("Couldn't bring it back");
+            armToast(TOAST_RESUME_MS * 2);
           }
         });
     };
-    toastTimer = setTimeout(hideToast, TOAST_MS);
+    toastPaused = toast.matches(':hover, :focus-within');
+    armToast(TOAST_MS);
   }
 
   function hideToast(): void {
     if (toastTimer !== null) clearTimeout(toastTimer);
     toastTimer = null;
-    toast.hidden = true;
+    toastShown = false;
+    toastPaused = false;
+    const hadFocus = toast.contains(document.activeElement);
+    setToast('');
+    undo.hidden = true;
     undo.onclick = null;
+    toast.classList.add('visually-hidden');
+    if (hadFocus && isOpen) search.focus();
   }
 
-  // ── Keys and search ──
+  function pauseToast(): void {
+    toastPaused = true;
+    if (toastTimer !== null) clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  function resumeToast(): void {
+    if (toast.matches(':hover, :focus-within')) return;
+    toastPaused = false;
+    if (toastShown && !restoring) armToast(Math.max(toastEnds - Date.now(), TOAST_RESUME_MS));
+  }
+  toast.addEventListener('pointerenter', pauseToast);
+  toast.addEventListener('focusin', pauseToast);
+  toast.addEventListener('pointerleave', resumeToast);
+  // After the focus has moved, so :focus-within is up to date.
+  toast.addEventListener('focusout', () => setTimeout(resumeToast, 0));
+
+  // ── Keys and search. Escape that is not used here goes on to the page (escapeAction). ──
   list.addEventListener('keydown', (ev) => {
     if (ev.target instanceof HTMLInputElement) return;
-    const ids = threads.map((t) => t.id);
-    const to = moved(ids, activeId, ev.key);
+    const to = moved(
+      threads.map((t) => t.id),
+      activeId,
+      ev.key,
+    );
     if (to !== null) {
       ev.preventDefault();
       setActive(to);
     } else if (ev.key === 'Enter' && activeId) {
       ev.preventDefault();
       choose(activeId);
-    } else if (ev.key === 'Escape') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      close();
     } else if ((ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) && activeId) {
       ev.preventDefault();
       const t = threads.find((x) => x.id === activeId);
@@ -514,14 +629,13 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     } else if (ev.key === 'Enter' && activeId) {
       ev.preventDefault();
       choose(activeId);
-    } else if (ev.key === 'Escape') {
+    } else if (ev.key === 'Escape' && search.value) {
+      // The first Escape clears the search; the next one goes on and closes the list.
       ev.preventDefault();
       ev.stopPropagation();
-      // The first Escape clears the search, the next one closes.
-      if (search.value) {
-        search.value = '';
-        void load(false);
-      } else close();
+      search.value = '';
+      activeId = null;
+      void load(false);
     }
   });
 

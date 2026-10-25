@@ -45,7 +45,7 @@ import {
 import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
 import { createSidebar } from './sidebar';
-import { createThreads, listPath } from './threads';
+import { createThreads, escapeAction, listPath } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
@@ -470,6 +470,8 @@ const mic = createMic({
   attach: (node) => galaxy.attachAnalyser(node, 'mic'),
 });
 let retryMs = 1000;
+// The next try after the link dropped. Cleared by any connect, so two sockets never race.
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 const shown = new Set<string>();
 
 // The first conversation, or a later change of names (ONB-3). Its lines are the
@@ -977,8 +979,10 @@ function talkNames(): void {
 
 /** Open another conversation, or (null) a fresh one: reconnect and the core resumes it. */
 function switchTo(id: string | null): void {
-  // She stops first, so nothing of this conversation plays over the next one.
-  if (view.busy || voice.active || view.mic || mic.on) interrupt();
+  // She stops first, so nothing of this conversation plays over the next one. Only a
+  // reply under way needs the core told; the rest is this page's to quiet.
+  if (view.busy) send({ type: 'interrupt' });
+  quiet();
   store(CONVERSATION_KEY, id);
   shown.clear();
   if (!active(ob)) ob = null;
@@ -1045,6 +1049,8 @@ threadSwitch.addEventListener('click', toggleThreads);
 // ── Connection ───────────────────────────────────────────────────────────
 
 function connect(): void {
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryTimer = null;
   const token = takeToken();
   if (!token) {
     apply({ ...view, link: 'unauthenticated' });
@@ -1058,6 +1064,8 @@ function connect(): void {
   });
   ws.binaryType = 'arraybuffer';
   ws.addEventListener('message', (ev) => {
+    // A socket this page has moved on from (a switch, a reconnect) has nothing more to say.
+    if (socket !== ws) return;
     if (ev.data instanceof ArrayBuffer) {
       voice.audio(ev.data);
       return;
@@ -1072,7 +1080,7 @@ function connect(): void {
     if (msg.type === 'error' && msg['code'] === 'unauthenticated') store(TOKEN_KEY, null);
     // This conversation was deleted (here or in another tab): the core has closed it, so start a new one.
     if (msg.type === 'error' && msg['code'] === 'deleted') {
-      if (socket === ws) switchTo(null);
+      switchTo(null);
       return;
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
@@ -1227,18 +1235,10 @@ function connect(): void {
   ws.addEventListener('close', () => {
     if (socket !== ws) return;
     socket = null;
-    voice.stop();
-    endHold();
-    mic.stop();
-    micMode = 'send';
-    bargeHeld = null;
-    overlapping = false;
-    cutIn = false;
-    streamWatch = false;
-    unwatchPending = false;
+    quiet();
     if (view.link === 'unauthenticated' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
-    setTimeout(connect, retryMs);
+    retryTimer = setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10_000);
   });
 }
@@ -1286,7 +1286,8 @@ input.addEventListener('input', () => {
   input.style.height = '';
   input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 });
-const interrupt = (): void => {
+/** Everything of hers on this page goes still: her voice, the microphone, any cut-in under way. */
+function quiet(): void {
   voice.stop();
   endHold();
   mic.stop();
@@ -1296,6 +1297,9 @@ const interrupt = (): void => {
   cutIn = false;
   streamWatch = false;
   unwatchPending = false;
+}
+const interrupt = (): void => {
+  quiet();
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);
@@ -1348,10 +1352,20 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
 }
 
 addEventListener('keydown', (ev) => {
-  // Escape stops her first; only when nothing is sounding or listening does it close the workspace.
+  // One order for Escape (escapeAction). The thread list keeps only the Escapes it uses itself.
   if (ev.key === 'Escape') {
-    if (view.busy || voice.active || view.mic) interrupt();
-    else if (workspace.isOpen) {
+    const action = escapeAction({
+      busy: view.busy,
+      speaking: voice.active,
+      listening: view.mic,
+      listOpen: threads.isOpen,
+      workspaceOpen: workspace.isOpen,
+    });
+    if (action === 'interrupt') interrupt();
+    else if (action === 'list') {
+      ev.preventDefault();
+      threads.close();
+    } else if (action === 'workspace') {
       ev.preventDefault();
       workspace.close();
     }

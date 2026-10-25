@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appended,
+  escapeAction,
   cursorOf,
   groupByDay,
   listPath,
@@ -177,5 +178,23 @@ describe('rowTime', () => {
     const older = day('2026-10-20T09:05:00');
     expect(rowTime(today, now)).toBe(new Date(today).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
     expect(rowTime(older, now)).toBe(new Date(older).toLocaleDateString([], { month: 'short', day: 'numeric' }));
+  });
+});
+
+describe('escapeAction', () => {
+  const idle = { busy: false, speaking: false, listening: false, listOpen: false, workspaceOpen: false };
+  it('stops her first, whatever else is open', () => {
+    expect(escapeAction({ ...idle, busy: true, listOpen: true, workspaceOpen: true })).toBe('interrupt');
+    expect(escapeAction({ ...idle, speaking: true })).toBe('interrupt');
+    expect(escapeAction({ ...idle, listening: true, listOpen: true })).toBe('interrupt');
+  });
+
+  it('then closes the thread list, then the workspace', () => {
+    expect(escapeAction({ ...idle, listOpen: true, workspaceOpen: true })).toBe('list');
+    expect(escapeAction({ ...idle, workspaceOpen: true })).toBe('workspace');
+  });
+
+  it('does nothing when nothing is open or under way', () => {
+    expect(escapeAction(idle)).toBeNull();
   });
 });
