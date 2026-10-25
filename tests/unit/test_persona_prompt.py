@@ -166,3 +166,12 @@ def test_she_is_told_how_to_use_the_board_in_both_modalities() -> None:
     for text in (typed, spoken):
         assert "board" in text and "workspace" in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_she_shows_what_an_approval_is_about_but_never_as_the_approval() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 25, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "approval" in text and "never present a widget as the approval" in text
+        assert "\u2014" not in text and "\u2013" not in text
