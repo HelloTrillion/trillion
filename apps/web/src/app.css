@@ -274,8 +274,18 @@ button:disabled {
   display: none;
 }
 
+/* A section's own Close or Done: the workspace's bar, Escape and the docked orb already close it. */
+.workspace .settings-close {
+  display: none;
+}
+
+/* A row left with nothing in it once that is gone. */
+.workspace .settings-actions:not(:has(> :not(.settings-close))) {
+  display: none;
+}
+
 body[data-sidebar='hidden'] .workspace {
-  left: 16px;
+  left: var(--ws-inset);
 }
 
 .workspace-bar {
@@ -331,6 +341,11 @@ body[data-sidebar='hidden'] .workspace {
     pointer-events: none;
   }
 
+  /* A section's Save row stays above the hole, its buttons being at the right. */
+  .panel-pane .settings-actions {
+    bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
+  }
+
   /* The section's last controls scroll clear of the hole; the rail keeps the full height. */
   .panel-body {
     padding-bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
@@ -371,7 +386,7 @@ body[data-sidebar='hidden'] .workspace {
     display: none;
   }
   .workspace {
-    left: 16px;
+    left: var(--ws-inset);
   }
 }
 
@@ -568,20 +583,6 @@ body[data-sidebar='hidden'] .workspace {
   font-size: 12px;
   color: var(--color-text-2);
   min-height: 1.4em;
-}
-
-dialog {
-  width: min(520px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
-  padding: 0;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
-  background: var(--color-bg-1);
-  color: var(--color-text-0);
-}
-
-dialog::backdrop {
-  background: rgb(0 0 0 / 0.5);
 }
 
 .settings {

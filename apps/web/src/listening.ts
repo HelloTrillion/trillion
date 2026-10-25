@@ -69,7 +69,8 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   let busy = false;
 
   const form = el('form', 'settings');
-  form.method = 'dialog';
+  // Enter in a field never submits; the buttons do the work.
+  form.addEventListener('submit', (ev) => ev.preventDefault());
   const title = el('h2', '', 'Her hearing');
   title.id = 'listening-title';
   dialog.setAttribute('aria-labelledby', title.id);
@@ -127,7 +128,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   const actions = el('div', 'settings-actions');
   const save = el('button', 'approve', 'Save');
   save.type = 'button';
-  const close = el('button', '', 'Close');
+  const close = el('button', 'settings-close', 'Close');
   close.type = 'button';
   actions.append(save, close);
   form.append(title, intro, choices, keyRow, pickRow, earlyRow, status, ...(microphones ? [microphones.element] : []), actions);

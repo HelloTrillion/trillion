@@ -28,7 +28,7 @@ function section(host: Host, id: string, heading: string, intro: string): { form
     form,
     finish: (...nodes) => {
       const actions = el('div', 'settings-actions');
-      const close = el('button', '', 'Done');
+      const close = el('button', 'settings-close', 'Done');
       close.type = 'button';
       close.addEventListener('click', () => host.close());
       actions.append(close);

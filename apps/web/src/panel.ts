@@ -69,7 +69,6 @@ export const crumb = (label: string): string => (label ? `Settings / ${label}` :
 
 export function createPanel(surface: Surface): Panel {
   const root = el('div', 'panel');
-  root.setAttribute('aria-label', 'Settings');
 
   // The rail: search and the groups of sections. The surface's bar says "Settings".
   const rail = el('aside', 'panel-rail');

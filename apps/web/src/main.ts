@@ -1271,7 +1271,7 @@ function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
     // in the sidebar still talks.
     inOtherControl:
       (panel.isOpen && (target === null || target.closest('#sidebar') === null)) ||
-      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], dialog') !== null),
+      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable]') !== null),
   };
 }
 
