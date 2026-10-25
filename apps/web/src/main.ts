@@ -1473,3 +1473,18 @@ addEventListener('hashchange', () => {
 render();
 connect();
 if (showcaseAt) openShowcase(workspace, showcaseAt);
+
+// One click to the workspace and its widgets, and one to close it again.
+const workspaceBtn = $<HTMLButtonElement>('workspace-btn');
+workspaceBtn.replaceChildren(icon('workspace', 18));
+const showWorkspaceState = (): void => {
+  const on = workspace.isOpen && workspace.showing === 'showcase';
+  workspaceBtn.toggleAttribute('data-on', on);
+  workspaceBtn.setAttribute('aria-pressed', String(on));
+};
+workspaceBtn.addEventListener('click', () => {
+  if (workspace.isOpen && workspace.showing === 'showcase') workspace.close();
+  else openShowcase(workspace);
+  showWorkspaceState();
+});
+workspace.onClose(showWorkspaceState);

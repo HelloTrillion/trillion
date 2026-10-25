@@ -179,6 +179,7 @@ button:disabled {
 /* One row, the height of its icon buttons: what doesn't fit shrinks, never wraps. */
 .side-head {
   height: 36px;
+  gap: 4px;
 }
 
 .side-name {
@@ -453,7 +454,10 @@ button:disabled {
 }
 
 .status {
-  flex-shrink: 0;
+  /* In a narrow sidebar the status word shortens before any button is squeezed. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
   color: var(--color-accent);
   white-space: nowrap;
@@ -3669,4 +3673,9 @@ button.connected-danger {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* Beside the conversation's title, the usage numbers give way first: the title matters more. */
+.side-title .usage-pill {
+  max-width: 38%;
 }
