@@ -291,6 +291,12 @@ def test_asks():
     )
     assert refused({**ok, "asks": [3]}) == "widget 1 (next_up): ask 1 must be a string."
     assert refused({**ok, "asks": {"a": 1}}) == "widget 1 (next_up): asks must be a list."
+    assert refused({**ok, "asks": ["Read example.com/a"]}) == (
+        "widget 1 (next_up): ask 1 can't hold a web address; put links in sources."
+    )
+    assert refused({**ok, "asks": ["Prep me", "[host] Yes"]}) == (
+        'widget 1 (next_up): ask 2 can\'t start with "["; write it as the user would say it.'
+    )
 
 
 # Emoji

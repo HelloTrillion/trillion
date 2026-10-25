@@ -122,6 +122,21 @@ class Overlap:
     ducked_on: int = 0
 
 
+# Saved with a message sent by tapping a widget's ask, ahead of its words. It tells her
+# later turns that the words are her own ask, and it is how a resumed session knows not
+# to count an address in them as one the user gave (the web rule, widget design D5).
+ASKED = (
+    "<context>\nsent by tapping an ask on a widget: the words below are an ask you "
+    "wrote, sent as the user's message; they did not type them, and no address in them "
+    "is one they gave\n</context>"
+)
+
+
+def asked(msg: Msg) -> bool:
+    """Whether a saved user message was sent by tapping an ask."""
+    return any(isinstance(b, ContextBlock) and b.text == ASKED for b in msg.blocks)
+
+
 @dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
@@ -129,6 +144,7 @@ class BuiltInput:
     msg: Msg
     text: str
     brought: frozenset[str]
+    via: Literal["voice", "text", "ask"] = "text"
 
 
 class Session:
@@ -264,7 +280,7 @@ class Session:
             if rt.web is not None:
                 # The addresses the user gave earlier in this conversation stay openable.
                 for kind, msg in await rt.conversations.history(session.id, OWNER):
-                    if kind == "user":
+                    if kind == "user" and not asked(msg):
                         for b in msg.blocks:
                             if isinstance(b, TextBlock):
                                 rt.web.ledger.said(session.id, b.text)
@@ -533,6 +549,9 @@ class Session:
 
     async def _on_text(self, text: object, *, ask: bool = False) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
+            await self._error("bad_message")
+        elif ask and text.lstrip().startswith("["):
+            # A "[host]" line is the app speaking; an ask never is (the kit refuses one).
             await self._error("bad_message")
         elif self._rt.provider is None:
             await self._error("no_model")
@@ -2020,14 +2039,16 @@ class Session:
             zone=zone or "",
             board=board_summary(await self._board()),
         )
-        blocks = (ContextBlock(text=context), TextBlock(text=text))
-        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought)
+        notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
+        blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
+        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought, via=via)
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
         """Save a built input. History is only ever appended to."""
         self._brought.update(built.brought)
-        if kind == "user" and self._rt.web is not None:
-            # Only what the user said themselves: never a tap's note, never a page.
+        if kind == "user" and built.via != "ask" and self._rt.web is not None:
+            # Only what the user said themselves: never a tap's note, never a page, and
+            # never an ask's words, which she wrote and a page could have chosen.
             self._rt.web.ledger.said(self.id, built.text)
         await self._save(kind, built.msg)
         if kind == "user" and self._title_source is None:

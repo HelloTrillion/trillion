@@ -17,6 +17,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+from trillion.tools.web import has_address
 from trillion.workspace.blocks import (
     MAX_BLOCKS,
     MAX_PEOPLE,
@@ -109,7 +110,8 @@ def asked(raw: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def asks(raw: Mapping[str, Any], where: str) -> list[str] | None:
     """Up to two questions the user can tap to send. Refused rather than cut: a tap
-    sends exactly these words, so a clipped one would ask something else."""
+    sends exactly these words, so a clipped one would ask something else. An ask holds
+    no web address and never starts like a "[host]" line."""
     value = raw.get("asks")
     if value is None:
         return None
@@ -124,6 +126,13 @@ def asks(raw: Mapping[str, Any], where: str) -> list[str] | None:
         ask = " ".join(ask.split())
         if len(ask) > ASK:
             raise fail(where, f"ask {i} is {len(ask)} characters, {ASK} at most")
+        # A tap sends these words as the user's. An address in them would read as one
+        # the user gave, so she could open it (and a page could have chosen it).
+        if has_address(ask):
+            raise fail(where, f"ask {i} can't hold a web address; put links in sources")
+        # A line starting "[host]" is the app speaking; an ask is never that.
+        if ask.startswith("["):
+            raise fail(where, f'ask {i} can\'t start with "["; write it as the user would say it')
         if ask:
             kept.append(ask)
     if len(kept) > MAX_ASKS:

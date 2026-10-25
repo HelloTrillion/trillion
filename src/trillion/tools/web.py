@@ -299,6 +299,12 @@ async def fetch(
 # ── What she may open ────────────────────────────────────────────────────
 
 
+def has_address(text: str) -> bool:
+    """Whether anything in the text reads as a web address, a bare name like
+    `example.com` included: the same rule that decides what the user gave."""
+    return _SAID.search(text) is not None
+
+
 def addresses_in(text: str) -> list[str]:
     out: list[str] = []
     for m in _SAID.finditer(text):
