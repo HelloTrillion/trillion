@@ -3693,13 +3693,24 @@ button.connected-danger {
   --chart-4: rgb(14 120 150);
 }
 
+/* While it holds the board, the workspace's scroll area is a column the board can fill. */
+.workspace-body:has(> .bd) {
+  display: flex;
+  flex-direction: column;
+}
+
 .bd {
   --bd-soft: color-mix(in srgb, var(--color-text-0) 5%, transparent);
   --bd-line: color-mix(in srgb, var(--color-text-0) 9%, transparent);
-  max-width: 1120px;
-  margin: 0 auto;
+  /* The whole scroll area: at least its height, so a short board's rows can share it (see .bd-grid). */
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
   padding: 18px 22px 28px;
   box-sizing: border-box;
+  overflow-x: clip;
   color: var(--color-text-0);
   outline: none;
 }
@@ -3718,17 +3729,28 @@ button.connected-danger {
 .bd-c4 { --c: var(--chart-4); }
 .bd-cx { --c: var(--color-text-2); }
 
-/* One column on a narrow workspace, two in the middle, six on a wide one; a widget's size picks its span. */
+/*
+ * One column on a narrow workspace, two in the middle, six on a wide one. Each card's span
+ * (--wide, --mid) and each row's height (--rows-*) come from planRows in board.ts: every row is
+ * filled to the edge, and a row holding a chart shares the height the board has to spare while
+ * the others keep their natural height. No dense packing: the plan already leaves no holes.
+ */
 .bd-grid {
+  flex: 1 0 auto;
   display: grid;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   grid-template-columns: minmax(0, 1fr);
-  /* A later, smaller card fills a hole left by one too wide for the row, so the board stays tidy. */
-  grid-auto-flow: row dense;
+  grid-template-rows: var(--rows-one, auto);
+  grid-auto-rows: auto;
+  align-content: start;
   gap: 14px;
 }
 @container workspace (min-width: 600px) {
   .bd-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: var(--rows-mid, auto);
   }
   .bd-card {
     grid-column: span var(--mid, 1);
@@ -3737,6 +3759,7 @@ button.connected-danger {
 @container workspace (min-width: 940px) {
   .bd-grid {
     grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-rows: var(--rows-wide, auto);
   }
   .bd-card {
     grid-column: span var(--wide, 3);
@@ -3747,7 +3770,9 @@ button.connected-danger {
   position: relative;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
   min-width: 0;
+  max-width: 100%;
   padding: 14px 16px 16px;
   border-radius: var(--radius-lg);
   background:
@@ -3850,12 +3875,13 @@ button.connected-danger {
 /* Stat ── */
 
 .bd-card[data-type='stat'] .bd-card-body {
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
 }
 .bd-stat-value {
   margin: 0;
-  font-size: clamp(24px, 12cqi, 44px);
+  /* Bigger the more room the card has. */
+  font-size: clamp(24px, 12cqi, 72px);
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1.05;
@@ -3891,8 +3917,8 @@ button.connected-danger {
 
 .bd-plot {
   position: relative;
-  /* Its height is set from the widget's size (chartHeight) and never shrinks. */
-  flex: none;
+  /* Fills what the card has to spare; its least height (chartHeight) is set inline. */
+  flex: 1 1 auto;
   border-radius: var(--radius-sm);
   outline-offset: 2px;
 }
