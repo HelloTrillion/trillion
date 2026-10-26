@@ -1439,8 +1439,11 @@ const interrupt = (): void => {
   send({ type: 'interrupt' });
 };
 stopBtn.addEventListener('click', interrupt);
-/** Start listening, or, while listening, send what she heard. The Speak button and Space. */
-function talk(): void {
+/**
+ * Start listening, or, while listening, send what she heard. The Speak button and Space.
+ * `held`: the talk key is being held, so only letting go ends the turn, never a pause.
+ */
+function talk(held = false): void {
   // The core is hearing them over her already, and would ignore a new start.
   if (overlapping) return;
   if (!view.listening) {
@@ -1451,12 +1454,12 @@ function talk(): void {
   } else if (!view.busy && view.link === 'ready') {
     voice.unlock(); // a click is what lets a browser play her answer
     voice.stop();
-    send({ type: 'listen.start' });
+    send(held ? { type: 'listen.start', held: true } : { type: 'listen.start' });
     // Opened here, inside the click or key press, so the permission prompt belongs to it.
     void mic.start();
   }
 }
-micBtn.addEventListener('click', talk);
+micBtn.addEventListener('click', () => talk());
 /** What the talk shortcut can see of one key event. */
 function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
   const target = ev.target instanceof HTMLElement ? ev.target : null;
@@ -1482,7 +1485,7 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
   if (action === null || view.link !== 'ready' || active(ob)) return;
   ev.preventDefault();
   if (action === 'toggle') talk();
-  else if (action === 'start' && !view.mic) talk();
+  else if (action === 'start' && !view.mic) talk(true);
   else if (action === 'stop' && view.mic) send({ type: 'listen.stop' });
   else if (action === 'cancel' && view.mic) interrupt();
 }
