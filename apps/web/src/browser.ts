@@ -1,11 +1,13 @@
 /**
  * The Settings sections that need nothing from Trillion's core: Shortcuts and
  * Appearance (kept in this browser), and two that only show what the page already
- * knows: the shared folders and what is running.
+ * knows: the shared folders and what is running. And the Board's one switch, which
+ * the core keeps.
  */
 
 import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifierRelease, isModifier, keycaps, refused } from './hotkey';
 import type { Host } from './panel';
+import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
 import type { Theme } from './prefs';
 import { type Usage, breakdown, sentence } from './usage';
@@ -266,6 +268,68 @@ export function createAppearance(host: Host, current: () => Theme, choose: (t: T
       theme.set(current());
       host.showModal();
     },
+  };
+}
+
+// ── Board ────────────────────────────────────────────────────────────────
+
+/** The core's preference: live widgets refresh while the board is open. On unless turned off. */
+export const WIDGETS_FRESH_PATH = '/api/settings/workspace';
+
+export function createBoardSettings(host: Host, api: Api, changed: () => void): { open(): Promise<void>; summary(): string } {
+  const { finish } = section(host, 'board', 'Board', 'Widgets she builds from a connected service can keep their numbers up to date.');
+  const row = el('label', 'settings-check');
+  const box = el('input');
+  box.type = 'checkbox';
+  box.setAttribute('role', 'switch');
+  box.id = 'board-fresh';
+  const words = el('span');
+  words.append(
+    el('strong', '', 'Keep widgets fresh'),
+    el('small', '', 'While the board is open, she reads the service again every few minutes. Each refresh uses a little of your model.'),
+  );
+  row.append(box, words);
+  const status = el('p', 'settings-status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  finish(row, status);
+
+  let on = true;
+  const take = async (r: Response): Promise<void> => {
+    const body = (await r.json()) as { widgets_fresh?: unknown };
+    on = body.widgets_fresh !== false;
+  };
+  box.addEventListener('change', () => {
+    const want = box.checked;
+    box.disabled = true;
+    status.textContent = '';
+    void api('PUT', WIDGETS_FRESH_PATH, { widgets_fresh: want })
+      .then(async (r) => {
+        if (r.ok) await take(r);
+        else status.textContent = 'That could not be saved. Try again.';
+      })
+      .catch(() => {
+        status.textContent = 'That could not be saved. Try again.';
+      })
+      .finally(() => {
+        box.checked = on;
+        box.disabled = false;
+        changed();
+      });
+  });
+  return {
+    async open() {
+      status.textContent = '';
+      try {
+        const r = await api('GET', WIDGETS_FRESH_PATH);
+        if (r.ok) await take(r);
+      } catch {
+        // Unread: the switch shows the default.
+      }
+      box.checked = on;
+      host.showModal();
+    },
+    summary: () => (on ? 'Kept fresh' : 'Snapshots'),
   };
 }
 

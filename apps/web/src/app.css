@@ -3854,9 +3854,12 @@ button.connected-danger {
   user-select: text;
 }
 
-/* The × shows on the card the pointer or keyboard is on, and always on a touch screen. */
+/* The × (and a live card's refresh beside it) shows on the card the pointer or keyboard is on,
+   and always on a touch screen. */
 .bd-x,
-.bd-x:hover:not(:disabled) {
+.bd-x:hover:not(:disabled),
+.bd-refresh,
+.bd-refresh:hover:not(:disabled) {
   margin-left: auto;
   margin-top: -4px;
   margin-right: -6px;
@@ -3873,18 +3876,40 @@ button.connected-danger {
   opacity: 0;
   transition: opacity var(--motion-fast), background var(--motion-fast), color var(--motion-fast);
 }
-.bd-card:hover .bd-x,
-.bd-card:focus-within .bd-x {
+/* The two sit together in the corner: the refresh takes the push, the × follows close by. */
+.bd-refresh,
+.bd-refresh:hover:not(:disabled) {
+  margin-right: 0;
+}
+.bd-refresh + .bd-x,
+.bd-refresh + .bd-x:hover:not(:disabled) {
+  margin-left: -6px;
+}
+.bd-card:hover :is(.bd-x, .bd-refresh),
+.bd-card:focus-within :is(.bd-x, .bd-refresh) {
   opacity: 1;
 }
-.bd-x:hover:not(:disabled) {
+.bd-x:hover:not(:disabled),
+.bd-refresh:hover:not([aria-disabled='true']) {
   background: var(--bd-soft);
   color: var(--color-text-0);
 }
+/* While a refresh runs, the button rests: still there, plainly not for now. */
+.bd-card .bd-refresh[aria-disabled='true'] {
+  opacity: 0.4;
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: default;
+}
 @media (hover: none) {
-  .bd-x {
+  .bd-x,
+  .bd-refresh {
     opacity: 1;
   }
+}
+/* Untitled and live: the first block keeps clear of both buttons. */
+.bd-card[data-untitled][data-live] .bd-card-body > .bk > :first-child {
+  margin-right: 54px;
 }
 
 .bd-sub {
@@ -3926,6 +3951,40 @@ button.connected-danger {
 }
 .bd-source-words {
   min-width: 0;
+}
+/* A live card: "live" in the foot, and a small dot before it that breathes while a refresh runs. */
+.bd-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.bd-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--w-good-fill);
+  animation: bd-live-pulse 1.4s ease-in-out infinite;
+}
+.bd-live-dot[hidden] {
+  display: none;
+}
+@keyframes bd-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bd-live-dot {
+    animation: none;
+  }
+}
+/* The last refresh failed: the foot says so, in the attention tone. */
+.bd-source[data-failed] {
+  color: var(--w-attention-text);
 }
 .bd-asks {
   display: flex;
@@ -5810,7 +5869,7 @@ button.connected-danger {
   flex: none;
   padding: 0;
 }
-.kit .bd-x {
+.kit :is(.bd-x, .bd-refresh) {
   display: none;
 }
 .kit-cap {
