@@ -198,6 +198,28 @@ Replay goes through the router as `via = "refresh"`. It runs reads only. It refu
 - After a failure the footer reads "Couldn't refresh · 12 min ago".
 - A refresh button sits beside the ×. It refreshes that card now and counts toward the hourly cap.
 
+## Your day
+
+Ask "what's my day?", or tap **Your day** above the thread list. Both open today's day conversation, one per date, and build the board there. Nothing builds by itself. The page only asks (`day.build`). The host writes what she is told, in `persona/day.py`, and saves it as a host message that the conversation shows as "Building your day".
+
+She reads each source with her own tools, so every card is live. A source with nothing to show gets no card.
+
+| Source | Widget |
+|---|---|
+| Google Calendar | `next_up`, `free_time` |
+| Gmail | `inbox` |
+| Slack | `mentions` |
+| Work pack | `due_soon` |
+| Money pack | `kpis` |
+| Building pack | `checks` or `errors`, only if something is failing |
+| Her reminders | `tasks` |
+
+She shows at most 8 widgets, the most urgent first, then says two short sentences about what matters most. She does not read the board out. With nothing connected she shows a callout that says how to connect a calendar.
+
+To personalise it, give her a standing rule, such as "on my day board, skip mentions". The recipe tells her to follow her rules for the day board.
+
+Tapping Your day again opens the same conversation and does not rebuild a board that is there. Tomorrow a new day conversation is made. Yesterday's stays in the list.
+
 ## Next
 
 - Refreshing with no page open, and push from services.
