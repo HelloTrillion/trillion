@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -26,7 +27,10 @@ Kind = Literal["user", "tap", "assistant", "tool_results"]
 # the model a later turn in which to confirm some other card.
 USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
-ConversationKind = Literal["chat", "scheduled"]
+# A day is a page's too: the one conversation per date where she builds the user's day.
+ConversationKind = Literal["chat", "scheduled", "day"]
+# The kinds a page opens, lists, renames and deletes.
+_PAGE_KINDS = "kind IN ('chat', 'day')"
 TitleSource = Literal["words", "model", "user"]
 TITLE_MAX = 80
 WORDS_TITLE_MAX = 60
@@ -39,6 +43,9 @@ class ChatRow:
     id: str
     title: str | None
     last_message_at: int
+    kind: ConversationKind = "chat"
+    # A day conversation's local date, YYYY-MM-DD; None for any other.
+    day: str | None = None
 
 
 def tidy_title(text: str, limit: int = TITLE_MAX) -> str:
@@ -120,11 +127,44 @@ class SqliteConversationStore:
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
         """Whether a page may open it: a chat of this owner's that was not deleted."""
         async with self._conn.execute(
-            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"
-            " AND kind = 'chat'",
+            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ? AND deleted_at IS NULL"  # noqa: S608 - fixed text only
+            f" AND {_PAGE_KINDS}",
             (conversation_id, owner_id),
         ) as cur:
             return await cur.fetchone() is not None
+
+    async def kind_of(self, conversation_id: str, owner_id: str) -> ConversationKind | None:
+        async with self._conn.execute(
+            "SELECT kind FROM conversations WHERE id = ? AND owner_id = ?",
+            (conversation_id, owner_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["kind"] if row is not None else None
+
+    async def day_conversation(
+        self, owner_id: str, day: str, title: str, now_ms: int
+    ) -> tuple[str, bool]:
+        """The day conversation for a date, made now if there is none, and whether it
+        was. Its title is the host's, saved as the user's so her naming never replaces
+        it. One that was deleted comes back: there is only ever one per date."""
+        cur = await self._conn.execute(
+            "INSERT INTO conversations"
+            " (id, owner_id, created_at, kind, day, title, title_source)"
+            " VALUES (?, ?, ?, 'day', ?, ?, 'user') ON CONFLICT DO NOTHING",
+            (uuid.uuid4().hex, owner_id, now_ms, day, tidy_title(title)),
+        )
+        created = cur.rowcount == 1
+        async with self._conn.execute(
+            "SELECT id, deleted_at FROM conversations"
+            " WHERE owner_id = ? AND kind = 'day' AND day = ?",
+            (owner_id, day),
+        ) as c:
+            row = await c.fetchone()
+        if row is None:  # pragma: no cover - the insert or the row before it is there
+            raise RuntimeError("the day conversation was neither found nor made")
+        if row["deleted_at"] is not None:
+            await self.restore(row["id"], owner_id)
+        return str(row["id"]), created
 
     async def append(
         self, conversation_id: str, owner_id: str, kind: Kind, msg: Msg, now_ms: int
@@ -217,7 +257,7 @@ class SqliteConversationStore:
         guard = " AND (title_source IS NULL OR title_source != 'user')" if source == "model" else ""
         cur = await self._conn.execute(
             "UPDATE conversations SET title = ?, title_source = ?"  # noqa: S608 - fixed text only
-            " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NULL" + guard,
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NULL" + guard,
             (clean, source, conversation_id, owner_id),
         )
         return cur.rowcount == 1
@@ -236,7 +276,7 @@ class SqliteConversationStore:
         as (last_message_at, id). LIKE folds ASCII case only."""
         where = [
             "c.owner_id = ?",
-            "c.kind = 'chat'",
+            f"c.{_PAGE_KINDS}",
             "c.deleted_at IS NULL",
             "c.last_message_at IS NOT NULL",
         ]
@@ -255,19 +295,22 @@ class SqliteConversationStore:
             )
             args += [_like(q), _like(q)]
         sql = (
-            "SELECT c.id, c.title, c.last_message_at FROM conversations c"  # noqa: S608
+            "SELECT c.id, c.title, c.last_message_at, c.kind, c.day FROM conversations c"  # noqa: S608
             f" WHERE {' AND '.join(where)} ORDER BY c.last_message_at DESC, c.id LIMIT ?"
         )
         async with self._conn.execute(sql, [*args, limit + 1]) as cur:
             rows = list(await cur.fetchall())
-        out = [ChatRow(r["id"], r["title"], int(r["last_message_at"])) for r in rows[:limit]]
+        out = [
+            ChatRow(r["id"], r["title"], int(r["last_message_at"]), r["kind"], r["day"])
+            for r in rows[:limit]
+        ]
         return out, len(rows) > limit
 
     async def delete(self, conversation_id: str, owner_id: str, now_ms: int) -> bool:
         """Soft delete (SPN-9): hidden from the list and from resuming, kept on disk."""
         cur = await self._conn.execute(
-            "UPDATE conversations SET deleted_at = ?"
-            " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NULL",
+            "UPDATE conversations SET deleted_at = ?"  # noqa: S608 - fixed text only
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NULL",
             (now_ms, conversation_id, owner_id),
         )
         return cur.rowcount == 1
@@ -275,8 +318,8 @@ class SqliteConversationStore:
     async def restore(self, conversation_id: str, owner_id: str) -> bool:
         """Undo a delete; returns whether it brought one back (False for one not deleted)."""
         cur = await self._conn.execute(
-            "UPDATE conversations SET deleted_at = NULL"
-            " WHERE id = ? AND owner_id = ? AND kind = 'chat' AND deleted_at IS NOT NULL",
+            "UPDATE conversations SET deleted_at = NULL"  # noqa: S608 - fixed text only
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NOT NULL",
             (conversation_id, owner_id),
         )
         return cur.rowcount == 1

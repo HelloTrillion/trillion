@@ -40,7 +40,13 @@ def test_lists_newest_first(make) -> None:
     assert r.status_code == 200
     body = r.json()
     assert [c["id"] for c in body["conversations"]] == ["b", "a"]
-    assert body["conversations"][0] == {"id": "b", "title": "second", "last_message_at": 2000}
+    assert body["conversations"][0] == {
+        "id": "b",
+        "title": "second",
+        "last_message_at": 2000,
+        "kind": "chat",
+        "day": None,
+    }
     assert body["more"] is False
 
 
@@ -179,3 +185,38 @@ def test_a_deleted_conversation_cannot_be_renamed_and_a_live_one_is_not_restored
     assert write(app, "POST", f"{PATH}/a/restore").status_code == 404
     assert write(app, "DELETE", f"{PATH}/a").status_code == 200
     assert write(app, "PATCH", f"{PATH}/a", json={"title": "x"}).status_code == 404
+
+
+# ── Your day (SUR-1) ─────────────────────────────────────────────────────
+
+
+def test_today_is_made_once_then_the_same(make) -> None:
+    from trillion.persona import day
+
+    app = make(model=False)
+    at = 1_793_000_000_000  # 26 Oct 2026, 07:33 UTC
+    app.rt.clock = lambda: at
+    first = app.client.get(f"{PATH}/day", headers=app.auth)
+    assert first.status_code == 200 and first.json()["created"] is True
+    cid = first.json()["id"]
+    again = app.client.get(f"{PATH}/day", headers=app.auth).json()
+    assert again == {"id": cid, "created": False}
+    portal = app.client.portal
+    assert portal is not None
+    date = day.today(at, app.rt.zone())
+    title = portal.call(app.rt.conversations.title_of, cid, OWNER)
+    assert title == (day.title(date), "user") and title[0].startswith("Your day · ")
+    # Listed once something is said there, with its kind and date.
+    reply = Msg(role="assistant", blocks=(TextBlock(text="Your day is clear."),))
+    portal.call(app.rt.conversations.append, cid, OWNER, "assistant", reply, at)
+    (row,) = app.client.get(PATH, headers=app.auth).json()["conversations"]
+    assert row["kind"] == "day" and row["day"] == date.isoformat() and row["id"] == cid
+    # The next day is another conversation.
+    app.rt.clock = lambda: at + 86_400_000
+    tomorrow = app.client.get(f"{PATH}/day", headers=app.auth).json()
+    assert tomorrow["created"] is True and tomorrow["id"] != cid
+
+
+def test_today_needs_the_token(make) -> None:
+    app = make(model=False)
+    assert app.client.get(f"{PATH}/day").status_code == 401

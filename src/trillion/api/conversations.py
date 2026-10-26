@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from trillion.api.runtime import OWNER, Runtime
+from trillion.persona import day
 from trillion.storage.sqlite.conversation_store import tidy_title
 
 LIMIT_MAX = 100
@@ -46,10 +47,28 @@ def create_conversations_router(rt: Runtime) -> APIRouter:
         )
         return {
             "conversations": [
-                {"id": r.id, "title": r.title, "last_message_at": r.last_message_at} for r in rows
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "last_message_at": r.last_message_at,
+                    "kind": r.kind,
+                    "day": r.day,
+                }
+                for r in rows
             ],
             "more": more,
         }
+
+    @router.get("/day")
+    async def today() -> Any:
+        """Today's day conversation in the user's zone, made the first time it is asked
+        for (SUR-1). Opening it builds nothing: the page asks for that separately."""
+        now = rt.clock()
+        date = day.today(now, rt.zone())
+        cid, created = await rt.conversations.day_conversation(
+            OWNER, date.isoformat(), day.title(date), now
+        )
+        return {"id": cid, "created": created}
 
     @router.patch("/{conversation_id}")
     async def rename(conversation_id: str, body: Rename) -> Any:

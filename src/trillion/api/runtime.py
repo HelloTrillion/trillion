@@ -29,6 +29,7 @@ from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
+from trillion.persona.day import SetUp
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker
@@ -46,6 +47,7 @@ from trillion.storage.sqlite.conversation_store import SqliteConversationStore, 
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
+from trillion.tools.day import DAY_OPEN, DayOpen, Where
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
@@ -257,6 +259,8 @@ class Runtime:
     # The widget types the workspace tools were last told, so an unchanged list is
     # not built and validated again.
     _told: list[str] | None = None
+    # When each day conversation was last asked to build its board (epoch ms).
+    day_built: dict[str, int] = field(default_factory=dict)
 
     def out_of_turn(self) -> int:
         """A fresh number for speech outside a turn, never reused in this process."""
@@ -428,6 +432,31 @@ class Runtime:
                 self.registry.redefine(name, definition)
         # Only once all four took it: a failed redefine is tried again next time.
         self._told = types
+
+    def day_setup(self) -> SetUp:
+        """What the day board can read: Google services with an account, Slack when
+        connected, and the catalogue servers configured and on, as for the packs."""
+        states = self.mcp.states.values() if self.mcp is not None else []
+        saved = self.google.saved if self.google is not None else None
+        return SetUp(
+            calendar=saved is not None and bool(saved.with_service("calendar")),
+            gmail=saved is not None and bool(saved.with_service("gmail")),
+            slack=self.slack is not None and bool(self.slack.token()),
+            catalog=frozenset(
+                s.config.catalog for s in states if s.config.catalog and not s.config.disabled
+            ),
+        )
+
+    async def open_day(self, conversation_id: str) -> Where:
+        """`day_open`: the page on a chat is told to open the day; in the day itself
+        there is nothing to open."""
+        session = self.by_conversation.get(conversation_id)
+        if session is None:
+            return "no_page"
+        if session.kind == "day":
+            return "here"
+        await session.send("day.open")
+        return "opened"
 
     def _mcp_fact(self) -> str:
         servers = self.mcp.states.values() if self.mcp is not None else []
@@ -690,6 +719,9 @@ async def open_runtime(
             board_tool, WorkspaceShow | WorkspaceUpdate | WorkspaceRemove | WorkspaceClose
         ):
             board_tool.bind(rt.boards, OWNER)
+    day_tool = registry.get(DAY_OPEN)
+    if isinstance(day_tool, DayOpen):
+        day_tool.bind(rt.open_day, OWNER)
     for name in (KEEP, DROP):
         rule_tool = registry.get(name)
         if isinstance(rule_tool, RuleKeep | RuleDrop):
