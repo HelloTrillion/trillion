@@ -453,3 +453,12 @@ def test_she_is_told_she_may_set_refresh() -> None:
     # Minutes may come as text; the schema must not refuse what the kit takes.
     assert set(widget_schema()["properties"]["refresh"]["type"]) == {"string", "number", "null"}
     assert "live" not in widget_schema()["properties"]
+
+
+def test_a_read_with_large_arguments_is_not_remembered() -> None:
+    reads = Reads()
+    reads.record("c1", 1, "mcp_stripe_list_charges", {"q": "x" * live.MAX_ARGS}, "Stripe")
+    reads.record("c1", 1, "mcp_stripe_list_charges", {"q": object()}, "Stripe")
+    assert reads.of("c1", 1) == []
+    reads.record("c1", 1, "mcp_stripe_list_charges", {"q": "x" * 100}, "Stripe")
+    assert len(reads.of("c1", 1)) == 1

@@ -155,25 +155,34 @@ export function footWords(foot: Foot): string {
 /**
  * Tells the core whether her board is on a screen (`board.seen`), so live widgets refresh only
  * while someone looks: the board is the workspace's content and the tab is visible. Only a
- * change is sent; the core starts every connection at "not seen".
+ * change is sent; the core starts every connection at "not seen". `opened` says the board itself
+ * was opened (a widget that stopped after failures gets another go), never the tab coming back.
+ * From a connection's start (`reset`) until its first board (`ready`), nothing is said, the tab's
+ * visibility included: the board on screen may be the last connection's.
  */
 export function createSeen(
-  send: (on: boolean) => void,
+  send: (on: boolean, opened: boolean) => void,
   shown: () => boolean,
   doc: Pick<Document, 'visibilityState' | 'addEventListener'> = document,
-): { sync(): void; reset(): void } {
+): { sync(opened?: boolean): void; reset(): void; ready(): void } {
   let last = false;
-  const sync = (): void => {
+  let waiting = true;
+  const sync = (opened = false): void => {
+    if (waiting) return;
     const on = shown() && doc.visibilityState === 'visible';
     if (on === last) return;
     last = on;
-    send(on);
+    send(on, on && opened);
   };
-  doc.addEventListener('visibilitychange', sync);
+  doc.addEventListener('visibilitychange', () => sync(false));
   return {
     sync,
     reset() {
       last = false;
+      waiting = true;
+    },
+    ready() {
+      waiting = false;
     },
   };
 }

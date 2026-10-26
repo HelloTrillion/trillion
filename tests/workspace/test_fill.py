@@ -221,3 +221,25 @@ async def test_a_large_table_has_room_to_be_answered() -> None:
 def test_merge_refuses_what_the_kit_refuses() -> None:
     with pytest.raises(BoardError):
         fill.merge(saved(), {"metrics": "not a list"})
+
+
+async def test_the_fresh_results_are_capped_in_all_and_shared() -> None:
+    from trillion.spine.untrusted import wrap
+
+    provider = ScriptedProvider(say("{}"))
+    huge = "y" * 100_000
+    await fill.fill(
+        provider,
+        saved(),
+        [
+            fill.Fresh(tool="a", text=wrap("a", huge), wrapped=True),
+            fill.Fresh(tool="b", text=huge, wrapped=False),
+            fill.Fresh(tool="c", text="small", wrapped=False),
+        ],
+    )
+    text = provider.calls[0][1][0].blocks[0].text  # type: ignore[union-attr]
+    assert len(text) < fill.MAX_RESULTS + 3000
+    assert text.count(fill.CUT) == 2 and "small" in text
+    # Every result still opens and closes its own wrapper.
+    assert text.count("<untrusted_tool_result") == 3
+    assert text.count("</untrusted_tool_result>") == 3

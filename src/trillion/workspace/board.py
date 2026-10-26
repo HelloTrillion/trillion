@@ -133,7 +133,10 @@ def describe(widget: Widget, quote: str = '"') -> str:
     kind = widget["type"].replace("_", " ")
     if kind == "chart":
         kind = f"{widget['kind']} chart"
-    name = widget.get(_NAMED_BY.get(widget["type"], "title")) or widget.get("title")
+    # A live widget's data is rewritten from outside by the fill-in, with nobody
+    # watching: it is named by the title she wrote, never by a field that refreshes.
+    by = "title" if "live" in widget else _NAMED_BY.get(widget["type"], "title")
+    name = widget.get(by) or widget.get("title")
     named = f" {quote}{_clip(name)}{quote}" if name else ""
     return f"{widget['id']} {kind}{named}"
 

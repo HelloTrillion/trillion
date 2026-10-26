@@ -1193,7 +1193,6 @@ function connect(): void {
     if (msg.type === 'session') {
       seen.reset();
       boardView.reset();
-      boardAwaited = true;
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
@@ -1317,9 +1316,9 @@ function connect(): void {
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
     if (msg.type === 'board') {
-      boardAwaited = false;
+      seen.ready();
       onBoard();
-      syncSeen();
+      seen.sync();
     }
     if (msg.type === 'board.refreshing') boardView.refreshing(String(msg['id'] ?? ''), msg['on'] === true);
     // The turn is over and she never made a sound (no words heard, a reply only
@@ -1589,15 +1588,11 @@ const boardView = createBoardView({
 });
 // Whether her board is on a screen: live widgets refresh only then.
 const seen = createSeen(
-  (on) => send({ type: 'board.seen', on }),
+  (on, opened) => send(opened ? { type: 'board.seen', on, opened } : { type: 'board.seen', on }),
   () => workspace.isOpen && workspace.showing === 'board',
 );
 // From a connection's start until its first board: nothing is said.
-let boardAwaited = true;
-const syncSeen = (): void => {
-  if (!boardAwaited) seen.sync();
-};
-workspace.onClose(syncSeen);
+workspace.onClose(() => seen.sync());
 function showBoard(): void {
   boardDraws++;
   boardChip.hidden = true;
@@ -1613,7 +1608,8 @@ function showBoard(): void {
   // Already showing: this only changes the title; the cards were redrawn in place.
   workspace.open(boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
-  syncSeen();
+  // Shown now: the board was opened (a redraw of a board already shown changes nothing).
+  seen.sync(true);
 }
 /** The user asked for the board: a saved one she had put away is open again, and she is told.
  * One with nothing on it shows the empty state and tells her nothing (the core would refuse). */

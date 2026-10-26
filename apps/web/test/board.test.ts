@@ -520,17 +520,23 @@ describe('footOf', () => {
 });
 
 describe('board.seen', () => {
-  function page(visible = true) {
+  function page(visible = true, ready = true) {
     const doc = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
     doc.visibilityState = visible ? 'visible' : 'hidden';
     const sent: boolean[] = [];
+    const opened: boolean[] = [];
     let shown = false;
-    const seen = createSeen((on) => void sent.push(on), () => shown, doc as unknown as Document);
+    const seen = createSeen(
+      (on, o) => void (sent.push(on), opened.push(o)),
+      () => shown,
+      doc as unknown as Document,
+    );
+    if (ready) seen.ready();
     const hide = (hidden: boolean) => {
       doc.visibilityState = hidden ? 'hidden' : 'visible';
       doc.dispatchEvent(new Event('visibilitychange'));
     };
-    return { seen, sent, show: (on: boolean) => ((shown = on), seen.sync()), hide };
+    return { seen, sent, opened, show: (on: boolean) => ((shown = on), seen.sync(on)), hide, set: (on: boolean) => (shown = on) };
   }
 
   it('is sent when the board is shown and hidden, never twice in a row', () => {
@@ -555,6 +561,17 @@ describe('board.seen', () => {
     expect(sent).toEqual([true, false, true]);
   });
 
+  it('says the board was opened only when it was, never when the tab comes back', () => {
+    const { sent, opened, show, hide } = page();
+    show(true);
+    hide(true);
+    hide(false);
+    show(false);
+    show(true);
+    expect(sent).toEqual([true, false, true, false, true]);
+    expect(opened).toEqual([true, false, false, false, true]);
+  });
+
   it('is not seen while the tab is hidden, and is said again on a new connection', () => {
     const { seen, sent, show, hide } = page(false);
     show(true);
@@ -562,8 +579,26 @@ describe('board.seen', () => {
     hide(false);
     expect(sent).toEqual([true]);
     seen.reset();
+    seen.ready();
     seen.sync();
     expect(sent).toEqual([true, true]);
+  });
+
+  it("says nothing from a connection's start until its first board, the tab included", () => {
+    const { seen, sent, hide, set } = page(true, false);
+    set(true);
+    seen.sync(true);
+    hide(true);
+    hide(false);
+    expect(sent).toEqual([]);
+    seen.ready();
+    seen.sync();
+    expect(sent).toEqual([true]);
+    // A new connection: quiet again until its board, whatever the tab does.
+    seen.reset();
+    hide(true);
+    hide(false);
+    expect(sent).toEqual([true]);
   });
 });
 

@@ -129,22 +129,34 @@ class Refresher:
 
     # ── What the pages say ───────────────────────────────────────────────
 
-    def seen(self, conversation_id: str, on: bool) -> None:
-        """A page shows this conversation's board, or no longer does. Opening it anew
-        catches up at once and gives up on no widget."""
+    def seen(self, conversation_id: str, on: bool, *, opened: bool = False) -> None:
+        """A page shows this conversation's board, or no longer does. Showing it catches
+        up at once. Only the board being opened (not the tab coming back) gives a widget
+        that stopped after failures another go."""
         if on:
-            if conversation_id not in self._seen:
-                self._seen.add(conversation_id)
-                for key in [k for k in self._fails if k[0] == conversation_id]:
-                    del self._fails[key]
-                    self._tried.pop(key, None)
+            self._seen.add(conversation_id)
+            if opened:
+                self._forget(conversation_id, self._tried, self._fails)
             self._wake.set()
         else:
-            # Nothing kept for a board no page shows: opening it again starts afresh.
             self._seen.discard(conversation_id)
-            for kept in (self._queue, self._tried, self._fails):
-                for key in [k for k in kept if k[0] == conversation_id]:
-                    del kept[key]
+            self._forget(conversation_id, self._queue)
+
+    def forget(self, conversation_id: str) -> None:
+        """No page is on this conversation any more: nothing is kept for it."""
+        self._seen.discard(conversation_id)
+        self._forget(conversation_id, self._queue, self._tried, self._fails)
+
+    @staticmethod
+    def _forget(conversation_id: str, *kept: dict[Key, Any]) -> None:
+        for each in kept:
+            for key in [k for k in each if k[0] == conversation_id]:
+                each.pop(key, None)
+
+    def refreshing(self, conversation_id: str) -> frozenset[str]:
+        """The widget being refreshed on this conversation now, if any."""
+        key = self.in_flight
+        return frozenset({key[1]}) if key is not None and key[0] == conversation_id else frozenset()
 
     def is_seen(self, conversation_id: str) -> bool:
         return conversation_id in self._seen
@@ -205,14 +217,18 @@ class Refresher:
             for key in list(self._queue):
                 if not self._enabled():
                     break
+                # A page may have hidden the board during the last refresh: what it took
+                # out of the queue is gone.
+                if key not in self._queue:
+                    continue
                 if key[0] not in self._seen:
-                    del self._queue[key]
+                    self._queue.pop(key, None)
                     continue
                 if self._busy(key[0]):
                     continue  # her turn first; it stays queued
                 if not self._room():
                     break
-                del self._queue[key]
+                self._queue.pop(key, None)
                 if await self._refresh(*key):
                     ran += 1
             return ran

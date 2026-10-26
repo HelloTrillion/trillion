@@ -380,6 +380,11 @@ class Runtime:
         if self.scheduler is not None:
             await self.scheduler.stop()
 
+    def refreshing(self, conversation_id: str) -> frozenset[str]:
+        """The widgets being refreshed on this conversation now."""
+        r = self.refresher
+        return r.refreshing(conversation_id) if r is not None else frozenset()
+
     def turn_running(self, conversation_id: str) -> bool:
         """Her own turn is running on this conversation: a refresh waits for it."""
         session = self.by_conversation.get(conversation_id)
@@ -664,6 +669,7 @@ async def open_runtime(
         owner=OWNER,
         zone=lambda: rt.zone(),
         reads=rt.reads,
+        refreshing=rt.refreshing,
     )
     rt.refresher = Refresher(
         boards=rt.boards,

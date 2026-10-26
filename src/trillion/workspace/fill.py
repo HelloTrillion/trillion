@@ -36,6 +36,11 @@ TIMEOUT_S = 20.0
 MIN_TOKENS, MAX_TOKENS = 6000, 16_000
 # Characters past which an answer is no answer: three times the widget, at least this.
 MIN_CHARS = 32_000
+# The fresh results, all together, shared across the reads: a read that returns a whole
+# mailbox does not crowd out the rest, or make every refresh cost a long prompt.
+MAX_RESULTS = 24_000
+CUT = "[cut]"
+_CLOSE = "</untrusted_tool_result>"
 # What she decided, kept from the widget as it was whatever the answer says.
 _KEPT = ("type", "title", "size", "asks", "refresh")
 # The server's own, never taken from an answer.
@@ -79,11 +84,25 @@ def as_written(widget: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _cut(r: Fresh, share: int) -> str:
+    """One result, wrapped, within its share. A wrapped result is cut inside its wrapper
+    and closed again: the router defanged any closing tag in it, so this one is the end."""
+    if not r.wrapped:
+        text = r.text if len(r.text) <= share else r.text[:share] + f"\n{CUT}"
+        return wrap(r.tool, text)
+    if len(r.text) <= share:
+        return r.text
+    body = r.text.removesuffix(_CLOSE).rstrip("\n")
+    return f"{body[:share]}\n{CUT}\n{_CLOSE}"
+
+
 def _results(results: Sequence[Fresh]) -> str:
     # The router wraps what it returns unless the tool's output is trusted; that is
     # wrapped here, so every result arrives as data.
-    parts = [r.text if r.wrapped else wrap(r.tool, r.text) for r in results]
-    return "\n\n".join(parts) or "(no results)"
+    if not results:
+        return "(no results)"
+    share = MAX_RESULTS // len(results)
+    return "\n\n".join(_cut(r, share) for r in results)
 
 
 def parse(text: str, max_chars: int = MIN_CHARS) -> dict[str, Any] | None:

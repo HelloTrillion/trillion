@@ -310,7 +310,8 @@ class Session:
         try:
             await session._send("history", messages=shown)
             # The conversation's board as it was left, open or closed (D3).
-            await session._send("board", board=for_page(await session._board(), rt.zone()))
+            board = for_page(await session._board(), rt.zone(), rt.refreshing(session.id))
+            await session._send("board", board=board)
             for a in await session._open_actions():
                 await session._send_card(a.id)
             session._started = True
@@ -374,9 +375,9 @@ class Session:
         self._rt.sessions.discard(self)
         if self._rt.by_conversation.get(self.id) is self:
             del self._rt.by_conversation[self.id]
-            # No page shows this board any more.
+            # No page is on this conversation any more: nothing is kept for it.
             if self._rt.refresher is not None:
-                self._rt.refresher.seen(self.id, False)
+                self._rt.refresher.forget(self.id)
         await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
@@ -517,7 +518,8 @@ class Session:
             if not isinstance(on, bool):
                 await self._error("bad_message")
             elif self._rt.refresher is not None:
-                self._rt.refresher.seen(self.id, on)
+                # `opened`: the board itself was opened, not the tab shown again.
+                self._rt.refresher.seen(self.id, on, opened=on and msg.get("opened") is True)
         elif kind == "board.refresh":
             widget_id = msg.get("id")
             if not (isinstance(widget_id, str) and widget_id):
@@ -566,7 +568,9 @@ class Session:
             logger.warning("board edit failed: %s", type(e).__name__)
             changed = False
         if not changed:
-            await self._send("board", board=for_page(await self._board(), self._rt.zone()))
+            rt = self._rt
+            board = for_page(await self._board(), rt.zone(), rt.refreshing(self.id))
+            await self._send("board", board=board)
 
     async def _on_text(self, text: object, *, ask: bool = False) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:

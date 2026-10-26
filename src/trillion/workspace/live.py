@@ -12,6 +12,7 @@ earlier turn is not what this widget was built from.
 from __future__ import annotations
 
 import copy
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,9 @@ from trillion.workspace.packs import PACKS
 from trillion.workspace.recipe_kit import OFF
 
 MAX_READS = 5
+# A read's arguments, as JSON, past which it is not remembered: a refresh replays a
+# lookup, not a payload, and the board keeps them.
+MAX_ARGS = 2000
 # Kept per turn, the oldest dropped first: a widget takes at most the last five.
 KEEP = 20
 
@@ -103,6 +107,12 @@ class Reads:
         self._by_turn: dict[tuple[str, int], list[Read]] = {}
 
     def record(self, session_id: str, turn: int, tool: str, args: JSON, title: str) -> None:
+        try:
+            size = len(json.dumps(dict(args), ensure_ascii=False))
+        except (TypeError, ValueError, RecursionError):
+            return
+        if size > MAX_ARGS:
+            return
         # A copy: the arguments as called, whatever happens to the caller's dict later.
         read = Read(tool=tool, args=copy.deepcopy(dict(args)), connector=title)
         kept = self._by_turn.setdefault((session_id, turn), [])
@@ -162,9 +172,10 @@ def attach(widget: dict[str, Any], reads: list[Read], old: Mapping[str, Any] | N
         widget["live"] = live
 
 
-def for_page(widget: Mapping[str, Any]) -> dict[str, Any] | None:
+def for_page(widget: Mapping[str, Any], refreshing: bool = False) -> dict[str, Any] | None:
     """What the page is told of a widget's `live`: how often, and how it is going. Never
-    the reads. None for a snapshot, or one she turned off."""
+    the reads. None for a snapshot, or one she turned off. `refreshing`: a refresh of it
+    is in flight, so a board sent meanwhile says so."""
     live = widget.get("live")
     if not isinstance(live, Mapping) or widget.get("refresh") == OFF:
         return None
@@ -173,4 +184,6 @@ def for_page(widget: Mapping[str, Any]) -> dict[str, Any] | None:
     failed = live.get("failed")
     if isinstance(failed, Mapping) and failed.get("at"):
         out["state"], out["failed_at"] = "failed", failed["at"]
+    if refreshing:
+        out["state"] = "refreshing"
     return out

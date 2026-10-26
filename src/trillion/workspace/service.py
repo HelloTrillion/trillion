@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
@@ -43,11 +43,13 @@ class BoardSaveError(BoardError):
     """The edit was fine; the database refused it."""
 
 
-def for_page(board: Board | None, zone: str | None = None) -> Board | None:
+def for_page(
+    board: Board | None, zone: str | None = None, refreshing: Collection[str] = ()
+) -> Board | None:
     """The board as the page draws it: every widget expanded into blocks, and without
     the id counter, which is the server's own. Expanded on today in `zone` (the
     user's), so "Today" in a due-soon card is their day, not the server's. The saved
-    board is left as it was."""
+    board is left as it was. `refreshing`: the ids of widgets being refreshed now."""
     if board is None:
         return None
     with on_day(day_in(zone)):
@@ -55,7 +57,7 @@ def for_page(board: Board | None, zone: str | None = None) -> Board | None:
     # Expanded in order, one for one. A live widget says how it is kept fresh, never
     # the reads that do it.
     for saved, shown in zip(board["widgets"], page["widgets"], strict=True):
-        put = live.for_page(saved)
+        put = live.for_page(saved, saved.get("id") in refreshing)
         if put is not None:
             shown["live"] = put
     return page
@@ -87,7 +89,10 @@ class Boards:
         owner: str,
         zone: Callable[[], str | None] = lambda: None,
         reads: live.Reads | None = None,
+        refreshing: Callable[[str], Collection[str]] = lambda conversation_id: (),
     ) -> None:
+        # The widgets being refreshed on a conversation now: a board sent meanwhile says so.
+        self._refreshing = refreshing
         self._store = store
         # This turn's reads, which a widget she saves from a connector remembers.
         self._reads = reads
@@ -118,7 +123,7 @@ class Boards:
                 new = edit(old)
             now = self._clock()
             _stamp(new, now)
-            page = for_page(new, zone)
+            page = for_page(new, zone, self._refreshing(conversation_id))
             try:
                 await self._store.put(conversation_id, self._owner, new, now)
             except Exception as e:
