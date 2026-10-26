@@ -16,12 +16,17 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Callable
-from datetime import date
 from typing import Any
 
 from trillion.workspace.blocks import Block
 from trillion.workspace.kit import VALUE, Widget, cap
-from trillion.workspace.recipe_kit import is_date
+from trillion.workspace.pack_recipes import PACK_RECIPES, PACK_TITLED_BY, PACK_TITLES
+from trillion.workspace.wording import amount as _amount
+from trillion.workspace.wording import by_date as _by
+from trillion.workspace.wording import day as _day
+from trillion.workspace.wording import deadline as _deadline
+from trillion.workspace.wording import span as _span
+from trillion.workspace.wording import with_fields as _with
 
 logger = logging.getLogger(__name__)
 
@@ -29,78 +34,7 @@ Board = dict[str, Any]
 
 # What the page gets of a widget besides its blocks; the recipe's own fields stay home.
 KEPT = ("id", "type", "size", "title", "source", "asks")
-
-_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _TONE = {"up": "good", "down": "bad"}
-_DASH = "\u2013"  # an en dash, as a range of times is printed
-# Written before the amount ("$4,200"); every other unit after it ("42 km").
-_PREFIX = ("$", "€", "£")
-
-
-def _with(out: Block, **fields: Any) -> Block:
-    """The block with the fields that have a value."""
-    out.update({k: v for k, v in fields.items() if v is not None})
-    return out
-
-
-# Words for times and numbers
-
-
-def _day(text: str) -> str:
-    """'2026-10-28…' → 'Wed 28 Oct'."""
-    d = date.fromisoformat(text[:10])
-    return f"{_DAYS[d.weekday()]} {d.day} {_MONTHS[d.month - 1]}"
-
-
-def _clock(text: str) -> tuple[str, str]:
-    """'…T14:05' → ('2:05', 'pm')."""
-    hour, minute = int(text[11:13]), text[14:16]
-    return f"{hour % 12 or 12}:{minute}", "am" if hour < 12 else "pm"
-
-
-def _span(start: str, end: str) -> str:
-    """9:00 to 10:30 am, 2:00 to 3:00 pm, 11:30 am to 12:15 pm, joined by an en dash:
-    the half of the day said once when both ends share it, as the page's ranges are."""
-    (a, a_half), (b, b_half) = _clock(start), _clock(end)
-    if a_half != b_half:
-        return f"{a} {a_half}{_DASH}{b} {b_half}"
-    return f"{a}{_DASH}{b} {b_half}"
-
-
-def _deadline(text: str) -> str:
-    """An ISO date as 'Sat 31 Oct' (with ', 5:00 pm' when it has a time); words as written."""
-    if not is_date(text):
-        return text
-    if "T" not in text:
-        return _day(text)
-    clock, half = _clock(text)
-    return f"{_day(text)}, {clock} {half}"
-
-
-def _by(text: str) -> str:
-    """A goal's date as 'Nov 30'; words as written."""
-    if not is_date(text):
-        return text
-    d = date.fromisoformat(text[:10])
-    return f"{_MONTHS[d.month - 1]} {d.day}"
-
-
-def _figure(n: float | int) -> str:
-    """4200 → '4,200'; 42.5 → '42.5'; 1/3 → '0.33'."""
-    if float(n).is_integer():
-        return f"{int(n):,}"
-    return f"{n:,.2f}".rstrip("0").rstrip(".")
-
-
-def _amount(n: float | int, unit: str | None) -> str:
-    """'$4,200', '-$5', '42 km', '12%'."""
-    if not unit:
-        return _figure(n)
-    if unit in _PREFIX:
-        sign = "-" if n < 0 else ""
-        return f"{sign}{unit}{_figure(abs(n))}"
-    return f"{_figure(n)}{'' if unit == '%' else ' '}{unit}"
 
 
 def _total(scores: list[float | int]) -> float | int:
@@ -340,6 +274,7 @@ _RECIPES: dict[str, Callable[[Widget], list[Block]]] = {
     "callout": _callout,
     "goal": _goal,
     "sources": _sources,
+    **PACK_RECIPES,
     "custom": _custom,
 }
 
@@ -356,9 +291,10 @@ _TITLES = {
     "decision": "Decision",
     "sources": "Sources",
     "facts": "Details",
+    **PACK_TITLES,
 }
-# Or the widget's own field that names it.
-_TITLED_BY = {"goal": "label", "thread": "subject"}
+# Or the widget's own field that names it (the default above when it has none).
+_TITLED_BY = {"goal": "label", "thread": "subject", **PACK_TITLED_BY}
 
 
 def title_of(widget: Widget) -> str | None:
@@ -367,7 +303,7 @@ def title_of(widget: Widget) -> str | None:
     if widget.get("title"):
         return str(widget["title"])
     field = _TITLED_BY.get(widget["type"])
-    named = widget.get(field) if field else _TITLES.get(widget["type"])
+    named = (widget.get(field) if field else None) or _TITLES.get(widget["type"])
     return named if isinstance(named, str) and named else None
 
 

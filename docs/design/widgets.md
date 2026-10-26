@@ -46,7 +46,7 @@ Defined in `src/trillion/workspace/blocks.py`. Short strings are trimmed and cap
 | `chart` | `kind`, `x[]`, `series[]`, `unit?` | Checked by the kit's chart rules. The card has the title. |
 | `table` | `columns[]`, `rows[][]`, `highlight?` | `highlight` is a row index, counted from 0. |
 | `timeline` | `events[]` (`title`, `start`, `end?`, `meta?`) | Times as `HH:MM`. |
-| `rows` | `label?`, `items[]` (`title`, `detail?`, `person?`, `status?`, `when?`, `meta?`, `chip?`, `done?`) | At most 30 items across a card. The page places them. |
+| `rows` | `label?`, `items[]` (`title`, `detail?`, `person?`, `status?`, `when?`, `meta?`, `chip?`, `done?`, `amount?`, `amount_tone?`) | At most 30 items across a card. The page places them. An amount (up to 40 characters) sits on the right in tabular figures, with `when` under it. With an amount, `meta` and `chip` are not drawn. |
 | `person` | `name`, `detail?` | Initials avatar. |
 | `people` | `names[]` | Up to 8. An avatar stack, then "Sam, Jo and 2 more". |
 | `status` | `tone`, `text` | A dot and words. |
@@ -55,6 +55,9 @@ Defined in `src/trillion/workspace/blocks.py`. Short strings are trimmed and cap
 | `quote` | `text`, `by?`, `when?` | Up to 600 characters. |
 | `facts` | `items[]` (`label`, `value`) | Up to 10. |
 | `columns` | `columns[]`, each a list of blocks | 2 to 4 columns. Columns cannot hold columns. |
+| `bars` | `items[]` (`label`, `value`, `note?`), `unit?`, `tone?` | 1 to 10 items, values 0 or more. Each bar is scaled to the largest, in the order given. |
+| `funnel` | `stages[]` (`label`, `count`, `value?`) | 2 to 6 stages, counts 0 or more. Between stages the page says "55% move on" (nothing after a 0). |
+| `stages` | `steps[]`, `current`, `tone?` | 2 to 7 steps. `current` is a step's label or its index from 0. Earlier steps are done, `current` is ringed, the rest are open. |
 
 ## Widgets
 
@@ -86,6 +89,27 @@ What she writes, and what it becomes. Every widget also takes `title?`, `size?`,
 
 Catalogue widgets get a default title when she gives none. A near-miss type name maps to the right widget ("agenda" is `timeline`, "checklist" is `plan`). Those aliases are in `widgets.py`. Times may be ISO 8601 or a bare clock time like "9:12", which means today in the user's timezone. A count or goal written as text ("12", "4,200") is read as the number.
 
+## Packs
+
+Phase 2 added widgets for what the catalogue's connectors hold. She is told about them only while a matching connector is set up, because the toolkit text is read on every turn and small models do worse with more. They live in `src/trillion/workspace/packs.py`.
+
+| Pack | Connectors (by catalogue title) | Widgets |
+|---|---|---|
+| core | none, always told | the phase 1 widgets, `kpis`, `tasks`, `custom` |
+| money | Stripe, PayPal, Square | `transactions`, `invoices`, `breakdown`, `payouts` |
+| customers | HubSpot, Intercom, Nitrosend, Resend | `pipeline`, `deal`, `contact`, `campaign`, `support_queue` |
+| building | GitHub, Sentry, Vercel, Supabase | `checks`, `errors`, `deploys`, `services` |
+| work | Linear, Jira and Confluence, Todoist, ClickUp, monday.com, Notion, Airtable | `kanban`, `sprint`, `due_soon` |
+
+- Core is always told. A pack is told while a connector of that kind is configured and enabled. It does not need to be connected this second, so a slow start or a short outage does not take the widgets away.
+- Packs change what she is told, never what is accepted. The kit takes every widget type at all times, so old boards keep loading and numbers she was told can still become a pipeline.
+- The workspace tools' description is built from `told(...)`. The registry snapshots a definition, so `redefine` swaps it, and `retell_workspace` in `api/runtime.py` calls that at start and whenever a server is connected, disconnected or removed.
+- Two budgets, both in tests. The four workspace tool definitions stay under 12,000 characters with core only, and under 16,000 with every pack. Each has about 200 characters of headroom. Trim before you add.
+
+### Source tiles
+
+A card's footer names its source. When the name matches the title of a connected catalogue entry (ignoring case), the footer shows that entry's tile before the name. Google services count when an account is signed in. The tile uses the catalogue's colour and letters, and the bundled icon Settings already shows. No match, no tile: the name alone. She names connector data by the connector's title ("Stripe", "Linear").
+
 ## Rules
 
 She follows these (the prompt and `#kit` both state them).
@@ -109,16 +133,29 @@ Asks are refused when too long, not cut, because a clipped ask would send differ
 
 ## Adding a block or a widget
 
+For a widget in a pack, use the next section.
+
 1. **Block.** Add its check to `src/trillion/workspace/blocks.py` and list it in `_BLOCKS`. Reuse the kit's helpers for sizes and text.
 2. **Widget.** Add the check to `recipe_kit.py` (`RECIPES`) and the expansion to `recipes.py`. Add its page size in `SIZE` if it is not medium.
 3. **Names.** Add aliases and the field that identifies it to `widgets.py` (`_ALIASES`, `_BY_FIELD`, `_KEY`).
-4. **Tool schema.** Add the one-line card to `schema.py`. The whole tool definition must stay under 12,000 characters.
+4. **Tool schema.** Add the one-line card to `schema.py`. The four tool definitions must stay under 12,000 characters with core only (16,000 with every pack).
 5. **Samples.** Add a sample to `samples.py`. Use generic names only.
 6. **Regenerate.** `uv run python scripts/gen_kit_samples.py`. A test fails when `apps/web/src/kit/samples.json` is out of date.
 7. **Draw it.** Add the block's drawing function to `apps/web/src/blocks.ts`. Use `textContent` only. Add its `bk-` styles to the "Widget kit" section of `app.css`, using the `--w-` tokens.
 8. **Look.** Open `#kit`. Check light and dark, narrow and wide.
 
+## Adding a pack or a pack widget
+
+1. **Kit.** Add the check to `pack_kit.py`. Read state words leniently.
+2. **Recipe.** Add the expansion to `pack_recipes.py`.
+3. **Pack.** Add the type to its pack in `packs.py` (`PACKS`). For a new pack, also map its catalogue ids in `PACK_OF`.
+4. **Names.** Add aliases and the identifying field to `widgets.py`.
+5. **Schema.** Add the type to `FIELDS` and its one-line card to `CARDS` in `schema.py`. Check both budgets.
+6. **Samples.** Add a sample to `samples.py`.
+7. **Regenerate.** `uv run python scripts/gen_kit_samples.py`.
+8. **Draw it.** Only if it needs a new block, add that to `apps/web/src/blocks.ts`.
+9. **Look.** Open `#kit`. The caption shows the pack ("transactions · money · medium").
+
 ## Next
 
-- **Phase 2:** widgets for the catalogue's connectors: money, customers, building, work. They are new widget types on the same blocks.
 - **Phase 3:** live refresh. A widget keeps its shape and the server refreshes its values.

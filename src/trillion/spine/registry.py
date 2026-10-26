@@ -35,8 +35,9 @@ def runs_unattended(d: ToolDefinition) -> bool:
     return d.risk not in GATED and d.category not in UNATTENDED_NEVER
 
 
-def validate(tool: Tool, module: str) -> None:
-    d = tool.definition
+def validate(tool: Tool, module: str, definition: ToolDefinition | None = None) -> None:
+    """Check `tool` against the contract, with `definition` in place of its own if given."""
+    d = tool.definition if definition is None else definition
     if not isinstance(d, ToolDefinition):
         raise RegistryError("definition must be a ToolDefinition")
     if not isinstance(d.risk, Risk):
@@ -76,34 +77,68 @@ def validate(tool: Tool, module: str) -> None:
         raise RegistryError(f"{d.name}: gated tools must implement describe() (SPN-2a)")
 
 
+def _snapshot(d: ToolDefinition) -> ToolDefinition:
+    # What was validated, copied: a plugin that later reassigns `tool.definition` (or
+    # mutates its schema dict) cannot change its risk, path_args or trust.
+    return dataclasses.replace(d, input_schema=copy.deepcopy(dict(d.input_schema)))
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._definitions: dict[str, ToolDefinition] = {}
+        self._modules: dict[str, str] = {}
 
     def register(self, tool: Tool, *, module: str | None = None) -> None:
         d = tool.definition
-        validate(tool, module or type(tool).__module__)
+        module = module or type(tool).__module__
+        validate(tool, module)
         name = d.name
         if name in self._tools:
             raise RegistryError(f"{name}: already registered")
-        # Snapshot what was validated. A plugin that later reassigns `tool.definition`
-        # (or mutates its schema dict) cannot change its risk, path_args or trust.
-        snapshot = dataclasses.replace(d, input_schema=copy.deepcopy(dict(d.input_schema)))
+        # Kept so a redefinition is held to what this module may declare.
+        self._modules[name] = module
         self._tools[name] = tool
-        self._definitions[name] = snapshot
+        self._definitions[name] = _snapshot(d)
+
+    def redefine(self, name: str, definition: ToolDefinition) -> None:
+        """Change what a registered tool says about itself, as when a connector changes
+        which widgets the workspace tools list. Validated like `register`; only the
+        description and input_schema may change."""
+        tool, old = self._tools.get(name), self._definitions.get(name)
+        if tool is None or old is None:
+            raise RegistryError(f"{name}: not registered")
+        if not isinstance(definition, ToolDefinition) or definition.name != name:
+            raise RegistryError(f"{name}: a new definition must keep the name")
+        if definition.risk is not old.risk:
+            raise RegistryError(f"{name}: a new definition may not change the risk")
+        if definition.category != old.category:
+            raise RegistryError(f"{name}: a new definition may not change the category")
+        # Only words and shape: how the router treats it (paths, trust, timeout,
+        # recovery) is settled once, at registration.
+        kept = dataclasses.replace(
+            definition, description=old.description, input_schema=old.input_schema
+        )
+        if kept != old:
+            raise RegistryError(
+                f"{name}: a new definition may change only its description and input_schema"
+            )
+        validate(tool, self._modules[name], definition)
+        self._definitions[name] = _snapshot(definition)
 
     def unregister(self, name: str) -> None:
         """Take a tool away, as when the user disconnects the server it came from. A
         card already waiting for it can no longer run: the router finds no tool."""
         self._tools.pop(name, None)
         self._definitions.pop(name, None)
+        self._modules.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
     def definition(self, name: str) -> ToolDefinition | None:
-        """The definition as validated at registration. The router uses only this."""
+        """The definition as validated at registration (or `redefine`). The router uses
+        only this."""
         return self._definitions.get(name)
 
     def definitions(self) -> list[ToolDefinition]:
@@ -139,6 +174,9 @@ class _ReadOnly(ToolRegistry):
         raise RegistryError("an unattended view is read-only")
 
     def unregister(self, name: str) -> None:
+        raise RegistryError("an unattended view is read-only")
+
+    def redefine(self, name: str, definition: ToolDefinition) -> None:
         raise RegistryError("an unattended view is read-only")
 
     def definitions(self) -> list[ToolDefinition]:

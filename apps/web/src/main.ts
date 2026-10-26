@@ -905,7 +905,11 @@ const appearance = createAppearance(
   },
 );
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
-const connected = createConnected(panel.host('connected'), api, () => panel.refresh());
+const connected = createConnected(panel.host('connected'), api, () => {
+  panel.refresh();
+  // A connector set up or removed puts its tile on, or takes it off, the cards that name it.
+  if (workspace.showing === 'board') showBoard();
+});
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
@@ -1180,6 +1184,8 @@ function connect(): void {
       switchTo(null);
       return;
     }
+    // Let in (at start, after a reconnect, with a new token): what is connected now, for the cards' source tiles.
+    if (msg.type === 'session') void connected.load();
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
@@ -1558,6 +1564,7 @@ const boardView = createBoardView({
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
   approvals: approvals.strip.el,
+  connected: () => connected.tiles(),
   // Exactly the ask's words, as the user's message. Hidden while it could not go (asksOff).
   onAsk: (text) => {
     // Onboarding's conversation is the page's own: a tap never cuts into it.

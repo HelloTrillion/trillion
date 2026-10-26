@@ -145,3 +145,78 @@ def test_the_definition_is_snapshotted_at_registration():
     assert snap.input_schema["properties"]["q"] == {"type": "string"}
     assert snap in r.definitions()
     assert r.definition("missing") is None
+
+
+def test_redefine_replaces_the_snapshot():
+    r = ToolRegistry()
+    r.register(make(d()))
+    new = d(
+        description="told more", input_schema=schema(q={"type": "string"}, n={"type": "integer"})
+    )
+    r.redefine("good_tool", new)
+    snap = r.definition("good_tool")
+    assert snap is not None and snap.description == "told more"
+    assert set(snap.input_schema["properties"]) == {"q", "n"}
+    # A snapshot: changing the definition handed in afterwards changes nothing.
+    new.input_schema["properties"]["n"]["type"] = "string"  # type: ignore[index]
+    assert snap.input_schema["properties"]["n"] == {"type": "integer"}
+    assert snap in r.definitions()
+
+
+@pytest.mark.parametrize(
+    ("defn", "fragment"),
+    [
+        (d(risk=Risk.WRITE), "risk"),
+        (d(category="other"), "category"),
+        (d(name="other_tool"), "name"),
+        (d(input_schema={"type": "object", "properties": {}}), "additionalProperties"),
+        (d(input_schema=schema(path={"type": "string"})), "path_args"),
+        (d(input_schema={"type": 7}), "invalid input_schema"),
+    ],
+)
+def test_redefine_is_validated_like_register(defn, fragment):
+    r = ToolRegistry()
+    r.register(make(d()), module="evil")
+    before = r.definition("good_tool")
+    with pytest.raises(RegistryError, match=fragment):
+        r.redefine("good_tool", defn)
+    assert r.definition("good_tool") == before
+
+
+def test_redefine_refuses_a_tool_not_registered():
+    r = ToolRegistry()
+    with pytest.raises(RegistryError, match="not registered"):
+        r.redefine("good_tool", d())
+    r.register(make(d()))
+    r.unregister("good_tool")
+    with pytest.raises(RegistryError, match="not registered"):
+        r.redefine("good_tool", d())
+
+
+def test_an_unattended_view_cannot_be_redefined():
+    r = ToolRegistry()
+    r.register(make(d()))
+    with pytest.raises(RegistryError, match="read-only"):
+        r.unattended().redefine("good_tool", d(description="x"))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"path_args": ("q",)},
+        {"outside_path_args": ("q",)},
+        {"recoverable": False},
+        {"timeout_s": 9.0},
+        {"lossless_output": True},
+        {"trusted_output": True},
+    ],
+)
+def test_redefine_changes_only_the_description_and_schema(change):
+    """How the router treats a tool is settled at registration, even for a first-party
+    tool that could have declared it then."""
+    r = ToolRegistry()
+    r.register(make(d()), module="trillion.tools.x")
+    before = r.definition("good_tool")
+    with pytest.raises(RegistryError, match="only its description and input_schema"):
+        r.redefine("good_tool", d(description="new", **change))
+    assert r.definition("good_tool") == before

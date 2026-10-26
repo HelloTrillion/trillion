@@ -6,6 +6,7 @@
  * textContent and nothing is ever parsed as HTML.
  */
 import { type DrawnBlocks, drawBlocks, h, records, str } from './blocks';
+import { type SourceTile, mark } from './connected';
 import { icon } from './icons';
 import { type Board, type Widget, type WidgetSize } from './view';
 import { age } from './when';
@@ -109,6 +110,25 @@ export function sourceWords(source: unknown, now: Date): string {
   return when ? `${name} · ${when}` : name;
 }
 
+/** The connected service a card's source names (its catalogue title, ignoring case), if any. */
+export function sourceTile(source: unknown, connected: readonly SourceTile[]): SourceTile | undefined {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return undefined;
+  const name = str((source as Record<string, unknown>)['name']).trim().toLocaleLowerCase();
+  if (!name) return undefined;
+  return connected.find((t) => tileNames(t.title).includes(name));
+}
+
+/**
+ * The names a source may use for a connector: its catalogue title, and the short name
+ * people say ("Calendar" for "Google Calendar", "Jira" for "Jira and Confluence",
+ * "monday" for "monday.com").
+ */
+export function tileNames(title: string): string[] {
+  const full = title.trim().toLocaleLowerCase();
+  const short = full.replace(/^google /, '').split(' and ')[0]!.split('.')[0]!.trim();
+  return short && short !== full ? [full, short] : [full];
+}
+
 /** At most two asks, each her words as given; anything that is not words is left out. */
 export function asksOf(asks: unknown): string[] {
   if (!Array.isArray(asks)) return [];
@@ -142,6 +162,8 @@ export interface BoardOptions {
   readonly approvals?: HTMLElement;
   /** The user tapped one of a card's asks: send exactly its words as their turn. Without it, no asks are drawn. */
   readonly onAsk?: (text: string) => void;
+  /** The catalogue services connected now: a card whose source names one shows its tile. */
+  readonly connected?: () => readonly SourceTile[];
   /** The clock; tests set it. */
   readonly now?: () => Date;
 }
@@ -154,7 +176,7 @@ interface Card {
 
 const NO_BLOCKS: Omit<DrawnBlocks, 'el'> = { tick: () => {}, dispose: () => {} };
 
-function card(w: Widget, now: Date, opts: BoardOptions): Card {
+function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undefined): Card {
   // The type is an attribute, not a class: a class named for it would also be its parts'.
   const el = h('section', 'bd-card');
   el.dataset['type'] = w.type;
@@ -202,8 +224,12 @@ function card(w: Widget, now: Date, opts: BoardOptions): Card {
   if (source || asks.length) {
     const foot = h('footer', 'bd-card-foot');
     if (source) {
-      from = h('p', 'bd-source', source);
-      foot.append(from);
+      const line = h('p', 'bd-source');
+      // The connector's own tile before its name: where the numbers came from, at a glance.
+      if (tile) line.append(mark(tile.color, tile.glyph, 'xs', tile.id));
+      from = h('span', 'bd-source-words', source);
+      line.append(from);
+      foot.append(line);
     }
     if (asks.length) {
       const list = h('ul', 'bd-asks');
@@ -333,8 +359,11 @@ export function createBoardView(opts: BoardOptions): BoardView {
       const next = new Map<string, { key: string; card: Card }>();
       const cards: HTMLElement[] = [];
       let arriving = 0;
+      const connected = opts.connected?.() ?? [];
       for (const w of widgets) {
-        const key = JSON.stringify(w);
+        const tile = sourceTile(w['source'], connected);
+        // A tile that came or went redraws its card, like any other change.
+        const key = JSON.stringify(w) + (tile ? `|${tile.id}` : '');
         const old = drawn.get(w.id);
         if (old && old.key === key) {
           old.card.el.classList.remove('bd-new');
@@ -343,7 +372,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
           cards.push(old.card.el);
           continue;
         }
-        const c = card(w, now, opts);
+        const c = card(w, now, opts, tile);
         if (!old) {
           c.el.classList.add('bd-new');
           c.el.style.setProperty('--i', String(arriving++));

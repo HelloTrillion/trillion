@@ -82,6 +82,36 @@ export function percentOf(value: number, max: number): number {
   return Math.round((Math.min(max, Math.max(0, value)) / max) * 100);
 }
 
+/** Each bar's share of the largest, 0 to 1: the largest fills its track. */
+export function barShares(values: readonly number[]): number[] {
+  const clean = values.map((v) => (Number.isFinite(v) && v > 0 ? v : 0));
+  const top = Math.max(0, ...clean);
+  return clean.map((v) => (top > 0 ? v / top : 0));
+}
+
+/**
+ * What moves on from each funnel stage to the next, as a whole percent: the next count over this
+ * one. Null after the last stage, after a stage of 0 (nothing to move on from), and before a
+ * larger stage (more than all moving on is not a funnel, so it says nothing).
+ */
+export function funnelSteps(counts: readonly number[]): (number | null)[] {
+  return counts.map((c, i) => {
+    const next = counts[i + 1];
+    if (next === undefined || !(c > 0) || !Number.isFinite(next) || next > c) return null;
+    return Math.round((Math.max(0, next) / c) * 100);
+  });
+}
+
+/** The current step's index: a step's label (as written, else ignoring case) or its index; -1 for neither. */
+export function currentStep(steps: readonly string[], current: unknown): number {
+  if (typeof current === 'number') return Number.isInteger(current) && current >= 0 && current < steps.length ? current : -1;
+  if (typeof current !== 'string') return -1;
+  const exact = steps.indexOf(current);
+  if (exact >= 0) return exact;
+  const want = current.trim().toLocaleLowerCase();
+  return steps.findIndex((s) => s.trim().toLocaleLowerCase() === want);
+}
+
 export interface Run {
   readonly text: string;
   readonly bold: boolean;
@@ -833,11 +863,21 @@ function rows(b: Rec, now: Date): HTMLElement {
     const detail = [saysName(str(it['title']), who) ? '' : who, str(it['detail'])].filter(Boolean).join(' · ');
     if (detail) words.append(h('span', 'bk-row-detail', detail));
     li.append(words);
-    // On the right, one of: when, meta, a chip.
+    // On the right, one of: an amount (with its time under it), when, meta, a chip.
+    const amount = str(it['amount']);
     const when = str(it['when']);
     const meta = str(it['meta']);
     const chip = str(it['chip']);
-    if (when) li.append(timeEl('bk-row-trail', when, now));
+    if (amount) {
+      const end = h('div', 'bk-row-end');
+      const tone = toneOfBlock(it['amount_tone']);
+      const sum = h('span', `bk-row-amount ${toneClass(tone)}`, amount);
+      // The colour, in words, as a status dot says it.
+      if (TONE_WORDS[tone]) sum.prepend(hidden(`${TONE_WORDS[tone]}: `));
+      end.append(sum);
+      if (when) end.append(timeEl('bk-row-trail', when, now));
+      li.append(end);
+    } else if (when) li.append(timeEl('bk-row-trail', when, now));
     else if (meta) li.append(h('span', 'bk-row-trail', meta));
     else if (chip) li.append(h('span', 'bk-chip bk-row-chip', chip));
     ul.append(li);
@@ -929,6 +969,93 @@ function facts(b: Rec): HTMLElement {
   return dl;
 }
 
+// Bars ──
+
+function bars(b: Rec): HTMLElement {
+  const items = records(b['items']);
+  const unit = str(b['unit']) || undefined;
+  const shares = barShares(items.map((it) => num(it['value'])));
+  const ul = h('ul', `bk-bars ${seriesOr(b['tone'])}`);
+  items.forEach((it, i) => {
+    const li = h('li', 'bk-bar');
+    const head = h('div', 'bk-bar-head');
+    head.append(h('span', 'bk-bar-label', str(it['label'])), h('span', 'bk-bar-num', formatValue(num(it['value']), unit, 2)));
+    const track = h('div', 'bk-bar-track');
+    track.setAttribute('aria-hidden', 'true');
+    const fill = h('i', 'bk-bar-fill');
+    fill.style.setProperty('--v', String(shares[i] ?? 0));
+    track.append(fill);
+    li.append(head, track);
+    const note = str(it['note']);
+    if (note) li.append(h('span', 'bk-bar-note', note));
+    ul.append(li);
+  });
+  return ul;
+}
+
+// Funnel ──
+
+function funnel(b: Rec): HTMLElement {
+  const stages = records(b['stages']);
+  const counts = stages.map((st) => Math.max(0, num(st['count'])));
+  const first = counts[0] ?? 0;
+  const steps = funnelSteps(counts);
+  const ol = h('ol', 'bk-funnel bk-series');
+  stages.forEach((st, i) => {
+    const li = h('li', 'bk-funnel-stage');
+    const band = h('div', 'bk-funnel-band');
+    // Narrowing from the first stage, centred. The words sit across the whole band, so they fit at any width.
+    const fill = h('i', 'bk-funnel-fill');
+    fill.setAttribute('aria-hidden', 'true');
+    const count = counts[i] ?? 0;
+    fill.style.setProperty('--v', String(first > 0 ? Math.min(1, count / first) : 0));
+    if (count === 0) fill.dataset['none'] = '';
+    const figures = h('span', 'bk-funnel-figures');
+    figures.append(h('strong', 'bk-funnel-count', count.toLocaleString()));
+    const worth = str(st['value']);
+    if (worth) figures.append(h('span', 'bk-funnel-value', worth));
+    band.append(fill, h('span', 'bk-funnel-label', str(st['label'])), figures);
+    li.append(band);
+    const pct = steps[i];
+    if (pct !== null && pct !== undefined) li.append(h('p', 'bk-funnel-step', `${pct}% move on`));
+    ol.append(li);
+  });
+  return ol;
+}
+
+// Stages ──
+
+function stagesBlock(b: Rec): HTMLElement {
+  const steps = strings(b['steps']);
+  const at = currentStep(steps, b['current']);
+  const box = h('div', `bk-stages ${seriesOr(b['tone'])}`);
+  box.style.setProperty('--steps', String(Math.max(1, steps.length)));
+  // Many steps in a narrow card: only the current one is named, under the track (CSS decides when).
+  if (steps.length > 4) box.dataset['many'] = steps.length > 5 ? 'lots' : '';
+  const ol = h('ol', 'bk-stages-track');
+  ol.setAttribute('aria-hidden', 'true');
+  steps.forEach((label, i) => {
+    const state = at < 0 || i > at ? 'open' : i < at ? 'done' : 'current';
+    const li = h('li', 'bk-step');
+    li.dataset['state'] = state;
+    const mark = h('span', 'bk-step-dot');
+    if (state === 'done') mark.append(icon('check', 9));
+    li.append(mark, h('span', 'bk-step-label', label));
+    ol.append(li);
+  });
+  box.append(ol);
+  const current = steps[at];
+  if (current !== undefined) {
+    const named = h('p', 'bk-stages-now');
+    named.setAttribute('aria-hidden', 'true');
+    named.append(h('strong', '', current), document.createTextNode(` · ${at + 1} of ${steps.length}`));
+    box.append(named, hidden(`Step ${at + 1} of ${steps.length}: ${current}`));
+  } else if (steps.length) {
+    box.append(hidden(`Steps: ${steps.join(', ')}`));
+  }
+  return box;
+}
+
 // Columns ──
 
 function columns(b: Rec, now: Date, ctx: Ctx): HTMLElement {
@@ -955,6 +1082,9 @@ const DRAW: Readonly<Record<string, Draw>> = {
   table: tableBlock,
   timeline: timelineBlock,
   rows,
+  bars,
+  funnel,
+  stages: stagesBlock,
   person,
   people,
   status,

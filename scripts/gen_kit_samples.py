@@ -11,27 +11,37 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+from trillion.workspace.blocks import on_day
+from trillion.workspace.packs import PACK_OF_TYPE
 from trillion.workspace.recipes import expand_board
 from trillion.workspace.samples import BLOCK_SAMPLES, SAMPLES
 from trillion.workspace.widgets import validate_widget
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "apps" / "web" / "src" / "kit" / "samples.json"
-# The server stamps when a source was read; the samples use one fixed moment.
+# The server stamps when a source was read; the samples use one fixed moment, and one
+# fixed day for bare times and "Today", so the file only changes when the kit does.
 AT = "2026-10-25T09:00:00Z"
+DAY = date(2026, 10, 25)
 
 
 def _expanded(samples: list[dict[str, Any]], first: int) -> list[dict[str, Any]]:
     widgets = []
-    for n, raw in enumerate(samples, first):
-        widget = validate_widget(raw, n - first + 1)
-        if "source" in widget:
-            widget["source"]["at"] = AT
-        widgets.append({"id": f"k{n}", **widget})
-    return list(expand_board({"widgets": widgets})["widgets"])
+    with on_day(DAY):
+        for n, raw in enumerate(samples, first):
+            widget = validate_widget(raw, n - first + 1)
+            if "source" in widget:
+                widget["source"]["at"] = AT
+            widgets.append({"id": f"k{n}", **widget})
+        expanded = expand_board({"widgets": widgets})["widgets"]
+    # Which pack each belongs to, for the style guide's captions.
+    return [
+        {"id": w["id"], "type": w["type"], "pack": PACK_OF_TYPE[w["type"]], **w} for w in expanded
+    ]
 
 
 def render() -> str:

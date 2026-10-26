@@ -116,7 +116,15 @@ def _clip(text: str) -> str:
 
 
 # The field that names a widget best, when it is not the title.
-_NAMED_BY = {"stat": "label", "next_up": "event", "goal": "label", "thread": "subject"}
+_NAMED_BY = {
+    "stat": "label",
+    "next_up": "event",
+    "goal": "label",
+    "thread": "subject",
+    "deal": "name",
+    "contact": "name",
+    "sprint": "name",
+}
 
 
 def describe(widget: Widget, quote: str = '"') -> str:

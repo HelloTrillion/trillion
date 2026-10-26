@@ -3,6 +3,7 @@
     {
       "id": "k1",
       "type": "stat",
+      "pack": "core",
       "size": "medium",
       "title": "October spend",
       "source": {
@@ -26,6 +27,7 @@
     {
       "id": "k2",
       "type": "chart",
+      "pack": "core",
       "size": "medium",
       "title": "Spend by week, October",
       "source": {
@@ -69,6 +71,7 @@
     {
       "id": "k3",
       "type": "list",
+      "pack": "core",
       "size": "medium",
       "title": "Before the trip to Maple Park",
       "blocks": [
@@ -99,6 +102,7 @@
     {
       "id": "k4",
       "type": "table",
+      "pack": "core",
       "size": "medium",
       "title": "Unpaid invoices",
       "source": {
@@ -143,6 +147,7 @@
     {
       "id": "k5",
       "type": "note",
+      "pack": "core",
       "size": "medium",
       "title": "What we agreed with Sam",
       "blocks": [
@@ -155,6 +160,7 @@
     {
       "id": "k6",
       "type": "timeline",
+      "pack": "core",
       "size": "medium",
       "title": "Monday, Oct 26",
       "source": {
@@ -194,6 +200,7 @@
     {
       "id": "k7",
       "type": "compare",
+      "pack": "core",
       "size": "medium",
       "title": "Two flats near Maple Park",
       "asks": [
@@ -285,6 +292,7 @@
     {
       "id": "k8",
       "type": "next_up",
+      "pack": "core",
       "size": "small",
       "title": "Next up",
       "source": {
@@ -324,6 +332,7 @@
     {
       "id": "k9",
       "type": "free_time",
+      "pack": "core",
       "size": "medium",
       "title": "Free for an hour or more this week",
       "source": {
@@ -356,6 +365,7 @@
     {
       "id": "k10",
       "type": "inbox",
+      "pack": "core",
       "size": "medium",
       "title": "Email since this morning",
       "source": {
@@ -399,6 +409,7 @@
     {
       "id": "k11",
       "type": "thread",
+      "pack": "core",
       "size": "medium",
       "title": "Sam needs an answer",
       "source": {
@@ -437,6 +448,7 @@
     {
       "id": "k12",
       "type": "mentions",
+      "pack": "core",
       "size": "wide",
       "title": "Mentions since Friday",
       "source": {
@@ -479,6 +491,7 @@
     {
       "id": "k13",
       "type": "files",
+      "pack": "core",
       "size": "medium",
       "title": "Edited this week",
       "source": {
@@ -514,6 +527,7 @@
     {
       "id": "k14",
       "type": "quote",
+      "pack": "core",
       "size": "small",
       "title": "What the client said",
       "source": {
@@ -532,6 +546,7 @@
     {
       "id": "k15",
       "type": "plan",
+      "pack": "core",
       "size": "medium",
       "title": "Move to the Elm Street office",
       "asks": [
@@ -576,6 +591,7 @@
     {
       "id": "k16",
       "type": "decision",
+      "pack": "core",
       "size": "wide",
       "title": "Which venue for the team day",
       "blocks": [
@@ -622,6 +638,7 @@
     {
       "id": "k17",
       "type": "facts",
+      "pack": "core",
       "size": "small",
       "title": "Flight to the conference",
       "source": {
@@ -655,6 +672,7 @@
     {
       "id": "k18",
       "type": "callout",
+      "pack": "core",
       "size": "small",
       "title": "Rent goes up in December",
       "source": {
@@ -675,6 +693,7 @@
     {
       "id": "k19",
       "type": "goal",
+      "pack": "core",
       "size": "small",
       "title": "Holiday fund",
       "source": {
@@ -699,6 +718,7 @@
     {
       "id": "k20",
       "type": "sources",
+      "pack": "core",
       "size": "medium",
       "title": "Where the venue figures came from",
       "blocks": [
@@ -725,7 +745,962 @@
     },
     {
       "id": "k21",
+      "type": "kpis",
+      "pack": "core",
+      "size": "wide",
+      "title": "October so far",
+      "source": {
+        "name": "Stripe",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Who churned this month?"
+      ],
+      "blocks": [
+        {
+          "type": "columns",
+          "columns": [
+            [
+              {
+                "type": "value",
+                "value": "$48,200",
+                "label": "Revenue",
+                "delta": "+8% vs September",
+                "tone": "good"
+              },
+              {
+                "type": "sparkline",
+                "values": [
+                  9800,
+                  11200,
+                  12900,
+                  14300
+                ],
+                "tone": "good"
+              }
+            ],
+            [
+              {
+                "type": "value",
+                "value": "37",
+                "label": "New customers",
+                "delta": "+5",
+                "tone": "good"
+              },
+              {
+                "type": "sparkline",
+                "values": [
+                  7,
+                  9,
+                  10,
+                  11
+                ],
+                "tone": "good"
+              }
+            ],
+            [
+              {
+                "type": "value",
+                "value": "2.1%",
+                "label": "Churn",
+                "delta": "+0.4 pts",
+                "tone": "bad"
+              },
+              {
+                "type": "sparkline",
+                "values": [
+                  1.6,
+                  1.7,
+                  1.9,
+                  2.1
+                ],
+                "tone": "bad"
+              }
+            ],
+            [
+              {
+                "type": "value",
+                "value": "$640",
+                "label": "Refunds",
+                "delta": "3 this month"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k22",
+      "type": "tasks",
+      "pack": "core",
+      "size": "medium",
+      "title": "Launch week",
+      "source": {
+        "name": "Linear",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "What is blocking pricing?"
+      ],
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Book the venue",
+              "detail": "Done",
+              "person": "Alex",
+              "status": "good",
+              "done": true
+            },
+            {
+              "title": "Write the launch post",
+              "detail": "In progress",
+              "person": "Jo",
+              "status": "attention",
+              "when": "2026-10-27",
+              "chip": "High",
+              "done": false
+            },
+            {
+              "title": "New pricing page",
+              "detail": "Blocked",
+              "person": "Sam",
+              "status": "bad",
+              "when": "2026-10-28",
+              "chip": "High",
+              "done": false
+            },
+            {
+              "title": "Order name badges",
+              "detail": "To do",
+              "person": "Alex",
+              "meta": "Due Friday",
+              "done": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k23",
+      "type": "transactions",
+      "pack": "money",
+      "size": "medium",
+      "title": "Payments today",
+      "source": {
+        "name": "Stripe",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "value",
+          "value": "$1,529",
+          "label": "Total"
+        },
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Maple Park Dental",
+              "person": "Maple Park Dental",
+              "amount": "$1,200",
+              "detail": "Annual plan, 10 seats",
+              "when": "2026-10-25T09:12"
+            },
+            {
+              "title": "Elm Street Bakery",
+              "person": "Elm Street Bakery",
+              "amount": "$89",
+              "detail": "Monthly plan",
+              "when": "2026-10-25T08:40"
+            },
+            {
+              "title": "Alex Rivera Design",
+              "person": "Alex Rivera Design",
+              "amount": "$240",
+              "detail": "Extra seats · Pending",
+              "amount_tone": "attention",
+              "when": "2026-10-25T08:05"
+            },
+            {
+              "title": "Jo Park",
+              "person": "Jo Park",
+              "amount": "$89",
+              "detail": "Card declined · Failed",
+              "amount_tone": "bad",
+              "when": "2026-10-25T07:30"
+            },
+            {
+              "title": "The Boathouse",
+              "person": "The Boathouse",
+              "amount": "$45",
+              "detail": "Duplicate charge · Refunded",
+              "amount_tone": "bad",
+              "when": "2026-10-24T17:55"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k24",
+      "type": "invoices",
+      "pack": "money",
+      "size": "medium",
+      "title": "Unpaid invoices",
+      "source": {
+        "name": "PayPal",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Remind the two that are late"
+      ],
+      "blocks": [
+        {
+          "type": "value",
+          "value": "$2,050",
+          "label": "Overdue",
+          "hint": "2 invoices"
+        },
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Maple Park Dental",
+              "amount": "$1,200",
+              "detail": "Overdue",
+              "amount_tone": "bad",
+              "when": "2026-10-10"
+            },
+            {
+              "title": "Alex Rivera Design",
+              "amount": "$850",
+              "detail": "Overdue",
+              "amount_tone": "bad",
+              "when": "2026-10-18"
+            },
+            {
+              "title": "Elm Street Bakery",
+              "amount": "$420",
+              "when": "2026-10-31"
+            },
+            {
+              "title": "The Boathouse",
+              "amount": "$1,750",
+              "when": "2026-11-15"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k25",
+      "type": "breakdown",
+      "pack": "money",
+      "size": "medium",
+      "title": "Sales by category, October",
+      "source": {
+        "name": "Square",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "bars",
+          "items": [
+            {
+              "label": "Coffee",
+              "value": 8420
+            },
+            {
+              "label": "Pastries",
+              "value": 5130
+            },
+            {
+              "label": "Lunch",
+              "value": 3960
+            },
+            {
+              "label": "Retail beans",
+              "value": 1870
+            },
+            {
+              "label": "Gift cards",
+              "value": 640
+            }
+          ],
+          "unit": "$"
+        }
+      ]
+    },
+    {
+      "id": "k26",
+      "type": "payouts",
+      "pack": "money",
+      "size": "medium",
+      "title": "Next payouts",
+      "source": {
+        "name": "Stripe",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "value",
+          "value": "$6,880",
+          "label": "Total"
+        },
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Tue 27 Oct",
+              "amount": "$3,420",
+              "detail": "To the account ending 4410"
+            },
+            {
+              "title": "Thu 29 Oct",
+              "amount": "$2,180",
+              "detail": "To the account ending 4410"
+            },
+            {
+              "title": "Fri 30 Oct",
+              "amount": "$1,280",
+              "detail": "Held 2 days for a dispute"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k27",
+      "type": "pipeline",
+      "pack": "customers",
+      "size": "medium",
+      "title": "Q4 pipeline",
+      "source": {
+        "name": "HubSpot",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Which proposals are stuck?"
+      ],
+      "blocks": [
+        {
+          "type": "funnel",
+          "stages": [
+            {
+              "label": "Leads",
+              "count": 48,
+              "value": "$212,000"
+            },
+            {
+              "label": "Qualified",
+              "count": 21,
+              "value": "$118,000"
+            },
+            {
+              "label": "Proposal",
+              "count": 9,
+              "value": "$64,500"
+            },
+            {
+              "label": "Won",
+              "count": 4,
+              "value": "$31,200"
+            }
+          ]
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Total value",
+              "value": "$425,700"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k28",
+      "type": "deal",
+      "pack": "customers",
+      "size": "medium",
+      "title": "Maple Park Dental, 40 seats",
+      "source": {
+        "name": "HubSpot",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Draft the revised quote"
+      ],
+      "blocks": [
+        {
+          "type": "value",
+          "value": "$18,000 a year"
+        },
+        {
+          "type": "stages",
+          "steps": [
+            "Lead",
+            "Qualified",
+            "Proposal",
+            "Negotiation",
+            "Won"
+          ],
+          "current": "Proposal"
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Owner",
+              "value": "Sam"
+            },
+            {
+              "label": "Next step",
+              "value": "Send the revised quote"
+            },
+            {
+              "label": "Closes",
+              "value": "Fri 20 Nov"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k29",
+      "type": "contact",
+      "pack": "customers",
+      "size": "medium",
+      "title": "Jo Park",
+      "source": {
+        "name": "HubSpot",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "person",
+          "name": "Jo Park",
+          "detail": "Head of operations at Maple Park Dental"
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Customer since",
+              "value": "Mar 2024"
+            },
+            {
+              "label": "Plan",
+              "value": "Annual, 10 seats"
+            },
+            {
+              "label": "Lifetime value",
+              "value": "$4,800"
+            }
+          ]
+        },
+        {
+          "type": "rows",
+          "label": "Recent activity",
+          "items": [
+            {
+              "title": "Opened the 40-seat proposal",
+              "when": "2026-10-24T16:20"
+            },
+            {
+              "title": "Call with Sam about onboarding",
+              "when": "2026-10-22T11:00"
+            },
+            {
+              "title": "Asked for a second admin login",
+              "when": "2026-10-19T09:45"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k30",
+      "type": "campaign",
+      "pack": "customers",
+      "size": "medium",
+      "title": "October newsletter",
+      "source": {
+        "name": "Resend",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "funnel",
+          "stages": [
+            {
+              "label": "Sent",
+              "count": 4200
+            },
+            {
+              "label": "Delivered",
+              "count": 4150
+            },
+            {
+              "label": "Opened",
+              "count": 1890
+            },
+            {
+              "label": "Clicked",
+              "count": 412
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k31",
+      "type": "support_queue",
+      "pack": "customers",
+      "size": "medium",
+      "title": "Support",
+      "source": {
+        "name": "Intercom",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Draft a reply to Sam"
+      ],
+      "blocks": [
+        {
+          "type": "value",
+          "value": "14",
+          "label": "Open"
+        },
+        {
+          "type": "rows",
+          "label": "Waiting longest",
+          "items": [
+            {
+              "title": "Sam",
+              "person": "Sam",
+              "detail": "Export to a spreadsheet",
+              "when": "2026-10-23T10:05"
+            },
+            {
+              "title": "Jo Park",
+              "person": "Jo Park",
+              "detail": "Refund for a double charge",
+              "when": "2026-10-24T15:30"
+            },
+            {
+              "title": "Alex",
+              "person": "Alex",
+              "detail": "Can't add a second admin",
+              "when": "2026-10-25T08:10"
+            }
+          ]
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "First reply",
+              "value": "1h 40m"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k32",
+      "type": "checks",
+      "pack": "building",
+      "size": "medium",
+      "title": "Checks on the new checkout",
+      "source": {
+        "name": "GitHub",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "Why are the end-to-end tests failing?"
+      ],
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Unit tests",
+              "status": "good",
+              "detail": "Passing",
+              "when": "2026-10-25T09:40"
+            },
+            {
+              "title": "Type check",
+              "status": "good",
+              "detail": "Passing",
+              "when": "2026-10-25T09:38"
+            },
+            {
+              "title": "End-to-end tests",
+              "status": "bad",
+              "detail": "Failing",
+              "when": "2026-10-25T09:44"
+            },
+            {
+              "title": "Preview build",
+              "status": "attention",
+              "detail": "Running"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k33",
+      "type": "errors",
+      "pack": "building",
+      "size": "medium",
+      "title": "Errors this week",
+      "source": {
+        "name": "Sentry",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "sparkline",
+          "values": [
+            42,
+            38,
+            51,
+            47,
+            160,
+            210,
+            185
+          ]
+        },
+        {
+          "type": "bars",
+          "items": [
+            {
+              "label": "TypeError in checkout",
+              "value": 412,
+              "note": "96 users"
+            },
+            {
+              "label": "Timeout on search",
+              "value": 138,
+              "note": "41 users"
+            },
+            {
+              "label": "Image upload too large",
+              "value": 54,
+              "note": "22 users"
+            },
+            {
+              "label": "Missing avatar",
+              "value": 12,
+              "note": "9 users"
+            }
+          ],
+          "unit": "events"
+        }
+      ]
+    },
+    {
+      "id": "k34",
+      "type": "deploys",
+      "pack": "building",
+      "size": "medium",
+      "title": "Recent deploys",
+      "source": {
+        "name": "Vercel",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "New checkout flow",
+              "status": "attention",
+              "detail": "Building",
+              "chip": "checkout",
+              "when": "2026-10-25T09:44"
+            },
+            {
+              "title": "Fix the header on small screens",
+              "status": "good",
+              "detail": "Ready",
+              "chip": "main",
+              "when": "2026-10-25T08:15"
+            },
+            {
+              "title": "Try the new font",
+              "status": "bad",
+              "detail": "Failed",
+              "chip": "type",
+              "when": "2026-10-24T16:30"
+            },
+            {
+              "title": "Pricing copy",
+              "status": "good",
+              "detail": "Ready",
+              "chip": "main",
+              "when": "2026-10-24T11:05"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k35",
+      "type": "services",
+      "pack": "building",
+      "size": "medium",
+      "title": "Status right now",
+      "source": {
+        "name": "Supabase",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "status",
+          "tone": "attention",
+          "text": "1 degraded"
+        },
+        {
+          "type": "rows",
+          "items": [
+            {
+              "title": "Database",
+              "status": "good"
+            },
+            {
+              "title": "Auth",
+              "status": "good"
+            },
+            {
+              "title": "Storage",
+              "status": "attention",
+              "detail": "Degraded · Slow uploads since 9:20"
+            },
+            {
+              "title": "Realtime",
+              "status": "good"
+            },
+            {
+              "title": "Edge functions",
+              "status": "good"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k36",
+      "type": "kanban",
+      "pack": "work",
+      "size": "wide",
+      "title": "Website refresh",
+      "source": {
+        "name": "Linear",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "columns",
+          "columns": [
+            [
+              {
+                "type": "rows",
+                "label": "To do · 9",
+                "items": [
+                  {
+                    "title": "Footer links"
+                  },
+                  {
+                    "title": "Cookie notice"
+                  },
+                  {
+                    "title": "404 page"
+                  }
+                ]
+              }
+            ],
+            [
+              {
+                "type": "rows",
+                "label": "Doing · 2",
+                "items": [
+                  {
+                    "title": "Pricing page"
+                  },
+                  {
+                    "title": "New header"
+                  }
+                ]
+              }
+            ],
+            [
+              {
+                "type": "rows",
+                "label": "Review · 1",
+                "items": [
+                  {
+                    "title": "Team photos"
+                  }
+                ]
+              }
+            ],
+            [
+              {
+                "type": "rows",
+                "label": "Done · 14",
+                "items": [
+                  {
+                    "title": "Logo"
+                  },
+                  {
+                    "title": "Colour tokens"
+                  },
+                  {
+                    "title": "Contact form"
+                  }
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k37",
+      "type": "sprint",
+      "pack": "work",
+      "size": "medium",
+      "title": "Sprint 42",
+      "source": {
+        "name": "Jira and Confluence",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "asks": [
+        "What won't make it?"
+      ],
+      "blocks": [
+        {
+          "type": "meter",
+          "value": 12,
+          "max": 20,
+          "label": "12 of 20 done"
+        },
+        {
+          "type": "chart",
+          "kind": "line",
+          "x": [
+            "Day 1",
+            "Day 2",
+            "Day 3",
+            "Day 4",
+            "Day 5",
+            "Day 6",
+            "Day 7"
+          ],
+          "series": [
+            {
+              "name": "Remaining",
+              "values": [
+                20,
+                19,
+                17,
+                15,
+                14,
+                11,
+                8
+              ]
+            }
+          ]
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Ends",
+              "value": "Fri 30 Oct"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k38",
+      "type": "due_soon",
+      "pack": "work",
+      "size": "medium",
+      "title": "Due this week",
+      "source": {
+        "name": "Todoist",
+        "at": "2026-10-25T09:00:00Z"
+      },
+      "blocks": [
+        {
+          "type": "rows",
+          "label": "Yesterday",
+          "items": [
+            {
+              "title": "Renew the domain",
+              "person": "Alex",
+              "status": "bad"
+            }
+          ]
+        },
+        {
+          "type": "rows",
+          "label": "Today",
+          "items": [
+            {
+              "title": "Send the quote to Maple Park",
+              "person": "Sam",
+              "when": "2026-10-25T17:00"
+            }
+          ]
+        },
+        {
+          "type": "rows",
+          "label": "Tomorrow",
+          "items": [
+            {
+              "title": "Pay the Elm Street rent"
+            },
+            {
+              "title": "Review the launch post",
+              "person": "Jo",
+              "when": "2026-10-26T15:00"
+            }
+          ]
+        },
+        {
+          "type": "rows",
+          "label": "Thu 29 Oct",
+          "items": [
+            {
+              "title": "Book the movers"
+            }
+          ]
+        },
+        {
+          "type": "rows",
+          "label": "Fri 30 Oct",
+          "items": [
+            {
+              "title": "File the quarterly taxes"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k39",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "Who's on call this week",
       "source": {
@@ -764,8 +1739,9 @@
       ]
     },
     {
-      "id": "k22",
+      "id": "k40",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "Two offices, October",
       "source": {
@@ -841,8 +1817,9 @@
   ],
   "blocks": [
     {
-      "id": "k23",
+      "id": "k41",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "value",
       "blocks": [
@@ -856,8 +1833,9 @@
       ]
     },
     {
-      "id": "k24",
+      "id": "k42",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "sparkline",
       "blocks": [
@@ -876,8 +1854,9 @@
       ]
     },
     {
-      "id": "k25",
+      "id": "k43",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "meter",
       "blocks": [
@@ -890,8 +1869,9 @@
       ]
     },
     {
-      "id": "k26",
+      "id": "k44",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "time",
       "blocks": [
@@ -904,8 +1884,9 @@
       ]
     },
     {
-      "id": "k27",
+      "id": "k45",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "chart",
       "blocks": [
@@ -933,8 +1914,9 @@
       ]
     },
     {
-      "id": "k28",
+      "id": "k46",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "table",
       "blocks": [
@@ -959,8 +1941,9 @@
       ]
     },
     {
-      "id": "k29",
+      "id": "k47",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "timeline",
       "blocks": [
@@ -982,8 +1965,9 @@
       ]
     },
     {
-      "id": "k30",
+      "id": "k48",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "rows",
       "blocks": [
@@ -1004,14 +1988,22 @@
             {
               "title": "Rain jackets",
               "chip": "Elm Street"
+            },
+            {
+              "title": "Maple Park Dental",
+              "detail": "Invoice 214",
+              "when": "2026-10-10",
+              "amount": "$1,200",
+              "amount_tone": "bad"
             }
           ]
         }
       ]
     },
     {
-      "id": "k31",
+      "id": "k49",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "person",
       "blocks": [
@@ -1023,8 +2015,9 @@
       ]
     },
     {
-      "id": "k32",
+      "id": "k50",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "people",
       "blocks": [
@@ -1040,8 +2033,9 @@
       ]
     },
     {
-      "id": "k33",
+      "id": "k51",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "status",
       "blocks": [
@@ -1053,8 +2047,9 @@
       ]
     },
     {
-      "id": "k34",
+      "id": "k52",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "chips",
       "blocks": [
@@ -1069,8 +2064,9 @@
       ]
     },
     {
-      "id": "k35",
+      "id": "k53",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "text",
       "blocks": [
@@ -1081,8 +2077,9 @@
       ]
     },
     {
-      "id": "k36",
+      "id": "k54",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "quote",
       "blocks": [
@@ -1094,8 +2091,9 @@
       ]
     },
     {
-      "id": "k37",
+      "id": "k55",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "facts",
       "blocks": [
@@ -1115,8 +2113,9 @@
       ]
     },
     {
-      "id": "k38",
+      "id": "k56",
       "type": "custom",
+      "pack": "core",
       "size": "medium",
       "title": "columns",
       "blocks": [
@@ -1138,6 +2137,91 @@
               }
             ]
           ]
+        }
+      ]
+    },
+    {
+      "id": "k57",
+      "type": "custom",
+      "pack": "core",
+      "size": "medium",
+      "title": "bars",
+      "blocks": [
+        {
+          "type": "bars",
+          "items": [
+            {
+              "label": "Rent",
+              "value": 1950
+            },
+            {
+              "label": "Groceries",
+              "value": 612,
+              "note": "Up $80 on September"
+            },
+            {
+              "label": "Travel",
+              "value": 245
+            },
+            {
+              "label": "Eating out",
+              "value": 180
+            }
+          ],
+          "unit": "$"
+        }
+      ]
+    },
+    {
+      "id": "k58",
+      "type": "custom",
+      "pack": "core",
+      "size": "medium",
+      "title": "funnel",
+      "blocks": [
+        {
+          "type": "funnel",
+          "stages": [
+            {
+              "label": "Leads",
+              "count": 48,
+              "value": "$212,000"
+            },
+            {
+              "label": "Qualified",
+              "count": 21,
+              "value": "$118,000"
+            },
+            {
+              "label": "Proposal",
+              "count": 9,
+              "value": "$64,500"
+            },
+            {
+              "label": "Won",
+              "count": 4,
+              "value": "$31,200"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k59",
+      "type": "custom",
+      "pack": "core",
+      "size": "medium",
+      "title": "stages",
+      "blocks": [
+        {
+          "type": "stages",
+          "steps": [
+            "Lead",
+            "Qualified",
+            "Proposal",
+            "Won"
+          ],
+          "current": "Proposal"
         }
       ]
     }

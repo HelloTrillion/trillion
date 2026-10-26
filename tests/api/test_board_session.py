@@ -157,3 +157,34 @@ async def test_a_failed_edit_resends_the_saved_board(rt: Runtime) -> None:
     await s.handle({"type": "board.close"})
     assert page.all("board")[-1]["board"] == shown
     await s.close()
+
+
+async def test_today_on_a_page_is_the_users_day_on_start_and_on_a_resend(rt: Runtime) -> None:
+    """A day apart from the server's: the board a page is sent, outside her own
+    changes, says "Today" on the user's day."""
+    from datetime import date
+
+    from trillion.workspace.blocks import day_in
+
+    zone = next(z for z in ("Pacific/Kiritimati", "Pacific/Pago_Pago") if day_in(z) != date.today())
+    rt.zone = lambda: zone  # type: ignore[method-assign]
+    page = Page(rt)
+    s = await Session.start(rt, page.send, None)
+    assert rt.boards is not None
+    due = {
+        "type": "due_soon",
+        "items": [{"title": "Send the deck", "due": day_in(zone).isoformat()}],
+    }
+    await rt.boards.show(s.id, None, [due])
+
+    def label(board: dict[str, Any]) -> str:
+        return str(board["widgets"][0]["blocks"][0]["label"])
+
+    again = Page(rt)
+    s2 = await Session.start(rt, again.send, s.id)
+    assert label(again.all("board")[0]["board"]) == "Today"
+    # Already open, so nothing changes and the page is sent the board as it is.
+    await s2.handle({"type": "board.open"})
+    assert len(again.all("board")) == 2 and label(again.all("board")[-1]["board"]) == "Today"
+    await s2.close()
+    await s.close()

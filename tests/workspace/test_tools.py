@@ -18,9 +18,9 @@ from trillion.spine.router import RouterResponse
 from trillion.spine.untrusted import wrap
 from trillion.storage.sqlite.board_store import BoardNotSaved
 from trillion.tools.describe import NAME as DESCRIBE_SELF
-from trillion.tools.workspace import CLOSE, REMOVE, SHOW, UPDATE
+from trillion.tools.workspace import CLOSE, REMOVE, SHOW, UPDATE, definitions
 from trillion.workspace.blocks import BLOCK_TYPES
-from trillion.workspace.widgets import TYPES as TYPES_OF_WIDGET
+from trillion.workspace.packs import PACK_OF, PACKS, told
 
 TOOLS = (SHOW, UPDATE, REMOVE, CLOSE)
 STAT = {"type": "stat", "label": "Total", "value": "$41.20"}
@@ -166,16 +166,59 @@ def test_show_carries_a_card_per_type() -> None:
     assert "Widget types (field? optional, field[] a list, others required):" in text
     assert "next_up: event, start, end?, where?, people[]?, note?" in text
     assert text.count("custom: ") == 1
-    for kind in TYPES_OF_WIDGET:
-        assert f"{kind}: " in text, kind
+    # Until a connector says otherwise, the core widgets only.
+    for kind in PACKS["core"]:
+        assert f"\n{kind}: " in text, kind
+    for pack in ("money", "customers", "building", "work"):
+        for kind in PACKS[pack]:
+            assert f"\n{kind}: " not in text, kind
     # The custom widget's blocks, by name.
     for block in BLOCK_TYPES:
         assert f"{block} {{" in text, block
 
 
+def _size(types: list[str]) -> int:
+    """The four tools as a provider sends them, with these widget types told."""
+    told_ = definitions(types)
+    return len(
+        json.dumps(
+            [
+                {"name": d.name, "description": d.description, "input_schema": d.input_schema}
+                for d in (told_[name] for name in TOOLS)
+            ]
+        )
+    )
+
+
 def test_the_four_tools_stay_small() -> None:
     size = len(json.dumps([_as_the_model_sees(name) for name in TOOLS]))
+    assert size == _size(told([]))
     assert size < 12_000, size
+
+
+def test_the_four_tools_stay_small_with_every_pack() -> None:
+    size = _size(told(PACK_OF))
+    assert size < 16_000, size
+
+
+@pytest.mark.parametrize("member", ["stripe", "hubspot", "sentry", "linear"])
+def test_a_pack_adds_its_cards(member: str) -> None:
+    show = definitions(told([member]))[SHOW]
+    pack = PACK_OF[member]
+    for kind in PACKS[pack]:
+        assert f"\n{kind}: " in show.description, kind
+    # Only what she is told changes.
+    registered = ToolRegistry.discover().definition(SHOW)
+    assert registered is not None
+    assert (show.risk, show.category) == (registered.risk, registered.category)
+
+
+async def test_a_pack_widget_is_shown_with_no_pack_told(rt: Runtime) -> None:
+    widget = {"type": "transactions", "items": [{"who": "Sam", "amount": "$120"}]}
+    done = await call(rt, SHOW, {"widgets": [widget]})
+    assert done.status == "succeeded", done.content
+    board = await saved(rt)
+    assert board is not None and board["widgets"][0]["type"] == "transactions"
 
 
 async def test_the_page_gets_blocks_and_her_source_is_stamped(rt: Runtime) -> None:

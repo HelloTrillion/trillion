@@ -36,6 +36,9 @@ MINIMAL: list[dict[str, Any]] = [
         "type": "columns",
         "columns": [[{"type": "value", "value": "1"}], [{"type": "text", "text": "a"}]],
     },
+    {"type": "bars", "items": [{"label": "Rent", "value": 1950}]},
+    {"type": "funnel", "stages": [{"label": "Leads", "count": 40}, {"label": "Won", "count": 6}]},
+    {"type": "stages", "steps": ["Lead", "Won"], "current": "Lead"},
 ]
 
 FULL: list[dict[str, Any]] = [
@@ -82,7 +85,30 @@ FULL: list[dict[str, Any]] = [
     {"type": "chips", "items": ["a"], "tone": "neutral"},
     {"type": "text", "text": "Warm.", "tone": "attention"},
     {"type": "quote", "text": "Hi.", "by": "Jo", "when": "2026-10-25T14:30:00Z"},
+    {
+        "type": "bars",
+        "items": [
+            {"label": "Rent", "value": 1950, "note": "Due Nov 1"},
+            {"label": "Food", "value": 612.5},
+        ],
+        "unit": "$",
+        "tone": "neutral",
+    },
+    {
+        "type": "funnel",
+        "stages": [
+            {"label": "Leads", "count": 40, "value": "$120,000"},
+            {"label": "Proposal", "count": 12, "value": "$48,000"},
+            {"label": "Won", "count": 6},
+        ],
+    },
+    {"type": "stages", "steps": ["Lead", "Proposal", "Won"], "current": 1, "tone": "good"},
 ]
+
+
+def chunks(blocks_: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """A card holds 8 blocks; check a long list a card at a time."""
+    return [blocks_[i : i + 8] for i in range(0, len(blocks_), 8)]
 
 
 def refused(raw: object, where: str = WHERE) -> str:
@@ -96,7 +122,7 @@ def one(block: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_every_block_type_accepted_with_minimal_fields() -> None:
-    out = validate_blocks(MINIMAL[:8], WHERE) + validate_blocks(MINIMAL[8:], WHERE)
+    out = [b for part in chunks(MINIMAL) for b in validate_blocks(part, WHERE)]
     assert [b["type"] for b in out] == [b["type"] for b in MINIMAL]
 
 
@@ -438,10 +464,8 @@ def test_full_fields_keep_their_values() -> None:
 
 def test_input_is_not_changed() -> None:
     before = copy.deepcopy(FULL + MINIMAL)
-    validate_blocks(FULL[:8], WHERE)
-    validate_blocks(FULL[8:], WHERE)
-    validate_blocks(MINIMAL[:8], WHERE)
-    validate_blocks(MINIMAL[8:], WHERE)
+    for part in chunks(FULL) + chunks(MINIMAL):
+        validate_blocks(part, WHERE)
     assert before == FULL + MINIMAL
 
 
@@ -469,3 +493,102 @@ def test_a_bare_clock_time_is_today(
     assert one({"type": "quote", "text": "x", "when": given})["when"] == stored
     got = one({"type": "rows", "items": [{"title": "a", "when": given}]})
     assert got["items"][0]["when"] == stored
+
+
+# Bars, funnel and stages
+
+
+def test_bars_keep_their_fields() -> None:
+    assert one(FULL[-3]) == FULL[-3]
+    got = one({"type": "bars", "items": [{"label": 2026, "value": 3.0, "x": 1}], "tone": "up"})
+    assert got == {"type": "bars", "items": [{"label": "2026", "value": 3.0}], "tone": "good"}
+
+
+def test_bars_limits() -> None:
+    bar = {"label": "Rent", "value": 1}
+    assert "items is empty" in refused([{"type": "bars", "items": []}])
+    assert "11 items, 10 at most" in refused([{"type": "bars", "items": [bar] * 11}])
+    assert len(one({"type": "bars", "items": [bar] * 10})["items"]) == 10
+    msg = refused([{"type": "bars", "items": [bar, {"label": "Food", "value": -5}]}])
+    assert msg == "widget 1 (custom): block 1 (bars): item 2: value must be 0 or more, not -5."
+    assert "finite" in refused([{"type": "bars", "items": [{"label": "a", "value": float("nan")}]}])
+    assert "not a number" in refused([{"type": "bars", "items": [{"label": "a", "value": "5"}]}])
+    assert "item 1: label is required" in refused([{"type": "bars", "items": [{"value": 1}]}])
+
+
+def test_funnel_keeps_its_fields() -> None:
+    assert one(FULL[-2]) == FULL[-2]
+    got = one({"type": "funnel", "stages": [{"label": "a", "count": 0, "value": 12}] * 2})
+    assert got["stages"][0] == {"label": "a", "count": 0, "value": "12"}
+
+
+def test_funnel_limits() -> None:
+    stage = {"label": "Leads", "count": 4}
+    assert "needs at least 2 stages" in refused([{"type": "funnel", "stages": [stage]}])
+    assert "7 stages, 6 at most" in refused([{"type": "funnel", "stages": [stage] * 7}])
+    assert len(one({"type": "funnel", "stages": [stage] * 6})["stages"]) == 6
+    msg = refused([{"type": "funnel", "stages": [stage, {"label": "Won", "count": -1}]}])
+    assert msg == "widget 1 (custom): block 1 (funnel): stage 2: count must be 0 or more, not -1."
+    assert "stage 1: count is required" in refused(
+        [{"type": "funnel", "stages": [{"label": "a"}, stage]}]
+    )
+
+
+def test_stages_current_by_label_or_index() -> None:
+    steps = ["Lead", "Proposal", "Won"]
+    assert one(FULL[-1]) == FULL[-1]
+    assert one({"type": "stages", "steps": steps, "current": "Won"})["current"] == "Won"
+    # A label as she spelled it differently is the step's own.
+    assert one({"type": "stages", "steps": steps, "current": " proposal "})["current"] == "Proposal"
+    assert one({"type": "stages", "steps": steps, "current": 2.0})["current"] == 2
+    assert one({"type": "stages", "steps": steps, "current": 0})["current"] == 0
+
+
+def test_stages_limits() -> None:
+    steps = ["Lead", "Proposal", "Won"]
+    assert "needs at least 2 steps" in refused(
+        [{"type": "stages", "steps": ["Lead"], "current": 0}]
+    )
+    assert "8 steps, 7 at most" in refused(
+        [{"type": "stages", "steps": list("abcdefgh"), "current": 0}]
+    )
+    assert refused([{"type": "stages", "steps": steps, "current": "Signed"}]) == (
+        "widget 1 (custom): block 1 (stages): current 'Signed' is not a step;"
+        " use one of Lead, Proposal, Won, or its position from 0."
+    )
+    assert refused([{"type": "stages", "steps": steps, "current": 3}]) == (
+        "widget 1 (custom): block 1 (stages): current 3 is not a step;"
+        " use one of Lead, Proposal, Won, or its position from 0."
+    )
+    for bad in (-1, True, 1.5):
+        assert "current" in refused([{"type": "stages", "steps": steps, "current": bad}])
+    assert "current is required" in refused([{"type": "stages", "steps": steps}])
+
+
+# Amounts on rows
+
+
+def test_rows_take_an_amount_and_its_tone() -> None:
+    got = one(
+        {
+            "type": "rows",
+            "items": [
+                {"title": "Sam", "amount": "$1,200", "amount_tone": "bad", "when": "2026-10-25"},
+                {"title": "Jo", "amount": 85.5, "amount_tone": "up"},
+            ],
+        }
+    )
+    assert got["items"] == [
+        {"title": "Sam", "when": "2026-10-25", "amount": "$1,200", "amount_tone": "bad"},
+        {"title": "Jo", "amount": "85.5", "amount_tone": "good"},
+    ]
+    assert (
+        len(
+            one({"type": "rows", "items": [{"title": "a", "amount": "9" * 50}]})["items"][0][
+                "amount"
+            ]
+        )
+        == 40
+    )
+    msg = refused([{"type": "rows", "items": [{"title": "a", "amount_tone": "red"}]}])
+    assert "item 1" in msg and "amount_tone must be one of" in msg

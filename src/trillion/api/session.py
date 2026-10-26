@@ -309,7 +309,7 @@ class Session:
         try:
             await session._send("history", messages=shown)
             # The conversation's board as it was left, open or closed (D3).
-            await session._send("board", board=for_page(await session._board()))
+            await session._send("board", board=for_page(await session._board(), rt.zone()))
             for a in await session._open_actions():
                 await session._send_card(a.id)
             session._started = True
@@ -545,7 +545,7 @@ class Session:
             logger.warning("board edit failed: %s", type(e).__name__)
             changed = False
         if not changed:
-            await self._send("board", board=for_page(await self._board()))
+            await self._send("board", board=for_page(await self._board(), self._rt.zone()))
 
     async def _on_text(self, text: object, *, ask: bool = False) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:

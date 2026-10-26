@@ -13,6 +13,8 @@ import {
   planRows,
   revive,
   rowTemplate,
+  sourceTile,
+  tileNames,
   sourceWords,
   spans,
 } from '../src/board';
@@ -190,6 +192,59 @@ describe('the board', () => {
     view.draw(board({ ...meeting, title: evil, source: { name: evil, at: '2026-10-25T14:03' }, asks: [evil] }));
     expect(view.el.querySelectorAll('img')).toHaveLength(0);
     expect(view.el.querySelector('.bd-card-title')?.textContent).toBe(evil);
+  });
+});
+
+describe('source tiles', () => {
+  const stripe = { id: 'stripe', title: 'Stripe', color: 'rgb(99 91 255)', glyph: 'S' };
+  const linear = { id: 'linear', title: 'Linear', color: 'rgb(94 106 210)', glyph: 'L' };
+  const payments: Widget = {
+    id: 'p1',
+    type: 'transactions',
+    size: 'medium',
+    title: 'Payments today',
+    blocks: [{ type: 'rows', items: [{ title: 'Sam', amount: '$40' }] }],
+    source: { name: 'stripe', at: '2026-10-25T14:03' },
+  };
+
+  it('finds the connected service a source names, ignoring case, and nothing else', () => {
+    expect(sourceTile({ name: ' STRIPE ' }, [linear, stripe])).toBe(stripe);
+    expect(sourceTile({ name: 'Stripe dashboard' }, [stripe])).toBeUndefined();
+    expect(sourceTile({ name: 'Stripe' }, [])).toBeUndefined();
+    expect(sourceTile(undefined, [stripe])).toBeUndefined();
+  });
+
+  it('takes the short name people say for a connector', () => {
+    expect(tileNames('Google Calendar')).toEqual(['google calendar', 'calendar']);
+    expect(tileNames('Jira and Confluence')).toEqual(['jira and confluence', 'jira']);
+    expect(tileNames('monday.com')).toEqual(['monday.com', 'monday']);
+    expect(tileNames('Stripe')).toEqual(['stripe']);
+    const calendar = { ...stripe, id: 'google-calendar', title: 'Google Calendar' };
+    expect(sourceTile({ name: 'Calendar' }, [calendar])).toBe(calendar);
+    expect(sourceTile({ name: 'Google Calendar' }, [calendar])).toBe(calendar);
+  });
+
+  it('shows the tile before the name only for a connected title, and keeps the age ticking', () => {
+    vi.useFakeTimers();
+    let tiles = [linear];
+    const { view, setNow } = mount({ connected: () => tiles });
+    view.draw(board(payments, meeting));
+    expect(view.el.querySelector('.bd-card-foot .connected-mark')).toBeNull();
+
+    tiles = [linear, stripe];
+    view.draw(board(payments, meeting));
+    const [pay, meet] = [...view.el.querySelectorAll('.bd-card')];
+    const tile = pay?.querySelector<HTMLElement>('.bd-source > .connected-mark-xs');
+    expect(tile?.textContent).toBe('S');
+    expect(tile?.getAttribute('aria-hidden')).toBe('true');
+    expect(pay?.querySelector('.bd-source-words')?.textContent).toBe('stripe · 2 min ago');
+    // Calendar is not connected here: the name alone, as before.
+    expect(meet?.querySelector('.connected-mark')).toBeNull();
+
+    setNow(new Date(2026, 9, 25, 14, 20));
+    vi.advanceTimersByTime(TICK_MS);
+    expect(pay?.querySelector('.bd-source-words')?.textContent).toBe('stripe · 17 min ago');
+    expect(pay?.querySelector('.connected-mark')).not.toBeNull();
   });
 });
 

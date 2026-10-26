@@ -75,9 +75,11 @@ from trillion.tools.workspace import (
     WorkspaceShow,
     WorkspaceUpdate,
 )
+from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
+from trillion.workspace.packs import told
 from trillion.workspace.service import Boards
 
 logger = logging.getLogger(__name__)
@@ -241,6 +243,9 @@ class Runtime:
     by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
+    # The widget types the workspace tools were last told, so an unchanged list is
+    # not built and validated again.
+    _told: list[str] | None = None
 
     def out_of_turn(self) -> int:
         """A fresh number for speech outside a turn, never reused in this process."""
@@ -358,6 +363,22 @@ class Runtime:
     async def stop_background(self) -> None:
         if self.scheduler is not None:
             await self.scheduler.stop()
+
+    def retell_workspace(self) -> None:
+        """Tell her the widget types the connectors listed now fill (widget packs, D2).
+        Configured and turned on is enough: a server still starting, or down for a
+        moment, does not take a pack's widgets away from her."""
+        states = self.mcp.states.values() if self.mcp is not None else []
+        ids = [s.config.catalog for s in states if s.config.catalog and not s.config.disabled]
+        types = told(ids)
+        # Most changes (a retune, a reconnect) leave the packs as they were.
+        if types == self._told:
+            return
+        for name, definition in board_definitions(types).items():
+            if self.registry.definition(name) is not None:
+                self.registry.redefine(name, definition)
+        # Only once all four took it: a failed redefine is tried again next time.
+        self._told = types
 
     def _mcp_fact(self) -> str:
         servers = self.mcp.states.values() if self.mcp is not None else []
@@ -534,7 +555,7 @@ async def open_runtime(
     if isinstance(web, WebFetch):
         rt.web = web
     # Connected in the background: a slow or broken server never delays the start.
-    rt.mcp = McpServers(registry, keychain, paths.home() / "mcp-logs")
+    rt.mcp = McpServers(registry, keychain, paths.home() / "mcp-logs", changed=rt.retell_workspace)
     rt.mcp_config = mcp_config
     rt.google = GoogleConnection(
         registry, keychain, google_config or paths.google_config_path(), env=env

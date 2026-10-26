@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { chatText, connectedSummary, filterCatalog, inkFor, readingTools, statusText, type CatalogEntry, type ToolRow } from '../src/connected';
+import {
+  chatText,
+  connectedSummary,
+  filterCatalog,
+  inkFor,
+  readingTools,
+  sourceTiles,
+  statusText,
+  type CatalogEntry,
+  type Connected,
+  type ToolRow,
+} from '../src/connected';
 
 const server = (status: 'connected' | 'failed' | 'disabled' | 'signing_in', problem = '') => ({ status, problem }) as const;
 
@@ -63,5 +74,40 @@ describe('connected tools', () => {
     expect(chatText({ ...c, configured: false })).toBe('Not set up');
     expect(chatText({ ...c, on: false })).toBe('Turned off');
     expect(chatText({ ...c, status: 'failed', problem: 'the token was revoked' })).toBe('Not connected: the token was revoked');
+  });
+});
+
+describe('sourceTiles', () => {
+  const stripe = entry('stripe', 'Stripe', 'Money');
+  const linear = entry('linear', 'Linear', 'Work');
+  const calendar: CatalogEntry = { ...entry('google-calendar', 'Google Calendar', 'Google'), how: 'google', service: 'calendar' };
+  const slack: CatalogEntry = { ...entry('slack', 'Slack', 'Chat'), how: 'slack' };
+  const all = [stripe, linear, calendar, slack];
+  const row = (catalog: string, disabled = false): unknown => ({ name: catalog || 'own', catalog, disabled });
+  const state = (servers: unknown[], catalog?: CatalogEntry[]): Connected =>
+    ({ config_path: '', problems: {}, servers, ...(catalog ? { catalog } : {}) }) as unknown as Connected;
+  const google = (accounts: string[]): Parameters<typeof sourceTiles>[1] => ({ services: { calendar: { title: 'Calendar', accounts, tools: [] } } });
+  const ids = (c: Connected | null, g: Parameters<typeof sourceTiles>[1] = null): string[] => sourceTiles(c, g).map((t) => t.id);
+
+  it('is nothing without a catalogue', () => {
+    expect(ids(null)).toEqual([]);
+    expect(ids(state([row('stripe')]))).toEqual([]);
+  });
+
+  it('leaves out a server turned off, and one not from the catalogue', () => {
+    expect(ids(state([row('stripe', true)], all))).toEqual([]);
+    expect(ids(state([row('')], all))).toEqual([]);
+  });
+
+  it('takes a catalogue server set up and on, as its id, title, colour and glyph', () => {
+    expect(ids(state([row('stripe'), row('linear', true), row('')], all))).toEqual(['stripe']);
+    expect(sourceTiles(state([row('stripe')], all))).toEqual([{ id: 'stripe', title: 'Stripe', color: '000000', glyph: 'S' }]);
+  });
+
+  it('takes a Google service only with an account signed in, and never a chat channel', () => {
+    expect(ids(state([], all))).toEqual([]);
+    expect(ids(state([], all), google([]))).toEqual([]);
+    expect(ids(state([], all), google(['sam@example.com']))).toEqual(['google-calendar']);
+    expect(ids(state([], all), { services: {} })).toEqual([]);
   });
 });
