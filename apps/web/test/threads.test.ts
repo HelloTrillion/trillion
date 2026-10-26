@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DAY_OPEN_WAIT_MS,
   appended,
   createDayOpener,
   escapeAction,
@@ -16,6 +17,7 @@ import {
   threadsOf,
   todayIn,
   untitled,
+  whenIdle,
   without,
   type Thread,
 } from '../src/threads';
@@ -345,5 +347,48 @@ describe('createDayOpener', () => {
       expect(s.switched).toEqual([]);
       expect(s.builds).toBe(0);
     }
+  });
+});
+
+describe('whenIdle', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('runs at once when she is already idle', () => {
+    let ran = 0;
+    whenIdle(() => true, () => ran++);
+    expect(ran).toBe(1);
+  });
+
+  it('waits for her reply to end, then runs once', () => {
+    vi.useFakeTimers();
+    let busy = true;
+    let ran = 0;
+    whenIdle(() => !busy, () => ran++);
+    vi.advanceTimersByTime(3000);
+    expect(ran).toBe(0);
+    busy = false;
+    vi.advanceTimersByTime(250);
+    expect(ran).toBe(1);
+    vi.advanceTimersByTime(5000);
+    expect(ran).toBe(1);
+  });
+
+  it('runs anyway at the cap', () => {
+    vi.useFakeTimers();
+    let ran = 0;
+    whenIdle(() => false, () => ran++);
+    vi.advanceTimersByTime(DAY_OPEN_WAIT_MS - 500);
+    expect(ran).toBe(0);
+    vi.advanceTimersByTime(500);
+    expect(ran).toBe(1);
+  });
+
+  it('can be called off', () => {
+    vi.useFakeTimers();
+    let ran = 0;
+    const cancel = whenIdle(() => false, () => ran++);
+    cancel();
+    vi.advanceTimersByTime(DAY_OPEN_WAIT_MS * 2);
+    expect(ran).toBe(0);
   });
 });

@@ -225,6 +225,29 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
   };
 }
 
+/** How long `day.open` waits for her to finish before opening the day anyway. */
+export const DAY_OPEN_WAIT_MS = 15_000;
+const DAY_OPEN_POLL_MS = 200;
+
+/**
+ * Run `then` once `idle()` holds, checked now and every moment after, or at `capMs`
+ * whatever. `day.open` comes mid-reply ("Opening your day."): switching at once would
+ * close the socket and cut her off. Returns a cancel.
+ */
+export function whenIdle(idle: () => boolean, then: () => void, capMs = DAY_OPEN_WAIT_MS): () => void {
+  if (idle()) {
+    then();
+    return () => undefined;
+  }
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (!idle() && Date.now() - started < capMs) return;
+    clearInterval(timer);
+    then();
+  }, DAY_OPEN_POLL_MS);
+  return () => clearInterval(timer);
+}
+
 /** What Escape does, in one order: she stops first, then the thread list closes, then the workspace. */
 export function escapeAction(s: {
   readonly busy: boolean;

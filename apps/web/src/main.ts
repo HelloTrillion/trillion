@@ -45,7 +45,7 @@ import {
 import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
 import { createSidebar, revealForCard } from './sidebar';
-import { createDayOpener, createThreads, escapeAction, listPath } from './threads';
+import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
@@ -1080,6 +1080,8 @@ function talkNames(): void {
 function switchTo(id: string | null): void {
   // She stops first, so nothing of this conversation plays over the next one. Only a
   // reply under way needs the core told; the rest is this page's to quiet.
+  // The user went somewhere themselves: a day.open still waiting is dropped.
+  cancelDayOpen();
   if (view.busy) send({ type: 'interrupt' });
   quiet();
   store(CONVERSATION_KEY, id);
@@ -1117,6 +1119,9 @@ const day = createDayOpener({
   switchTo: (id) => switchTo(id),
   build: () => send({ type: 'day.build' }),
 });
+
+// A `day.open` waiting for her to finish; a newer one replaces it.
+let cancelDayOpen: () => void = () => undefined;
 
 const threads = createThreads({
   root: threadsEl,
@@ -1207,10 +1212,18 @@ function connect(): void {
       boardView.reset();
       day.session();
     }
-    // She was asked about the day from a chat: the page opens it, as the entry does.
+    // She was asked about the day from a chat: the page opens it, as the entry does, once
+    // her reply ("Opening your day.") is over, so the switch never cuts her off.
     if (msg.type === 'day.open') {
-      threads.close();
-      void day.open();
+      cancelDayOpen();
+      cancelDayOpen = whenIdle(
+        () => !view.busy && !voice.active,
+        () => {
+          cancelDayOpen = () => undefined;
+          threads.close();
+          void day.open();
+        },
+      );
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
