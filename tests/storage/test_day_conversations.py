@@ -33,7 +33,7 @@ async def test_one_day_conversation_per_date(store: SqliteConversationStore) -> 
     assert (again, created) == (cid, False)
     other, created = await store.day_conversation(OWNER, "2026-10-27", "Your day · Tue", 3000)
     assert created and other != cid
-    assert await store.kind_of(cid, OWNER) == "day"
+    assert await store.kind_of(cid, OWNER) == ("day", "2026-10-26")
     # Named by the host, so her naming never replaces it.
     assert await store.title_of(cid, OWNER) == (TITLE, "user")
     assert await store.exists(cid, OWNER)
@@ -54,11 +54,21 @@ async def test_two_rows_for_one_date_are_refused(store: SqliteConversationStore)
         )
 
 
-async def test_a_deleted_day_comes_back(store: SqliteConversationStore) -> None:
+async def test_a_deleted_day_gives_a_fresh_one(store: SqliteConversationStore) -> None:
     cid, _ = await store.day_conversation(OWNER, "2026-10-26", TITLE, 1000)
     assert await store.delete(cid, OWNER, 1500)
-    again, created = await store.day_conversation(OWNER, "2026-10-26", TITLE, 2000)
-    assert (again, created) == (cid, False) and await store.exists(cid, OWNER)
+    fresh, created = await store.day_conversation(OWNER, "2026-10-26", TITLE, 2000)
+    assert created and fresh != cid and not await store.exists(cid, OWNER)
+    # The old one cannot come back beside it: one live day per date.
+    assert not await store.restore(cid, OWNER)
+    assert await store.delete(fresh, OWNER, 2500)
+    assert await store.restore(cid, OWNER) and await store.exists(cid, OWNER)
+
+
+async def test_lookups_by_conversation_are_indexed(store: SqliteConversationStore) -> None:
+    async with store._conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'") as cur:
+        names = {r[0] for r in await cur.fetchall()}
+    assert {"usage_by_conversation", "turn_timings_by_conversation"} <= names
 
 
 async def test_the_list_carries_kind_and_day(store: SqliteConversationStore) -> None:
@@ -73,7 +83,7 @@ async def test_the_list_carries_kind_and_day(store: SqliteConversationStore) -> 
         ("c1", "chat", None),
     ]
     assert rows[0].title == TITLE
-    assert await store.kind_of("c1", OWNER) == "chat"
+    assert await store.kind_of("c1", OWNER) == ("chat", None)
     assert await store.kind_of("missing", OWNER) is None
 
 

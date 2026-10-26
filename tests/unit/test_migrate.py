@@ -103,7 +103,7 @@ SHIPPED = {
     ),
     "011_boards.sql": "e76da2a7b12317962aa0cf242920324717eb36852b1bfd3127d0c4d537684e6a",
     "012_day_conversations.sql": (
-        "76a153649bd676e6940c12eeafca6b06553ddd182b92ed468d53d45b22f50d9b"
+        "613e24ac9ccd3341281cba89b58e5352d32632474ee570a101c5c69e6dbb7b19"
     ),
 }
 

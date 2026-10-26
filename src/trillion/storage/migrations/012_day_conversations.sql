@@ -6,6 +6,11 @@
 -- tables that refer to it are untouched. Foreign keys are checked when this commits:
 -- dropping the old table counts each message as missing its conversation, and putting
 -- the conversation back counts it found again, so a row that went missing fails it.
+-- Dropping and refilling the table looks up every row that refers to it. Without
+-- these two indexes that is a full scan of usage and turn_timings per conversation;
+-- they also serve any later lookup by conversation, so they stay.
+CREATE INDEX IF NOT EXISTS usage_by_conversation ON usage (conversation_id);
+CREATE INDEX IF NOT EXISTS turn_timings_by_conversation ON turn_timings (conversation_id);
 PRAGMA defer_foreign_keys = ON;
 CREATE TABLE conversations_before_012 AS SELECT * FROM conversations;
 DROP TABLE conversations;
@@ -31,5 +36,6 @@ INSERT INTO conversations
 DROP TABLE conversations_before_012;
 CREATE INDEX conversations_by_recent
     ON conversations (owner_id, kind, deleted_at, last_message_at DESC);
--- One day conversation per date.
-CREATE UNIQUE INDEX conversations_one_day ON conversations (owner_id, day) WHERE kind = 'day';
+-- One live day conversation per date: a deleted one leaves room for a fresh one.
+CREATE UNIQUE INDEX conversations_one_day ON conversations (owner_id, day)
+    WHERE kind = 'day' AND deleted_at IS NULL;

@@ -133,20 +133,23 @@ class SqliteConversationStore:
         ) as cur:
             return await cur.fetchone() is not None
 
-    async def kind_of(self, conversation_id: str, owner_id: str) -> ConversationKind | None:
+    async def kind_of(
+        self, conversation_id: str, owner_id: str
+    ) -> tuple[ConversationKind, str | None] | None:
+        """A conversation's kind, and its date when it is a day; None if there is none."""
         async with self._conn.execute(
-            "SELECT kind FROM conversations WHERE id = ? AND owner_id = ?",
+            "SELECT kind, day FROM conversations WHERE id = ? AND owner_id = ?",
             (conversation_id, owner_id),
         ) as cur:
             row = await cur.fetchone()
-        return row["kind"] if row is not None else None
+        return (row["kind"], row["day"]) if row is not None else None
 
     async def day_conversation(
         self, owner_id: str, day: str, title: str, now_ms: int
     ) -> tuple[str, bool]:
         """The day conversation for a date, made now if there is none, and whether it
         was. Its title is the host's, saved as the user's so her naming never replaces
-        it. One that was deleted comes back: there is only ever one per date."""
+        it. One that was deleted stays deleted: a fresh one takes its place."""
         cur = await self._conn.execute(
             "INSERT INTO conversations"
             " (id, owner_id, created_at, kind, day, title, title_source)"
@@ -155,15 +158,13 @@ class SqliteConversationStore:
         )
         created = cur.rowcount == 1
         async with self._conn.execute(
-            "SELECT id, deleted_at FROM conversations"
-            " WHERE owner_id = ? AND kind = 'day' AND day = ?",
+            "SELECT id FROM conversations"
+            " WHERE owner_id = ? AND kind = 'day' AND day = ? AND deleted_at IS NULL",
             (owner_id, day),
         ) as c:
             row = await c.fetchone()
         if row is None:  # pragma: no cover - the insert or the row before it is there
             raise RuntimeError("the day conversation was neither found nor made")
-        if row["deleted_at"] is not None:
-            await self.restore(row["id"], owner_id)
         return str(row["id"]), created
 
     async def append(
@@ -316,10 +317,14 @@ class SqliteConversationStore:
         return cur.rowcount == 1
 
     async def restore(self, conversation_id: str, owner_id: str) -> bool:
-        """Undo a delete; returns whether it brought one back (False for one not deleted)."""
+        """Undo a delete; returns whether it brought one back (False for one not deleted,
+        and for a day whose date has a fresh day conversation since)."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = NULL"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NOT NULL",
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NOT NULL"
+            " AND NOT (kind = 'day' AND EXISTS (SELECT 1 FROM conversations o"
+            " WHERE o.owner_id = conversations.owner_id AND o.kind = 'day'"
+            " AND o.day = conversations.day AND o.deleted_at IS NULL))",
             (conversation_id, owner_id),
         )
         return cur.rowcount == 1

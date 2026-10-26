@@ -13,6 +13,7 @@ from tests.brain.fakes import ScriptedProvider, say, use
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import DAY_BUILD, DAY_BUILD_SHOWN, Session, day_build
 from trillion.brain.types import ContextBlock, Msg, TextBlock, ToolResultBlock
+from trillion.persona.day import today
 from trillion.secrets.store import MemoryStore
 from trillion.spine.confirm import Status
 from trillion.tools.day import HERE, OPENING
@@ -33,8 +34,9 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     await runtime.close()
 
 
-async def open_day(rt: Runtime, page: Page) -> Session:
-    cid, _ = await rt.conversations.day_conversation(OWNER, "2026-10-26", "Your day", NOW)
+async def open_day(rt: Runtime, page: Page, *, days_ago: int = 0) -> Session:
+    date = today(NOW - days_ago * 86_400_000, rt.zone())
+    cid, _ = await rt.conversations.day_conversation(OWNER, date.isoformat(), "Your day", NOW)
     return await Session.start(rt, page.send, cid)
 
 
@@ -86,6 +88,38 @@ async def test_refused_outside_a_day_conversation(rt: Runtime) -> None:
     await idle(session)
     assert provider.calls == [] and page.all("host") == []
     assert await rt.conversations.history(session.id, OWNER) == []
+    await session.close()
+
+
+async def test_refused_on_a_past_day(rt: Runtime) -> None:
+    provider = ScriptedProvider(say("never"))
+    rt.provider = provider
+    page = Page(rt)
+    session = await open_day(rt, page, days_ago=1)
+    await session.handle({"type": "day.build"})
+    await idle(session)
+    assert provider.calls == [] and page.all("host") == []
+    await session.close()
+
+
+async def test_a_build_that_was_not_saved_can_be_asked_again(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = ScriptedProvider(say("Built."))
+    rt.provider = provider
+    session = await open_day(rt, Page(rt))
+    real = rt.conversations.append
+
+    async def broken(*args: object, **kw: object) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rt.conversations, "append", broken)
+    with pytest.raises(OSError):
+        await session.handle({"type": "day.build"})
+    monkeypatch.setattr(rt.conversations, "append", real)
+    await session.handle({"type": "day.build"})
+    await idle(session)
+    assert len(provider.calls) == 1
     await session.close()
 
 
@@ -151,6 +185,8 @@ async def test_the_recipe_cannot_approve(rt: Runtime) -> None:
     assert not target.exists()
     pending = await rt.spine_store.get_pending(pid)
     assert pending is not None and pending.status is Status.PROPOSED
+    # Once the build is over, what the user says next is theirs again.
+    assert session._via == "text"
     await session.close()
 
 

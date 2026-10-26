@@ -180,6 +180,10 @@ class Session:
         self.id = conversation_id
         # A chat, or the user's day (SUR-1), where she builds the day board.
         self.kind: ConversationKind = "chat"
+        # A day conversation's local date (YYYY-MM-DD), and whether the running turn is
+        # building its board.
+        self.day: str | None = None
+        self._building_day = False
         # The messages the model is sent, after the latest summary, each with its kind
         # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
@@ -303,7 +307,8 @@ class Session:
                     shown.append({"role": msg.role, "text": text})
             summary, rows = await rt.conversations.context(session.id, OWNER)
             session._summary = summary
-            session.kind = await rt.conversations.kind_of(session.id, OWNER) or "chat"
+            found = await rt.conversations.kind_of(session.id, OWNER)
+            session.kind, session.day = found if found is not None else ("chat", None)
             if rt.web is not None:
                 # The addresses the user gave earlier in this conversation stay openable.
                 for kind, msg in await rt.conversations.history(session.id, OWNER):
@@ -649,8 +654,8 @@ class Session:
         """Build the day board (SUR-1): she reads what is connected and shows it.
 
         Like the greeting, the page only asks: the recipe is composed here from what
-        is set up, never from anything the page sent (ONB-3). It is taken only in a
-        day conversation, never over a running turn, and at most once a minute. It is
+        is set up, never from anything the page sent (ONB-3). It is taken only in
+        today's day conversation, never over a running turn, and at most once a minute. It is
         saved as the host's input, so it advances no turn and can approve nothing."""
         rt = self._rt
         if self.kind != "day":
@@ -660,20 +665,28 @@ class Session:
             return
         async with self._taking_input():
             now = rt.clock()
+            zone = rt.zone()
+            date = day.today(now, zone)
             last = rt.day_built.get(self.id)
-            if self._task is not None or (last is not None and now - last < DAY_BUILD_EVERY_MS):
+            if (
+                self._task is not None
+                # A past day stays as it was left: its board is that day's.
+                or self.day != date.isoformat()
+                or (last is not None and now - last < DAY_BUILD_EVERY_MS)
+            ):
                 return
-            rt.day_built[self.id] = now
             await self._stop_listening()
             # Never an approval: the recipe is the app's words, not the user's.
             self._via = "ask"
             self.active_ms = now
             self._arrived = self._starting("tap")
-            zone = rt.zone()
-            text = day.recipe(rt.day_setup(), day.today(now, zone), zone or "", rt.identity)
+            text = day.recipe(rt.day_setup(), date, zone or "", rt.identity)
             built = await self._build_input("tap", text, marker=DAY_BUILD)
             await self._commit_input("tap", built)
+            # Only once it is saved: a build that failed to save can be asked for again.
+            rt.day_built[self.id] = now
             await self._send("host", text=DAY_BUILD_SHOWN)
+            self._building_day = True
             self._begin()
 
     # ── Listening ────────────────────────────────────────────────────────
@@ -1524,6 +1537,11 @@ class Session:
             # Only its own: never a task that started after this one was let go.
             if self._task is asyncio.current_task():
                 self._task = None
+                if self._building_day:
+                    # Before anything awaits, so no input of the user's has begun: their
+                    # next answer to a card is theirs again, never taken for an ask.
+                    self._building_day = False
+                    self._via = "text"
             if self._using is not None:
                 # Never reached its turn.
                 await self._unuse()
