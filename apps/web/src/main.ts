@@ -1188,10 +1188,12 @@ function connect(): void {
     }
     // Let in (at start, after a reconnect, with a new token): what is connected now, for the cards' source tiles.
     if (msg.type === 'session') void connected.load();
-    // A new connection starts unseen in the core: say again that the board is on a screen.
+    // A new connection starts unseen in the core, and may be another conversation: wait for its
+    // board before saying the board is on a screen, so the old one is never reported seen.
     if (msg.type === 'session') {
       seen.reset();
-      queueMicrotask(syncSeen);
+      boardView.reset();
+      boardAwaited = true;
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
@@ -1314,7 +1316,11 @@ function connect(): void {
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
-    if (msg.type === 'board') onBoard();
+    if (msg.type === 'board') {
+      boardAwaited = false;
+      onBoard();
+      syncSeen();
+    }
     if (msg.type === 'board.refreshing') boardView.refreshing(String(msg['id'] ?? ''), msg['on'] === true);
     // The turn is over and she never made a sound (no words heard, a reply only
     // written, an error): the microphone held for her closes as after a reply.
@@ -1586,7 +1592,11 @@ const seen = createSeen(
   (on) => send({ type: 'board.seen', on }),
   () => workspace.isOpen && workspace.showing === 'board',
 );
-const syncSeen = (): void => seen.sync();
+// From a connection's start until its first board: nothing is said.
+let boardAwaited = true;
+const syncSeen = (): void => {
+  if (!boardAwaited) seen.sync();
+};
 workspace.onClose(syncSeen);
 function showBoard(): void {
   boardDraws++;

@@ -315,14 +315,19 @@ function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undef
   // Beside "live", pulsing while a refresh runs; kept across ticks.
   const dot = h('span', 'bd-live-dot');
   dot.setAttribute('aria-hidden', 'true');
+  // The dot, in words for a screen reader; empty when nothing is running.
+  const said = h('span', 'visually-hidden');
+  // What the foot last said, so a tick repaints only when the words move on.
+  let painted = '';
   const paint = (f: Foot): void => {
     if (!from) return;
+    painted = footWords(f);
     if (!f.live || f.failed) {
-      from.textContent = footWords(f);
+      from.textContent = painted;
       return;
     }
     const word = h('span', 'bd-live');
-    word.append(dot, 'live');
+    word.append(dot, 'live', said);
     from.replaceChildren(`${f.name} · `, word, f.when ? ` · ${f.when}` : '');
   };
   if (foot0 || asks.length) {
@@ -358,7 +363,10 @@ function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undef
   const refreshing = (on: boolean): void => {
     resting = on;
     dot.hidden = !on;
+    said.textContent = on ? ' (refreshing)' : '';
     el.toggleAttribute('data-refreshing', on);
+    if (on) el.setAttribute('aria-busy', 'true');
+    else el.removeAttribute('aria-busy');
     again?.setAttribute('aria-disabled', String(on));
   };
   refreshing(busy && live !== null);
@@ -367,7 +375,7 @@ function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undef
     tick(at) {
       blocks.tick(at);
       const f = footOf(w, at);
-      if (f && from && from.textContent !== footWords(f)) paint(f);
+      if (f && from && footWords(f) !== painted) paint(f);
     },
     refreshing,
     dispose: () => blocks.dispose(),
@@ -409,6 +417,8 @@ export interface BoardView {
   draw(board: Board | null, pinned?: Pinned): void;
   /** A live card's refresh started or ended (`board.refreshing`). */
   refreshing(id: string, on: boolean): void;
+  /** A new connection: whatever `board.refreshing` said before is forgotten (its "off" may be lost). */
+  reset(): void;
   /** The board is no longer shown: stop watching card sizes and the clock. The next draw starts afresh. */
   dispose(): void;
 }
@@ -422,7 +432,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
   const from = h('h3', 'bd-from');
   let emptyEl: HTMLElement | null = null;
   // By id: what it was drawn from, so an unchanged widget keeps its element (and its hover).
-  let drawn = new Map<string, { key: string; card: Card }>();
+  let drawn = new Map<string, { key: string; card: Card; sent: boolean }>();
   // One clock for the whole board: every card's times and ages move on together.
   let timer: ReturnType<typeof setInterval> | null = null;
   // By id: what `board.refreshing` last said, over the state the widget was sent with.
@@ -455,6 +465,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
     timer = null;
     for (const d of drawn.values()) d.card.dispose();
     drawn = new Map();
+    busy.clear();
     grid.replaceChildren();
     emptyEl = null;
   }
@@ -462,6 +473,10 @@ export function createBoardView(opts: BoardOptions): BoardView {
   return {
     el,
     dispose,
+    reset() {
+      busy.clear();
+      for (const d of drawn.values()) d.card.refreshing(d.sent);
+    },
     refreshing(id, on) {
       busy.set(id, on);
       drawn.get(id)?.card.refreshing(on);
@@ -477,7 +492,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
       const active = document.activeElement;
       const focused = active instanceof HTMLElement && el.contains(active) ? active : null;
       const widgets = board?.widgets ?? [];
-      const next = new Map<string, { key: string; card: Card }>();
+      const next = new Map<string, { key: string; card: Card; sent: boolean }>();
       const cards: HTMLElement[] = [];
       let arriving = 0;
       const connected = opts.connected?.() ?? [];
@@ -493,12 +508,15 @@ export function createBoardView(opts: BoardOptions): BoardView {
           cards.push(old.card.el);
           continue;
         }
+        // Sent afresh and not refreshing: an older "on" whose "off" was lost does not stick.
+        const sent = liveOf(w['live'])?.state === 'refreshing';
+        if (!sent) busy.delete(w.id);
         const c = card(w, now, opts, tile, isBusy(w));
         if (!old) {
           c.el.classList.add('bd-new');
           c.el.style.setProperty('--i', String(arriving++));
         }
-        next.set(w.id, { key, card: c });
+        next.set(w.id, { key, card: c, sent });
         cards.push(c.el);
       }
       for (const [id, old] of drawn) if (next.get(id) !== old) old.card.dispose();

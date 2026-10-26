@@ -317,15 +317,20 @@ export function createBoardSettings(host: Host, api: Api, changed: () => void): 
         changed();
       });
   });
+  const load = async (): Promise<void> => {
+    try {
+      const r = await api('GET', WIDGETS_FRESH_PATH);
+      if (r.ok) await take(r);
+    } catch {
+      // Unread: the switch shows the default.
+    }
+  };
+  // Read now, so the section's summary is right before it is first opened.
+  void load().then(changed);
   return {
     async open() {
       status.textContent = '';
-      try {
-        const r = await api('GET', WIDGETS_FRESH_PATH);
-        if (r.ok) await take(r);
-      } catch {
-        // Unread: the switch shows the default.
-      }
+      await load();
       box.checked = on;
       host.showModal();
     },

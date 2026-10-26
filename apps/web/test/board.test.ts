@@ -416,13 +416,47 @@ describe('live cards', () => {
     expect(dot(a)?.hidden).toBe(false);
     expect(a?.hasAttribute('data-refreshing')).toBe(true);
     expect(dot(b)?.hidden).toBe(true);
-    // A redraw while it runs keeps the pulse.
-    view.draw(board({ ...revenue, blocks: [{ type: 'text', text: '$1,300' }] }, { ...revenue, id: 'w10' }));
+    // A redraw that says it still runs keeps the pulse.
+    view.draw(board({ ...revenue, blocks: [{ type: 'text', text: '$1,300' }], live: { every: 15, state: 'refreshing' } }, { ...revenue, id: 'w10' }));
     const again = view.el.querySelector<HTMLElement>('.bd-card');
     expect(dot(again ?? undefined)?.hidden).toBe(false);
     view.refreshing('w9', false);
     expect(dot(again ?? undefined)?.hidden).toBe(true);
     expect(again?.hasAttribute('data-refreshing')).toBe(false);
+  });
+
+  it('says refreshing to a screen reader, and marks the card busy, only while it runs', () => {
+    const { view } = mount();
+    view.draw(board(revenue));
+    const card = view.el.querySelector<HTMLElement>('.bd-card')!;
+    const said = () => card.querySelector('.bd-live .visually-hidden')?.textContent;
+    expect(said()).toBe('');
+    expect(card.hasAttribute('aria-busy')).toBe(false);
+    view.refreshing('w9', true);
+    expect(said()).toBe(' (refreshing)');
+    expect(card.getAttribute('aria-busy')).toBe('true');
+    view.refreshing('w9', false);
+    expect(said()).toBe('');
+    expect(card.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('never keeps a refresh whose end was lost', () => {
+    const { view } = mount();
+    const dot = () => view.el.querySelector<HTMLElement>('.bd-live-dot')?.hidden;
+    view.draw(board(revenue));
+    // A new connection: the "off" may have gone with the old one.
+    view.refreshing('w9', true);
+    view.reset();
+    expect(dot()).toBe(true);
+    // A fresh board that says it is not refreshing wins over an older "on".
+    view.refreshing('w9', true);
+    view.draw(board({ ...revenue, blocks: [{ type: 'text', text: '$1,400' }] }));
+    expect(dot()).toBe(true);
+    // Put away: the same id in another conversation starts quiet.
+    view.refreshing('w9', true);
+    view.dispose();
+    view.draw(board(revenue));
+    expect(dot()).toBe(true);
   });
 
   it('takes a widget sent as refreshing as refreshing', () => {
@@ -549,7 +583,11 @@ describe('Settings: Keep widgets fresh', () => {
       return new Response(JSON.stringify({ widgets_fresh: stored }), { status: 200 });
     };
     const h = host();
-    const s = createBoardSettings(h, api, () => {});
+    let told = 0;
+    const s = createBoardSettings(h, api, () => void told++);
+    // Read as the panel is built: the summary is right before the section is opened.
+    await vi.waitFor(() => expect(told).toBe(1));
+    expect(s.summary()).toBe('Snapshots');
     await s.open();
     const box = h.querySelector<HTMLInputElement>('input[role="switch"]');
     expect(h.textContent).toContain('Keep widgets fresh');
