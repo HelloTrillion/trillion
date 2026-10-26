@@ -6,8 +6,10 @@ from datetime import date
 
 from trillion.persona.day import (
     CONNECT_ASK,
+    MAIL_ASK,
     MAX_DAY_WIDGETS,
     NOTHING_CONNECTED,
+    OTHER_ASK,
     SetUp,
     recipe,
     rows,
@@ -79,3 +81,26 @@ def test_everything() -> None:
     assert "Follow your standing rules for the day board" in text
     assert "at most two short sentences" in text and "Never read the board out" in text
     assert no_dashes(text)
+
+
+def test_sources_that_ask_first_are_never_read() -> None:
+    setup = SetUp(calendar=True, asks_first=("gmail", "slack"))
+    text = recipe(setup, DAY, "UTC", SAM)
+    assert "gmail_search" not in text and "slack_search" not in text
+    assert "- Gmail and Slack: do not call their tools, because each read asks Sam first." in text
+    assert 'one callout with tone "attention"' in text
+    assert (
+        '"Gmail and Slack need your OK each time. Let Nova read them without asking in '
+        'Settings, Connected."' in text
+    )
+    assert f'"{MAIL_ASK}"' in text
+    # Something is set up: not the "connect your calendar" callout.
+    assert NOTHING_CONNECTED not in text and no_dashes(text)
+    only = recipe(SetUp(asks_first=("stripe",)), DAY, "UTC", SAM)
+    assert '"Stripe needs your OK each time. Let Nova read it without asking' in only
+    assert f'"{OTHER_ASK}"' in only and MAIL_ASK not in only and NOTHING_CONNECTED not in only
+
+
+def test_she_is_told_not_to_open_the_day_from_inside_it() -> None:
+    for setup in (SetUp(), SetUp(calendar=True)):
+        assert "do not call day_open." in recipe(setup, DAY, "UTC", SAM)

@@ -29,7 +29,7 @@ from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
-from trillion.persona.day import SetUp
+from trillion.persona.day import DAY_READS, SetUp
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker
@@ -37,8 +37,9 @@ from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
 from trillion.spine.audit import audit_key
+from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
-from trillion.spine.registry import ToolRegistry
+from trillion.spine.registry import ToolRegistry, runs_unattended
 from trillion.spine.router import Router
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
@@ -434,18 +435,41 @@ class Runtime:
         self._told = types
 
     def day_setup(self) -> SetUp:
-        """What the day board can read: Google services with an account, Slack when
-        connected, and the catalogue servers configured and on, as for the packs."""
-        states = self.mcp.states.values() if self.mcp is not None else []
+        """What the day board may read without asking (persona/day.py). A source set up
+        whose read tools still ask first is listed apart and never read: building the
+        day must never put up a card."""
         saved = self.google.saved if self.google is not None else None
-        return SetUp(
-            calendar=saved is not None and bool(saved.with_service("calendar")),
-            gmail=saved is not None and bool(saved.with_service("gmail")),
-            slack=self.slack is not None and bool(self.slack.token()),
-            catalog=frozenset(
-                s.config.catalog for s in states if s.config.catalog and not s.config.disabled
+        readable: dict[str, bool] = {}
+        for source, tools, on in (
+            (
+                "google-calendar",
+                DAY_READS["google-calendar"],
+                bool(saved and saved.with_service("calendar")),
             ),
+            ("gmail", DAY_READS["gmail"], bool(saved and saved.with_service("gmail"))),
+            ("slack", DAY_READS["slack"], self.slack is not None and bool(self.slack.token())),
+        ):
+            if on:
+                readable[source] = all(self._reads_freely(t) for t in tools)
+        catalog: list[str] = []
+        states = self.mcp.states.values() if self.mcp is not None else []
+        for s in states:
+            # A server whose tools are not known yet (starting, or down) is left out.
+            if s.config.catalog and not s.config.disabled and s.tools:
+                readable[s.config.catalog] = any(self._reads_freely(t.name) for t in s.tools)
+                catalog.append(s.config.catalog)
+        return SetUp(
+            calendar=readable.get("google-calendar", False),
+            gmail=readable.get("gmail", False),
+            slack=readable.get("slack", False),
+            catalog=frozenset(c for c in catalog if readable[c]),
+            asks_first=tuple(dict.fromkeys(i for i, ok in readable.items() if not ok)),
         )
+
+    def _reads_freely(self, name: str) -> bool:
+        """A registered read that runs without a card."""
+        d = self.registry.definition(name)
+        return d is not None and d.risk is Risk.READ and runs_unattended(d)
 
     async def open_day(self, conversation_id: str) -> Where:
         """`day_open`: the page on a chat is told to open the day; in the day itself

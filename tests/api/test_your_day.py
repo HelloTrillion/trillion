@@ -16,6 +16,7 @@ from trillion.brain.types import ContextBlock, Msg, TextBlock, ToolResultBlock
 from trillion.persona.day import today
 from trillion.secrets.store import MemoryStore
 from trillion.spine.confirm import Status
+from trillion.spine.contract import JSON, ActionSummary, BaseTool, Risk, ToolDefinition
 from trillion.tools.day import HERE, OPENING
 
 NOW = 1_793_000_000_000
@@ -238,20 +239,75 @@ def test_day_open_is_never_offered_unattended() -> None:
     assert registry.unattended().definition("day_open") is None
 
 
-async def test_the_recipe_follows_what_is_set_up_and_on(rt: Runtime) -> None:
+class _Read(BaseTool):
+    def __init__(self, name: str, risk: Risk) -> None:
+        self.definition = ToolDefinition(
+            name=name,
+            description="A read.",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            risk=risk,
+            category="mcp",
+            timeout_s=5.0,
+        )
+
+    def describe(self, args: JSON) -> ActionSummary:
+        return ActionSummary(text="Read the list")
+
+
+async def test_only_what_she_may_read_without_asking(rt: Runtime) -> None:
     from trillion.connectors.google.config import Account
     from trillion.connectors.mcp.config import parse_server
-    from trillion.connectors.mcp.servers import ServerState
+    from trillion.connectors.mcp.servers import ServerState, ToolInfo
     from trillion.connectors.slack import USER_TOKEN
     from trillion.persona.day import SetUp
 
     assert rt.day_setup() == SetUp()
-    assert rt.google is not None and rt.mcp is not None
-    rt.google.saved.accounts.append(Account(email="sam@example.com", services=["calendar"]))
+    assert rt.google is not None and rt.mcp is not None and rt.slack is not None
+    # Set up, but every read still asks first: listed apart, never read.
+    rt.google.saved.accounts.append(
+        Account(email="sam@example.com", services=["calendar", "gmail"])
+    )
+    rt.google.refresh_tools()
     rt.secrets.set(USER_TOKEN, "xoxp-test")
-    for name, disabled in (("linear", False), ("stripe", True)):
-        config = parse_server(
-            name, {"url": "https://x.example/mcp", "catalog": name, "disabled": disabled}
+    rt.slack.refresh_tools()
+    for name, risk in (("linear", Risk.READ), ("stripe", Risk.IRREVERSIBLE)):
+        rt.registry.register(_Read(f"mcp_{name}_list", risk))
+        config = parse_server(name, {"url": "https://x.example/mcp", "catalog": name})
+        info = ToolInfo(
+            name=f"mcp_{name}_list", remote="list", description="", risk="", read_only_hint=True
         )
-        rt.mcp.states[name] = ServerState(config=config)
-    assert rt.day_setup() == SetUp(calendar=True, slack=True, catalog=frozenset({"linear"}))
+        rt.mcp.states[name] = ServerState(config=config, tools=[info])
+    # Starting: its tools are not known yet, so it is left out either way.
+    rt.mcp.states["github"] = ServerState(
+        config=parse_server("github", {"url": "https://x.example/mcp", "catalog": "github"})
+    )
+    assert rt.day_setup() == SetUp(
+        catalog=frozenset({"linear"}),
+        asks_first=("google-calendar", "gmail", "slack", "stripe"),
+    )
+    # Freed in Settings: read like any other source. Half freed still asks.
+    rt.google.set_free({"calendar_events": "read", "calendar_busy": "read", "gmail_search": "read"})
+    rt.slack.set_free({"slack_search": "read", "slack_read": "read"})
+    assert rt.day_setup() == SetUp(
+        calendar=True,
+        slack=True,
+        catalog=frozenset({"linear"}),
+        asks_first=("gmail", "stripe"),
+    )
+
+
+async def test_building_the_day_never_raises_a_card(rt: Runtime) -> None:
+    from trillion.connectors.google.config import Account
+
+    assert rt.google is not None
+    rt.google.saved.accounts.append(Account(email="sam@example.com", services=["gmail"]))
+    rt.google.refresh_tools()
+    provider = ScriptedProvider(say("Built."))
+    rt.provider = provider
+    session = await open_day(rt, Page(rt))
+    await session.handle({"type": "day.build"})
+    await idle(session)
+    (text,) = [b.text for b in recipe_msg(provider).blocks if isinstance(b, TextBlock)]
+    assert "do not call its tools" in text and "gmail_search" not in text
+    assert "Gmail needs your OK each time" in text and "do not call day_open" in text
+    await session.close()

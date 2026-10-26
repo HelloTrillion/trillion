@@ -24,6 +24,15 @@ MAX_DAY_WIDGETS = 8
 _SHORT = {"atlassian": "Jira"}
 NOTHING_CONNECTED = "Connect your calendar and inbox to see your day here."
 CONNECT_ASK = "How do I connect my calendar?"
+MAIL_ASK = "How do I let you read my mail?"
+# The tools she reads each built-in source with. All of them must run without asking
+# for the source to be read: a card in the middle of her day board is never wanted.
+DAY_READS: dict[str, tuple[str, ...]] = {
+    "google-calendar": ("calendar_events", "calendar_busy"),
+    "gmail": ("gmail_search", "gmail_read"),
+    "slack": ("slack_search", "slack_read"),
+}
+OTHER_ASK = "How do I let you read them without asking?"
 
 # The packs that have a row, in the order she is told them, and what she reads there.
 _PACK_ROWS: tuple[tuple[str, str], ...] = (
@@ -39,13 +48,18 @@ _PACK_ROWS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True, kw_only=True)
 class SetUp:
-    """What is connected and turned on, as far as the day board cares."""
+    """What the day board may read without asking: building it never raises a card.
+
+    A source counts only when the tools she reads it with run without asking. One that
+    is set up but still asks first is in `asks_first`, by catalogue id ("gmail",
+    "google-calendar", "slack", or a server's), and is never read."""
 
     calendar: bool = False
     gmail: bool = False
     slack: bool = False
-    # Catalogue ids of the MCP servers configured and not turned off.
+    # Catalogue ids of the MCP servers configured, turned on and readable without asking.
     catalog: frozenset[str] = frozenset()
+    asks_first: tuple[str, ...] = ()
 
 
 def today(now_ms: int, zone: str | None) -> date:
@@ -88,8 +102,25 @@ def rows(setup: SetUp, user_name: str) -> list[str]:
 
 
 def connected(setup: SetUp) -> bool:
-    """Whether anything but her own reminders has a row."""
-    return len(rows(setup, "")) > 1
+    """Whether anything but her own reminders has a row, or waits on the user's OK."""
+    return len(rows(setup, "")) > 1 or bool(setup.asks_first)
+
+
+def _asks_first(setup: SetUp, identity: Identity) -> str:
+    """The row for sources that would ask: say so on the board, never read them."""
+    names = _names(setup.asks_first)
+    one = len(setup.asks_first) == 1
+    text = (
+        f"{names} {'needs' if one else 'need'} your OK each time. Let "
+        f"{identity.agent_name} read {'it' if one else 'them'} without asking in Settings, "
+        "Connected."
+    )
+    ask = MAIL_ASK if "gmail" in setup.asks_first else OTHER_ASK
+    return (
+        f"- {names}: do not call {'its' if one else 'their'} tools, because each read asks "
+        f'{identity.user_name} first. Add one callout with tone "attention": "{text}", with '
+        f'the ask "{ask}".'
+    )
 
 
 def recipe(setup: SetUp, day: date, zone: str, identity: Identity) -> str:
@@ -103,6 +134,8 @@ def recipe(setup: SetUp, day: date, zone: str, identity: Identity) -> str:
         "Read first, each with its own tools:",
         *(f"- {r}" for r in rows(setup, user)),
     ]
+    if setup.asks_first:
+        lines.append(_asks_first(setup, identity))
     if not connected(setup):
         lines.append(
             f'- Nothing else is connected yet. Add a callout: "{NOTHING_CONNECTED}", with '
@@ -116,5 +149,6 @@ def recipe(setup: SetUp, day: date, zone: str, identity: Identity) -> str:
         "standing rules for the day board.",
         "Then say at most two short sentences that lead with what matters most. Never "
         "read the board out.",
+        "This is already the day conversation: do not call day_open.",
     ]
     return "\n".join(lines)
