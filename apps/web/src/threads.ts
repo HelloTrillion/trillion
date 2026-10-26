@@ -155,16 +155,22 @@ export interface DayOpenerDeps {
   readonly switchTo: (id: string) => void;
   /** Ask the core to build the board (`day.build`). */
   readonly build: () => void;
+  readonly now?: () => number;
 }
 
+/** How an open ended. Superseded is not a failure: a newer open, or a switch, took over. */
+export type DayResult = 'opened' | 'failed' | 'superseded';
+
 export interface DayOpener {
-  /** The entry or her `day_open`: open today's day, building its board if it is empty. False if it could not. */
-  open(): Promise<boolean>;
+  /** The entry or her `day_open`: open today's day, building its board if it is empty. */
+  open(): Promise<DayResult>;
+  /** The user went elsewhere: an open still waiting on the core, or on its board, is dropped. */
+  cancel(): void;
   /** A session began (a switch or a reconnect): its board has not come yet. */
   session(): void;
   /** The session's board arrived (null for none). */
   board(board: { readonly widgets: readonly unknown[] } | null): void;
-  /** Today's day conversation, once known. */
+  /** Today's day conversation, once known; null once that day is over. */
   readonly id: string | null;
 }
 
@@ -173,7 +179,9 @@ export interface DayOpener {
  * is empty. Armed once per open, so a reconnect or a later board never builds again.
  */
 export function createDayOpener(d: DayOpenerDeps): DayOpener {
-  let id: string | null = null;
+  const now = d.now ?? Date.now;
+  // The day conversation last opened, and its date: after midnight it is not today's.
+  let known: { readonly id: string; readonly day: string } | null = null;
   let armed: string | null = null;
   let seen = false;
   let last: { readonly widgets: readonly unknown[] } | null = null;
@@ -195,20 +203,27 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
       try {
         body = await d.fetchDay();
       } catch {
-        return false;
+        return mine === gen ? 'failed' : 'superseded';
       }
-      if (mine !== gen) return false;
+      if (mine !== gen) return 'superseded';
       const got = (body as { id?: unknown } | null)?.id;
-      if (typeof got !== 'string' || !got) return false;
-      id = got;
-      armed = got;
-      if (d.current() === got) settle();
-      else {
+      if (typeof got !== 'string' || !got) return 'failed';
+      known = { id: got, day: localDay(now()) };
+      if (d.current() === got) {
+        armed = got;
+        settle();
+      } else {
+        // The page's switch cancels whatever was waiting, this open included, so it is armed after.
+        d.switchTo(got);
         seen = false;
         last = null;
-        d.switchTo(got);
+        armed = got;
       }
-      return true;
+      return 'opened';
+    },
+    cancel() {
+      gen++;
+      armed = null;
     },
     session() {
       seen = false;
@@ -220,7 +235,7 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
       settle();
     },
     get id() {
-      return id;
+      return known && known.day === localDay(now()) ? known.id : null;
     },
   };
 }
@@ -277,7 +292,7 @@ export interface ThreadsDeps {
   readonly deletedCurrent: () => void;
   readonly now: () => number;
   /** The "Your day" row was chosen. False if the day could not be opened. */
-  readonly openDay: () => Promise<boolean>;
+  readonly openDay: () => Promise<DayResult>;
   /** Today's day conversation, when the page knows it. */
   readonly dayId: () => string | null;
 }
@@ -376,11 +391,11 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     dayRow.disabled = true;
     void d
       .openDay()
-      .catch(() => false)
-      .then((ok) => {
+      .catch((): DayResult => 'failed')
+      .then((result) => {
         dayRow.disabled = false;
-        if (ok) close();
-        else say("Couldn't open your day", false);
+        if (result === 'opened') close();
+        else if (result === 'failed') say("Couldn't open your day", false);
       });
   });
   root.append(dayRow, searchWrap, status, list);

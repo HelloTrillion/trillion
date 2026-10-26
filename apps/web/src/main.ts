@@ -1082,6 +1082,7 @@ function switchTo(id: string | null): void {
   // reply under way needs the core told; the rest is this page's to quiet.
   // The user went somewhere themselves: a day.open still waiting is dropped.
   cancelDayOpen();
+  day.cancel();
   if (view.busy) send({ type: 'interrupt' });
   quiet();
   store(CONVERSATION_KEY, id);
@@ -1221,7 +1222,10 @@ function connect(): void {
         () => {
           cancelDayOpen = () => undefined;
           threads.close();
-          void day.open();
+          // Asked for by her, not tapped: a failure is said in the conversation.
+          void day.open().then((result) => {
+            if (result === 'failed') apply({ ...view, entries: [...view.entries, { kind: 'notice', text: "Couldn't open your day." }] });
+          });
         },
       );
     }

@@ -212,7 +212,7 @@ She reads each source with her own tools, so every card is live. A source with n
 | Work pack | `due_soon` |
 | Money pack | `kpis` |
 | Building pack | `checks` or `errors`, only if something is failing |
-| Her reminders | `tasks` |
+| Her reminders | `tasks` or `due_soon` |
 
 She shows at most 8 widgets, the most urgent first, then says two short sentences about what matters most. She does not read the board out. With nothing connected she shows a callout that says how to connect a calendar.
 

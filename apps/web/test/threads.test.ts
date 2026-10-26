@@ -274,7 +274,7 @@ describe('createDayOpener', () => {
 
   it('creates, switches, and builds once the new session shows an empty board', async () => {
     const { s, opener } = setup();
-    expect(await opener.open()).toBe(true);
+    expect(await opener.open()).toBe('opened');
     expect(s.switched).toEqual(['d1']);
     expect(opener.id).toBe('d1');
     expect(s.builds).toBe(0);
@@ -339,10 +339,83 @@ describe('createDayOpener', () => {
     expect(s.builds).toBe(0);
   });
 
+  it('a newer open supersedes an older one still waiting on the core', async () => {
+    let answer!: (v: unknown) => void;
+    const calls: Promise<unknown>[] = [new Promise((r) => (answer = r)), Promise.resolve({ id: 'd1' })];
+    const switched: string[] = [];
+    const opener = createDayOpener({
+      fetchDay: () => calls.shift()!,
+      current: () => 'c1',
+      switchTo: (id) => switched.push(id),
+      build: () => undefined,
+    });
+    const first = opener.open();
+    expect(await opener.open()).toBe('opened');
+    answer({ id: 'd1' });
+    expect(await first).toBe('superseded');
+    expect(switched).toEqual(['d1']);
+  });
+
+  it('a switch by the user cancels an open waiting on the core, and its build', async () => {
+    let answer!: (v: unknown) => void;
+    const s = { switched: [] as string[], builds: 0, current: 'c1' };
+    const opener = createDayOpener({
+      fetchDay: () => new Promise((r) => (answer = r)),
+      current: () => s.current,
+      switchTo: (id) => s.switched.push(id),
+      build: () => s.builds++,
+    });
+    const pending = opener.open();
+    opener.cancel();
+    answer({ id: 'd1' });
+    expect(await pending).toBe('superseded');
+    expect(s.switched).toEqual([]);
+
+    // Opened, then the user leaves before its board comes: no build lands on the day later.
+    const { s: t, opener: o } = setup();
+    await o.open();
+    o.cancel();
+    o.session();
+    o.board(null);
+    expect(t.builds).toBe(0);
+  });
+
+  it('the page switching (which cancels) does not undo the open that asked for it', async () => {
+    const s = { current: 'c1', builds: 0 };
+    const opener: ReturnType<typeof createDayOpener> = createDayOpener({
+      fetchDay: () => Promise.resolve({ id: 'd1' }),
+      current: () => s.current,
+      switchTo: (id) => {
+        opener.cancel();
+        s.current = id;
+      },
+      build: () => s.builds++,
+    });
+    await opener.open();
+    opener.session();
+    opener.board(null);
+    expect(s.builds).toBe(1);
+  });
+
+  it('forgets the day id after midnight', async () => {
+    let now = new Date('2026-10-26T23:59:00').getTime();
+    const opener = createDayOpener({
+      fetchDay: () => Promise.resolve({ id: 'd1' }),
+      current: () => 'c1',
+      switchTo: () => undefined,
+      build: () => undefined,
+      now: () => now,
+    });
+    await opener.open();
+    expect(opener.id).toBe('d1');
+    now += 2 * 60_000;
+    expect(opener.id).toBeNull();
+  });
+
   it('does nothing when the core does not answer, or answers without an id', async () => {
     for (const body of [new Error('offline'), {}, null, { id: '' }]) {
       const { s, opener } = setup(body);
-      expect(await opener.open()).toBe(false);
+      expect(await opener.open()).toBe('failed');
       opener.board(null);
       expect(s.switched).toEqual([]);
       expect(s.builds).toBe(0);

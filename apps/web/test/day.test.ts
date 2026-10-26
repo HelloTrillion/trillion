@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
-import { createThreads, shortDate, type ThreadsDeps } from '../src/threads';
+import { type DayResult, createThreads, shortDate, type ThreadsDeps } from '../src/threads';
 
 const NOW = new Date('2026-10-26T09:05:00').getTime();
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -15,7 +15,7 @@ const ROWS = {
 function setup(over: Partial<ThreadsDeps> = {}) {
   const root = document.createElement('div');
   document.body.append(root);
-  const s = { opened: 0, current: 'c1' as string | null, dayId: null as string | null, ok: true };
+  const s = { opened: 0, current: 'c1' as string | null, dayId: null as string | null, result: 'opened' as DayResult };
   const list = createThreads({
     root,
     fetchPage: () => Promise.resolve(ROWS),
@@ -28,7 +28,7 @@ function setup(over: Partial<ThreadsDeps> = {}) {
     now: () => NOW,
     openDay: () => {
       s.opened++;
-      return Promise.resolve(s.ok);
+      return Promise.resolve(s.result);
     },
     dayId: () => s.dayId,
     ...over,
@@ -65,7 +65,7 @@ describe('the Your day row', () => {
 
   it('stays open and says so when the day could not be opened', async () => {
     const { root, s, list, row } = setup();
-    s.ok = false;
+    s.result = 'failed';
     list.open();
     await flush();
     row().click();
@@ -74,6 +74,18 @@ describe('the Your day row', () => {
     expect(row().disabled).toBe(false);
     await new Promise((r) => setTimeout(r, 80));
     expect(root.querySelector('[role="status"]')?.textContent).toBe("Couldn't open your day");
+  });
+
+  it('says nothing when a newer open took over', async () => {
+    const { root, s, list, row } = setup();
+    s.result = 'superseded';
+    list.open();
+    await flush();
+    row().click();
+    await flush();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(row().disabled).toBe(false);
+    expect(root.querySelector('[role="status"]')?.textContent).not.toBe("Couldn't open your day");
   });
 
   it("is marked current when today's day is open, known from the rows or the page", async () => {
