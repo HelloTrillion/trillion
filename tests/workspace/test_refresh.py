@@ -341,3 +341,128 @@ async def test_the_task_runs_with_the_runtime_and_wakes_on_seen(world: World) ->
     finally:
         await world.rt.stop_background()
     assert not world.refresher.running
+
+
+async def test_her_change_mid_refresh_wins_and_is_no_failure(world: World) -> None:
+    assert world.rt.boards is not None
+    world.refresher.seen(world.s.id, True)
+    world.clock.advance(16)
+    gate = asyncio.Event()
+    real = world.filler.stream
+
+    async def slow(**kw: Any) -> AsyncIterator[ModelEvent]:
+        await gate.wait()
+        async for ev in real(**kw):
+            yield ev
+
+    world.filler.stream = slow  # type: ignore[method-assign]
+    running = asyncio.create_task(world.step())
+    for _ in range(100):
+        await asyncio.sleep(0)
+    # Her turn changes the widget while the fill-in runs.
+    mine = {**KPIS, "metrics": [{"label": "MRR", "value": "$9"}, {"label": "New", "value": "1"}]}
+    await world.rt.boards.update(world.s.id, "w1", mine, turn=2)
+    gate.set()
+    assert await running == 1
+    w = (await world.board())["widgets"][0]
+    assert w["metrics"][0]["value"] == "$9" and "failed" not in w["live"]
+    assert world.refresher._fails == {}
+
+
+async def test_a_board_that_cannot_be_saved_keeps_the_old_data(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.refresher.seen(world.s.id, True)
+    world.clock.advance(16)
+
+    async def broken(*a: Any, **k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(world.rt.board_store, "put", broken)
+    assert await world.step() == 1
+    assert await world.value() == "$4,200"
+    assert world.refresher._fails == {(world.s.id, "w1"): 1}
+    assert world.page.all("board.refreshing")[-1]["on"] is False
+
+
+async def test_a_slow_page_cannot_hold_the_queue(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.workspace import refresh
+
+    monkeypatch.setattr(refresh, "SEND_S", 0.01)
+
+    async def stuck(kind: str, /, **body: Any) -> None:
+        if kind == "board.refreshing":
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(world.s, "send", stuck)
+    world.refresher.seen(world.s.id, True)
+    world.clock.advance(16)
+    assert await asyncio.wait_for(world.step(), 2) == 1
+    assert await world.value() != "$4,200"
+
+
+async def test_what_a_page_asks_for_is_bounded(world: World) -> None:
+    from trillion.workspace.refresh import MAX_ID, MAX_QUEUE
+
+    world.refresher.seen(world.s.id, True)
+    world.refresher.now(world.s.id, "w" * (MAX_ID + 1))
+    assert world.refresher._queue == {}
+    for i in range(MAX_QUEUE + 10):
+        world.refresher.now(world.s.id, f"w{i + 100}")
+    assert len(world.refresher._queue) == MAX_QUEUE
+
+
+async def test_a_hidden_board_keeps_nothing(world: World) -> None:
+    world.refresher.seen(world.s.id, True)
+    world.filler.answer = "no"
+    world.clock.advance(16)
+    await world.step()
+    assert world.refresher._tried and world.refresher._fails
+    world.refresher.now(world.s.id, "w1")
+    world.refresher.seen(world.s.id, False)
+    assert world.refresher._tried == {} and world.refresher._fails == {}
+    assert world.refresher._queue == {}
+
+
+async def test_turning_the_switch_back_on_wakes_it(world: World) -> None:
+    from fastapi.routing import APIRoute
+
+    from trillion.api.settings import WidgetsFresh, create_router
+
+    world.rt.widgets_fresh = False
+    world.refresher._wake.clear()
+    (route,) = [
+        r
+        for r in create_router(world.rt).routes
+        if isinstance(r, APIRoute) and r.path == "/api/settings/workspace" and "PUT" in r.methods
+    ]
+    out = await route.endpoint(WidgetsFresh(widgets_fresh=True))
+    assert out == {"widgets_fresh": True} and world.refresher._wake.is_set()
+
+
+async def test_a_reconnected_page_is_seen_again_and_the_old_close_does_not_undo_it(
+    world: World,
+) -> None:
+    world.refresher.seen(world.s.id, True)
+    again = Page(world.rt)
+    s2 = await Session.start(world.rt, again.send, world.s.id)
+    # The old session was replaced: until the new page says so, nobody sees the board.
+    assert not world.refresher.is_seen(world.s.id)
+    # The page says so once it has the new session's board.
+    types = [m["type"] for m in again.got]
+    assert "board" in types
+    await s2.handle({"type": "board.seen", "on": True})
+    assert world.refresher.is_seen(world.s.id)
+    # The old socket closing late changes nothing.
+    await world.s.close()
+    assert world.refresher.is_seen(world.s.id)
+    world.clock.advance(16)
+    assert await world.step() == 1
+    assert again.all("board.refreshing")[0] == {
+        "type": "board.refreshing",
+        "id": "w1",
+        "on": True,
+    }
+    await s2.close()

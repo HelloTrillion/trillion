@@ -82,6 +82,11 @@ _UNATTENDED = "nobody is here to approve it; say what you would do instead"
 # Neither can raise, settle or re-present a card.
 _UNWATCHED = frozenset({"schedule", "refresh"})
 _REFRESH_READS_ONLY = "a refresh only reads"
+# Never replayed by a refresh, whatever their risk: a page is chosen by what she read
+# (SPN-5), and her own tools say nothing about a connector. Named here so the spine
+# needs nothing from the tools (tests check the names still match).
+REFRESH_NEVER = frozenset({"web_fetch", "describe_self"})
+REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
     Status.UNKNOWN: "unknown",
@@ -315,7 +320,11 @@ class Router:
             # A card belongs to a session someone is watching (D5). Refused before any of
             # the tool's own code runs, whether or not it was offered to this run.
             return await audited(risk, _refused(Refusal.UNATTENDED, _UNATTENDED))
-        if ctx.via == "refresh" and tool.definition.risk is not Risk.READ:
+        if ctx.via == "refresh" and (
+            tool.definition.risk is not Risk.READ
+            or tool.definition.name in REFRESH_NEVER
+            or tool.definition.category in REFRESH_NEVER_CATEGORIES
+        ):
             # A refresh replays what she read for a widget, with nobody deciding (D4): a
             # freed write is still a write.
             return await audited(risk, _refused(Refusal.UNATTENDED, _REFRESH_READS_ONLY))

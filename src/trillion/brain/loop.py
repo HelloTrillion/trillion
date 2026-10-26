@@ -115,6 +115,10 @@ async def run_turn(
     `history` ends with the user's message. `save` is called once for each message
     the turn adds; `emit` must not raise.
 
+    In each round, her board's calls run after every other call of the round, whether
+    the round runs in parallel (reads only) or in order (anything else); the answers
+    still go back in the order she asked.
+
     `first`, when given, stands in for the first model call: a draft started while the
     user was finishing (VOI-12).
 

@@ -410,6 +410,9 @@ def create_router(rt: Runtime) -> APIRouter:
         """Whether live widgets refresh while the board is seen. Off stops them all."""
         rt.widgets_fresh = body.widgets_fresh
         await rt.preferences.put(OWNER, WIDGETS_FRESH_PREF, body.widgets_fresh, rt.clock())
+        if rt.refresher is not None:
+            # Back on: a board on a screen catches up now, not at the next tick.
+            rt.refresher.wake()
         return {"widgets_fresh": rt.widgets_fresh}
 
     @router.post("/listening/choices")

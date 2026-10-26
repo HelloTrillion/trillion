@@ -114,3 +114,23 @@ async def test_a_read_runs_and_the_deny_floor_still_applies(spine: Spine) -> Non
         "file_read", {"path": str(spine.granted.parent / "outside.txt")}, via="refresh"
     )
     assert outside.reason is Refusal.DENIED_BY_FLOOR
+
+
+async def test_a_refresh_never_replays_the_web_herself_or_memory(spine: Spine) -> None:
+    from trillion.spine.router import REFRESH_NEVER, REFRESH_NEVER_CATEGORIES
+    from trillion.tools.describe import NAME, DescribeSelf
+    from trillion.tools.memory import MemoryRecall
+    from trillion.tools.web import FETCH, WebFetch
+
+    # The names the spine keeps are the tools' own.
+    assert {FETCH, NAME} == REFRESH_NEVER
+    recall = MemoryRecall()
+    assert recall.definition.category in REFRESH_NEVER_CATEGORIES
+    reg = ToolRegistry()
+    for tool in (WebFetch(), DescribeSelf(), recall):
+        reg.register(tool)
+    router = Router(reg, spine.store, policy=DenyPolicy.default(), clock=spine.clock)
+    for d in (t.definition for t in (reg.get(FETCH), reg.get(NAME), recall) if t):
+        assert d.risk is Risk.READ, d.name  # refused for what they are, not their risk
+        r = await router.execute(ToolCall(name=d.name, args={}), spine.ctx(via="refresh"))
+        assert r.status == "refused" and r.reason is Refusal.UNATTENDED, d.name

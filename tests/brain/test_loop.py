@@ -537,3 +537,22 @@ async def test_workspace_calls_go_last_in_an_ordered_round_too(run: Run) -> None
     ends = [e.call_id for e in run.events if isinstance(e, ToolEnded)]
     assert ends == ["w1", "b1"]
     assert [r.tool_use_id for r in run.results()] == ["b1", "w1"]
+
+
+async def test_a_mixed_round_runs_in_her_order_with_the_board_last(run: Run) -> None:
+    ended: list[str] = []
+    board = _Board(ended)
+    run.spine.registry.register(board, module="trillion.tools.workspace")
+    round_one: list[ModelEvent] = [
+        ToolUse(id="w1", name="scripted_write", args={}),
+        ToolUse(id="b1", name="board_peek", args={}),
+        ToolUse(id="r1", name="plain_reader", args={}),
+        ToolUse(id="b2", name="board_peek", args={}),
+        Done(stop_reason="tool_use", usage=USAGE),
+    ]
+    await run.go(ScriptedProvider(round_one, say("Up.")))
+    starts = [e.call_id for e in run.events if isinstance(e, ToolStarted)]
+    ends = [e.call_id for e in run.events if isinstance(e, ToolEnded)]
+    # A write is in the round, so one at a time: hers first, then the board's.
+    assert starts == ends == ["w1", "r1", "b1", "b2"]
+    assert [r.tool_use_id for r in run.results()] == ["w1", "b1", "r1", "b2"]

@@ -39,6 +39,12 @@ PER_HOUR = 60
 HOUR_MS = 60 * 60 * 1000
 # Failures in a row before a widget is left alone until the board is opened anew.
 MAX_FAILS = 3
+# Bounds on what pages can ask for: the queue never holds more than every widget of
+# this many boards, and a widget id is short ("w12").
+MAX_QUEUE = 256
+MAX_ID = 32
+# How long the pages may take to be told a refresh started or ended.
+SEND_S = 2.0
 # Turn numbers for refreshes, far from any conversation's own.
 TURN_BASE = 1 << 40
 
@@ -134,9 +140,11 @@ class Refresher:
                     self._tried.pop(key, None)
             self._wake.set()
         else:
+            # Nothing kept for a board no page shows: opening it again starts afresh.
             self._seen.discard(conversation_id)
-            for key in [k for k in self._queue if k[0] == conversation_id]:
-                del self._queue[key]
+            for kept in (self._queue, self._tried, self._fails):
+                for key in [k for k in kept if k[0] == conversation_id]:
+                    del kept[key]
 
     def is_seen(self, conversation_id: str) -> bool:
         return conversation_id in self._seen
@@ -147,8 +155,14 @@ class Refresher:
         key = (conversation_id, widget_id)
         if conversation_id not in self._seen or self.in_flight == key:
             return
+        if len(widget_id) > MAX_ID or (key not in self._queue and len(self._queue) >= MAX_QUEUE):
+            return
         self._queue[key] = None
         self._queue.move_to_end(key, last=False)
+        self._wake.set()
+
+    def wake(self) -> None:
+        """Look again now: the user turned "Keep widgets fresh" back on."""
         self._wake.set()
 
     # ── The task ─────────────────────────────────────────────────────────
@@ -224,7 +238,8 @@ class Refresher:
                 continue
             last = max(_at(widget) or 0, self._tried.get(key, 0))
             if now - last >= live.every(widget) * 60_000:
-                self._queue.setdefault(key, None)
+                if key in self._queue or len(self._queue) < MAX_QUEUE:
+                    self._queue.setdefault(key, None)
 
     @staticmethod
     def _live(widget: Mapping[str, Any]) -> bool:
@@ -269,13 +284,14 @@ class Refresher:
     ) -> bool:
         self._count += 1
         turn = TURN_BASE + self._count
-        results: list[tuple[str, str]] = []
+        results: list[fill.Fresh] = []
         for i, read in enumerate(widget["live"]["reads"]):
             name, args = read.get("tool"), read.get("args")
             # Checked again: what may be replayed is decided now, not when it was saved.
             if not isinstance(name, str) or not isinstance(args, Mapping):
                 return False
-            if not live.eligible(self._definition(name)):
+            definition = self._definition(name)
+            if definition is None or not live.eligible(definition):
                 return False
             ctx = ToolContext(
                 owner_id=self._owner,
@@ -288,7 +304,10 @@ class Refresher:
             r = await self._router.dispatch(ToolCall(name=name, args=dict(args)), ctx)
             if r.status != "succeeded":
                 return False
-            results.append((name, r.content))
+            # The router wraps every result but a trusted tool's; the fill-in wraps those.
+            results.append(
+                fill.Fresh(tool=name, text=r.content, wrapped=not definition.trusted_output)
+            )
         answer, usage = await fill.fill(provider, widget, results)
         try:
             # Recorded even if this task is stopped meanwhile: the call was paid for.
@@ -310,6 +329,7 @@ class Refresher:
 
     async def _tell_safely(self, conversation_id: str, widget_id: str, on: bool) -> None:
         try:
-            await self._tell(conversation_id, widget_id, on)
+            # Bounded, so a slow page cannot hold the queue.
+            await asyncio.wait_for(self._tell(conversation_id, widget_id, on), SEND_S)
         except Exception as e:
             logger.warning("board.refreshing not sent: %s", type(e).__name__)
