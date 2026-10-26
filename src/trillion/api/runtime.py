@@ -374,10 +374,11 @@ class Runtime:
         # Most changes (a retune, a reconnect) leave the packs as they were.
         if types == self._told:
             return
-        self._told = types
         for name, definition in board_definitions(types).items():
             if self.registry.definition(name) is not None:
                 self.registry.redefine(name, definition)
+        # Only once all four took it: a failed redefine is tried again next time.
+        self._told = types
 
     def _mcp_fact(self) -> str:
         servers = self.mcp.states.values() if self.mcp is not None else []

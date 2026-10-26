@@ -14,6 +14,7 @@ import {
   revive,
   rowTemplate,
   sourceTile,
+  tileNames,
   sourceWords,
   spans,
 } from '../src/board';
@@ -211,6 +212,16 @@ describe('source tiles', () => {
     expect(sourceTile({ name: 'Stripe dashboard' }, [stripe])).toBeUndefined();
     expect(sourceTile({ name: 'Stripe' }, [])).toBeUndefined();
     expect(sourceTile(undefined, [stripe])).toBeUndefined();
+  });
+
+  it('takes the short name people say for a connector', () => {
+    expect(tileNames('Google Calendar')).toEqual(['google calendar', 'calendar']);
+    expect(tileNames('Jira and Confluence')).toEqual(['jira and confluence', 'jira']);
+    expect(tileNames('monday.com')).toEqual(['monday.com', 'monday']);
+    expect(tileNames('Stripe')).toEqual(['stripe']);
+    const calendar = { ...stripe, id: 'google-calendar', title: 'Google Calendar' };
+    expect(sourceTile({ name: 'Calendar' }, [calendar])).toBe(calendar);
+    expect(sourceTile({ name: 'Google Calendar' }, [calendar])).toBe(calendar);
   });
 
   it('shows the tile before the name only for a connected title, and keeps the age ticking', () => {

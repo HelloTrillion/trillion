@@ -11,7 +11,7 @@ connector of that kind is connected.
 
 | | Decision | Why |
 |---|---|---|
-| D1 | **Packs follow connections.** The workspace tool's description lists the core widgets always, and a pack's widgets only while a connector in that pack is connected. | What the user chose: the toolkit text costs on every turn and small models do worse with more. |
+| D1 | **Packs follow connections.** The workspace tool's description lists the core widgets always, and a pack's widgets only while a connector in that pack is set up and turned on (a server still starting or briefly down keeps its pack). | What the user chose: the toolkit text costs on every turn and small models do worse with more. |
 | D2 | **Packs change what she is told, never what is accepted.** The kit takes every widget type at all times. | Numbers she was told can still become a pipeline; old boards keep loading. |
 | D3 | **Widgets are generic, named by what they show** (`transactions`, `pipeline`), not by service (`stripe_payments`). | One widget serves every service of its kind. |
 | D4 | **A source names its connector by its catalogue title** ("Stripe"), and the footer shows that connector's tile when it is connected. | Trust: the user sees where the numbers came from. |

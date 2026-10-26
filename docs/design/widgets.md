@@ -99,7 +99,7 @@ Phase 2 added widgets for what the catalogue's connectors hold. She is told abou
 | money | Stripe, PayPal, Square | `transactions`, `invoices`, `breakdown`, `payouts` |
 | customers | HubSpot, Intercom, Nitrosend, Resend | `pipeline`, `deal`, `contact`, `campaign`, `support_queue` |
 | building | GitHub, Sentry, Vercel, Supabase | `checks`, `errors`, `deploys`, `services` |
-| work | Linear, Jira and Confluence, Todoist, ClickUp, monday, Notion, Airtable | `kanban`, `sprint`, `due_soon` |
+| work | Linear, Jira and Confluence, Todoist, ClickUp, monday.com, Notion, Airtable | `kanban`, `sprint`, `due_soon` |
 
 - Core is always told. A pack is told while a connector of that kind is configured and enabled. It does not need to be connected this second, so a slow start or a short outage does not take the widgets away.
 - Packs change what she is told, never what is accepted. The kit takes every widget type at all times, so old boards keep loading and numbers she was told can still become a pipeline.

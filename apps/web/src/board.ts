@@ -115,7 +115,18 @@ export function sourceTile(source: unknown, connected: readonly SourceTile[]): S
   if (typeof source !== 'object' || source === null || Array.isArray(source)) return undefined;
   const name = str((source as Record<string, unknown>)['name']).trim().toLocaleLowerCase();
   if (!name) return undefined;
-  return connected.find((t) => t.title.trim().toLocaleLowerCase() === name);
+  return connected.find((t) => tileNames(t.title).includes(name));
+}
+
+/**
+ * The names a source may use for a connector: its catalogue title, and the short name
+ * people say ("Calendar" for "Google Calendar", "Jira" for "Jira and Confluence",
+ * "monday" for "monday.com").
+ */
+export function tileNames(title: string): string[] {
+  const full = title.trim().toLocaleLowerCase();
+  const short = full.replace(/^google /, '').split(' and ')[0]!.split('.')[0]!.trim();
+  return short && short !== full ? [full, short] : [full];
 }
 
 /** At most two asks, each her words as given; anything that is not words is left out. */
