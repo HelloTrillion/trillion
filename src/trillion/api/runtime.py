@@ -79,6 +79,7 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
+from trillion.workspace.live import Reads
 from trillion.workspace.packs import told
 from trillion.workspace.service import Boards
 
@@ -240,6 +241,9 @@ class Runtime:
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)
+    # Each running turn's eligible reads, which a widget she builds from a connector
+    # remembers so it can be kept fresh (the live widgets spec).
+    reads: Reads = field(default_factory=Reads)
     by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
@@ -618,6 +622,7 @@ async def open_runtime(
         clock=lambda: rt.clock(),
         owner=OWNER,
         zone=lambda: rt.zone(),
+        reads=rt.reads,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)

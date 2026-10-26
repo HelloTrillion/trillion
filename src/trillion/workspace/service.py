@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from trillion.workspace import board as edits
+from trillion.workspace import live
 from trillion.workspace.blocks import day_in, on_day
 from trillion.workspace.board import Board, BoardError, Mode
 from trillion.workspace.recipes import expand_board
@@ -48,7 +49,14 @@ def for_page(board: Board | None, zone: str | None = None) -> Board | None:
     if board is None:
         return None
     with on_day(day_in(zone)):
-        return expand_board({k: v for k, v in board.items() if k != "next_id"})
+        page = expand_board({k: v for k, v in board.items() if k != "next_id"})
+    # Expanded in order, one for one. A live widget says how it is kept fresh, never
+    # the reads that do it.
+    for saved, shown in zip(board["widgets"], page["widgets"], strict=True):
+        put = live.for_page(saved)
+        if put is not None:
+            shown["live"] = put
+    return page
 
 
 def _stamp(board: Board, now_ms: int) -> None:
@@ -72,8 +80,11 @@ class Boards:
         clock: Callable[[], int],
         owner: str,
         zone: Callable[[], str | None] = lambda: None,
+        reads: live.Reads | None = None,
     ) -> None:
         self._store = store
+        # This turn's reads, which a widget she saves from a connector remembers.
+        self._reads = reads
         # The user's timezone, so a bare "9:12" she writes is on their today.
         self._zone = zone
         self._conversations = conversations
@@ -117,18 +128,50 @@ class Boards:
 
     # ── Hers, through the workspace tools ────────────────────────────────
 
+    def _turn_reads(self, conversation_id: str, turn: int | None) -> list[live.Read]:
+        if self._reads is None or turn is None:
+            return []
+        return self._reads.of(conversation_id, turn)
+
     async def show(
         self,
         conversation_id: str,
         title: str | None,
         widgets: Sequence[Any],
         mode: Mode = "replace",
+        *,
+        turn: int | None = None,
     ) -> Board:
-        _, new = await self._apply(conversation_id, lambda b: edits.show(b, title, widgets, mode))
+        """`turn`, her turn the call is in: a widget from a connector remembers that
+        turn's reads of it."""
+        reads = self._turn_reads(conversation_id, turn)
+
+        def edit(board: Board | None) -> Board:
+            new = edits.show(board, title, widgets, mode)
+            # Ids are never reused, so the new widgets are the ones with new ids.
+            had = {w["id"] for w in (board or {}).get("widgets", [])}
+            for widget in new["widgets"]:
+                if widget["id"] not in had:
+                    live.attach(widget, reads, None)
+            return new
+
+        _, new = await self._apply(conversation_id, edit)
         return new
 
-    async def update(self, conversation_id: str, widget_id: str, widget: Any) -> Board:
-        _, new = await self._apply(conversation_id, lambda b: edits.update(b, widget_id, widget))
+    async def update(
+        self, conversation_id: str, widget_id: str, widget: Any, *, turn: int | None = None
+    ) -> Board:
+        """As `show`: the widget's `live` is rebuilt from this turn's reads, or kept."""
+        reads = self._turn_reads(conversation_id, turn)
+
+        def edit(board: Board | None) -> Board:
+            new = edits.update(board, widget_id, widget)
+            (old,) = [w for w in (board or {})["widgets"] if w["id"] == widget_id]
+            (changed,) = [w for w in new["widgets"] if w["id"] == widget_id]
+            live.attach(changed, reads, old)
+            return new
+
+        _, new = await self._apply(conversation_id, edit)
         return new
 
     async def remove(

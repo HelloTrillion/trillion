@@ -66,6 +66,7 @@ from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
 from trillion.voice.types import VoiceError, Word
 from trillion.voice.whose import EchoShare, matched, whose
+from trillion.workspace import live
 from trillion.workspace.board import Board
 from trillion.workspace.board import summary as board_summary
 from trillion.workspace.service import for_page
@@ -1534,6 +1535,8 @@ class Session:
                     # From here to the end of the turn, what she writes to memory is
                     # something she read, not something the user said.
                     self._outside.add(turn)
+                if r.status == "succeeded":
+                    self._remember_read(turn, ev.name, ev.args)
                 await self._send(
                     "tool.end",
                     call_id=ev.call_id,
@@ -1648,6 +1651,8 @@ class Session:
             await self._keep_trace(trace, "error", voiced=speaker is not None)
             await self._error("internal")
         finally:
+            # Its reads are this turn's: a widget saved in a later turn never remembers them.
+            rt.reads.end(self.id, turn)
             if self._speaker is speaker:
                 self._speaker = None
             if using is not None:
@@ -1657,6 +1662,17 @@ class Session:
             # However the turn ended: what counts is that a reply of hers was saved.
             self._maybe_name()
         self._rest = final
+
+    def _remember_read(self, turn: int, name: str, args: Mapping[str, Any]) -> None:
+        """A read that succeeded this turn, kept while the turn runs so a widget she
+        builds from it can be kept fresh: only one that may run with nobody deciding,
+        from a connector a widget can name (the live widgets spec)."""
+        rt = self._rt
+        if not live.eligible(rt.registry.definition(name)):
+            return
+        title = live.connector(name, rt.registry.get(name))
+        if title is not None:
+            rt.reads.record(self.id, turn, name, args, title)
 
     # ── Naming (SUR-1) ───────────────────────────────────────────────────
 

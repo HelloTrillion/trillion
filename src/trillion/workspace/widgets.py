@@ -3,8 +3,8 @@
 Pure, no I/O. The widget's type is read leniently (a near miss means what it plainly
 means), its strings lose their emoji, and then its type's own check runs: today's
 seven in `kit.py`, the recipes built on blocks in `recipe_kit.py`. Every widget may
-also carry a title, a size, a source and asks. The first problem raises `BoardError`
-naming the widget, the field and the limit.
+also carry a title, a size, a source, asks and how often it is refreshed. The first
+problem raises `BoardError` naming the widget, the field and the limit.
 """
 
 from __future__ import annotations
@@ -290,4 +290,6 @@ def validate_widget(raw: Any, at: int | str) -> Widget:
     out.update(build(raw, where))
     put(out, "source", recipe_kit.source(raw, where))
     put(out, "asks", recipe_kit.asks(raw, where))
+    # `live` is the server's (workspace/live.py): what she sends of it is dropped here.
+    put(out, "refresh", recipe_kit.refresh(raw, where))
     return out

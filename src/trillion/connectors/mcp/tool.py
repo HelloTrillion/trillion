@@ -121,6 +121,8 @@ class McpTool(BaseTool):
             outside_path_args=pathy,
         )
         self.server = server.name
+        # The name its tile has, which a widget built from it names as its source.
+        self.title = server.shown
         self.remote_name = offered.name
         self.read_only_hint = offered.read_only_hint
         self.hint = hint

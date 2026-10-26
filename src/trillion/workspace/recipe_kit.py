@@ -50,6 +50,9 @@ from trillion.workspace.kit import (
 )
 
 SOURCE = 30
+# How often a live widget is refreshed: off, or minutes (the live widgets spec).
+OFF = "off"
+MIN_EVERY, MAX_EVERY = 2, 24 * 60
 ASK, MAX_ASKS = 40, 2
 CALLOUT = 200
 # A decision is drawn as a table: one row per option, and the option and the total
@@ -63,6 +66,7 @@ _DATE = re.compile(r"^\d{4}-\d")
 _NUMERIC = re.compile(r"^-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$")
 # A free-time slot written with Z or an offset.
 _ZONED = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+_DIGITS = re.compile(r"^\d+$")
 
 
 def is_date(text: str) -> bool:
@@ -85,6 +89,26 @@ def source(raw: Mapping[str, Any], where: str) -> Widget | None:
         value, "name", f"{where}: source", SOURCE, need=isinstance(raw["source"], Mapping)
     )
     return None if name is None else {"name": name}
+
+
+def refresh(raw: Mapping[str, Any], where: str) -> int | str | None:
+    """How often she wants a live widget refreshed: "off", or minutes from 2 to 1440.
+    Minutes as text ("15") are read as the number. None when she says nothing."""
+    value = raw.get("refresh")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word == OFF:
+            return OFF
+        value = int(word) if _DIGITS.match(word) else value
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise fail(where, f'refresh must be "{OFF}" or minutes from {MIN_EVERY} to {MAX_EVERY}')
+    if not MIN_EVERY <= value <= MAX_EVERY:
+        raise fail(where, f"refresh is {value} minutes; from {MIN_EVERY} to {MAX_EVERY}")
+    return value
 
 
 def asked(raw: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from trillion.brain.types import (
     Block,
@@ -30,7 +30,7 @@ from trillion.brain.types import (
     Usage,
 )
 from trillion.spine.confirm import Refusal
-from trillion.spine.contract import Risk, ToolCall, ToolContext
+from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext
 from trillion.spine.loop_guard import Limits, LoopGuard, Verdict
 from trillion.spine.registry import ToolRegistry
 from trillion.spine.router import Router, RouterResponse
@@ -58,6 +58,8 @@ class ToolEnded:
     call_id: str
     name: str
     response: RouterResponse
+    # The arguments as the model called it: a read a widget remembers is replayed with them.
+    args: JSON = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -145,7 +147,7 @@ async def run_turn(
             )
         else:
             response = await router.dispatch(ToolCall(name=u.name, args=u.args), ctx(u.id), guard)
-        await emit(ToolEnded(call_id=u.id, name=u.name, response=response))
+        await emit(ToolEnded(call_id=u.id, name=u.name, response=response, args=u.args))
         return ToolResultBlock(
             tool_use_id=u.id,
             content=response.to_model(),
