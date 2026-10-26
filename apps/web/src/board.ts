@@ -110,6 +110,83 @@ export function sourceWords(source: unknown, now: Date): string {
   return when ? `${name} · ${when}` : name;
 }
 
+/** What the server says of a widget that keeps itself fresh; null for a snapshot. Never the reads. */
+export interface Live {
+  readonly every: number;
+  readonly state: 'idle' | 'refreshing' | 'failed';
+  readonly failedAt: string;
+}
+
+export function liveOf(raw: unknown): Live | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const state = r['state'] === 'refreshing' || r['state'] === 'failed' ? r['state'] : 'idle';
+  return { every: typeof r['every'] === 'number' ? r['every'] : 0, state, failedAt: str(r['failed_at']) };
+}
+
+/** A card's foot, in parts: the source's name, whether it is live, whether its last refresh failed, and the age. */
+export interface Foot {
+  readonly name: string;
+  readonly live: boolean;
+  readonly failed: boolean;
+  readonly when: string;
+}
+
+/** The foot of a widget with a source ("Stripe · live · 1 min ago"); null with no source. */
+export function footOf(w: Readonly<Record<string, unknown>>, now: Date): Foot | null {
+  const source = w['source'];
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return null;
+  const r = source as Record<string, unknown>;
+  const name = str(r['name']).trim();
+  if (!name) return null;
+  const live = liveOf(w['live']);
+  const failed = live?.state === 'failed';
+  // Failed: how long ago it last tried; else how old the numbers are.
+  const at = failed && live.failedAt ? live.failedAt : str(r['at']);
+  return { name, live: live !== null, failed, when: age(at, now) };
+}
+
+/** A foot in words, as it reads on the card. */
+export function footWords(foot: Foot): string {
+  const lead = foot.failed ? ['Couldn’t refresh'] : foot.live ? [foot.name, 'live'] : [foot.name];
+  return [...lead, foot.when].filter(Boolean).join(' · ');
+}
+
+/**
+ * Tells the core whether her board is on a screen (`board.seen`), so live widgets refresh only
+ * while someone looks: the board is the workspace's content and the tab is visible. Only a
+ * change is sent; the core starts every connection at "not seen". `opened` says the board itself
+ * was opened (a widget that stopped after failures gets another go), never the tab coming back.
+ * From a connection's start (`reset`) until its first board (`ready`), nothing is said, the tab's
+ * visibility included: the board on screen may be the last connection's.
+ */
+export function createSeen(
+  send: (on: boolean, opened: boolean) => void,
+  shown: () => boolean,
+  doc: Pick<Document, 'visibilityState' | 'addEventListener'> = document,
+): { sync(opened?: boolean): void; reset(): void; ready(): void } {
+  let last = false;
+  let waiting = true;
+  const sync = (opened = false): void => {
+    if (waiting) return;
+    const on = shown() && doc.visibilityState === 'visible';
+    if (on === last) return;
+    last = on;
+    send(on, on && opened);
+  };
+  doc.addEventListener('visibilitychange', () => sync(false));
+  return {
+    sync,
+    reset() {
+      last = false;
+      waiting = true;
+    },
+    ready() {
+      waiting = false;
+    },
+  };
+}
+
 /** The connected service a card's source names (its catalogue title, ignoring case), if any. */
 export function sourceTile(source: unknown, connected: readonly SourceTile[]): SourceTile | undefined {
   if (typeof source !== 'object' || source === null || Array.isArray(source)) return undefined;
@@ -164,6 +241,8 @@ export interface BoardOptions {
   readonly onAsk?: (text: string) => void;
   /** The catalogue services connected now: a card whose source names one shows its tile. */
   readonly connected?: () => readonly SourceTile[];
+  /** The user asked a live card to refresh now. Without it, no refresh button is drawn. */
+  readonly onRefresh?: (id: string) => void;
   /** The clock; tests set it. */
   readonly now?: () => Date;
 }
@@ -171,12 +250,14 @@ export interface BoardOptions {
 interface Card {
   readonly el: HTMLElement;
   tick(now: Date): void;
+  /** A refresh started or ended: the dot by "live" pulses and the refresh button rests. */
+  refreshing(on: boolean): void;
   dispose(): void;
 }
 
 const NO_BLOCKS: Omit<DrawnBlocks, 'el'> = { tick: () => {}, dispose: () => {} };
 
-function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undefined): Card {
+function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undefined, busy: boolean): Card {
   // The type is an attribute, not a class: a class named for it would also be its parts'.
   const el = h('section', 'bd-card');
   el.dataset['type'] = w.type;
@@ -189,6 +270,25 @@ function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undef
   } else {
     // No title: the head is only the ×, floated into the corner, so the blocks start at the top.
     el.dataset['untitled'] = '';
+  }
+  const live = liveOf(w['live']);
+  let again: HTMLButtonElement | null = null;
+  let resting = busy;
+  if (live) {
+    el.dataset['live'] = '';
+    if (opts.onRefresh) {
+      // Beside the ×, as quiet: a refresh already running is not asked for twice.
+      const b = h('button', 'bd-refresh');
+      b.type = 'button';
+      b.setAttribute('aria-label', name ? `Refresh “${name}”` : 'Refresh this');
+      b.title = 'Refresh now';
+      b.append(icon('refresh', 14));
+      b.addEventListener('click', () => {
+        if (!resting) opts.onRefresh?.(w.id);
+      });
+      head.append(b);
+      again = b;
+    }
   }
   const x = h('button', 'bd-x');
   x.type = 'button';
@@ -218,16 +318,36 @@ function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undef
   }
 
   // The foot: where it came from on the left, her asks on the right; it wraps on a narrow card.
-  const source = sourceWords(w['source'], now);
+  const foot0 = footOf(w, now);
   const asks = opts.onAsk ? asksOf(w['asks']) : [];
   let from: HTMLElement | null = null;
-  if (source || asks.length) {
+  // Beside "live", pulsing while a refresh runs; kept across ticks.
+  const dot = h('span', 'bd-live-dot');
+  dot.setAttribute('aria-hidden', 'true');
+  // The dot, in words for a screen reader; empty when nothing is running.
+  const said = h('span', 'visually-hidden');
+  // What the foot last said, so a tick repaints only when the words move on.
+  let painted = '';
+  const paint = (f: Foot): void => {
+    if (!from) return;
+    painted = footWords(f);
+    if (!f.live || f.failed) {
+      from.textContent = painted;
+      return;
+    }
+    const word = h('span', 'bd-live');
+    word.append(dot, 'live', said);
+    from.replaceChildren(`${f.name} · `, word, f.when ? ` · ${f.when}` : '');
+  };
+  if (foot0 || asks.length) {
     const foot = h('footer', 'bd-card-foot');
-    if (source) {
+    if (foot0) {
       const line = h('p', 'bd-source');
+      if (foot0.failed) line.dataset['failed'] = '';
       // The connector's own tile before its name: where the numbers came from, at a glance.
       if (tile) line.append(mark(tile.color, tile.glyph, 'xs', tile.id));
-      from = h('span', 'bd-source-words', source);
+      from = h('span', 'bd-source-words');
+      paint(foot0);
       line.append(from);
       foot.append(line);
     }
@@ -249,15 +369,24 @@ function card(w: Widget, now: Date, opts: BoardOptions, tile: SourceTile | undef
     }
     el.append(foot);
   }
+  const refreshing = (on: boolean): void => {
+    resting = on;
+    dot.hidden = !on;
+    said.textContent = on ? ' (refreshing)' : '';
+    el.toggleAttribute('data-refreshing', on);
+    if (on) el.setAttribute('aria-busy', 'true');
+    else el.removeAttribute('aria-busy');
+    again?.setAttribute('aria-disabled', String(on));
+  };
+  refreshing(busy && live !== null);
   return {
     el,
     tick(at) {
       blocks.tick(at);
-      if (from) {
-        const words = sourceWords(w['source'], at);
-        if (from.textContent !== words) from.textContent = words;
-      }
+      const f = footOf(w, at);
+      if (f && from && footWords(f) !== painted) paint(f);
     },
+    refreshing,
     dispose: () => blocks.dispose(),
   };
 }
@@ -295,6 +424,10 @@ export interface BoardView {
    * while one waits, the cards' asks are hidden.
    */
   draw(board: Board | null, pinned?: Pinned): void;
+  /** A live card's refresh started or ended (`board.refreshing`). */
+  refreshing(id: string, on: boolean): void;
+  /** A new connection: whatever `board.refreshing` said before is forgotten (its "off" may be lost). */
+  reset(): void;
   /** The board is no longer shown: stop watching card sizes and the clock. The next draw starts afresh. */
   dispose(): void;
 }
@@ -308,9 +441,12 @@ export function createBoardView(opts: BoardOptions): BoardView {
   const from = h('h3', 'bd-from');
   let emptyEl: HTMLElement | null = null;
   // By id: what it was drawn from, so an unchanged widget keeps its element (and its hover).
-  let drawn = new Map<string, { key: string; card: Card }>();
+  let drawn = new Map<string, { key: string; card: Card; sent: boolean }>();
   // One clock for the whole board: every card's times and ages move on together.
   let timer: ReturnType<typeof setInterval> | null = null;
+  // By id: what `board.refreshing` last said, over the state the widget was sent with.
+  const busy = new Map<string, boolean>();
+  const isBusy = (w: Widget): boolean => busy.get(w.id) ?? liveOf(w['live'])?.state === 'refreshing';
 
   function tick(): void {
     const at = clock();
@@ -338,6 +474,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
     timer = null;
     for (const d of drawn.values()) d.card.dispose();
     drawn = new Map();
+    busy.clear();
     grid.replaceChildren();
     emptyEl = null;
   }
@@ -345,6 +482,14 @@ export function createBoardView(opts: BoardOptions): BoardView {
   return {
     el,
     dispose,
+    reset() {
+      busy.clear();
+      for (const d of drawn.values()) d.card.refreshing(d.sent);
+    },
+    refreshing(id, on) {
+      busy.set(id, on);
+      drawn.get(id)?.card.refreshing(on);
+    },
     draw(board, pinned = NOTHING_PINNED) {
       // Opening afresh: every card arrives. Already open: only new ones do.
       const fresh = !el.isConnected;
@@ -356,7 +501,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
       const active = document.activeElement;
       const focused = active instanceof HTMLElement && el.contains(active) ? active : null;
       const widgets = board?.widgets ?? [];
-      const next = new Map<string, { key: string; card: Card }>();
+      const next = new Map<string, { key: string; card: Card; sent: boolean }>();
       const cards: HTMLElement[] = [];
       let arriving = 0;
       const connected = opts.connected?.() ?? [];
@@ -372,15 +517,19 @@ export function createBoardView(opts: BoardOptions): BoardView {
           cards.push(old.card.el);
           continue;
         }
-        const c = card(w, now, opts, tile);
+        // Sent afresh and not refreshing: an older "on" whose "off" was lost does not stick.
+        const sent = liveOf(w['live'])?.state === 'refreshing';
+        if (!sent) busy.delete(w.id);
+        const c = card(w, now, opts, tile, isBusy(w));
         if (!old) {
           c.el.classList.add('bd-new');
           c.el.style.setProperty('--i', String(arriving++));
         }
-        next.set(w.id, { key, card: c });
+        next.set(w.id, { key, card: c, sent });
         cards.push(c.el);
       }
       for (const [id, old] of drawn) if (next.get(id) !== old) old.card.dispose();
+      for (const id of busy.keys()) if (!next.has(id)) busy.delete(id);
       drawn = next;
       // A tap on a widget can't approve: while an approval waits, there is nothing to tap.
       el.classList.toggle('bd-asks-off', pinned.waiting || pinned.asksOff === true);

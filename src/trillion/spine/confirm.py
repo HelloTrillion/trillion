@@ -110,6 +110,10 @@ def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Sta
         return Rejection(_STATUS_REFUSAL.get(a.status, Refusal.ALREADY_RESOLVED), a.status.value)
     if now_ms >= a.expires_at:
         return Rejection(Refusal.EXPIRED, "re-present it to ask again")
+    if ctx.via in ("schedule", "refresh"):
+        # Nobody is there to say yes or no. The router refuses these first; this is the
+        # same rule where a decision is made, should another caller ever reach it.
+        return Rejection(Refusal.UNATTENDED, "nobody is here to answer it")
     if event == "cancel":
         return Status.REJECTED
     if ctx.via == "ask":

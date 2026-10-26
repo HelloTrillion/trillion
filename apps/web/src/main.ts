@@ -2,7 +2,7 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
-import { createAbout, createAppearance, createFolders, createShortcuts, createUsageSettings } from './browser';
+import { createAbout, createAppearance, createBoardSettings, createFolders, createShortcuts, createUsageSettings } from './browser';
 import { TalkKeys, type TalkPrefs } from './hotkey';
 import { icon } from './icons';
 import { createConnected } from './connected';
@@ -54,7 +54,7 @@ import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
-import { boardTitle, buttonAction, createBoardView } from './board';
+import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
 import { createApprovals, outcomeWords } from './approvals';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
@@ -904,6 +904,7 @@ const appearance = createAppearance(
     panel.refresh();
   },
 );
+const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh());
 const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
 const connected = createConnected(panel.host('connected'), api, () => {
   panel.refresh();
@@ -933,6 +934,7 @@ panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'mic
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
+panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
@@ -1186,6 +1188,12 @@ function connect(): void {
     }
     // Let in (at start, after a reconnect, with a new token): what is connected now, for the cards' source tiles.
     if (msg.type === 'session') void connected.load();
+    // A new connection starts unseen in the core, and may be another conversation: wait for its
+    // board before saying the board is on a screen, so the old one is never reported seen.
+    if (msg.type === 'session') {
+      seen.reset();
+      boardView.reset();
+    }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
@@ -1307,7 +1315,12 @@ function connect(): void {
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
-    if (msg.type === 'board') onBoard();
+    if (msg.type === 'board') {
+      seen.ready();
+      onBoard();
+      seen.sync();
+    }
+    if (msg.type === 'board.refreshing') boardView.refreshing(String(msg['id'] ?? ''), msg['on'] === true);
     // The turn is over and she never made a sound (no words heard, a reply only
     // written, an error): the microphone held for her closes as after a reply.
     const over = msg.type === 'turn.complete' || (msg.type === 'state' && (view.orb === 'idle' || view.orb === 'error'));
@@ -1563,6 +1576,7 @@ const boardChip = $<HTMLButtonElement>('board-chip');
 const boardView = createBoardView({
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
+  onRefresh: (id) => send({ type: 'board.refresh', id }),
   approvals: approvals.strip.el,
   connected: () => connected.tiles(),
   // Exactly the ask's words, as the user's message. Hidden while it could not go (asksOff).
@@ -1572,6 +1586,13 @@ const boardView = createBoardView({
     sendTurn(text, 'ask');
   },
 });
+// Whether her board is on a screen: live widgets refresh only then.
+const seen = createSeen(
+  (on, opened) => send(opened ? { type: 'board.seen', on, opened } : { type: 'board.seen', on }),
+  () => workspace.isOpen && workspace.showing === 'board',
+);
+// From a connection's start until its first board: nothing is said.
+workspace.onClose(() => seen.sync());
 function showBoard(): void {
   boardDraws++;
   boardChip.hidden = true;
@@ -1587,6 +1608,8 @@ function showBoard(): void {
   // Already showing: this only changes the title; the cards were redrawn in place.
   workspace.open(boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
+  // Shown now: the board was opened (a redraw of a board already shown changes nothing).
+  seen.sync(true);
 }
 /** The user asked for the board: a saved one she had put away is open again, and she is told.
  * One with nothing on it shows the empty state and tells her nothing (the core would refuse). */

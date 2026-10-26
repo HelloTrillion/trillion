@@ -156,6 +156,48 @@ For a widget in a pack, use the next section.
 8. **Draw it.** Only if it needs a new block, add that to `apps/web/src/blocks.ts`.
 9. **Look.** Open `#kit`. The caption shows the pack ("transactions · money · medium").
 
+## Live widgets
+
+A widget she builds from a connector keeps itself fresh while the user looks at the board. The spec is `docs/specs/2026-10-25-live-widgets.md`.
+
+### What is remembered
+
+- During a turn, the session records each read that succeeded and may run with nobody deciding. These are reads that `runs_unattended` allows, never `web_fetch`, memory or workspace tools. Each is kept with its tool name, its arguments and its connector.
+- When she saves a widget with a `source`, the reads of that turn from the same connector become its `live`. The source matches by title or short name ("Calendar" for "Google Calendar"), ignoring case, with `-` and `_` read as spaces. The widget keeps the last five reads.
+- No matching read means no `live`. The widget stays a snapshot.
+- `live` is stored in the board as plain JSON, like the conversation history. It goes when the board goes. She cannot write it, and the page never sees the reads, only how often and how it is going.
+
+### Rates
+
+She may set `refresh` to `"off"` or to minutes, from 2 to 1440. Without it, the type decides:
+
+- 2 minutes: next up, inbox, mentions, checks, deploys, services, support queue.
+- 15 minutes: the money and customers packs, kanban, sprint, tasks, due soon, KPIs.
+- 60 minutes: everything else.
+
+### When it runs
+
+- Only while a page shows the board. The page sends `board.seen` when the board is shown or hidden and when the tab changes visibility, and marks it `opened` only when the board itself was opened.
+- Showing the board catches up at once: every widget past its rate is refreshed.
+- One runtime task works a queue, one refresh at a time, at most 60 an hour.
+- It waits while her own turn is running on that conversation.
+- After three failures in a row a widget is left alone until the board is opened anew. Switching tabs back is not opening it.
+- The Settings switch "Keep widgets fresh" (on by default) stops all of it.
+
+### The fill-in
+
+The server replays the saved reads. Then one model call with no tools turns the fresh results into the widget's data. The results reach it wrapped as untrusted, at most about 24,000 characters in all, shared across the reads. From the answer the server takes only the data fields of the widget's type. It keeps the type, title, size, source, asks and `refresh` from the widget as it was, and the field that names it: a stat's or goal's `label`, a thread's `subject`, a deal's, contact's or sprint's `name`, and a chart's `kind`. The kit checks the result like any widget she writes. A refreshed widget is named to her by its title only, so nothing the fill-in wrote reaches her context. Nothing is added to the conversation. The usage is recorded like a turn's.
+
+### Safety
+
+Replay goes through the router as `via = "refresh"`. It runs reads only. It refuses anything gated, any card, any confirmation, and every workspace, schedule and `web_fetch` call. The model has no tools, so a hostile result can change at most the data fields of one card, which is the same trust as the first snapshot (SPN-5).
+
+### What the user sees
+
+- A live card's footer reads "Stripe · live · 1 min ago". While it refreshes, a dot beside "live" pulses (not with reduced motion).
+- After a failure the footer reads "Couldn't refresh · 12 min ago".
+- A refresh button sits beside the ×. It refreshes that card now and counts toward the hourly cap.
+
 ## Next
 
-- **Phase 3:** live refresh. A widget keeps its shape and the server refreshes its values.
+- Refreshing with no page open, and push from services.

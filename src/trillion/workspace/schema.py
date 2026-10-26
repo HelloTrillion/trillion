@@ -102,7 +102,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "custom": ("blocks",),
 }
 # What every widget may carry.
-_COMMON = ("type", "size", "title", "source", "asks")
+_COMMON = ("type", "size", "title", "source", "asks", "refresh")
 # The blocks a custom widget arranges, with their fields.
 BLOCK_CARDS = {
     "value": "value, label?, delta?, hint?, tone?",
@@ -141,7 +141,8 @@ def type_cards(types: Collection[str] = TYPES) -> str:
     return (
         "Widget types (field? optional, field[] a list, others required):\n"
         f"{types}\nAny widget: title?, size?, source? (where its facts came from), asks[]? "
-        f"(at most {MAX_ASKS} short questions the user can tap to send). Times ISO 8601. "
+        f"(at most {MAX_ASKS} short questions the user can tap to send), refresh? ('off' or "
+        f"minutes). Times ISO 8601. "
         f"Tones: {', '.join(BLOCK_TONES)}.\n"
         f"Blocks, for custom only when no type fits; each {{type, ...}}: {blocks}."
     )
@@ -181,11 +182,9 @@ def widget_schema(types: Collection[str] = TYPES) -> dict[str, Any]:
         "size": d(s, f"One of {', '.join(SIZES)}."),
         "title": s,
         "source": d(so, "Where its facts came from, e.g. 'Calendar'."),
-        "asks": {
-            "type": ["array", "string"],
-            "items": s,
-            "description": f"At most {MAX_ASKS} questions the user can tap to send.",
-        },
+        # What asks are is in workspace_show's cards, said once rather than twice.
+        "asks": {"type": ["array", "string"], "items": s},
+        "refresh": sn,
         "label": sn,
         "value": d(sn, "Stat: as shown, e.g. '$41.20'. Goal: a number."),
         "delta": sn,

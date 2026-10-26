@@ -19,7 +19,7 @@ from trillion import paths
 from trillion.brain import compact
 from trillion.brain.config import ModelSettings, Source, resolve
 from trillion.brain.standing import StandingRules
-from trillion.brain.types import ModelProvider, SystemBlock
+from trillion.brain.types import ModelProvider, SystemBlock, Usage
 from trillion.channels.answer import Answerer
 from trillion.channels.manager import Channels
 from trillion.connectors.google.connection import GoogleConnection
@@ -79,7 +79,9 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
+from trillion.workspace.live import Reads
 from trillion.workspace.packs import told
+from trillion.workspace.refresh import Refresher
 from trillion.workspace.service import Boards
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,8 @@ OUT_OF_TURN = 1 << 30
 SPEECH_PREF = "speech"
 LISTEN_PREF = "listening"
 THINK_EARLY_PREF = "think_early"
+# Whether live widgets refresh while the board is seen (the live widgets spec).
+WIDGETS_FRESH_PREF = "widgets_fresh"
 # The last choice made, kept when the feature is switched off so that switching it
 # back on does not mean choosing everything again.
 SPEECH_LAST_PREF = "speech_last"
@@ -226,6 +230,10 @@ class Runtime:
     listening_last: ListenSettings | None = None
     # Whether she drafts a reply while the user may still be talking (VOI-12).
     think_early: bool = True
+    # "Keep widgets fresh": live widgets refresh while the board is seen.
+    widgets_fresh: bool = True
+    # The queue that keeps them fresh, started with the server.
+    refresher: Refresher | None = None
     identity: Identity
     soul: str
     # Where the identity files live, and what onboarding last wrote there (PER-6).
@@ -240,6 +248,9 @@ class Runtime:
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)
+    # Each running turn's eligible reads, which a widget she builds from a connector
+    # remembers so it can be kept fresh (the live widgets spec).
+    reads: Reads = field(default_factory=Reads)
     by_conversation: dict[str, Any] = field(default_factory=dict)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
@@ -356,13 +367,51 @@ class Runtime:
         )
 
     def start_background(self) -> None:
-        """What runs beside the server, on its event loop: the scheduler."""
+        """What runs beside the server, on its event loop: the scheduler, and the queue
+        that keeps live widgets fresh."""
         if self.scheduler is not None:
             self.scheduler.start()
+        if self.refresher is not None:
+            self.refresher.start()
 
     async def stop_background(self) -> None:
+        if self.refresher is not None:
+            await self.refresher.stop()
         if self.scheduler is not None:
             await self.scheduler.stop()
+
+    def refreshing(self, conversation_id: str) -> frozenset[str]:
+        """The widgets being refreshed on this conversation now."""
+        r = self.refresher
+        return r.refreshing(conversation_id) if r is not None else frozenset()
+
+    def turn_running(self, conversation_id: str) -> bool:
+        """Her own turn is running on this conversation: a refresh waits for it."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and session.busy()
+
+    async def send_refreshing(self, conversation_id: str, widget_id: str, on: bool) -> None:
+        """Every page on this conversation: a live card's refresh started or ended."""
+        for session in list(self.sessions):
+            if session.id == conversation_id:
+                await session.send("board.refreshing", id=widget_id, on=on)
+
+    async def record_refresh_usage(
+        self, conversation_id: str, provider: ModelProvider, usage: Usage
+    ) -> None:
+        """A refresh's model call, counted with the conversation like a turn's (BRN-4)."""
+        if usage == Usage():
+            return
+        pricing = provider.pricing()
+        await self.conversations.record_usage(
+            owner_id=OWNER,
+            conversation_id=conversation_id,
+            provider=provider.name,
+            model=provider.model,
+            usage=usage,
+            cost_usd=pricing.cost(usage) if pricing is not None else None,
+            now_ms=self.clock(),
+        )
 
     def retell_workspace(self) -> None:
         """Tell her the widget types the connectors listed now fill (widget packs, D2).
@@ -539,6 +588,7 @@ async def open_runtime(
         listening_last=ListenSettings.from_json(await preferences.get(OWNER, LISTEN_LAST_PREF))
         or listening,
         think_early=await preferences.get(OWNER, THINK_EARLY_PREF) is not False,
+        widgets_fresh=await preferences.get(OWNER, WIDGETS_FRESH_PREF) is not False,
         identity=load_identity(persona),
         soul=load_soul(persona),
         persona_dir=persona or paths.persona_dir(),
@@ -618,6 +668,21 @@ async def open_runtime(
         clock=lambda: rt.clock(),
         owner=OWNER,
         zone=lambda: rt.zone(),
+        reads=rt.reads,
+        refreshing=rt.refreshing,
+    )
+    rt.refresher = Refresher(
+        boards=rt.boards,
+        router=router,
+        definition=registry.definition,
+        provider=lambda: rt.provider,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+        busy=rt.turn_running,
+        enabled=lambda: rt.widgets_fresh,
+        tell=rt.send_refreshing,
+        spent=rt.record_refresh_usage,
+        granted_roots=lambda: rt.granted_roots,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)

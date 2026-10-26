@@ -22,6 +22,7 @@ from trillion.api.runtime import (
     OWNER,
     SPEECH_PREF,
     THINK_EARLY_PREF,
+    WIDGETS_FRESH_PREF,
     ListenSettings,
     Runtime,
     SpeechSettings,
@@ -103,6 +104,12 @@ class ThinkEarly(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     on: StrictBool
+
+
+class WidgetsFresh(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    widgets_fresh: StrictBool
 
 
 class ListenSave(BaseModel):
@@ -391,6 +398,22 @@ def create_router(rt: Runtime) -> APIRouter:
         rt.think_early = body.on
         await rt.preferences.put(OWNER, THINK_EARLY_PREF, body.on, rt.clock())
         return describe_listening()
+
+    # ── The board: live widgets (the live widgets spec) ──
+
+    @router.get("/workspace")
+    async def read_workspace() -> dict[str, Any]:
+        return {"widgets_fresh": rt.widgets_fresh}
+
+    @router.put("/workspace")
+    async def save_workspace(body: WidgetsFresh) -> dict[str, Any]:
+        """Whether live widgets refresh while the board is seen. Off stops them all."""
+        rt.widgets_fresh = body.widgets_fresh
+        await rt.preferences.put(OWNER, WIDGETS_FRESH_PREF, body.widgets_fresh, rt.clock())
+        if rt.refresher is not None:
+            # Back on: a board on a screen catches up now, not at the next tick.
+            rt.refresher.wake()
+        return {"widgets_fresh": rt.widgets_fresh}
 
     @router.post("/listening/choices")
     async def listening_choices(body: ListenProbe) -> Any:

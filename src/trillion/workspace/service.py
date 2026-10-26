@@ -8,14 +8,17 @@ edit (`BoardError`) changes nothing, saved or shown.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from trillion.workspace import board as edits
+from trillion.workspace import live
 from trillion.workspace.blocks import day_in, on_day
 from trillion.workspace.board import Board, BoardError, Mode
+from trillion.workspace.kit import Widget
 from trillion.workspace.recipes import expand_board
 
 logger = logging.getLogger(__name__)
@@ -40,22 +43,35 @@ class BoardSaveError(BoardError):
     """The edit was fine; the database refused it."""
 
 
-def for_page(board: Board | None, zone: str | None = None) -> Board | None:
+def for_page(
+    board: Board | None, zone: str | None = None, refreshing: Collection[str] = ()
+) -> Board | None:
     """The board as the page draws it: every widget expanded into blocks, and without
     the id counter, which is the server's own. Expanded on today in `zone` (the
     user's), so "Today" in a due-soon card is their day, not the server's. The saved
-    board is left as it was."""
+    board is left as it was. `refreshing`: the ids of widgets being refreshed now."""
     if board is None:
         return None
     with on_day(day_in(zone)):
-        return expand_board({k: v for k, v in board.items() if k != "next_id"})
+        page = expand_board({k: v for k, v in board.items() if k != "next_id"})
+    # Expanded in order, one for one. A live widget says how it is kept fresh, never
+    # the reads that do it.
+    for saved, shown in zip(board["widgets"], page["widgets"], strict=True):
+        put = live.for_page(saved, saved.get("id") in refreshing)
+        if put is not None:
+            shown["live"] = put
+    return page
+
+
+def _iso(now_ms: int) -> str:
+    return datetime.fromtimestamp(now_ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _stamp(board: Board, now_ms: int) -> None:
     """When a widget's facts were put up is the server's to say: `validate_widget`
     drops any `at` she sends, so a widget with a source and no `at` is new or changed
     by this edit. A widget the edit left alone keeps its time."""
-    at = datetime.fromtimestamp(now_ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    at = _iso(now_ms)
     for widget in board["widgets"]:
         source = widget.get("source")
         if isinstance(source, dict) and "at" not in source:
@@ -72,8 +88,14 @@ class Boards:
         clock: Callable[[], int],
         owner: str,
         zone: Callable[[], str | None] = lambda: None,
+        reads: live.Reads | None = None,
+        refreshing: Callable[[str], Collection[str]] = lambda conversation_id: (),
     ) -> None:
+        # The widgets being refreshed on a conversation now: a board sent meanwhile says so.
+        self._refreshing = refreshing
         self._store = store
+        # This turn's reads, which a widget she saves from a connector remembers.
+        self._reads = reads
         # The user's timezone, so a bare "9:12" she writes is on their today.
         self._zone = zone
         self._conversations = conversations
@@ -101,7 +123,7 @@ class Boards:
                 new = edit(old)
             now = self._clock()
             _stamp(new, now)
-            page = for_page(new, zone)
+            page = for_page(new, zone, self._refreshing(conversation_id))
             try:
                 await self._store.put(conversation_id, self._owner, new, now)
             except Exception as e:
@@ -117,18 +139,50 @@ class Boards:
 
     # ── Hers, through the workspace tools ────────────────────────────────
 
+    def _turn_reads(self, conversation_id: str, turn: int | None) -> list[live.Read]:
+        if self._reads is None or turn is None:
+            return []
+        return self._reads.of(conversation_id, turn)
+
     async def show(
         self,
         conversation_id: str,
         title: str | None,
         widgets: Sequence[Any],
         mode: Mode = "replace",
+        *,
+        turn: int | None = None,
     ) -> Board:
-        _, new = await self._apply(conversation_id, lambda b: edits.show(b, title, widgets, mode))
+        """`turn`, her turn the call is in: a widget from a connector remembers that
+        turn's reads of it."""
+        reads = self._turn_reads(conversation_id, turn)
+
+        def edit(board: Board | None) -> Board:
+            new = edits.show(board, title, widgets, mode)
+            # Ids are never reused, so the new widgets are the ones with new ids.
+            had = {w["id"] for w in (board or {}).get("widgets", [])}
+            for widget in new["widgets"]:
+                if widget["id"] not in had:
+                    live.attach(widget, reads, None)
+            return new
+
+        _, new = await self._apply(conversation_id, edit)
         return new
 
-    async def update(self, conversation_id: str, widget_id: str, widget: Any) -> Board:
-        _, new = await self._apply(conversation_id, lambda b: edits.update(b, widget_id, widget))
+    async def update(
+        self, conversation_id: str, widget_id: str, widget: Any, *, turn: int | None = None
+    ) -> Board:
+        """As `show`: the widget's `live` is rebuilt from this turn's reads, or kept."""
+        reads = self._turn_reads(conversation_id, turn)
+
+        def edit(board: Board | None) -> Board:
+            new = edits.update(board, widget_id, widget)
+            (old,) = [w for w in (board or {})["widgets"] if w["id"] == widget_id]
+            (changed,) = [w for w in new["widgets"] if w["id"] == widget_id]
+            live.attach(changed, reads, old)
+            return new
+
+        _, new = await self._apply(conversation_id, edit)
         return new
 
     async def remove(
@@ -142,6 +196,55 @@ class Boards:
     async def close(self, conversation_id: str) -> Board:
         _, new = await self._apply(conversation_id, edits.close)
         return new
+
+    # ── A live widget's refresh (the live widgets spec) ──────────────────
+
+    async def _in_place(
+        self, conversation_id: str, before: Mapping[str, Any], change: Callable[[Widget], None]
+    ) -> bool:
+        """Change one widget where it is, only if it is still exactly `before`: one she
+        changed or took off meanwhile is hers, and a refresh never overwrites it."""
+
+        def edit(board: Board | None) -> Board:
+            new = copy.deepcopy(board) if board is not None else None
+            mine = [w for w in (new or {}).get("widgets", []) if w.get("id") == before.get("id")]
+            if new is None or len(mine) != 1 or mine[0] != before:
+                raise BoardError("the widget changed meanwhile.")
+            change(mine[0])
+            return new
+
+        try:
+            await self._apply(conversation_id, edit)
+        except BoardSaveError:
+            raise
+        except BoardError:
+            return False
+        return True
+
+    async def refreshed(
+        self, conversation_id: str, before: Mapping[str, Any], after: Widget
+    ) -> bool:
+        """Save a refreshed widget in place (same id, same position) with a new `at`,
+        keeping its reads. False when the widget changed meanwhile."""
+
+        def change(widget: Widget) -> None:
+            reads = copy.deepcopy(widget["live"]["reads"])
+            widget.clear()
+            # No `at` in `after`: `_stamp` gives it now.
+            widget.update({"id": before["id"], **copy.deepcopy(after)})
+            widget["live"] = {"reads": reads, "every": live.every(widget)}
+
+        return await self._in_place(conversation_id, before, change)
+
+    async def refresh_failed(self, conversation_id: str, before: Mapping[str, Any]) -> bool:
+        """Keep the old data and count the failure, with when: the page says so."""
+
+        def change(widget: Widget) -> None:
+            failed = widget["live"].get("failed")
+            count = failed.get("count", 0) if isinstance(failed, Mapping) else 0
+            widget["live"]["failed"] = {"count": count + 1, "at": _iso(self._clock())}
+
+        return await self._in_place(conversation_id, before, change)
 
     # ── The user's, from the page (D7) ───────────────────────────────────
 

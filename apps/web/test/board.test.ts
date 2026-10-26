@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chartSpecOf } from '../src/blocks';
+import { WIDGETS_FRESH_PATH, createBoardSettings } from '../src/browser';
 import { layoutChart } from '../src/chart';
 import {
   TICK_MS,
@@ -9,6 +10,9 @@ import {
   buttonAction,
   chartHeight,
   createBoardView,
+  createSeen,
+  footOf,
+  footWords,
   hasChart,
   planRows,
   revive,
@@ -373,5 +377,276 @@ describe('revive', () => {
     revive(card as unknown as Parameters<typeof revive>[0]);
     expect(attrs.has('data-leaving')).toBe(false);
     expect(x.disabled).toBe(false);
+  });
+});
+
+describe('live cards', () => {
+  const stripe = { id: 'stripe', title: 'Stripe', color: 'var(--chart-1)', glyph: 'S' };
+  const revenue: Widget = {
+    id: 'w9',
+    type: 'kpis',
+    size: 'medium',
+    title: 'Revenue',
+    blocks: [{ type: 'text', text: '$1,200' }],
+    source: { name: 'Stripe', at: '2026-10-25T14:04' },
+    live: { every: 15, state: 'idle' },
+  };
+
+  it('says live in the foot, keeps the tile, and keeps the age ticking', () => {
+    vi.useFakeTimers();
+    const { view, setNow } = mount({ connected: () => [stripe] });
+    view.draw(board(revenue));
+    const card = view.el.querySelector<HTMLElement>('.bd-card');
+    expect(card?.querySelector('.bd-source-words')?.textContent).toBe('Stripe · live · 1 min ago');
+    expect(card?.querySelector('.bd-source > .connected-mark')).not.toBeNull();
+    expect(card?.querySelector('.bd-live .bd-live-dot')).not.toBeNull();
+    setNow(new Date(2026, 9, 25, 14, 16));
+    vi.advanceTimersByTime(TICK_MS);
+    expect(card?.querySelector('.bd-source-words')?.textContent).toBe('Stripe · live · 12 min ago');
+    expect(card?.querySelector('.bd-live .bd-live-dot')).not.toBeNull();
+  });
+
+  it('pulses the dot only while board.refreshing is on for that card', () => {
+    const { view } = mount();
+    view.draw(board(revenue, { ...revenue, id: 'w10' }));
+    const [a, b] = [...view.el.querySelectorAll<HTMLElement>('.bd-card')];
+    const dot = (c: HTMLElement | undefined) => c?.querySelector<HTMLElement>('.bd-live-dot');
+    expect(dot(a)?.hidden).toBe(true);
+    view.refreshing('w9', true);
+    expect(dot(a)?.hidden).toBe(false);
+    expect(a?.hasAttribute('data-refreshing')).toBe(true);
+    expect(dot(b)?.hidden).toBe(true);
+    // A redraw that says it still runs keeps the pulse.
+    view.draw(board({ ...revenue, blocks: [{ type: 'text', text: '$1,300' }], live: { every: 15, state: 'refreshing' } }, { ...revenue, id: 'w10' }));
+    const again = view.el.querySelector<HTMLElement>('.bd-card');
+    expect(dot(again ?? undefined)?.hidden).toBe(false);
+    view.refreshing('w9', false);
+    expect(dot(again ?? undefined)?.hidden).toBe(true);
+    expect(again?.hasAttribute('data-refreshing')).toBe(false);
+  });
+
+  it('says refreshing to a screen reader, and marks the card busy, only while it runs', () => {
+    const { view } = mount();
+    view.draw(board(revenue));
+    const card = view.el.querySelector<HTMLElement>('.bd-card')!;
+    const said = () => card.querySelector('.bd-live .visually-hidden')?.textContent;
+    expect(said()).toBe('');
+    expect(card.hasAttribute('aria-busy')).toBe(false);
+    view.refreshing('w9', true);
+    expect(said()).toBe(' (refreshing)');
+    expect(card.getAttribute('aria-busy')).toBe('true');
+    view.refreshing('w9', false);
+    expect(said()).toBe('');
+    expect(card.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('never keeps a refresh whose end was lost', () => {
+    const { view } = mount();
+    const dot = () => view.el.querySelector<HTMLElement>('.bd-live-dot')?.hidden;
+    view.draw(board(revenue));
+    // A new connection: the "off" may have gone with the old one.
+    view.refreshing('w9', true);
+    view.reset();
+    expect(dot()).toBe(true);
+    // A fresh board that says it is not refreshing wins over an older "on".
+    view.refreshing('w9', true);
+    view.draw(board({ ...revenue, blocks: [{ type: 'text', text: '$1,400' }] }));
+    expect(dot()).toBe(true);
+    // Put away: the same id in another conversation starts quiet.
+    view.refreshing('w9', true);
+    view.dispose();
+    view.draw(board(revenue));
+    expect(dot()).toBe(true);
+  });
+
+  it('takes a widget sent as refreshing as refreshing', () => {
+    const { view } = mount();
+    view.draw(board({ ...revenue, live: { every: 15, state: 'refreshing' } }));
+    expect(view.el.querySelector<HTMLElement>('.bd-live-dot')?.hidden).toBe(false);
+  });
+
+  it('says it could not refresh, in the attention tone, with how long ago it tried', () => {
+    const { view } = mount({ connected: () => [stripe] });
+    view.draw(board({ ...revenue, live: { every: 15, state: 'failed', failed_at: '2026-10-25T13:53' } }));
+    const line = view.el.querySelector<HTMLElement>('.bd-source');
+    expect(line?.querySelector('.bd-source-words')?.textContent).toBe('Couldn’t refresh · 12 min ago');
+    expect(line?.hasAttribute('data-failed')).toBe(true);
+    expect(line?.querySelector('.bd-live-dot')).toBeNull();
+  });
+
+  it('sends board.refresh from a quiet button beside the ×, and rests it while one runs', () => {
+    const asked: string[] = [];
+    const { view } = mount({ onRefresh: (id) => void asked.push(id) });
+    view.draw(board(revenue, meeting));
+    const [live, snapshot] = [...view.el.querySelectorAll<HTMLElement>('.bd-card')];
+    const button = live?.querySelector<HTMLButtonElement>('.bd-card-head .bd-refresh');
+    expect(button?.getAttribute('aria-label')).toBe('Refresh “Revenue”');
+    // Beside the ×, before it.
+    expect(button?.nextElementSibling?.classList.contains('bd-x')).toBe(true);
+    expect(snapshot?.querySelector('.bd-refresh')).toBeNull();
+    button?.click();
+    expect(asked).toEqual(['w9']);
+    view.refreshing('w9', true);
+    expect(button?.getAttribute('aria-disabled')).toBe('true');
+    button?.click();
+    expect(asked).toEqual(['w9']);
+    view.refreshing('w9', false);
+    expect(button?.getAttribute('aria-disabled')).toBe('false');
+    button?.click();
+    expect(asked).toEqual(['w9', 'w9']);
+  });
+
+  it('draws no refresh button when nothing would send it', () => {
+    const { view } = mount();
+    view.draw(board(revenue));
+    expect(view.el.querySelector('.bd-refresh')).toBeNull();
+  });
+
+  it('never shows the reads, whatever comes with live', () => {
+    const { view } = mount();
+    view.draw(board({ ...revenue, live: { every: 15, state: 'idle', reads: [{ tool: 'stripe_list_charges', args: {} }] } }));
+    expect(view.el.textContent).not.toContain('stripe_list_charges');
+  });
+});
+
+describe('footOf', () => {
+  it('reads a snapshot, a live card and a failed one', () => {
+    const source = { name: 'Stripe', at: '2026-10-25T14:04' };
+    expect(footWords(footOf({ source }, NOW)!)).toBe('Stripe · 1 min ago');
+    expect(footWords(footOf({ source, live: { every: 2, state: 'idle' } }, NOW)!)).toBe('Stripe · live · 1 min ago');
+    expect(footWords(footOf({ source, live: { every: 2, state: 'failed' } }, NOW)!)).toBe('Couldn’t refresh · 1 min ago');
+    expect(footOf({ live: { every: 2, state: 'idle' } }, NOW)).toBeNull();
+  });
+});
+
+describe('board.seen', () => {
+  function page(visible = true, ready = true) {
+    const doc = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
+    doc.visibilityState = visible ? 'visible' : 'hidden';
+    const sent: boolean[] = [];
+    const opened: boolean[] = [];
+    let shown = false;
+    const seen = createSeen(
+      (on, o) => void (sent.push(on), opened.push(o)),
+      () => shown,
+      doc as unknown as Document,
+    );
+    if (ready) seen.ready();
+    const hide = (hidden: boolean) => {
+      doc.visibilityState = hidden ? 'hidden' : 'visible';
+      doc.dispatchEvent(new Event('visibilitychange'));
+    };
+    return { seen, sent, opened, show: (on: boolean) => ((shown = on), seen.sync(on)), hide, set: (on: boolean) => (shown = on) };
+  }
+
+  it('is sent when the board is shown and hidden, never twice in a row', () => {
+    const { sent, show } = page();
+    show(false);
+    expect(sent).toEqual([]);
+    show(true);
+    show(true);
+    show(false);
+    show(false);
+    expect(sent).toEqual([true, false]);
+  });
+
+  it('follows the tab only while the board is shown', () => {
+    const { sent, show, hide } = page();
+    hide(true);
+    hide(false);
+    expect(sent).toEqual([]);
+    show(true);
+    hide(true);
+    hide(false);
+    expect(sent).toEqual([true, false, true]);
+  });
+
+  it('says the board was opened only when it was, never when the tab comes back', () => {
+    const { sent, opened, show, hide } = page();
+    show(true);
+    hide(true);
+    hide(false);
+    show(false);
+    show(true);
+    expect(sent).toEqual([true, false, true, false, true]);
+    expect(opened).toEqual([true, false, false, false, true]);
+  });
+
+  it('is not seen while the tab is hidden, and is said again on a new connection', () => {
+    const { seen, sent, show, hide } = page(false);
+    show(true);
+    expect(sent).toEqual([]);
+    hide(false);
+    expect(sent).toEqual([true]);
+    seen.reset();
+    seen.ready();
+    seen.sync();
+    expect(sent).toEqual([true, true]);
+  });
+
+  it("says nothing from a connection's start until its first board, the tab included", () => {
+    const { seen, sent, hide, set } = page(true, false);
+    set(true);
+    seen.sync(true);
+    hide(true);
+    hide(false);
+    expect(sent).toEqual([]);
+    seen.ready();
+    seen.sync();
+    expect(sent).toEqual([true]);
+    // A new connection: quiet again until its board, whatever the tab does.
+    seen.reset();
+    hide(true);
+    hide(false);
+    expect(sent).toEqual([true]);
+  });
+});
+
+describe('Settings: Keep widgets fresh', () => {
+  function host() {
+    const el = document.createElement('div');
+    document.body.append(el);
+    return Object.assign(el, { open: false, showModal() {}, close() {} });
+  }
+
+  it('shows the saved choice and saves the switch as widgets_fresh', async () => {
+    const calls: [string, string, unknown][] = [];
+    let stored = false;
+    const api = async (method: string, path: string, body?: unknown) => {
+      calls.push([method, path, body]);
+      if (method === 'PUT') stored = (body as { widgets_fresh: boolean }).widgets_fresh;
+      return new Response(JSON.stringify({ widgets_fresh: stored }), { status: 200 });
+    };
+    const h = host();
+    let told = 0;
+    const s = createBoardSettings(h, api, () => void told++);
+    // Read as the panel is built: the summary is right before the section is opened.
+    await vi.waitFor(() => expect(told).toBe(1));
+    expect(s.summary()).toBe('Snapshots');
+    await s.open();
+    const box = h.querySelector<HTMLInputElement>('input[role="switch"]');
+    expect(h.textContent).toContain('Keep widgets fresh');
+    expect(box?.checked).toBe(false);
+    expect(s.summary()).toBe('Snapshots');
+    box!.checked = true;
+    box!.dispatchEvent(new Event('change'));
+    await vi.waitFor(() => expect(box?.disabled).toBe(false));
+    expect(calls.at(-1)).toEqual(['PUT', WIDGETS_FRESH_PATH, { widgets_fresh: true }]);
+    expect(box?.checked).toBe(true);
+    expect(s.summary()).toBe('Kept fresh');
+  });
+
+  it('is on when the core has nothing to say, and puts the switch back when saving fails', async () => {
+    const api = async (method: string) => new Response('{}', { status: method === 'GET' ? 404 : 500 });
+    const h = host();
+    const s = createBoardSettings(h, api, () => {});
+    await s.open();
+    const box = h.querySelector<HTMLInputElement>('input[role="switch"]')!;
+    expect(box.checked).toBe(true);
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    await vi.waitFor(() => expect(box.disabled).toBe(false));
+    expect(box.checked).toBe(true);
+    expect(h.querySelector('.settings-status')?.textContent).toContain('could not be saved');
   });
 });

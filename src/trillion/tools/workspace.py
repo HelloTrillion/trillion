@@ -133,23 +133,24 @@ class _BoardTool(BaseTool):
             return _refused(_NO_BOARD)
         try:
             # Sessions use the conversation's id as their own.
-            return await self._run(boards, ctx.session_id, args)
+            return await self._run(boards, ctx, args)
         except BoardSaveError as e:
             return _refused(str(e), "save_failed")
         except BoardError as e:
             return _refused(str(e))
 
-    async def _run(self, boards: Boards, conversation_id: str, args: JSON) -> ToolResult:
+    async def _run(self, boards: Boards, ctx: ToolContext, args: JSON) -> ToolResult:
         raise NotImplementedError
 
 
 class WorkspaceShow(_BoardTool):
     definition = _TOLD[SHOW]
 
-    async def _run(self, boards: Boards, conversation_id: str, args: JSON) -> ToolResult:
+    async def _run(self, boards: Boards, ctx: ToolContext, args: JSON) -> ToolResult:
         raw = args.get("widgets", [])
         title = args.get("title")
-        board = await boards.show(conversation_id, title, raw, args.get("mode", "replace"))
+        mode = args.get("mode", "replace")
+        board = await boards.show(ctx.session_id, title, raw, mode, turn=ctx.turn)
         if not raw:
             text = f"The board is open again: {_named(board['widgets'])}."
         else:
@@ -160,9 +161,9 @@ class WorkspaceShow(_BoardTool):
 class WorkspaceUpdate(_BoardTool):
     definition = _TOLD[UPDATE]
 
-    async def _run(self, boards: Boards, conversation_id: str, args: JSON) -> ToolResult:
+    async def _run(self, boards: Boards, ctx: ToolContext, args: JSON) -> ToolResult:
         widget_id = str(args.get("id", ""))
-        board = await boards.update(conversation_id, widget_id, args.get("widget"))
+        board = await boards.update(ctx.session_id, widget_id, args.get("widget"), turn=ctx.turn)
         (changed,) = [w for w in board["widgets"] if w["id"] == widget_id]
         return ToolResult(
             ok=True, content=f"Updated on the board: {_named([changed])}.", effect="confirmed"
@@ -172,11 +173,11 @@ class WorkspaceUpdate(_BoardTool):
 class WorkspaceRemove(_BoardTool):
     definition = _TOLD[REMOVE]
 
-    async def _run(self, boards: Boards, conversation_id: str, args: JSON) -> ToolResult:
+    async def _run(self, boards: Boards, ctx: ToolContext, args: JSON) -> ToolResult:
         ids: Any = args.get("ids")
         if ids == ["all"]:
             ids = "all"
-        board, gone = await boards.remove(conversation_id, ids)
+        board, gone = await boards.remove(ctx.session_id, ids)
         text = f"Taken off the board: {_named(gone)}."
         if not board["widgets"]:
             text += " The board is empty and closed."
@@ -186,8 +187,8 @@ class WorkspaceRemove(_BoardTool):
 class WorkspaceClose(_BoardTool):
     definition = _TOLD[CLOSE]
 
-    async def _run(self, boards: Boards, conversation_id: str, args: JSON) -> ToolResult:
-        await boards.close(conversation_id)
+    async def _run(self, boards: Boards, ctx: ToolContext, args: JSON) -> ToolResult:
+        await boards.close(ctx.session_id)
         return ToolResult(
             ok=True,
             content="Closed the board. It is kept: workspace_show with no widgets reopens it.",

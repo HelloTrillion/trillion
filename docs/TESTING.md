@@ -164,6 +164,16 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.7.21 | Remove that server. Ask "what widgets can you show?" again, then give her the numbers for a kanban | The work widgets are gone from her list. Told the numbers, she still builds the kanban, because the kit accepts every type. |
 | 2.7.22 | With a catalogue server connected (for example Stripe or Linear), ask for a card from it and look at the footer | The footer shows that service's tile (colour, letters and icon) before its name. A card whose source is not a connected service shows the name alone. |
 
+### 2.8 Live widgets (SUR-1), by hand with a connected service and Voice off
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.8.1 | With a service connected (for example Stripe), ask for a card from it. Change the data in that service, keep the board open and wait one rate | The footer reads "live", and the numbers change on their own. The conversation gains no message. |
+| 2.8.2 | Close the board, change the data again, wait past the rate, then open the board | Nothing changed while it was closed. On opening, the card catches up. |
+| 2.8.3 | Click the refresh button on a live card | The dot pulses, the numbers update, the age resets. Clicking again while it runs does nothing. |
+| 2.8.4 | Turn off "Keep widgets fresh" in Settings, change the data and open the board | Nothing refreshes, not even on opening, and the refresh button does nothing. Turn it back on and the card catches up. |
+| 2.8.5 | Disconnect the service, then click the refresh button | The footer reads "Couldn't refresh" with an age. The old numbers stay. |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
