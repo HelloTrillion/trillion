@@ -146,6 +146,17 @@ def test_a_voice_too_quiet_to_measure_falls_back_to_the_words() -> None:
     assert 0.15 <= rules.quiet_s <= 0.25
 
 
+def test_a_voice_too_quiet_to_measure_gets_the_same_pause() -> None:
+    """Only the recognizer hears this voice. A pause after its words is a pause like
+    anyone's, not the end half a second later."""
+    rules = EndOfSpeech(streaming=True)
+    run(rules, room(0.5))
+    rules.heard(final=False, has_text=True)
+    assert run(rules, room(SLOW_S - 0.2)) is None  # a pause, not the end
+    assert run(rules, room(0.4)) == "end"
+    assert abs(rules.now - (0.5 + SLOW_S)) < 0.1
+
+
 def test_a_finished_question_ends_as_soon_as_the_recognizer_hears_the_pause() -> None:
     """Latency: when the words read as finished and the recognizer heard the pause,
     the turn ends then, not 0.4s after the late final words arrive."""
