@@ -84,10 +84,15 @@ def tile_names(title: str) -> list[str]:
     return [full, short] if short and short != full else [full]
 
 
+def _spaced(name: str) -> str:
+    return " ".join(name.replace("-", " ").replace("_", " ").split())
+
+
 def matches(source: str, title: str) -> bool:
-    """Whether a widget's source names this connector, ignoring case."""
-    name = source.strip().lower()
-    return bool(name) and name in tile_names(title)
+    """Whether a widget's source names this connector, ignoring case, and reading `-`
+    and `_` as spaces: a server named "my-crm" is the "My CRM" she writes."""
+    name = _spaced(source.strip().lower())
+    return bool(name) and name in {_spaced(t) for t in tile_names(title)}
 
 
 class Reads:
@@ -150,7 +155,7 @@ def attach(widget: dict[str, Any], reads: list[Read], old: Mapping[str, Any] | N
     if live is None and old is not None:
         kept = old.get("live")
         name, was = _source_name(widget), _source_name(old)
-        same = bool(name and was and name.strip().lower() == was.strip().lower())
+        same = bool(name and was and _spaced(name.lower()) == _spaced(was.lower()))
         if isinstance(kept, Mapping) and same:
             live = {"reads": copy.deepcopy(kept.get("reads", [])), "every": every(widget)}
     if live is not None:

@@ -121,6 +121,11 @@ def test_a_read_is_named_by_its_connectors_tile() -> None:
         ("Gmail", "Google Drive", False),
         ("Google", "Google Calendar", False),
         ("", "Stripe", False),
+        # A server named in code matches the name people say, and the other way round.
+        ("My CRM", "my-crm", True),
+        ("my_crm", "My CRM", True),
+        ("my-crm", "my_crm", True),
+        ("My CRM", "my-crm-two", False),
     ],
 )
 def test_a_source_names_a_connector_as_tiles_do(source: str, title: str, same: bool) -> None:

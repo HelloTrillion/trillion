@@ -34,7 +34,14 @@ from trillion.brain.types import (
     ToolUse,
     ToolUseBlock,
 )
-from trillion.spine.contract import ToolContext
+from trillion.spine.contract import (
+    JSON,
+    BaseTool,
+    Risk,
+    ToolContext,
+    ToolDefinition,
+    ToolResult,
+)
 from trillion.spine.loop_guard import Limits
 
 USER = Msg(role="user", blocks=(TextBlock(text="hello"),))
@@ -453,3 +460,80 @@ async def test_a_given_first_call_that_fails_midway_ends_the_turn_like_a_real_ca
     assert provider.calls == []
     assert done.stop == "provider_error" and done.error_kind == "rate_limited"
     assert run.saved == [Msg(role="assistant", blocks=(TextBlock(text="So far"),))]
+
+
+class _Board(BaseTool):
+    """A workspace read that notes which of the slow reads had ended when it ran."""
+
+    definition = ToolDefinition(
+        name="board_peek",
+        description="Peek at the board (test).",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        risk=Risk.READ,
+        category="workspace",
+        timeout_s=5.0,
+    )
+
+    def __init__(self, ended: list[str]) -> None:
+        self.ended = ended
+        self.saw: list[list[str]] = []
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        self.saw.append(list(self.ended))
+        return ToolResult(ok=True, content="board", effect="none")
+
+
+class _Slow(BaseTool):
+    definition = ToolDefinition(
+        name="slow_read",
+        description="A slow read (test).",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        risk=Risk.READ,
+        category="test",
+        timeout_s=5.0,
+    )
+
+    def __init__(self, ended: list[str]) -> None:
+        self.ended = ended
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        await asyncio.sleep(0.05)
+        self.ended.append(ctx.call_id)
+        return ToolResult(ok=True, content="read", effect="none")
+
+
+async def test_workspace_calls_run_after_the_rest_of_their_round(run: Run) -> None:
+    """A widget saved in the same round as the read it shows must find that read
+    recorded: the session records it when the read's ToolEnded is emitted."""
+    ended: list[str] = []
+    board, slow = _Board(ended), _Slow(ended)
+    run.spine.registry.register(board, module="trillion.tools.workspace")
+    run.spine.registry.register(slow)
+    round_one: list[ModelEvent] = [
+        ToolUse(id="b1", name="board_peek", args={}),
+        ToolUse(id="r1", name="slow_read", args={}),
+        ToolUse(id="r2", name="slow_read", args={}),
+        Done(stop_reason="tool_use", usage=USAGE),
+    ]
+    done = await run.go(ScriptedProvider(round_one, say("Up.")))
+    assert done.stop == "end"
+    assert board.saw == [["r1", "r2"]] or board.saw == [["r2", "r1"]]
+    ends = [e.call_id for e in run.events if isinstance(e, ToolEnded)]
+    assert ends[-1] == "b1"
+    # The answers keep the order the model asked in.
+    assert [r.tool_use_id for r in run.results()] == ["b1", "r1", "r2"]
+
+
+async def test_workspace_calls_go_last_in_an_ordered_round_too(run: Run) -> None:
+    ended: list[str] = []
+    board = _Board(ended)
+    run.spine.registry.register(board, module="trillion.tools.workspace")
+    round_one: list[ModelEvent] = [
+        ToolUse(id="b1", name="board_peek", args={}),
+        ToolUse(id="w1", name="scripted_write", args={}),
+        Done(stop_reason="tool_use", usage=USAGE),
+    ]
+    await run.go(ScriptedProvider(round_one, say("Up.")))
+    ends = [e.call_id for e in run.events if isinstance(e, ToolEnded)]
+    assert ends == ["w1", "b1"]
+    assert [r.tool_use_id for r in run.results()] == ["b1", "w1"]

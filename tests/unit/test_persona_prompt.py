@@ -206,3 +206,13 @@ def test_she_is_told_connectors_add_widgets_and_to_name_them() -> None:
         assert "workspace tool" in text and "use what it lists" in text
         assert "by the connector's name" in text and "Stripe" in text and "Linear" in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_she_is_told_connector_widgets_keep_themselves_fresh() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 25, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "keep themselves fresh while the board is open" in text
+        assert '"off"' in text and "minutes" in text and "refresh" in text
+        assert "\u2014" not in text and "\u2013" not in text

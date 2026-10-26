@@ -37,6 +37,10 @@ from trillion.spine.router import Router, RouterResponse
 
 logger = logging.getLogger(__name__)
 
+# The board tools' category (tools/workspace.py), named here so the loop needs nothing
+# from the workspace.
+WORKSPACE = "workspace"
+
 MAX_TOKENS = 4096
 INTERRUPTED = " [interrupted]"
 
@@ -154,14 +158,30 @@ async def run_turn(
             is_error=response.status in ("failed", "refused"),
         )
 
+    def board(u: ToolUse) -> bool:
+        d = registry.definition(u.name)
+        return d is not None and d.category == WORKSPACE
+
     async def run_all(batch: Sequence[ToolUse], refuse: Refusal | None) -> list[Block]:
         reads_only = all(
             (d := registry.definition(u.name)) is not None and d.risk is Risk.READ for u in batch
         )
+        # Her board's calls go after the rest of the round: a widget she saves beside the
+        # read it shows remembers that read only once the read has ended (live widgets).
+        order = [i for i, u in enumerate(batch) if not board(u)]
+        order += [i for i, u in enumerate(batch) if board(u)]
+        out: dict[int, Block] = {}
         if reads_only and refuse is None:
-            return list(await asyncio.gather(*(call(u) for u in batch)))
-        # Anything that writes or proposes runs in the order the model asked.
-        return [await call(u, refuse) for u in batch]
+            first = [i for i in order if not board(batch[i])]
+            for group in (first, order[len(first) :]):
+                done = await asyncio.gather(*(call(batch[i]) for i in group))
+                out.update(zip(group, done, strict=True))
+        else:
+            # Anything that writes or proposes runs in the order the model asked.
+            for i in order:
+                out[i] = await call(batch[i], refuse)
+        # Answered in the order she asked.
+        return [out[i] for i in range(len(batch))]
 
     while True:
         if guard.next_round().verdict is Verdict.STOP:

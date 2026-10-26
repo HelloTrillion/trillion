@@ -78,6 +78,10 @@ _UNHASHABLE = "unhashable"
 _TARGET_CHANGED = "the target changed since you were asked"
 _NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
 _UNATTENDED = "nobody is here to approve it; say what you would do instead"
+# Runs nobody is watching: a timed ask, and a widget's refresh (the live widgets spec).
+# Neither can raise, settle or re-present a card.
+_UNWATCHED = frozenset({"schedule", "refresh"})
+_REFRESH_READS_ONLY = "a refresh only reads"
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
     Status.UNKNOWN: "unknown",
@@ -275,7 +279,7 @@ class Router:
             extra = set(call.args) - {"pending_id"}
             if not isinstance(pid, str) or not pid or extra:
                 return await audited("meta", _refused(Refusal.INVALID_ARGS, "pending_id only"))
-            if ctx.via == "schedule":
+            if ctx.via in _UNWATCHED:
                 # Nobody said yes or no: an unattended run settles no card (D5).
                 return await audited("meta", _refused(Refusal.UNATTENDED, _UNATTENDED))
             decision: Literal["confirm", "cancel"] = (
@@ -307,10 +311,14 @@ class Router:
         if tool is None:
             return await audited("unknown", _refused(Refusal.UNKNOWN_TOOL))
         risk = tool.definition.risk.value
-        if ctx.via == "schedule" and not runs_unattended(tool.definition):
+        if ctx.via in _UNWATCHED and not runs_unattended(tool.definition):
             # A card belongs to a session someone is watching (D5). Refused before any of
             # the tool's own code runs, whether or not it was offered to this run.
             return await audited(risk, _refused(Refusal.UNATTENDED, _UNATTENDED))
+        if ctx.via == "refresh" and tool.definition.risk is not Risk.READ:
+            # A refresh replays what she read for a widget, with nobody deciding (D4): a
+            # freed write is still a write.
+            return await audited(risk, _refused(Refusal.UNATTENDED, _REFRESH_READS_ONLY))
         if h is None:
             return await audited(risk, _refused(Refusal.INVALID_ARGS, "arguments must be JSON"))
 
@@ -419,7 +427,7 @@ class Router:
         if not await self._known(ctx.owner_id):
             return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
-        if ctx.via == "schedule":
+        if ctx.via in _UNWATCHED:
             meta = CONFIRM_TOOL.name if decision == "confirm" else CANCEL_TOOL.name
             h = args_hash({"pending_id": pending_id})
             refusal = _refused(Refusal.UNATTENDED, _UNATTENDED)
@@ -560,7 +568,7 @@ class Router:
             return _refused(Refusal.UNKNOWN_OWNER)
         start = self._clock()
         h = args_hash({"pending_id": pending_id})
-        if ctx.via == "schedule":
+        if ctx.via in _UNWATCHED:
             refusal = _refused(Refusal.UNATTENDED, _UNATTENDED)
             return await self._audit(ctx, start, "represent", h, "meta", "represent", refusal)
         a = await self._store.get_pending(pending_id)

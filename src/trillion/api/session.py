@@ -366,10 +366,17 @@ class Session:
         await self._send("error", code="replaced")
         await self.close()
 
+    def busy(self) -> bool:
+        """Her turn, or her saying something, is running here: a refresh waits."""
+        return self._task is not None and not self._task.done()
+
     async def close(self) -> None:
         self._rt.sessions.discard(self)
         if self._rt.by_conversation.get(self.id) is self:
             del self._rt.by_conversation[self.id]
+            # No page shows this board any more.
+            if self._rt.refresher is not None:
+                self._rt.refresher.seen(self.id, False)
         await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
@@ -504,6 +511,19 @@ class Session:
             await self._offer()
         elif kind in ("board.open", "board.close", "board.remove"):
             await self._on_board(kind, msg.get("id"))
+        elif kind == "board.seen":
+            # Whether this page shows the board: live widgets refresh only then.
+            on = msg.get("on")
+            if not isinstance(on, bool):
+                await self._error("bad_message")
+            elif self._rt.refresher is not None:
+                self._rt.refresher.seen(self.id, on)
+        elif kind == "board.refresh":
+            widget_id = msg.get("id")
+            if not (isinstance(widget_id, str) and widget_id):
+                await self._error("bad_message")
+            elif self._rt.refresher is not None:
+                self._rt.refresher.now(self.id, widget_id)
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
