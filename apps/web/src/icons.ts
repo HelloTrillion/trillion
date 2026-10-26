@@ -33,6 +33,11 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   check: ['M5.5 12.5l4 4l9-9'],
   // Four tiles: the workspace and its widgets.
   workspace: ['M4 4.5h7v7H4z', 'M13 4.5h7v4h-7z', 'M13 10.5h7v9h-7z', 'M4 13.5h7v6H4z'],
+  // A small sun: today, and the day conversations.
+  day: [
+    'M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7z',
+    'M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6L18 18M6 18l1.4-1.4M16.6 7.4L18 6',
+  ],
   search: ['M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 0 0 0-13z', 'M20 20l-4.8-4.8'],
 };
 

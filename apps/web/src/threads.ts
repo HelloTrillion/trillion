@@ -1,3 +1,5 @@
+import { icon } from './icons';
+
 /**
  * The thread list (SUR-1). The pure part, grouping by day, is tested on its own;
  * the DOM part below it only draws and calls the API.
@@ -7,6 +9,8 @@ export interface Thread {
   readonly id: string;
   readonly title: string | null;
   readonly lastMessageAt: number;
+  /** A day conversation's date (YYYY-MM-DD); absent for a chat. */
+  readonly day?: string;
 }
 
 export interface Group {
@@ -43,9 +47,9 @@ export function threadsOf(body: unknown): { threads: Thread[]; more: boolean } {
   const rows: unknown[] = Array.isArray(b?.conversations) ? b.conversations : [];
   const threads = rows.flatMap((raw): Thread[] => {
     const r = raw as Record<string, unknown> | null;
-    return typeof r?.['id'] === 'string' && typeof r['last_message_at'] === 'number'
-      ? [{ id: r['id'], title: typeof r['title'] === 'string' ? r['title'] : null, lastMessageAt: r['last_message_at'] }]
-      : [];
+    if (typeof r?.['id'] !== 'string' || typeof r['last_message_at'] !== 'number') return [];
+    const t: Thread = { id: r['id'], title: typeof r['title'] === 'string' ? r['title'] : null, lastMessageAt: r['last_message_at'] };
+    return [r['kind'] === 'day' && typeof r['day'] === 'string' ? { ...t, day: r['day'] } : t];
   });
   return { threads, more: b?.more === true };
 }
@@ -121,6 +125,106 @@ export function rowTime(at: number, now: number): string {
   return d.toLocaleDateString([], thisYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// ── Your day ─────────────────────────────────────────────────────────────
+
+/** Today as the core dates a day conversation: YYYY-MM-DD, local. */
+export function localDay(now: number): string {
+  const d = new Date(now);
+  const two = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}
+
+/** Today, short, as the day conversation's title has it: "Mon 26 Oct". */
+export function shortDate(now: number): string {
+  const d = new Date(now);
+  return `${d.toLocaleDateString([], { weekday: 'short' })} ${d.getDate()} ${d.toLocaleDateString([], { month: 'short' })}`;
+}
+
+/** Today's day conversation among the rows, if it is there. */
+export const todayIn = (threads: readonly Thread[], now: number): string | null =>
+  threads.find((t) => t.day === localDay(now))?.id ?? null;
+
+/** Nothing built yet: no board, or one with no widgets. */
+export const needsBuild = (board: { readonly widgets: readonly unknown[] } | null): boolean =>
+  board === null || board.widgets.length === 0;
+
+export interface DayOpenerDeps {
+  /** GET /api/conversations/day: `{id, created}`, or a rejection. */
+  readonly fetchDay: () => Promise<unknown>;
+  readonly current: () => string | null;
+  readonly switchTo: (id: string) => void;
+  /** Ask the core to build the board (`day.build`). */
+  readonly build: () => void;
+}
+
+export interface DayOpener {
+  /** The entry or her `day_open`: open today's day, building its board if it is empty. False if it could not. */
+  open(): Promise<boolean>;
+  /** A session began (a switch or a reconnect): its board has not come yet. */
+  session(): void;
+  /** The session's board arrived (null for none). */
+  board(board: { readonly widgets: readonly unknown[] } | null): void;
+  /** Today's day conversation, once known. */
+  readonly id: string | null;
+}
+
+/**
+ * Opening the day: switch to it, then, once its board is known, ask for a build when it
+ * is empty. Armed once per open, so a reconnect or a later board never builds again.
+ */
+export function createDayOpener(d: DayOpenerDeps): DayOpener {
+  let id: string | null = null;
+  let armed: string | null = null;
+  let seen = false;
+  let last: { readonly widgets: readonly unknown[] } | null = null;
+  // Counts each open, so an older answer arriving after a newer one is ignored.
+  let gen = 0;
+
+  function settle(): void {
+    if (armed === null || !seen) return;
+    const mine = armed === d.current();
+    armed = null;
+    // A session that is not the day's (the switch did not land there) builds nothing.
+    if (mine && needsBuild(last)) d.build();
+  }
+
+  return {
+    async open() {
+      const mine = ++gen;
+      let body: unknown;
+      try {
+        body = await d.fetchDay();
+      } catch {
+        return false;
+      }
+      if (mine !== gen) return false;
+      const got = (body as { id?: unknown } | null)?.id;
+      if (typeof got !== 'string' || !got) return false;
+      id = got;
+      armed = got;
+      if (d.current() === got) settle();
+      else {
+        seen = false;
+        last = null;
+        d.switchTo(got);
+      }
+      return true;
+    },
+    session() {
+      seen = false;
+      last = null;
+    },
+    board(board) {
+      seen = true;
+      last = board;
+      settle();
+    },
+    get id() {
+      return id;
+    },
+  };
+}
+
 /** What Escape does, in one order: she stops first, then the thread list closes, then the workspace. */
 export function escapeAction(s: {
   readonly busy: boolean;
@@ -149,6 +253,10 @@ export interface ThreadsDeps {
   /** The open conversation was deleted. */
   readonly deletedCurrent: () => void;
   readonly now: () => number;
+  /** The "Your day" row was chosen. False if the day could not be opened. */
+  readonly openDay: () => Promise<boolean>;
+  /** Today's day conversation, when the page knows it. */
+  readonly dayId: () => string | null;
 }
 
 export interface ThreadList {
@@ -236,7 +344,33 @@ export function createThreads(d: ThreadsDeps): ThreadList {
   // The end of the list: once it scrolls into view, the next page loads.
   const sentinel = el('li', 'threads-sentinel');
   sentinel.setAttribute('role', 'presentation');
-  root.append(searchWrap, status, list);
+  // Your day sits above everything, search included: it is not one of the threads.
+  const dayRow = button('thread-day', '');
+  const dayName = el('span', 'thread-name', 'Your day');
+  const dayDate = el('small', 'thread-time');
+  dayRow.append(icon('day', 16), dayName, dayDate);
+  dayRow.addEventListener('click', () => {
+    dayRow.disabled = true;
+    void d
+      .openDay()
+      .catch(() => false)
+      .then((ok) => {
+        dayRow.disabled = false;
+        if (ok) close();
+        else say("Couldn't open your day", false);
+      });
+  });
+  root.append(dayRow, searchWrap, status, list);
+
+  /** Today's date on the row, and marked when today's day is the open conversation. */
+  function drawDay(): void {
+    const now = d.now();
+    dayDate.textContent = shortDate(now);
+    const today = d.dayId() ?? todayIn(threads, now);
+    const on = today !== null && today === d.current();
+    if (on) dayRow.setAttribute('aria-current', 'true');
+    else dayRow.removeAttribute('aria-current');
+  }
 
   function say(text: string, canRetry = false): void {
     setStatus(text);
@@ -325,6 +459,7 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     }
     if (more) items.push(sentinel);
     list.replaceChildren(...items);
+    drawDay();
     if (more) observer?.observe(sentinel);
     say(threads.length ? '' : search.value.trim() ? 'No conversations match' : 'No conversations yet');
     if (hadFocus) focusActive();
@@ -352,6 +487,7 @@ export function createThreads(d: ThreadsDeps): ThreadList {
       ev.stopPropagation();
       menu(t, li);
     });
+    if (t.day) li.append(icon('day', 14));
     li.append(name, when, dots);
     li.addEventListener('click', () => {
       if (renaming !== t.id) choose(t.id);
@@ -657,6 +793,7 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     isOpen = true;
     root.hidden = false;
     activeId = null;
+    drawDay();
     void load(false);
     search.focus();
     fire();

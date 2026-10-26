@@ -45,7 +45,7 @@ import {
 import { announcement, statusText } from './announce';
 import { createReminders } from './reminders';
 import { createSidebar, revealForCard } from './sidebar';
-import { createThreads, escapeAction, listPath } from './threads';
+import { createDayOpener, createThreads, escapeAction, listPath } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
@@ -629,6 +629,8 @@ function renderEntry(e: Entry): HTMLElement {
     }
     case 'notice':
       return el('p', 'notice', e.text);
+    case 'host':
+      return el('p', 'host-line', e.text);
     case 'scheduled': {
       // A missed or failed one has no words of hers: a quiet line, never her speech.
       if (e.text === null) return el('p', 'notice scheduled-quiet', quietLine(e));
@@ -1108,6 +1110,14 @@ async function okJson(r: Promise<Response>): Promise<unknown> {
 const succeeded = (r: Promise<Response>): Promise<boolean> => r.then((res) => res.ok).catch(() => false);
 const threadPath = (id: string): string => `/api/conversations/${encodeURIComponent(id)}`;
 
+// Your day (SUR-1): the entry and her `day_open` both come here; the build waits for the day's board.
+const day = createDayOpener({
+  fetchDay: () => okJson(api('GET', '/api/conversations/day')),
+  current: () => view.conversationId,
+  switchTo: (id) => switchTo(id),
+  build: () => send({ type: 'day.build' }),
+});
+
 const threads = createThreads({
   root: threadsEl,
   fetchPage: ({ q, before }) => okJson(api('GET', listPath(q, before))),
@@ -1121,6 +1131,8 @@ const threads = createThreads({
   },
   deletedCurrent: () => switchTo(null),
   now: () => Date.now(),
+  openDay: () => day.open(),
+  dayId: () => day.id,
 });
 threads.onToggle((open) => {
   threadSwitch.setAttribute('aria-expanded', String(open));
@@ -1193,6 +1205,12 @@ function connect(): void {
     if (msg.type === 'session') {
       seen.reset();
       boardView.reset();
+      day.session();
+    }
+    // She was asked about the day from a chat: the page opens it, as the entry does.
+    if (msg.type === 'day.open') {
+      threads.close();
+      void day.open();
     }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
@@ -1319,6 +1337,7 @@ function connect(): void {
       seen.ready();
       onBoard();
       seen.sync();
+      day.board(view.board);
     }
     if (msg.type === 'board.refreshing') boardView.refreshing(String(msg['id'] ?? ''), msg['on'] === true);
     // The turn is over and she never made a sound (no words heard, a reply only

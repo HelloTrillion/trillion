@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
   appended,
+  createDayOpener,
   escapeAction,
   cursorOf,
   groupByDay,
   listPath,
+  localDay,
   moved,
+  needsBuild,
   putBack,
   retitle,
   rowTime,
+  shortDate,
   threadsOf,
+  todayIn,
   untitled,
   without,
   type Thread,
@@ -196,5 +201,149 @@ describe('escapeAction', () => {
 
   it('does nothing when nothing is open or under way', () => {
     expect(escapeAction(idle)).toBeNull();
+  });
+});
+
+describe('threadsOf, day conversations', () => {
+  it('keeps the date of a day conversation, and none for a chat', () => {
+    const body = {
+      conversations: [
+        { id: 'd', title: 'Your day · Mon 26 Oct', last_message_at: 5, kind: 'day', day: '2026-10-26' },
+        { id: 'c', title: 'Trip', last_message_at: 4, kind: 'chat', day: null },
+        { id: 'x', title: 'Odd', last_message_at: 3, kind: 'chat', day: '2026-10-26' },
+      ],
+    };
+    expect(threadsOf(body).threads).toEqual([
+      { id: 'd', title: 'Your day · Mon 26 Oct', lastMessageAt: 5, day: '2026-10-26' },
+      { id: 'c', title: 'Trip', lastMessageAt: 4 },
+      { id: 'x', title: 'Odd', lastMessageAt: 3 },
+    ]);
+  });
+});
+
+describe('your day, the pure parts', () => {
+  const now = day('2026-10-26T09:05:00');
+  it('dates today locally, as the core does', () => {
+    expect(localDay(now)).toBe('2026-10-26');
+    expect(localDay(day('2026-03-04T23:59:00'))).toBe('2026-03-04');
+  });
+
+  it('shows today short', () => {
+    const d = new Date(now);
+    expect(shortDate(now)).toBe(
+      `${d.toLocaleDateString([], { weekday: 'short' })} 26 ${d.toLocaleDateString([], { month: 'short' })}`,
+    );
+  });
+
+  it("finds today's day conversation among the rows", () => {
+    const rows: Thread[] = [
+      { id: 'old', title: null, lastMessageAt: 1, day: '2026-10-25' },
+      { id: 'chat', title: null, lastMessageAt: 2 },
+      { id: 'today', title: null, lastMessageAt: 3, day: '2026-10-26' },
+    ];
+    expect(todayIn(rows, now)).toBe('today');
+    expect(todayIn(rows.slice(0, 2), now)).toBeNull();
+  });
+
+  it('builds only for no board or an empty one', () => {
+    expect(needsBuild(null)).toBe(true);
+    expect(needsBuild({ widgets: [] })).toBe(true);
+    expect(needsBuild({ widgets: [{ id: 'w' }] })).toBe(false);
+  });
+});
+
+describe('createDayOpener', () => {
+  function setup(body: unknown = { id: 'd1', created: true }, current: string | null = 'c1') {
+    const s = { current, switched: [] as string[], builds: 0, fetches: 0 };
+    const opener = createDayOpener({
+      fetchDay: () => {
+        s.fetches++;
+        return body instanceof Error ? Promise.reject(body) : Promise.resolve(body);
+      },
+      current: () => s.current,
+      switchTo: (id) => {
+        s.switched.push(id);
+        s.current = id;
+      },
+      build: () => s.builds++,
+    });
+    return { s, opener };
+  }
+
+  it('creates, switches, and builds once the new session shows an empty board', async () => {
+    const { s, opener } = setup();
+    expect(await opener.open()).toBe(true);
+    expect(s.switched).toEqual(['d1']);
+    expect(opener.id).toBe('d1');
+    expect(s.builds).toBe(0);
+    opener.session();
+    opener.board(null);
+    expect(s.builds).toBe(1);
+  });
+
+  it('opens a day that has a board without building', async () => {
+    const { s, opener } = setup({ id: 'd1', created: false });
+    await opener.open();
+    opener.session();
+    opener.board({ widgets: [{ id: 'w' }] });
+    expect(s.switched).toEqual(['d1']);
+    expect(s.builds).toBe(0);
+  });
+
+  it('builds a day opened earlier with nothing on its board', async () => {
+    const { s, opener } = setup({ id: 'd1', created: false });
+    await opener.open();
+    opener.session();
+    opener.board({ widgets: [] });
+    expect(s.builds).toBe(1);
+  });
+
+  it('builds once per open: a later board or a reconnect builds nothing', async () => {
+    const { s, opener } = setup();
+    await opener.open();
+    opener.session();
+    opener.board(null);
+    opener.board(null);
+    opener.session();
+    opener.board(null);
+    expect(s.builds).toBe(1);
+  });
+
+  it('opened again while in it: no switch, and no rebuild of a built board', async () => {
+    const { s, opener } = setup({ id: 'd1', created: false }, 'd1');
+    opener.session();
+    opener.board({ widgets: [{ id: 'w' }] });
+    await opener.open();
+    expect(s.switched).toEqual([]);
+    expect(s.builds).toBe(0);
+  });
+
+  it('opened again while in it with an empty board: builds now', async () => {
+    const { s, opener } = setup({ id: 'd1', created: false }, 'd1');
+    opener.session();
+    opener.board(null);
+    await opener.open();
+    expect(s.builds).toBe(1);
+  });
+
+  it('builds nothing when the session that came is not the day', async () => {
+    const { s, opener } = setup();
+    await opener.open();
+    s.current = 'elsewhere';
+    opener.session();
+    opener.board(null);
+    s.current = 'd1';
+    opener.board(null);
+    expect(s.builds).toBe(0);
+  });
+
+  it('does nothing when the core does not answer, or answers without an id', async () => {
+    for (const body of [new Error('offline'), {}, null, { id: '' }]) {
+      const { s, opener } = setup(body);
+      expect(await opener.open()).toBe(false);
+      opener.board(null);
+      expect(s.switched).toEqual([]);
+      expect(s.builds).toBe(0);
+    }
   });
 });

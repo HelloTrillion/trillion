@@ -313,6 +313,40 @@ button:disabled {
   color: var(--color-text-2);
 }
 
+/* Your day: a row like the threads, pinned above them, with today's date. */
+.thread-day {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.thread-day:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+  color: var(--color-text-0);
+}
+
+.thread-day[aria-current='true'] {
+  background: color-mix(in srgb, var(--color-text-0) 6%, transparent);
+  color: var(--color-text-0);
+}
+
+.thread-day .icon,
+.thread-row > .icon {
+  flex: none;
+  color: var(--color-text-2);
+}
+
 .thread-more {
   flex: none;
   padding: 0 6px;
@@ -794,6 +828,14 @@ body[data-sidebar='hidden'] .workspace {
 .notice {
   color: var(--color-text-1);
   font-size: 13px;
+}
+
+/* The app's own line ("Building your day"): small and quiet, never a bubble. */
+.host-line {
+  align-self: center;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-2);
 }
 
 .chip {
