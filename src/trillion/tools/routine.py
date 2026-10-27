@@ -69,10 +69,15 @@ _SCHEMA: JSON = {
 Where = Callable[[str], Awaitable[tuple[str, bool]]]
 
 # How feedback that only narrows a routine opens ("stop showing refunds", "less detail").
-_NARROW_OPENERS = (
-    "stop", "don't", "do not", "dont", "never", "no", "less", "fewer", "skip", "drop",
-    "hide", "without", "exclude",
-)  # fmt: skip
+# How feedback that only narrows a routine opens. A verb opener ("stop", "never") must
+# be followed by one of `_SHOWN`: "stop showing refunds". A noun opener ("less",
+# "skip") takes only plain nouns after it: "less detail", "skip weekends".
+_VERB_OPENERS = ("stop", "don't", "do not", "dont", "never")
+_NOUN_OPENERS = ("no", "less", "fewer", "skip", "drop", "hide", "without", "exclude")
+_SHOWN = frozenset(
+    "show showing include including mention mentioning list listing report reporting "
+    "tell telling".split()
+)
 # Every word that narrows, limits or negates, matched as the start of a word. A
 # narrowing holds exactly one, its opener: a second turns it round ("stop skipping
 # Slack", "fewer exclusions"), so it goes to a card.
@@ -89,39 +94,70 @@ _WORD = re.compile(r"[a-z0-9$%]+(?:'[a-z]+)?")
 _MAX_WORDS = 10
 # A web address names somewhere new to read.
 _ADDRESS = re.compile(r"\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}\b")
-# Any one of these and it might widen what a run does: it chains on a second request,
-# reads more, reaches for everything, or acts.
-_WIDENS_WORDS = frozenset(
+# Any word starting with one of these might widen what a run does: it chains on a
+# second request, undoes what was left out, reads more, reaches for everything, or
+# acts. Matched as a word start; the shortest only as whole words, so "anything" and
+# "payments" are not taken for "any" and "pay".
+_WIDENS_STEMS = (
     # Chaining.
-    "and or plus but then also too more new another extra well unless except instead "
-    "rather however "
+    "plus", "then", "also", "more", "another", "extra", "well", "unless", "except",
+    "instead", "rather", "however",
     # Undoing what was left out.
-    "overlook just nothing everything "
+    "overlook", "just", "nothing", "everything",
     # Reading more, and everything at once.
-    "read check look search fetch open watch see pull scan all any every whole entire "
+    "read", "check", "look", "search", "fetch", "open", "watch", "pull", "scan", "every",
+    "whole", "entire",
     # Acting.
-    "send email post message buy pay delete cancel share forward call book add".split()
+    "send", "email", "post", "message", "share", "forward", "call", "book", "delete",
+    "cancel",
+)  # fmt: skip
+_WIDENS_WORDS = frozenset("and or but too new all any see add buy pay".split())
+# After a noun opener: verbs that could turn it round ("no keeping it short", "fewer
+# charts, let the rest in"). Any word ending -ing or -ed is refused there too.
+_NOUN_DENY = frozenset(
+    "let allow keep get give bring make go take put use do have be is are was were "
+    "turn start begin continue resume restore return undo unhide unmute unblock show "
+    "include mention tell hold".split()
 )
+
+
+def _widens(word: str) -> bool:
+    return word in _WIDENS_WORDS or word.startswith(_WIDENS_STEMS)
+
+
+def _verbish(word: str) -> bool:
+    """A word that may be a verb doing something: -ing or -ed ("anything" is not)."""
+    if word.endswith("thing"):
+        return False
+    return word.endswith(("ing", "ed")) or word in _NOUN_DENY
 
 
 def narrows_routine(text: str) -> bool:
     """Whether feedback only narrows what a routine looks at, so it stands at once.
 
-    It fails safe: a short plain sentence that opens with a narrowing word, holds no
-    other narrowing or negating word, and nothing that could chain on, read more or
-    act. Anything not plainly narrowing goes to a card (`routine_widen`)."""
+    An allowlist, so it fails safe: a short plain sentence with exactly one narrowing
+    word, its opener; after a verb opener, a word for showing ("stop showing X"); after
+    a noun opener, nothing that reads as a verb. Nothing anywhere that could chain on,
+    read more or act. Anything not plainly narrowing goes to a card (`routine_widen`)."""
     said = " ".join(text.replace("\u2019", "'").casefold().split()).rstrip(" .")
     said = _LEAD.sub("", said)
     if not _PLAIN.match(said) or _ADDRESS.search(said):
         return False
-    if not any(said == o or said.startswith(o + " ") for o in _NARROW_OPENERS):
-        return False
     words = _WORD.findall(said)
-    if len(words) > _MAX_WORDS or any(w in _WIDENS_WORDS for w in words):
+    if not words or len(words) > _MAX_WORDS or any(_widens(w) for w in words):
         return False
     # Exactly one narrowing word: the opener ("do not" counts once, as "not").
-    narrowing = [w for w in words if w.startswith(_NARROWING_STEMS)]
-    return len(narrowing) == 1
+    if len([w for w in words if w.startswith(_NARROWING_STEMS)]) != 1:
+        return False
+    verb = next((o for o in _VERB_OPENERS if said.startswith(o + " ")), None)
+    if verb is not None:
+        rest = _WORD.findall(said[len(verb) :])
+        return bool(rest) and rest[0] in _SHOWN
+    noun = next((o for o in _NOUN_OPENERS if said.startswith(o + " ")), None)
+    if noun is None:
+        return False
+    rest = _WORD.findall(said[len(noun) :])
+    return bool(rest) and not any(_verbish(w) for w in rest)
 
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:

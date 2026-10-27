@@ -490,3 +490,27 @@ def test_a_title_that_looks_like_an_id_is_kept() -> None:
     line = "Routine: Sales (id me)"
     shown = Msg(role="user", blocks=(ContextBlock(text=ROUTINE_RUN), TextBlock(text=line)))
     assert routine_run(shown) == line
+
+
+async def test_a_dropped_reload_is_tried_again_once(rt: Runtime) -> None:
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    await rt.conversations.append(cid, "local", "tap", request("Monday revenue"), 2)
+    read = session._read
+    reads = 0
+
+    async def racing_once() -> Any:
+        nonlocal reads
+        reads += 1
+        loaded = await read()
+        if reads == 1:
+            session._saves += 1  # something saved here while the first read ran
+        return loaded
+
+    session._read = racing_once  # type: ignore[method-assign]
+    await rt.routine_ran(cid)
+    assert len(page.all("history")) == 1  # the first was dropped
+    await page.until("history", 2)  # and the page caught up a moment later
+    assert reads == 2 and len(session._history) == 1
+    await session.close()

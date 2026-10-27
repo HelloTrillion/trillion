@@ -343,7 +343,9 @@ class ScheduleList(_ScheduleTool):
                 nxt, when = "unknown", f"{s.at_local} ({s.zone}), {repeat_words(s.repeat)}"
             run = last.get(s.id)
             ran = run.status if run is not None else "none yet"
-            lines.append(f"- {s.id} ({what}) {s.title}: {when}; next {nxt}; last run {ran}")
+            # A paused routine's due time is not moving: saying it would mislead.
+            coming = "paused" if s.paused_ms is not None else f"next {nxt}"
+            lines.append(f"- {s.id} ({what}) {s.title}: {when}; {coming}; last run {ran}")
         return ToolResult(ok=True, content="\n".join(lines), effect="none")
 
 

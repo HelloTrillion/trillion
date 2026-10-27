@@ -23,6 +23,7 @@ from trillion.spine.contract import (
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.registry import (
     ROUTINE_BOARD,
+    ROUTINE_LIST,
     ROUTINE_NOTHING,
     ToolRegistry,
     runs_in_routine,
@@ -30,6 +31,7 @@ from trillion.spine.registry import (
 from trillion.spine.router import Router
 from trillion.tools.day import DAY_OPEN
 from trillion.tools.routine import CATEGORY, RoutineNothing
+from trillion.tools.schedule import ScheduleList
 from trillion.tools.workspace import CATEGORY as BOARD_CATEGORY
 from trillion.tools.workspace import REMOVE, SHOW, UPDATE
 
@@ -69,9 +71,12 @@ def routed(spine: Spine) -> tuple[Router, dict[str, Counted]]:
             ("ask_schedule", "schedule"),
             ("rule_keep", "rules"),
             ("routine_narrow", "routine"),
+            ("schedule_list", "schedule"),
             ("plain_read", "test"),
         )
     }
+    for name in ("reminder_set", "schedule_cancel"):
+        tools[name] = Counted(name, "schedule", Risk.WRITE)
     tools["send_it"] = Counted("send_it", "test", Risk.IRREVERSIBLE)
     for tool in tools.values():
         reg.register(tool, module="tests.spine")
@@ -82,6 +87,8 @@ def routed(spine: Spine) -> tuple[Router, dict[str, Counted]]:
 def test_the_names_the_spine_holds_are_the_tools_names() -> None:
     assert {SHOW, UPDATE, REMOVE} == ROUTINE_BOARD
     assert RoutineNothing.definition.name == ROUTINE_NOTHING
+    assert ScheduleList.definition.name == ROUTINE_LIST
+    assert ScheduleList.definition.category == "schedule"
     assert RoutineNothing.definition.category == CATEGORY
     assert BOARD_CATEGORY == "workspace"
 
@@ -90,7 +97,7 @@ def test_the_view_is_the_unattended_one_with_the_board_and_nothing(spine: Spine)
     router, _ = routed(spine)
     reg = router._registry
     names = {d.name for d in reg.routine().definitions()}
-    assert names == {SHOW, UPDATE, REMOVE, ROUTINE_NOTHING, "plain_read"}
+    assert names == {SHOW, UPDATE, REMOVE, ROUTINE_NOTHING, ROUTINE_LIST, "plain_read"}
     unattended = {d.name for d in reg.unattended().definitions()}
     assert unattended == {"plain_read"}  # a timed ask still gets none of them
 
@@ -100,6 +107,9 @@ def test_only_the_tools_by_their_own_family_and_risk() -> None:
     assert not runs_in_routine(impostor.definition)
     writes = Counted(ROUTINE_NOTHING, "routine", Risk.WRITE)
     assert not runs_in_routine(writes.definition)
+    assert runs_in_routine(Counted(ROUTINE_LIST, "schedule").definition)
+    assert not runs_in_routine(Counted(ROUTINE_LIST, "rules").definition)
+    assert not runs_in_routine(Counted(ROUTINE_LIST, "schedule", Risk.WRITE).definition)
 
 
 async def test_the_board_tools_run_on_its_own_conversation(spine: Spine) -> None:
@@ -191,3 +201,18 @@ def test_an_offered_view_is_live_and_filtered(spine: Spine) -> None:
     assert view.get("late_read") is late  # registered after the view was taken
     assert "late_read" in {d.name for d in view.definitions()}
     assert ROUTINE_NOTHING not in {d.name for d in view.definitions()}
+
+
+async def test_a_routine_may_list_the_schedule_and_nothing_more(spine: Spine) -> None:
+    router, tools = routed(spine)
+    ctx = spine.ctx(via="routine", session_id="target", routine_target="target")
+    listed = await router.execute(ToolCall(name=ROUTINE_LIST, args={}), ctx)
+    assert listed.status == "succeeded" and tools[ROUTINE_LIST].calls == ["target"]
+    for name in ("reminder_set", "schedule_cancel", "ask_schedule"):
+        r = await router.execute(ToolCall(name=name, args={}), ctx)
+        assert r.status == "refused" and r.reason is Refusal.UNATTENDED, name
+        assert tools[name].calls == []
+    # A plain timed ask still may not.
+    timed = spine.ctx(via="schedule", session_id="target")
+    r = await router.execute(ToolCall(name=ROUTINE_LIST, args={}), timed)
+    assert r.status == "refused" and tools[ROUTINE_LIST].calls == ["target"]

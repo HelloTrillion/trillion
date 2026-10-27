@@ -416,11 +416,11 @@ class Runtime:
         return session is not None and session.writing()
 
     async def routine_ran(self, conversation_id: str) -> None:
-        """A routine wrote in a conversation: a page open on it, with no turn running,
-        shows what is there now. Notices still reach the user only through the door."""
+        """A routine wrote in a conversation: a page open on it shows what is there now,
+        or once it is free. Notices still reach the user only through the door."""
         session = self.by_conversation.get(conversation_id)
         if session is not None:
-            await session.reloaded()
+            await session.catch_up()
 
     async def send_refreshing(self, conversation_id: str, widget_id: str, on: bool) -> None:
         """Every page on this conversation: a live card's refresh started or ended."""

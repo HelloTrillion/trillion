@@ -424,6 +424,20 @@ WIDENINGS = [
     "fewer exclusions",
     "less strict",
     "only 100 slack channels",
+    # A double negative after a verb opener (the final review's).
+    "stop overlooking slack",
+    "stop neglecting my slack",
+    "stop disregarding slack messages",
+    "stop dismissing slack",
+    "stop suppressing slack alerts",
+    "stop withholding details",
+    "don't hold back",
+    "stop truncating the list",
+    # After a noun opener, no verb that could turn it round.
+    "skip the shared ones",
+    "less hidden stuff",
+    "no keeping it short",
+    "fewer charts, let the rest in",
     # Any "only" goes to a card, even a count.
     "only the top five",
     "only 3 charts",
@@ -484,3 +498,10 @@ async def test_in_the_day_only_the_routine_it_names_is_changed(it: Setup) -> Non
     assert first.status == "succeeded"
     assert other.status == "refused" and "not this routine's conversation" in other.detail
     assert await it.notes("0e0e0e0e") == ""
+
+
+async def test_a_paused_routine_is_listed_as_paused(it: Setup) -> None:
+    await it.store.create(own(next_due_ms=ms("2026-10-26T08:00")))
+    assert await it.store.pause("local", "0a0b0c0d", NOW)
+    listed = (await it.list.execute({}, CTX)).content
+    assert "paused" in listed and "next " not in listed

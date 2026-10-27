@@ -29,6 +29,9 @@ UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules", "routine"})
 # Named here so the spine needs nothing from the tools (tests check the names still match).
 ROUTINE_BOARD = frozenset({"workspace_show", "workspace_update", "workspace_remove"})
 ROUTINE_NOTHING = "routine_nothing"
+# The day's recipe reads the user's reminders: a routine's run may list them, never
+# set or cancel one.
+ROUTINE_LIST = "schedule_list"
 
 
 class RegistryError(ValueError):
@@ -45,14 +48,16 @@ def runs_unattended(d: ToolDefinition) -> bool:
 
 def runs_in_routine(d: ToolDefinition) -> bool:
     """Whether a routine's run may use this tool: what any unattended run may, the
-    three board tools, and `routine_nothing`. Each a read of the family it says it is,
-    so nothing else can take one of their names and be let through."""
+    three board tools, `routine_nothing` and `schedule_list`. Each a read of the family
+    it says it is, so nothing else can take one of their names and be let through."""
     if runs_unattended(d):
         return True
     if d.risk is not Risk.READ:
         return False
-    return (d.name in ROUTINE_BOARD and d.category == "workspace") or (
-        d.name == ROUTINE_NOTHING and d.category == "routine"
+    return (
+        (d.name in ROUTINE_BOARD and d.category == "workspace")
+        or (d.name == ROUTINE_NOTHING and d.category == "routine")
+        or (d.name == ROUTINE_LIST and d.category == "schedule")
     )
 
 
@@ -178,8 +183,9 @@ class ToolRegistry:
         return view
 
     def routine(self) -> ToolRegistry:
-        """The view for a routine's run: the unattended view, plus the board tools and
-        `routine_nothing` (`runs_in_routine`). Read-only, and taken when the run starts."""
+        """The view for a routine's run: the unattended view, plus the board tools,
+        `routine_nothing` and `schedule_list` (`runs_in_routine`). Read-only, and taken
+        when the run starts."""
         view = _ReadOnly()
         for name, d in self._definitions.items():
             if runs_in_routine(d):

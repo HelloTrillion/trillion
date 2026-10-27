@@ -48,6 +48,10 @@ from trillion.spine.clock import Clock
 
 logger = logging.getLogger(__name__)
 
+# A routine blocked by the user's own turn: the page says it in its words
+# (`BUSY_DETAIL` in apps/web/src/reminders.ts), so the two stay the same text.
+BUSY_DETAIL = "a turn is running there"
+
 TICK_S = 15.0
 # A timed ask this far past due is reported missed instead of run stale (D3).
 ASK_WINDOW_MS = 60 * 60 * 1000
@@ -375,7 +379,7 @@ class Scheduler:
         except NoModel:
             await self._store.block(run.id, self._clock(), "no model")
         except Busy:
-            await self._store.block(run.id, self._clock(), "a turn is running there")
+            await self._store.block(run.id, self._clock(), BUSY_DETAIL)
         except TimeoutError:
             # Ours only if the limit ran out; one raised inside the ask is its failure.
             why = f"timed out after {seconds:g} s" if limit.expired() else "TimeoutError"

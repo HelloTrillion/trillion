@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from trillion.brain.loop import (
@@ -53,6 +53,8 @@ from trillion.spine.router import Router
 from trillion.spine.untrusted import is_outside
 from trillion.storage.sqlite.conversation_store import Kind, SqliteConversationStore
 from trillion.workspace import live
+from trillion.workspace.board import Board
+from trillion.workspace.board import summary as board_summary
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,11 @@ ROUTINE_RUN = (
 )
 # The id after a routine's name in its request: the page's host line shows the name only.
 ROUTINE_ID = re.compile(r"\s*\(id [a-f0-9]{8}\)$")
+# The scheduled overlay says her reply reaches the user: a routine's does not.
+WHERE_IT_GOES = (
+    "This is a routine: the user gets a short ready line, and your reply stays in this "
+    "routine's conversation for when they open it."
+)
 # What an 'own' routine is told to do with what it found (the routines spec).
 SHOW_OR_NOTHING = (
     "Show what you found with one workspace_show (mode replace), then say one sentence. "
@@ -118,6 +125,7 @@ def routine_request(s: Schedule, recipe: str | None = None) -> str:
     request, the user's notes, and for its own conversation what to do with it."""
     # Its id rides with its name, so she knows which routine a run's conversation holds.
     lines = [f"Routine: {s.title} (id {s.id})", "", recipe if recipe is not None else s.body]
+    lines += ["", WHERE_IT_GOES]
     if s.notes.strip():
         lines += ["", f"Follow these notes from the user: {s.notes.strip()}"]
     if recipe is None:
@@ -273,6 +281,16 @@ class _Run:
     def reply(self) -> str:
         return "".join(self.last).strip()
 
+    async def _board(self) -> str:
+        """The one-line summary of the run's board, or "" with none or none readable."""
+        boards = self.a.routines.boards()
+        try:
+            board = await boards.current(self.conversation) if boards is not None else None
+        except Exception as e:
+            logger.warning("a routine's board not read: %s", type(e).__name__)
+            return ""
+        return board_summary(cast(Board, board)) if board is not None else ""
+
     def built(self) -> Built:
         return Built(shown=self.shown, nothing=self.nothing, said=self.reply())
 
@@ -288,10 +306,12 @@ class _Run:
         zone = a._zone() or ""
         now = datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone()
         notes = (ContextBlock(text=ROUTINE_RUN),) if self.routine else ()
+        # Her board as it stands, as a page's turn is told, so she can name its widgets.
+        board = await self._board() if self.routine else ""
         ask = Msg(
             role="user",
             blocks=(
-                ContextBlock(text=volatile_context(now, [], zone=zone)),
+                ContextBlock(text=volatile_context(now, [], zone=zone, board=board)),
                 *notes,
                 TextBlock(text=text),
             ),

@@ -14,7 +14,17 @@ import type { Api } from './settings';
 
 // ── What the server sends ────────────────────────────────────────────────
 
-export type RunStatus = 'delivered' | 'late' | 'missed' | 'blocked' | 'failed' | 'interrupted' | 'cancelled';
+export type RunStatus =
+  | 'delivered'
+  | 'late'
+  | 'missed'
+  | 'blocked'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled'
+  // A routine not run because its day was already built, or one that found nothing to say.
+  | 'skipped'
+  | 'nothing';
 
 export interface Upcoming {
   readonly id: string;
@@ -115,9 +125,15 @@ const RESULTS: Readonly<Record<RunStatus, string>> = {
   failed: "Didn't finish",
   interrupted: 'Interrupted',
   cancelled: 'Cancelled',
+  skipped: 'Skipped, already built',
+  nothing: 'Nothing to report',
 };
 
-export function resultText(status: RunStatus): string {
+/** The core's detail on a run blocked because the user's own turn is running there. */
+export const BUSY_DETAIL = 'a turn is running there';
+
+export function resultText(status: RunStatus, detail = ''): string {
+  if (status === 'blocked' && detail === BUSY_DETAIL) return 'Waiting for you to finish';
   return RESULTS[status] ?? String(status);
 }
 
@@ -168,7 +184,7 @@ export function dueWords(ms: number, timeZone?: string): string {
 export function resultLine(r: Pick<RunResult, 'title' | 'status' | 'due_ms' | 'due' | 'detail'>, timeZone?: string): string {
   // Waiting for a model already says why; a delivered or cancelled one needs none.
   const why = r.detail && (r.status === 'missed' || r.status === 'failed' || r.status === 'interrupted') ? `: ${r.detail}` : '';
-  return `${r.title}: ${resultText(r.status)}${why} (due ${r.due || dueWords(r.due_ms, timeZone)})`;
+  return `${r.title}: ${resultText(r.status, r.detail)}${why} (due ${r.due || dueWords(r.due_ms, timeZone)})`;
 }
 
 /** Worth a warning colour: it went wrong, or is waiting. */

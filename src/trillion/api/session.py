@@ -98,6 +98,11 @@ WATCH_HOLD_S = 15.0
 SURFACE = "web"
 # The day board is built at most this often per conversation, however often it is asked.
 DAY_BUILD_EVERY_MS = 60_000
+# A reload dropped because something was saved meanwhile is tried again this soon, and
+# given up on after this long if the page never comes free (the page catches up when
+# it next opens the conversation).
+RELOAD_AGAIN_S = 0.2
+RELOAD_GIVE_UP_S = 30.0
 # The error a page is sent when a routine is building in its conversation.
 ROUTINE_BUILDING = "routine_building"
 # How the page shows the saved recipe: a small line, never the user's words.
@@ -343,6 +348,8 @@ class Session:
         # The routine tools a page's turn here is offered, and the routine named in her
         # context, read again before each turn.
         self._routine_tools: frozenset[str] = frozenset()
+        # A dropped reload, tried once more when the page is free (`catch_up`).
+        self._retry: asyncio.Task[None] | None = None
         self._routine = ""
 
     # ── Lifecycle ────────────────────────────────────────────────────────
@@ -462,6 +469,27 @@ class Session:
         )
         return True
 
+    async def catch_up(self) -> None:
+        """A routine wrote here: show it now, or, if that read was dropped, once more
+        when the page is next free, so an open page is not left behind the run."""
+        if await self.reloaded() or self._closed or self._retry is not None:
+            return
+        self._retry = asyncio.create_task(self._reload_later())
+
+    async def _reload_later(self) -> None:
+        try:
+            await asyncio.sleep(RELOAD_AGAIN_S)
+            waited = RELOAD_AGAIN_S
+            while self.writing() and not self._closed and waited < RELOAD_GIVE_UP_S:
+                await asyncio.sleep(RELOAD_AGAIN_S)
+                waited += RELOAD_AGAIN_S
+            await self.reloaded()
+        except Exception as e:
+            # The page catches up when it next opens the conversation.
+            logger.warning("reload not tried again in session %s: %s", self.id, type(e).__name__)
+        finally:
+            self._retry = None
+
     def _offers(self, d: ToolDefinition) -> bool:
         """Whether a page's turn here is offered this tool: never a routine's own,
         unless this conversation is where it belongs (`tools/routine.py`)."""
@@ -553,6 +581,9 @@ class Session:
         await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
+        retry, self._retry = self._retry, None
+        if retry is not None and retry is not asyncio.current_task():
+            retry.cancel()
         self._tail = None
         task = self._task
         if task is not None:

@@ -367,3 +367,34 @@ async def test_a_board_a_failed_run_left_is_the_routines_to_replace(rt: Runtime)
     # Once the user changes it, it is theirs.
     await rt.boards.show(target, "Mine", [KPIS])  # type: ignore[union-attr]
     assert await a.place(s) is None
+
+
+async def test_a_day_routine_may_read_the_users_reminders(rt: Runtime) -> None:
+    # The day's recipe asks for schedule_list: a routine's run is let read it.
+    provider = Recording(use("schedule_list", {}, "l1"), show(NOTE), say("Your day is set."))
+    a = asker(rt, provider)
+    s = routine(target="day", title="Build my day", body="build my day")
+    target = await a.place(s)
+    assert target is not None
+    assert (await a.build(s, target)).outcome == "ready"
+    history = await rt.conversations.history(target, "local")
+    results = [b for _, m in history for b in m.blocks if isinstance(b, ToolResultBlock)]
+    listed = next(r for r in results if r.tool_use_id == "l1")
+    assert not listed.is_error and "nothing is set" in json.dumps(listed.content)
+
+
+async def test_a_run_is_told_its_board_and_where_its_reply_goes(rt: Runtime) -> None:
+    provider = Recording(show(KPIS), say("Revenue is up."), say("Still up."))
+    a = asker(rt, provider)
+    first = await a.place(routine())
+    assert first is not None
+    await a.build(routine(), first)
+    s = routine(conversation_id=first)
+    await a.build(s, first)
+    asked = provider.calls[-1][1][-1]
+    context = "".join(b.text for b in asked.blocks if isinstance(b, ContextBlock))
+    # The board as it stands, so workspace_update and remove can name its widgets.
+    assert "Board (" in context and "Revenue" in context
+    (text,) = [b.text for b in asked.blocks if isinstance(b, TextBlock)]
+    assert "the user gets a short ready line" in text
+    assert "your reply stays in this routine's conversation" in text
