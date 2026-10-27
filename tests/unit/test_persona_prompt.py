@@ -232,3 +232,13 @@ def test_she_says_asks_first_is_the_users_setting_never_the_apps() -> None:
     text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
     assert "that is their own setting for that tool, never the app's rule" in text
     assert "Settings, Connected tools" in text and "Never say the app requires the tap" in text
+
+
+def test_she_answers_first_then_reaches_for_a_tool_in_both_modalities() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 27, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "say one short line first, before you call it" in text
+        assert "never narrate the call" not in text
+        assert "\u2014" not in text and "\u2013" not in text
