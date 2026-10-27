@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, boardOf, boardOpen, busyOf, dueLabel, expire, localClock, micFailed, quietLine, readyConversation, reduce, sent, unreadFor, toolLabel, waiting } from '../src/view';
+import { INITIAL, type View, backgroundLine, boardOf, boardOpen, busyOf, dueLabel, expire, localClock, micFailed, quietLine, readyConversation, reduce, sent, unreadFor, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -531,5 +531,62 @@ describe('boardOf', () => {
     expect(boardOpen(v, true).board?.open).toBe(true);
     expect(boardOpen(v, false)).toBe(v);
     expect(boardOpen(INITIAL, true)).toBe(INITIAL);
+  });
+});
+
+describe('background reads', () => {
+  const start = { type: 'session', id: 'c1', agent_name: 'Nova', model: null, title: null };
+  const call = [
+    { type: 'state', orb: 'processing' },
+    { type: 'tool.start', call_id: 'k1', name: 'stripe_revenue' },
+    { type: 'tool.end', call_id: 'k1', ok: true, summary: 'background' },
+  ];
+
+  it('says a read sent to the background is working there', () => {
+    const v = feed([start, ...call]);
+    const chip = v.entries[0];
+    expect(chip).toMatchObject({ kind: 'tool', outcome: 'background', ok: true });
+    expect(toolLabel('stripe_revenue', 'background', true)).toBe('stripe_revenue: working in background');
+  });
+
+  it('is not busy while the read runs once her turn has ended', () => {
+    const v = feed([start, ...call, { type: 'reply.delta', text: 'Pulling your Stripe numbers now.' }, { type: 'turn.complete' }, { type: 'state', orb: 'idle' }, { type: 'jobs', count: 1 }]);
+    expect(v.busy).toBe(false);
+    expect(waiting(v)).toBe(false);
+    expect(v.jobs).toBe(1);
+  });
+
+  it('counts reads in the background, in words, and clears at none', () => {
+    expect(INITIAL.jobs).toBe(0);
+    let v = feed([start, { type: 'jobs', count: 1 }]);
+    expect(backgroundLine(v.jobs)).toBe('1 read in background');
+    v = feed([{ type: 'jobs', count: 2 }], v);
+    expect(backgroundLine(v.jobs)).toBe('2 reads in background');
+    v = feed([{ type: 'jobs', count: 0 }], v);
+    expect(v.jobs).toBe(0);
+    expect(backgroundLine(v.jobs)).toBe('');
+    expect(feed([{ type: 'jobs', count: 'x' }]).jobs).toBe(0);
+  });
+
+  it('forgets the count on another conversation, which sends its own', () => {
+    let v = feed([start, { type: 'jobs', count: 2 }]);
+    v = feed([{ ...start, id: 'c2' }], v);
+    expect(v.jobs).toBe(0);
+  });
+
+  it('shows a background read that came in as a host line on reload', () => {
+    const v = feed([
+      start,
+      {
+        type: 'history',
+        messages: [
+          { role: 'user', text: 'How did Stripe do?' },
+          { role: 'assistant', text: 'Pulling your Stripe numbers now.' },
+          { role: 'host', text: 'Stripe numbers are in' },
+          { role: 'assistant', text: 'Revenue is up 12%.' },
+        ],
+      },
+    ]);
+    expect(v.entries[2]).toEqual({ kind: 'host', text: 'Stripe numbers are in' });
   });
 });

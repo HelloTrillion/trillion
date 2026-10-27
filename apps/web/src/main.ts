@@ -72,6 +72,7 @@ import {
   reduce,
   sent,
   toolLabel,
+  backgroundLine,
   unreadFor,
   waiting,
 } from './view';
@@ -148,6 +149,7 @@ stopBtn.setAttribute('aria-label', 'Stop');
 stopBtn.title = 'Stop her (Esc)';
 let micIcon = '';
 const footEl = $('foot');
+const jobsEl = $('jobs-line');
 const newBtn = $<HTMLButtonElement>('new');
 newBtn.replaceChildren(icon('edit', 18));
 const agentNameEl = $('agent-name');
@@ -794,6 +796,10 @@ function render(): void {
         : view.entries.length
           ? `Reply to ${view.agentName}`
           : `Say hello to ${view.agentName}`;
+  // Reads she sent off keep running while the user talks: a quiet count, never busy.
+  const jobsText = ready ? backgroundLine(view.jobs) : '';
+  jobsEl.hidden = !jobsText;
+  jobsEl.textContent = jobsText;
   sendBtn.disabled = !canType || view.busy;
   sendBtn.hidden = view.busy;
   stopBtn.hidden = !(view.busy || voice.active || view.mic);

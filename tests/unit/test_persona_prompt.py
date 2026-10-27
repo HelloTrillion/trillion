@@ -7,6 +7,7 @@ from trillion.persona.prompt import (
     DEFAULT_AGENT_NAME,
     DEFAULT_USER_NAME,
     Identity,
+    JobNote,
     PendingNote,
     load_identity,
     load_soul,
@@ -255,6 +256,19 @@ def test_she_says_asks_first_is_the_users_setting_never_the_apps() -> None:
     assert "Settings, Connected tools" in text and "Never say the app requires the tap" in text
 
 
+def test_she_is_told_about_reads_in_the_background_in_both_modalities() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 27, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert 'A read that answers "started" is on its way in the background' in text
+        assert "never call it again while it runs" in text and "say it is coming" in text
+        assert "say in one short line that it is in" in text
+        assert "show it on the board if it is better seen" in text
+        assert "at most two sentences" in text
+        assert "\u2014" not in text and "\u2013" not in text
+
+
 def test_she_answers_first_then_reaches_for_a_tool_in_both_modalities() -> None:
     ident = Identity(agent_name="Nova", user_name="Sam")
     typed = system_blocks(ident, "soul")[0].text
@@ -263,3 +277,12 @@ def test_she_answers_first_then_reaches_for_a_tool_in_both_modalities() -> None:
         assert "say one short line first, before you call it" in text
         assert "never narrate the call" not in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_reads_still_running_ride_in_the_context() -> None:
+    now = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)
+    job = JobNote(tool="stripe_revenue", job_id="3f2a", seconds=12)
+    text = volatile_context(now, [], jobs=[job])
+    assert "background: stripe_revenue (job 3f2a) running 12 s" in text
+    assert text.index("background:") < text.index("</context>")
+    assert "background:" not in volatile_context(now, [])

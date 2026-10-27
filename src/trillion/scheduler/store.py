@@ -211,6 +211,12 @@ class ScheduleStore(Protocol):
         the notice that pauses the routine (`PAUSE_AFTER`) takes this title."""
         ...
 
+    async def ready_notice(
+        self, owner_id: str, source_id: str, title: str, now_ms: int, conversation_id: str
+    ) -> Notice:
+        """A ready line with no run behind it (a background read is in), held."""
+        ...
+
     async def notice(self, notice_id: str) -> Notice | None: ...
 
     async def held(self, owner_id: str) -> list[Notice]:

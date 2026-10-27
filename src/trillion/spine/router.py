@@ -69,6 +69,8 @@ ResponseStatus = Literal[
     "confirmation_required",
     "cancelled",
     "in_progress",
+    # A slow read handed to the background: its result arrives later as a host note.
+    "started",
 ]
 
 _DETAIL_LIMIT = 2000
@@ -109,11 +111,13 @@ class RouterResponse:
     # else's words like any read (MEM-5), whichever way it was approved. Never sent to
     # the model.
     tool: str | None = None
+    # The background job a "started" read runs as, so she can say which is on its way.
+    job: str | None = None
 
     def to_model(self) -> str:
         """The JSON the model sees. Only fields that carry information."""
         body: dict[str, Any] = {"status": self.status}
-        for key in ("content", "pending_id", "summary", "detail", "error_kind", "warning"):
+        for key in ("content", "pending_id", "job", "summary", "detail", "error_kind", "warning"):
             value = getattr(self, key)
             if value:
                 body[key] = value

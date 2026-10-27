@@ -16,6 +16,7 @@ from typing import Any
 import aiosqlite
 
 from trillion import paths
+from trillion.api.jobs import Jobs
 from trillion.brain import compact
 from trillion.brain.config import ModelSettings, Source, resolve
 from trillion.brain.standing import StandingRules
@@ -268,6 +269,8 @@ class Runtime:
     # Conversations a routine is building in now: a page's turn there is refused, and the
     # page told, until it is done (one writer).
     routine_holds: set[str] = field(default_factory=set)
+    # Slow reads running in the background, per conversation (the background reads spec).
+    jobs: Jobs = field(default_factory=lambda: Jobs(clock=_now_ms))
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
     # The widget types the workspace tools were last told, so an unchanged list is
@@ -421,6 +424,12 @@ class Runtime:
         session = self.by_conversation.get(conversation_id)
         if session is not None:
             await session.catch_up()
+
+    async def send_jobs(self, conversation_id: str, count: int) -> None:
+        """Every page on this conversation: how many reads run in the background there."""
+        for session in list(self.sessions):
+            if session.id == conversation_id:
+                await session.send("jobs", count=count)
 
     async def send_refreshing(self, conversation_id: str, widget_id: str, on: bool) -> None:
         """Every page on this conversation: a live card's refresh started or ended."""
@@ -583,8 +592,9 @@ class Runtime:
         await self.preferences.put(OWNER, ONBOARDING_PREF, "skipped", self.clock())
 
     async def close(self) -> None:
-        # First, so no tick runs on a connection that is closing.
+        # First, so no tick or read runs on a connection that is closing.
         await self.stop_background()
+        await self.jobs.stop()
         if self.mcp is not None:
             await self.mcp.stop()
         if self.google is not None:
@@ -735,6 +745,7 @@ async def open_runtime(
     rt.schedules = schedules
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
+    rt.jobs = Jobs(clock=lambda: rt.clock(), changed=rt.send_jobs)
     asker = Asker(
         provider=lambda: rt.provider,
         router=router,

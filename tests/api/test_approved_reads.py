@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.api.test_background_reads import until
 from tests.api.test_session import Page, idle
 from tests.api.test_widget_ask import tool_results
 from tests.brain.fakes import ScriptedProvider, say, use
@@ -106,10 +107,14 @@ async def test_a_read_approved_by_saying_yes_counts_as_read(rt: Runtime) -> None
 
 async def test_the_same_read_without_a_card_was_already_read(rt: Runtime) -> None:
     rt.registry.register(NoteRead(Risk.READ), module="tests.api")
-    provider = ScriptedProvider(use(NOTE, {}, "n1"), use("reminder_set", REMIND, "r1"), say("."))
+    # Without a card it runs in the background, and what she does on its note is read.
+    provider = ScriptedProvider(
+        use(NOTE, {}, "n1"), say("Reading it."), use("reminder_set", REMIND, "r1"), say(".")
+    )
     rt.provider = provider
     session = await Session.start(rt, Page(rt).send, None)
     await session.handle({"type": "turn.text", "text": "read my note"})
+    await until(lambda: len(provider.calls) == 4, "the follow-up")
     await idle(session)
     assert await reminder_refused(rt, provider)
     await session.close()

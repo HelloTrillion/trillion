@@ -110,6 +110,8 @@ export interface View {
   readonly banner: string | null;
   /** Her board for this conversation (the workspace's widgets), or null when she has made none. */
   readonly board: Board | null;
+  /** Reads of this conversation still running in the background, as the core last counted them. */
+  readonly jobs: number;
 }
 
 export const INITIAL: View = {
@@ -133,6 +135,7 @@ export const INITIAL: View = {
   draft: null,
   banner: null,
   board: null,
+  jobs: 0,
 };
 
 export type WidgetSize = 'small' | 'medium' | 'wide' | 'full';
@@ -375,8 +378,16 @@ export function toolLabel(name: string, outcome: string | null, ok: boolean): st
   if (outcome === 'already_resolved') return 'Already settled';
   const words = TOOL_LABELS[name];
   if (outcome === null) return words ? `${words[0]} …` : `${name} …`;
+  // Sent off to run while the user talks: it is not done, and nothing failed.
+  if (outcome === 'background') return `${name}: working in background`;
   if (words && ok && outcome === 'succeeded') return words[1];
   return `${name}: ${outcome.replaceAll('_', ' ')}`;
+}
+
+/** The quiet line under the input while reads run in the background; empty at none. */
+export function backgroundLine(count: number): string {
+  if (count <= 0) return '';
+  return count === 1 ? '1 read in background' : `${count} reads in background`;
 }
 
 /** A user message the page is about to send: shown at once, before the core echoes anything. */
@@ -422,12 +433,17 @@ function step(view: View, msg: ServerMsg): View {
         held: [],
         pending: null,
         banner: null,
-        // Another conversation: its own board follows, if it has one.
+        // Another conversation: its own board follows, if it has one, and its own count of reads.
         board: null,
+        jobs: 0,
       };
     }
     case 'board':
       return { ...view, board: boardOf(msg['board']) };
+    case 'jobs': {
+      const count = msg['count'];
+      return { ...view, jobs: typeof count === 'number' && count > 0 ? Math.floor(count) : 0 };
+    }
     case 'model': {
       const model = msg['model'] as { model?: unknown } | null;
       return { ...view, model: model ? str(model.model) : null, banner: null };

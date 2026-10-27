@@ -86,6 +86,8 @@ def create_conversations_router(rt: Runtime) -> APIRouter:
     async def delete(conversation_id: str) -> Any:
         if not await rt.conversations.delete(conversation_id, OWNER, rt.clock()):
             return _not_found()
+        # Its reads stop: nothing is told of them, and nothing is saved there.
+        await rt.jobs.cancel(conversation_id)
         live = rt.by_conversation.get(conversation_id)
         if live is not None:
             await live.deleted()

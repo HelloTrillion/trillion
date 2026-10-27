@@ -435,6 +435,36 @@ class SqliteScheduleStore:
             )
         return n
 
+    async def ready_notice(
+        self, owner_id: str, source_id: str, title: str, now_ms: int, conversation_id: str
+    ) -> Notice:
+        """A ready line with no run behind it: a background read is in, in a conversation
+        nobody has open (the background reads spec). Held for the door like any other."""
+        n = Notice(
+            id=uuid.uuid4().hex,
+            owner_id=owner_id,
+            source_id=source_id,
+            kind="ready",
+            title=title,
+            text=f"{title}.",
+            due_ms=now_ms,
+            late=False,
+            created_ms=now_ms,
+            status="held",
+            delivered_ms=None,
+            delivered_to=None,
+            notified_ms=None,
+            conversation_id=conversation_id,
+        )
+        async with self._tx() as conn:
+            await conn.execute(
+                "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
+                " due_ms, late, created_ms, status, conversation_id) VALUES (?, ?, 'schedule',"
+                " ?, 'ready', ?, ?, ?, 0, ?, 'held', ?)",
+                (n.id, owner_id, source_id, n.title, n.text, now_ms, now_ms, conversation_id),
+            )
+        return n
+
     @staticmethod
     async def _count_failure(conn: aiosqlite.Connection, schedule_id: str, now_ms: int) -> bool:
         """One more failed run in a row, in the transaction that writes its notice, so

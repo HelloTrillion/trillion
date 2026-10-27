@@ -160,6 +160,24 @@ async def test_a_ready_notice_carries_the_conversation(store: SqliteScheduleStor
     assert {r.status for r in await runs(store, "a1b2c3d4")} == {"delivered"}
 
 
+async def test_a_ready_notice_with_no_run_is_held_for_the_door(
+    store: SqliteScheduleStore,
+) -> None:
+    # A background read that ended with nobody on its conversation (the background
+    # reads spec): no schedule, no run, only the line and where it opens.
+    n = await store.ready_notice("local", "job-3f2a", "Stripe numbers are in", DUE, "c9")
+    kept = await store.notice(n.id)
+    assert kept is not None
+    assert (kept.kind, kept.title, kept.text, kept.conversation_id, kept.status) == (
+        "ready",
+        "Stripe numbers are in",
+        "Stripe numbers are in.",
+        "c9",
+        "held",
+    )
+    assert [h.id for h in await store.held("local")] == [n.id]
+
+
 async def test_a_run_can_end_skipped_or_with_nothing(store: SqliteScheduleStore) -> None:
     await store.create(routine(target="own"))
     for due, status in ((1, "skipped"), (2, "nothing")):
