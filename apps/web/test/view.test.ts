@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL, type View, boardOf, boardOpen, busyOf, dueLabel, expire, localClock, micFailed, quietLine, readyConversation, reduce, sent, toolLabel, waiting } from '../src/view';
+import { INITIAL, type View, boardOf, boardOpen, busyOf, dueLabel, expire, localClock, micFailed, quietLine, readyConversation, reduce, sent, unreadFor, toolLabel, waiting } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View =>
   msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
@@ -358,6 +358,32 @@ describe('notices from reminders and timed asks', () => {
     expect(readyConversation({ type: 'state', kind: 'ready', conversation_id: 'r1' })).toBeNull();
   });
 
+  it('marks unread only a conversation other than the open one', () => {
+    const msg = notice({ kind: 'ready', conversation_id: 'r1' });
+    expect(unreadFor(msg, ready)).toBe('r1');
+    expect(unreadFor(notice({ kind: 'ready', conversation_id: 'c1' }), ready)).toBeNull();
+    expect(unreadFor(notice(), ready)).toBeNull();
+  });
+
+  it('draws a ready line again on reload from the host line that kept it', () => {
+    const v = feed(
+      [
+        {
+          type: 'history',
+          messages: [
+            { role: 'host', text: 'Your Monday revenue is ready', conversation_id: 'r1' },
+            { role: 'host', text: 'Building your day' },
+          ],
+        },
+      ],
+      ready,
+    );
+    expect(v.entries).toEqual([
+      { kind: 'host', text: 'Your Monday revenue is ready', conversationId: 'r1' },
+      { kind: 'host', text: 'Building your day' },
+    ]);
+  });
+
   it('waits for a reply that is still arriving, then follows it', () => {
     const v = feed([{ type: 'reply.delta', text: 'Half a' }, notice(), { type: 'reply.delta', text: ' reply.' }], ready);
     expect(v.entries).toEqual([{ kind: 'assistant', text: 'Half a reply.', interrupted: false }]);
@@ -437,6 +463,13 @@ describe('notice speech never makes the page busy', () => {
     expect(v.banner).toBe("She's building this conversation's routine right now. Try again in a moment.");
     // Spoken, with nothing typed: the reason alone.
     expect(reduce(ready, { type: 'error', code: 'routine_building' }).banner).toBe(v.banner);
+  });
+
+  it('puts words heard while a routine builds in the box, so nothing said is lost', () => {
+    const heard = feed([{ type: 'mic.start' }, { type: 'transcript.partial', text: 'show me more' }, { type: 'mic.stop', reason: 'end' }], ready);
+    const v = reduce(heard, { type: 'error', code: 'routine_building' });
+    expect(v).toMatchObject({ hearing: '', draft: 'show me more', entries: [] });
+    expect(v.banner).toBe("She's building this conversation's routine right now. Try again in a moment.");
   });
 
   it('keeps a message once her turn has started, and earlier ones of the same words', () => {

@@ -22,6 +22,12 @@ describe('the ready line', () => {
     expect(opened).toEqual(['r1']);
   });
 
+  it('sets its title only as text', () => {
+    const line = readyLine('<img src=x onerror=alert(1)>', 'r1', () => undefined);
+    expect(line.querySelector('img')).toBeNull();
+    expect(line.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
   it('is only the words when there is nowhere to go', () => {
     expect(readyLine('Your day is ready', null, () => undefined).querySelector('button')).toBeNull();
   });

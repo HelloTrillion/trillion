@@ -397,6 +397,18 @@ class SqliteScheduleStore:
             ) as cur:
                 if await cur.fetchone() is None:
                     return None
+            async with conn.execute(
+                "SELECT 1 FROM schedules WHERE id = ? AND status = 'cancelled'", (source_id,)
+            ) as cur:
+                cancelled = await cur.fetchone() is not None
+            if cancelled:
+                # Deleted while it ran: the user asked for it to stop, so it says nothing.
+                await conn.execute(
+                    "UPDATE task_runs SET status = 'cancelled', finished_ms = ?,"
+                    " detail = 'cancelled' WHERE id = ?",
+                    (now_ms, run_id),
+                )
+                return None
             if pauses_as is not None and await self._count_failure(conn, source_id, now_ms):
                 n = dataclasses.replace(n, title=pauses_as)
             await conn.execute(

@@ -466,7 +466,7 @@ class Scheduler:
             pauses_as=pauses,
         )
         if notice is None:
-            logger.warning("run %s was already finished", run.id)
+            logger.info("run %s was already finished, or its schedule cancelled", run.id)
             return
         if pauses is not None and notice.title == pauses:
             logger.info("routine %s failed %d times in a row: paused", s.id, PAUSE_AFTER)

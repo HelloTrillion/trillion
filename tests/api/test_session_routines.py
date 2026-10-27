@@ -18,7 +18,13 @@ from tests.scheduler.conftest import FakeClock, ms, schedule, written
 from tests.scheduler.test_ask import Hangs, Recording
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
-from trillion.api.session import OUT_OF_TURN, ROUTINE_BUILDING, Session, routine_run
+from trillion.api.session import (
+    OUT_OF_TURN,
+    ROUTINE_BUILDING,
+    Session,
+    ready_line,
+    routine_run,
+)
 from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.persona import day, setup
 from trillion.persona.prompt import system_blocks
@@ -105,7 +111,9 @@ async def test_the_ready_line_is_spoken_once_and_kept(rt: Runtime) -> None:
     (said,) = page.all("reply.sentence")
     assert said["text"] == line and said["turn"] == OUT_OF_TURN + 1
     history = await rt.conversations.history(session.id, "local")
-    assert history[-1][1].blocks == (TextBlock(text=line),)
+    # Kept as the app's line, never as hers (test_session_notices has the reload).
+    assert history[-1][0] == "tap"
+    assert ready_line(history[-1][1]) == {"role": "host", "text": line[:-1]}
     await session.close()
 
 

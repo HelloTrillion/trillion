@@ -125,6 +125,9 @@ describe('the Routines group', () => {
     press(card('Monday revenue'), 'Delete');
     expect(calls.filter((c) => c.startsWith('DELETE'))).toEqual([]);
     expect(card('Monday revenue').textContent).toContain('Delete “Monday revenue”? It won\'t run again.');
+    // Keyed like Coming up's, so focus can find them again across a redraw.
+    const keys = [...card('Monday revenue').querySelectorAll<HTMLElement>('.connected-confirm button')].map((b) => b.dataset.focus);
+    expect(keys).toEqual(['keep:b1b2c3d4', 'drop:b1b2c3d4']);
     press(card('Monday revenue'), 'Keep it');
     expect(card('Monday revenue').querySelector('.connected-confirm')).toBeNull();
     press(card('Monday revenue'), 'Delete');

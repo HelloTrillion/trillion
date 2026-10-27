@@ -357,7 +357,7 @@ function liveText(region: HTMLElement): (text: string) => void {
 
 /** A small dot, read out as "unread" with its row's name. */
 function unreadMark(): HTMLElement {
-  const mark = el('span', 'thread-unread connected-dot connected-dot-on');
+  const mark = el('span', 'thread-unread');
   mark.setAttribute('role', 'img');
   mark.setAttribute('aria-label', 'unread');
   return mark;
@@ -433,6 +433,8 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     const on = today !== null && today === d.current();
     if (on) dayRow.setAttribute('aria-current', 'true');
     else dayRow.removeAttribute('aria-current');
+    // Only today's: a day routine's line that arrives after midnight names yesterday's
+    // day conversation, which is marked on its own row in the list, not here.
     dayMark.hidden = today === null || !unread.has(today);
   }
 

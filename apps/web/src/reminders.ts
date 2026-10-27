@@ -320,10 +320,12 @@ export function createReminders(
         (form.querySelector(`[data-focus="${CSS.escape(`delete:${r.id}`)}"]`) as HTMLElement | null)?.focus();
       });
       keep.setAttribute('aria-label', `Keep ${r.name}`);
+      keep.dataset.focus = `keep:${r.id}`;
       const drop = button('Delete it', 'connected-danger-solid', () => {
         if (!busy) void act(r, 'delete');
       });
       drop.setAttribute('aria-label', `Delete ${r.name} for good`);
+      drop.dataset.focus = `drop:${r.id}`;
       confirm.append(el('span', '', `Delete “${r.name}”? It won't run again.`), keep, drop);
       box.append(confirm);
       return box;

@@ -43,7 +43,8 @@ export type Entry =
     }
   | { readonly kind: 'notice'; readonly text: string }
   /** A line the app wrote ("Building your day"): never the user's words, never hers. */
-  | { readonly kind: 'host'; readonly text: string }
+  /** A routine's ready line, kept as the app's, carries the conversation it opens. */
+  | { readonly kind: 'host'; readonly text: string; readonly conversationId?: string }
   | {
       readonly kind: 'scheduled';
       readonly id: string;
@@ -282,7 +283,18 @@ function scheduledOf(msg: ServerMsg): Entry | null {
   };
 }
 
-/** The conversation a routine's ready notice says is ready, to mark unread; null for any other message. */
+function hostOf(r: Record<string, unknown>): Entry {
+  const opens = str(r['conversation_id']);
+  return opens ? { kind: 'host', text: str(r['text']), conversationId: opens } : { kind: 'host', text: str(r['text']) };
+}
+
+/** The conversation to mark unread for a ready notice: never the one open, which the user is looking at. */
+export function unreadFor(msg: ServerMsg, view: Pick<View, 'conversationId'>): string | null {
+  const id = readyConversation(msg);
+  return id && id !== view.conversationId ? id : null;
+}
+
+/** The conversation a routine's ready notice says is ready; null for any other message. */
 export function readyConversation(msg: ServerMsg): string | null {
   if (msg.type !== 'notice' || msg['code'] !== 'schedule' || msg['kind'] !== 'ready') return null;
   return str(msg['conversation_id']) || null;
@@ -443,7 +455,7 @@ function step(view: View, msg: ServerMsg): View {
         r['role'] === 'user'
           ? { kind: 'user', text: str(r['text']) }
           : r['role'] === 'host'
-            ? { kind: 'host', text: str(r['text']) }
+            ? hostOf(r)
             : { kind: 'assistant', text: str(r['text']), interrupted: false },
       );
       return { ...view, entries };
@@ -573,6 +585,10 @@ function step(view: View, msg: ServerMsg): View {
         // Her voice failed; the reply itself carries on as text (VOI-14).
         const why = PROVIDER_ERRORS[str(msg['kind'])]?.replace('The model provider', 'The voice provider');
         return { ...view, banner: sentence || `${why ?? 'The voice provider failed.'} She is answering in text.` };
+      }
+      if (REFUSED.has(code) && view.pending === null && view.hearing) {
+        // Spoken and refused: the words heard go in the box, so nothing said is lost.
+        return { ...view, draft: view.hearing, hearing: '', busy: busyOf(view.orb, view.noticeSpeaking), banner: ERRORS[code] ?? null };
       }
       if (REFUSED.has(code) && view.pending !== null) {
         // The message was refused, not taken: back in the box, and off the screen.

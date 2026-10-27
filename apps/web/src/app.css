@@ -347,6 +347,15 @@ button:disabled {
   color: var(--color-text-2);
 }
 
+/* Unread: a routine built this conversation since the user last looked. */
+.thread-unread {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
 .thread-more {
   flex: none;
   padding: 0 6px;

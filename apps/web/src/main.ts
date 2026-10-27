@@ -69,10 +69,10 @@ import {
   expire,
   micFailed,
   quietLine,
-  readyConversation,
   reduce,
   sent,
   toolLabel,
+  unreadFor,
   waiting,
 } from './view';
 
@@ -632,6 +632,8 @@ function renderEntry(e: Entry): HTMLElement {
     case 'notice':
       return el('p', 'notice', e.text);
     case 'host':
+      // A ready line kept from an earlier visit: drawn again with its Open.
+      if (e.conversationId) return readyLine(e.text, e.conversationId, openReady);
       return el('p', 'host-line', e.text);
     case 'scheduled': {
       // A routine's: one line that opens what it built.
@@ -1365,8 +1367,8 @@ function connect(): void {
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
     // A routine finished somewhere else: its conversation is marked until opened.
-    const built = readyConversation(msg);
-    if (built && built !== view.conversationId) threads.markUnread(built);
+    const built = unreadFor(msg, view);
+    if (built) threads.markUnread(built);
     if (msg.type === 'board') {
       seen.ready();
       onBoard();

@@ -204,7 +204,8 @@ class ScheduleStore(Protocol):
     ) -> Notice | None:
         """Finish a running (or interrupted) run and write its notice, together, so a
         crash between the two can never leave a run to be tried again with its notice
-        already written. None, and nothing written, if the run was not running.
+        already written. None, and nothing written, if the run was not running. None
+        too if its schedule was cancelled meanwhile: the run ends cancelled, untold.
 
         `pauses_as`, for a routine's failure: it is counted in the same change, and
         the notice that pauses the routine (`PAUSE_AFTER`) takes this title."""

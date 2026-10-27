@@ -201,14 +201,23 @@ class SqliteConversationStore:
         return int(cur.lastrowid or 0)
 
     async def append_many(
-        self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
+        self,
+        conversation_id: str,
+        owner_id: str,
+        kind: Kind | Sequence[Kind],
+        msgs: Sequence[Msg],
+        now_ms: int,
     ) -> list[int]:
         """Save several messages in one statement, so all are kept or none, with no
-        transaction held open on the shared connection. Returns their ids in order."""
+        transaction held open on the shared connection. Returns their ids in order.
+        `kind` is one for all, or each message's own."""
         if not msgs:
             return []
+        kinds: list[Kind] = [kind] * len(msgs) if isinstance(kind, str) else list(kind)
+        if len(kinds) != len(msgs):
+            raise ValueError("a kind for each message")
         values: list[object] = []
-        for msg in msgs:
+        for kind, msg in zip(kinds, msgs, strict=True):
             values += [
                 owner_id,
                 conversation_id,
@@ -224,7 +233,11 @@ class SqliteConversationStore:
         async with self._conn.execute(sql, values) as cur:
             # RETURNING's order is not promised; ids rise in the order the rows went in.
             ids = sorted(int(r[0]) for r in await cur.fetchall())
-        await self._touched(conversation_id, owner_id, kind, msgs, now_ms)
+        # Only the user's own words can title a conversation.
+        said = [m for k, m in zip(kinds, msgs, strict=True) if k == "user"]
+        await self._touched(
+            conversation_id, owner_id, "user" if said else kinds[0], said or msgs, now_ms
+        )
         return ids
 
     async def append_run(

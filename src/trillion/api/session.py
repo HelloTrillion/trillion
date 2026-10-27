@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -173,6 +174,34 @@ def routine_run(msg: Msg) -> str | None:
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
     return ROUTINE_ID.sub("", text.split("\n", 1)[0].strip()) or "Routine"
+
+
+# Saved with a routine's ready line, ahead of it, in the conversation the page had open.
+# It tells her the line is the app's notice, not hers and not the user's, and it is
+# how history shows it again as the ready line with Open.
+READY_LINE = (
+    "<context>\nsent by the app because a routine the user set up finished: the line "
+    "below is the app's notice that its result is ready in another conversation, not "
+    "words the user typed or said, and not yours\n</context>"
+)
+# The conversation a ready line opens, on its last line.
+_READY_OPENS = re.compile(r"\n\(conversation ([A-Za-z0-9_-]{1,64})\)$")
+
+
+def ready_msg(title: str, conversation_id: str | None) -> Msg:
+    """A ready line as saved: the app's note, the line, and where it opens."""
+    opens = f"\n(conversation {conversation_id})" if conversation_id else ""
+    return Msg(role="user", blocks=(ContextBlock(text=READY_LINE), TextBlock(text=title + opens)))
+
+
+def ready_line(msg: Msg) -> dict[str, str] | None:
+    """A saved ready line as the page shows it, or None for any other message."""
+    if not any(isinstance(b, ContextBlock) and b.text == READY_LINE for b in msg.blocks):
+        return None
+    text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+    opens = _READY_OPENS.search(text)
+    shown = {"role": "host", "text": _READY_OPENS.sub("", text).strip()}
+    return {**shown, "conversation_id": opens.group(1)} if opens else shown
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -389,7 +418,10 @@ class Session:
             turn += kind in USER_INPUTS
             text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
             routine = routine_run(msg) if kind == "tap" else None
-            if kind == "tap" and day_build(msg):
+            ready = ready_line(msg) if kind == "tap" else None
+            if ready is not None:
+                shown.append(ready)
+            elif kind == "tap" and day_build(msg):
                 # The host's line, never shown as the user's words or the recipe's.
                 shown.append({"role": "host", "text": DAY_BUILD_SHOWN})
             elif routine is not None:
@@ -2476,10 +2508,17 @@ class Session:
         if self._closed or not free(self.facts(), rt.clock()):
             raise NotFree
         said = [n.text for n in notices if n.text]
-        if said:
-            await self._save_all(
-                "assistant", [Msg(role="assistant", blocks=(TextBlock(text=t),)) for t in said]
-            )
+        # Hers are saved as hers. A ready line is the app's, never hers: kept as its note,
+        # so she never takes it for something she said, and a reload shows it with Open.
+        rows: list[tuple[Kind, Msg]] = [
+            ("tap", ready_msg(n.title, n.conversation_id))
+            if n.kind == "ready"
+            else ("assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),)))
+            for n in notices
+            if n.text
+        ]
+        if rows:
+            await self._save_all(rows)
         if any(n.kind == "ask" and n.text for n in notices):
             # A timed ask's answer can quote what it read: whatever she does next on the
             # strength of it is something she read, not something the user said (MEM-5).
@@ -2503,17 +2542,19 @@ class Session:
             if self._task is None and not self._closed and not self._stopped:
                 self._task = self._notice_task = asyncio.create_task(self._say_notices(said))
 
-    async def _save_all(self, kind: Kind, msgs: Sequence[Msg]) -> None:
+    async def _save_all(self, rows: Sequence[tuple[Kind, Msg]]) -> None:
         """Like `_save`, for several at once: in the history before the write, so a turn
         that starts meanwhile has them, and taken out again if the write fails. Only
         these: a message saved meanwhile stays, wherever they now are."""
         self._saves += 1
         self._tail = None
+        kinds = [k for k, _ in rows]
+        msgs = [m for _, m in rows]
         self._history.extend(msgs)
-        self._kinds.extend([kind] * len(msgs))
+        self._kinds.extend(kinds)
         try:
             ids = await self._rt.conversations.append_many(
-                self.id, OWNER, kind, msgs, self._rt.clock()
+                self.id, OWNER, kinds, msgs, self._rt.clock()
             )
         except BaseException:
             mine = {id(m) for m in msgs}

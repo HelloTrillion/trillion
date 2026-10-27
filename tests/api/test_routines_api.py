@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from tests.api.test_server import App, home, make  # noqa: F401
@@ -147,3 +148,33 @@ def test_what_is_not_a_routine_is_refused(make: Any) -> None:
     assert tap(app, "DELETE", f"{PATH}/..%2Fx").status_code in (404, 422)
     # The plain reminder is untouched.
     assert app.client.get("/api/schedules", headers=app.auth).json()["active"] != []
+
+
+def test_a_routine_deleted_while_it_runs_says_nothing_when_it_ends(make: Any) -> None:
+    app: App = make()
+    s, portal = app.rt.schedules, app.client.portal
+    assert s is not None and portal is not None
+    due = ms("2099-10-26T08:00")
+    stopped(app, due)
+    routine(app)
+    assert portal.call(s.enqueue, RID, due, due + 86_400_000, 300.0, due)
+    run = portal.call(s.claim, "w", due, due)
+    assert run is not None
+    assert tap(app, "DELETE", f"{PATH}/{RID}").status_code == 200
+    n = portal.call(
+        partial(
+            s.finish_with_notice,
+            run.id,
+            "delivered",
+            due + 1000,
+            owner_id="local",
+            source_id=RID,
+            kind="ready",
+            title="Your Monday revenue is ready",
+            text="Your Monday revenue is ready.",
+            due_ms=due,
+            late=False,
+            conversation_id="conv-1",
+        )
+    )
+    assert n is None and portal.call(s.held, "local") == []

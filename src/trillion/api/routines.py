@@ -71,7 +71,7 @@ def create_routines_router(rt: Runtime) -> APIRouter:
     async def pause(schedule_id: str = ID) -> Any:
         if await routine(schedule_id) is None:
             return _not_found()
-        # False when it was already paused: the tap is answered with how it stands.
+        # Already paused is fine: the tap is answered with how it stands.
         await store().pause(OWNER, schedule_id, rt.clock())
         return await listing()
 
