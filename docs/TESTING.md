@@ -202,6 +202,19 @@ Keep Voice off except in 2.10.2. To make a run due now, set the routine a minute
 | 2.10.9 | Type in a routine's conversation while it is building there | The message is refused with "She's building this conversation's routine right now", and what was typed stays in the box. |
 | 2.10.10 | Make a routine fail three runs in a row (disconnect its only source, or stop the model) | After the third, it pauses itself, and one notice says so ("Monday revenue failed three times, so I've paused it"). |
 
+### 2.11 Background reads (VOI-17, SUR-9), by hand with a connected service
+
+Keep Voice off. Connect a service whose reads run without a card (for example Stripe).
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.11.1 | Ask "pull my Stripe year to date" | She acknowledges at once in one line. The chip reads "working in background", "1 read in background" shows under the input, and the input stays free. |
+| 2.11.2 | While it runs, ask something else, then ask "is it in yet?" | She answers the other question. Asked if it is in, she says it is on its way and does not start the read again. |
+| 2.11.3 | Wait for the read to end, then reload the page | At the next pause, never over a reply of hers, the host line "Stripe numbers are in" shows. She says so in one short line, puts the numbers on the board and says at most two sentences. The "in background" line is gone. After the reload the host line is still there. |
+| 2.11.4 | Start the read again, then switch to another conversation while it runs | When it ends, a ready line "Stripe numbers are in" appears with an Open button. Open shows the conversation with the host line, and she brings the numbers in there. |
+| 2.11.5 | Start the read again, then press stop while she is replying | Her reply stops. The read carries on and is brought in at the next pause. |
+| 2.11.6 | Ask her to read a file on this computer | The read runs in the turn: no "working in background" chip and no "in background" line. |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
