@@ -596,6 +596,11 @@ class Session:
             # An ask is typed words that can never approve (widget design D5).
             self._via = "ask" if ask else "text"
             self._turn += 1
+            if ask:
+                # Her words, not the user's, and maybe drawn from a page she read: what she
+                # does on them counts as read (MEM-5), so a memory is kept as a claim and a
+                # reminder or timed ask is refused, as after any outside read.
+                self._outside.add(self._turn)
             self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
             await self._save_input("user", text)
