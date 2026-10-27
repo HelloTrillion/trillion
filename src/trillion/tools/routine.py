@@ -70,8 +70,17 @@ Where = Callable[[str], Awaitable[tuple[str, bool]]]
 
 # How feedback that only narrows a routine opens ("stop showing refunds", "less detail").
 _NARROW_OPENERS = (
-    "stop", "don't", "do not", "dont", "never", "no", "less", "fewer", "only", "skip",
-    "drop", "hide", "without", "exclude",
+    "stop", "don't", "do not", "dont", "never", "no", "less", "fewer", "skip", "drop",
+    "hide", "without", "exclude",
+)  # fmt: skip
+# Every word that narrows, limits or negates, matched as the start of a word. A
+# narrowing holds exactly one, its opener: a second turns it round ("stop skipping
+# Slack", "fewer exclusions"), so it goes to a card.
+_NARROWING_STEMS = (
+    "stop", "never", "no", "not", "don", "less", "fewer", "skip", "hid", "drop", "exclu",
+    "omit", "remov", "cut", "limit", "filter", "restrict", "strict", "without", "only",
+    "ignor", "leav", "forget", "miss", "avoid", "block", "ban", "mute", "silenc", "narrow",
+    "reduc", "trim", "shorter", "smaller",
 )  # fmt: skip
 _LEAD = re.compile(r"^(?:(?:please|from now on|ok|okay)\b[\s,]*)+")
 # Plain words only: no `;`, `:`, `/` or quotes that could chain a second request on.
@@ -80,53 +89,39 @@ _WORD = re.compile(r"[a-z0-9$%]+(?:'[a-z]+)?")
 _MAX_WORDS = 10
 # A web address names somewhere new to read.
 _ADDRESS = re.compile(r"\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}\b")
-_NUMBER = "one two three four five six seven eight nine ten eleven twelve fifteen twenty".split()
-# Any one of these after the opener and it might widen what a run does: it chains on
-# a second request, turns the narrowing round ("stop ignoring refunds"), reads more,
-# reaches for everything, or acts. The opener is the only "not" a narrowing has.
+# Any one of these and it might widen what a run does: it chains on a second request,
+# reads more, reaches for everything, or acts.
 _WIDENS_WORDS = frozenset(
     # Chaining.
     "and or plus but then also too more new another extra well unless except instead "
     "rather however "
-    # Turned round: a second "not", or the narrowing itself undone.
-    "not no nor never don't dont stop skip without exclude excluding hide drop only "
-    "forget miss overlook ignore ignoring omit omitting leave leaving just nothing "
-    "everything "
+    # Undoing what was left out.
+    "overlook just nothing everything "
     # Reading more, and everything at once.
     "read check look search fetch open watch see pull scan all any every whole entire "
     # Acting.
     "send email post message buy pay delete cancel share forward call book add".split()
 )
-# Word starts that undo a narrowing whatever their ending: filter, limit, restrict.
-_WIDENS_STARTS = ("filter", "limit", "restrict")
-
-
-def _only_a_number(rest: list[str]) -> bool:
-    """`only` stands only for a count: "only 3 charts", "only the top five"."""
-    if rest[:2] == ["the", "top"]:
-        rest = rest[2:]
-    return bool(rest) and (rest[0].isdigit() or rest[0] in _NUMBER)
 
 
 def narrows_routine(text: str) -> bool:
     """Whether feedback only narrows what a routine looks at, so it stands at once.
 
-    It fails safe: a short plain sentence that opens with a narrowing word and holds
-    nothing that could chain on, turn round, read more or act. Anything not plainly
-    narrowing goes to a card (`routine_widen`)."""
+    It fails safe: a short plain sentence that opens with a narrowing word, holds no
+    other narrowing or negating word, and nothing that could chain on, read more or
+    act. Anything not plainly narrowing goes to a card (`routine_widen`)."""
     said = " ".join(text.replace("\u2019", "'").casefold().split()).rstrip(" .")
     said = _LEAD.sub("", said)
     if not _PLAIN.match(said) or _ADDRESS.search(said):
         return False
-    opener = next((o for o in _NARROW_OPENERS if said == o or said.startswith(o + " ")), None)
-    if opener is None:
+    if not any(said == o or said.startswith(o + " ") for o in _NARROW_OPENERS):
         return False
-    rest = _WORD.findall(said[len(opener) :])
-    if not rest or len(opener.split()) + len(rest) > _MAX_WORDS:
+    words = _WORD.findall(said)
+    if len(words) > _MAX_WORDS or any(w in _WIDENS_WORDS for w in words):
         return False
-    if opener == "only" and not _only_a_number(rest):
-        return False
-    return not any(w in _WIDENS_WORDS or w.startswith(_WIDENS_STARTS) for w in rest)
+    # Exactly one narrowing word: the opener ("do not" counts once, as "not").
+    narrowing = [w for w in words if w.startswith(_NARROWING_STEMS)]
+    return len(narrowing) == 1
 
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:

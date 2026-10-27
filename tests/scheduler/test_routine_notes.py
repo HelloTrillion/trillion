@@ -343,8 +343,8 @@ NARROWINGS = [
     "never mention X",
     "never mention test payments",
     "skip weekends",
-    "only the top five",
-    "only 3 charts",
+    "hide the refunds chart",
+    "drop the sparkline",
     "skip anything under $100",
     "fewer charts",
     "don't include test payments",
@@ -413,6 +413,20 @@ WIDENINGS = [
     "skip charts in the entire report",
     "never show the whole list of anything",
     "skip one two three four five six seven eight nine ten",
+    # A second narrowing or negating word turns it round (the review's probe).
+    "stop skipping slack",
+    "no fewer than ten charts",
+    "less hiding of slack",
+    "drop the slack exclusion",
+    "never show fewer than 50 items",
+    "stop dropping slack threads",
+    "without gmail exclusions",
+    "fewer exclusions",
+    "less strict",
+    "only 100 slack channels",
+    # Any "only" goes to a card, even a count.
+    "only the top five",
+    "only 3 charts",
     "",
 ]
 
@@ -447,7 +461,7 @@ async def test_a_mixed_one_is_refused_as_a_narrowing(it: Setup) -> None:
     ("text", "said"),
     [
         ("less detail", "less detail."),
-        ("only the top five", "only the top five."),
+        ("drop the sparkline", "drop the sparkline."),
         ("skip anything under $100", "skip anything under $100."),
         ("without the footnotes.", "without the footnotes."),
     ],
