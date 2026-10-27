@@ -139,12 +139,15 @@ def test_a_protected_root_spelled_with_long_s_still_protects(tmp_path):
     assert denial is not None and "protected" in denial.reason
 
 
-def test_a_granted_root_spelled_differently_still_grants(tmp_path):
+def test_a_granted_root_spelled_differently_grants_only_where_case_is_ignored(tmp_path):
+    # On macOS and Windows "GRANTED" is the same folder as "Granted"; on Linux it is
+    # another one, and a grant of it must not reach in here.
     granted = tmp_path / "Granted"
     granted.mkdir()
     policy = DenyPolicy(protected_roots=())
     alias = tmp_path / "GRANTED"
-    assert check(DEF, {"path": str(granted / "a.txt")}, policy, (alias,)) is None
+    denial = check(DEF, {"path": str(granted / "a.txt")}, policy, (alias,))
+    assert (denial is None) is deny_floor.CASE_BLIND
 
 
 @pytest.mark.skipif(deny_floor._F_GETPATH is None, reason="F_GETPATH is macOS-only")
