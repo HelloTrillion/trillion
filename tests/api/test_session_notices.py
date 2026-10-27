@@ -94,6 +94,12 @@ async def test_a_busy_page_gets_it_after_the_reply_is_over(rt: Runtime) -> None:
     assert page.all("notice") == []  # never over a live reply
     held.set()
     await idle(session)
+    # The notice follows the turn's end by an await or two: wait for it, as a slow
+    # runner may not have sent it the moment the turn lets go.
+    for _ in range(400):
+        if page.all("notice"):
+            break
+        await asyncio.sleep(0.005)
     kinds = [m["type"] for m in page.got]
     assert kinds.index("turn.complete") < kinds.index("notice")
     await session.close()
