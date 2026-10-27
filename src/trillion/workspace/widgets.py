@@ -270,11 +270,25 @@ def _typed(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     return {**raw, "type": guess} if guess else raw
 
 
+# Types that name their number by a label, which she often writes only as the title.
+_LABELLED = ("stat", "goal")
+
+
+def _label_from_title(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """A stat or goal with a title and no label takes the title as its label: refusing
+    it would cost a turn and show "failed" for a card that says what it means."""
+    label, title = raw.get("label"), raw.get("title")
+    has_label = isinstance(label, str | int | float) and str(label).strip()
+    if raw.get("type") in _LABELLED and not has_label and isinstance(title, str) and title.strip():
+        return {**raw, "label": title}
+    return raw
+
+
 def validate_widget(raw: Any, at: int | str) -> Widget:
     """The widget as it is saved, without an id. `at` is the position in the call
     (1-based) for a new widget, or the id of the widget it replaces."""
     named = f"widget {at}" if isinstance(at, int) else at
-    raw = recipe_kit.asked(_typed(scrub(as_object(raw, named))))
+    raw = recipe_kit.asked(_label_from_title(_typed(scrub(as_object(raw, named)))))
     kind = raw.get("type")
     build = None
     if isinstance(kind, str):

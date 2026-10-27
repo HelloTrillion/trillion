@@ -48,8 +48,10 @@ def _total(scores: list[float | int]) -> float | int:
 
 def _stat(w: Widget) -> list[Block]:
     tone = _TONE.get(w["tone"], w["tone"]) if "tone" in w else None
-    value = {"type": "value", "value": w["value"], "label": w["label"]}
-    return [_with(value, delta=w.get("delta"), hint=w.get("hint"), tone=tone)]
+    value = {"type": "value", "value": w["value"]}
+    # The label once: under the number, unless the card's title already says it.
+    label = None if w.get("title") == w["label"] else w["label"]
+    return [_with(value, label=label, delta=w.get("delta"), hint=w.get("hint"), tone=tone)]
 
 
 def _chart(w: Widget) -> list[Block]:

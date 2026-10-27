@@ -544,6 +544,19 @@ def test_near_synonyms_and_missing_types_are_read_from_the_fields() -> None:
     )
 
 
+def test_a_stat_or_goal_titled_but_not_labelled_takes_its_title() -> None:
+    # She often names the number in the title alone: the card is still clear.
+    stat = validate_widget({"type": "stat", "title": "Revenue YTD", "value": "$184,000"}, 1)
+    assert stat["label"] == "Revenue YTD" and stat["title"] == "Revenue YTD"
+    goal = {"type": "goal", "title": "Annual target", "value": 184000, "target": 250000}
+    assert validate_widget(goal, 1)["label"] == "Annual target"
+    # A label she gave is kept; with neither, it is still refused.
+    labelled = {"type": "stat", "title": "Revenue", "label": "YTD", "value": "1"}
+    assert validate_widget(labelled, 1)["label"] == "YTD"
+    with pytest.raises(BoardError, match="label is required"):
+        validate_widget({"type": "stat", "value": "1"}, 1)
+
+
 def test_what_cannot_be_read_is_still_refused() -> None:
     with pytest.raises(BoardError, match="widget 1: no type; use one of"):
         validate_widget({"title": "?"}, 1)
