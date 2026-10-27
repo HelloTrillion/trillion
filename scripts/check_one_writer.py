@@ -80,6 +80,10 @@ NOT_DECISIONS: dict[str, str] = {
         f"schedules.{c}": "a reminder's own progress (AGT-4): it approves nothing"
         for c in ("status", "next_due_ms")
     },
+    "schedules.paused_ms": "whether a routine runs for now (the routines spec): approves nothing",
+    "schedules.failures": "a routine's failed runs in a row: a count, it approves nothing",
+    "schedules.conversation_id": "where a routine's board goes: it approves nothing",
+    "schedules.notes": "what a routine looks at, from the user's feedback: it approves nothing",
     **{
         f"task_runs.{c}": "a scheduled run's progress (AGT-4): it approves nothing"
         for c in (

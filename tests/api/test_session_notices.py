@@ -487,6 +487,58 @@ async def test_the_notice_event_carries_its_due_time_in_words(rt: Runtime) -> No
     await session.close()
 
 
+async def test_the_ready_notice_event_carries_the_conversation_it_opens(rt: Runtime) -> None:
+    assert rt.schedules is not None and rt.door is not None
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    n = await written(
+        rt.schedules,
+        kind="ready",
+        text="Your Monday revenue is ready.",
+        title="Your Monday revenue is ready",
+        due_ms=DUE,
+        now_ms=rt.clock(),
+        conversation_id="conv-1",
+    )
+    await rt.door.added(n)
+    (shown,) = page.all("notice")
+    assert shown["kind"] == "ready" and shown["conversation_id"] == "conv-1"
+    await session.close()
+
+
+async def test_a_ready_line_is_kept_as_the_hosts_never_as_hers(rt: Runtime) -> None:
+    assert rt.schedules is not None and rt.door is not None
+    voiced(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    line = "Your Monday revenue is ready"
+    n = await written(
+        rt.schedules,
+        kind="ready",
+        text=f"{line}.",
+        title=line,
+        due_ms=DUE,
+        now_ms=rt.clock(),
+        conversation_id="conv-1",
+    )
+    await rt.door.added(n)
+    await idle(session)
+    # Still spoken once, from its words.
+    assert [m["text"] for m in page.all("reply.sentence")] == [f"{line}."]
+    history = await rt.conversations.history(session.id, "local")
+    assert [k for k, _ in history] == ["tap"]
+    msg = history[0][1]
+    # The model reads it as the app's note, never as something she said.
+    assert msg.role == "user" and isinstance(msg.blocks[0], ContextBlock)
+    await session.close()
+    # A reload draws it again as the ready line, with somewhere to open.
+    again = Page(rt)
+    reopened = await Session.start(rt, again.send, session.id)
+    (shown,) = again.all("history")
+    assert shown["messages"] == [{"role": "host", "text": line, "conversation_id": "conv-1"}]
+    await reopened.close()
+
+
 async def test_a_page_whose_start_fails_is_not_left_to_take_notices(
     rt: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

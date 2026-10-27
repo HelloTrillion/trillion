@@ -426,7 +426,7 @@ async def test_a_late_barge_changes_nothing_once_something_was_saved_after_her_r
     session = await answered(rt, page)
     await played(session, page, 1)
     # A notice arrives after it: the reply is no longer the conversation's last word.
-    await session._save_all("assistant", [Msg(role="assistant", blocks=(TextBlock(text="Hi."),))])
+    await session._save_all([("assistant", Msg(role="assistant", blocks=(TextBlock(text="Hi."),)))])
     await session.handle({"type": "barge"})
 
     assert not page.all("interrupted")

@@ -82,6 +82,8 @@ class Delivery:
     # When it was due, in words and in the schedule's own zone ("Sat 4:00 pm"). Empty
     # when that can't be told: its schedule is gone, or its zone unknown here.
     due: str = ""
+    # The conversation a routine's ready line opens; None for any other.
+    conversation_id: str | None = None
 
 
 class NotFree(Exception):
@@ -183,10 +185,12 @@ class Door:
                             kind=n.kind,
                             title=n.title,
                             # Only she writes words; a missed or failed notice has none (D7).
-                            text=n.text if n.kind in ("reminder", "ask") else None,
+                            # A ready line is the host's, and spoken once like hers (D3).
+                            text=n.text if n.kind in ("reminder", "ask", "ready") else None,
                             due_ms=n.due_ms,
                             late=n.late or now - n.due_ms > LATE_MS,
                             due=await self._due(n, now, zones),
+                            conversation_id=n.conversation_id,
                         )
                     )
             except BaseException:

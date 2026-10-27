@@ -93,4 +93,16 @@ describe('reminders', () => {
     expect(dueWords(due, 'America/New_York')).toBe('Sat 24 Oct, 4:00 pm');
     expect(resultLine({ ...r, due: '', due_ms: due, status: 'missed', detail: '' }, 'America/New_York')).toBe('Email: Missed (due Sat 24 Oct, 4:00 pm)');
   });
+
+  it("says a routine's quiet outcomes plainly, and a run waiting on the user's own turn", () => {
+    expect(resultText('skipped')).toBe('Skipped, already built');
+    expect(resultText('nothing')).toBe('Nothing to report');
+    expect(troubled('skipped') || troubled('nothing')).toBe(false);
+    const r = { title: 'Revenue', due: 'Mon 26 Oct, 8:00 am', due_ms: 0 };
+    expect(resultLine({ ...r, status: 'blocked', detail: 'a turn is running there' })).toBe(
+      'Revenue: Waiting for you to finish (due Mon 26 Oct, 8:00 am)',
+    );
+    expect(resultText('blocked', 'a turn is running there')).toBe('Waiting for you to finish');
+    expect(resultText('blocked', 'no model')).toBe('Waiting for a model');
+  });
 });

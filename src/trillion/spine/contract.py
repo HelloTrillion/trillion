@@ -13,7 +13,9 @@ JSON = Mapping[str, Any]
 # settle a card. "ask" is a turn started by tapping a widget's ask: typed words in
 # every way but one, they can never approve (its words may come from a page she read).
 # "refresh" replays a live widget's reads with nobody there: reads only, never a card.
-Via = Literal["voice", "text", "tap", "channel", "schedule", "ask", "refresh"]
+# "routine" is a routine's run, with nobody there: all a timed ask may do, and its board
+# on its own conversation (`ToolContext.routine_target`).
+Via = Literal["voice", "text", "tap", "channel", "schedule", "ask", "refresh", "routine"]
 Effect = Literal["confirmed", "none", "unknown"]
 
 
@@ -60,6 +62,9 @@ class ToolContext:
     # True once this turn has read something from outside (a web page, a file). What
     # she does with it after that is not something the user said (MEM-5, EVL-2).
     read_outside: bool = False
+    # A routine's run: the one conversation it may show a board on. Set by the host
+    # that starts the run, never from anything the model says.
+    routine_target: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

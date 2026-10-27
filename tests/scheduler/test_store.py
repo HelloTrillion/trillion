@@ -115,6 +115,37 @@ async def test_cancelling_cancels_the_runs_still_waiting(store: SqliteScheduleSt
     assert not await store.cancel("someone-else", "a1b2c3d4", DUE + 6)
 
 
+async def test_a_run_whose_schedule_was_cancelled_meanwhile_stays_quiet(
+    store: SqliteScheduleStore,
+) -> None:
+    """Cancelled while it ran: no ready line, no failure, nothing to tell (Settings delete)."""
+    await store.create(schedule(kind="ask", target="own", repeat=Repeat(every="day")))
+    await store.enqueue("a1b2c3d4", DUE, DUE + 86_400_000, 10.0, DUE)
+    run = await store.claim("w1", DUE, 0)
+    assert run is not None
+    assert await store.cancel("local", "a1b2c3d4", DUE + 5)
+    for kind in ("ready", "failed"):
+        n = await store.finish_with_notice(
+            run.id,
+            "delivered",
+            DUE + 10,
+            owner_id="local",
+            source_id="a1b2c3d4",
+            kind=kind,
+            title="Your Call the dentist is ready",
+            text="Ready.",
+            due_ms=DUE,
+            late=False,
+            conversation_id="r1",
+            pauses_as="paused" if kind == "failed" else None,
+        )
+        assert n is None
+    assert await store.held("local") == []
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["cancelled"]
+    gone = await store.get("a1b2c3d4")
+    assert gone is not None and gone.failures == 0
+
+
 async def test_results_name_their_schedule_newest_first(store: SqliteScheduleStore) -> None:
     await store.create(schedule())
     await store.create(schedule(id="e5f6a7b8", title="Stretch", zone=NY))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import re
+from collections.abc import Callable
 from importlib.metadata import entry_points
 
 from jsonschema import Draft202012Validator
@@ -21,7 +22,16 @@ _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
 # Families an unattended run never gets, whatever their risk: a run nobody watches does
 # not change what runs later (AGT-9), and has no page to show a board on (SUR-1).
 # A standing rule is the user's own word: a run nobody is watching never changes one.
-UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules"})
+# A routine's own tools change a routine, or end its run: never a plain timed ask's.
+UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules", "routine"})
+# What a routine's run gets besides (the routines spec, D5): the board tools, on its own
+# conversation only (the router checks which), and the way to say it has nothing.
+# Named here so the spine needs nothing from the tools (tests check the names still match).
+ROUTINE_BOARD = frozenset({"workspace_show", "workspace_update", "workspace_remove"})
+ROUTINE_NOTHING = "routine_nothing"
+# The day's recipe reads the user's reminders: a routine's run may list them, never
+# set or cancel one.
+ROUTINE_LIST = "schedule_list"
 
 
 class RegistryError(ValueError):
@@ -34,6 +44,21 @@ def runs_unattended(d: ToolDefinition) -> bool:
     left asking first is registered irreversible), and nothing that changes the schedule.
     `unattended()` offers exactly these, and the router refuses the rest by name."""
     return d.risk not in GATED and d.category not in UNATTENDED_NEVER
+
+
+def runs_in_routine(d: ToolDefinition) -> bool:
+    """Whether a routine's run may use this tool: what any unattended run may, the
+    three board tools, `routine_nothing` and `schedule_list`. Each a read of the family
+    it says it is, so nothing else can take one of their names and be let through."""
+    if runs_unattended(d):
+        return True
+    if d.risk is not Risk.READ:
+        return False
+    return (
+        (d.name in ROUTINE_BOARD and d.category == "workspace")
+        or (d.name == ROUTINE_NOTHING and d.category == "routine")
+        or (d.name == ROUTINE_LIST and d.category == "schedule")
+    )
 
 
 def validate(tool: Tool, module: str, definition: ToolDefinition | None = None) -> None:
@@ -157,6 +182,22 @@ class ToolRegistry:
                 view._definitions[name] = d
         return view
 
+    def routine(self) -> ToolRegistry:
+        """The view for a routine's run: the unattended view, plus the board tools,
+        `routine_nothing` and `schedule_list` (`runs_in_routine`). Read-only, and taken
+        when the run starts."""
+        view = _ReadOnly()
+        for name, d in self._definitions.items():
+            if runs_in_routine(d):
+                view._tools[name] = self._tools[name]
+                view._definitions[name] = d
+        return view
+
+    def offered(self, keep: Callable[[ToolDefinition], bool]) -> ToolRegistry:
+        """A view of what a page's turn is offered: the tools `keep` allows. Live, so a
+        server connected mid-turn is offered as before; read-only."""
+        return _Offered(self, keep)
+
     @classmethod
     def discover(cls, group: str = "trillion.tools") -> ToolRegistry:
         reg = cls()
@@ -182,3 +223,37 @@ class _ReadOnly(ToolRegistry):
 
     def definitions(self) -> list[ToolDefinition]:
         return list(self._definitions.values())
+
+
+class _Offered(ToolRegistry):
+    """What `offered()` returns: this registry, read through a filter on every call."""
+
+    def __init__(self, base: ToolRegistry, keep: Callable[[ToolDefinition], bool]) -> None:
+        super().__init__()
+        self._base = base
+        self._keep = keep
+
+    def register(self, tool: Tool, *, module: str | None = None) -> None:
+        raise RegistryError("an offered view is read-only")
+
+    def unregister(self, name: str) -> None:
+        raise RegistryError("an offered view is read-only")
+
+    def redefine(self, name: str, definition: ToolDefinition) -> None:
+        raise RegistryError("an offered view is read-only")
+
+    def get(self, name: str) -> Tool | None:
+        return self._base.get(name) if self.definition(name) is not None else None
+
+    def definition(self, name: str) -> ToolDefinition | None:
+        d = self._base.definition(name)
+        return d if d is not None and self._keep(d) else None
+
+    def definitions(self) -> list[ToolDefinition]:
+        return [d for d in self._base.definitions() if self._keep(d)]
+
+    def unattended(self) -> ToolRegistry:
+        raise RegistryError("take an unattended view from the registry itself")
+
+    def routine(self) -> ToolRegistry:
+        raise RegistryError("take a routine's view from the registry itself")

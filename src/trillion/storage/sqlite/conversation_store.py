@@ -28,9 +28,10 @@ Kind = Literal["user", "tap", "assistant", "tool_results"]
 USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
 # A day is a page's too: the one conversation per date where she builds the user's day.
-ConversationKind = Literal["chat", "scheduled", "day"]
+# A routine is a page's as well: one routine's own, where each of its runs puts its board.
+ConversationKind = Literal["chat", "scheduled", "day", "routine"]
 # The kinds a page opens, lists, renames and deletes.
-_PAGE_KINDS = "kind IN ('chat', 'day')"
+_PAGE_KINDS = "kind IN ('chat', 'day', 'routine')"
 TitleSource = Literal["words", "model", "user"]
 TITLE_MAX = 80
 WORDS_TITLE_MAX = 60
@@ -167,6 +168,17 @@ class SqliteConversationStore:
             raise RuntimeError("the day conversation was neither found nor made")
         return str(row["id"]), created
 
+    async def routine_conversation(self, owner_id: str, title: str, now_ms: int) -> str:
+        """A new conversation of a routine's own, titled with its name. The title is
+        saved as the user's, so her naming never replaces it."""
+        conversation_id = uuid.uuid4().hex
+        await self._conn.execute(
+            "INSERT INTO conversations (id, owner_id, created_at, kind, title, title_source)"
+            " VALUES (?, ?, ?, 'routine', ?, 'user')",
+            (conversation_id, owner_id, now_ms, tidy_title(title)),
+        )
+        return conversation_id
+
     async def append(
         self, conversation_id: str, owner_id: str, kind: Kind, msg: Msg, now_ms: int
     ) -> int:
@@ -189,14 +201,23 @@ class SqliteConversationStore:
         return int(cur.lastrowid or 0)
 
     async def append_many(
-        self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
+        self,
+        conversation_id: str,
+        owner_id: str,
+        kind: Kind | Sequence[Kind],
+        msgs: Sequence[Msg],
+        now_ms: int,
     ) -> list[int]:
         """Save several messages in one statement, so all are kept or none, with no
-        transaction held open on the shared connection. Returns their ids in order."""
+        transaction held open on the shared connection. Returns their ids in order.
+        `kind` is one for all, or each message's own."""
         if not msgs:
             return []
+        kinds: list[Kind] = [kind] * len(msgs) if isinstance(kind, str) else list(kind)
+        if len(kinds) != len(msgs):
+            raise ValueError("a kind for each message")
         values: list[object] = []
-        for msg in msgs:
+        for kind, msg in zip(kinds, msgs, strict=True):
             values += [
                 owner_id,
                 conversation_id,
@@ -212,8 +233,36 @@ class SqliteConversationStore:
         async with self._conn.execute(sql, values) as cur:
             # RETURNING's order is not promised; ids rise in the order the rows went in.
             ids = sorted(int(r[0]) for r in await cur.fetchall())
-        await self._touched(conversation_id, owner_id, kind, msgs, now_ms)
+        # Only the user's own words can title a conversation.
+        said = [m for k, m in zip(kinds, msgs, strict=True) if k == "user"]
+        await self._touched(
+            conversation_id, owner_id, "user" if said else kinds[0], said or msgs, now_ms
+        )
         return ids
+
+    async def append_run(
+        self, conversation_id: str, owner_id: str, rows: Sequence[tuple[Kind, Msg, int]]
+    ) -> None:
+        """Save a whole run's messages, each with its kind and time, in one statement:
+        kept all or none, so a tool call is never kept without its result."""
+        if not rows:
+            return
+        values: list[object] = []
+        for kind, msg, at in rows:
+            values += [
+                owner_id,
+                conversation_id,
+                msg.role,
+                kind,
+                json.dumps([_dump(b) for b in msg.blocks], ensure_ascii=False),
+                _dump_raw(msg.raw),
+                at,
+            ]
+        marks = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        cols = "owner_id, conversation_id, role, kind, blocks_json, raw_json, created_at"
+        await self._conn.execute(f"INSERT INTO messages ({cols}) VALUES {marks}", values)  # noqa: S608 - placeholders only
+        # Recency only: none of these is the user's, so none names the conversation.
+        await self._touched(conversation_id, owner_id, "assistant", [], max(r[2] for r in rows))
 
     async def _touched(
         self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int

@@ -43,6 +43,7 @@ import {
   shownTheme,
 } from './prefs';
 import { announcement, statusText } from './announce';
+import { readyLine } from './ready';
 import { createReminders } from './reminders';
 import { createSidebar, revealForCard } from './sidebar';
 import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from './threads';
@@ -71,6 +72,7 @@ import {
   reduce,
   sent,
   toolLabel,
+  unreadFor,
   waiting,
 } from './view';
 
@@ -630,8 +632,12 @@ function renderEntry(e: Entry): HTMLElement {
     case 'notice':
       return el('p', 'notice', e.text);
     case 'host':
+      // A ready line kept from an earlier visit: drawn again with its Open.
+      if (e.conversationId) return readyLine(e.text, e.conversationId, openReady);
       return el('p', 'host-line', e.text);
     case 'scheduled': {
+      // A routine's: one line that opens what it built.
+      if (e.what === 'ready') return readyLine(e.title, e.conversationId, openReady);
       // A missed or failed one has no words of hers: a quiet line, never her speech.
       if (e.text === null) return el('p', 'notice scheduled-quiet', quietLine(e));
       const box = el('div', 'msg assistant');
@@ -914,7 +920,7 @@ const connected = createConnected(panel.host('connected'), api, () => {
   if (workspace.showing === 'board') showBoard();
 });
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
-const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh());
+const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh(), openReady);
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
@@ -1076,8 +1082,16 @@ function talkNames(): void {
   })();
 }
 
+/** A ready line's Open: the conversation its routine built. */
+function openReady(id: string): void {
+  if (id !== view.conversationId) switchTo(id);
+  else focusInput();
+}
+
 /** Open another conversation, or (null) a fresh one: reconnect and the core resumes it. */
 function switchTo(id: string | null): void {
+  // Opened, so no longer unread.
+  if (id) threads.markRead(id);
   // She stops first, so nothing of this conversation plays over the next one. Only a
   // reply under way needs the core told; the rest is this page's to quiet.
   // The user went somewhere themselves: a day.open still waiting is dropped.
@@ -1323,7 +1337,7 @@ function connect(): void {
     const stuck =
       msg.type === 'error' &&
       (bargeHeld !== null || overlapping || cutIn) &&
-      ['busy', 'no_model', 'no_listening'].includes(String(msg['code']));
+      ['busy', 'no_model', 'no_listening', 'routine_building'].includes(String(msg['code']));
     if (stuck && overlapping) {
       voice.duck(false);
       overlapping = false;
@@ -1352,6 +1366,9 @@ function connect(): void {
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     apply(reduce(view, msg));
+    // A routine finished somewhere else: its conversation is marked until opened.
+    const built = unreadFor(msg, view);
+    if (built) threads.markUnread(built);
     if (msg.type === 'board') {
       seen.ready();
       onBoard();

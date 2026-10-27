@@ -56,6 +56,9 @@ workspace_update = "trillion.tools.workspace:WorkspaceUpdate"
 workspace_remove = "trillion.tools.workspace:WorkspaceRemove"
 workspace_close = "trillion.tools.workspace:WorkspaceClose"
 day_open = "trillion.tools.day:DayOpen"
+routine_nothing = "trillion.tools.routine:RoutineNothing"
+routine_narrow = "trillion.tools.routine:RoutineNarrow"
+routine_widen = "trillion.tools.routine:RoutineWiden"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]

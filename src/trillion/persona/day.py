@@ -123,12 +123,13 @@ def _asks_first(setup: SetUp, identity: Identity) -> str:
     )
 
 
-def recipe(setup: SetUp, day: date, zone: str, identity: Identity) -> str:
-    """The turn's input when the user opens their day: what to read, how to show it,
-    and what to say."""
+def recipe(setup: SetUp, day: date, zone: str, identity: Identity, *, routine: bool = False) -> str:
+    """The turn's input when the user opens their day, or when their day routine runs
+    with nobody there: what to read, how to show it, and what to say."""
     user = identity.user_name
+    why = f"It's time for {user}'s day routine." if routine else f"{user} opened their day."
     lines = [
-        f"[host] {user} opened their day. Build today's board: {day:%A} {day.day} "
+        f"[host] {why} Build today's board: {day:%A} {day.day} "
         f"{day:%B} {day.year}" + (f", in {zone}." if zone else "."),
         "",
         "Read first, each with its own tools:",

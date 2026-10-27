@@ -198,6 +198,7 @@ def volatile_context(
     spoken: Identity | None = None,
     zone: str = "",
     board: str = "",
+    routine: str = "",
 ) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
@@ -209,6 +210,9 @@ def volatile_context(
     `zone` is the user's timezone by name, so she can work out a time for a reminder
     in it (AGT-9); `now` is already in that zone.
 
+    `routine` names the routine this conversation belongs to, as `id "name"`, so she
+    knows which one feedback here changes (the routines spec).
+
     `board` is the one-line summary of her board (SUR-1). It is wrapped as untrusted
     here: its titles may quote a page she read. It rides with the message, never in the
     cached block, and with no board nothing is added."""
@@ -217,6 +221,9 @@ def volatile_context(
     named = zone and zone != now.strftime("%Z")
     lines = [f"now: {when} ({zone})" if named else f"now: {when}"]
     lines.extend(f"waiting for an answer: {p.pending_id}: {p.summary}" for p in pending)
+    if routine:
+        # The routine this conversation belongs to: its id, for routine_narrow and widen.
+        lines.append(f"routine: {routine}")
     if spoken is not None:
         # How this one message arrived (PER-3, #40). It rides here, with the message,
         # so the cached block stays the same whether the user types or talks.

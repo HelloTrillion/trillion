@@ -23,7 +23,7 @@ from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 RECENT = 20
 
 
-def _words(s: Schedule) -> tuple[str, str]:
+def words(s: Schedule) -> tuple[str, str]:
     """(next, when) in the user's own zone. Empty for a zone this computer doesn't know."""
     try:
         upcoming = when.spoken(s.next_due_ms, s.zone) if s.next_due_ms is not None else ""
@@ -52,7 +52,10 @@ def create_schedules_router(rt: Runtime) -> APIRouter:
         last = await s.last_results(OWNER)
         active = []
         for x in await s.active(OWNER):
-            upcoming, at = _words(x)
+            if x.target is not None:
+                # A routine is listed with the routines (`api/routines.py`), not twice.
+                continue
+            upcoming, at = words(x)
             active.append(
                 {
                     "id": x.id,

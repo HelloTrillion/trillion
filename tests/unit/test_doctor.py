@@ -139,12 +139,12 @@ def test_setup_prepares_the_machine_and_can_be_run_again(
 ) -> None:
     prepared(home)
     first = capsys.readouterr().out
-    assert "database ready (13 updates applied)" in first and "Start it with: trillion run" in first
+    assert "database ready (14 updates applied)" in first and "Start it with: trillion run" in first
     assert (home / "trillion.db").exists() and (home / "persona").is_dir()
     prepared(home)  # a second run finishes what is there and changes nothing
     assert "already prepared: nothing to do" in capsys.readouterr().out
     assert examine()["Database"] == Check(
-        name="Database", status="ok", detail="up to date (13 migrations)"
+        name="Database", status="ok", detail="up to date (14 migrations)"
     )
 
 
@@ -559,7 +559,9 @@ def scheduled(home: Path, *runs: tuple[str, int]) -> None:
     prepared(home)
     with closing(sqlite3.connect(home / "trillion.db")) as db, db:
         db.execute(
-            "INSERT INTO schedules VALUES ('a1b2c3d4', 'local', 'ask', 'Email', 'Check.',"
+            "INSERT INTO schedules (id, owner_id, kind, title, body, zone, at_local, repeat,"
+            " next_due_ms, status, created_ms, created_in)"
+            " VALUES ('a1b2c3d4', 'local', 'ask', 'Email', 'Check.',"
             " 'America/New_York', '2026-10-26T09:00', '{\"every\": \"weekday\"}',"
             " 1793019600000, 'active', 0, 'c1')"
         )
@@ -576,6 +578,14 @@ def test_the_scheduler_line_says_what_is_set_and_when_next(home: Path) -> None:
     scheduled(home)
     check = doctor.check_scheduler(home / "trillion.db", 1_792_857_600_000)
     assert check.status == "ok" and check.detail == "1 active; next due Mon 26 Oct, 9:00 am"
+
+
+def test_a_paused_routines_time_is_not_next(home: Path) -> None:
+    scheduled(home)
+    with closing(sqlite3.connect(home / "trillion.db")) as db, db:
+        db.execute("UPDATE schedules SET target = 'own', paused_ms = 1 WHERE id = 'a1b2c3d4'")
+    check = doctor.check_scheduler(home / "trillion.db", 1_792_857_600_000)
+    assert check.status == "ok" and check.detail == "1 active"
 
 
 def test_a_failed_or_blocked_run_in_the_last_day_is_worth_a_look(home: Path) -> None:
