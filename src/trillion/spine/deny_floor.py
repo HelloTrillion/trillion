@@ -14,7 +14,7 @@ import re
 import sys
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from trillion import paths
 from trillion.spine.contract import JSON, ToolDefinition
@@ -66,8 +66,30 @@ def _folded_parts(p: Path) -> tuple[str, ...]:
 
 
 def _is_under(p: Path, root: Path) -> bool:
+    """Under `root` by any spelling: for what is protected, refusing too much is safe."""
     rp, rr = _folded_parts(p), _folded_parts(root)
     return rp[: len(rr)] == rr
+
+
+# Whether one folder answers to names that differ only in case. On Linux `Docs` and
+# `docs` are two folders: a grant of one must not reach into the other, or the card
+# would show one file while another is changed.
+CASE_BLIND = sys.platform in ("darwin", "win32")
+
+
+def inside(p: Path, root: Path) -> bool:
+    """Under a granted folder, comparing names the way this system's disks do."""
+    if CASE_BLIND:
+        return _is_under(p, root)
+    rp, rr = p.parts, root.parts
+    return rp[: len(rr)] == rr
+
+
+def _has_stream(p: PurePath) -> bool:
+    """A colon in a name after the drive. On Windows `.env::$DATA` is `.env` itself, and
+    `.git::$INDEX_ALLOCATION` the folder `.git`, so no name rule could see them."""
+    names = p.parts[1:] if p.anchor else p.parts
+    return any(":" in name for name in names)
 
 
 def _is_env_file(leaf: str) -> bool:
@@ -114,6 +136,8 @@ def _spellings(p: Path) -> tuple[Path, ...]:
 def _check_one(
     name: str, p: Path, policy: DenyPolicy, granted_roots: tuple[Path, ...]
 ) -> Denial | None:
+    if _has_stream(p):
+        return Denial(name, "a name with a colon in it is not allowed")
     folded = _folded_parts(p)
     hit = _FOLDED_SEGMENTS.intersection(folded)
     if hit:
@@ -124,8 +148,18 @@ def _check_one(
         if any(_is_under(p, r) for r in _spellings(root)):
             return Denial(name, "Trillion's own files are protected")
     grants = [s for g in granted_roots for s in _spellings(g.expanduser().resolve())]
-    if not any(_is_under(p, g) for g in grants):
+    if not any(inside(p, g) for g in grants):
         return Denial(name, "the path is outside the folders the user granted")
+    return None
+
+
+def refused(p: Path, granted_roots: tuple[Path, ...]) -> str | None:
+    """Why a path already resolved is refused, or None. For the file tools, on the very
+    path they are about to walk to, after any folder on the way may have changed."""
+    for form in _spellings(p):
+        denial = _check_one("path", form, DenyPolicy.default(), granted_roots)
+        if denial is not None:
+            return denial.reason
     return None
 
 

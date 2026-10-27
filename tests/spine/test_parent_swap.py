@@ -150,3 +150,55 @@ async def test_a_file_that_is_itself_a_link_is_not_followed(spine: Spine) -> Non
     symlink_or_skip(spine.granted / "alias.txt", spine.granted / "real.txt")
     r = await spine.call("file_read", {"path": str(spine.granted / "alias.txt")})
     assert r.status == "failed" and "give the path of the file it points to" in r.content
+
+
+# ── Swapped in before the path is placed, to a protected folder in the grant ──
+
+
+def swap_before_locate(monkeypatch: pytest.MonkeyPatch, sub: Path, to: Path) -> Callable[[], int]:
+    """Replace `sub` with a link to `to` after the tool's own check, before `locate`."""
+    real = beneath.locate
+    swaps: list[int] = []
+
+    def racing(path: Path, roots: Any, **kw: Any) -> Any:
+        if not swaps and sub.is_dir() and not sub.is_symlink():
+            sub.rename(sub.with_name(sub.name + ".moved"))
+            symlink_or_skip(sub, to)
+            swaps.append(1)
+        return real(path, roots, **kw)
+
+    monkeypatch.setattr(beneath, "locate", racing)
+    return lambda: len(swaps)
+
+
+@pytest.fixture
+def git(spine: Spine) -> Path:
+    """A protected folder inside the grant, and an ordinary one beside it."""
+    d = spine.granted / ".git"
+    d.mkdir()
+    (d / "config").write_text("[remote] the attacker wants this\n")
+    sub = spine.granted / "sub"
+    sub.mkdir()
+    (sub / "config").write_text("fine\n")
+    return d
+
+
+async def test_a_read_never_lands_in_a_protected_folder_swapped_in(
+    spine: Spine, git: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    swapped = swap_before_locate(monkeypatch, spine.granted / "sub", git)
+    r = await spine.call("file_read", {"path": str(spine.granted / "sub" / "config")})
+    assert swapped() == 1
+    assert "attacker" not in r.content and r.status != "succeeded"
+
+
+async def test_a_write_never_lands_in_a_protected_folder_swapped_in(
+    spine: Spine, git: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = str(spine.granted / "sub" / "config")
+    r = await spine.call("file_overwrite", {"path": path, "content": "planted"})
+    assert r.status == "confirmation_required"
+    swapped = swap_before_locate(monkeypatch, spine.granted / "sub", git)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert swapped() == 1 and done.status != "succeeded"
+    assert (git / "config").read_text() == "[remote] the attacker wants this\n"

@@ -1,6 +1,6 @@
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -241,3 +241,54 @@ def test_what_reads_as_a_path() -> None:
     assert deny_floor.reads_as_path("/etc/hosts") and deny_floor.reads_as_path("~/x")
     assert deny_floor.reads_as_path("notes/today.md") and deny_floor.reads_as_path("C:\\x")
     assert not deny_floor.reads_as_path("1aBcD") and not deny_floor.reads_as_path("https://x/y")
+
+
+# ── A colon after the drive (Windows streams) ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "rel", [".env::$DATA", ".env:x", ".git::$INDEX_ALLOCATION/config", "notes:hidden.txt"]
+)
+def test_a_name_with_a_colon_is_refused(setup, rel):
+    # On Windows `.env::$DATA` is `.env` itself: no name rule could see it.
+    policy, roots, granted = setup
+    denial = check(DEF, {"path": str(granted / rel)}, policy, roots)
+    assert denial is not None and "colon" in denial.reason
+
+
+def test_the_drive_colon_is_not_a_name(setup):
+    policy, roots, granted = setup
+    assert check(DEF, {"path": str(granted / "note.txt")}, policy, roots) is None
+    assert not deny_floor._has_stream(PureWindowsPath("C:/Users/note.txt"))
+    assert deny_floor._has_stream(PureWindowsPath("C:/Users/.env::$DATA"))
+
+
+# ── Granted folders match the way the disk does ──────────────────────────
+
+
+def test_a_case_sensitive_disk_keeps_docs_and_Docs_apart(monkeypatch):
+    monkeypatch.setattr(deny_floor, "CASE_BLIND", False)
+    assert deny_floor.inside(Path("/home/sam/docs/a"), Path("/home/sam/docs"))
+    assert not deny_floor.inside(Path("/home/sam/Docs/a"), Path("/home/sam/docs"))
+
+
+def test_a_case_blind_disk_treats_them_as_one(monkeypatch):
+    monkeypatch.setattr(deny_floor, "CASE_BLIND", True)
+    assert deny_floor.inside(Path("/Users/sam/Docs/a"), Path("/Users/sam/docs"))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux disks tell Docs from docs")
+def test_on_linux_a_grant_of_docs_does_not_reach_Docs(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (tmp_path / "Docs").mkdir()
+    policy = DenyPolicy(protected_roots=())
+    denial = check(DEF, {"path": str(tmp_path / "Docs" / "a")}, policy, (docs,))
+    assert denial is not None and "granted" in denial.reason
+
+
+def test_protected_names_stay_refused_in_any_case_everywhere(setup, monkeypatch):
+    # Refusing too much is safe: `.GIT` is refused even where it is another folder.
+    monkeypatch.setattr(deny_floor, "CASE_BLIND", False)
+    policy, roots, granted = setup
+    assert check(DEF, {"path": str(granted / ".GIT" / "config")}, policy, roots) is not None
