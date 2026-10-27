@@ -242,6 +242,27 @@ async def test_the_user_can_end_their_own_message(rt: Runtime) -> None:
     await session.close()
 
 
+async def test_a_held_key_lets_a_pause_go_by_and_ends_on_release(rt: Runtime) -> None:
+    """Hold to talk: a pause to think, however long, is not the end. Letting go is."""
+    stt = hearing(rt, say("Okay."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start", "held": True})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("I need to remember to", final=True)
+    await speak(session, room(2.5))  # thinking, with the key still down
+    await asyncio.sleep(0.01)
+    assert page.all("mic.stop") == [] and page.all("transcript.final") == []
+    await speak(session, tone(0.5))
+    stt.stream.say("call the dentist", final=True)
+    await asyncio.sleep(0.01)
+    await session.handle({"type": "listen.stop"})  # the key comes up
+    await idle(session)
+    (final,) = page.all("transcript.final")
+    assert "remember" in final["text"] and "dentist" in final["text"]
+    await session.close()
+
+
 async def test_typing_wins_over_a_microphone_left_open(rt: Runtime) -> None:
     stt = hearing(rt, say("Typed it is."))
     page = Page(rt)

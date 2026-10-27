@@ -102,6 +102,8 @@ class Listener:
         self._watching = watch
         # The recognizer said its current turn is over; its next words start another.
         self._turn_ended = False
+        # The talk key is held down: a pause never ends the turn, only letting go does.
+        self.key_held = False
         # Once heard over her, which words are the user's: her echo is left out (#102).
         self._judge: Judge | None = None
         self._stream: STTStream | None = None
@@ -336,7 +338,12 @@ class Listener:
         await self._stream.send(pcm)
         if self._watching:
             return None  # nothing ends while watching: the session decides
-        self._verdict = self._rules.audio(pcm)
+        verdict = self._rules.audio(pcm)
+        if self.key_held and verdict in ("end", "nothing"):
+            # Quiet, or the recognizer's own sense of an end, is not the end while the
+            # key is down. A dead microphone and the length cap still are.
+            verdict = None
+        self._verdict = verdict
         return self._verdict
 
     def _measure(self, pcm: bytes) -> None:
