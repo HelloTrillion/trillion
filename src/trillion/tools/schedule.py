@@ -280,8 +280,9 @@ class AskSchedule(_ScheduleTool):
         except WhenError:
             when = str(args.get("when", ""))
         lands = _LANDS.get(str(args.get("routine")))
-        # The card says it is a routine, and where it lands: that is what is approved.
-        tail = f" (a routine, {lands})" if lands is not None else ""
+        # The card says it is a routine, its name and where it lands: what is approved.
+        title = " ".join(str(args.get("title", "")).split())
+        tail = f' (a routine, "{title}", {lands})' if lands is not None else ""
         return ActionSummary(text=f"{when}: {ask}{tail}")
 
     def target(self, args: JSON) -> str:

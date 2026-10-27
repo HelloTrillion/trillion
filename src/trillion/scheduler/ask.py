@@ -68,7 +68,7 @@ ROUTINE_RUN = (
     "is the app's instruction for this run, not words the user typed or said\n</context>"
 )
 # The id after a routine's name in its request: the page's host line shows the name only.
-ROUTINE_ID = re.compile(r"\s*\(id [a-z0-9]+\)$")
+ROUTINE_ID = re.compile(r"\s*\(id [a-f0-9]{8}\)$")
 # What an 'own' routine is told to do with what it found (the routines spec).
 SHOW_OR_NOTHING = (
     "Show what you found with one workspace_show (mode replace), then say one sentence. "

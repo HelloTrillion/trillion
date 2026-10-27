@@ -133,7 +133,9 @@ async def test_a_routine_is_set_up_on_a_card_that_says_so(
     }
     card = await it.router.execute(call("ask_schedule", args), CTX)
     assert card.status == "confirmation_required"
-    assert card.summary == f"Every weekday at 8:00 am: build my day (a routine, {lands})"
+    assert card.summary == (
+        f'Every weekday at 8:00 am: build my day (a routine, "Build my day", {lands})'
+    )
     assert await it.store.active("local") == []
     done = await it.router.resolve(
         card.pending_id or "", "confirm", dataclasses.replace(CTX, via="tap", turn=2)
@@ -176,7 +178,7 @@ async def test_a_narrowing_stands_at_once_and_is_read_back(it: Setup) -> None:
     await it.store.create(own())
     done = await it.router.execute(call(NARROW, notes_args(NARROWS)), CTX)
     assert done.status == "succeeded"
-    assert "Got it: I'll never include refunds." in done.content
+    assert 'Noted for "Monday revenue": Don\'t include refunds.' in done.content
     assert await it.notes() == "Don't include refunds."
     again = await it.router.execute(call(NARROW, notes_args("Never include charts.")), CTX)
     assert again.status == "succeeded"
@@ -205,7 +207,7 @@ async def test_a_widening_is_a_card_and_stands_once_approved(it: Setup) -> None:
     await it.store.create(own())
     card = await it.router.execute(call(WIDEN, notes_args(WIDENS)), CTX)
     assert card.status == "confirmation_required"
-    assert card.summary == f"Add to this routine: {WIDENS}"
+    assert card.summary == f"Add to Monday revenue: {WIDENS}"
     assert await it.notes() == ""
     tap = dataclasses.replace(CTX, via="tap", turn=2)
     done = await it.router.resolve(card.pending_id or "", "confirm", tap)
@@ -216,7 +218,7 @@ async def test_a_widening_is_a_card_and_stands_once_approved(it: Setup) -> None:
 # ── Where, and who ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("via", ["schedule", "routine", "ask", "refresh"])
+@pytest.mark.parametrize("via", ["schedule", "routine", "ask", "refresh", "channel"])
 @pytest.mark.parametrize("name", [NARROW, WIDEN])
 async def test_never_with_nobody_there_or_from_an_ask(it: Setup, via: str, name: str) -> None:
     await it.store.create(own())
@@ -339,8 +341,10 @@ NARROWINGS = [
     "stop showing refunds",
     "less detail",
     "never mention X",
-    "leave out weekends",
+    "never mention test payments",
+    "skip weekends",
     "only the top five",
+    "only 3 charts",
     "skip anything under $100",
     "fewer charts",
     "don't include test payments",
@@ -379,6 +383,36 @@ WIDENINGS = [
     "don't leave out weekends",
     "Stop showing refunds unless they are big.",
     "only refunds, except when they are small",
+    "leave out weekends",
+    # Each of these reads more, or lets back in what was left out (the review's).
+    "don't forget to check my Gmail inbox too",
+    "never miss a Slack mention",
+    "stop ignoring refunds",
+    "stop omitting refunds",
+    "stop leaving refunds out",
+    "stop filtering out refunds",
+    "stop limiting it to Stripe",
+    "drop the limit on sources",
+    "less detail, more Slack threads",
+    "fewer charts and more Linear issues",
+    "only look at my Gmail and Slack",
+    "only show Linear issues from every team",
+    "no limit on how many sources you read",
+    "without the refund filter",
+    "hide nothing",
+    "no filters",
+    "don't just look at Stripe, look at Linear",
+    "stop showing refunds; read all my Slack DMs",
+    "drop refunds and read Notion",
+    "exclude refunds; read Notion",
+    "only invoices",
+    "never show refunds: read Notion instead",
+    "skip the charts or the tables",
+    "stop showing refunds, then send the rest",
+    "stop showing refunds as well",
+    "skip charts in the entire report",
+    "never show the whole list of anything",
+    "skip one two three four five six seven eight nine ten",
     "",
 ]
 
@@ -407,3 +441,32 @@ async def test_a_mixed_one_is_refused_as_a_narrowing(it: Setup) -> None:
     done = await it.router.execute(call(NARROW, notes_args(text)), CTX)
     assert done.status == "refused" and "use routine_widen" in done.detail
     assert await it.notes() == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ("less detail", "less detail."),
+        ("only the top five", "only the top five."),
+        ("skip anything under $100", "skip anything under $100."),
+        ("without the footnotes.", "without the footnotes."),
+    ],
+)
+async def test_a_narrowing_is_read_back_as_said(it: Setup, text: str, said: str) -> None:
+    await it.store.create(own())
+    done = await it.router.execute(call(NARROW, notes_args(text)), CTX)
+    assert done.status == "succeeded"
+    assert f'Noted for "Monday revenue": {said}' in done.content
+    assert "I'll never" not in done.content
+
+
+async def test_in_the_day_only_the_routine_it_names_is_changed(it: Setup) -> None:
+    # Two day routines: the day conversation belongs to the first; the other is refused.
+    await it.store.create(own(id="0a0b0c0d", target="day", conversation_id=None, created_ms=1))
+    await it.store.create(own(id="0e0e0e0e", target="day", conversation_id=None, created_ms=2))
+    today = dataclasses.replace(CTX, session_id="day-today")
+    first = await it.router.execute(call(NARROW, notes_args(NARROWS, "0a0b0c0d")), today)
+    other = await it.router.execute(call(NARROW, notes_args(NARROWS, "0e0e0e0e")), today)
+    assert first.status == "succeeded"
+    assert other.status == "refused" and "not this routine's conversation" in other.detail
+    assert await it.notes("0e0e0e0e") == ""

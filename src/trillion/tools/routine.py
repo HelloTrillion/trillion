@@ -18,7 +18,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable
 
-from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean, read_back
+from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean
 from trillion.memory.present import inert
 from trillion.scheduler.store import NOTES_MAX, Schedule, ScheduleStore
 from trillion.spine.contract import (
@@ -41,9 +41,10 @@ NOTHING = ROUTINE_NOTHING
 NARROW, WIDEN = "routine_narrow", "routine_widen"
 NOTES_TOOLS = frozenset({NARROW, WIDEN})
 _ONLY_ROUTINES = "Only a routine's run can end with nothing to say."
-# Nobody is there to have said it (a run), or the words may come from a page she read
-# (a tapped ask): neither changes what a routine looks at.
-_NOT_SAID = frozenset({"schedule", "routine", "ask", "refresh"})
+# Nobody is there to have said it (a run), the words may come from a page she read
+# (a tapped ask), or from somewhere other than the routine's own page (a channel):
+# none of them changes what a routine looks at.
+_NOT_SAID = frozenset({"schedule", "routine", "ask", "refresh", "channel"})
 _UNSAID = "a routine's notes change only from what the user says in its conversation"
 _FROM_READING = (
     "a routine can't be changed after reading a page, a file or a message in this turn; "
@@ -70,40 +71,62 @@ Where = Callable[[str], Awaitable[tuple[str, bool]]]
 # How feedback that only narrows a routine opens ("stop showing refunds", "less detail").
 _NARROW_OPENERS = (
     "stop", "don't", "do not", "dont", "never", "no", "less", "fewer", "only", "skip",
-    "leave out", "drop", "hide", "without", "exclude",
+    "drop", "hide", "without", "exclude",
 )  # fmt: skip
-_LEAD = re.compile(r"^(?:(?:please|from now on|and|also|ok|okay)\b[\s,:]*)+")
-_WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
-# A web or email address points a run somewhere new.
-_ADDRESS = re.compile(r"@|://|\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}\b")
-# Any one of these and it might widen what a run does: it acts, it adds, or it lets
-# something back in. A second "not" turns a narrowing round ("never skip X").
+_LEAD = re.compile(r"^(?:(?:please|from now on|ok|okay)\b[\s,]*)+")
+# Plain words only: no `;`, `:`, `/` or quotes that could chain a second request on.
+_PLAIN = re.compile(r"^[a-z0-9 ,.'$%-]+$")
+_WORD = re.compile(r"[a-z0-9$%]+(?:'[a-z]+)?")
+_MAX_WORDS = 10
+# A web address names somewhere new to read.
+_ADDRESS = re.compile(r"\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}\b")
+_NUMBER = "one two three four five six seven eight nine ten eleven twelve fifteen twenty".split()
+# Any one of these after the opener and it might widen what a run does: it chains on
+# a second request, turns the narrowing round ("stop ignoring refunds"), reads more,
+# reaches for everything, or acts. The opener is the only "not" a narrowing has.
 _WIDENS_WORDS = frozenset(
-    "send sends sending email emails emailing post posts posting message messages "
-    "messaging buy buying pay paying delete deleting cancel cancelling share sharing "
-    "forward forwarding call calling book booking add adding also plus unless except "
-    "but however instead rather not no never don't dont nor skip skipping without "
-    "exclude excluding stop stopping hide hiding omit ignore".split()
+    # Chaining.
+    "and or plus but then also too more new another extra well unless except instead "
+    "rather however "
+    # Turned round: a second "not", or the narrowing itself undone.
+    "not no nor never don't dont stop skip without exclude excluding hide drop only "
+    "forget miss overlook ignore ignoring omit omitting leave leaving just nothing "
+    "everything "
+    # Reading more, and everything at once.
+    "read check look search fetch open watch see pull scan all any every whole entire "
+    # Acting.
+    "send email post message buy pay delete cancel share forward call book add".split()
 )
-_WIDENS_PHRASES = ("include more", "include new", "include another", "leave out", "do not")
+# Word starts that undo a narrowing whatever their ending: filter, limit, restrict.
+_WIDENS_STARTS = ("filter", "limit", "restrict")
+
+
+def _only_a_number(rest: list[str]) -> bool:
+    """`only` stands only for a count: "only 3 charts", "only the top five"."""
+    if rest[:2] == ["the", "top"]:
+        rest = rest[2:]
+    return bool(rest) and (rest[0].isdigit() or rest[0] in _NUMBER)
 
 
 def narrows_routine(text: str) -> bool:
     """Whether feedback only narrows what a routine looks at, so it stands at once.
 
-    It fails safe, as standing rules' `narrows` does: it opens with a narrowing word,
-    and holds nothing that could widen what a run does. Anything else is a card."""
-    said = " ".join(text.replace("\u2019", "'").casefold().split()).strip(" .!")
+    It fails safe: a short plain sentence that opens with a narrowing word and holds
+    nothing that could chain on, turn round, read more or act. Anything not plainly
+    narrowing goes to a card (`routine_widen`)."""
+    said = " ".join(text.replace("\u2019", "'").casefold().split()).rstrip(" .")
     said = _LEAD.sub("", said)
+    if not _PLAIN.match(said) or _ADDRESS.search(said):
+        return False
     opener = next((o for o in _NARROW_OPENERS if said == o or said.startswith(o + " ")), None)
-    if opener is None or _ADDRESS.search(said):
+    if opener is None:
         return False
-    rest = said[len(opener) :]
-    words = _WORD.findall(rest)
-    if any(w in _WIDENS_WORDS for w in words):
+    rest = _WORD.findall(said[len(opener) :])
+    if not rest or len(opener.split()) + len(rest) > _MAX_WORDS:
         return False
-    padded = f" {' '.join(words)} "
-    return not any(f" {p} " in padded for p in _WIDENS_PHRASES)
+    if opener == "only" and not _only_a_number(rest):
+        return False
+    return not any(w in _WIDENS_WORDS or w.startswith(_WIDENS_STARTS) for w in rest)
 
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:
@@ -130,6 +153,12 @@ def for_session(
     tools where a routine belongs. `routine_nothing` never is; it is a run's alone."""
     found = mine(kind, conversation_id, routines, today=today)
     return NOTES_TOOLS if found is not None else frozenset()
+
+
+def read_back(s: Schedule, text: str) -> str:
+    """Her one sentence for a note just kept: the routine's name and the words as said."""
+    said = " ".join(text.split()).rstrip(" .")
+    return f'Noted for "{inert(s.title)}": {said}.'
 
 
 def named(s: Schedule) -> str:
@@ -169,14 +198,16 @@ class _NotesTool(BaseTool):
         self._store: ScheduleStore | None = None
         self._where: Where | None = None
         self._owner = ""
+        # Each routine's name, as its last check found it, for its card.
+        self._titles: dict[str, str] = {}
 
     def bind(self, store: ScheduleStore, where: Where, owner: str) -> None:
         """Called once at startup with the running process's store, and how to tell
         what a conversation is."""
         self._store, self._where, self._owner = store, where, owner
 
-    async def _why_not(self, args: JSON, ctx: ToolContext) -> str | None:
-        """Why this call may not change the routine, or None when it may."""
+    async def _check(self, args: JSON, ctx: ToolContext) -> Schedule | str:
+        """The routine this call may change, or why it may not."""
         store, where = self._store, self._where
         if store is None or where is None or ctx.owner_id != self._owner:
             return "routines are not available"
@@ -192,22 +223,28 @@ class _NotesTool(BaseTool):
         if s is None or s.owner_id != ctx.owner_id or s.target is None or s.status != "active":
             return "no such routine"
         kind, today = await where(ctx.session_id)
-        if not belongs(s, kind, ctx.session_id, today=today):
+        # The one routine this conversation names in her context, and only that one.
+        here = mine(kind, ctx.session_id, await store.active(ctx.owner_id), today=today)
+        if here is None or here.id != s.id:
             return _NOT_HERE
-        return None
+        self._titles[s.id] = s.title
+        return s
 
-    async def _add(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
-        """Add the note, or say why not. None when it was added."""
-        why = await self._why_not(args, ctx)
-        if why is not None:
-            return _refused(why)
+    async def _why_not(self, args: JSON, ctx: ToolContext) -> str | None:
+        checked = await self._check(args, ctx)
+        return checked if isinstance(checked, str) else None
+
+    async def _add(self, args: JSON, ctx: ToolContext) -> Schedule | ToolResult:
+        """Add the note: the routine it was added to, or why not."""
+        checked = await self._check(args, ctx)
+        if isinstance(checked, str):
+            return _refused(checked)
         store = self._store
-        routine = str(args["routine"])
         if store is None or not await store.add_note(
-            ctx.owner_id, routine, clean(str(args["text"]))
+            ctx.owner_id, checked.id, clean(str(args["text"]))
         ):
             return _refused(_FULL, "full")
-        return None
+        return checked
 
 
 class RoutineNarrow(_NotesTool):
@@ -216,7 +253,8 @@ class RoutineNarrow(_NotesTool):
         description=(
             "In a routine's conversation, when the user says it should stop, never or less "
             "often show something ('don't include refunds'): add it to the routine's notes "
-            "at once. `routine` is its id from schedule_list; their words, one sentence. "
+            "at once. `routine` is the id in your context ('routine: id ...'); their words, "
+            "one sentence. "
             "Anything new it should look at goes to routine_widen."
         ),
         input_schema=_SCHEMA,
@@ -240,16 +278,16 @@ class RoutineNarrow(_NotesTool):
         # Asked again here, so nothing between the check and the write can widen it.
         if not narrows_routine(text):
             return _refused(_WIDENS, "asks_first")
-        refused = await self._add(args, ctx)
-        if refused is not None:
-            return refused
+        added = await self._add(args, ctx)
+        if isinstance(added, ToolResult):
+            return added
         # Recorded: the note is in the routine for all to see, and the call in the audit.
-        logger.info("routine %s narrowed in %s", args["routine"], ctx.session_id)
+        logger.info("routine %s narrowed in %s", added.id, ctx.session_id)
         return ToolResult(
             ok=True,
             content=(
                 "noted: the routine follows it from its next run on. Read it back in one "
-                f"sentence: {read_back(text)}"
+                f"sentence: {read_back(added, text)}"
             ),
             effect="confirmed",
         )
@@ -260,8 +298,8 @@ class RoutineWiden(_NotesTool):
         name=WIDEN,
         description=(
             "In a routine's conversation, when the user wants it to look at something new "
-            "(a source, a kind of thing): add it to the routine's notes. `routine` is its id "
-            "from schedule_list; their words, one sentence. " + ASKS_BY_CARD
+            "(a source, a kind of thing): add it to the routine's notes. `routine` is the id "
+            "in your context ('routine: id ...'); their words, one sentence. " + ASKS_BY_CARD
         ),
         input_schema=_SCHEMA,
         # What a routine reads with nobody watching grows: the user approves it.
@@ -274,7 +312,9 @@ class RoutineWiden(_NotesTool):
 
     def describe(self, args: JSON) -> ActionSummary:
         text = " ".join(str(args.get("text", "")).split())
-        return ActionSummary(text=f"Add to this routine: {text}")
+        # Named by its check, which runs before the card is made.
+        title = self._titles.get(str(args.get("routine", "")), "this routine")
+        return ActionSummary(text=f"Add to {title}: {text}")
 
     def target(self, args: JSON) -> str:
         return f"routine:{args.get('routine', '')}"
@@ -284,10 +324,10 @@ class RoutineWiden(_NotesTool):
         return Precondition.failed(why) if why is not None else Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
-        refused = await self._add(args, ctx)
-        if refused is not None:
-            return refused
-        logger.info("routine %s widened in %s", args["routine"], ctx.session_id)
+        added = await self._add(args, ctx)
+        if isinstance(added, ToolResult):
+            return added
+        logger.info("routine %s widened in %s", added.id, ctx.session_id)
         return ToolResult(
             ok=True,
             content="added: the routine follows it from its next run on",

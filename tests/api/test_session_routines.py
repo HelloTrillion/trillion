@@ -18,7 +18,7 @@ from tests.scheduler.conftest import FakeClock, ms, schedule, written
 from tests.scheduler.test_ask import Hangs, Recording
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
-from trillion.api.session import OUT_OF_TURN, ROUTINE_BUILDING, Session
+from trillion.api.session import OUT_OF_TURN, ROUTINE_BUILDING, Session, routine_run
 from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.persona import day, setup
 from trillion.persona.prompt import system_blocks
@@ -387,15 +387,26 @@ class _Heard:
         return "First."
 
 
-async def test_a_trim_counts_as_a_save_so_a_racing_reload_is_dropped(rt: Runtime) -> None:
+async def test_a_reload_that_raced_a_trim_is_dropped(rt: Runtime) -> None:
     cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
     reply = Msg(role="assistant", blocks=(TextBlock(text="First. Second."),))
     await rt.conversations.append(cid, "local", "assistant", reply, 2)
-    session = await Session.start(rt, Page(rt).send, cid)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
     session._tail = (_Heard(), session._ids[-1])  # type: ignore[assignment]
-    saved = session._saves
-    assert await session.trim_tail(tell=False) is not None
-    assert session._saves == saved + 1
+    read = session._read
+
+    async def racing() -> Any:
+        loaded = await read()  # read before the trim: it still has the whole reply
+        assert await session.trim_tail(tell=False) is not None
+        return loaded
+
+    session._read = racing  # type: ignore[method-assign]
+    assert not await session.reloaded()
+    # The trimmed reply stays: the stale read was never taken.
+    (kept,) = session._history[-1].blocks
+    assert isinstance(kept, TextBlock) and "Second." not in kept.text
+    assert len(page.all("history")) == 1
     await session.close()
 
 
@@ -458,3 +469,16 @@ async def test_the_host_line_shows_the_name_without_the_id(rt: Runtime) -> None:
     (history,) = page.all("history")
     assert history["messages"] == [{"role": "host", "text": "Routine: Monday revenue"}]
     await session.close()
+
+
+def test_a_title_that_looks_like_an_id_is_kept() -> None:
+    s = schedule(kind="ask", title="Sales (id 12345678)", target="own")
+    asked = Msg(
+        role="user",
+        blocks=(ContextBlock(text=ROUTINE_RUN), TextBlock(text=routine_request(s))),
+    )
+    assert routine_run(asked) == "Routine: Sales (id 12345678)"
+    # Only a real id is taken off: a title that ends like one is the user's.
+    line = "Routine: Sales (id me)"
+    shown = Msg(role="user", blocks=(ContextBlock(text=ROUTINE_RUN), TextBlock(text=line)))
+    assert routine_run(shown) == line
