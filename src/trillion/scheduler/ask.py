@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -43,7 +43,7 @@ from trillion.brain.types import (
 )
 from trillion.persona import day
 from trillion.persona.prompt import Identity, scheduled, volatile_context
-from trillion.scheduler.runner import AskFailed, Built, NoModel
+from trillion.scheduler.runner import AskFailed, Built, Busy, NoModel
 from trillion.scheduler.store import Schedule
 from trillion.spine.contract import ToolContext, Via
 from trillion.spine.registry import ROUTINE_NOTHING, ToolRegistry
@@ -118,6 +118,8 @@ class Asker:
         boards: Callable[[], BoardsLike | None] = lambda: None,
         reads: live.Reads | None = None,
         day_setup: Callable[[], day.SetUp] = day.SetUp,
+        busy: Callable[[str], bool] = lambda conversation_id: False,
+        ran: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._provider = provider
         self._router = router
@@ -133,6 +135,10 @@ class Asker:
         # The run's eligible reads, so a widget it puts up is kept fresh (live widgets).
         self._reads = reads
         self._day_setup = day_setup
+        # Whether her turn is running on a page open on a conversation: a run waits.
+        self._busy = busy
+        # Tells a page open on the conversation that a run wrote there.
+        self._ran = ran
 
     async def __call__(self, schedule: Schedule) -> str:
         """A plain timed ask, in a background conversation of its own."""
@@ -159,21 +165,36 @@ class Asker:
             boards = self._boards()
             if boards is not None and _has_widgets(await boards.current(conversation)):
                 return None
-            return conversation
+            return self._free(conversation)
         mine = schedule.conversation_id
         # A page may have deleted it: the next run makes a fresh one.
         if mine is not None and await self._conversations.exists(mine, self._owner):
-            return mine
+            return self._free(mine)
         return await self._conversations.routine_conversation(self._owner, schedule.title, now)
+
+    def _free(self, conversation_id: str) -> str:
+        """The conversation, unless her turn is running on a page open there: the run
+        would write between its messages. It waits for a later tick (`Busy`)."""
+        if self._busy(conversation_id):
+            raise Busy
+        return conversation_id
 
     async def build(self, schedule: Schedule, conversation_id: str) -> Built:
         """Run a routine in its conversation."""
         recipe = None
         if schedule.target == "day":
             date = day.today(self._clock(), self._zone())
-            recipe = day.recipe(self._day_setup(), date, self._zone() or "", self._identity())
+            recipe = day.recipe(
+                self._day_setup(), date, self._zone() or "", self._identity(), routine=True
+            )
         run = _Run(self, schedule, conversation_id, target=conversation_id)
         await run.go(routine_request(schedule, recipe))
+        if run.wrote and self._ran is not None:
+            try:
+                await self._ran(conversation_id)
+            except Exception as e:
+                # The page catches up when it next opens the conversation.
+                logger.warning("a page could not reload after a routine: %s", type(e).__name__)
         return run.built()
 
 
@@ -197,6 +218,8 @@ class _Run:
         self.held: list[tuple[Kind, Msg]] = []
         self.shown = False
         self.nothing = False
+        # Whether the run saved anything in its conversation, board or messages.
+        self.wrote = False
         self.stop = ""
 
     def reply(self) -> str:
@@ -357,7 +380,10 @@ class _Run:
             # A board shown and then taken off again is no board.
             boards = a._boards()
             self.shown = boards is None or _has_widgets(await boards.current(self.conversation))
-        if self.built().outcome == "nothing":
+        # Nothing to tell and no board: nothing of it is kept. A board she put up and
+        # then judged not worth telling stays, with what made it, but nobody is told.
+        if self.built().outcome == "nothing" and not self.shown:
             return
+        self.wrote = True
         for kind, msg in self.held:
             await a._conversations.append(self.conversation, a._owner, kind, msg, a._clock())

@@ -57,12 +57,15 @@ from trillion.persona.prompt import (
     greeting,
     volatile_context,
 )
+from trillion.scheduler.ask import ROUTINE_RUN
 from trillion.spine import labels
 from trillion.spine.confirm import Status
-from trillion.spine.contract import Risk, ToolContext
+from trillion.spine.contract import Risk, ToolContext, ToolDefinition
 from trillion.spine.router import RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
+from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
+from trillion.tools.routine import for_session as routine_tools
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
@@ -157,6 +160,15 @@ DAY_BUILD = (
 def day_build(msg: Msg) -> bool:
     """Whether a saved message is the day board's recipe."""
     return any(isinstance(b, ContextBlock) and b.text == DAY_BUILD for b in msg.blocks)
+
+
+def routine_run(msg: Msg) -> str | None:
+    """The host's line for a saved routine request ("Routine: Monday revenue"), or None
+    for any other message. Its first line is the routine's name (`scheduler/ask.py`)."""
+    if not any(isinstance(b, ContextBlock) and b.text == ROUTINE_RUN for b in msg.blocks):
+        return None
+    text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+    return text.split("\n", 1)[0].strip() or "Routine"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -300,18 +312,7 @@ class Session:
         session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
         shown: list[dict[str, str]] = []
         if resumed:
-            # The page and the turn count get every message; the model gets the latest
-            # summary and what came after it (BRN-5).
-            for kind, msg in await rt.conversations.history(session.id, OWNER):
-                session._turn += kind in USER_INPUTS
-                text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
-                if kind == "tap" and day_build(msg):
-                    # The host's line, never shown as the user's words or the recipe's.
-                    shown.append({"role": "host", "text": DAY_BUILD_SHOWN})
-                elif kind in ("user", "assistant") and text:
-                    shown.append({"role": msg.role, "text": text})
-            summary, rows = await rt.conversations.context(session.id, OWNER)
-            session._summary = summary
+            shown = await session._load()
             found = await rt.conversations.kind_of(session.id, OWNER)
             session.kind, session.day = found if found is not None else ("chat", None)
             if rt.web is not None:
@@ -321,10 +322,6 @@ class Session:
                         for b in msg.blocks:
                             if isinstance(b, TextBlock):
                                 rt.web.ledger.said(session.id, b.text)
-            for message_id, kind, msg in rows:
-                session._ids.append(message_id)
-                session._kinds.append(kind)
-                session._history.append(msg)
         else:
             await rt.conversations.create(session.id, OWNER, rt.clock())
         title, session._title_source = await rt.conversations.title_of(session.id, OWNER)
@@ -358,6 +355,53 @@ class Session:
             await session.close()
             raise
         return session
+
+    async def _load(self) -> list[dict[str, str]]:
+        """Read the conversation from the store: the page and the turn count get every
+        message; the model gets the latest summary and what came after it (BRN-5).
+        Returns the lines the page shows."""
+        rt = self._rt
+        shown: list[dict[str, str]] = []
+        turn = 0
+        for kind, msg in await rt.conversations.history(self.id, OWNER):
+            turn += kind in USER_INPUTS
+            text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+            routine = routine_run(msg) if kind == "tap" else None
+            if kind == "tap" and day_build(msg):
+                # The host's line, never shown as the user's words or the recipe's.
+                shown.append({"role": "host", "text": DAY_BUILD_SHOWN})
+            elif routine is not None:
+                shown.append({"role": "host", "text": routine})
+            elif kind in ("user", "assistant") and text:
+                shown.append({"role": msg.role, "text": text})
+        summary, rows = await rt.conversations.context(self.id, OWNER)
+        self._turn, self._summary = turn, summary
+        self._ids[:] = [message_id for message_id, _, _ in rows]
+        self._kinds[:] = [kind for _, kind, _ in rows]
+        self._history[:] = [msg for _, _, msg in rows]
+        return shown
+
+    async def reloaded(self) -> bool:
+        """A routine wrote here with nobody's turn running: read the conversation again
+        and show the page what is there now, history and board. It delivers nothing:
+        notices reach the user only through the door (SUR-9). False, and nothing done,
+        while a turn runs or before the page has its history."""
+        if self._closed or not self._started or self.busy():
+            return False
+        rt = self._rt
+        shown = await self._load()
+        # Her last reply here is history now: nothing of it can be trimmed.
+        self._tail = None
+        await self._send("history", messages=shown)
+        await self._send(
+            "board", board=for_page(await self._board(), rt.zone(), rt.refreshing(self.id))
+        )
+        return True
+
+    def _offers(self, d: ToolDefinition) -> bool:
+        """Whether a page's turn here is offered this tool: never a routine's own,
+        unless this conversation is where it belongs (`tools/routine.py`)."""
+        return d.category != ROUTINE_CATEGORY or d.name in routine_tools(self.kind, self.id)
 
     def _model(self) -> dict[str, str] | None:
         p = self._rt.provider
@@ -1703,7 +1747,7 @@ class Session:
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
-                registry=rt.registry,
+                registry=rt.registry.offered(self._offers),
                 system=system,
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
@@ -1922,7 +1966,7 @@ class Session:
             provider=provider,
             system=system,
             messages=compact.with_summary(self._summary, history),
-            tools=tool_schemas(rt.registry),
+            tools=tool_schemas(rt.registry.offered(self._offers)),
             words=words,
             built=built,
             history_len=len(self._history),

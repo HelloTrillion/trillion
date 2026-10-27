@@ -405,6 +405,13 @@ class Runtime:
         session = self.by_conversation.get(conversation_id)
         return session is not None and session.busy()
 
+    async def routine_ran(self, conversation_id: str) -> None:
+        """A routine wrote in a conversation: a page open on it, with no turn running,
+        shows what is there now. Notices still reach the user only through the door."""
+        session = self.by_conversation.get(conversation_id)
+        if session is not None:
+            await session.reloaded()
+
     async def send_refreshing(self, conversation_id: str, widget_id: str, on: bool) -> None:
         """Every page on this conversation: a live card's refresh started or ended."""
         for session in list(self.sessions):
@@ -718,6 +725,8 @@ async def open_runtime(
         boards=lambda: rt.boards,
         reads=rt.reads,
         day_setup=rt.day_setup,
+        busy=rt.turn_running,
+        ran=rt.routine_ran,
     )
     rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
     for name in (REMINDER, ASK, LIST, CANCEL):

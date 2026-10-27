@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import re
+from collections.abc import Callable
 from importlib.metadata import entry_points
 
 from jsonschema import Draft202012Validator
@@ -186,6 +187,11 @@ class ToolRegistry:
                 view._definitions[name] = d
         return view
 
+    def offered(self, keep: Callable[[ToolDefinition], bool]) -> ToolRegistry:
+        """A view of what a page's turn is offered: the tools `keep` allows. Live, so a
+        server connected mid-turn is offered as before; read-only."""
+        return _Offered(self, keep)
+
     @classmethod
     def discover(cls, group: str = "trillion.tools") -> ToolRegistry:
         reg = cls()
@@ -211,3 +217,37 @@ class _ReadOnly(ToolRegistry):
 
     def definitions(self) -> list[ToolDefinition]:
         return list(self._definitions.values())
+
+
+class _Offered(ToolRegistry):
+    """What `offered()` returns: this registry, read through a filter on every call."""
+
+    def __init__(self, base: ToolRegistry, keep: Callable[[ToolDefinition], bool]) -> None:
+        super().__init__()
+        self._base = base
+        self._keep = keep
+
+    def register(self, tool: Tool, *, module: str | None = None) -> None:
+        raise RegistryError("an offered view is read-only")
+
+    def unregister(self, name: str) -> None:
+        raise RegistryError("an offered view is read-only")
+
+    def redefine(self, name: str, definition: ToolDefinition) -> None:
+        raise RegistryError("an offered view is read-only")
+
+    def get(self, name: str) -> Tool | None:
+        return self._base.get(name) if self.definition(name) is not None else None
+
+    def definition(self, name: str) -> ToolDefinition | None:
+        d = self._base.definition(name)
+        return d if d is not None and self._keep(d) else None
+
+    def definitions(self) -> list[ToolDefinition]:
+        return [d for d in self._base.definitions() if self._keep(d)]
+
+    def unattended(self) -> ToolRegistry:
+        raise RegistryError("take an unattended view from the registry itself")
+
+    def routine(self) -> ToolRegistry:
+        raise RegistryError("take a routine's view from the registry itself")

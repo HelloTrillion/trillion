@@ -21,6 +21,7 @@ from trillion.connectors.mcp.tool import McpTool, Offered, Outcome
 from trillion.persona import day
 from trillion.persona.prompt import system_blocks
 from trillion.scheduler.ask import ROUTINE_RUN, SHOW_OR_NOTHING, Asker
+from trillion.scheduler.runner import Busy
 from trillion.scheduler.store import Schedule
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import JSON, Risk
@@ -47,7 +48,7 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     await runtime.close()
 
 
-def asker(rt: Runtime, provider: Recording | None) -> Asker:
+def asker(rt: Runtime, provider: Recording | None, **kw: Any) -> Asker:
     return Asker(
         provider=lambda: provider,
         router=rt.router,
@@ -62,6 +63,7 @@ def asker(rt: Runtime, provider: Recording | None) -> Asker:
         boards=lambda: rt.boards,
         reads=rt.reads,
         day_setup=rt.day_setup,
+        **kw,
     )
 
 
@@ -194,7 +196,8 @@ async def test_a_day_routine_fills_todays_day_conversation(rt: Runtime) -> None:
     assert (await a.build(s, target)).outcome == "ready"
     history = await rt.conversations.history(target, "local")
     (text,) = [b.text for b in history[0][1].blocks if isinstance(b, TextBlock)]
-    assert text.startswith("Routine: Build my day\n\n[host]")
+    assert text.startswith("Routine: Build my day\n\n[host] It's time for ")
+    assert "day routine. Build today's board" in text
     assert "Build today's board" in text and "do not call day_open" in text
     assert text.endswith("Follow these notes from the user: No Slack.")
     # Built: the next run finds a board there, and leaves it alone.
@@ -284,7 +287,11 @@ async def test_the_running_scheduler_builds_it_and_says_it_is_ready(rt: Runtime)
     await rt.schedules.create(routine(next_due_ms=now, zone=NY))
     await rt.scheduler.tick()
     (held,) = await rt.schedules.held("local")
-    assert (held.kind, held.title, held.text) == ("ready", "Your Monday revenue is ready", None)
+    assert (held.kind, held.title, held.text) == (
+        "ready",
+        "Your Monday revenue is ready",
+        "Your Monday revenue is ready.",
+    )
     s = await rt.schedules.get("a1b2c3d4")
     assert s is not None and held.conversation_id == s.conversation_id
     assert held.conversation_id is not None
@@ -292,3 +299,46 @@ async def test_the_running_scheduler_builds_it_and_says_it_is_ready(rt: Runtime)
     assert board is not None and board["widgets"]
     # Nobody's page was open: one quiet line on the computer.
     assert [t for t, _ in shown] == ["Your Monday revenue is ready"]
+
+
+async def test_a_board_she_then_judged_not_worth_telling_is_kept(rt: Runtime) -> None:
+    a = asker(rt, Recording(show(KPIS), use("routine_nothing", {}, "n1"), say("")))
+    target = await a.place(routine())
+    assert target is not None
+    built = await a.build(routine(), target)
+    assert built.shown and built.outcome == "nothing"
+    assert await rt.boards.current(target) is not None  # type: ignore[union-attr]
+    kinds = [k for k, _ in await rt.conversations.history(target, "local")]
+    assert kinds == ["tap", "assistant", "tool_results", "assistant", "tool_results", "assistant"]
+
+
+async def test_a_turn_running_there_makes_it_wait(rt: Runtime) -> None:
+    turning: set[str] = set()
+    a = asker(rt, None, busy=lambda c: c in turning)
+    first = await a.place(routine())
+    assert first is not None
+    turning.add(first)
+    with pytest.raises(Busy):
+        await a.place(routine(conversation_id=first))
+    today = day.today(rt.clock(), NY)
+    mine, _ = await rt.conversations.day_conversation(
+        "local", today.isoformat(), day.title(today), rt.clock()
+    )
+    turning.add(mine)
+    with pytest.raises(Busy):
+        await a.place(routine(target="day"))
+
+
+async def test_a_page_open_there_is_told_after_the_run(rt: Runtime) -> None:
+    told: list[str] = []
+
+    async def ran(conversation_id: str) -> None:
+        told.append(conversation_id)
+
+    a = asker(rt, Recording(show(KPIS), say("Up."), use("routine_nothing", {}), say("")), ran=ran)
+    target = await a.place(routine())
+    assert target is not None
+    await a.build(routine(), target)
+    assert told == [target]
+    await a.build(routine(), target)  # nothing kept: nobody to tell
+    assert told == [target]

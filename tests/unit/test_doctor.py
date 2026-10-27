@@ -580,6 +580,14 @@ def test_the_scheduler_line_says_what_is_set_and_when_next(home: Path) -> None:
     assert check.status == "ok" and check.detail == "1 active; next due Mon 26 Oct, 9:00 am"
 
 
+def test_a_paused_routines_time_is_not_next(home: Path) -> None:
+    scheduled(home)
+    with closing(sqlite3.connect(home / "trillion.db")) as db, db:
+        db.execute("UPDATE schedules SET target = 'own', paused_ms = 1 WHERE id = 'a1b2c3d4'")
+    check = doctor.check_scheduler(home / "trillion.db", 1_792_857_600_000)
+    assert check.status == "ok" and check.detail == "1 active"
+
+
 def test_a_failed_or_blocked_run_in_the_last_day_is_worth_a_look(home: Path) -> None:
     now = 1_792_857_600_000
     scheduled(home, ("failed", now - 3_600_000), ("delivered", now - 60_000))

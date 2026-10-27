@@ -204,6 +204,14 @@ async def test_missed_and_failed_never_carry_stored_words(store: SqliteScheduleS
     assert [(x.kind, x.text) for x in page.got] == [("failed", None)]
 
 
+async def test_a_ready_line_keeps_its_words_to_be_spoken(store: SqliteScheduleStore) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    line = "Your Monday revenue is ready."
+    await d.added(await add(store, kind="ready", text=line))
+    assert [(x.kind, x.text) for x in page.got] == [("ready", line)]
+
+
 def test_a_turn_sent_to_be_heard_always_says_when() -> None:
     with pytest.raises(ValueError):
         dataclasses.replace(IDLE, spoken_turn=1, spoken_ms=None)

@@ -51,6 +51,8 @@ TICK_S = 15.0
 # A timed ask this far past due is reported missed instead of run stale (D3).
 ASK_WINDOW_MS = 60 * 60 * 1000
 ASK_TIMEOUT_S = 120.0
+# A routine reads several sources and builds a board: it is given longer.
+ROUTINE_TIMEOUT_S = 300.0
 REMINDER_TIMEOUT_S = 10.0
 # A run is tried at most twice: once, and once more after an interruption.
 MAX_ATTEMPTS = 2
@@ -58,6 +60,11 @@ MAX_ATTEMPTS = 2
 
 class NoModel(Exception):
     """No model to run a timed ask with. The run is blocked, not failed (TESTING §4.2)."""
+
+
+class Busy(Exception):
+    """A page is open on the routine's conversation and her turn is running there. The
+    run waits, blocked, for a later tick: two writers would interleave its history."""
 
 
 class AskFailed(Exception):
@@ -70,7 +77,7 @@ class AskFailed(Exception):
 
 RunAsk = Callable[[Schedule], Awaitable[str]]
 T = TypeVar("T")
-Outcome = Literal["ready", "said", "nothing"]
+Outcome = Literal["ready", "nothing"]
 DAY_READY = "Your day is ready"
 
 
@@ -85,12 +92,11 @@ class Built:
 
     @property
     def outcome(self) -> Outcome:
-        # A board is there whatever she said after it: the user should know.
-        if self.shown:
-            return "ready"
-        if self.nothing or not self.said.strip():
+        """Her `routine_nothing` wins, board or not: she judged it not worth telling.
+        Otherwise a board, or words in the routine's conversation, are ready to see."""
+        if self.nothing or not (self.shown or self.said.strip()):
             return "nothing"
-        return "said"
+        return "ready"
 
 
 class Routines(Protocol):
@@ -107,6 +113,19 @@ class Routines(Protocol):
 def ready_title(s: Schedule) -> str:
     """The ready line: "Your Monday revenue is ready", or "Your day is ready"."""
     return DAY_READY if s.target == "day" else f"Your {s.title} is ready"
+
+
+async def resume(store: ScheduleStore, owner_id: str, schedule_id: str, now_ms: int) -> bool:
+    """Resume a paused routine from its next due time after now: a time it was paused
+    through is never run late. False if there was no paused routine to resume."""
+    s = await store.get(schedule_id)
+    if s is None or s.owner_id != owner_id or s.paused_ms is None:
+        return False
+    try:
+        following = next_after(s.at_local, s.repeat, s.zone, now_ms)
+    except WhenError:
+        following = None
+    return await store.resume(owner_id, schedule_id, following)
 
 
 # PAUSE_AFTER, in words.
@@ -141,6 +160,7 @@ class Scheduler:
         routines: Routines | None = None,
         tick_s: float = TICK_S,
         ask_timeout_s: float = ASK_TIMEOUT_S,
+        routine_timeout_s: float = ROUTINE_TIMEOUT_S,
         worker: str | None = None,
     ) -> None:
         self._store = store
@@ -150,6 +170,7 @@ class Scheduler:
         self._routines = routines
         self.tick_s = tick_s
         self._ask_timeout_s = ask_timeout_s
+        self._routine_timeout_s = routine_timeout_s
         # Who claims runs: this process. A run another one left running was interrupted.
         self._worker = worker or uuid.uuid4().hex
         self._task: asyncio.Task[None] | None = None
@@ -269,8 +290,11 @@ class Scheduler:
             # Its zone left this computer's zone data: it runs this once, then stops.
             logger.warning("schedule %s can no longer be worked out", s.id)
             following = None
-        timeout = self._ask_timeout_s if s.kind == "ask" else REMINDER_TIMEOUT_S
+        timeout = self._timeout(s) if s.kind == "ask" else REMINDER_TIMEOUT_S
         await self._store.enqueue(s.id, s.next_due_ms, following, timeout, now)
+
+    def _timeout(self, s: Schedule) -> float:
+        return self._routine_timeout_s if s.target is not None else self._ask_timeout_s
 
     async def _reclaim(self) -> None:
         now = self._clock()
@@ -345,17 +369,18 @@ class Scheduler:
     async def _attempt(self, run: Run, s: Schedule, work: Callable[[], Awaitable[T]]) -> T:
         """Run an ask within its timeout. No model blocks the run; any failure is
         reported once and never retried. Either way it raises `_Handled`."""
-        limit = asyncio.timeout(self._ask_timeout_s)
+        seconds = self._timeout(s)
+        limit = asyncio.timeout(seconds)
         try:
             async with limit:
                 return await work()
         except NoModel:
             await self._store.block(run.id, self._clock(), "no model")
+        except Busy:
+            await self._store.block(run.id, self._clock(), "a turn is running there")
         except TimeoutError:
             # Ours only if the limit ran out; one raised inside the ask is its failure.
-            why = (
-                f"timed out after {self._ask_timeout_s:g} s" if limit.expired() else "TimeoutError"
-            )
+            why = f"timed out after {seconds:g} s" if limit.expired() else "TimeoutError"
             await self._notice(run, s, "failed", None, "failed", why)
         except AskFailed as e:
             await self._notice(run, s, "failed", None, "failed", e.why[:200])
@@ -393,16 +418,16 @@ class Scheduler:
             await self._store.succeeded(s.id)
         except Exception as e:
             logger.warning("routine %s: failures not reset: %s", s.id, type(e).__name__)
+        if built.outcome == "nothing":
+            # Nothing worth the user's attention: a log line, never a notice (AGT-6).
+            logger.info("routine %s had nothing to say", s.id)
+            await self._store.finish(run.id, "nothing", self._clock(), detail="nothing")
+            return
+        # Her words, if any, stay in the routine's conversation. The notice is one line
+        # of the host's, spoken once like a reminder's (D3).
+        title = ready_title(s)
         status: RunStatus = "late" if late else "delivered"
-        match built.outcome:
-            case "ready":
-                await self._notice(run, s, "ready", None, status, conversation_id=target)
-            case "said":
-                await self._notice(run, s, "ask", built.said, status, conversation_id=target)
-            case "nothing":
-                # Nothing worth the user's attention: a log line, never a notice (AGT-6).
-                logger.info("routine %s had nothing to say", s.id)
-                await self._store.finish(run.id, "nothing", self._clock(), detail="nothing")
+        await self._notice(run, s, "ready", f"{title}.", status, conversation_id=target)
 
     async def _notice(
         self,

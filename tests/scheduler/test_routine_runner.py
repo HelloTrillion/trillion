@@ -8,7 +8,15 @@ from typing import Any
 
 from tests.scheduler.conftest import ms, runs, schedule
 from tests.scheduler.test_runner import Asks, make
-from trillion.scheduler.runner import AskFailed, Built, NoModel
+from trillion.scheduler.runner import (
+    ASK_TIMEOUT_S,
+    ROUTINE_TIMEOUT_S,
+    AskFailed,
+    Built,
+    Busy,
+    NoModel,
+    resume,
+)
 from trillion.scheduler.store import Schedule
 from trillion.scheduler.when import Repeat
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -63,10 +71,11 @@ async def test_a_board_writes_one_ready_notice_with_the_conversation(
     sched, door, _ = make(store, DUE, asks, routines=routines)
     await sched.tick()
     (n,) = door.notices
+    # Spoken once like a reminder's words: the title as a sentence (D3).
     assert (n.kind, n.title, n.text, n.conversation_id) == (
         "ready",
         "Your Monday revenue is ready",
-        None,
+        "Your Monday revenue is ready.",
         "c9",
     )
     assert routines.built == [("a1b2c3d4", "c9")] and asks.calls == 0
@@ -98,7 +107,7 @@ async def test_nothing_to_say_is_no_notice(store: SqliteScheduleStore) -> None:
     assert [r.status for r in await runs(store, "a1b2c3d4")] == ["nothing", "nothing"]
 
 
-async def test_words_without_a_board_reach_the_user_as_an_ask(
+async def test_words_without_a_board_are_ready_in_its_conversation(
     store: SqliteScheduleStore,
 ) -> None:
     await store.create(routine())
@@ -106,7 +115,75 @@ async def test_words_without_a_board_reach_the_user_as_an_ask(
     sched, door, _ = make(store, DUE, routines=Routines(said))
     await sched.tick()
     (n,) = door.notices
-    assert (n.kind, n.text, n.conversation_id) == ("ask", "No revenue data this week.", "c9")
+    # Her words stay in the routine's conversation; the notice is the ready line.
+    assert (n.kind, n.text, n.conversation_id) == ("ready", "Your Monday revenue is ready.", "c9")
+
+
+async def test_routine_nothing_wins_over_a_board(store: SqliteScheduleStore) -> None:
+    await store.create(routine())
+    both = Built(shown=True, nothing=True, said="")
+    sched, door, _ = make(store, DUE, routines=Routines(both))
+    await sched.tick()
+    assert door.notices == []
+    assert [r.status for r in await runs(store, "a1b2c3d4")] == ["nothing"]
+
+
+async def test_a_turn_running_there_makes_it_wait_for_a_later_tick(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(routine())
+    routines = Routines(Busy(), BOARD)
+    sched, door, clock = make(store, DUE, routines=routines)
+    await sched.tick()
+    assert door.notices == []
+    (run,) = await runs(store, "a1b2c3d4")
+    assert (run.status, run.detail) == ("blocked", "a turn is running there")
+    s = await store.get("a1b2c3d4")
+    assert s is not None and s.failures == 0
+    clock.advance(MINUTE)
+    await sched.tick()
+    (n,) = door.notices
+    assert n.kind == "ready"
+    (run,) = await runs(store, "a1b2c3d4")
+    assert run.status == "delivered"
+
+
+async def test_waiting_more_than_an_hour_is_missed(store: SqliteScheduleStore) -> None:
+    await store.create(routine())
+    sched, door, clock = make(store, DUE, routines=Routines(Busy()))
+    await sched.tick()
+    clock.advance(61 * MINUTE)
+    await sched.tick()
+    (n,) = door.notices
+    assert n.kind == "missed"
+
+
+async def test_a_routine_has_longer_than_a_plain_ask(store: SqliteScheduleStore) -> None:
+    await store.create(routine())
+    await store.create(schedule(id="plain", kind="ask", next_due_ms=DUE))
+    sched, _, _ = make(store, DUE, Asks("Fine."), routines=Routines(BOARD))
+    await sched.tick()
+    (mine,) = await runs(store, "a1b2c3d4")
+    (plain,) = await runs(store, "plain")
+    assert (mine.timeout_s, plain.timeout_s) == (ROUTINE_TIMEOUT_S, ASK_TIMEOUT_S) == (300, 120)
+
+
+async def test_resuming_starts_from_the_next_time_after_now(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(routine())
+    await store.pause("local", "a1b2c3d4", DUE - MINUTE)
+    later = DUE + 3 * 24 * 60 * MINUTE + 5 * MINUTE  # three days on, just past 8:00
+    assert await resume(store, "local", "a1b2c3d4", later)
+    s = await store.get("a1b2c3d4")
+    assert s is not None and s.paused_ms is None
+    assert s.next_due_ms == ms("2026-10-30T08:00")
+    assert not await resume(store, "local", "a1b2c3d4", later)  # not paused now
+    # Nothing stale fires.
+    routines = Routines(BOARD)
+    sched, door, _ = make(store, later, routines=routines)
+    await sched.tick()
+    assert door.notices == [] and routines.built == []
 
 
 async def test_a_day_built_by_hand_is_skipped_quietly(store: SqliteScheduleStore) -> None:
