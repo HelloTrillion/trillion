@@ -90,6 +90,29 @@ class KeychainSignIn:
         data["client"] = client_info.model_dump(mode="json", exclude_none=True)
         self._write(data)
 
+    def service(self) -> tuple[Any, str | None] | None:
+        """The sign-in service as it was found when the person signed in: its metadata
+        (where it takes tokens) and its address. None if not kept, or not readable."""
+        from mcp.shared.auth import OAuthMetadata
+
+        kept = self._read().get("service")
+        if not isinstance(kept, dict) or not isinstance(kept.get("metadata"), dict):
+            return None
+        try:
+            metadata = OAuthMetadata.model_validate(kept["metadata"])
+        except ValueError:
+            return None
+        address = kept.get("auth_server_url")
+        return metadata, address if isinstance(address, str) else None
+
+    def set_service(self, metadata: Any, address: str | None) -> None:
+        data = self._read()
+        data["service"] = {
+            "metadata": metadata.model_dump(mode="json", exclude_none=True),
+            "auth_server_url": address,
+        }
+        self._write(data)
+
 
 @dataclass
 class _Waiting:
@@ -182,10 +205,24 @@ def provider(
     class _Provider(OAuthClientProvider):
         async def _initialize(self) -> None:
             await super()._initialize()
-            # The library keeps a token's expiry in memory only; after a restart it
-            # would use an expired token and ask the person to sign in again, when a
-            # refresh would do. The keychain entry remembers when it expires.
+            # The library keeps what it learned at sign-in in memory only: when the
+            # token expires, and where the service takes tokens. Started again, it
+            # guessed "/token" on the server's own address, which a service that keeps
+            # it elsewhere answers with 404, and the sign-in was dropped. Both are kept
+            # beside the sign-in and put back here.
+            kept = storage.service()
+            if kept is None:
+                # Without the service's address a renewal would go to a guess, and a
+                # wrong guess drops the sign-in: the token is tried as it is instead.
+                return
+            self.context.oauth_metadata, self.context.auth_server_url = kept
             self.context.token_expiry_time = storage.expires_at()
+
+        async def _handle_token_response(self, response: Any) -> None:
+            await super()._handle_token_response(response)
+            # Signed in: keep where the service was found, for renewals after a restart.
+            if self.context.oauth_metadata is not None:
+                storage.set_service(self.context.oauth_metadata, self.context.auth_server_url)
 
     return _Provider(
         server_url=url,
