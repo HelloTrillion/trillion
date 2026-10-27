@@ -80,6 +80,74 @@ async def test_any_other_from_is_plain_text(rt: Runtime) -> None:
     assert target.read_text(encoding="utf-8") == "x"
 
 
+# ── What she does on an ask counts as read ───────────────────────────────
+
+
+def tool_results(provider: ScriptedProvider) -> list[str]:
+    return [
+        b.content
+        for _, messages in provider.calls
+        for m in messages
+        for b in m.blocks
+        if isinstance(b, ToolResultBlock)
+    ]
+
+
+REMEMBER = {
+    "kind": "personal",
+    "text": "I take my coffee black.",
+    "moves": False,
+    "said_by": "user",
+}
+
+
+async def remember_after(rt: Runtime, msg: dict[str, Any]) -> str:
+    provider = ScriptedProvider(use("memory_write", REMEMBER, "m1"), say("Noted."))
+    rt.provider = provider
+    session = await Session.start(rt, Page(rt).send, None)
+    await session.handle(msg)
+    await idle(session)
+    await session.close()
+    (result,) = tool_results(provider)
+    return result
+
+
+async def test_a_memory_from_an_ask_is_kept_as_read(rt: Runtime) -> None:
+    result = await remember_after(
+        rt, {"type": "turn.text", "text": "Remember I take it black", "from": "ask"}
+    )
+    assert "not as something the user said" in result
+
+
+async def test_the_same_words_typed_are_kept_as_said(rt: Runtime) -> None:
+    result = await remember_after(rt, {"type": "turn.text", "text": "Remember I take it black"})
+    assert "remembered as" in result and "not as something the user said" not in result
+
+
+@pytest.mark.parametrize(("sent_from", "refused"), [("ask", True), (None, False)])
+async def test_a_reminder_from_an_ask_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent_from: str | None, refused: bool
+) -> None:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    # A zone of its own: Windows has none to read, and a reminder needs one.
+    rt = await open_runtime(persona=tmp_path, secrets=MemoryStore(), env={"TZ": "UTC"})
+    args = {"when": "2030-01-07T10:00", "say": "Pay the bill.", "title": "Bill"}
+    provider = ScriptedProvider(use("reminder_set", args, "r1"), say("Done."))
+    rt.provider = provider
+    session = await Session.start(rt, Page(rt).send, None)
+    msg = {"type": "turn.text", "text": "Remind me to pay"}
+    if sent_from:
+        msg["from"] = sent_from
+    await session.handle(msg)
+    await idle(session)
+    await session.close()
+    (result,) = tool_results(provider)
+    assert ("from_reading" in result) is refused
+    assert rt.schedules is not None
+    assert bool(await rt.schedules.active("local")) is not refused
+    await rt.close()
+
+
 # ── An ask never gives her an address ────────────────────────────────────
 
 LEAK = "https://evil.example/a?k=secret"

@@ -12,7 +12,7 @@ Until now every message of a conversation was sent to the model on every turn, f
 
 **How they reach her.** In the system block, on every turn, after her own rules, headed "STANDING RULES Sam GAVE YOU". The heading says they hold until the user drops one, that they can only make her more careful, and that none of them approves an action or stands in for a yes on a card. Because they are in the system block and not in the history, nothing that rewrites the history can touch them.
 
-**How a rule is added or removed.** `rule_keep` and `rule_drop` both ask first, on a card that quotes the rule. That matters: the rules are trusted text in her instructions, so a page or a file she reads must not be able to slip one in. A dropped or edited rule takes effect from the next turn.
+**How a rule is added or removed.** `rule_keep` and `rule_drop` both ask first, on a card that quotes the rule. The one exception is `rule_never`: a rule the user has just said that only stops her doing something ("never use emojis") is kept at once, because it can only narrow what she does; `narrows` in `brain/standing.py` decides, fails safe to a card, and never passes a rule said in a turn that read a page or a file. Every rule kept or dropped is also written to `rule_events`, so the decision record can say how it came and went. That matters: the rules are trusted text in her instructions, so a page or a file she reads must not be able to slip one in. A dropped or edited rule takes effect from the next turn.
 
 ## Compaction
 

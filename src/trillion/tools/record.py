@@ -16,6 +16,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Protocol
 
+from trillion.brain.standing import RuleEvent
 from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.contract import (
     JSON,
@@ -76,6 +77,12 @@ class Record(Protocol):
     async def get_delivery(self, pending_id: str) -> DeliveryRow | None: ...
 
 
+class RuleRecord(Protocol):
+    async def rule_events(
+        self, owner_id: str, *, since_ms: int, limit: int, words: Sequence[str] = ()
+    ) -> list[RuleEvent]: ...
+
+
 def _when(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000).astimezone().strftime("%a %d %b %Y %H:%M")
 
@@ -114,6 +121,20 @@ def describe(
     return "\n".join(lines)
 
 
+def describe_rule(e: RuleEvent) -> str:
+    """One standing rule kept or dropped, as the record holds it."""
+    if e.event == "dropped":
+        how = "dropped after the user's yes on its card; it can be kept again in the same words"
+    elif e.how == "said":
+        how = (
+            "kept at once, in the user's own words: it only narrows what she does, so no card "
+            "was needed"
+        )
+    else:
+        how = "kept after the user's yes on its card"
+    return f"{e.rule_id}: standing rule “{e.text}”\n  {e.event}: {_when(e.at)}\n  how: {how}"
+
+
 class DecisionRecord(BaseTool):
     definition = ToolDefinition(
         name=RECORD,
@@ -122,7 +143,8 @@ class DecisionRecord(BaseTool):
             "whether the card was ever shown, who answered and how, and the outcome. It reads "
             "the app's permanent record, not the conversation, so use it whenever the user asks "
             "whether something was approved, done, seen or is still waiting, even if this "
-            "conversation never mentioned it. Newest first."
+            "conversation never mentioned it. It also says when each standing rule was kept "
+            "or dropped, and how. Newest first."
         ),
         input_schema={
             "type": "object",
@@ -149,10 +171,18 @@ class DecisionRecord(BaseTool):
         self._record: Record | None = None
         self._owner = ""
         self._clock: Callable[[], int] | None = None
+        self._rules: RuleRecord | None = None
 
-    def bind(self, record: Record, owner_id: str, clock: Callable[[], int]) -> None:
+    def bind(
+        self,
+        record: Record,
+        owner_id: str,
+        clock: Callable[[], int],
+        rules: RuleRecord | None = None,
+    ) -> None:
         """Called once at startup with the running process's store."""
         self._record, self._owner, self._clock = record, owner_id, clock
+        self._rules = rules
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         record, clock = self._record, self._clock
@@ -164,18 +194,23 @@ class DecisionRecord(BaseTool):
         limit = min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)
         about = " ".join(str(args.get("about") or "").split())[:100]
         now = clock()
-        found = await record.recent(
-            ctx.owner_id, since_ms=now - days * DAY_MS, limit=limit, words=words(about)
+        since, matching = now - days * DAY_MS, words(about)
+        found = await record.recent(ctx.owner_id, since_ms=since, limit=limit, words=matching)
+        rules = (
+            await self._rules.rule_events(ctx.owner_id, since_ms=since, limit=limit, words=matching)
+            if self._rules is not None
+            else []
         )
-        if not found:
+        if not found and not rules:
             narrowed = f" matching {about!r}" if about else ""
+            kept = ", and no standing rule was kept or dropped" if self._rules else ""
             return ToolResult(
                 ok=True,
-                content=f"no action needed an answer in the last {days} days{narrowed}",
+                content=f"no action needed an answer in the last {days} days{narrowed}{kept}",
                 effect="none",
             )
         parts = [
             describe(a, await record.get_delivery(a.id), await record.list_decisions(a.id), now)
             for a in found
-        ]
+        ] + [describe_rule(e) for e in rules]
         return ToolResult(ok=True, content="\n\n".join(parts), effect="none")

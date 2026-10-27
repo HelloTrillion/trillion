@@ -133,6 +133,7 @@ async def test_she_runs_it_told_the_user_is_away_with_only_tools_that_never_ask(
         "file_create",
         "memory_forget",
         "rule_keep",
+        "rule_never",
         "confirm_pending_action",
         "cancel_pending_action",
     }

@@ -85,7 +85,11 @@ async def test_json_is_read_through_code_fences(reply: str) -> None:
     assert answer == {"metrics": []}
 
 
-@pytest.mark.parametrize("reply", ["no json here", "[1, 2]", "{broken", "x" * 40_000])
+# The long reply gets a short id: pytest puts the id in an environment variable, and
+# Windows refuses one over 32,767 characters.
+@pytest.mark.parametrize(
+    "reply", ["no json here", "[1, 2]", "{broken", pytest.param("x" * 40_000, id="too-long")]
+)
 async def test_a_bad_answer_is_none(reply: str) -> None:
     answer, usage = await fill.fill(ScriptedProvider(say(reply)), saved(), [])
     assert answer is None and usage == USAGE

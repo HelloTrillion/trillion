@@ -179,7 +179,8 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
     assert await migrate(conn) == [
         "010_conversation_titles",
         "011_boards",
-        "012_day_conversations",
+        "012_rule_events",
+        "013_day_conversations",
     ]
     store = SqliteConversationStore(conn)
     assert await store.title_of("old", OWNER) == ("Plan the trip", "words")

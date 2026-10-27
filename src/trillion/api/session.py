@@ -466,6 +466,7 @@ class Session:
                 await self._offer()
                 self._stopped = False
         elif kind == "listen.start":
+            held = msg.get("held") is True
             ov = self._overlap
             if ov is not None and ov.watching and self._task is None:
                 # Speak, while her finished reply plays: the watch becomes the turn,
@@ -474,7 +475,9 @@ class Session:
                 await self._leave_watch(ov)
                 await self._overlap_interrupts(ov)
             else:
-                await self._on_listen(NOTHING_AFTER_S)
+                await self._on_listen(NOTHING_AFTER_S, held=held)
+            if held and self._listener is not None:
+                self._listener.key_held = True
         elif kind == "barge":
             ov = self._overlap
             if ov is not None:
@@ -626,6 +629,11 @@ class Session:
             # An ask is typed words that can never approve (widget design D5).
             self._via = "ask" if ask else "text"
             self._turn += 1
+            if ask:
+                # Her words, not the user's, and maybe drawn from a page she read: what she
+                # does on them counts as read (MEM-5), so a memory is kept as a claim and a
+                # reminder or timed ask is refused, as after any outside read.
+                self._outside.add(self._turn)
             self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
             await self._save_input("user", text)
@@ -1238,11 +1246,13 @@ class Session:
         """Her voice back up. For a watch, `end`: the page stops sending, as it is over."""
         await self._send("overlap.over", **({"end": True} if ov.watch else {}))
 
-    async def _on_listen(self, patience_s: float, *, follow_up: bool = False) -> None:
+    async def _on_listen(
+        self, patience_s: float, *, follow_up: bool = False, held: bool = False
+    ) -> None:
         async with self._taking_input():
-            await self._listen(patience_s, follow_up=follow_up)
+            await self._listen(patience_s, follow_up=follow_up, held=held)
 
-    async def _listen(self, patience_s: float, *, follow_up: bool) -> None:
+    async def _listen(self, patience_s: float, *, follow_up: bool, held: bool = False) -> None:
         rt = self._rt
         if self._listener is not None or self._overlap is not None:
             return
@@ -1262,6 +1272,8 @@ class Session:
                 patience_s=patience_s,
                 on_turn=self._turn_signal,
             )
+            # Set before it starts: what was held while it connected is judged the same way.
+            listener.key_held = held
             if follow_up and self._timeline is not None and self._timeline.sentences:
                 # No watch placed her on this clock: her last sentence is taken to end
                 # as it opens, so her echo still in the air is hers.

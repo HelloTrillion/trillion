@@ -80,7 +80,10 @@ is a known limit of this phase.
   folders the user granted), memory (`memory_write`, `memory_recall`,
   `memory_forget`; a memory written in a turn that read a page or a file is
   kept as something she read, not as the user's words, and cannot replace
-  one), standing rules (`rule_keep`, `rule_drop`), the decision
+  one), standing rules (`rule_keep` and `rule_drop` ask on a card;
+  `rule_never` keeps at once only a rule the user just said that plainly
+  narrows what she does, and never in a turn that read a page or a file;
+  `rule_list` reads them), the decision
   record (`decision_record`, read-only), `web_fetch` and `describe_self`,
   plus the tools of any MCP server the user connected (below), and
   `skill_open` and `skill_file`, which read skills the user turned on.

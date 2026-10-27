@@ -209,7 +209,9 @@ class EndOfSpeech:
                 return "end"
             return None
 
-        quiet = now - self._last_voice
+        # A voice too quiet for the meter has no `_last_voice`: its quiet counts from
+        # its words, or it would be cut off half a second after them.
+        quiet = self.quiet_s
         if self._streaming and self._done and not self._pending_words and quiet >= DONE_S:
             return "end"
         if self._streaming:
