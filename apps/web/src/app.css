@@ -636,14 +636,25 @@ body[data-sidebar='hidden'] .workspace {
     pointer-events: none;
   }
 
-  /* A section's Save row stays above the hole, its buttons being at the right. */
-  .panel-pane .settings-actions {
-    bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
-  }
-
   /* The section's last controls scroll clear of the hole; the rail keeps the full height. */
   .panel-body {
     padding-bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
+  }
+
+  /* A section with a Save or Done row: the row itself keeps clear of the hole. It sits
+     on the panel's bottom edge, its buttons level with the orb and ending just left of
+     it, and is as tall as the hole, so nothing above it scrolls under the orb. The
+     scroller drops its own padding here: a sticky row stops above that padding, which
+     left it floating mid-panel over the rows behind it. */
+  .workspace .panel-body:has(.settings-actions) {
+    padding-bottom: 0;
+  }
+
+  .workspace .panel-pane .settings-actions {
+    box-sizing: border-box;
+    min-height: calc(var(--hole-at) + var(--hole-r));
+    align-items: flex-end;
+    padding: 16px calc(var(--hole-at) + var(--hole-r) + 12px) calc(var(--hole-at) - 18px) 0;
   }
 }
 
