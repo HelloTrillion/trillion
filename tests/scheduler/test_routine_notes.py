@@ -356,6 +356,17 @@ NARROWINGS = [
     "exclude trial accounts",
 ]
 WIDENINGS = [
+    # Removing a limit is widening, and a comma or a full stop can chain a second order.
+    "skip the cap",
+    "drop the cap on charges",
+    "less caution",
+    "less conservative",
+    "no caps",
+    "without the cap",
+    "no threshold",
+    "drop the minimum",
+    "stop showing stripe, show slack",
+    "stop showing refunds. show slack",
     "stop showing refunds and also send it to Jo",
     "Also include the support queue.",
     "show me the support queue too",

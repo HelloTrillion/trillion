@@ -89,7 +89,9 @@ _NARROWING_STEMS = (
 )  # fmt: skip
 _LEAD = re.compile(r"^(?:(?:please|from now on|ok|okay)\b[\s,]*)+")
 # Plain words only: no `;`, `:`, `/` or quotes that could chain a second request on.
-_PLAIN = re.compile(r"^[a-z0-9 ,.'$%-]+$")
+# No commas, and a full stop only inside a number ("$1.50"): either could chain a
+# second order on ("stop showing stripe, show slack").
+_PLAIN = re.compile(r"^[a-z0-9 '$%-]+(?:(?<=\d)\.(?=\d)[a-z0-9 '$%-]*)*$")
 _WORD = re.compile(r"[a-z0-9$%]+(?:'[a-z]+)?")
 _MAX_WORDS = 10
 # A web address names somewhere new to read.
@@ -119,6 +121,14 @@ _NOUN_DENY = frozenset(
     "turn start begin continue resume restore return undo unhide unmute unblock show "
     "include mention tell hold".split()
 )
+
+
+# After a noun opener, taking a limit away is widening: "skip the cap", "no threshold".
+_LIMITS = (
+    "cap", "limit", "ban", "rule", "filter", "restrict", "exclu", "threshold", "caution",
+    "careful", "conserv", "strict", "minim", "maxim", "guard", "safe", "check", "block",
+    "cutoff", "boundar", "constrain",
+)  # fmt: skip
 
 
 def _widens(word: str) -> bool:
@@ -157,7 +167,7 @@ def narrows_routine(text: str) -> bool:
     if noun is None:
         return False
     rest = _WORD.findall(said[len(noun) :])
-    return bool(rest) and not any(_verbish(w) for w in rest)
+    return bool(rest) and not any(_verbish(w) or w.startswith(_LIMITS) for w in rest)
 
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:
