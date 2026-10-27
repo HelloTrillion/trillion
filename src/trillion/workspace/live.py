@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from trillion.connectors.mcp.tool import McpTool
-from trillion.connectors.stripe_revenue import StripeRevenue
 from trillion.spine.contract import JSON, Risk, Tool, ToolDefinition
 from trillion.spine.registry import runs_unattended
 from trillion.tools.describe import NAME as DESCRIBE_SELF
@@ -40,6 +39,9 @@ _DAILY = (*PACKS["money"], *PACKS["customers"], "kanban", "sprint", "tasks", "du
 # Fast wins: the support queue is a customers widget that changes by the minute.
 DEFAULT_EVERY = {**{t: 15 for t in _DAILY}, **{t: 2 for t in _FAST}}
 OTHER_EVERY = 60
+# Reads that cost too much to replay often, by the fewest minutes between them, by the
+# tool's name: stripe_revenue pages up to a minute of charges each time.
+SLOW_READS = {"stripe_revenue": 60}
 
 # Never replayed: a page is chosen by what she read (SPN-5), and her own tools say
 # nothing about a connector.
@@ -75,8 +77,12 @@ def eligible(d: ToolDefinition | None) -> bool:
 def connector(name: str, tool: Tool | None) -> str | None:
     """The connector a tool belongs to, by the name its tile has: an MCP server's
     title, or a built-in connector's. None for anything else (files, the web)."""
-    if isinstance(tool, McpTool | StripeRevenue):
+    if isinstance(tool, McpTool):
         return tool.title
+    # A built-in tool that reads through a connector says which (stripe_revenue).
+    title = getattr(tool, "connector_title", None)
+    if isinstance(title, str) and title:
+        return title
     return next((title for prefix, title in _PREFIXES if name.startswith(prefix)), None)
 
 
@@ -127,13 +133,19 @@ class Reads:
         self._by_turn.pop((session_id, turn), None)
 
 
-def every(widget: Mapping[str, Any]) -> int:
+def every(widget: Mapping[str, Any], reads: Iterable[str] | None = None) -> int:
     """Minutes between refreshes: hers, or her type's default (also when she turned it
-    off, so turning it back on needs nothing else)."""
+    off, so turning it back on needs nothing else), never sooner than its slowest read
+    allows. `reads` names the tools it replays; by default, those in its `live`."""
     given = widget.get("refresh")
     if isinstance(given, int):
         return given
-    return DEFAULT_EVERY.get(str(widget.get("type")), OTHER_EVERY)
+    if reads is None:
+        kept = widget.get("live")
+        listed = kept.get("reads") if isinstance(kept, Mapping) else None
+        reads = [str(r.get("tool")) for r in listed or () if isinstance(r, Mapping)]
+    base = DEFAULT_EVERY.get(str(widget.get("type")), OTHER_EVERY)
+    return max([base, *(SLOW_READS.get(t, 0) for t in reads)])
 
 
 def _source_name(widget: Mapping[str, Any]) -> str | None:
@@ -153,7 +165,7 @@ def live_for(widget: Mapping[str, Any], reads: list[Read]) -> dict[str, Any] | N
         return None
     return {
         "reads": [{"tool": r.tool, "args": copy.deepcopy(dict(r.args))} for r in mine],
-        "every": every(widget),
+        "every": every(widget, [r.tool for r in mine]),
     }
 
 
@@ -168,7 +180,8 @@ def attach(widget: dict[str, Any], reads: list[Read], old: Mapping[str, Any] | N
         name, was = _source_name(widget), _source_name(old)
         same = bool(name and was and _spaced(name.lower()) == _spaced(was.lower()))
         if isinstance(kept, Mapping) and same:
-            live = {"reads": copy.deepcopy(kept.get("reads", [])), "every": every(widget)}
+            reads = copy.deepcopy(kept.get("reads", []))
+            live = {"reads": reads, "every": every({**widget, "live": {"reads": reads}})}
     if live is not None:
         widget["live"] = live
 

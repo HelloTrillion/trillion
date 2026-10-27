@@ -170,7 +170,8 @@ class McpServers:
             return
         state.config = server
         if state.status == "connected":
-            self._unregister(state)
+            # Re-registered at once, so what it held stays its own.
+            self._unregister(state, hand_on=False)
             self._register(state, state.offered)
         self._tell()
 
@@ -319,24 +320,40 @@ class McpServers:
                     read_only_hint=o.read_only_hint,
                 )
             )
-        # Registered with the server's tools, so a retune that changes the risk of the
-        # tool a companion calls changes the companion's too.
+        self._add_companions(state)
+
+    def _add_companions(self, state: ServerState) -> None:
+        """Register the built-in tools this server brings, from the tools it actually
+        registered. Registered with the server's tools, so a retune that changes the
+        risk of the tool a companion calls changes the companion's too. A name already
+        taken belongs to another server of the same kind: the first keeps it."""
+        server = state.config
+        remotes = [t.remote for t in state.tools]
         for extra in stripe_revenue.companions(
-            server, offered, self._caller(server), zone=self._zone
+            server, remotes, self._caller(server), zone=self._zone
         ):
+            name = extra.definition.name
+            if self._registry.get(name) is not None:
+                continue
             try:
                 self._registry.register(extra)
             except RegistryError as e:
                 logger.warning("MCP companion for %s not offered: %s", server.name, e)
                 continue
-            state.companions.append(extra.definition.name)
+            state.companions.append(name)
 
-    def _unregister(self, state: ServerState) -> None:
+    def _unregister(self, state: ServerState, *, hand_on: bool = True) -> None:
+        held = bool(state.companions)
         for name in [*(t.name for t in state.tools), *state.companions]:
             self._registry.unregister(name)
         state.tools = []
         state.companions = []
         state.skipped = {}
+        if held and hand_on:
+            # Another connected server of the same kind takes over what this one held.
+            for other in self.states.values():
+                if other is not state and other.status == "connected" and other.tools:
+                    self._add_companions(other)
 
     def _caller(self, server: ServerConfig) -> Any:
         async def call(tool: str, args: JSON, timeout: float) -> Outcome:

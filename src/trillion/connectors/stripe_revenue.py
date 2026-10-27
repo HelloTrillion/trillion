@@ -25,9 +25,10 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trillion.connectors.mcp.config import ServerConfig
-from trillion.connectors.mcp.tool import CATEGORY, Call, Offered
+from trillion.connectors.mcp.tool import CATEGORY, Call
 from trillion.spine.contract import (
     ASKS_BY_CARD,
+    GATED,
     JSON,
     ActionSummary,
     BaseTool,
@@ -57,9 +58,16 @@ PERIODS = {
     "custom": "",
 }
 BY = ("none", "month", "week", "day")
-# Currencies Stripe counts in whole units, and those it counts in thousandths.
+# Currencies Stripe counts in whole units, and those it counts in thousandths, as its
+# currency docs list them. ISK, HUF and TWD are not here: Stripe writes their charges
+# with two decimals (always 00 for ISK). UGX is on Stripe's zero-decimal list, but its
+# docs have also asked for it as two decimals for backwards compatibility; if Stripe's
+# charges show UGX amounts 100 times too large, it belongs with ISK instead.
 ZERO_DECIMAL = frozenset("bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf".split())
 THREE_DECIMAL = frozenset("bhd jod kwd omr tnd".split())
+NET_MEANS = (
+    "Refunds are those made on this period's charges; disputes and Stripe fees are not deducted."
+)
 
 _ACCOUNT = re.compile(r"\bacct_[A-Za-z0-9]+\b")
 
@@ -107,11 +115,18 @@ def _before(span: Span) -> Span:
     return Span(span.start - timedelta(days=span.days), span.start - timedelta(days=1))
 
 
-def _day(value: Any, what: str) -> date:
+# Stripe began in 2010; a year past next is a typo, and far years overflow the maths.
+FIRST_YEAR = 2010
+
+
+def _day(value: Any, what: str, today: date) -> date:
     try:
-        return date.fromisoformat(str(value))
+        d = date.fromisoformat(str(value))
     except ValueError:
         raise _Problem(f"{what} must be a date as YYYY-MM-DD") from None
+    if not FIRST_YEAR <= d.year <= today.year + 1:
+        raise _Problem(f"{what} must be between {FIRST_YEAR} and {today.year + 1}")
+    return d
 
 
 def spans(period: str, today: date, start: Any = None, end: Any = None) -> tuple[Span, Span]:
@@ -142,7 +157,7 @@ def spans(period: str, today: date, start: Any = None, end: Any = None) -> tuple
     if period == "custom":
         if not start or not end:
             raise _Problem("a custom period needs from and to, as YYYY-MM-DD")
-        span = Span(_day(start, "from"), _day(end, "to"))
+        span = Span(_day(start, "from", today), _day(end, "to", today))
         if span.end < span.start:
             raise _Problem("to must not be before from")
         return span, _before(span)
@@ -178,11 +193,16 @@ class _Sum:
     gross: int = 0
     refunds: int = 0
     charges: int = 0
+    disputed: int = 0
+    disputed_amount: int = 0
 
-    def add(self, gross: int, refunded: int) -> None:
+    def add(self, gross: int, refunded: int, disputed: bool) -> None:
         self.gross += gross
         self.refunds += refunded
         self.charges += 1
+        if disputed:
+            self.disputed += 1
+            self.disputed_amount += gross
 
 
 @dataclass
@@ -191,7 +211,9 @@ class _Tally:
     totals: dict[str, _Sum] = field(default_factory=dict)
     by: dict[str, dict[str, _Sum]] = field(default_factory=dict)
     pages: int = 0
-    # Why it stopped short, if it did.
+    # Charges that could not be read: left out and said, never counted as nothing.
+    unreadable: int = 0
+    # Why it stopped short, if it did: a code below, or what the server said.
     short: str = ""
 
 
@@ -201,20 +223,45 @@ class _Budget:
     deadline: float
 
 
-def _int(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+class _Unreadable(ValueError):
+    pass
 
 
-def _counted(charge: Mapping[str, Any]) -> tuple[str, int, int] | None:
-    """A charge's currency, captured amount and refunded amount, if it brought money in."""
-    if charge.get("status") != "succeeded" or charge.get("paid") is not True:
+# Why a period stopped short, put into words by `_short_note`.
+_PAGES, _TIME, _REPEAT, _GARBLED, _UNREADABLE = "pages", "time", "repeat", "garbled", "unreadable"
+
+
+def _amount(value: Any) -> int:
+    # A whole number of the smallest unit, never negative; True is not 1.
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    raise _Unreadable
+
+
+def _counted(charge: Mapping[str, Any]) -> tuple[str, int, int, bool] | None:
+    """A charge's currency, captured amount, refunded amount and whether it is
+    disputed, if it brought money in. Raises _Unreadable for one that cannot be read."""
+    # A hold not yet captured, or one that expired or was released, brought nothing in.
+    if (
+        charge.get("status") != "succeeded"
+        or charge.get("paid") is not True
+        or charge.get("captured") is not True
+    ):
         return None
     currency = charge.get("currency")
     if not isinstance(currency, str) or not currency:
-        return None
-    captured = charge.get("amount_captured")
-    gross = _int(captured) if captured is not None else _int(charge.get("amount"))
-    return currency.lower(), gross, _int(charge.get("amount_refunded"))
+        raise _Unreadable
+    if charge.get("amount_captured") is None:
+        amount = gross = _amount(charge.get("amount"))
+    else:
+        gross = _amount(charge.get("amount_captured"))
+        amount = _amount(charge.get("amount", gross))
+    refunded = _amount(charge.get("amount_refunded", 0))
+    # Capturing part of a hold releases the rest, and Stripe counts that release in
+    # amount_refunded: it was never revenue, so it is no refund either.
+    released = max(0, amount - gross)
+    refunds = max(0, min(refunded - released, gross))
+    return currency.lower(), gross, refunds, charge.get("disputed") is True
 
 
 def _page_of(text: str) -> Mapping[str, Any] | None:
@@ -245,7 +292,8 @@ def _walk(value: Any) -> Iterator[Mapping[str, Any]]:
 
 
 def accounts_in(text: str) -> list[tuple[str, str]]:
-    """The Stripe accounts a listing names: (id, name) each, the name when it has one."""
+    """The Stripe accounts a listing names: (id, name) each, the name when it has one.
+    From the listing's JSON; only when that names none, from ids in its words."""
     found: dict[str, str] = {}
     try:
         parsed: Any = json.loads(text)
@@ -256,15 +304,16 @@ def accounts_in(text: str) -> list[tuple[str, str]]:
         if len(ids) == 1:
             name = next(
                 (
-                    str(item[k])
+                    str(item[k]).strip()
                     for k in ("display_name", "business_name", "name")
                     if isinstance(item.get(k), str) and item[k].strip()
                 ),
                 "",
             )
             found.setdefault(ids[0], name)
-    for m in _ACCOUNT.finditer(text):
-        found.setdefault(m.group(0), "")
+    if not found:
+        for m in _ACCOUNT.finditer(text):
+            found.setdefault(m.group(0), "")
     return list(found.items())
 
 
@@ -290,17 +339,20 @@ def _figures(s: _Sum, currency: str) -> dict[str, Any]:
 
 def companions(
     server: ServerConfig,
-    offered: Iterable[Offered],
+    registered: Iterable[str],
     call: Call,
     *,
     zone: Callable[[], str | None] | None = None,
 ) -> list[StripeRevenue]:
     """The built-in tools a connected server brings: `stripe_revenue` for a Stripe
-    server from the catalogue that offers the read it needs, nothing for any other."""
-    names = {o.name for o in offered}
+    server from the catalogue whose `stripe_api_read` was registered, nothing for any
+    other. `registered` names the server's registered tools as the server knows them."""
+    names = set(registered)
     if server.catalog != CATALOG or READ_TOOL not in names:
         return []
-    return [StripeRevenue(server, call, zone=zone, lists_accounts=ACCOUNTS_TOOL in names)]
+    # The listing has its own setting: used only where the user let it run on its own.
+    lists = ACCOUNTS_TOOL in names and server.risk_of(ACCOUNTS_TOOL) is Risk.READ
+    return [StripeRevenue(server, call, zone=zone, lists_accounts=lists)]
 
 
 class StripeRevenue(BaseTool):
@@ -316,7 +368,7 @@ class StripeRevenue(BaseTool):
     ) -> None:
         # The user's word on the Stripe read it calls, never anything looser.
         risk = server.risk_of(READ_TOOL)
-        asks = risk is not Risk.READ
+        asks = risk in GATED
         self.definition = ToolDefinition(
             name=NAME,
             description=(
@@ -351,7 +403,7 @@ class StripeRevenue(BaseTool):
         )
         self.server = server.name
         # The name its tile has: a widget built from it names this as its source.
-        self.title = server.shown
+        self.title = self.connector_title = server.shown
         self._timeout = server.timeout_s
         self._call = call
         self._zone = zone
@@ -402,7 +454,10 @@ class StripeRevenue(BaseTool):
             keys = buckets(current, by) if by != "none" else []
             if len(keys) > MAX_BUCKETS:
                 raise _Problem(f"that is {len(keys)} {by}s; ask by a longer stretch")
-            account = str(args.get("account") or "") or await self._account(budget)
+            account = str(args.get("account") or "")
+            if account and not _ACCOUNT.fullmatch(account):
+                raise _Problem("account must be a Stripe account id, such as acct_...")
+            account = account or await self._account(budget)
             now = await self._count(current, tz, account, livemode, budget, by)
             if not now.pages:
                 raise _Problem(_unanswered(now.short))
@@ -433,8 +488,9 @@ class StripeRevenue(BaseTool):
         if len(found) == 1:
             return found[0][0]
         if not found:
-            raise _Problem("no Stripe account was found; say which one with account")
-        named = ", ".join(f"{i} ({n})" if n else i for i, n in found)
+            # Nothing to choose between: Stripe reads the account it signed in to.
+            return ""
+        named = ", ".join(f"{i} ({n[:60]})" if n else i for i, n in found)
         raise _Problem(f"Several Stripe accounts are connected: {named}. Say which with account.")
 
     async def _count(
@@ -451,9 +507,10 @@ class StripeRevenue(BaseTool):
         hi_day = span.end + timedelta(days=1)
         hi = int(datetime.combine(hi_day, datetime.min.time(), tz).timestamp())
         after = ""
+        seen: set[str] = set()
         while True:
             if budget.pages <= 0:
-                tally.short = "pages"
+                tally.short = _PAGES
                 return tally
             params: dict[str, Any] = {"created": {"gte": lo, "lt": hi}, "limit": PAGE_SIZE}
             if after:
@@ -471,27 +528,61 @@ class StripeRevenue(BaseTool):
                 return tally
             page = _page_of(text)
             if page is None:
-                tally.short = "Stripe's answer could not be read"
+                tally.short = _GARBLED
                 return tally
             budget.pages -= 1
             tally.pages += 1
-            data = [c for c in page["data"] if isinstance(c, Mapping)]
+            data = page["data"]
+            fresh = 0
+            oldest: int | None = None
             for charge in data:
-                created = charge.get("created")
-                if not isinstance(created, int) or not lo <= created < hi:
+                if not isinstance(charge, Mapping):
+                    tally.unreadable += 1
                     continue
-                counted = _counted(charge)
+                cid = charge.get("id")
+                if isinstance(cid, str):
+                    # A page the server sends twice is counted once.
+                    if cid in seen:
+                        continue
+                    seen.add(cid)
+                fresh += 1
+                created = charge.get("created")
+                if not isinstance(created, int) or isinstance(created, bool):
+                    tally.unreadable += 1
+                    continue
+                oldest = created if oldest is None else min(oldest, created)
+                if not lo <= created < hi:
+                    continue
+                try:
+                    counted = _counted(charge)
+                except _Unreadable:
+                    tally.unreadable += 1
+                    continue
                 if counted is None:
                     continue
-                currency, gross, refunded = counted
-                tally.totals.setdefault(currency, _Sum()).add(gross, refunded)
+                currency, gross, refunded, disputed = counted
+                tally.totals.setdefault(currency, _Sum()).add(gross, refunded, disputed)
                 if by != "none":
                     key = _bucket(datetime.fromtimestamp(created, tz).date(), by)
-                    tally.by.setdefault(currency, {}).setdefault(key, _Sum()).add(gross, refunded)
-            last = data[-1].get("id") if data else None
-            if page.get("has_more") is not True or not isinstance(last, str):
+                    bucket = tally.by.setdefault(currency, {}).setdefault(key, _Sum())
+                    bucket.add(gross, refunded, disputed)
+            if page.get("has_more") is not True:
+                break
+            last = data[-1].get("id") if data and isinstance(data[-1], Mapping) else None
+            if not isinstance(last, str):
+                # More promised, and nothing to ask for it by.
+                tally.short = _GARBLED
                 return tally
+            if not fresh or last == after:
+                tally.short = _REPEAT
+                return tally
+            # Newest first: once a page reaches before the start, the rest is too.
+            if oldest is not None and oldest < lo:
+                break
             after = last
+        if tally.unreadable:
+            tally.short = _UNREADABLE
+        return tally
 
     def _result(
         self,
@@ -503,6 +594,7 @@ class StripeRevenue(BaseTool):
         now: _Tally,
         before: _Tally,
     ) -> dict[str, Any]:
+        compared = before.pages > 0
         currencies = sorted(
             set(now.totals) | set(before.totals),
             key=lambda c: (-now.totals.get(c, _Sum()).charges, c),
@@ -512,15 +604,21 @@ class StripeRevenue(BaseTool):
             got = now.totals.get(currency, _Sum())
             prior = before.totals.get(currency, _Sum())
             figures = _figures(got, currency)
+            if got.disputed:
+                figures["disputed"] = {
+                    "charges": got.disputed,
+                    "amount": _major(got.disputed_amount, currency),
+                }
             then = prior.gross - prior.refunds
-            if then:
+            if compared and then:
                 change = (got.gross - got.refunds) / then - 1
                 figures["net_change_pct"] = round(change * 100, 1)
-            figures["previous"] = {
-                "from": previous.start.isoformat(),
-                "to": previous.end.isoformat(),
-                **_figures(prior, currency),
-            }
+            if compared:
+                figures["previous"] = {
+                    "from": previous.start.isoformat(),
+                    "to": previous.end.isoformat(),
+                    **_figures(prior, currency),
+                }
             if by != "none":
                 rows = now.by.get(currency, {})
                 figures[f"by_{by}"] = [
@@ -537,32 +635,36 @@ class StripeRevenue(BaseTool):
             out.update(one(currencies[0]) if currencies else {**one(""), "currency": None})
         else:
             out["by_currency"] = [one(c) for c in currencies]
-        complete = not now.short and not before.short
-        out["complete"] = complete
-        notes: list[str] = []
+        out["complete"] = not now.short and not before.short
+        notes = [NET_MEANS]
         if len(currencies) > 1:
             notes.append("Several currencies: each is added up on its own, never together.")
-        if not complete:
-            notes.append(_short_note(now.short or before.short, bool(now.short)))
-        if notes:
-            out["note"] = " ".join(notes)
+        if now.short:
+            notes.append(_short_note(now.short, "these totals"))
+        if not compared:
+            notes.append("The previous period could not be counted, so there is no comparison.")
+        elif before.short:
+            notes.append(_short_note(before.short, "the previous period"))
+        out["note"] = " ".join(notes)
         out["source"] = self.title
         return out
 
 
-def _short_note(why: str, current: bool) -> str:
-    which = "these totals" if current else "the previous period"
-    if why == "pages":
-        stop = f"Stopped after {MAX_PAGES * PAGE_SIZE:,} charges"
-    elif why == "time":
-        stop = f"Stopped after {MAX_SECONDS:g} seconds"
-    else:
-        stop = f"Stripe stopped answering partway ({why})"
+def _short_note(why: str, which: str) -> str:
+    stop = {
+        _PAGES: f"Stopped after {MAX_PAGES * PAGE_SIZE:,} charges",
+        _TIME: f"Stopped after {MAX_SECONDS:g} seconds",
+        _REPEAT: "Stripe repeated a page",
+        _GARBLED: "Stripe's answer could not be read",
+        _UNREADABLE: "Some charges could not be read and were left out",
+    }.get(why) or f"Stripe stopped answering partway ({why})"
     return f"{stop}, so {which} cover only part of the period: say so."
 
 
 def _unanswered(why: str) -> str:
     """Why nothing at all was counted: never a zero that looks like no sales."""
-    if why in ("time", "pages", ""):
+    if why == _GARBLED:
+        return "Stripe's answer could not be read; nothing was counted"
+    if why in (_TIME, _PAGES, ""):
         return "Stripe did not answer in time; nothing was counted"
     return f"Stripe did not answer: {why}"

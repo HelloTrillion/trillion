@@ -56,6 +56,8 @@ def charge(
     status: str = "succeeded",
     paid: bool = True,
     captured: int | None = None,
+    capture: bool = True,
+    disputed: bool = False,
 ) -> dict[str, Any]:
     return {
         "id": f"ch_{n}",
@@ -66,6 +68,8 @@ def charge(
         "currency": currency,
         "status": status,
         "paid": paid,
+        "captured": capture,
+        "disputed": disputed,
         "created": at(day),
         "billing_details": {"name": "Sam Doe", "email": "sam@example.com"},
         "receipt_email": "jo@example.com",
@@ -84,6 +88,9 @@ class FakeStripe:
         accounts: list[dict[str, Any]] | None = None,
         page: int = 100,
         fail_after: int | None = None,
+        repeat: bool = False,
+        anywhen: bool = False,
+        scripted: list[str] | None = None,
     ) -> None:
         self.charges = sorted(charges, key=lambda c: -c["created"])
         self.accounts = (
@@ -91,6 +98,11 @@ class FakeStripe:
         )
         self.page = page
         self.fail_after = fail_after
+        # A server that ignores starting_after, one that ignores the dates, and one
+        # that answers with these texts in turn.
+        self.repeat = repeat
+        self.anywhen = anywhen
+        self.scripted = list(scripted or [])
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def __call__(self, tool: str, args: Any, timeout: float) -> Outcome:
@@ -101,11 +113,13 @@ class FakeStripe:
         reads = sum(t == "stripe_api_read" for t, _ in self.calls)
         if self.fail_after is not None and reads > self.fail_after:
             return Outcome(ok=False, text="rate limited")
+        if self.scripted:
+            return Outcome(ok=True, text=self.scripted.pop(0))
         p = args["parameters"]
         lo, hi = p["created"]["gte"], p["created"]["lt"]
         assert p["limit"] == 100
-        rows = [c for c in self.charges if lo <= c["created"] < hi]
-        if "starting_after" in p:
+        rows = [c for c in self.charges if self.anywhen or lo <= c["created"] < hi]
+        if "starting_after" in p and not self.repeat:
             ids = [c["id"] for c in rows]
             rows = rows[ids.index(p["starting_after"]) + 1 :]
         out = rows[: self.page]
@@ -116,14 +130,16 @@ class FakeStripe:
         return [a for t, a in self.calls if t == "stripe_api_read"]
 
 
-def server(risk: Risk | None = None, catalog: str = "stripe") -> ServerConfig:
+def server(
+    risk: Risk | None = None, catalog: str = "stripe", name: str = "stripe", **risks: Risk
+) -> ServerConfig:
     return ServerConfig(
-        name="stripe",
+        name=name,
         transport="http",
         url="https://mcp.stripe.example",
         title="Stripe",
         catalog=catalog,
-        risks={"stripe_api_read": risk} if risk else {},
+        risks={**({"stripe_api_read": risk} if risk else {}), **risks},
     )
 
 
@@ -253,12 +269,65 @@ async def test_failed_and_unpaid_charges_are_not_revenue() -> None:
     assert (out["gross"], out["charges"]) == (100.0, 1)
 
 
-async def test_the_captured_amount_counts_and_the_amount_is_the_fallback() -> None:
-    partly = charge(1, "2026-10-02", 10000, captured=6000)
+async def test_a_partial_capture_counts_what_was_captured_and_the_release_is_no_refund() -> None:
+    # 1000 authorized, 600 captured: Stripe puts the 400 released in amount_refunded.
+    released = charge(1, "2026-10-02", 1000, captured=600, refunded=400)
+    out = await run(tool(FakeStripe([released])), period="month_to_date")
+    assert (out["gross"], out["refunds"], out["net"]) == (6.0, 0.0, 6.0)
+    # A real refund of 100 on top of the release.
+    refunded = charge(1, "2026-10-02", 1000, captured=600, refunded=500)
+    out = await run(tool(FakeStripe([refunded])), period="month_to_date")
+    assert (out["gross"], out["refunds"], out["net"]) == (6.0, 1.0, 5.0)
+
+
+async def test_holds_and_expired_authorizations_are_not_revenue() -> None:
+    hold = charge(1, "2026-10-02", 1000, captured=0, capture=False)
+    expired = charge(2, "2026-10-03", 1000, captured=0, refunded=1000, capture=False)
+    sold = charge(3, "2026-10-04", 500)
+    out = await run(tool(FakeStripe([hold, expired, sold])), period="month_to_date")
+    assert (out["gross"], out["refunds"], out["net"], out["charges"]) == (5.0, 0.0, 5.0, 1)
+    assert out["complete"] is True
+
+
+async def test_the_amount_is_the_fallback_when_nothing_says_what_was_captured() -> None:
     old = charge(2, "2026-10-03", 2500)
     del old["amount_captured"]
-    out = await run(tool(FakeStripe([partly, old])), period="month_to_date")
-    assert out["gross"] == 85.0
+    out = await run(tool(FakeStripe([old])), period="month_to_date")
+    assert out["gross"] == 25.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("amount_captured", "600"),
+        ("amount_captured", 6.5),
+        ("amount", -100),
+        ("amount_refunded", "10"),
+        ("amount_captured", True),
+    ],
+)
+async def test_an_unreadable_amount_is_left_out_and_said_never_counted_as_zero(
+    field: str, value: Any
+) -> None:
+    bad = charge(1, "2026-10-02", 1000)
+    bad[field] = value
+    out = await run(tool(FakeStripe([bad, charge(2, "2026-10-03", 500)])), period="month_to_date")
+    assert (out["gross"], out["charges"]) == (5.0, 1)
+    assert out["complete"] is False and "could not be read" in out["note"]
+
+
+async def test_a_refund_over_the_gross_is_held_to_the_gross() -> None:
+    odd = charge(1, "2026-10-02", 1000, refunded=5000)
+    out = await run(tool(FakeStripe([odd])), period="month_to_date")
+    assert (out["gross"], out["refunds"], out["net"]) == (10.0, 10.0, 0.0)
+
+
+async def test_disputes_are_reported_apart_and_not_deducted() -> None:
+    fake = FakeStripe([charge(1, "2026-10-02", 1000, disputed=True), charge(2, "2026-10-03", 500)])
+    out = await run(tool(fake), period="month_to_date")
+    assert (out["gross"], out["net"]) == (15.0, 15.0)
+    assert out["disputed"] == {"charges": 1, "amount": 10.0}
+    assert "disputes and Stripe fees are not deducted" in out["note"]
 
 
 async def test_it_pages_until_stripe_says_there_is_no_more() -> None:
@@ -434,6 +503,43 @@ async def test_an_account_given_is_used_as_given() -> None:
     assert {r["stripe_context"] for r in fake.reads()} == {"acct_test2"}
 
 
+async def test_the_listing_is_used_only_when_it_runs_on_its_own() -> None:
+    fake = FakeStripe([])
+    names = ["stripe_api_read", "list_available_accounts_or_orgs"]
+    (asks,) = companions(server(Risk.READ), names, fake)
+    await asks.execute({"period": "last_7_days"}, CTX)
+    assert [t for t, _ in fake.calls] == ["stripe_api_read", "stripe_api_read"]
+    assert all("stripe_context" not in r for r in fake.reads())
+    fake = FakeStripe([])
+    free = server(Risk.READ, list_available_accounts_or_orgs=Risk.READ)
+    (lists,) = companions(free, names, fake)
+    await lists.execute({"period": "last_7_days"}, CTX)
+    assert fake.calls[0][0] == "list_available_accounts_or_orgs"
+
+
+async def test_no_account_found_reads_without_one() -> None:
+    fake = FakeStripe([], accounts=[])
+    await run(tool(fake), period="last_7_days")
+    assert fake.reads() and all("stripe_context" not in r for r in fake.reads())
+
+
+async def test_an_account_that_is_not_an_id_is_refused() -> None:
+    fake = FakeStripe([])
+    r = await tool(fake).execute({"period": "last_7_days", "account": "Sam's shop"}, CTX)
+    assert not r.ok and "acct_" in r.content and fake.calls == []
+
+
+async def test_a_long_account_name_is_cut_in_the_refusal() -> None:
+    accounts = [{"id": "acct_test1", "display_name": "x" * 200}, {"id": "acct_test2"}]
+    r = await tool(FakeStripe([], accounts=accounts)).execute({"period": "last_7_days"}, CTX)
+    assert not r.ok and "x" * 60 in r.content and "x" * 61 not in r.content
+
+
+def test_accounts_read_from_json_come_before_ids_in_its_words() -> None:
+    text = '{"data": [{"id": "acct_test1", "name": "Sam"}], "hint": "not acct_test9 itself"}'
+    assert accounts_in(text) == [("acct_test1", "Sam")]
+
+
 def test_accounts_are_read_from_json_or_text() -> None:
     assert accounts_in('{"accounts": [{"account_id": "acct_test1", "name": "Alex"}]}') == [
         ("acct_test1", "Alex")
@@ -453,9 +559,37 @@ def servers(spine: Spine, tmp: Path) -> McpServers:
 
 def test_only_a_stripe_server_from_the_catalogue_brings_it() -> None:
     fake = FakeStripe([])
-    assert [t.definition.name for t in companions(server(), OFFERED, fake)] == [NAME]
-    assert companions(server(catalog=""), OFFERED, fake) == []
-    assert companions(server(), OFFERED[1:], fake) == []
+    names = [o.name for o in OFFERED]
+    assert [t.definition.name for t in companions(server(), names, fake)] == [NAME]
+    assert companions(server(catalog=""), names, fake) == []
+    assert companions(server(), names[1:], fake) == []
+
+
+async def test_it_needs_stripe_api_read_actually_offered(spine: Spine, tmp_path: Path) -> None:
+    mcp = servers(spine, tmp_path)
+    unusable = Offered(name="stripe_api_read", description="", input_schema={"type": "string"})
+    state = ServerState(config=server(Risk.READ), status="connected")
+    mcp._register(state, [unusable, *OFFERED[1:]])
+    assert "stripe_api_read" in state.skipped and spine.registry.get(NAME) is None
+
+
+async def test_with_two_stripe_servers_the_first_has_it_and_the_other_takes_over(
+    spine: Spine, tmp_path: Path
+) -> None:
+    mcp = servers(spine, tmp_path)
+    first = ServerState(config=server(Risk.READ), status="connected", offered=OFFERED)
+    other = ServerState(config=server(name="stripe2"), status="connected", offered=OFFERED)
+    mcp.states.update({"stripe": first, "stripe2": other})
+    mcp._register(first, OFFERED)
+    mcp._register(other, OFFERED)
+    assert (first.companions, other.companions) == ([NAME], [])
+    d = spine.registry.definition(NAME)
+    assert d is not None and d.risk is Risk.READ
+    await mcp.disconnect("stripe")
+    assert other.companions == [NAME]
+    # Now the other server's own setting decides: it asks first.
+    d = spine.registry.definition(NAME)
+    assert d is not None and d.risk is Risk.IRREVERSIBLE
 
 
 async def test_it_is_offered_only_while_stripe_is_connected(spine: Spine, tmp_path: Path) -> None:
@@ -492,6 +626,11 @@ async def test_its_risk_is_the_one_the_user_gave_stripe_api_read(
     assert d is not None and d.risk is risk and d.category == "mcp"
     assert runs_unattended(d) is (risk is Risk.READ)
     assert ("approval card" in d.description) is (risk is not Risk.READ)
+
+
+def test_the_card_line_is_only_for_a_tool_that_puts_up_a_card() -> None:
+    t = StripeRevenue(server(Risk.WRITE), FakeStripe([]))
+    assert t.definition.risk is Risk.WRITE and "approval card" not in t.definition.description
 
 
 async def test_a_retune_moves_its_risk_with_stripe_api_read(spine: Spine, tmp_path: Path) -> None:
@@ -550,6 +689,16 @@ def test_a_widget_built_from_it_names_stripe_and_stays_fresh() -> None:
     assert not live.eligible(tool(FakeStripe([]), risk=None).definition)
 
 
+def test_a_widget_built_from_it_refreshes_hourly_unless_she_says() -> None:
+    kpis = {"type": "kpis", "source": {"name": "Stripe"}}
+    mine = [live.Read(tool=NAME, args={"period": "month_to_date"}, connector="Stripe")]
+    got = live.live_for(kpis, mine)
+    assert got is not None and got["every"] == 60
+    assert live.every({**kpis, "live": got}) == 60
+    assert live.live_for({**kpis, "refresh": 5}, mine) == {**got, "every": 5}
+    assert live.SLOW_READS == {NAME: 60}
+
+
 # ── What she is told ─────────────────────────────────────────────────────
 
 
@@ -558,3 +707,87 @@ def test_she_is_told_to_use_it_never_analytics(name: str) -> None:
     text = (files("trillion.persona") / "prompts" / name).read_text(encoding="utf-8")
     assert "stripe_revenue" in text and "never stripe_analytics" in text
     assert chr(0x2014) not in text and chr(0x2013) not in text
+
+
+# ── Pages that do not hold up ────────────────────────────────────────────
+
+
+async def test_a_page_repeated_is_counted_once_and_said() -> None:
+    rows = [charge(n, "2026-10-02", 100) for n in range(150)]
+    out = await run(tool(FakeStripe(rows, repeat=True)), period="month_to_date")
+    assert out["charges"] == 100 and out["complete"] is False
+    assert "repeated a page" in out["note"]
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        '{"object": "list", "data": [], "has_more": true}',
+        '{"object": "list", "data": [{"status": "failed"}], "has_more": true}',
+    ],
+)
+async def test_more_promised_but_nothing_to_follow_is_never_complete(page: str) -> None:
+    fake = FakeStripe([], scripted=[page])
+    out = await run(tool(fake), period="month_to_date")
+    assert out["complete"] is False and "could not be read" in out["note"]
+
+
+async def test_paging_stops_once_past_the_start_of_the_period() -> None:
+    days = ["2026-10-20", "2026-10-10", "2026-10-02", "2026-09-20", "2026-08-20", "2026-08-10"]
+    rows = [charge(n, d, 100) for n, d in enumerate(days)]
+    fake = FakeStripe(rows, page=2, anywhen=True)
+    out = await run(tool(fake), period="month_to_date")
+    assert out["charges"] == 3 and out["complete"] is True
+    lo = fake.reads()[0]["parameters"]["created"]["gte"]
+    assert sum(r["parameters"]["created"]["gte"] == lo for r in fake.reads()) == 2
+
+
+async def test_a_previous_period_never_counted_is_left_out_and_said() -> None:
+    out = await run(
+        tool(FakeStripe([charge(1, "2026-10-02", 100)], fail_after=1)), period="month_to_date"
+    )
+    assert "previous" not in out and "net_change_pct" not in out
+    assert out["complete"] is False and "previous period could not be counted" in out["note"]
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("2009-12-31", "2010-01-31"),
+        ("2027-12-01", "2028-01-01"),
+        ("0001-01-01", "0001-01-02"),
+        ("9999-12-30", "9999-12-31"),
+    ],
+)
+async def test_a_custom_year_out_of_reach_is_refused_plainly(start: str, end: str) -> None:
+    fake = FakeStripe([])
+    r = await tool(fake).execute({"period": "custom", "from": start, "to": end}, CTX)
+    assert not r.ok and r.error_kind == "refused" and "between 2010 and 2027" in r.content
+    assert fake.calls == []
+
+
+async def test_day_buckets_across_the_end_of_summer_time() -> None:
+    # Los Angeles leaves summer time at 02:00 on 1 November 2026: a 25-hour day.
+    rows = [
+        {**charge(1, "2026-11-01", 100), "created": at("2026-11-01", hour=0) + 1800},
+        {**charge(2, "2026-11-01", 200), "created": at("2026-11-01", hour=23) + 1800},
+        {**charge(3, "2026-11-02", 400), "created": at("2026-11-02", hour=0) + 1800},
+    ]
+    fake = FakeStripe(rows)
+    out = await run(
+        tool(fake), period="custom", **{"from": "2026-10-31", "to": "2026-11-02"}, by="day"
+    )
+    assert [(d["day"], d["charges"]) for d in out["by_day"]] == [
+        ("2026-10-31", 0),
+        ("2026-11-01", 2),
+        ("2026-11-02", 1),
+    ]
+    window = fake.reads()[0]["parameters"]["created"]
+    assert window["lt"] - window["gte"] == 3 * 86400 + 3600
+
+
+async def test_isk_is_written_with_two_decimals() -> None:
+    out = await run(
+        tool(FakeStripe([charge(1, "2026-10-02", 150000, currency="isk")])), period="month_to_date"
+    )
+    assert out["gross"] == 1500.0
