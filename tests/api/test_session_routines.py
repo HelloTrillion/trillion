@@ -11,14 +11,16 @@ from typing import Any
 
 import pytest
 
+from tests.api.test_listening import hearing
 from tests.api.test_session import Gated, Page, idle
 from tests.brain.fakes import say, use
 from tests.scheduler.conftest import FakeClock, ms, schedule, written
-from tests.scheduler.test_ask import Recording
+from tests.scheduler.test_ask import Hangs, Recording
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
-from trillion.api.session import OUT_OF_TURN, Session
+from trillion.api.session import OUT_OF_TURN, ROUTINE_BUILDING, Session
 from trillion.brain.types import ContextBlock, Msg, TextBlock
+from trillion.persona import day, setup
 from trillion.persona.prompt import system_blocks
 from trillion.scheduler.ask import ROUTINE_RUN, Asker, RoutineDeps
 from trillion.scheduler.runner import Busy
@@ -236,4 +238,162 @@ async def test_a_reload_that_raced_a_save_is_dropped(rt: Runtime) -> None:
     session._read = read  # type: ignore[method-assign]
     assert await session.reloaded()
     assert len(session._history) == 1 and len(page.all("history")) == 2
+    await session.close()
+
+
+# ── Changing a routine where it belongs (AGT-7) ──────────────────────
+
+
+async def test_a_routines_own_conversation_is_offered_its_notes_tools(rt: Runtime) -> None:
+    assert rt.schedules is not None
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    await rt.schedules.create(
+        schedule(kind="ask", title="Monday revenue", target="own", conversation_id=cid)
+    )
+    provider = Recording(say("Noted."), say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    here = await Session.start(rt, page.send, cid)
+    await here.handle({"type": "turn.text", "text": "less detail please"})
+    await idle(here)
+    offered = provider.offered[0]
+    assert "routine_narrow" in offered and "routine_widen" in offered
+    assert "routine_nothing" not in offered
+    await here.close()
+    elsewhere = await Session.start(rt, Page(rt).send, None)
+    await elsewhere.handle({"type": "turn.text", "text": "less detail please"})
+    await idle(elsewhere)
+    assert not {"routine_narrow", "routine_widen"} & set(provider.offered[-1])
+    await elsewhere.close()
+
+
+async def test_todays_day_is_offered_them_only_with_a_day_routine(rt: Runtime) -> None:
+    assert rt.schedules is not None
+    date = day.today(rt.clock(), rt.zone())
+    cid, _ = await rt.conversations.day_conversation("local", date.isoformat(), "Your day", 1)
+    provider = Recording(say("Hello."), say("Noted."))
+    rt.provider = provider
+    session = await Session.start(rt, Page(rt).send, cid)
+    await session.handle({"type": "turn.text", "text": "hi"})
+    await idle(session)
+    assert "routine_narrow" not in provider.offered[0]
+    # Set up mid-conversation: the next turn is offered them.
+    await rt.schedules.create(schedule(kind="ask", title="Build my day", target="day"))
+    await session.handle({"type": "turn.text", "text": "never include Slack"})
+    await idle(session)
+    assert "routine_narrow" in provider.offered[-1]
+    await session.close()
+
+
+# ── One writer: what a hold refuses, and that it always ends ─────────
+
+
+async def test_voice_is_refused_before_the_microphone_opens(rt: Runtime) -> None:
+    hearing(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    rt.routine_holds.add(session.id)
+    await session.handle({"type": "listen.start"})
+    assert [e["code"] for e in page.all("error")] == [ROUTINE_BUILDING]
+    assert page.all("mic.start") == [] and session._listener is None
+    rt.routine_holds.discard(session.id)
+    await session.close()
+
+
+async def test_a_greeting_is_refused_while_a_routine_builds(rt: Runtime) -> None:
+    rt.profile = setup.Profile(user_name="Sam", timezone="UTC")
+    provider = Recording(say("Hello, Sam."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    rt.routine_holds.add(session.id)
+    await session.handle({"type": "greet"})
+    await idle(session)
+    assert [e["code"] for e in page.all("error")] == [ROUTINE_BUILDING]
+    assert provider.calls == [] and not session._greeted
+    rt.routine_holds.discard(session.id)
+    await session.close()
+
+
+async def test_a_day_build_is_refused_while_a_routine_builds(rt: Runtime) -> None:
+    date = day.today(rt.clock(), rt.zone())
+    cid, _ = await rt.conversations.day_conversation("local", date.isoformat(), "Your day", 1)
+    provider = Recording(say("A quiet day."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    rt.routine_holds.add(cid)
+    await session.handle({"type": "day.build"})
+    await idle(session)
+    assert [e["code"] for e in page.all("error")] == [ROUTINE_BUILDING]
+    assert provider.calls == [] and await rt.conversations.history(cid, "local") == []
+    rt.routine_holds.discard(cid)
+    await session.close()
+
+
+async def test_a_card_tap_is_refused_while_a_routine_builds(rt: Runtime) -> None:
+    rt.provider = Recording(say("Done."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    rt.routine_holds.add(session.id)
+    await session.handle({"type": "confirm", "pending_id": "p1"})
+    await idle(session)
+    assert [e["code"] for e in page.all("error")] == [ROUTINE_BUILDING]
+    assert page.all("confirm.resolved") == []
+    rt.routine_holds.discard(session.id)
+    await session.close()
+
+
+async def _build_until_it_waits(rt: Runtime, model: Hangs) -> tuple[asyncio.Task[Any], str]:
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    s = schedule(kind="ask", title="Monday revenue", target="own", conversation_id=cid)
+    building = asyncio.create_task(asker(rt, model).build(s, cid))  # type: ignore[arg-type]
+    await asyncio.wait_for(model.waiting.wait(), 2)
+    assert cid in rt.routine_holds
+    return building, cid
+
+
+async def test_the_hold_ends_when_the_run_is_cancelled(rt: Runtime) -> None:
+    building, cid = await _build_until_it_waits(rt, Hangs())
+    building.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await building
+    assert cid not in rt.routine_holds
+
+
+async def test_the_hold_ends_when_the_run_times_out(rt: Runtime) -> None:
+    model = Hangs()
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    s = schedule(kind="ask", title="Monday revenue", target="own", conversation_id=cid)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asker(rt, model).build(s, cid), 0.2)  # type: ignore[arg-type]
+    assert cid not in rt.routine_holds
+
+
+async def test_the_hold_ends_when_the_run_fails(rt: Runtime) -> None:
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    s = schedule(kind="ask", title="Monday revenue", target="own", conversation_id=cid)
+    with pytest.raises(Exception):  # noqa: B017 - whichever way it fails, it lets go
+        await asker(rt, Recording(RuntimeError("boom"))).build(s, cid)
+    assert cid not in rt.routine_holds
+
+
+class _Heard:
+    """All a trim needs of a speaker: not failed, and what was heard."""
+
+    failed = False
+
+    def heard_text(self) -> str:
+        return "First."
+
+
+async def test_a_trim_counts_as_a_save_so_a_racing_reload_is_dropped(rt: Runtime) -> None:
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    reply = Msg(role="assistant", blocks=(TextBlock(text="First. Second."),))
+    await rt.conversations.append(cid, "local", "assistant", reply, 2)
+    session = await Session.start(rt, Page(rt).send, cid)
+    session._tail = (_Heard(), session._ids[-1])  # type: ignore[assignment]
+    saved = session._saves
+    assert await session.trim_tail(tell=False) is not None
+    assert session._saves == saved + 1
     await session.close()

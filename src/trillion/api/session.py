@@ -309,6 +309,8 @@ class Session:
         # names it once, after her first reply, and never over the user's own name.
         self._title_source: str | None = None
         self._naming: asyncio.Task[None] | None = None
+        # The routine tools a page's turn here is offered, read again before each turn.
+        self._routine_tools: frozenset[str] = frozenset()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -427,7 +429,20 @@ class Session:
     def _offers(self, d: ToolDefinition) -> bool:
         """Whether a page's turn here is offered this tool: never a routine's own,
         unless this conversation is where it belongs (`tools/routine.py`)."""
-        return d.category != ROUTINE_CATEGORY or d.name in routine_tools(self.kind, self.id)
+        return d.category != ROUTINE_CATEGORY or d.name in self._routine_tools
+
+    async def _read_routines(self) -> None:
+        """Which routine tools this conversation is offered now: a routine set up, or
+        today's day turned over, since the last turn changes it."""
+        rt = self._rt
+        try:
+            routines = await rt.schedules.active(OWNER) if rt.schedules is not None else []
+        except Exception as e:
+            # Offered nothing: a routine is changed only where it surely belongs.
+            logger.warning("routines not read in session %s: %s", self.id, type(e).__name__)
+            routines = []
+        today = self.day == day.today(rt.clock(), rt.zone()).isoformat()
+        self._routine_tools = routine_tools(self.kind, self.id, routines, today=today)
 
     def _model(self) -> dict[str, str] | None:
         p = self._rt.provider
@@ -1369,6 +1384,9 @@ class Session:
             await self._error("no_model")
         elif self._task is not None:
             await self._error("busy")
+        elif await self._routine_building():
+            # Before the microphone opens: no words heard, no draft paid for, all refused.
+            return
         else:
             self._spoken = None
             listener = Listener(
@@ -1790,6 +1808,7 @@ class Session:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
             system = await asyncio.to_thread(rt.system)
+            await self._read_routines()
             if using is not None and list(using.system) != system:
                 # A rule or skill changed while the draft ran: it sent an old prompt.
                 trace.draft = "dropped"
@@ -2006,6 +2025,7 @@ class Session:
         built = await self._build_input("user", words, via="voice")
         # The same as `_one_turn` sends: its rules and skills, its history, its tools.
         system = await asyncio.to_thread(rt.system)
+        await self._read_routines()
         # Read after the awaits, so a trim meanwhile is in what is sent.
         history = [*self._history, built.msg]
         # A history the turn would summarize first is not the history it would send.
@@ -2157,6 +2177,8 @@ class Session:
         if not written.startswith(heard):  # pragma: no cover - the speaker only saw this
             return None
         msg = Msg(role="assistant", blocks=(TextBlock(text=kept_of(written, heard)),))
+        # A change to what is saved here, as `_save` is: a reload reading meanwhile is dropped.
+        self._saves += 1
         try:
             changed = await self._rt.conversations.amend_tail(self.id, OWNER, message_id, msg)
         except Exception as e:

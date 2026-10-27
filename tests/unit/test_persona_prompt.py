@@ -226,3 +226,16 @@ def test_she_is_told_to_open_the_day_in_both_modalities() -> None:
         assert "what's my day" in text and "brief me" in text and "call day_open" in text
         assert "already the day conversation" in text and "rebuild the board" in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_she_is_told_how_to_set_up_and_change_a_routine_in_both_modalities() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 27, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "A routine is a timed ask with" in text and "routine" in text
+        assert "built or shown regularly" in text and "ask_schedule" in text
+        assert '"day" when it is about their day' in text and '"own"' in text
+        assert '"stop", "never" or "less" is routine_narrow' in text
+        assert "anything new for it to look at is routine_widen" in text
+        assert "\u2014" not in text and "\u2013" not in text

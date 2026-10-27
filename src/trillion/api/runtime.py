@@ -29,7 +29,7 @@ from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
-from trillion.persona.day import DAY_READS, SetUp
+from trillion.persona.day import DAY_READS, SetUp, today
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker, RoutineDeps
@@ -53,6 +53,7 @@ from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
+from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
 from trillion.tools.rules import (
     DROP,
     KEEP,
@@ -264,7 +265,8 @@ class Runtime:
     # remembers so it can be kept fresh (the live widgets spec).
     reads: Reads = field(default_factory=Reads)
     by_conversation: dict[str, Any] = field(default_factory=dict)
-    # Conversations a routine is building in now: a page's turn there waits (one writer).
+    # Conversations a routine is building in now: a page's turn there is refused, and the
+    # page told, until it is done (one writer).
     routine_holds: set[str] = field(default_factory=set)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
@@ -495,6 +497,15 @@ class Runtime:
         """A registered read that runs without a card."""
         d = self.registry.definition(name)
         return d is not None and d.risk is Risk.READ and runs_unattended(d)
+
+    async def conversation_is(self, conversation_id: str) -> tuple[str, bool]:
+        """A conversation's kind, and whether it is today's day conversation: where a
+        routine's notes may be changed (`tools/routine.py`)."""
+        found = await self.conversations.kind_of(conversation_id, OWNER)
+        if found is None:
+            return "chat", False
+        kind, date = found
+        return kind, kind == "day" and date == today(self.clock(), self.zone()).isoformat()
 
     async def open_day(self, conversation_id: str) -> Where:
         """`day_open`: the page on a chat is told to open the day; in the day itself
@@ -744,6 +755,10 @@ async def open_runtime(
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
             schedule_tool.bind(schedules, zone=rt.zone, clock=lambda: rt.clock(), owner=OWNER)
+    for name in (NARROW, WIDEN):
+        notes_tool = registry.get(name)
+        if isinstance(notes_tool, RoutineNarrow | RoutineWiden):
+            notes_tool.bind(schedules, rt.conversation_is, OWNER)
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):

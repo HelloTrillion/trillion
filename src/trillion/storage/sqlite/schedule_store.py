@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 import aiosqlite
 
 from trillion.scheduler.store import (
+    NOTES_MAX,
     PAUSE_AFTER,
     Kind,
     Notice,
@@ -235,6 +236,18 @@ class SqliteScheduleStore:
                 "UPDATE schedules SET conversation_id = ? WHERE id = ?",
                 (conversation_id, schedule_id),
             )
+
+    async def add_note(self, owner_id: str, schedule_id: str, line: str) -> bool:
+        async with self._tx() as conn:
+            # Checked in the same statement, so two notes at once never pass the cap.
+            cur = await conn.execute(
+                "UPDATE schedules SET notes = CASE WHEN notes = '' THEN ?1"
+                " ELSE notes || char(10) || ?1 END"
+                " WHERE id = ?2 AND owner_id = ?3 AND target IS NOT NULL AND status = 'active'"
+                " AND length(notes) + (CASE WHEN notes = '' THEN 0 ELSE 1 END) + length(?1) <= ?4",
+                (line, schedule_id, owner_id, NOTES_MAX),
+            )
+            return cur.rowcount == 1
 
     async def succeeded(self, schedule_id: str) -> None:
         async with self._tx() as conn:

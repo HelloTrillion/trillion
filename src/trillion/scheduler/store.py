@@ -145,6 +145,11 @@ class ScheduleStore(Protocol):
         """Where an 'own' routine's runs go from now on."""
         ...
 
+    async def add_note(self, owner_id: str, schedule_id: str, line: str) -> bool:
+        """Add a line to a routine's notes (AGT-7), only while they stay within
+        `NOTES_MAX`. False, and nothing changed, otherwise or for no such routine."""
+        ...
+
     async def succeeded(self, schedule_id: str) -> None:
         """A run that finished: the failures in a row start again from none."""
         ...
