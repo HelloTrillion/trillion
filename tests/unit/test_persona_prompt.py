@@ -226,3 +226,9 @@ def test_she_is_told_to_open_the_day_in_both_modalities() -> None:
         assert "what's my day" in text and "brief me" in text and "call day_open" in text
         assert "already the day conversation" in text and "rebuild the board" in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_she_says_asks_first_is_the_users_setting_never_the_apps() -> None:
+    text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
+    assert "that is their own setting for that tool, never the app's rule" in text
+    assert "Settings, Connected tools" in text and "Never say the app requires the tap" in text
