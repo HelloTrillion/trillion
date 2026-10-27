@@ -184,6 +184,10 @@ class Session:
         # building its board.
         self.day: str | None = None
         self._building_day = False
+        # The day was asked for out loud: once her summary has been heard, the microphone
+        # reopens as after a spoken turn. Only the microphone: the build stays the app's
+        # input and can approve nothing.
+        self._listen_after = False
         # The messages the model is sent, after the latest summary, each with its kind
         # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
@@ -444,6 +448,7 @@ class Session:
             # and is not spoken either: they asked for quiet.
             task = self._task
             self._stopped = True
+            self._listen_after = False
             self._stopped_her()
             # Stopped: the page drops what it was playing and never reports it played.
             self._spoken = None
@@ -508,7 +513,7 @@ class Session:
         elif kind == "greet":
             await self._on_greet()
         elif kind == "day.build":
-            await self._on_day_build()
+            await self._on_day_build(spoken=msg.get("spoken") is True)
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
         elif kind == "mic.opened":
@@ -543,7 +548,7 @@ class Session:
                 ov.ended = True
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
-            elif self._via == "voice" and self._task is None and self._listener is None:
+            elif self._answered_aloud() and self._task is None and self._listener is None:
                 await self._on_listen(FOLLOW_UP_S, follow_up=True)
             await self._offer()
         elif kind in ("board.open", "board.close", "board.remove"):
@@ -658,7 +663,7 @@ class Session:
             self._queued.append(greeting(rt.identity))
             self._begin()
 
-    async def _on_day_build(self) -> None:
+    async def _on_day_build(self, *, spoken: bool = False) -> None:
         """Build the day board (SUR-1): she reads what is connected and shows it.
 
         Like the greeting, the page only asks: the recipe is composed here from what
@@ -695,6 +700,7 @@ class Session:
             rt.day_built[self.id] = now
             await self._send("host", text=DAY_BUILD_SHOWN)
             self._building_day = True
+            self._listen_after = spoken
             self._begin()
 
     # ── Listening ────────────────────────────────────────────────────────
@@ -884,9 +890,19 @@ class Session:
             await self._start_deciding(ov)
         return True
 
+    def _answered_aloud(self) -> bool:
+        """Her last turn answered something said out loud, so the microphone reopens
+        after it: a spoken turn, or a day build asked for by voice."""
+        return self._via == "voice" or self._listen_after
+
+    @property
+    def spoken_turn(self) -> bool:
+        """The running turn answers something said out loud."""
+        return self._via == "voice"
+
     def _after_her(self) -> bool:
         """Her spoken turn is over: once she has been heard, the watch is the next window."""
-        return self._task is None and self._via == "voice" and self._listener is None
+        return self._task is None and self._answered_aloud() and self._listener is None
 
     def _her_over(self, ov: Overlap) -> bool:
         """Her echo is over by the listener's clock: her last sentence, played, has
@@ -1120,7 +1136,7 @@ class Session:
         if ov is None or not ov.watching or self._task is not None:
             return
         unheard = self._spoken is not None and self._spoken[0] != self._played
-        if ov.ended and self._via == "voice" and self._listener is None:
+        if ov.ended and self._answered_aloud() and self._listener is None:
             # Her last words may still come back: the watch tells them from the user's
             # until her echo is over, then becomes the window (see `_watch_once`).
             ov.wake.set()
@@ -1158,7 +1174,7 @@ class Session:
             await self._offer()
             return
         await self._end_overlap(tell=True)
-        if ov.ended and self._via == "voice" and self._task is None and self._listener is None:
+        if ov.ended and self._answered_aloud() and self._task is None and self._listener is None:
             # She finished being heard while they spoke: the window that would have opened.
             await self._on_listen(FOLLOW_UP_S, follow_up=True)
         # Notices held while they were heard may arrive now.
@@ -2282,6 +2298,8 @@ class Session:
         session's task or has come to nothing, and notice speech gives way to it."""
         # Counted before the first await, so a tick in any gap sees the page busy.
         self._taking += 1
+        # Something new is taken in: a spoken build's promise to listen is spent.
+        self._listen_after = False
         try:
             await self._hush()
             yield
@@ -2375,6 +2393,7 @@ class Session:
         turn = rt.out_of_turn()
         # Not a spoken turn: when she has said it, the microphone stays closed.
         self._via = "text"
+        self._listen_after = False
         speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
         try:
             await self._state("speaking", notice=True)

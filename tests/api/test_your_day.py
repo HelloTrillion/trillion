@@ -8,8 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.api.test_listening import hearing, speak
 from tests.api.test_session import Page, idle
 from tests.brain.fakes import ScriptedProvider, say, use
+from tests.voice.audio import room, tone
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import DAY_BUILD, DAY_BUILD_SHOWN, Session, day_build
 from trillion.brain.types import ContextBlock, Msg, TextBlock, ToolResultBlock
@@ -226,6 +228,57 @@ async def test_day_open_inside_the_day_rebuilds_here(rt: Runtime) -> None:
     assert page.all("day.open") == []
     done = result_of(provider, "d1")
     assert not done.is_error and HERE in done.content
+    await session.close()
+
+
+async def test_day_open_from_a_spoken_turn_says_so(rt: Runtime) -> None:
+    stt = hearing(rt, use("day_open", {}, "d1"), say("Opening it."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await speak(session, tone(0.5))
+    stt.stream.say("what's my day")
+    await speak(session, room(0.6))
+    await idle(session)
+    # Asked out loud: the build that follows keeps the conversation going by voice.
+    assert page.all("day.open") == [{"type": "day.open", "spoken": True}]
+    await session.close()
+
+
+async def test_a_build_asked_for_by_voice_listens_after_it(rt: Runtime) -> None:
+    hearing(rt, say("A quiet day."))
+    page = Page(rt)
+    session = await open_day(rt, page)
+    await session.handle({"type": "day.build", "spoken": True})
+    await idle(session)
+    # Still the app's words: nothing it does can approve (the recipe stays an ask).
+    assert session._via != "voice"
+    assert page.all("mic.start") == []
+    await session.handle({"type": "playback.ended", "turn_id": 0, "played_ms": 900})
+    assert page.all("mic.start") == [{"type": "mic.start", "follow_up": True}]
+    await session.close()
+
+
+async def test_a_tapped_build_leaves_the_microphone_closed(rt: Runtime) -> None:
+    hearing(rt, say("A quiet day."))
+    page = Page(rt)
+    session = await open_day(rt, page)
+    await session.handle({"type": "day.build"})
+    await idle(session)
+    await session.handle({"type": "playback.ended", "turn_id": 0, "played_ms": 900})
+    assert page.all("mic.start") == []
+    await session.close()
+
+
+async def test_stopping_a_spoken_build_leaves_the_microphone_closed(rt: Runtime) -> None:
+    hearing(rt, say("A quiet day."))
+    page = Page(rt)
+    session = await open_day(rt, page)
+    await session.handle({"type": "day.build", "spoken": True})
+    await idle(session)
+    await session.handle({"type": "interrupt"})
+    await session.handle({"type": "playback.ended", "turn_id": 0, "played_ms": 300})
+    assert page.all("mic.start") == []
     await session.close()
 
 

@@ -489,7 +489,11 @@ class Runtime:
             return "no_page"
         if session.kind == "day":
             return "here"
-        await session.send("day.open")
+        # Asked out loud, the build that follows listens after it, as a spoken turn does.
+        if session.spoken_turn:
+            await session.send("day.open", spoken=True)
+        else:
+            await session.send("day.open")
         return "opened"
 
     def _mcp_fact(self) -> str:
