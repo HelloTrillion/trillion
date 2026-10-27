@@ -21,7 +21,7 @@ from tests.brain.fakes import ScriptedProvider, say, use
 from trillion.api.conversations import create_conversations_router
 from trillion.api.jobs import STARTED
 from trillion.api.runtime import OWNER, Runtime, open_runtime
-from trillion.api.session import BACKGROUND, Session
+from trillion.api.session import BACKGROUND, Session, _Finished, keep_for_later
 from trillion.brain.types import ContextBlock, Msg, TextBlock, ToolResultBlock
 from trillion.delivery import door as delivery
 from trillion.secrets.store import MemoryStore
@@ -525,6 +525,10 @@ async def test_a_stop_before_the_note_is_saved_loses_nothing(rt: Runtime) -> Non
     tool.gate.set()
     await building.wait()
     await session.handle({"type": "interrupt"})
+    # They asked for quiet: nothing starts at the rest that follows the Stop.
+    await asyncio.sleep(0.05)
+    assert len(provider.calls) == 2 and session._task is None
+    # At the next pause it comes, and the note is saved once.
     await until(lambda: len(provider.calls) == 3, "the follow-up")
     await idle(session)
     assert len(notes(await rt.conversations.history(session.id, OWNER))) == 1
@@ -666,3 +670,119 @@ async def test_it_waits_while_a_routine_holds_the_conversation(rt: Runtime) -> N
     await until(lambda: len(provider.calls) == 3, "the follow-up")
     await idle(session)
     await session.close()
+
+
+# ── A close that always finishes, and saves that never repeat ──────────────
+
+
+async def two_waiting(rt: Runtime, *after: list[Any]) -> tuple[Session, Page, ScriptedProvider]:
+    """Two reads end together while her reply is still heard: both notes wait."""
+    voiced(rt)
+    tool = slow(rt)
+    provider = ScriptedProvider(
+        use(READ, {"n": 1}, "r1"), use(READ, {"n": 2}, "r2"), say("Pulling both."), *after
+    )
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "pull both"})
+    await idle(session)
+    tool.gate.set()
+    await until(lambda: len(session._finished) == 2, "both notes waiting")
+    return session, page, provider
+
+
+async def test_a_close_whose_save_fails_still_finishes(rt: Runtime) -> None:
+    session, _, _ = await two_waiting(rt)
+
+    async def broken(*a: Any, **kw: Any) -> int:
+        raise RuntimeError("disk full")
+
+    rt.conversations.append = broken  # type: ignore[method-assign]
+    dropped: list[bool] = []
+
+    async def drop() -> None:
+        dropped.append(True)
+
+    session._drop_draft = drop  # type: ignore[method-assign]
+    naming = asyncio.ensure_future(asyncio.Event().wait())
+    session._naming = naming  # type: ignore[assignment]
+    await session.close()  # never raises
+    assert dropped and naming.cancelled()
+    assert session.id not in rt.by_conversation and rt.routine_holds == set()
+
+
+async def test_a_save_that_fails_part_way_saves_nothing_twice(rt: Runtime) -> None:
+    session, page, provider = await two_waiting(rt, say("Both are in."))
+    real = session._save
+    failed: list[bool] = []
+    seen = 0
+
+    async def save(kind: Any, msg: Msg) -> None:
+        nonlocal seen
+        seen += bool(notes([(kind, msg)]))
+        if seen == 2 and not failed:
+            # The first note is saved; the second is not.
+            failed.append(True)
+            raise RuntimeError("disk hiccup")
+        await real(kind, msg)
+
+    session._save = save  # type: ignore[method-assign]
+    await session.handle({"type": "playback.ended", "turn_id": 1})
+    await until(lambda: bool(failed), "the failed save")
+    # It still comes to rest, with nothing of the follow-up left set.
+    await until(lambda: session._task is None and page.all("state")[-1]["orb"] == "idle", "rest")
+    assert len(session._finished) == 1 and not session._listen_after and not session._aloud
+    # At the next pause the one left is saved, once, and she brings both in.
+    await until(lambda: len(provider.calls) == 4, "the follow-up")
+    await idle(session)
+    saved = notes(await rt.conversations.history(session.id, OWNER))
+    assert len(saved) == 2 and text_of(saved[0][1]) != text_of(saved[1][1])
+    await session.close()
+
+
+async def test_a_conversation_deleted_part_way_gets_nothing_more(rt: Runtime) -> None:
+    session, _, provider = await two_waiting(rt, say("unreached"))
+    real = session._save
+
+    async def save(kind: Any, msg: Msg) -> None:
+        await real(kind, msg)
+        if notes([(kind, msg)]):
+            # Deleted elsewhere just after the first note landed.
+            await rt.conversations.delete(session.id, OWNER, rt.clock())
+
+    session._save = save  # type: ignore[method-assign]
+    await session.handle({"type": "playback.ended", "turn_id": 1})
+    await until(lambda: not session._finished, "the notes dropped")
+    await asyncio.sleep(0.05)
+    assert len(notes(await rt.conversations.history(session.id, OWNER))) == 1
+    assert len(provider.calls) == 3  # no turn on a deleted conversation
+    await session.close()
+
+
+async def test_keeping_for_later_stops_when_the_conversation_is_deleted(rt: Runtime) -> None:
+    cid = "c-gone"
+    await rt.conversations.create(cid, OWNER, rt.clock())
+    real = rt.conversations.append
+
+    async def append(conversation_id: str, owner: str, kind: Any, msg: Msg, at: int) -> int:
+        n = await real(conversation_id, owner, kind, msg, at)
+        # Deleted elsewhere just after the first note landed.
+        await rt.conversations.delete(cid, OWNER, rt.clock())
+        return n
+
+    rt.conversations.append = append  # type: ignore[method-assign]
+    two = [
+        _Finished(
+            note=f"[host] Stripe results are in. The background read you started ({READ}, "
+            f"job j{n}) is in. Result: {{}}",
+            read=None,
+            title="Stripe results are in",
+            job_id=f"j{n}",
+        )
+        for n in (1, 2)
+    ]
+    await keep_for_later(rt, cid, two)
+    assert len(notes(await rt.conversations.history(cid, OWNER))) == 1
+    assert rt.schedules is not None and await rt.schedules.held(OWNER) == []
+    assert cid not in rt.routine_holds

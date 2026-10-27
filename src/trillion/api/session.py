@@ -235,6 +235,9 @@ _NOTE_TITLE = re.compile(r"\[host\] ([^\n]+?)\. The background read you started 
 JOB_MARGIN_S = 5.0
 # How often a read that ended waits again while a routine builds in its conversation.
 HOLD_WAIT_S = 0.2
+# After a Stop, or a note that could not be saved, the follow-up waits this long for
+# the next pause: never at the rest the Stop itself made.
+PAUSE_AGAIN_S = 0.5
 
 
 def background_title(name: str, connector: str | None, label: str, *, ok: bool) -> str:
@@ -350,9 +353,10 @@ async def keep_for_later(
     rt.routine_holds.add(cid)
     opened: Any = None
     try:
-        if not await rt.conversations.exists(cid, OWNER):
-            return
         for f in finished:
+            # Looked at before each: a conversation deleted meanwhile gets nothing more.
+            if not await rt.conversations.exists(cid, OWNER):
+                return
             await rt.conversations.append(cid, OWNER, "tap", background_msg(f.note), rt.clock())
             if f.read is not None:
                 rt.jobs.keep_read(cid, *f.read)
@@ -376,7 +380,10 @@ async def _keep_after_holds(
     """`keep_for_later`, once no routine holds the conversation."""
     while cid in rt.routine_holds:
         await asyncio.sleep(HOLD_WAIT_S)
-    await keep_for_later(rt, cid, finished, notify=notify)
+    try:
+        await keep_for_later(rt, cid, finished, notify=notify)
+    except Exception as e:
+        logger.warning("background note not kept in %s: %s", cid, type(e).__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -532,6 +539,8 @@ class Session:
         self._aloud = False
         # Looks again once a page that never says it played her reply stops holding back.
         self._grace: asyncio.TimerHandle | None = None
+        # Looks again at the next pause after a Stop, or after a save that failed.
+        self._again: asyncio.TimerHandle | None = None
         # Closing because the conversation opened elsewhere: that page brings notes in.
         self._replacing = False
 
@@ -781,9 +790,10 @@ class Session:
         await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
-        grace, self._grace = self._grace, None
-        if grace is not None:
-            grace.cancel()
+        for timer in (self._grace, self._again):
+            if timer is not None:
+                timer.cancel()
+        self._grace = self._again = None
         retry, self._retry = self._retry, None
         if retry is not None and retry is not asyncio.current_task():
             retry.cancel()
@@ -803,7 +813,13 @@ class Session:
                 # A routine is the one writer there: the notes wait for it, not the close.
                 rt.jobs.track(self.id, _keep_after_holds(rt, self.id, finished, notify=notify))
             else:
-                await keep_for_later(rt, self.id, finished, notify=notify)
+                try:
+                    await keep_for_later(rt, self.id, finished, notify=notify)
+                except Exception as e:
+                    # The close goes on: what it lets go matters more than the note.
+                    logger.warning(
+                        "background note not kept in session %s: %s", self.id, type(e).__name__
+                    )
         # The turn is over by now, so nothing is replaying either of these. Belt and
         # braces: every path that ends a turn already lets its draft go.
         await self._drop_draft()
@@ -1957,10 +1973,19 @@ class Session:
         try:
             if follow_up:
                 try:
-                    await self._bring_in()
+                    stopped = not await self._bring_in()
                 except asyncio.CancelledError:
                     # Stopped before it was saved: it stays, for the next pause.
                     stopped = True
+                except Exception as e:
+                    # What was not saved stays, and is tried at the next pause; this one
+                    # still comes to rest, with nothing of the follow-up left set.
+                    logger.warning(
+                        "background note not saved in session %s: %s", self.id, type(e).__name__
+                    )
+                    self._listen_after = False
+                    stopped = True
+                    self._look_again_soon()
             while not stopped and not self._closed:
                 if self._queued:
                     if self._using is not None:
@@ -2268,6 +2293,10 @@ class Session:
             return
         if self.id in rt.routine_holds:
             return
+        if self._stopped or self._again is not None:
+            # What arrives at the rest a Stop made is never spoken: it comes at the next.
+            self._look_again_soon()
+            return
         if not free(self.facts(), rt.clock()):
             self._look_again_after_grace()
             return
@@ -2295,23 +2324,37 @@ class Session:
         # Just past the grace: `free` wants more than it, not as much.
         self._grace = asyncio.get_running_loop().call_later(left_ms / 1000 + 0.01, again)
 
-    async def _bring_in(self) -> None:
+    def _look_again_soon(self) -> None:
+        if self._again is not None or self._closed:
+            return
+
+        def again() -> None:
+            self._again = None
+            self._follow_up_if_free()
+
+        self._again = asyncio.get_running_loop().call_later(PAUSE_AGAIN_S, again)
+
+    async def _bring_in(self) -> bool:
         """Save what ended as the host's notes, one message each, and set the turn up to
         answer them. Until they are saved they stay where they were: a Stop before then
-        loses nothing, and once saving has begun it is finished."""
+        loses nothing, and once saving has begun it is finished. False when there is
+        nothing to answer: the conversation is gone."""
         done = list(self._finished)
         if done:
             self._arrived = self._starting("tap")
             built = await self._build_input("tap", done[0].note, marker=BACKGROUND)
             saving = asyncio.ensure_future(self._save_notes(built, done))
             try:
-                await asyncio.shield(saving)
+                if not await asyncio.shield(saving):
+                    return False
             except asyncio.CancelledError:
                 while not saving.done():
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.wait({saving})
                 # Saved, and still to be answered at the next pause.
-                self._unanswered = not saving.cancelled() and saving.exception() is None
+                self._unanswered = (
+                    not saving.cancelled() and saving.exception() is None and saving.result()
+                )
                 raise
         rt = self._rt
         self._unanswered = False
@@ -2327,13 +2370,23 @@ class Session:
             if rt.schedules is not None:
                 with contextlib.suppress(Exception):
                     await rt.schedules.mark_delivered(notice_id, self.id, rt.clock())
+        return True
 
-    async def _save_notes(self, built: BuiltInput, done: Sequence[_Finished]) -> None:
-        await self._commit_input("tap", built)
-        for d in done[1:]:
-            await self._save("tap", background_msg(d.note))
-        # Only now: whatever ended meanwhile waits for its own pause.
-        del self._finished[: len(done)]
+    async def _save_notes(self, built: BuiltInput, done: Sequence[_Finished]) -> bool:
+        """Save each note, taking it off the waiting list as it lands, so a save that
+        fails part way never saves one twice. False, with nothing more saved or kept,
+        once the conversation is gone."""
+        for i, d in enumerate(done):
+            if not await self._rt.conversations.exists(self.id, OWNER):
+                self._finished.clear()
+                self._unanswered = False
+                return False
+            if i == 0:
+                await self._commit_input("tap", built)
+            else:
+                await self._save("tap", background_msg(d.note))
+            del self._finished[:1]
+        return True
 
     # ── Naming (SUR-1) ───────────────────────────────────────────────────
 

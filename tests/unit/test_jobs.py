@@ -176,3 +176,24 @@ async def test_stopping_cancels_tracked_work_too() -> None:
     task = jobs.track("c1", forever())
     await jobs.stop()
     assert task.cancelled()
+
+
+async def test_nothing_is_started_once_stopped() -> None:
+    ran: list[bool] = []
+
+    async def work() -> None:
+        ran.append(True)
+
+    async def fine() -> RouterResponse:
+        return RouterResponse(status="succeeded")
+
+    async def then(job: object, r: RouterResponse) -> None:
+        ran.append(True)
+
+    jobs = Jobs(clock=lambda: 0)
+    await jobs.stop()
+    assert jobs.track("c1", work()) is None
+    with pytest.raises(Full):
+        await jobs.start("c1", "mcp_a", {}, fine, then)
+    await asyncio.sleep(0)
+    assert ran == []

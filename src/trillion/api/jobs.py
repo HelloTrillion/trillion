@@ -95,6 +95,8 @@ class Jobs:
         # Every task working for a conversation, until its delivery is done too: a job
         # off the running list may still be writing its note.
         self._tasks: dict[str, set[asyncio.Task[None]]] = {}
+        # The runtime is stopping: nothing new starts.
+        self._stopped = False
 
     def running(self, conversation_id: str) -> list[Job]:
         return [j for j in self._jobs.values() if j.conversation_id == conversation_id]
@@ -113,7 +115,7 @@ class Jobs:
         then: Then,
     ) -> Job:
         """Run `work` as a job; `then` gets its response once it has left the running."""
-        if len(self.running(conversation_id)) >= self.limit:
+        if self._stopped or len(self.running(conversation_id)) >= self.limit:
             raise Full(conversation_id)
         job = Job(
             id=secrets.token_hex(4),
@@ -123,13 +125,19 @@ class Jobs:
             started_ms=self._clock(),
             key=_key(tool, args),
         )
-        self._jobs[job.id] = job
         job.task = self.track(conversation_id, self._run(job, work, then))
+        self._jobs[job.id] = job
         await self._tell(conversation_id)
         return job
 
-    def track(self, conversation_id: str, work: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
-        """Run `work` for a conversation, cancelled with it (or with the runtime)."""
+    def track(
+        self, conversation_id: str, work: Coroutine[Any, Any, None]
+    ) -> asyncio.Task[None] | None:
+        """Run `work` for a conversation, cancelled with it (or with the runtime). None,
+        and `work` never run, once the runtime is stopping."""
+        if self._stopped:
+            work.close()
+            return None
         task = asyncio.create_task(work)
         mine = self._tasks.setdefault(conversation_id, set())
         mine.add(task)
@@ -190,6 +198,7 @@ class Jobs:
 
     async def stop(self) -> None:
         """The runtime is stopping: every read stops, and every delivery."""
+        self._stopped = True
         self._kept.clear()
         self._jobs.clear()
         tasks = {t for mine in self._tasks.values() for t in mine}
