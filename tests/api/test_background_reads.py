@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from tests.api.test_heard import Halting, asked_by_voice
 from tests.api.test_listening import hearing
 from tests.api.test_session import Page, idle
 from tests.api.test_session_notices import Shown, voiced
@@ -22,6 +23,7 @@ from trillion.api.jobs import STARTED
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import BACKGROUND, Session
 from trillion.brain.types import ContextBlock, Msg, TextBlock, ToolResultBlock
+from trillion.delivery import door as delivery
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import (
     JSON,
@@ -421,3 +423,246 @@ async def test_closing_the_runtime_cancels_every_read(
     await runtime.close()
     assert job.task is not None and job.task.cancelled()
     assert runtime.jobs.running(session.id) == []
+
+
+# ── Tracked to the end, and no note lost ─────────────────────────────────
+
+
+async def test_a_delete_while_its_note_is_written_writes_nothing(rt: Runtime) -> None:
+    tool = slow(rt)
+    first, _, provider = await started(rt)
+    cid = first.id
+    await first.close()
+    writing, never = asyncio.Event(), asyncio.Event()
+    real = rt.conversations.exists
+
+    async def exists(conversation_id: str, owner: str) -> bool:
+        if conversation_id == cid:
+            writing.set()
+            await never.wait()
+        return await real(conversation_id, owner)
+
+    rt.conversations.exists = exists  # type: ignore[method-assign]
+    (job,) = rt.jobs.running(cid)
+    tool.gate.set()
+    await writing.wait()
+    assert rt.jobs.running(cid) == []  # off the list, still delivering
+    router = create_conversations_router(rt)
+    delete = next(r for r in router.routes if getattr(r, "methods", None) == {"DELETE"})
+    await delete.endpoint(cid)  # type: ignore[attr-defined]
+    assert job.task is not None and job.task.cancelled()  # its delivery too
+    never.set()
+    await asyncio.sleep(0.02)
+    assert notes(await rt.conversations.history(cid, OWNER)) == []
+    assert rt.schedules is not None and await rt.schedules.held(OWNER) == []
+    assert cid not in rt.routine_holds
+    assert len(provider.calls) == 2
+
+
+async def test_a_page_that_opens_while_the_note_is_written_brings_it_in(rt: Runtime) -> None:
+    tool = slow(rt)
+    first, _, provider = await started(rt, say("Your Stripe numbers are in."))
+    cid = first.id
+    await first.close()
+    page = Page(rt)
+    opened: list[Session] = []
+    real = rt.conversations.append
+
+    async def append(conversation_id: str, owner: str, kind: Any, msg: Msg, at: int) -> int:
+        if conversation_id == cid and notes([(kind, msg)]) and not opened:
+            # The page reads the history just before the note lands.
+            opened.append(await Session.start(rt, page.send, cid))
+        return await real(conversation_id, owner, kind, msg, at)
+
+    rt.conversations.append = append  # type: ignore[method-assign]
+    tool.gate.set()
+    await until(lambda: len(provider.calls) == 3, "the follow-up on the page that opened")
+    await idle(opened[0])
+    assert page.all("notice") == []  # it shows the note; no ready line as well
+    assert rt.schedules is not None and await rt.schedules.held(OWNER) == []
+    assert rt.door is not None and isinstance(rt.door.notify, Shown)
+    assert rt.door.notify.calls == []
+    await opened[0].close()
+
+
+async def test_a_routine_cannot_start_while_the_note_is_written(rt: Runtime) -> None:
+    tool = slow(rt)
+    first, _, _ = await started(rt)
+    cid = first.id
+    await first.close()
+    held: list[bool] = []
+    real = rt.conversations.append
+
+    async def append(conversation_id: str, owner: str, kind: Any, msg: Msg, at: int) -> int:
+        if conversation_id == cid:
+            # What a routine's build checks before it takes the conversation.
+            held.append(cid in rt.routine_holds)
+        return await real(conversation_id, owner, kind, msg, at)
+
+    rt.conversations.append = append  # type: ignore[method-assign]
+    tool.gate.set()
+    await until(lambda: bool(held), "the note")
+    await until(lambda: cid not in rt.routine_holds, "the hold let go")
+    assert held == [True]
+
+
+async def test_a_stop_before_the_note_is_saved_loses_nothing(rt: Runtime) -> None:
+    tool = slow(rt)
+    session, _, provider = await started(rt, say("In."))
+    real = session._build_input
+    building, never = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def build(*a: Any, **kw: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if kw.get("marker") == BACKGROUND and calls == 1:
+            building.set()
+            await never.wait()
+        return await real(*a, **kw)
+
+    session._build_input = build  # type: ignore[method-assign]
+    tool.gate.set()
+    await building.wait()
+    await session.handle({"type": "interrupt"})
+    await until(lambda: len(provider.calls) == 3, "the follow-up")
+    await idle(session)
+    assert len(notes(await rt.conversations.history(session.id, OWNER))) == 1
+    await session.close()
+
+
+async def test_the_users_own_message_answers_a_saved_note(rt: Runtime) -> None:
+    tool = slow(rt)
+    first, _, provider = await started(rt, say("Here they are, and good morning."))
+    cid = first.id
+    await first.close()
+    tool.gate.set()
+    await until(lambda: rt.jobs.running(cid) == [], "the job's end")
+    await until(lambda: bool(rt.door and rt.door.notify.calls), "the note kept")  # type: ignore[attr-defined]
+    rt.provider = None  # no model yet: nothing runs on open
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    rt.provider = provider
+    await session.handle({"type": "turn.text", "text": "morning, anything new?"})
+    await idle(session)
+    await asyncio.sleep(0.02)
+    # She answered it in the user's turn: no empty turn of its own after it.
+    assert len(provider.calls) == 3 and session._task is None
+    await session.close()
+
+
+# ── Voice ────────────────────────────────────────────────────────────────
+
+
+async def spoken_read(rt: Runtime, provider: ScriptedProvider) -> tuple[Session, Page, SlowRead]:
+    """A read asked for out loud; it ends while she is still heard, and the microphone
+    that opened after her is closed again, which is the pause."""
+    hearing(rt)
+    voiced(rt)
+    rt.think_early = False  # no draft takes a scripted reply
+    tool = slow(rt)
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await asked_by_voice(rt, page, session)
+    await until(lambda: len(provider.calls) == 2 and session._task is None, "the spoken turn")
+    tool.gate.set()
+    await until(lambda: rt.jobs.running(session.id) == [], "the job's end")
+    first = page.all("reply.sentence")[0]["turn"]
+    await session.handle({"type": "playback.ended", "turn_id": first})
+    assert session._listener is not None  # her spoken turn's follow-up window
+    await session.handle({"type": "interrupt"})
+    return session, page, tool
+
+
+async def test_after_a_spoken_turn_the_microphone_comes_back_after_the_follow_up(
+    rt: Runtime,
+) -> None:
+    provider = ScriptedProvider(
+        use(READ, {}, "r1"), say("Pulling it."), say("Your Stripe numbers are in.")
+    )
+    session, page, _ = await spoken_read(rt, provider)
+    await until(lambda: len(provider.calls) == 3, "the follow-up")
+    await idle(session)
+    opened = len(page.all("mic.start"))
+    turn = page.all("reply.sentence")[-1]["turn"]
+    await session.handle({"type": "playback.ended", "turn_id": turn})
+    assert len(page.all("mic.start")) == opened + 1
+    await session.close()
+
+
+async def test_a_barge_over_a_spoken_follow_up_keeps_what_was_heard(rt: Runtime) -> None:
+    provider = Halting(use(READ, {}, "r1"), say("Pulling it."))
+    session, page, _ = await spoken_read(rt, provider)
+    before = len(page.all("reply.sentence"))
+    await page.until("reply.sentence", before + 2)
+    turn = page.all("reply.sentence")[-1]["turn"]
+    await session.handle({"type": "playback.sentence", "turn_id": turn, "seq": 1})
+    await session.handle({"type": "barge"})
+    (stopped,) = page.all("interrupted")
+    assert stopped["kept"] == "First thing.…"
+    await session.close()
+
+
+async def test_a_page_that_never_says_it_played_still_gets_the_follow_up(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(delivery, "PLAYBACK_GRACE_MS", 300)
+    voiced(rt)
+    tool = slow(rt)
+    session, _, provider = await started(rt, say("In."))
+    tool.gate.set()
+    await until(lambda: rt.jobs.running(session.id) == [], "the job's end")
+    await asyncio.sleep(0.02)
+    assert len(provider.calls) == 2  # still being heard, as far as anyone knows
+    # No playback.ended ever comes: once the grace is over, it comes anyway.
+    await until(lambda: len(provider.calls) == 3, "the follow-up after the grace")
+    await idle(session)
+    await session.close()
+
+
+# ── Closing with a note waiting ──────────────────────────────────────────
+
+
+async def test_a_page_closed_before_the_pause_keeps_the_note_and_tells(rt: Runtime) -> None:
+    voiced(rt)  # her reply is still heard: the note waits
+    tool = slow(rt)
+    session, _, provider = await started(rt)
+    tool.gate.set()
+    await until(lambda: bool(session._finished), "the note waiting")
+    await session.close()
+    assert notes(await rt.conversations.history(session.id, OWNER))
+    assert rt.door is not None and isinstance(rt.door.notify, Shown)
+    assert rt.door.notify.calls[0][0] == "Stripe results are in"
+    assert len(provider.calls) == 2
+
+
+async def test_a_page_replaced_before_the_pause_hands_the_note_on(rt: Runtime) -> None:
+    voiced(rt)
+    tool = slow(rt)
+    session, _, provider = await started(rt, say("Your Stripe numbers are in."))
+    tool.gate.set()
+    await until(lambda: bool(session._finished), "the note waiting")
+    page = Page(rt)
+    again = await Session.start(rt, page.send, session.id)
+    await until(lambda: len(provider.calls) == 3, "the follow-up on the new page")
+    await idle(again)
+    assert rt.door is not None and isinstance(rt.door.notify, Shown)
+    assert rt.door.notify.calls == [] and page.all("notice") == []
+    assert len(notes(await rt.conversations.history(session.id, OWNER))) == 1
+    await again.close()
+
+
+async def test_it_waits_while_a_routine_holds_the_conversation(rt: Runtime) -> None:
+    tool = slow(rt)
+    session, _, provider = await started(rt, say("In."))
+    rt.routine_holds.add(session.id)
+    tool.gate.set()
+    await until(lambda: bool(session._finished), "the note waiting")
+    await asyncio.sleep(0.02)
+    assert len(provider.calls) == 2
+    rt.routine_holds.discard(session.id)
+    await rt.routine_ran(session.id)  # what a routine does when it is done
+    await until(lambda: len(provider.calls) == 3, "the follow-up")
+    await idle(session)
+    await session.close()

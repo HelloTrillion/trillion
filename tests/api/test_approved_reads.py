@@ -7,12 +7,12 @@ just as when the same read runs without a card."""
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
+from tests.api.test_background_reads import until
 from tests.api.test_session import Page, idle
 from tests.api.test_widget_ask import tool_results
 from tests.brain.fakes import ScriptedProvider, say, use
@@ -114,10 +114,7 @@ async def test_the_same_read_without_a_card_was_already_read(rt: Runtime) -> Non
     rt.provider = provider
     session = await Session.start(rt, Page(rt).send, None)
     await session.handle({"type": "turn.text", "text": "read my note"})
-    for _ in range(400):
-        if len(provider.calls) == 4 and session._task is None:
-            break
-        await asyncio.sleep(0.005)
+    await until(lambda: len(provider.calls) == 4, "the follow-up")
     await idle(session)
     assert await reminder_refused(rt, provider)
     await session.close()

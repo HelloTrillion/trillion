@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +25,8 @@ from trillion.spine.untrusted import is_outside
 logger = logging.getLogger(__name__)
 
 LIMIT = 3
+# Read in the turn though its words are someone else's: a file here is quick.
+FILE_READ = "file_read"
 # What the model is told at once, in place of the result (the spec's step 1).
 STARTED = (
     "Running in the background; you will be told when it is in. Do not call it again; "
@@ -37,8 +39,15 @@ Then = Callable[["Job", RouterResponse], Awaitable[None]]
 
 def goes_to_background(d: ToolDefinition | None) -> bool:
     """A read that runs without a card and reads someone else's words: an MCP, Google
-    or Slack tool, stripe_revenue (an MCP tool), web_fetch or file_read (D1)."""
-    return d is not None and d.risk is Risk.READ and runs_unattended(d) and is_outside(d.name, d)
+    or Slack tool, stripe_revenue (an MCP tool), or web_fetch (D1). A file is read in
+    the turn: it is on this computer, and quick."""
+    return (
+        d is not None
+        and d.risk is Risk.READ
+        and runs_unattended(d)
+        and d.name != FILE_READ
+        and is_outside(d.name, d)
+    )
 
 
 def _key(tool: str, args: JSON) -> str:
@@ -83,6 +92,9 @@ class Jobs:
         self.changed = changed
         self._jobs: dict[str, Job] = {}
         self._kept: dict[str, _Kept] = {}
+        # Every task working for a conversation, until its delivery is done too: a job
+        # off the running list may still be writing its note.
+        self._tasks: dict[str, set[asyncio.Task[None]]] = {}
 
     def running(self, conversation_id: str) -> list[Job]:
         return [j for j in self._jobs.values() if j.conversation_id == conversation_id]
@@ -112,9 +124,25 @@ class Jobs:
             key=_key(tool, args),
         )
         self._jobs[job.id] = job
-        job.task = asyncio.create_task(self._run(job, work, then))
+        job.task = self.track(conversation_id, self._run(job, work, then))
         await self._tell(conversation_id)
         return job
+
+    def track(self, conversation_id: str, work: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Run `work` for a conversation, cancelled with it (or with the runtime)."""
+        task = asyncio.create_task(work)
+        mine = self._tasks.setdefault(conversation_id, set())
+        mine.add(task)
+
+        def done(t: asyncio.Task[None]) -> None:
+            left = self._tasks.get(conversation_id)
+            if left is not None:
+                left.discard(t)
+                if not left:
+                    del self._tasks[conversation_id]
+
+        task.add_done_callback(done)
+        return task
 
     async def _run(
         self, job: Job, work: Callable[[], Awaitable[RouterResponse]], then: Then
@@ -153,22 +181,25 @@ class Jobs:
         return (kept.reads, kept.notices) if kept is not None else ([], [])
 
     async def cancel(self, conversation_id: str) -> None:
-        """The conversation is gone: its reads stop, and nothing is told of them."""
+        """The conversation is gone: its reads stop, a note on its way is never written,
+        and nothing is told of them."""
         self._kept.pop(conversation_id, None)
-        await self._cancel([j for j in self.running(conversation_id)])
+        for job in self.running(conversation_id):
+            self._jobs.pop(job.id, None)
+        await self._cancel(self._tasks.pop(conversation_id, set()))
 
     async def stop(self) -> None:
-        """The runtime is stopping: every read stops."""
+        """The runtime is stopping: every read stops, and every delivery."""
         self._kept.clear()
-        await self._cancel(list(self._jobs.values()))
+        self._jobs.clear()
+        tasks = {t for mine in self._tasks.values() for t in mine}
+        self._tasks.clear()
+        await self._cancel(tasks)
 
-    async def _cancel(self, jobs: list[Job]) -> None:
-        tasks: list[asyncio.Task[Any]] = []
-        for job in jobs:
-            self._jobs.pop(job.id, None)
-            if job.task is not None and not job.task.done():
-                job.task.cancel()
-                tasks.append(job.task)
+    @staticmethod
+    async def _cancel(tasks: set[asyncio.Task[None]]) -> None:
+        for task in tasks:
+            task.cancel()
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task

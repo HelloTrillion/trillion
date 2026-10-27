@@ -32,7 +32,6 @@ def definition(name: str, risk: Risk = Risk.READ, category: str = "mcp") -> Tool
         ("calendar_events", "google"),
         ("slack_read", "slack"),
         ("web_fetch", "web"),
-        ("file_read", "files"),
     ],
 )
 def test_a_read_from_outside_goes_to_the_background(name: str, category: str) -> None:
@@ -49,6 +48,8 @@ def test_a_read_from_outside_goes_to_the_background(name: str, category: str) ->
         ("day_open", "day"),
         ("routine_nothing", "routine"),
         ("file_list", "files"),
+        # A file is on this computer and quick: read in the turn.
+        ("file_read", "files"),
     ],
 )
 def test_her_own_quick_tools_stay_in_the_turn(name: str, category: str) -> None:
@@ -145,3 +146,33 @@ def test_what_a_job_left_for_a_conversation_is_taken_once() -> None:
     jobs.keep_notice("c1", "n1")
     assert jobs.take("c1") == ([("mcp_a", {"x": 1})], ["n1"])
     assert jobs.take("c1") == ([], [])
+
+
+async def test_a_delivery_still_running_is_cancelled_with_its_conversation() -> None:
+    delivering = asyncio.Event()
+    finished: list[str] = []
+
+    async def then(job: object, r: RouterResponse) -> None:
+        delivering.set()
+        await asyncio.Event().wait()  # writing its note, for ever
+        finished.append("written")
+
+    async def fine() -> RouterResponse:
+        return RouterResponse(status="succeeded")
+
+    jobs = Jobs(clock=lambda: 0)
+    job = await jobs.start("c1", "mcp_a", {}, fine, then)
+    await delivering.wait()
+    assert jobs.running("c1") == []  # off the list, but not done
+    await jobs.cancel("c1")
+    assert job.task is not None and job.task.cancelled() and finished == []
+
+
+async def test_stopping_cancels_tracked_work_too() -> None:
+    async def forever() -> None:
+        await asyncio.Event().wait()
+
+    jobs = Jobs(clock=lambda: 0)
+    task = jobs.track("c1", forever())
+    await jobs.stop()
+    assert task.cancelled()

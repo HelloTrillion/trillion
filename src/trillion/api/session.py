@@ -51,6 +51,7 @@ from trillion.brain.types import (
     Usage,
 )
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
+from trillion.delivery import door as delivery
 from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
 from trillion.persona import day
@@ -228,8 +229,8 @@ _IN = (
     "then say at most two sentences on what matters."
 )
 _NOT_IN = "Say plainly, once, that it did not come back, and offer to try again."
-# A note's host line, on each of its lines.
-_NOTE_TITLE = re.compile(r"^\[host\] (.+?)\. The background read you started \(", re.M)
+# A note's host line, from its first line: one note per message.
+_NOTE_TITLE = re.compile(r"\[host\] ([^\n]+?)\. The background read you started \(")
 # The read's own timeout ends it first; this bounds what the router does around it.
 JOB_MARGIN_S = 5.0
 # How often a read that ended waits again while a routine builds in its conversation.
@@ -243,8 +244,6 @@ def background_title(name: str, connector: str | None, label: str, *, ok: bool) 
         subject, many = f"{connector or 'Stripe'} numbers", True
     elif name == FETCH:
         subject, many = "The page", False
-    elif name == "file_read":
-        subject, many = "The file", False
     elif connector:
         subject, many = f"{connector} results", True
     else:
@@ -273,7 +272,8 @@ def background_lines(msg: Msg) -> list[dict[str, str]] | None:
     if not any(isinstance(b, ContextBlock) and b.text == BACKGROUND for b in msg.blocks):
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
-    return [{"role": "host", "text": t} for t in _NOTE_TITLE.findall(text)]
+    found = _NOTE_TITLE.match(text)
+    return [{"role": "host", "text": found.group(1)}] if found else []
 
 
 async def background_read(
@@ -292,6 +292,25 @@ async def background_read(
         )
 
 
+def _chip(r: RouterResponse) -> str:
+    """What a call's chip says when it ends: why it was refused, its status, or that it
+    is working in the background."""
+    if r.status == "started":
+        return "background"
+    return r.reason.value if r.reason is not None else r.status
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Finished:
+    """A background read that ended: its note, the read a widget built from it remembers,
+    and the title its ready line has."""
+
+    note: str
+    read: tuple[str, JSON] | None
+    title: str
+    job_id: str
+
+
 async def background_ended(rt: Runtime, job: Job, r: RouterResponse) -> None:
     """A background read ended: to the page on its conversation, or kept there for
     when it is next opened, with a ready notice through the door."""
@@ -303,33 +322,61 @@ async def background_ended(rt: Runtime, job: Job, r: RouterResponse) -> None:
         labels.tool_label(job.tool, labels.connected(d, tool)),
         ok=r.status == "succeeded",
     )
-    note = background_note(title, job, r)
-    read = (job.tool, job.args) if r.status == "succeeded" else None
+    finished = _Finished(
+        note=background_note(title, job, r),
+        read=(job.tool, job.args) if r.status == "succeeded" else None,
+        title=title,
+        job_id=job.id,
+    )
     cid = job.conversation_id
     # A routine building there is the one writer until it is done.
     while cid in rt.routine_holds and cid not in rt.by_conversation:
         await asyncio.sleep(HOLD_WAIT_S)
     session = rt.by_conversation.get(cid)
     if session is not None:
-        await session.job_ended(note, read)
+        await session.job_ended(finished)
         return
-    if not await rt.conversations.exists(cid, OWNER):
-        return
-    await rt.conversations.append(cid, OWNER, "tap", background_msg(note), rt.clock())
-    if read is not None:
-        rt.jobs.keep_read(cid, *read)
-    if rt.schedules is not None and rt.door is not None:
-        n = await rt.schedules.ready_notice(OWNER, f"job-{job.id}", title, rt.clock(), cid)
-        rt.jobs.keep_notice(cid, n.id)
-        await rt.door.added(n)
+    await keep_for_later(rt, cid, [finished])
 
 
-@dataclass(frozen=True, kw_only=True)
-class _Finished:
-    """A background read that ended while this page was open, waiting for a pause."""
+async def keep_for_later(
+    rt: Runtime, cid: str, finished: Sequence[_Finished], *, notify: bool = True
+) -> None:
+    """Notes for a conversation no page is on: saved there, and a ready notice for each
+    through the door. Called with no await since the look that found no page there, it
+    holds the conversation as a routine does, so no turn writes between its messages.
+    A page that opened meanwhile read the history before the notes: it catches up, and
+    gets no notice for what it now shows."""
+    rt.routine_holds.add(cid)
+    opened: Any = None
+    try:
+        if not await rt.conversations.exists(cid, OWNER):
+            return
+        for f in finished:
+            await rt.conversations.append(cid, OWNER, "tap", background_msg(f.note), rt.clock())
+            if f.read is not None:
+                rt.jobs.keep_read(cid, *f.read)
+        opened = rt.by_conversation.get(cid)
+        if notify and opened is None and rt.schedules is not None and rt.door is not None:
+            for f in finished:
+                n = await rt.schedules.ready_notice(
+                    OWNER, f"job-{f.job_id}", f.title, rt.clock(), cid
+                )
+                rt.jobs.keep_notice(cid, n.id)
+                await rt.door.added(n)
+    finally:
+        rt.routine_holds.discard(cid)
+    if opened is not None:
+        await opened.catch_up()
 
-    note: str
-    read: tuple[str, JSON] | None
+
+async def _keep_after_holds(
+    rt: Runtime, cid: str, finished: Sequence[_Finished], *, notify: bool
+) -> None:
+    """`keep_for_later`, once no routine holds the conversation."""
+    while cid in rt.routine_holds:
+        await asyncio.sleep(HOLD_WAIT_S)
+    await keep_for_later(rt, cid, finished, notify=notify)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -480,6 +527,13 @@ class Session:
         # whether a saved one still waits for her (the background reads spec).
         self._finished: list[_Finished] = []
         self._unanswered = False
+        # The follow-up answers a spoken conversation: the microphone comes back after it,
+        # and a barge over it keeps what was heard.
+        self._aloud = False
+        # Looks again once a page that never says it played her reply stops holding back.
+        self._grace: asyncio.TimerHandle | None = None
+        # Closing because the conversation opened elsewhere: that page brings notes in.
+        self._replacing = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -696,6 +750,7 @@ class Session:
 
     async def replaced(self) -> None:
         """This conversation was opened somewhere else. Say so, then stop for good."""
+        self._replacing = True
         await self._send("error", code="replaced")
         await self.close()
 
@@ -726,6 +781,9 @@ class Session:
         await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
+        grace, self._grace = self._grace, None
+        if grace is not None:
+            grace.cancel()
         retry, self._retry = self._retry, None
         if retry is not None and retry is not asyncio.current_task():
             retry.cancel()
@@ -737,8 +795,15 @@ class Session:
                 await task
         finished, self._finished = self._finished, []
         if finished:
-            # Never lost: saved here, and brought in when the conversation is next open.
-            await self._leave_for_later(finished)
+            # Never lost: saved here, and brought in when the conversation is next open,
+            # with a ready notice unless the page that replaces this one brings it in.
+            rt = self._rt
+            notify = not self._replacing
+            if self.id in rt.routine_holds:
+                # A routine is the one writer there: the notes wait for it, not the close.
+                rt.jobs.track(self.id, _keep_after_holds(rt, self.id, finished, notify=notify))
+            else:
+                await keep_for_later(rt, self.id, finished, notify=notify)
         # The turn is over by now, so nothing is replaying either of these. Belt and
         # braces: every path that ends a turn already lets its draft go.
         await self._drop_draft()
@@ -1888,10 +1953,15 @@ class Session:
         `_task` stays set for the whole of it, so a second turn can never start beside
         this one: a message that arrives meanwhile is refused as busy, and a tap's note
         is picked up by the loop. `follow_up`: it brings in background reads that ended."""
+        stopped = False
         try:
             if follow_up:
-                await self._bring_in()
-            while not self._closed:
+                try:
+                    await self._bring_in()
+                except asyncio.CancelledError:
+                    # Stopped before it was saved: it stays, for the next pause.
+                    stopped = True
+            while not stopped and not self._closed:
                 if self._queued:
                     if self._using is not None:
                         # A tap's note joins the history: the draft never saw it.
@@ -1918,7 +1988,8 @@ class Session:
                     self._via = "text"
                 if follow_up:
                     # Likewise: the user's next words are theirs again, never an ask.
-                    self._via = "text"
+                    self._via = "voice" if self._aloud else "text"
+                    self._aloud = False
             if self._using is not None:
                 # Never reached its turn.
                 await self._unuse()
@@ -1958,7 +2029,7 @@ class Session:
         self._tail = None
         # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
         # read, and so was one with her voice off (D8).
-        listened = speaker is not None and self._via == "voice"
+        listened = speaker is not None and (self._via == "voice" or self._aloud)
         # What the turn saved of the round it was cut off in, when that was cut to what
         # was heard. Set only by the loop, so the page is told exactly what was kept.
         kept: str | None = None
@@ -2019,12 +2090,7 @@ class Session:
                     "tool.end",
                     call_id=ev.call_id,
                     ok=r.status in ("succeeded", "confirmation_required", "started"),
-                    # A read gone to the background: the chip says it is working there.
-                    summary="background"
-                    if r.status == "started"
-                    else r.reason.value
-                    if r.reason is not None
-                    else r.status,
+                    summary=_chip(r),
                 )
                 if r.status == "confirmation_required" and r.pending_id:
                     await self._send_card(r.pending_id)
@@ -2185,9 +2251,12 @@ class Session:
             return None
         return RouterResponse(status="started", job=job.id, detail=STARTED)
 
-    async def job_ended(self, note: str, read: tuple[str, JSON] | None) -> None:
+    async def job_ended(self, finished: _Finished) -> None:
         """A background read of this conversation ended: brought in at the next pause."""
-        self._finished.append(_Finished(note=note, read=read))
+        if self._closed:
+            # Deleted or closed meanwhile: whoever closed it keeps what it had.
+            return
+        self._finished.append(finished)
         self._follow_up_if_free()
 
     def _follow_up_if_free(self) -> None:
@@ -2197,23 +2266,57 @@ class Session:
         rt = self._rt
         if self._closed or not (self._finished or self._unanswered) or rt.provider is None:
             return
-        if self.id in rt.routine_holds or not free(self.facts(), rt.clock()):
+        if self.id in rt.routine_holds:
             return
-        # Her words on what she read can approve nothing (widget design D5).
+        if not free(self.facts(), rt.clock()):
+            self._look_again_after_grace()
+            return
+        # Her words on what she read can approve nothing (widget design D5). Answering a
+        # spoken conversation, the microphone comes back after her, as after a spoken turn.
+        self._aloud = self._via == "voice"
+        self._listen_after = self._aloud
         self._via = "ask"
         self._begin(follow_up=True)
 
+    def _look_again_after_grace(self) -> None:
+        """A page that never says it played her reply stops holding notices back after
+        the door's grace; nothing else may happen then, so the follow-up looks again."""
+        spoken = self._spoken
+        if spoken is None or self._played == spoken[0] or self._grace is not None:
+            return
+        left_ms = spoken[1] + delivery.PLAYBACK_GRACE_MS - self._rt.clock()
+        if left_ms < 0:
+            return
+
+        def again() -> None:
+            self._grace = None
+            self._follow_up_if_free()
+
+        # Just past the grace: `free` wants more than it, not as much.
+        self._grace = asyncio.get_running_loop().call_later(left_ms / 1000 + 0.01, again)
+
     async def _bring_in(self) -> None:
-        """Save what ended as the host's note, and set the turn up to answer it."""
+        """Save what ended as the host's notes, one message each, and set the turn up to
+        answer them. Until they are saved they stay where they were: a Stop before then
+        loses nothing, and once saving has begun it is finished."""
+        done = list(self._finished)
+        if done:
+            self._arrived = self._starting("tap")
+            built = await self._build_input("tap", done[0].note, marker=BACKGROUND)
+            saving = asyncio.ensure_future(self._save_notes(built, done))
+            try:
+                await asyncio.shield(saving)
+            except asyncio.CancelledError:
+                while not saving.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.wait({saving})
+                # Saved, and still to be answered at the next pause.
+                self._unanswered = not saving.cancelled() and saving.exception() is None
+                raise
         rt = self._rt
-        done, self._finished = self._finished, []
         self._unanswered = False
         reads, notices = rt.jobs.take(self.id)
         reads += [d.read for d in done if d.read is not None]
-        if done:
-            self._arrived = self._starting("tap")
-            note = "\n".join(d.note for d in done)
-            await self._commit_input("tap", await self._build_input("tap", note, marker=BACKGROUND))
         # What she says and does on it is something she read (MEM-5).
         self._outside.add(self._turn)
         # A widget she builds from it now remembers the read, as in the turn that made it.
@@ -2225,18 +2328,12 @@ class Session:
                 with contextlib.suppress(Exception):
                     await rt.schedules.mark_delivered(notice_id, self.id, rt.clock())
 
-    async def _leave_for_later(self, finished: Sequence[_Finished]) -> None:
-        """The page closed before a pause: the notes are saved, for the next open."""
-        rt = self._rt
-        try:
-            note = "\n".join(f.note for f in finished)
-            await rt.conversations.append(self.id, OWNER, "tap", background_msg(note), rt.clock())
-        except Exception as e:
-            logger.warning("background note not kept in session %s: %s", self.id, type(e).__name__)
-            return
-        for f in finished:
-            if f.read is not None:
-                rt.jobs.keep_read(self.id, *f.read)
+    async def _save_notes(self, built: BuiltInput, done: Sequence[_Finished]) -> None:
+        await self._commit_input("tap", built)
+        for d in done[1:]:
+            await self._save("tap", background_msg(d.note))
+        # Only now: whatever ended meanwhile waits for its own pause.
+        del self._finished[: len(done)]
 
     # ── Naming (SUR-1) ───────────────────────────────────────────────────
 
@@ -2645,6 +2742,9 @@ class Session:
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
         """Save a built input. History is only ever appended to."""
         self._brought.update(built.brought)
+        # Whatever she says next answers a saved background note too: it needs no turn
+        # of its own.
+        self._unanswered = False
         if kind == "user" and built.via != "ask" and self._rt.web is not None:
             # Only what the user said themselves: never a tap's note, never a page, and
             # never an ask's words, which she wrote and a page could have chosen.

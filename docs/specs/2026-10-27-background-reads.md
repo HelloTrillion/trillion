@@ -13,7 +13,7 @@ in", the board, two sentences.
 
 | | Decision | Why |
 |---|---|---|
-| D1 | **Slow reads only.** A call goes to the background when its tool is READ, runs without a card, and reads from outside: an MCP, Google or Slack tool, `stripe_revenue`, `web_fetch` or `file_read`. Her own quick tools (memory, board, schedules, rules, day, routines) and anything gated or writing stay in the turn. | What the user chose. Writes and approvals keep their exact order and cards. |
+| D1 | **Slow reads only.** A call goes to the background when its tool is READ, runs without a card, and reads from outside: an MCP, Google or Slack tool (which includes `stripe_revenue`), or `web_fetch`. Her own quick tools (memory, board, schedules, rules, day, routines), `file_read` (on this computer, and quick) and anything gated or writing stay in the turn. | What the user chose. Writes and approvals keep their exact order and cards. |
 | D2 | **At the next pause.** The result is brought in by a follow-up turn that starts only when the door would deliver a notice (`free()`): no turn running, nobody listening, nothing of hers still being heard. Never over the user, never over her own reply. | What the user chose; VOI-17. |
 | D3 | **A job is a host note, not a second turn.** The model's call gets an immediate answer ("started in the background"), so every tool use is paired at once. The real result arrives later as a host-authored message, like a tapped card's result. Two turns never run at once in one conversation. | Keeps the history well formed and the session's one-turn-at-a-time rule. |
 
@@ -30,12 +30,12 @@ in", the board, two sentences.
    - with the tool's own timeout;
    - its reads recorded as a turn's are, for live widgets.
    - A job is cancelled if its conversation is deleted, and when the runtime stops.
-4. **When it ends,** the result, wrapped as untrusted as always, is saved at once in that conversation as a host message:
+4. **When it ends,** the result, wrapped as untrusted as always, becomes a host message in that conversation. With a page open on it, the note is held in memory until the pause, so it is never written into the middle of a turn, and it is saved if the page closes first. With no page, it is saved at once:
    - `[host] The background read you started (<tool>, job <id>) is in. Result: <response JSON>`;
    - kind `tap`, with a `BACKGROUND` marker;
    - shown on reload as a small host line "Stripe numbers are in" (the tool's connector title, or its label).
 5. **The follow-up turn.**
-   - If a page is open on that conversation, the note is queued and a turn begins as soon as `free()` holds. Until then it waits, checked on each state change, as the door does.
+   - If a page is open on that conversation, the note is queued and a turn begins as soon as `free()` holds. Until then it waits, checked on each state change, as the door does, and once more when the door's playback grace runs out for a page that never says it played her reply.
    - She is told, in the note, to say in one short line that it's in, put it on the board if it is better seen, and say at most two sentences on what matters.
    - The follow-up turn counts as having read outside content (MEM-5): no reminders or memories as the user's words from it.
    - It is never a spoken yes, and can approve nothing (via `ask`, like a widget's ask).
