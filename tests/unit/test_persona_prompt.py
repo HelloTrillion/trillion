@@ -269,6 +269,16 @@ def test_she_is_told_about_reads_in_the_background_in_both_modalities() -> None:
         assert "\u2014" not in text and "\u2013" not in text
 
 
+def test_she_answers_first_then_reaches_for_a_tool_in_both_modalities() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 27, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "say one short line first, before you call it" in text
+        assert "never narrate the call" not in text
+        assert "\u2014" not in text and "\u2013" not in text
+
+
 def test_reads_still_running_ride_in_the_context() -> None:
     now = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)
     job = JobNote(tool="stripe_revenue", job_id="3f2a", seconds=12)
