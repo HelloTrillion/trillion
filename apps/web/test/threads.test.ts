@@ -256,7 +256,7 @@ describe('your day, the pure parts', () => {
 
 describe('createDayOpener', () => {
   function setup(body: unknown = { id: 'd1', created: true }, current: string | null = 'c1') {
-    const s = { current, switched: [] as string[], builds: 0, fetches: 0 };
+    const s = { current, switched: [] as string[], builds: 0, fetches: 0, spoken: [] as boolean[] };
     const opener = createDayOpener({
       fetchDay: () => {
         s.fetches++;
@@ -267,7 +267,10 @@ describe('createDayOpener', () => {
         s.switched.push(id);
         s.current = id;
       },
-      build: () => s.builds++,
+      build: (spoken) => {
+        s.builds++;
+        s.spoken.push(spoken);
+      },
     });
     return { s, opener };
   }
@@ -281,6 +284,17 @@ describe('createDayOpener', () => {
     opener.session();
     opener.board(null);
     expect(s.builds).toBe(1);
+  });
+
+  it('a day asked for out loud builds as spoken; a tap does not', async () => {
+    const { s, opener } = setup();
+    await opener.open({ spoken: true });
+    opener.session();
+    opener.board(null);
+    // A tap later, in the same day: its build is not spoken.
+    await opener.open();
+    opener.board({ widgets: [] });
+    expect(s.spoken).toEqual([true, false]);
   });
 
   it('opens a day that has a board without building', async () => {

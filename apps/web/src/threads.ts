@@ -153,8 +153,8 @@ export interface DayOpenerDeps {
   readonly fetchDay: () => Promise<unknown>;
   readonly current: () => string | null;
   readonly switchTo: (id: string) => void;
-  /** Ask the core to build the board (`day.build`). */
-  readonly build: () => void;
+  /** Ask the core to build the board (`day.build`); `spoken` when the day was asked for out loud. */
+  readonly build: (spoken: boolean) => void;
   readonly now?: () => number;
 }
 
@@ -162,8 +162,11 @@ export interface DayOpenerDeps {
 export type DayResult = 'opened' | 'failed' | 'superseded';
 
 export interface DayOpener {
-  /** The entry or her `day_open`: open today's day, building its board if it is empty. */
-  open(): Promise<DayResult>;
+  /**
+   * The entry or her `day_open`: open today's day, building its board if it is empty.
+   * `spoken`: it was asked for out loud, so the microphone reopens after the build.
+   */
+  open(opts?: { readonly spoken?: boolean }): Promise<DayResult>;
   /** The user went elsewhere: an open still waiting on the core, or on its board, is dropped. */
   cancel(): void;
   /** A session began (a switch or a reconnect): its board has not come yet. */
@@ -183,6 +186,8 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
   // The day conversation last opened, and its date: after midnight it is not today's.
   let known: { readonly id: string; readonly day: string } | null = null;
   let armed: string | null = null;
+  // Whether the armed open was asked for out loud.
+  let spoken = false;
   let seen = false;
   let last: { readonly widgets: readonly unknown[] } | null = null;
   // Counts each open, so an older answer arriving after a newer one is ignored.
@@ -193,12 +198,13 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
     const mine = armed === d.current();
     armed = null;
     // A session that is not the day's (the switch did not land there) builds nothing.
-    if (mine && needsBuild(last)) d.build();
+    if (mine && needsBuild(last)) d.build(spoken);
   }
 
   return {
-    async open() {
+    async open(opts) {
       const mine = ++gen;
+      const aloud = opts?.spoken === true;
       let body: unknown;
       try {
         body = await d.fetchDay();
@@ -211,6 +217,7 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
       known = { id: got, day: localDay(now()) };
       if (d.current() === got) {
         armed = got;
+        spoken = aloud;
         settle();
       } else {
         // The page's switch cancels whatever was waiting, this open included, so it is armed after.
@@ -218,6 +225,7 @@ export function createDayOpener(d: DayOpenerDeps): DayOpener {
         seen = false;
         last = null;
         armed = got;
+        spoken = aloud;
       }
       return 'opened';
     },

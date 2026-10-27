@@ -1118,7 +1118,7 @@ const day = createDayOpener({
   fetchDay: () => okJson(api('GET', '/api/conversations/day')),
   current: () => view.conversationId,
   switchTo: (id) => switchTo(id),
-  build: () => send({ type: 'day.build' }),
+  build: (spoken) => send(spoken ? { type: 'day.build', spoken: true } : { type: 'day.build' }),
 });
 
 // A `day.open` waiting for her to finish; a newer one replaces it.
@@ -1216,6 +1216,8 @@ function connect(): void {
     // She was asked about the day from a chat: the page opens it, as the entry does, once
     // her reply ("Opening your day.") is over, so the switch never cuts her off.
     if (msg.type === 'day.open') {
+      // Asked for out loud: once her summary is heard, the microphone reopens.
+      const spoken = msg['spoken'] === true;
       cancelDayOpen();
       cancelDayOpen = whenIdle(
         () => !view.busy && !voice.active,
@@ -1223,7 +1225,7 @@ function connect(): void {
           cancelDayOpen = () => undefined;
           threads.close();
           // Asked for by her, not tapped: a failure is said in the conversation.
-          void day.open().then((result) => {
+          void day.open({ spoken }).then((result) => {
             if (result === 'failed') apply({ ...view, entries: [...view.entries, { kind: 'notice', text: "Couldn't open your day." }] });
           });
         },
