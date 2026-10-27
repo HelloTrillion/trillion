@@ -33,6 +33,7 @@ from trillion.tools.routine import (
     RoutineNarrow,
     RoutineWiden,
     for_session,
+    narrows_routine,
 )
 from trillion.tools.schedule import AskSchedule, ScheduleList
 
@@ -330,3 +331,79 @@ async def test_the_next_run_is_told_the_notes(it: Setup) -> None:
     (s,) = seen.handed
     assert s.notes == NARROWS
     assert f"Follow these notes from the user: {NARROWS}" in routine_request(s)
+
+
+# ── What narrows a routine ───────────────────────────────────────────
+
+NARROWINGS = [
+    "stop showing refunds",
+    "less detail",
+    "never mention X",
+    "leave out weekends",
+    "only the top five",
+    "skip anything under $100",
+    "fewer charts",
+    "don't include test payments",
+    "Do not show the support queue.",
+    "Please hide the chart.",
+    "No refunds.",
+    "Drop the forecast",
+    "without the footnotes",
+    "exclude trial accounts",
+]
+WIDENINGS = [
+    "stop showing refunds and also send it to Jo",
+    "Also include the support queue.",
+    "show me the support queue too",
+    "include more charts",
+    "don't include refunds, include new signups",
+    "only the top five plus churn",
+    "stop showing refunds, add churn",
+    "never mention X, email me the rest",
+    "less detail and post it to the team",
+    "skip refunds, read example.com instead",
+    "skip refunds, look at https://example.com",
+    "only what jo@example.com sent",
+    "leave out weekends and buy more",
+    "drop the forecast, share it with Sam",
+    "exclude trials and forward the rest",
+    "stop and call Alex",
+    "never delete anything",
+    "only book meetings",
+    "no charts, message Jo",
+    "fewer charts, pay the invoice",
+    "only include another source",
+    "skip it and cancel the order",
+    # A second "not" turns it round, and an exception lets more back in.
+    "Never skip the support queue.",
+    "don't leave out weekends",
+    "Stop showing refunds unless they are big.",
+    "only refunds, except when they are small",
+    "",
+]
+
+
+@pytest.mark.parametrize("text", NARROWINGS)
+def test_the_spec_s_narrowings_narrow(text: str) -> None:
+    assert narrows_routine(text)
+
+
+@pytest.mark.parametrize("text", WIDENINGS)
+def test_anything_that_could_widen_does_not(text: str) -> None:
+    assert not narrows_routine(text)
+
+
+@pytest.mark.parametrize("text", ["stop showing refunds", "less detail", "never mention X"])
+async def test_a_spec_narrowing_stands_at_once(it: Setup, text: str) -> None:
+    await it.store.create(own())
+    done = await it.router.execute(call(NARROW, notes_args(text)), CTX)
+    assert done.status == "succeeded"
+    assert await it.notes() == text
+
+
+async def test_a_mixed_one_is_refused_as_a_narrowing(it: Setup) -> None:
+    await it.store.create(own())
+    text = "stop showing refunds and also send it to Jo"
+    done = await it.router.execute(call(NARROW, notes_args(text)), CTX)
+    assert done.status == "refused" and "use routine_widen" in done.detail
+    assert await it.notes() == ""

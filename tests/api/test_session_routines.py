@@ -22,7 +22,7 @@ from trillion.api.session import OUT_OF_TURN, ROUTINE_BUILDING, Session
 from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.persona import day, setup
 from trillion.persona.prompt import system_blocks
-from trillion.scheduler.ask import ROUTINE_RUN, Asker, RoutineDeps
+from trillion.scheduler.ask import ROUTINE_RUN, Asker, RoutineDeps, routine_request
 from trillion.scheduler.runner import Busy
 from trillion.secrets.store import MemoryStore
 
@@ -396,4 +396,65 @@ async def test_a_trim_counts_as_a_save_so_a_racing_reload_is_dropped(rt: Runtime
     saved = session._saves
     assert await session.trim_tail(tell=False) is not None
     assert session._saves == saved + 1
+    await session.close()
+
+
+# ── She knows which routine she is in ────────────────────────────────
+
+
+def context_of(provider: Recording, call: int) -> str:
+    """The host's context on the newest message of one model call."""
+    msg = provider.calls[call][1][-1]
+    return "".join(b.text for b in msg.blocks if isinstance(b, ContextBlock))
+
+
+async def test_a_routines_conversation_names_it_in_her_context(rt: Runtime) -> None:
+    assert rt.schedules is not None
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    await rt.schedules.create(
+        schedule(
+            id="0a0b0c0d", kind="ask", title="Monday revenue", target="own", conversation_id=cid
+        )
+    )
+    provider = Recording(say("Noted."), say("Hello."))
+    rt.provider = provider
+    here = await Session.start(rt, Page(rt).send, cid)
+    await here.handle({"type": "turn.text", "text": "less detail please"})
+    await idle(here)
+    assert 'routine: 0a0b0c0d "Monday revenue"' in context_of(provider, 0)
+    await here.close()
+    elsewhere = await Session.start(rt, Page(rt).send, None)
+    await elsewhere.handle({"type": "turn.text", "text": "hello"})
+    await idle(elsewhere)
+    assert "routine:" not in context_of(provider, len(provider.calls) - 1)
+    await elsewhere.close()
+
+
+async def test_todays_day_names_its_day_routine(rt: Runtime) -> None:
+    assert rt.schedules is not None
+    await rt.schedules.create(schedule(kind="ask", title="Build my day", target="day"))
+    date = day.today(rt.clock(), rt.zone())
+    cid, _ = await rt.conversations.day_conversation("local", date.isoformat(), "Your day", 1)
+    provider = Recording(say("Noted."))
+    rt.provider = provider
+    session = await Session.start(rt, Page(rt).send, cid)
+    await session.handle({"type": "turn.text", "text": "never include Slack"})
+    await idle(session)
+    assert 'routine: a1b2c3d4 "Build my day"' in context_of(provider, 0)
+    await session.close()
+
+
+async def test_the_host_line_shows_the_name_without_the_id(rt: Runtime) -> None:
+    cid = await rt.conversations.routine_conversation("local", "Monday revenue", 1)
+    s = schedule(kind="ask", title="Monday revenue", target="own", conversation_id=cid)
+    asked = Msg(
+        role="user",
+        blocks=(ContextBlock(text=ROUTINE_RUN), TextBlock(text=routine_request(s))),
+    )
+    assert "(id a1b2c3d4)" in routine_request(s).split("\n", 1)[0]
+    await rt.conversations.append(cid, "local", "tap", asked, 2)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    (history,) = page.all("history")
+    assert history["messages"] == [{"role": "host", "text": "Routine: Monday revenue"}]
     await session.close()

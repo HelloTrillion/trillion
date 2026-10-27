@@ -239,3 +239,11 @@ def test_she_is_told_how_to_set_up_and_change_a_routine_in_both_modalities() -> 
         assert '"stop", "never" or "less" is routine_narrow' in text
         assert "anything new for it to look at is routine_widen" in text
         assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_a_routines_conversation_is_named_in_the_context() -> None:
+    now = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)
+    text = volatile_context(now, [], routine='0a0b0c0d "Monday revenue"')
+    assert 'routine: 0a0b0c0d "Monday revenue"' in text
+    assert text.index("routine:") < text.index("</context>")
+    assert "routine:" not in volatile_context(now, [])

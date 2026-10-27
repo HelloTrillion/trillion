@@ -5,8 +5,8 @@ notice, her reply not kept. The run sees it called; the tool itself changes noth
 It is offered only to a routine's run, and refused anywhere else.
 
 `routine_narrow` and `routine_widen` edit a routine's notes from the user's feedback
-(AGT-7), as standing rules are kept (`tools/rules.py`): a narrowing that `narrows`
-accepts stands at once, anything else is a card. They are offered only where the
+(AGT-7), as standing rules are kept (`tools/rules.py`): a narrowing that
+`narrows_routine` accepts stands at once, anything else is a card. They are offered only where the
 routine belongs, its own conversation or today's day conversation for a day routine,
 and refused anywhere else, with nobody watching, from a tapped ask, and after reading
 outside content in the turn.
@@ -15,9 +15,11 @@ outside content in the turn.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable, Iterable
 
-from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean, narrows, read_back
+from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean, read_back
+from trillion.memory.present import inert
 from trillion.scheduler.store import NOTES_MAX, Schedule, ScheduleStore
 from trillion.spine.contract import (
     ASKS_BY_CARD,
@@ -65,6 +67,44 @@ _SCHEMA: JSON = {
 # A conversation's kind, and whether it is today's day conversation.
 Where = Callable[[str], Awaitable[tuple[str, bool]]]
 
+# How feedback that only narrows a routine opens ("stop showing refunds", "less detail").
+_NARROW_OPENERS = (
+    "stop", "don't", "do not", "dont", "never", "no", "less", "fewer", "only", "skip",
+    "leave out", "drop", "hide", "without", "exclude",
+)  # fmt: skip
+_LEAD = re.compile(r"^(?:(?:please|from now on|and|also|ok|okay)\b[\s,:]*)+")
+_WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+# A web or email address points a run somewhere new.
+_ADDRESS = re.compile(r"@|://|\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}\b")
+# Any one of these and it might widen what a run does: it acts, it adds, or it lets
+# something back in. A second "not" turns a narrowing round ("never skip X").
+_WIDENS_WORDS = frozenset(
+    "send sends sending email emails emailing post posts posting message messages "
+    "messaging buy buying pay paying delete deleting cancel cancelling share sharing "
+    "forward forwarding call calling book booking add adding also plus unless except "
+    "but however instead rather not no never don't dont nor skip skipping without "
+    "exclude excluding stop stopping hide hiding omit ignore".split()
+)
+_WIDENS_PHRASES = ("include more", "include new", "include another", "leave out", "do not")
+
+
+def narrows_routine(text: str) -> bool:
+    """Whether feedback only narrows what a routine looks at, so it stands at once.
+
+    It fails safe, as standing rules' `narrows` does: it opens with a narrowing word,
+    and holds nothing that could widen what a run does. Anything else is a card."""
+    said = " ".join(text.replace("\u2019", "'").casefold().split()).strip(" .!")
+    said = _LEAD.sub("", said)
+    opener = next((o for o in _NARROW_OPENERS if said == o or said.startswith(o + " ")), None)
+    if opener is None or _ADDRESS.search(said):
+        return False
+    rest = said[len(opener) :]
+    words = _WORD.findall(rest)
+    if any(w in _WIDENS_WORDS for w in words):
+        return False
+    padded = f" {' '.join(words)} "
+    return not any(f" {p} " in padded for p in _WIDENS_PHRASES)
+
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:
     """Whether this conversation is where a routine is changed: an 'own' routine's
@@ -76,13 +116,27 @@ def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> boo
     return kind == "day" and today
 
 
+def mine(
+    kind: str, conversation_id: str, routines: Iterable[Schedule], *, today: bool
+) -> Schedule | None:
+    """The routine this conversation belongs to, if any."""
+    return next((s for s in routines if belongs(s, kind, conversation_id, today=today)), None)
+
+
 def for_session(
     kind: str, conversation_id: str, routines: Iterable[Schedule], *, today: bool
 ) -> frozenset[str]:
     """Which routine tools a page's turn in this conversation is offered: the notes
     tools where a routine belongs. `routine_nothing` never is; it is a run's alone."""
-    mine = any(belongs(s, kind, conversation_id, today=today) for s in routines)
-    return NOTES_TOOLS if mine else frozenset()
+    found = mine(kind, conversation_id, routines, today=today)
+    return NOTES_TOOLS if found is not None else frozenset()
+
+
+def named(s: Schedule) -> str:
+    """How her context names the routine she is in: its id and its name, on one line,
+    with nothing in the name that reads as markup or closes its quotes."""
+    title = inert(s.title).replace('"', "'")
+    return f'{s.id} "{title}"'
 
 
 class RoutineNothing(BaseTool):
@@ -166,7 +220,7 @@ class RoutineNarrow(_NotesTool):
             "Anything new it should look at goes to routine_widen."
         ),
         input_schema=_SCHEMA,
-        # Only ever narrows what a routine looks at (`narrows`), so it needs no card.
+        # Only ever narrows what a routine looks at (`narrows_routine`), so no card.
         risk=Risk.WRITE,
         category=CATEGORY,
         timeout_s=10.0,
@@ -177,14 +231,14 @@ class RoutineNarrow(_NotesTool):
         why = await self._why_not(args, ctx)
         if why is not None:
             return Precondition.failed(why)
-        if not narrows(str(args.get("text", ""))):
+        if not narrows_routine(str(args.get("text", ""))):
             return Precondition.failed(_WIDENS)
         return Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         text = str(args["text"])
         # Asked again here, so nothing between the check and the write can widen it.
-        if not narrows(text):
+        if not narrows_routine(text):
             return _refused(_WIDENS, "asks_first")
         refused = await self._add(args, ctx)
         if refused is not None:

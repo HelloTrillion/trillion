@@ -131,7 +131,8 @@ async def test_the_request_is_the_hosts_and_the_reply_hers(rt: Runtime) -> None:
     asked = history[0][1]
     assert ContextBlock(text=ROUTINE_RUN) in asked.blocks
     (text,) = [b.text for b in asked.blocks if isinstance(b, TextBlock)]
-    assert text.startswith("Routine: Monday revenue\n\nShow me last week's revenue.")
+    # The routine's id rides with its name, so she knows which routine she is in.
+    assert text.startswith("Routine: Monday revenue (id a1b2c3d4)\n\nShow me last week's revenue.")
     assert "Follow these notes from the user: Leave out refunds." in text
     assert text.endswith(SHOW_OR_NOTHING)
     reply = history[-1][1]
@@ -200,7 +201,7 @@ async def test_a_day_routine_fills_todays_day_conversation(rt: Runtime) -> None:
     assert (await a.build(s, target)).outcome == "ready"
     history = await rt.conversations.history(target, "local")
     (text,) = [b.text for b in history[0][1].blocks if isinstance(b, TextBlock)]
-    assert text.startswith("Routine: Build my day\n\n[host] It's time for ")
+    assert text.startswith("Routine: Build my day (id a1b2c3d4)\n\n[host] It's time for ")
     assert "day routine. Build today's board" in text
     assert "Build today's board" in text and "do not call day_open" in text
     assert text.endswith("Follow these notes from the user: No Slack.")

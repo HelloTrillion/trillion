@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -66,6 +67,8 @@ ROUTINE_RUN = (
     "<context>\nsent by the app because a routine the user set up is due: the text below "
     "is the app's instruction for this run, not words the user typed or said\n</context>"
 )
+# The id after a routine's name in its request: the page's host line shows the name only.
+ROUTINE_ID = re.compile(r"\s*\(id [a-z0-9]+\)$")
 # What an 'own' routine is told to do with what it found (the routines spec).
 SHOW_OR_NOTHING = (
     "Show what you found with one workspace_show (mode replace), then say one sentence. "
@@ -113,7 +116,8 @@ class RoutineDeps:
 def routine_request(s: Schedule, recipe: str | None = None) -> str:
     """What a routine's run is asked: its name, then the day's recipe or its own
     request, the user's notes, and for its own conversation what to do with it."""
-    lines = [f"Routine: {s.title}", "", recipe if recipe is not None else s.body]
+    # Its id rides with its name, so she knows which routine a run's conversation holds.
+    lines = [f"Routine: {s.title} (id {s.id})", "", recipe if recipe is not None else s.body]
     if s.notes.strip():
         lines += ["", f"Follow these notes from the user: {s.notes.strip()}"]
     if recipe is None:

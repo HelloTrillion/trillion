@@ -57,7 +57,7 @@ from trillion.persona.prompt import (
     greeting,
     volatile_context,
 )
-from trillion.scheduler.ask import ROUTINE_RUN
+from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
 from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext, ToolDefinition
@@ -66,6 +66,8 @@ from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
+from trillion.tools.routine import mine as routine_here
+from trillion.tools.routine import named as routine_named
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
@@ -170,7 +172,7 @@ def routine_run(msg: Msg) -> str | None:
     if not any(isinstance(b, ContextBlock) and b.text == ROUTINE_RUN for b in msg.blocks):
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
-    return text.split("\n", 1)[0].strip() or "Routine"
+    return ROUTINE_ID.sub("", text.split("\n", 1)[0].strip()) or "Routine"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -309,8 +311,10 @@ class Session:
         # names it once, after her first reply, and never over the user's own name.
         self._title_source: str | None = None
         self._naming: asyncio.Task[None] | None = None
-        # The routine tools a page's turn here is offered, read again before each turn.
+        # The routine tools a page's turn here is offered, and the routine named in her
+        # context, read again before each turn.
         self._routine_tools: frozenset[str] = frozenset()
+        self._routine = ""
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -443,6 +447,8 @@ class Session:
             routines = []
         today = self.day == day.today(rt.clock(), rt.zone()).isoformat()
         self._routine_tools = routine_tools(self.kind, self.id, routines, today=today)
+        found = routine_here(self.kind, self.id, routines, today=today)
+        self._routine = routine_named(found) if found is not None else ""
 
     def _model(self) -> dict[str, str] | None:
         p = self._rt.provider
@@ -2025,7 +2031,6 @@ class Session:
         built = await self._build_input("user", words, via="voice")
         # The same as `_one_turn` sends: its rules and skills, its history, its tools.
         system = await asyncio.to_thread(rt.system)
-        await self._read_routines()
         # Read after the awaits, so a trim meanwhile is in what is sent.
         history = [*self._history, built.msg]
         # A history the turn would summarize first is not the history it would send.
@@ -2312,6 +2317,7 @@ class Session:
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
         recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
+        await self._read_routines()
         context = volatile_context(
             datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
             pending,
@@ -2320,6 +2326,7 @@ class Session:
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
             board=board_summary(await self._board()),
+            routine=self._routine,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:
