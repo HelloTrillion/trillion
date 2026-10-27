@@ -156,6 +156,8 @@ async def test_tools_and_each_model_call_are_counted(rt: Runtime) -> None:
     target = rt.granted_roots[0] / "note.txt"
     target.write_text("hi", encoding="utf-8")
     rt.provider = ScriptedProvider(use("file_read", {"path": str(target)}), say("It says hi."))
+    # No room in the background: the read runs in the turn, one turn to time.
+    rt.jobs.limit = 0
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "turn.text", "text": "read it"})

@@ -46,6 +46,15 @@ class PendingNote:
     summary: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class JobNote:
+    """A read still running in the background (the background reads spec)."""
+
+    tool: str
+    job_id: str
+    seconds: int
+
+
 def fields(path: Path) -> dict[str, str]:
     """`key: value` lines from a file's front matter. A missing file has none."""
     try:
@@ -199,6 +208,7 @@ def volatile_context(
     zone: str = "",
     board: str = "",
     routine: str = "",
+    jobs: Sequence[JobNote] = (),
 ) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
@@ -213,6 +223,9 @@ def volatile_context(
     `routine` names the routine this conversation belongs to, as `id "name"`, so she
     knows which one feedback here changes (the routines spec).
 
+    `jobs` are her reads still running in the background, so asked whether it is in
+    yet she says it is on its way, and never starts the same read again.
+
     `board` is the one-line summary of her board (SUR-1). It is wrapped as untrusted
     here: its titles may quote a page she read. It rides with the message, never in the
     cached block, and with no board nothing is added."""
@@ -224,6 +237,7 @@ def volatile_context(
     if routine:
         # The routine this conversation belongs to: its id, for routine_narrow and widen.
         lines.append(f"routine: {routine}")
+    lines.extend(f"background: {j.tool} (job {j.job_id}) running {j.seconds} s" for j in jobs)
     if spoken is not None:
         # How this one message arrived (PER-3, #40). It rides here, with the message,
         # so the cached block stays the same whether the user types or talks.

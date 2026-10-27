@@ -30,7 +30,7 @@ from trillion.brain.types import (
     Usage,
 )
 from trillion.spine.confirm import Refusal
-from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext
+from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
 from trillion.spine.loop_guard import Limits, LoopGuard, Verdict
 from trillion.spine.registry import ToolRegistry
 from trillion.spine.router import Router, RouterResponse
@@ -89,6 +89,11 @@ class TurnDone:
     error_kind: str | None = None
 
 
+# Asked of each call whether it runs in the background: the immediate answer if it does
+# (or a refusal), None to run it in the turn (the background reads spec).
+Background = Callable[[ToolUse, ToolDefinition, ToolContext], Awaitable[RouterResponse | None]]
+
+
 def tool_schemas(registry: ToolRegistry) -> list[ToolSchema]:
     return [
         ToolSchema(name=d.name, description=d.description, input_schema=d.input_schema)
@@ -109,6 +114,7 @@ async def run_turn(
     limits: Limits | None = None,
     first: AsyncIterator[ModelEvent] | None = None,
     heard: Callable[[str], str | None] | None = None,
+    background: Background | None = None,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
@@ -124,7 +130,10 @@ async def run_turn(
 
     `heard`, for a spoken turn, cuts the text to what the user heard when it is
     interrupted (D8): given what she wrote this round, it returns the part heard, or
-    None when the user read it all instead (her voice failed or was muted)."""
+    None when the user read it all instead (her voice failed or was muted).
+
+    `background`, when given, may take a slow read off the turn: the call is answered
+    at once and its result arrives later, outside this turn."""
     guard = LoopGuard(limits)
     tools = tool_schemas(registry)
     pricing = provider.pricing()
@@ -154,7 +163,14 @@ async def run_turn(
                 status="refused", reason=Refusal.INVALID_ARGS, detail=u.invalid
             )
         else:
-            response = await router.dispatch(ToolCall(name=u.name, args=u.args), ctx(u.id), guard)
+            context = ctx(u.id)
+            handed = None
+            if background is not None and definition is not None:
+                handed = await background(u, definition, context)
+            if handed is not None:
+                response = handed
+            else:
+                response = await router.dispatch(ToolCall(name=u.name, args=u.args), context, guard)
         await emit(ToolEnded(call_id=u.id, name=u.name, response=response, args=u.args))
         return ToolResultBlock(
             tool_use_id=u.id,

@@ -395,6 +395,9 @@ def connect_stripe(rt: Runtime) -> list[tuple[str, JSON]]:
 
 async def test_a_turns_reads_become_the_widgets_live(rt: Runtime) -> None:
     called = connect_stripe(rt)
+    # No room in the background: the reads run in the turn, as when the day is built.
+    # A read brought in later is tests/api/test_background_reads.py.
+    rt.jobs.limit = 0
     rt.provider = ScriptedProvider(
         use("mcp_stripe_list_charges", {"limit": 10}, "c1"),
         use("mcp_stripe_list_disputes", {}, "c2"),  # fails: not remembered

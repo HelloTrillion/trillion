@@ -7,6 +7,7 @@ just as when the same read runs without a card."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -106,10 +107,17 @@ async def test_a_read_approved_by_saying_yes_counts_as_read(rt: Runtime) -> None
 
 async def test_the_same_read_without_a_card_was_already_read(rt: Runtime) -> None:
     rt.registry.register(NoteRead(Risk.READ), module="tests.api")
-    provider = ScriptedProvider(use(NOTE, {}, "n1"), use("reminder_set", REMIND, "r1"), say("."))
+    # Without a card it runs in the background, and what she does on its note is read.
+    provider = ScriptedProvider(
+        use(NOTE, {}, "n1"), say("Reading it."), use("reminder_set", REMIND, "r1"), say(".")
+    )
     rt.provider = provider
     session = await Session.start(rt, Page(rt).send, None)
     await session.handle({"type": "turn.text", "text": "read my note"})
+    for _ in range(400):
+        if len(provider.calls) == 4 and session._task is None:
+            break
+        await asyncio.sleep(0.005)
     await idle(session)
     assert await reminder_refused(rt, provider)
     await session.close()
