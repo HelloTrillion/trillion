@@ -104,6 +104,10 @@ class RouterResponse:
     detail: str = ""
     error_kind: str | None = None
     warning: str | None = None
+    # The tool a confirmed or cancelled card belongs to: an approved read is someone
+    # else's words like any read (MEM-5), whichever way it was approved. Never sent to
+    # the model.
+    tool: str | None = None
 
     def to_model(self) -> str:
         """The JSON the model sees. Only fields that carry information."""
@@ -842,4 +846,5 @@ class Router:
         response: RouterResponse,
         decision: str = "resolve",
     ) -> RouterResponse:
+        response = dataclasses.replace(response, tool=a.tool)
         return await self._audit(ctx, start, a.tool, a.args_hash, a.risk.value, decision, response)

@@ -60,6 +60,7 @@ from trillion.persona.prompt import (
 from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
+from trillion.spine.router import RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
@@ -1520,6 +1521,10 @@ class Session:
             decision,
             self._ctx(f"tap-{uuid.uuid4().hex}", via="tap", turn=self._turn + 1),
         )
+        if self._read_outside(None, response):
+            # What she says and does on the result is something she read (MEM-5), as
+            # when the same read runs without a card. Her answer runs in this turn.
+            self._outside.add(self._turn)
         await self._send(
             "confirm.resolved",
             pending_id=pending_id,
@@ -1532,6 +1537,14 @@ class Session:
         self._queued.append(note + response.to_model())
         if self._task is None:
             self._begin()
+
+    def _read_outside(self, name: str | None, r: RouterResponse) -> bool:
+        """A call that succeeded with someone else's words. A confirmed card counts as
+        the tool it ran, by tap or by her `confirm_pending_action`, never as itself."""
+        ran = r.tool or name
+        if r.status != "succeeded" or ran is None:
+            return False
+        return is_outside(ran, self._rt.registry.definition(ran))
 
     # ── A turn ───────────────────────────────────────────────────────────
 
@@ -1660,7 +1673,7 @@ class Session:
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
             elif isinstance(ev, ToolEnded):
                 r = ev.response
-                if is_outside(ev.name, rt.registry.definition(ev.name)) and r.status == "succeeded":
+                if self._read_outside(ev.name, r):
                     # From here to the end of the turn, what she writes to memory is
                     # something she read, not something the user said.
                     self._outside.add(turn)
