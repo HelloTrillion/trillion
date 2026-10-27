@@ -174,6 +174,17 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.8.4 | Turn off "Keep widgets fresh" in Settings, change the data and open the board | Nothing refreshes, not even on opening, and the refresh button does nothing. Turn it back on and the card catches up. |
 | 2.8.5 | Disconnect the service, then click the refresh button | The footer reads "Couldn't refresh" with an age. The old numbers stay. |
 
+### 2.9 Your day (SUR-1), by hand with a connected calendar and Voice off
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.9.1 | From an ordinary chat, ask "what's my day?" | Today's day conversation opens, "Building your day" shows, and a live board appears from what is connected, followed by two short sentences. |
+| 2.9.2 | Tap Your day at the top of the thread list again | The same conversation opens and the board is not rebuilt. |
+| 2.9.3 | Disconnect everything, then open a new day (or clear the board) and tap Your day | The board shows her reminders and the callout about connecting a calendar. |
+| 2.9.4 | Tell her "on my day board, skip mentions". Rebuild the day | The board has no mentions card. |
+| 2.9.5 | The next day, tap Your day | A new day conversation is created. Yesterday's stays in the thread list. |
+| 2.9.6 | Wait with the app open and nothing asked | No day board is built by itself. |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)

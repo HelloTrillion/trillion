@@ -179,6 +179,26 @@ describe('view', () => {
     expect(feed([{ type: 'error', code: 'provider', kind: 'unauthorized' }]).banner).toMatch(/rejected the key/);
   });
 
+  it('shows the app\'s line from history as a host line, never as the user\'s', () => {
+    const v = feed([
+      { type: 'history', messages: [{ role: 'host', text: 'Building your day' }, { role: 'assistant', text: 'Two meetings.' }] },
+    ]);
+    expect(v.entries).toEqual([
+      { kind: 'host', text: 'Building your day' },
+      { kind: 'assistant', text: 'Two meetings.', interrupted: false },
+    ]);
+  });
+
+  it('draws the host line as it arrives, before the turn it starts', () => {
+    const v = feed([
+      { type: 'session', id: 'd1', agent_name: 'Nova', model: null, title: null },
+      { type: 'host', text: 'Building your day' },
+      { type: 'state', orb: 'processing' },
+    ]);
+    expect(v.entries).toEqual([{ kind: 'host', text: 'Building your day' }]);
+    expect(feed([{ type: 'host' }]).entries).toEqual([]);
+  });
+
   it('restores a conversation from history', () => {
     const v = feed([{ type: 'history', messages: [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }] }]);
     expect(v.entries.map((e) => e.kind)).toEqual(['user', 'assistant']);

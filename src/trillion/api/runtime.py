@@ -29,6 +29,7 @@ from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
+from trillion.persona.day import DAY_READS, SetUp
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker
@@ -36,8 +37,9 @@ from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
 from trillion.spine.audit import audit_key
+from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
-from trillion.spine.registry import ToolRegistry
+from trillion.spine.registry import ToolRegistry, runs_unattended
 from trillion.spine.router import Router
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
@@ -46,6 +48,7 @@ from trillion.storage.sqlite.conversation_store import SqliteConversationStore, 
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
+from trillion.tools.day import DAY_OPEN, DayOpen, Where
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
@@ -266,6 +269,8 @@ class Runtime:
     # The widget types the workspace tools were last told, so an unchanged list is
     # not built and validated again.
     _told: list[str] | None = None
+    # When each day conversation was last asked to build its board (epoch ms).
+    day_built: dict[str, int] = field(default_factory=dict)
 
     def out_of_turn(self) -> int:
         """A fresh number for speech outside a turn, never reused in this process."""
@@ -438,6 +443,54 @@ class Runtime:
                 self.registry.redefine(name, definition)
         # Only once all four took it: a failed redefine is tried again next time.
         self._told = types
+
+    def day_setup(self) -> SetUp:
+        """What the day board may read without asking (persona/day.py). A source set up
+        whose read tools still ask first is listed apart and never read: building the
+        day must never put up a card."""
+        saved = self.google.saved if self.google is not None else None
+        readable: dict[str, bool] = {}
+        for source, tools, on in (
+            (
+                "google-calendar",
+                DAY_READS["google-calendar"],
+                bool(saved and saved.with_service("calendar")),
+            ),
+            ("gmail", DAY_READS["gmail"], bool(saved and saved.with_service("gmail"))),
+            ("slack", DAY_READS["slack"], self.slack is not None and bool(self.slack.token())),
+        ):
+            if on:
+                readable[source] = all(self._reads_freely(t) for t in tools)
+        catalog: list[str] = []
+        states = self.mcp.states.values() if self.mcp is not None else []
+        for s in states:
+            # A server whose tools are not known yet (starting, or down) is left out.
+            if s.config.catalog and not s.config.disabled and s.tools:
+                readable[s.config.catalog] = any(self._reads_freely(t.name) for t in s.tools)
+                catalog.append(s.config.catalog)
+        return SetUp(
+            calendar=readable.get("google-calendar", False),
+            gmail=readable.get("gmail", False),
+            slack=readable.get("slack", False),
+            catalog=frozenset(c for c in catalog if readable[c]),
+            asks_first=tuple(dict.fromkeys(i for i, ok in readable.items() if not ok)),
+        )
+
+    def _reads_freely(self, name: str) -> bool:
+        """A registered read that runs without a card."""
+        d = self.registry.definition(name)
+        return d is not None and d.risk is Risk.READ and runs_unattended(d)
+
+    async def open_day(self, conversation_id: str) -> Where:
+        """`day_open`: the page on a chat is told to open the day; in the day itself
+        there is nothing to open."""
+        session = self.by_conversation.get(conversation_id)
+        if session is None:
+            return "no_page"
+        if session.kind == "day":
+            return "here"
+        await session.send("day.open")
+        return "opened"
 
     def _mcp_fact(self) -> str:
         servers = self.mcp.states.values() if self.mcp is not None else []
@@ -700,6 +753,9 @@ async def open_runtime(
             board_tool, WorkspaceShow | WorkspaceUpdate | WorkspaceRemove | WorkspaceClose
         ):
             board_tool.bind(rt.boards, OWNER)
+    day_tool = registry.get(DAY_OPEN)
+    if isinstance(day_tool, DayOpen):
+        day_tool.bind(rt.open_day, OWNER)
     for name in (KEEP, DROP, NEVER, LIST_RULES):
         rule_tool = registry.get(name)
         if isinstance(rule_tool, RuleKeep | RuleDrop | RuleNever | RuleList):

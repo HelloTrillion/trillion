@@ -42,6 +42,8 @@ export type Entry =
       readonly reason: Reason | null;
     }
   | { readonly kind: 'notice'; readonly text: string }
+  /** A line the app wrote ("Building your day"): never the user's words, never hers. */
+  | { readonly kind: 'host'; readonly text: string }
   | {
       readonly kind: 'scheduled';
       readonly id: string;
@@ -426,10 +428,15 @@ function step(view: View, msg: ServerMsg): View {
       const entries: Entry[] = rows.map((r) =>
         r['role'] === 'user'
           ? { kind: 'user', text: str(r['text']) }
-          : { kind: 'assistant', text: str(r['text']), interrupted: false },
+          : r['role'] === 'host'
+            ? { kind: 'host', text: str(r['text']) }
+            : { kind: 'assistant', text: str(r['text']), interrupted: false },
       );
       return { ...view, entries };
     }
+    case 'host':
+      // The app's own line, drawn just before the turn it starts.
+      return str(msg['text']) ? { ...view, entries: [...view.entries, { kind: 'host', text: str(msg['text']) }] } : view;
     case 'state': {
       const orb = ORBS.find((o) => o === msg['orb']) ?? view.orb;
       const noticeSpeaking = orb === 'speaking' && msg['notice'] === true;

@@ -49,6 +49,7 @@ from trillion.brain.types import (
 )
 from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.memory import present
+from trillion.persona import day
 from trillion.persona.prompt import (
     PendingNote,
     compaction,
@@ -60,7 +61,7 @@ from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import Risk, ToolContext
 from trillion.spine.untrusted import is_outside, wrap
-from trillion.storage.sqlite.conversation_store import USER_INPUTS, Kind
+from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
@@ -88,6 +89,10 @@ OVERLAP_TICK_S = 0.05
 # a reply that never sounds, a long tool, a page that stopped reporting (VOI-9).
 WATCH_HOLD_S = 15.0
 SURFACE = "web"
+# The day board is built at most this often per conversation, however often it is asked.
+DAY_BUILD_EVERY_MS = 60_000
+# How the page shows the saved recipe: a small line, never the user's words.
+DAY_BUILD_SHOWN = "Building your day"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -138,6 +143,21 @@ def asked(msg: Msg) -> bool:
     return any(isinstance(b, ContextBlock) and b.text == ASKED for b in msg.blocks)
 
 
+# Saved with the recipe for the day board, ahead of it (ONB-3). It tells her the text
+# is the app's own instruction, and it is how history shows it as a host line rather
+# than as something the user said.
+DAY_BUILD = (
+    "<context>\nsent by the app because the user opened their day: the text below is "
+    "the app's instruction for building the day board, not words the user typed or "
+    "said\n</context>"
+)
+
+
+def day_build(msg: Msg) -> bool:
+    """Whether a saved message is the day board's recipe."""
+    return any(isinstance(b, ContextBlock) and b.text == DAY_BUILD for b in msg.blocks)
+
+
 @dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
@@ -158,6 +178,12 @@ class Session:
         # The page can silence her; then nothing is synthesized, so nothing is paid for.
         self._muted = False
         self.id = conversation_id
+        # A chat, or the user's day (SUR-1), where she builds the day board.
+        self.kind: ConversationKind = "chat"
+        # A day conversation's local date (YYYY-MM-DD), and whether the running turn is
+        # building its board.
+        self.day: str | None = None
+        self._building_day = False
         # The messages the model is sent, after the latest summary, each with its kind
         # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
@@ -274,10 +300,15 @@ class Session:
             for kind, msg in await rt.conversations.history(session.id, OWNER):
                 session._turn += kind in USER_INPUTS
                 text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
-                if kind in ("user", "assistant") and text:
+                if kind == "tap" and day_build(msg):
+                    # The host's line, never shown as the user's words or the recipe's.
+                    shown.append({"role": "host", "text": DAY_BUILD_SHOWN})
+                elif kind in ("user", "assistant") and text:
                     shown.append({"role": msg.role, "text": text})
             summary, rows = await rt.conversations.context(session.id, OWNER)
             session._summary = summary
+            found = await rt.conversations.kind_of(session.id, OWNER)
+            session.kind, session.day = found if found is not None else ("chat", None)
             if rt.web is not None:
                 # The addresses the user gave earlier in this conversation stay openable.
                 for kind, msg in await rt.conversations.history(session.id, OWNER):
@@ -476,6 +507,8 @@ class Session:
             await self._on_tap(msg.get("pending_id"), kind)
         elif kind == "greet":
             await self._on_greet()
+        elif kind == "day.build":
+            await self._on_day_build()
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
         elif kind == "mic.opened":
@@ -623,6 +656,45 @@ class Session:
             self._via = "text"
             self._arrived = self._starting("greet")
             self._queued.append(greeting(rt.identity))
+            self._begin()
+
+    async def _on_day_build(self) -> None:
+        """Build the day board (SUR-1): she reads what is connected and shows it.
+
+        Like the greeting, the page only asks: the recipe is composed here from what
+        is set up, never from anything the page sent (ONB-3). It is taken only in
+        today's day conversation, never over a running turn, and at most once a minute. It is
+        saved as the host's input, so it advances no turn and can approve nothing."""
+        rt = self._rt
+        if self.kind != "day":
+            return
+        if rt.provider is None:
+            await self._error("no_model")
+            return
+        async with self._taking_input():
+            now = rt.clock()
+            zone = rt.zone()
+            date = day.today(now, zone)
+            last = rt.day_built.get(self.id)
+            if (
+                self._task is not None
+                # A past day stays as it was left: its board is that day's.
+                or self.day != date.isoformat()
+                or (last is not None and now - last < DAY_BUILD_EVERY_MS)
+            ):
+                return
+            await self._stop_listening()
+            # Never an approval: the recipe is the app's words, not the user's.
+            self._via = "ask"
+            self.active_ms = now
+            self._arrived = self._starting("tap")
+            text = day.recipe(rt.day_setup(), date, zone or "", rt.identity)
+            built = await self._build_input("tap", text, marker=DAY_BUILD)
+            await self._commit_input("tap", built)
+            # Only once it is saved: a build that failed to save can be asked for again.
+            rt.day_built[self.id] = now
+            await self._send("host", text=DAY_BUILD_SHOWN)
+            self._building_day = True
             self._begin()
 
     # ── Listening ────────────────────────────────────────────────────────
@@ -1477,6 +1549,11 @@ class Session:
             # Only its own: never a task that started after this one was let go.
             if self._task is asyncio.current_task():
                 self._task = None
+                if self._building_day:
+                    # Before anything awaits, so no input of the user's has begun: their
+                    # next answer to a card is theirs again, never taken for an ask.
+                    self._building_day = False
+                    self._via = "text"
             if self._using is not None:
                 # Never reached its turn.
                 await self._unuse()
@@ -2069,11 +2146,17 @@ class Session:
         await self._send("notice", code="compacted")
 
     async def _build_input(
-        self, kind: Kind, text: str, *, via: Literal["voice", "text", "ask"] | None = None
+        self,
+        kind: Kind,
+        text: str,
+        *,
+        via: Literal["voice", "text", "ask"] | None = None,
+        marker: str | None = None,
     ) -> BuiltInput:
         """The message a user input is saved as, built but not saved. A draft (VOI-12)
         uses this, so a used draft saves exactly what it was given. `via` is how it was
-        said, when that is not yet the session's."""
+        said, when that is not yet the session's. `marker` is a host note saved ahead
+        of the text, saying what the text is."""
         via = via or self._via
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
@@ -2092,6 +2175,8 @@ class Session:
             board=board_summary(await self._board()),
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
+        if marker is not None:
+            notes = (*notes, ContextBlock(text=marker))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
         return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought, via=via)
 
