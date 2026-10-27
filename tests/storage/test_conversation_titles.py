@@ -176,7 +176,11 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
         " VALUES ('local', 'bare', 'user', 'user', ?, 9)",
         (json.dumps([{"t": "context", "text": "no words"}]),),
     )
-    assert await migrate(conn) == ["010_conversation_titles", "011_boards"]
+    assert await migrate(conn) == [
+        "010_conversation_titles",
+        "011_boards",
+        "012_rule_events",
+    ]
     store = SqliteConversationStore(conn)
     assert await store.title_of("old", OWNER) == ("Plan the trip", "words")
     assert (await store.list_chats(OWNER))[0][0].last_message_at == 9
