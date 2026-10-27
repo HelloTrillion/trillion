@@ -100,6 +100,19 @@ def timings(path: Path, owner_id: str, limit: int) -> list[dict[str, Any]]:
     return out
 
 
+def _soonest(conn: sqlite3.Connection, owner_id: str) -> Any:
+    """The next one due, never a paused routine's: its time waits until it is resumed.
+    A database from before routines has no pause to read."""
+    query = (
+        "SELECT next_due_ms, zone FROM schedules WHERE owner_id = ? AND status = 'active'"
+        " AND next_due_ms IS NOT NULL{} ORDER BY next_due_ms LIMIT 1"
+    )
+    try:
+        return conn.execute(query.format(" AND paused_ms IS NULL"), (owner_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return conn.execute(query.format(""), (owner_id,)).fetchone()
+
+
 def schedules(path: Path, owner_id: str, since_ms: int) -> dict[str, Any] | None:
     """Reminders and timed asks (AGT-4): how many are active, the next one due, and how
     many runs were blocked or failed since a moment. None with no database, or one from
@@ -112,11 +125,7 @@ def schedules(path: Path, owner_id: str, since_ms: int) -> dict[str, Any] | None
                 "SELECT count(*) FROM schedules WHERE owner_id = ? AND status = 'active'",
                 (owner_id,),
             ).fetchone()
-            soonest = conn.execute(
-                "SELECT next_due_ms, zone FROM schedules WHERE owner_id = ? AND status = 'active'"
-                " AND next_due_ms IS NOT NULL ORDER BY next_due_ms LIMIT 1",
-                (owner_id,),
-            ).fetchone()
+            soonest = _soonest(conn, owner_id)
             (troubled,) = conn.execute(
                 "SELECT count(*) FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
                 " WHERE s.owner_id = ? AND r.status IN ('blocked', 'failed')"

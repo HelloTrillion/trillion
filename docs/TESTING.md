@@ -185,6 +185,23 @@ Measure **end of user speech → first non-silent assistant audio** by loopback 
 | 2.9.5 | The next day, tap Your day | A new day conversation is created. Yesterday's stays in the thread list. |
 | 2.9.6 | Wait with the app open and nothing asked | No day board is built by itself. |
 
+### 2.10 Routines (AGT-3, AGT-6, AGT-7, SUR-9), by hand with a connected service
+
+Keep Voice off except in 2.10.2. To make a run due now, set the routine a minute or two ahead, or use a test clock.
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.10.1 | Ask "every weekday at 8, build my day" | A card says when it runs and that it is a routine on Your day. Approve it, and it is listed in Settings → Reminders → Routines. |
+| 2.10.2 | With a day routine due now, close the page. Open it again after the run, once with Voice on and once with it off | The day board was built while the page was closed. The ready line "Your day is ready" appears with an Open button, and Open shows the board. With Voice on she says the line once. |
+| 2.10.3 | Ask "every Monday morning, show me last week's revenue", approve, and let it run | It gets a conversation of its own, named after the routine and marked unread until opened. A second run replaces its board in the same conversation. |
+| 2.10.4 | Set up a routine with nothing to find (an empty source), and let it run | No ready line, no notice, no unread mark. Only a log line. |
+| 2.10.5 | In a routine's conversation, say "stop showing refunds" | She says it back at once, with no card. The next run leaves refunds out. |
+| 2.10.6 | In the same conversation, say "also read Slack" | A card asks first. Nothing changes until it is approved. |
+| 2.10.7 | In Settings → Reminders → Routines, pause a routine, then resume it, then delete it | Paused, it shows as paused and does not run. Resumed, its next run is the next due time after now, never a missed one run late. Delete asks once, and it leaves the list. |
+| 2.10.8 | Delete a routine while it is running | No ready line and no failure notice arrive. |
+| 2.10.9 | Type in a routine's conversation while it is building there | The message is refused with "She's building this conversation's routine right now", and what was typed stays in the box. |
+| 2.10.10 | Make a routine fail three runs in a row (disconnect its only source, or stop the model) | After the third, it pauses itself, and one notice says so ("Monday revenue failed three times, so I've paused it"). |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
@@ -230,7 +247,7 @@ One door: every producer — alerts, routines, sub-agent results, errors, celebr
 
 Then: nothing arrives during a live reply; the same content never arrives twice; a routine with nothing to report delivers nothing at all (AGT-6); only `critical` arrives unasked.
 
-For reminders and timed asks: [the door](../tests/delivery/test_door.py), [no other route to a surface](../tests/delivery/test_structure.py), [notifications](../tests/delivery/test_notify.py), [in a live session](../tests/api/test_session_notices.py), [on the page](../apps/web/test/view.test.ts). Staying quiet when there is nothing to report (AGT-6) waits for routines (AGT-3).
+For reminders and timed asks: [the door](../tests/delivery/test_door.py), [no other route to a surface](../tests/delivery/test_structure.py), [notifications](../tests/delivery/test_notify.py), [in a live session](../tests/api/test_session_notices.py), [on the page](../apps/web/test/view.test.ts). Staying quiet when there is nothing to report (AGT-6): [the runner](../tests/scheduler/test_routine_runner.py), and by hand in 2.10.4.
 
 ---
 

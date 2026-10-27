@@ -29,10 +29,10 @@ from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
-from trillion.persona.day import DAY_READS, SetUp
+from trillion.persona.day import DAY_READS, SetUp, today
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.scheduler import when
-from trillion.scheduler.ask import Asker
+from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
@@ -53,6 +53,7 @@ from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
+from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
 from trillion.tools.rules import (
     DROP,
     KEEP,
@@ -264,6 +265,9 @@ class Runtime:
     # remembers so it can be kept fresh (the live widgets spec).
     reads: Reads = field(default_factory=Reads)
     by_conversation: dict[str, Any] = field(default_factory=dict)
+    # Conversations a routine is building in now: a page's turn there is refused, and the
+    # page told, until it is done (one writer).
+    routine_holds: set[str] = field(default_factory=set)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
     # The widget types the workspace tools were last told, so an unchanged list is
@@ -405,6 +409,19 @@ class Runtime:
         session = self.by_conversation.get(conversation_id)
         return session is not None and session.busy()
 
+    def page_writing(self, conversation_id: str) -> bool:
+        """A page open on this conversation is taking input or running a turn there:
+        a routine waits, so the two never write between each other's messages."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and session.writing()
+
+    async def routine_ran(self, conversation_id: str) -> None:
+        """A routine wrote in a conversation: a page open on it shows what is there now,
+        or once it is free. Notices still reach the user only through the door."""
+        session = self.by_conversation.get(conversation_id)
+        if session is not None:
+            await session.catch_up()
+
     async def send_refreshing(self, conversation_id: str, widget_id: str, on: bool) -> None:
         """Every page on this conversation: a live card's refresh started or ended."""
         for session in list(self.sessions):
@@ -480,6 +497,15 @@ class Runtime:
         """A registered read that runs without a card."""
         d = self.registry.definition(name)
         return d is not None and d.risk is Risk.READ and runs_unattended(d)
+
+    async def conversation_is(self, conversation_id: str) -> tuple[str, bool]:
+        """A conversation's kind, and whether it is today's day conversation: where a
+        routine's notes may be changed (`tools/routine.py`)."""
+        found = await self.conversations.kind_of(conversation_id, OWNER)
+        if found is None:
+            return "chat", False
+        kind, date = found
+        return kind, kind == "day" and date == today(self.clock(), self.zone()).isoformat()
 
     async def open_day(self, conversation_id: str) -> Where:
         """`day_open`: the page on a chat is told to open the day; in the day itself
@@ -709,27 +735,36 @@ async def open_runtime(
     rt.schedules = schedules
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
-    rt.scheduler = Scheduler(
-        schedules,
-        lambda: rt.clock(),
-        Asker(
-            provider=lambda: rt.provider,
-            router=router,
-            registry=registry,
-            conversations=rt.conversations,
-            system=rt.system,
-            identity=lambda: rt.identity,
-            granted_roots=lambda: rt.granted_roots,
-            zone=rt.zone,
-            clock=lambda: rt.clock(),
-            owner=OWNER,
+    asker = Asker(
+        provider=lambda: rt.provider,
+        router=router,
+        registry=registry,
+        conversations=rt.conversations,
+        system=rt.system,
+        identity=lambda: rt.identity,
+        granted_roots=lambda: rt.granted_roots,
+        zone=rt.zone,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+        routines=RoutineDeps(
+            # Made below; a routine runs only once the scheduler ticks, after this returns.
+            boards=lambda: rt.boards,
+            reads=rt.reads,
+            day_setup=rt.day_setup,
+            busy=rt.page_writing,
+            ran=rt.routine_ran,
+            holds=rt.routine_holds,
         ),
-        rt.door,
     )
+    rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
             schedule_tool.bind(schedules, zone=rt.zone, clock=lambda: rt.clock(), owner=OWNER)
+    for name in (NARROW, WIDEN):
+        notes_tool = registry.get(name)
+        if isinstance(notes_tool, RoutineNarrow | RoutineWiden):
+            notes_tool.bind(schedules, rt.conversation_is, OWNER)
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):

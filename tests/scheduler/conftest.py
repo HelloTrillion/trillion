@@ -84,6 +84,7 @@ async def written(
     due_ms: int,
     now_ms: int,
     late: bool = False,
+    conversation_id: str | None = None,
 ) -> Notice:
     """A held notice, written the way the runner writes one: a running run of its
     schedule, finished together with the notice (`finish_with_notice`)."""
@@ -109,6 +110,7 @@ async def written(
         text=text,
         due_ms=due_ms,
         late=late,
+        conversation_id=conversation_id,
     )
     assert n is not None
     return n

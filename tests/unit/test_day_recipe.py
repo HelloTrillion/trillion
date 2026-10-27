@@ -104,3 +104,12 @@ def test_sources_that_ask_first_are_never_read() -> None:
 def test_she_is_told_not_to_open_the_day_from_inside_it() -> None:
     for setup in (SetUp(), SetUp(calendar=True)):
         assert "do not call day_open." in recipe(setup, DAY, "UTC", SAM)
+
+
+def test_a_day_routine_says_it_is_the_routine_not_the_user() -> None:
+    mine = recipe(SetUp(), DAY, "Europe/London", SAM, routine=True)
+    assert mine.startswith("[host] It's time for Sam's day routine. Build today's board:")
+    assert "opened their day" not in mine and no_dashes(mine)
+    # Everything after the first line is the same recipe.
+    hand = recipe(SetUp(), DAY, "Europe/London", SAM)
+    assert mine.split("\n", 1)[1] == hand.split("\n", 1)[1]

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -57,12 +58,17 @@ from trillion.persona.prompt import (
     greeting,
     volatile_context,
 )
+from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
 from trillion.spine import labels
 from trillion.spine.confirm import Status
-from trillion.spine.contract import Risk, ToolContext
+from trillion.spine.contract import Risk, ToolContext, ToolDefinition
 from trillion.spine.router import RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
+from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
+from trillion.tools.routine import for_session as routine_tools
+from trillion.tools.routine import mine as routine_here
+from trillion.tools.routine import named as routine_named
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
@@ -92,6 +98,13 @@ WATCH_HOLD_S = 15.0
 SURFACE = "web"
 # The day board is built at most this often per conversation, however often it is asked.
 DAY_BUILD_EVERY_MS = 60_000
+# A reload dropped because something was saved meanwhile is tried again this soon, and
+# given up on after this long if the page never comes free (the page catches up when
+# it next opens the conversation).
+RELOAD_AGAIN_S = 0.2
+RELOAD_GIVE_UP_S = 30.0
+# The error a page is sent when a routine is building in its conversation.
+ROUTINE_BUILDING = "routine_building"
 # How the page shows the saved recipe: a small line, never the user's words.
 DAY_BUILD_SHOWN = "Building your day"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
@@ -159,6 +172,53 @@ def day_build(msg: Msg) -> bool:
     return any(isinstance(b, ContextBlock) and b.text == DAY_BUILD for b in msg.blocks)
 
 
+def routine_run(msg: Msg) -> str | None:
+    """The host's line for a saved routine request ("Routine: Monday revenue"), or None
+    for any other message. Its first line is the routine's name (`scheduler/ask.py`)."""
+    if not any(isinstance(b, ContextBlock) and b.text == ROUTINE_RUN for b in msg.blocks):
+        return None
+    text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+    return ROUTINE_ID.sub("", text.split("\n", 1)[0].strip()) or "Routine"
+
+
+# Saved with a routine's ready line, ahead of it, in the conversation the page had open.
+# It tells her the line is the app's notice, not hers and not the user's, and it is
+# how history shows it again as the ready line with Open.
+READY_LINE = (
+    "<context>\nsent by the app because a routine the user set up finished: the line "
+    "below is the app's notice that its result is ready in another conversation, not "
+    "words the user typed or said, and not yours\n</context>"
+)
+# The conversation a ready line opens, on its last line.
+_READY_OPENS = re.compile(r"\n\(conversation ([A-Za-z0-9_-]{1,64})\)$")
+
+
+def ready_msg(title: str, conversation_id: str | None) -> Msg:
+    """A ready line as saved: the app's note, the line, and where it opens."""
+    opens = f"\n(conversation {conversation_id})" if conversation_id else ""
+    return Msg(role="user", blocks=(ContextBlock(text=READY_LINE), TextBlock(text=title + opens)))
+
+
+def ready_line(msg: Msg) -> dict[str, str] | None:
+    """A saved ready line as the page shows it, or None for any other message."""
+    if not any(isinstance(b, ContextBlock) and b.text == READY_LINE for b in msg.blocks):
+        return None
+    text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+    opens = _READY_OPENS.search(text)
+    shown = {"role": "host", "text": _READY_OPENS.sub("", text).strip()}
+    return {**shown, "conversation_id": opens.group(1)} if opens else shown
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Loaded:
+    """A conversation as read from the store, before a session takes it."""
+
+    shown: list[dict[str, str]]
+    turn: int
+    summary: str | None
+    rows: list[tuple[int, Kind, Msg]]
+
+
 @dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
@@ -194,6 +254,9 @@ class Session:
         self._history: list[Msg] = []
         self._kinds: list[Kind] = []
         self._ids: list[int] = []
+        # Messages this session has saved, counted: a reload that read the store while
+        # one was saved would lose it, and is dropped (`reloaded`).
+        self._saves = 0
         self._summary: str | None = None
         # The turns in which she read something from outside: a page, a file, or a
         # timed ask's answer, which may quote an email (MEM-5).
@@ -282,6 +345,12 @@ class Session:
         # names it once, after her first reply, and never over the user's own name.
         self._title_source: str | None = None
         self._naming: asyncio.Task[None] | None = None
+        # The routine tools a page's turn here is offered, and the routine named in her
+        # context, read again before each turn.
+        self._routine_tools: frozenset[str] = frozenset()
+        # A dropped reload, tried once more when the page is free (`catch_up`).
+        self._retry: asyncio.Task[None] | None = None
+        self._routine = ""
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -300,18 +369,9 @@ class Session:
         session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
         shown: list[dict[str, str]] = []
         if resumed:
-            # The page and the turn count get every message; the model gets the latest
-            # summary and what came after it (BRN-5).
-            for kind, msg in await rt.conversations.history(session.id, OWNER):
-                session._turn += kind in USER_INPUTS
-                text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
-                if kind == "tap" and day_build(msg):
-                    # The host's line, never shown as the user's words or the recipe's.
-                    shown.append({"role": "host", "text": DAY_BUILD_SHOWN})
-                elif kind in ("user", "assistant") and text:
-                    shown.append({"role": msg.role, "text": text})
-            summary, rows = await rt.conversations.context(session.id, OWNER)
-            session._summary = summary
+            loaded = await session._read()
+            session._take(loaded)
+            shown = loaded.shown
             found = await rt.conversations.kind_of(session.id, OWNER)
             session.kind, session.day = found if found is not None else ("chat", None)
             if rt.web is not None:
@@ -321,10 +381,6 @@ class Session:
                         for b in msg.blocks:
                             if isinstance(b, TextBlock):
                                 rt.web.ledger.said(session.id, b.text)
-            for message_id, kind, msg in rows:
-                session._ids.append(message_id)
-                session._kinds.append(kind)
-                session._history.append(msg)
         else:
             await rt.conversations.create(session.id, OWNER, rt.clock())
         title, session._title_source = await rt.conversations.title_of(session.id, OWNER)
@@ -358,6 +414,101 @@ class Session:
             await session.close()
             raise
         return session
+
+    async def _read(self) -> _Loaded:
+        """Read the conversation from the store: the page and the turn count get every
+        message; the model gets the latest summary and what came after it (BRN-5)."""
+        rt = self._rt
+        shown: list[dict[str, str]] = []
+        turn = 0
+        for kind, msg in await rt.conversations.history(self.id, OWNER):
+            turn += kind in USER_INPUTS
+            text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+            routine = routine_run(msg) if kind == "tap" else None
+            ready = ready_line(msg) if kind == "tap" else None
+            if ready is not None:
+                shown.append(ready)
+            elif kind == "tap" and day_build(msg):
+                # The host's line, never shown as the user's words or the recipe's.
+                shown.append({"role": "host", "text": DAY_BUILD_SHOWN})
+            elif routine is not None:
+                shown.append({"role": "host", "text": routine})
+            elif kind in ("user", "assistant") and text:
+                shown.append({"role": msg.role, "text": text})
+        summary, rows = await rt.conversations.context(self.id, OWNER)
+        return _Loaded(shown=shown, turn=turn, summary=summary, rows=rows)
+
+    def _take(self, loaded: _Loaded) -> None:
+        """Make what was read this session's own. No await: nothing comes between."""
+        self._turn, self._summary = loaded.turn, loaded.summary
+        self._ids[:] = [message_id for message_id, _, _ in loaded.rows]
+        self._kinds[:] = [kind for _, kind, _ in loaded.rows]
+        self._history[:] = [msg for _, _, msg in loaded.rows]
+
+    async def reloaded(self) -> bool:
+        """A routine wrote here with nobody's turn running: read the conversation again
+        and show the page what is there now, history and board. It delivers nothing:
+        notices reach the user only through the door (SUR-9).
+
+        False, and nothing changed, while a turn runs or input is taken, before the page
+        has its history, or when anything was saved here while it read: the page then
+        catches up when it next opens the conversation."""
+        if self._closed or not self._started or self.writing():
+            return False
+        saved = self._saves
+        loaded = await self._read()
+        if self._closed or self.writing() or self._saves != saved:
+            return False
+        self._take(loaded)
+        # Her last reply here is history now: nothing of it can be trimmed.
+        self._tail = None
+        rt = self._rt
+        await self._send("history", messages=loaded.shown)
+        await self._send(
+            "board", board=for_page(await self._board(), rt.zone(), rt.refreshing(self.id))
+        )
+        return True
+
+    async def catch_up(self) -> None:
+        """A routine wrote here: show it now, or, if that read was dropped, once more
+        when the page is next free, so an open page is not left behind the run."""
+        if await self.reloaded() or self._closed or self._retry is not None:
+            return
+        self._retry = asyncio.create_task(self._reload_later())
+
+    async def _reload_later(self) -> None:
+        try:
+            await asyncio.sleep(RELOAD_AGAIN_S)
+            waited = RELOAD_AGAIN_S
+            while self.writing() and not self._closed and waited < RELOAD_GIVE_UP_S:
+                await asyncio.sleep(RELOAD_AGAIN_S)
+                waited += RELOAD_AGAIN_S
+            await self.reloaded()
+        except Exception as e:
+            # The page catches up when it next opens the conversation.
+            logger.warning("reload not tried again in session %s: %s", self.id, type(e).__name__)
+        finally:
+            self._retry = None
+
+    def _offers(self, d: ToolDefinition) -> bool:
+        """Whether a page's turn here is offered this tool: never a routine's own,
+        unless this conversation is where it belongs (`tools/routine.py`)."""
+        return d.category != ROUTINE_CATEGORY or d.name in self._routine_tools
+
+    async def _read_routines(self) -> None:
+        """Which routine tools this conversation is offered now: a routine set up, or
+        today's day turned over, since the last turn changes it."""
+        rt = self._rt
+        try:
+            routines = await rt.schedules.active(OWNER) if rt.schedules is not None else []
+        except Exception as e:
+            # Offered nothing: a routine is changed only where it surely belongs.
+            logger.warning("routines not read in session %s: %s", self.id, type(e).__name__)
+            routines = []
+        today = self.day == day.today(rt.clock(), rt.zone()).isoformat()
+        self._routine_tools = routine_tools(self.kind, self.id, routines, today=today)
+        found = routine_here(self.kind, self.id, routines, today=today)
+        self._routine = routine_named(found) if found is not None else ""
 
     def _model(self) -> dict[str, str] | None:
         p = self._rt.provider
@@ -407,6 +558,19 @@ class Session:
         """Her turn, or her saying something, is running here: a refresh waits."""
         return self._task is not None and not self._task.done()
 
+    def writing(self) -> bool:
+        """Busy, or taking in something the user did that may start a turn: a routine
+        waits rather than write between this page's messages."""
+        return self.busy() or self._taking > 0
+
+    async def _routine_building(self) -> bool:
+        """A routine is building in this conversation: it is the one writer here until
+        done, so what would start a turn is refused, and the page told why."""
+        if self.id not in self._rt.routine_holds:
+            return False
+        await self._error(ROUTINE_BUILDING)
+        return True
+
     async def close(self) -> None:
         self._rt.sessions.discard(self)
         if self._rt.by_conversation.get(self.id) is self:
@@ -417,6 +581,9 @@ class Session:
         await self._end_overlap(tell=False)
         await self._stop_listening()
         self._closed = True
+        retry, self._retry = self._retry, None
+        if retry is not None and retry is not asyncio.current_task():
+            retry.cancel()
         self._tail = None
         task = self._task
         if task is not None:
@@ -629,6 +796,8 @@ class Session:
     async def _take_text(self, text: str, *, ask: bool = False) -> None:
         if self._task is not None:
             await self._error("busy")
+        elif await self._routine_building():
+            return
         else:
             self._spoken = None
             await self._stop_listening()
@@ -656,6 +825,8 @@ class Session:
             return
         async with self._taking_input():
             if self._task is not None or self._history or self._greeted:
+                return
+            if await self._routine_building():
                 return
             self._greeted = True
             await self._stop_listening()
@@ -688,6 +859,8 @@ class Session:
                 or self.day != date.isoformat()
                 or (last is not None and now - last < DAY_BUILD_EVERY_MS)
             ):
+                return
+            if await self._routine_building():
                 return
             await self._stop_listening()
             # Never an approval: the recipe is the app's words, not the user's.
@@ -1280,6 +1453,9 @@ class Session:
             await self._error("no_model")
         elif self._task is not None:
             await self._error("busy")
+        elif await self._routine_building():
+            # Before the microphone opens: no words heard, no draft paid for, all refused.
+            return
         else:
             self._spoken = None
             listener = Listener(
@@ -1448,7 +1624,10 @@ class Session:
             only_her = not text and bool(listener.raw_text())
             if only_her:
                 logger.info("spoken turn in session %s dropped: her echo", self.id)
-            if text:
+            if text and await self._routine_building():
+                # Heard, but a routine is building here: nothing is saved or answered.
+                pass
+            elif text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
                 usable = draft is not None and self._usable(draft, text)
@@ -1512,6 +1691,9 @@ class Session:
             await self._tapped(pending_id, decision)
 
     async def _tapped(self, pending_id: str, decision: Literal["confirm", "cancel"]) -> None:
+        if await self._routine_building():
+            # The card stays: tapped again once the routine is done, it is answered.
+            return
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
@@ -1695,6 +1877,7 @@ class Session:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
             system = await asyncio.to_thread(rt.system)
+            await self._read_routines()
             if using is not None and list(using.system) != system:
                 # A rule or skill changed while the draft ran: it sent an old prompt.
                 trace.draft = "dropped"
@@ -1703,7 +1886,7 @@ class Session:
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
-                registry=rt.registry,
+                registry=rt.registry.offered(self._offers),
                 system=system,
                 history=compact.with_summary(self._summary, self._history),
                 ctx=lambda call_id: self._ctx(call_id, turn=turn),
@@ -1922,7 +2105,7 @@ class Session:
             provider=provider,
             system=system,
             messages=compact.with_summary(self._summary, history),
-            tools=tool_schemas(rt.registry),
+            tools=tool_schemas(rt.registry.offered(self._offers)),
             words=words,
             built=built,
             history_len=len(self._history),
@@ -2062,6 +2245,8 @@ class Session:
         if not written.startswith(heard):  # pragma: no cover - the speaker only saw this
             return None
         msg = Msg(role="assistant", blocks=(TextBlock(text=kept_of(written, heard)),))
+        # A change to what is saved here, as `_save` is: a reload reading meanwhile is dropped.
+        self._saves += 1
         try:
             changed = await self._rt.conversations.amend_tail(self.id, OWNER, message_id, msg)
         except Exception as e:
@@ -2131,6 +2316,7 @@ class Session:
     async def _save(self, kind: Kind, msg: Msg) -> None:
         # Something after her last reply: it is no longer the one to trim.
         self._tail = None
+        self._saves += 1
         self._history.append(msg)
         self._kinds.append(kind)
         message_id = await self._rt.conversations.append(
@@ -2194,6 +2380,7 @@ class Session:
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
         recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
+        await self._read_routines()
         context = volatile_context(
             datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone(),
             pending,
@@ -2202,6 +2389,7 @@ class Session:
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
             board=board_summary(await self._board()),
+            routine=self._routine,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:
@@ -2351,10 +2539,17 @@ class Session:
         if self._closed or not free(self.facts(), rt.clock()):
             raise NotFree
         said = [n.text for n in notices if n.text]
-        if said:
-            await self._save_all(
-                "assistant", [Msg(role="assistant", blocks=(TextBlock(text=t),)) for t in said]
-            )
+        # Hers are saved as hers. A ready line is the app's, never hers: kept as its note,
+        # so she never takes it for something she said, and a reload shows it with Open.
+        rows: list[tuple[Kind, Msg]] = [
+            ("tap", ready_msg(n.title, n.conversation_id))
+            if n.kind == "ready"
+            else ("assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),)))
+            for n in notices
+            if n.text
+        ]
+        if rows:
+            await self._save_all(rows)
         if any(n.kind == "ask" and n.text for n in notices):
             # A timed ask's answer can quote what it read: whatever she does next on the
             # strength of it is something she read, not something the user said (MEM-5).
@@ -2372,21 +2567,25 @@ class Session:
                 due_ms=n.due_ms,
                 due=n.due,
                 late=n.late,
+                conversation_id=n.conversation_id,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:
                 self._task = self._notice_task = asyncio.create_task(self._say_notices(said))
 
-    async def _save_all(self, kind: Kind, msgs: Sequence[Msg]) -> None:
+    async def _save_all(self, rows: Sequence[tuple[Kind, Msg]]) -> None:
         """Like `_save`, for several at once: in the history before the write, so a turn
         that starts meanwhile has them, and taken out again if the write fails. Only
         these: a message saved meanwhile stays, wherever they now are."""
+        self._saves += 1
         self._tail = None
+        kinds = [k for k, _ in rows]
+        msgs = [m for _, m in rows]
         self._history.extend(msgs)
-        self._kinds.extend([kind] * len(msgs))
+        self._kinds.extend(kinds)
         try:
             ids = await self._rt.conversations.append_many(
-                self.id, OWNER, kind, msgs, self._rt.clock()
+                self.id, OWNER, kinds, msgs, self._rt.clock()
             )
         except BaseException:
             mine = {id(m) for m in msgs}

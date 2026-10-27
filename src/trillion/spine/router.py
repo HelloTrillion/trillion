@@ -54,7 +54,7 @@ from trillion.spine.hashing import args_hash, canonical_json
 from trillion.spine.loop_guard import LoopGuard, Verdict
 from trillion.spine.lossless import encode
 from trillion.spine.neutralize import neutralize
-from trillion.spine.registry import ToolRegistry, runs_unattended
+from trillion.spine.registry import ROUTINE_BOARD, ToolRegistry, runs_in_routine, runs_unattended
 from trillion.spine.retention import RETENTION_DAYS, RETENTION_MS
 from trillion.spine.store import DecisionIn, SpineStore
 from trillion.spine.untrusted import wrap
@@ -78,9 +78,10 @@ _UNHASHABLE = "unhashable"
 _TARGET_CHANGED = "the target changed since you were asked"
 _NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
 _UNATTENDED = "nobody is here to approve it; say what you would do instead"
-# Runs nobody is watching: a timed ask, and a widget's refresh (the live widgets spec).
-# Neither can raise, settle or re-present a card.
-_UNWATCHED = frozenset({"schedule", "refresh"})
+# Runs nobody is watching: a timed ask, a widget's refresh (the live widgets spec), and
+# a routine's run (the routines spec). None can raise, settle or re-present a card.
+_UNWATCHED = frozenset({"schedule", "refresh", "routine"})
+_NOT_HERE = "a routine shows its board only on its own conversation"
 _REFRESH_READS_ONLY = "a refresh only reads"
 # Never replayed by a refresh, whatever their risk: a page is chosen by what she read
 # (SPN-5), and her own tools say nothing about a connector. Named here so the spine
@@ -119,6 +120,19 @@ class RouterResponse:
         if self.reason is not None:
             body["reason"] = self.reason.value
         return json.dumps(body, ensure_ascii=False)
+
+
+def _routine_may(d: ToolDefinition, ctx: ToolContext) -> bool:
+    """Whether a run nobody is watching may call this tool. A routine's run gets what
+    a timed ask gets, and besides its board tools only on the conversation it was
+    started for, and `routine_nothing` (the routines spec, D5)."""
+    if runs_unattended(d):
+        return True
+    if ctx.via != "routine" or not runs_in_routine(d):
+        return False
+    if d.name in ROUTINE_BOARD:
+        return ctx.routine_target is not None and ctx.session_id == ctx.routine_target
+    return True
 
 
 def _refused(reason: Refusal, detail: str = "") -> RouterResponse:
@@ -320,7 +334,9 @@ class Router:
         if tool is None:
             return await audited("unknown", _refused(Refusal.UNKNOWN_TOOL))
         risk = tool.definition.risk.value
-        if ctx.via in _UNWATCHED and not runs_unattended(tool.definition):
+        if ctx.via in _UNWATCHED and not _routine_may(tool.definition, ctx):
+            if ctx.via == "routine" and tool.definition.name in ROUTINE_BOARD:
+                return await audited(risk, _refused(Refusal.UNATTENDED, _NOT_HERE))
             # A card belongs to a session someone is watching (D5). Refused before any of
             # the tool's own code runs, whether or not it was offered to this run.
             return await audited(risk, _refused(Refusal.UNATTENDED, _UNATTENDED))

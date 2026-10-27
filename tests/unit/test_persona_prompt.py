@@ -228,6 +228,27 @@ def test_she_is_told_to_open_the_day_in_both_modalities() -> None:
         assert "\u2014" not in text and "\u2013" not in text
 
 
+def test_she_is_told_how_to_set_up_and_change_a_routine_in_both_modalities() -> None:
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 10, 27, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "A routine is a timed ask with" in text and "routine" in text
+        assert "built or shown regularly" in text and "ask_schedule" in text
+        assert '"day" when it is about their day' in text and '"own"' in text
+        assert '"stop", "never" or "less" is routine_narrow' in text
+        assert "anything new for it to look at is routine_widen" in text
+        assert "\u2014" not in text and "\u2013" not in text
+
+
+def test_a_routines_conversation_is_named_in_the_context() -> None:
+    now = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)
+    text = volatile_context(now, [], routine='0a0b0c0d "Monday revenue"')
+    assert 'routine: 0a0b0c0d "Monday revenue"' in text
+    assert text.index("routine:") < text.index("</context>")
+    assert "routine:" not in volatile_context(now, [])
+
+
 def test_she_says_asks_first_is_the_users_setting_never_the_apps() -> None:
     text = system_blocks(Identity(user_name="Sam"), "soul")[0].text
     assert "that is their own setting for that tool, never the app's rule" in text

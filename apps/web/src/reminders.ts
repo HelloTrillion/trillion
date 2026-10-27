@@ -4,6 +4,8 @@
  * scheduler that stopped looks just like one with nothing to do (TESTING §4.5).
  *
  * Reminders and timed asks are set by asking her. Here they can only be cancelled.
+ * Routines (AGT-3) are set by asking too; here they are listed in a group of their own,
+ * with where each lands, and can be paused, resumed or deleted.
  * Titles come from the model: they are only ever set as text.
  */
 
@@ -12,7 +14,17 @@ import type { Api } from './settings';
 
 // ── What the server sends ────────────────────────────────────────────────
 
-export type RunStatus = 'delivered' | 'late' | 'missed' | 'blocked' | 'failed' | 'interrupted' | 'cancelled';
+export type RunStatus =
+  | 'delivered'
+  | 'late'
+  | 'missed'
+  | 'blocked'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled'
+  // A routine not run because its day was already built, or one that found nothing to say.
+  | 'skipped'
+  | 'nothing';
 
 export interface Upcoming {
   readonly id: string;
@@ -48,6 +60,22 @@ export interface RemindersState {
   readonly tick_s: number;
   /** The server's clock when it answered: the page's own may differ. */
   readonly now_ms: number;
+}
+
+/** A routine: a timed ask that builds a board, in today's day or a conversation of its own. */
+export interface Routine {
+  readonly id: string;
+  readonly name: string;
+  /** "Every weekday at 8:00 am". */
+  readonly when: string;
+  readonly next_ms: number | null;
+  /** "Mon 26 Oct, 8:00 am", in the user's own zone; empty when nothing more is due. */
+  readonly next: string;
+  readonly target: 'day' | 'own';
+  /** Its own conversation, once it has run; null for a day routine or one not run yet. */
+  readonly conversation_id: string | null;
+  readonly paused: boolean;
+  readonly notes: string;
 }
 
 type Clock = Pick<RemindersState, 'checked_ms' | 'tick_s' | 'now_ms'>;
@@ -97,9 +125,15 @@ const RESULTS: Readonly<Record<RunStatus, string>> = {
   failed: "Didn't finish",
   interrupted: 'Interrupted',
   cancelled: 'Cancelled',
+  skipped: 'Skipped, already built',
+  nothing: 'Nothing to report',
 };
 
-export function resultText(status: RunStatus): string {
+/** The core's detail on a run blocked because the user's own turn is running there. */
+export const BUSY_DETAIL = 'a turn is running there';
+
+export function resultText(status: RunStatus, detail = ''): string {
+  if (status === 'blocked' && detail === BUSY_DETAIL) return 'Waiting for you to finish';
   return RESULTS[status] ?? String(status);
 }
 
@@ -117,6 +151,17 @@ export function repeatText(repeat: string): string {
 /** When it comes next, in words. A run with nothing more due is happening now. */
 export function nextText(u: Pick<Upcoming, 'next'>): string {
   return u.next ? `Next: ${u.next}` : 'Due now';
+}
+
+/** A routine's next run, or that it is paused: a paused one's due time is not moving. */
+export function routineNextText(r: Pick<Routine, 'next' | 'paused'>): string {
+  return r.paused ? 'Paused' : nextText(r);
+}
+
+/** Where a routine's board lands. */
+export function landsText(r: Pick<Routine, 'target' | 'conversation_id'>): string {
+  if (r.target === 'day') return 'Your day';
+  return r.conversation_id ? 'Its own conversation' : 'Its own conversation, made on its first run';
 }
 
 /** "Sat 24 Oct, 4:00 pm", in this browser's time unless a zone is given. */
@@ -139,7 +184,7 @@ export function dueWords(ms: number, timeZone?: string): string {
 export function resultLine(r: Pick<RunResult, 'title' | 'status' | 'due_ms' | 'due' | 'detail'>, timeZone?: string): string {
   // Waiting for a model already says why; a delivered or cancelled one needs none.
   const why = r.detail && (r.status === 'missed' || r.status === 'failed' || r.status === 'interrupted') ? `: ${r.detail}` : '';
-  return `${r.title}: ${resultText(r.status)}${why} (due ${r.due || dueWords(r.due_ms, timeZone)})`;
+  return `${r.title}: ${resultText(r.status, r.detail)}${why} (due ${r.due || dueWords(r.due_ms, timeZone)})`;
 }
 
 /** Worth a warning colour: it went wrong, or is waiting. */
@@ -175,8 +220,16 @@ function button(text: string, cls = '', onClick?: () => void): HTMLButtonElement
 const REDRAW_MS = 5_000;
 const RELOAD_MS = 15_000;
 
-export function createReminders(host: Host, api: Api, changed: () => void): { open(): Promise<void>; summary(): string } {
+export function createReminders(
+  host: Host,
+  api: Api,
+  changed: () => void,
+  /** Go to a routine's conversation. Settings closes first. */
+  openConversation: (id: string) => void = () => undefined,
+): { open(): Promise<void>; summary(): string } {
   let last: RemindersState | null = null;
+  // Read beside the rest; null until it first answers.
+  let routines: readonly Routine[] | null = null;
   // When `last` arrived, by this page's clock: the server's clock moves on from it.
   let fetchedAt = 0;
   let loadError = '';
@@ -205,7 +258,18 @@ export function createReminders(host: Host, api: Api, changed: () => void): { op
 
   const now = (): RemindersState | null => (last ? serverNow(last, Date.now() - fetchedAt) : null);
 
+  async function loadRoutines(): Promise<void> {
+    try {
+      const r = await api('GET', '/api/routines');
+      if (!r.ok) throw new Error(String(r.status));
+      routines = ((await r.json()) as { routines: Routine[] }).routines;
+    } catch {
+      // What was shown stays; with nothing shown yet, the group says it could not load.
+    }
+  }
+
   async function load(): Promise<void> {
+    const reading = loadRoutines();
     try {
       const r = await api('GET', '/api/schedules');
       if (!r.ok) throw new Error(String(r.status));
@@ -216,7 +280,89 @@ export function createReminders(host: Host, api: Api, changed: () => void): { op
       // Unreachable: what was shown stays, and goes stale by itself.
       loadError = last ? '' : 'Reminders could not be loaded.';
     }
+    await reading;
     changed();
+  }
+
+  /** Pause, resume or delete a routine: the user's own tap, answered with the routines as they now stand. */
+  async function act(r: Routine, what: 'pause' | 'resume' | 'delete'): Promise<void> {
+    busy = true;
+    error = '';
+    const path = `/api/routines/${encodeURIComponent(r.id)}`;
+    try {
+      // A body, so the request is JSON like every other change (SPN-11).
+      const res = what === 'delete' ? await api('DELETE', path, {}) : await api('POST', `${path}/${what}`, {});
+      if (res.ok) routines = ((await res.json()) as { routines: Routine[] }).routines;
+      else error = res.status === 404 ? `“${r.name}” was already gone.` : `“${r.name}” could not be changed.`;
+    } catch {
+      error = 'Trillion could not be reached.';
+    }
+    if (error) await loadRoutines();
+    confirming = '';
+    busy = false;
+    changed();
+    draw();
+    // A deleted one's card is gone: focus goes to the group it was in.
+    if (what === 'delete') (form.querySelector('[data-focus="routines"]') as HTMLElement | null)?.focus();
+  }
+
+  function routine(r: Routine): HTMLElement {
+    const box = el('div', 'connected-card reminders-card');
+    const head = el('div', 'connected-card-head');
+    const words = el('span', 'connected-card-words');
+    words.append(
+      el('strong', '', r.name),
+      el('small', 'connected-state', r.when),
+      el('small', 'connected-state', routineNextText(r)),
+    );
+    const lands = el('small', 'connected-state reminders-lands', landsText(r));
+    if (r.target === 'own' && r.conversation_id) {
+      const id = r.conversation_id;
+      const go = button('Open', 'quiet reminders-open', () => {
+        host.close();
+        openConversation(id);
+      });
+      go.setAttribute('aria-label', `Open ${r.name}`);
+      lands.append(' ', go);
+    }
+    words.append(lands);
+    head.append(words);
+    box.append(head);
+    if (confirming === `routine:${r.id}`) {
+      const confirm = el('div', 'connected-confirm');
+      const keep = button('Keep it', 'quiet', () => {
+        confirming = '';
+        draw();
+        (form.querySelector(`[data-focus="${CSS.escape(`delete:${r.id}`)}"]`) as HTMLElement | null)?.focus();
+      });
+      keep.setAttribute('aria-label', `Keep ${r.name}`);
+      keep.dataset.focus = `keep:${r.id}`;
+      const drop = button('Delete it', 'connected-danger-solid', () => {
+        if (!busy) void act(r, 'delete');
+      });
+      drop.setAttribute('aria-label', `Delete ${r.name} for good`);
+      drop.dataset.focus = `drop:${r.id}`;
+      confirm.append(el('span', '', `Delete “${r.name}”? It won't run again.`), keep, drop);
+      box.append(confirm);
+      return box;
+    }
+    const actions = el('span', 'reminders-actions');
+    const toggle = button(r.paused ? 'Resume' : 'Pause', 'quiet', () => {
+      if (!busy) void act(r, r.paused ? 'resume' : 'pause');
+    });
+    toggle.setAttribute('aria-label', `${r.paused ? 'Resume' : 'Pause'} ${r.name}`);
+    // The same place either way, so focus stays on it across the redraw.
+    toggle.dataset.focus = `toggle:${r.id}`;
+    const remove = button('Delete', 'quiet connected-danger', () => {
+      confirming = `routine:${r.id}`;
+      draw();
+      (form.querySelector('.connected-confirm button') as HTMLButtonElement | null)?.focus();
+    });
+    remove.setAttribute('aria-label', `Delete ${r.name}`);
+    remove.dataset.focus = `delete:${r.id}`;
+    actions.append(toggle, remove);
+    head.append(actions);
+    return box;
   }
 
   async function cancel(u: Upcoming): Promise<void> {
@@ -312,6 +458,17 @@ export function createReminders(host: Host, api: Api, changed: () => void): { op
     else {
       const list = el('div', 'connected-list');
       list.append(...s.active.map(upcoming));
+      parts.push(list);
+    }
+    const group = el('h3', 'connected-heading', 'Routines');
+    group.tabIndex = -1;
+    group.dataset.focus = 'routines';
+    parts.push(group);
+    if (routines === null) parts.push(el('p', 'settings-hint', 'Routines could not be loaded.'));
+    else if (!routines.length) parts.push(el('p', 'settings-hint', 'None yet. Try “every weekday at 8, build my day”.'));
+    else {
+      const list = el('div', 'connected-list');
+      list.append(...routines.map(routine));
       parts.push(list);
     }
     parts.push(el('h3', 'connected-heading', 'Recent'));

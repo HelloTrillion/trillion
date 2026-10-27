@@ -220,6 +220,12 @@ To personalise it, give her a standing rule, such as "on my day board, skip ment
 
 Tapping Your day again opens the same conversation and does not rebuild a board that is there. Tomorrow a new day conversation is made. Yesterday's stays in the list.
 
+## Routines
+
+A routine builds a board while nobody is watching ("every weekday at 8, build my day"). It may use `workspace_show`, `workspace_update` and `workspace_remove`, and only on its own conversation: today's day conversation for a day routine, or the conversation it owns. The router refuses them anywhere else, and `day_open` is never offered. A day routine never replaces a day board built by hand.
+
+Its widgets are like any other. They remember the reads that made them, so they are live and refresh while the board is seen. The user hears about the board in one ready line with an Open button. With nothing worth showing, there is no board and no line. See `docs/specs/2026-10-27-routines.md`.
+
 ## Next
 
 - Refreshing with no page open, and push from services.

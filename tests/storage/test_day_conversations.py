@@ -103,7 +103,7 @@ async def test_the_migration_keeps_every_row_and_reference(tmp_path: Path) -> No
         "INSERT INTO boards (conversation_id, owner_id, board_json, updated_at)"
         " VALUES ('c1', 'local', '{}', 1)"
     )
-    assert await migrate(conn) == ["013_day_conversations"]
+    assert await migrate(conn) == ["013_day_conversations", "014_routines"]
     async with conn.execute("PRAGMA foreign_key_check") as cur:
         assert await cur.fetchall() == []
     store = SqliteConversationStore(conn)

@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
-from trillion.scheduler.store import Kind, Schedule, ScheduleStore
+from trillion.scheduler.store import Kind, Schedule, ScheduleStore, Target
 from trillion.scheduler.when import (
     Repeat,
     WhenError,
@@ -74,6 +74,8 @@ _REPEAT: dict[str, Any] = {
         " means the last day)."
     ),
 }
+# Where a routine's board lands, as its card says it (the routines spec).
+_LANDS: dict[str, str] = {"day": "on Your day", "own": "in its own conversation"}
 _FROM_READING = (
     "a reminder can't be set after reading a page, a file or a message in this turn; "
     "tell the user what it would be for, then set it again"
@@ -83,6 +85,19 @@ _CANCEL_FROM_READING = (
     " in this turn; tell the user which one it is: they can cancel it in Settings →"
     " Reminders, or ask you again"
 )
+_NO_SUCH_ROUTINE = 'routine must be "day" or "own", or left out'
+
+
+def _routine(args: JSON) -> Target | Literal[False] | None:
+    """Where a routine lands, None for a plain timed ask, False for anything else."""
+    value = args.get("routine")
+    if value is None:
+        return None
+    if value == "day":
+        return "day"
+    if value == "own":
+        return "own"
+    return False
 
 
 def _refused(text: str, kind: str = "refused") -> ToolResult:
@@ -145,6 +160,7 @@ class _ScheduleTool(BaseTool):
         body_key: str,
         limit: int,
         ctx: ToolContext,
+        target: Target | None = None,
     ) -> ToolResult:
         try:
             zone, repeat, first = self._plan(args, body_key, limit)
@@ -163,9 +179,12 @@ class _ScheduleTool(BaseTool):
             status="active",
             created_ms=self._clock(),
             created_in=ctx.session_id,
+            target=target,
         )
         await store.create(s)
         what = "reminder" if kind == "reminder" else "timed ask"
+        if target is not None:
+            what = "routine"
         return ToolResult(
             ok=True,
             content=(
@@ -222,7 +241,7 @@ class AskSchedule(_ScheduleTool):
             "Do something for the user at a time, once or repeating, such as 'every weekday"
             " at 9, check my email and tell me what's urgent'. At that time you run `ask`"
             " with only the tools that never ask first, and what you find is delivered to"
-            " them. " + ASKS_BY_CARD
+            " them. Set `routine` to build a board each time. " + ASKS_BY_CARD
         ),
         input_schema={
             "type": "object",
@@ -236,6 +255,11 @@ class AskSchedule(_ScheduleTool):
                 },
                 "title": _TITLE,
                 "repeat": _REPEAT,
+                "routine": {
+                    "type": "string",
+                    "enum": ["day", "own"],
+                    "description": "day: builds their day board. own: its own conversation.",
+                },
             },
             "required": ["when", "ask", "title"],
             "additionalProperties": False,
@@ -255,7 +279,11 @@ class AskSchedule(_ScheduleTool):
             when = summary(str(args["when"]), repeat, zone)
         except WhenError:
             when = str(args.get("when", ""))
-        return ActionSummary(text=f"{when}: {ask}")
+        lands = _LANDS.get(str(args.get("routine")))
+        # The card says it is a routine, its name and where it lands: what is approved.
+        title = " ".join(str(args.get("title", "")).split())
+        tail = f' (a routine, "{title}", {lands})' if lands is not None else ""
+        return ActionSummary(text=f"{when}: {ask}{tail}")
 
     def target(self, args: JSON) -> str:
         return f"schedule:{' '.join(str(args.get('title', '')).split()).lower()}"
@@ -263,6 +291,8 @@ class AskSchedule(_ScheduleTool):
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if self._for(ctx) is None:
             return Precondition.failed("timed asks are not available")
+        if _routine(args) is False:
+            return Precondition.failed(_NO_SUCH_ROUTINE)
         try:
             self._plan(args, "ask", MAX_ASK)
         except WhenError as e:
@@ -273,15 +303,18 @@ class AskSchedule(_ScheduleTool):
         store = self._for(ctx)
         if store is None:
             return _refused("timed asks are not available", "unavailable")
-        return await self._create(store, "ask", args, "ask", MAX_ASK, ctx)
+        target = _routine(args)
+        if target is False:
+            return _refused(_NO_SUCH_ROUTINE)
+        return await self._create(store, "ask", args, "ask", MAX_ASK, ctx, target)
 
 
 class ScheduleList(_ScheduleTool):
     definition = ToolDefinition(
         name=LIST,
         description=(
-            "List the user's reminders and timed asks: each one's id, what it is, when it"
-            " runs next and how it repeats, and how its last run went."
+            "List the user's reminders, timed asks and routines: each one's id, what it is,"
+            " when it runs next and how it repeats, and how its last run went."
         ),
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         risk=Risk.READ,
@@ -300,6 +333,8 @@ class ScheduleList(_ScheduleTool):
         lines = []
         for s in active:
             what = "reminder" if s.kind == "reminder" else "timed ask"
+            if s.target is not None:
+                what = f"routine, {_LANDS[s.target]}"
             try:
                 nxt = spoken(s.next_due_ms, s.zone) if s.next_due_ms is not None else "nothing more"
                 when = summary(s.at_local, s.repeat, s.zone)
@@ -308,7 +343,9 @@ class ScheduleList(_ScheduleTool):
                 nxt, when = "unknown", f"{s.at_local} ({s.zone}), {repeat_words(s.repeat)}"
             run = last.get(s.id)
             ran = run.status if run is not None else "none yet"
-            lines.append(f"- {s.id} ({what}) {s.title}: {when}; next {nxt}; last run {ran}")
+            # A paused routine's due time is not moving: saying it would mislead.
+            coming = "paused" if s.paused_ms is not None else f"next {nxt}"
+            lines.append(f"- {s.id} ({what}) {s.title}: {when}; {coming}; last run {ran}")
         return ToolResult(ok=True, content="\n".join(lines), effect="none")
 
 

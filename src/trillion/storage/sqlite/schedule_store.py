@@ -8,6 +8,7 @@ same file.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -15,7 +16,17 @@ from contextlib import asynccontextmanager
 
 import aiosqlite
 
-from trillion.scheduler.store import Kind, Notice, NoticeKind, Result, Run, RunStatus, Schedule
+from trillion.scheduler.store import (
+    NOTES_MAX,
+    PAUSE_AFTER,
+    Kind,
+    Notice,
+    NoticeKind,
+    Result,
+    Run,
+    RunStatus,
+    Schedule,
+)
 from trillion.scheduler.when import read_repeat
 
 # A run still marked running this long past its own timeout is not running any more.
@@ -37,6 +48,11 @@ def _schedule(r: aiosqlite.Row) -> Schedule:
         status=r["status"],
         created_ms=int(r["created_ms"]),
         created_in=str(r["created_in"]),
+        target=r["target"],
+        conversation_id=str(r["conversation_id"]) if r["conversation_id"] is not None else None,
+        notes=str(r["notes"]),
+        paused_ms=_int(r["paused_ms"]),
+        failures=int(r["failures"]),
     )
 
 
@@ -76,6 +92,7 @@ def _notice(r: aiosqlite.Row) -> Notice:
         delivered_ms=_int(r["delivered_ms"]),
         delivered_to=str(r["delivered_to"]) if r["delivered_to"] is not None else None,
         notified_ms=_int(r["notified_ms"]),
+        conversation_id=str(r["conversation_id"]) if r["conversation_id"] is not None else None,
     )
 
 
@@ -107,8 +124,9 @@ class SqliteScheduleStore:
         async with self._tx() as conn:
             await conn.execute(
                 "INSERT INTO schedules (id, owner_id, kind, title, body, zone, at_local,"
-                " repeat, next_due_ms, status, created_ms, created_in)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " repeat, next_due_ms, status, created_ms, created_in, target, conversation_id,"
+                " notes, paused_ms, failures)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s.id,
                     s.owner_id,
@@ -122,6 +140,11 @@ class SqliteScheduleStore:
                     s.status,
                     s.created_ms,
                     s.created_in,
+                    s.target,
+                    s.conversation_id,
+                    s.notes,
+                    s.paused_ms,
+                    s.failures,
                 ),
             )
 
@@ -144,8 +167,9 @@ class SqliteScheduleStore:
 
     async def due(self, now_ms: int) -> list[Schedule]:
         async with self._conn.execute(
+            # A paused routine is never due: its due time waits where it was.
             "SELECT * FROM schedules WHERE status = 'active' AND next_due_ms IS NOT NULL"
-            " AND next_due_ms <= ? ORDER BY next_due_ms",
+            " AND next_due_ms <= ? AND paused_ms IS NULL ORDER BY next_due_ms",
             (now_ms,),
         ) as cur:
             return [_schedule(r) for r in await cur.fetchall()]
@@ -186,6 +210,50 @@ class SqliteScheduleStore:
                     (now_ms, schedule_id),
                 )
         return gone
+
+    async def pause(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE schedules SET paused_ms = ? WHERE id = ? AND owner_id = ?"
+                " AND status = 'active' AND target IS NOT NULL AND paused_ms IS NULL",
+                (now_ms, schedule_id, owner_id),
+            )
+            return cur.rowcount == 1
+
+    async def resume(self, owner_id: str, schedule_id: str, next_due_ms: int | None) -> bool:
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE schedules SET paused_ms = NULL, failures = 0, next_due_ms = ?,"
+                " status = CASE WHEN ? IS NULL THEN 'done' ELSE status END"
+                " WHERE id = ? AND owner_id = ? AND status = 'active' AND paused_ms IS NOT NULL",
+                (next_due_ms, next_due_ms, schedule_id, owner_id),
+            )
+            return cur.rowcount == 1
+
+    async def set_conversation(self, schedule_id: str, conversation_id: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                "UPDATE schedules SET conversation_id = ? WHERE id = ?",
+                (conversation_id, schedule_id),
+            )
+
+    async def add_note(self, owner_id: str, schedule_id: str, line: str) -> bool:
+        async with self._tx() as conn:
+            # Checked in the same statement, so two notes at once never pass the cap.
+            cur = await conn.execute(
+                "UPDATE schedules SET notes = CASE WHEN notes = '' THEN ?1"
+                " ELSE notes || char(10) || ?1 END"
+                " WHERE id = ?2 AND owner_id = ?3 AND target IS NOT NULL AND status = 'active'"
+                " AND length(notes) + (CASE WHEN notes = '' THEN 0 ELSE 1 END) + length(?1) <= ?4",
+                (line, schedule_id, owner_id, NOTES_MAX),
+            )
+            return cur.rowcount == 1
+
+    async def succeeded(self, schedule_id: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                "UPDATE schedules SET failures = 0 WHERE id = ? AND failures != 0", (schedule_id,)
+            )
 
     # ── Runs ─────────────────────────────────────────────────────────────
 
@@ -302,6 +370,8 @@ class SqliteScheduleStore:
         text: str | None,
         due_ms: int,
         late: bool,
+        conversation_id: str | None = None,
+        pauses_as: str | None = None,
     ) -> Notice | None:
         n = Notice(
             id=uuid.uuid4().hex,
@@ -317,6 +387,7 @@ class SqliteScheduleStore:
             delivered_ms=None,
             delivered_to=None,
             notified_ms=None,
+            conversation_id=conversation_id,
         )
         async with self._tx() as conn:
             # The write lock is held from BEGIN IMMEDIATE: what this reads stays true.
@@ -326,11 +397,36 @@ class SqliteScheduleStore:
             ) as cur:
                 if await cur.fetchone() is None:
                     return None
+            async with conn.execute(
+                "SELECT 1 FROM schedules WHERE id = ? AND status = 'cancelled'", (source_id,)
+            ) as cur:
+                cancelled = await cur.fetchone() is not None
+            if cancelled:
+                # Deleted while it ran: the user asked for it to stop, so it says nothing.
+                await conn.execute(
+                    "UPDATE task_runs SET status = 'cancelled', finished_ms = ?,"
+                    " detail = 'cancelled' WHERE id = ?",
+                    (now_ms, run_id),
+                )
+                return None
+            if pauses_as is not None and await self._count_failure(conn, source_id, now_ms):
+                n = dataclasses.replace(n, title=pauses_as)
             await conn.execute(
                 "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
-                " due_ms, late, created_ms, status) VALUES (?, ?, 'schedule', ?, ?, ?, ?, ?, ?,"
-                " ?, 'held')",
-                (n.id, owner_id, source_id, kind, title, text, due_ms, int(late), now_ms),
+                " due_ms, late, created_ms, status, conversation_id) VALUES (?, ?, 'schedule',"
+                " ?, ?, ?, ?, ?, ?, ?, 'held', ?)",
+                (
+                    n.id,
+                    owner_id,
+                    source_id,
+                    kind,
+                    n.title,
+                    text,
+                    due_ms,
+                    int(late),
+                    now_ms,
+                    conversation_id,
+                ),
             )
             await conn.execute(
                 "UPDATE task_runs SET status = ?, finished_ms = ?,"
@@ -338,6 +434,24 @@ class SqliteScheduleStore:
                 (status, now_ms, detail, n.id, run_id),
             )
         return n
+
+    @staticmethod
+    async def _count_failure(conn: aiosqlite.Connection, schedule_id: str, now_ms: int) -> bool:
+        """One more failed run in a row, in the transaction that writes its notice, so
+        a run is counted once. True when this one pauses the routine (`PAUSE_AFTER`);
+        a finished one has no runs left to pause."""
+        async with conn.execute(
+            "UPDATE schedules SET failures = failures + 1 WHERE id = ?"
+            " RETURNING failures, paused_ms, status",
+            (schedule_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or int(row["failures"]) < PAUSE_AFTER or row["paused_ms"] is not None:
+            return False
+        if row["status"] != "active":
+            return False
+        await conn.execute("UPDATE schedules SET paused_ms = ? WHERE id = ?", (now_ms, schedule_id))
+        return True
 
     async def notice(self, notice_id: str) -> Notice | None:
         async with self._conn.execute("SELECT * FROM notices WHERE id = ?", (notice_id,)) as cur:

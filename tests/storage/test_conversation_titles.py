@@ -133,6 +133,16 @@ async def test_recency_follows_the_newest_message(store: SqliteConversationStore
     assert page[0].last_message_at == 5000
 
 
+async def test_several_saved_at_once_keep_each_its_own_kind(store: SqliteConversationStore) -> None:
+    await store.create("c1", OWNER, 1000)
+    await store.append_many("c1", OWNER, ["assistant", "tap"], [reply("a"), said("b")], 5000)
+    assert [k for k, _ in await store.history("c1", OWNER)] == ["assistant", "tap"]
+    # An app's note never titles a conversation: only the user's words do.
+    assert await store.title_of("c1", OWNER) == (None, None)
+    with pytest.raises(ValueError):
+        await store.append_many("c1", OWNER, ["assistant"], [reply("a"), reply("b")], 6000)
+
+
 async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None:
     # Everything before 010, then a conversation written the old way.
     before = tmp_path / "before"
@@ -181,6 +191,7 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
         "011_boards",
         "012_rule_events",
         "013_day_conversations",
+        "014_routines",
     ]
     store = SqliteConversationStore(conn)
     assert await store.title_of("old", OWNER) == ("Plan the trip", "words")
