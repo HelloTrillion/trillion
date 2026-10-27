@@ -580,7 +580,7 @@ class Router:
     ) -> RouterResponse:
         result = await self._run(tool, a.args, ctx)
         status = final_status(result)
-        await self._move(
+        won = await self._move(
             a.id,
             Status.EXECUTING,
             status,
@@ -589,7 +589,12 @@ class Router:
             detail=result.content[:_DETAIL_LIMIT],
         )
         logger.info("pending action %s finished: %s", a.id, status.value)
-        return self._from_record(await self._reload(a))
+        if not won:
+            return self._from_record(await self._reload(a))
+        # She is shown the whole result, as on the direct path. The record keeps only its
+        # start: handing her that copy cut a list of records to its first, mid-record.
+        response = self._result_response(tool, status, result.content, result.error_kind)
+        return dataclasses.replace(response, pending_id=a.id)
 
     async def represent(self, pending_id: str, ctx: ToolContext) -> RouterResponse:
         """Ask again for an expired or invalidated proposal (SPN-2b). Never automatic."""

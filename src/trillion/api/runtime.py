@@ -698,7 +698,13 @@ async def open_runtime(
     if isinstance(web, WebFetch):
         rt.web = web
     # Connected in the background: a slow or broken server never delays the start.
-    rt.mcp = McpServers(registry, keychain, paths.home() / "mcp-logs", changed=rt.retell_workspace)
+    rt.mcp = McpServers(
+        registry,
+        keychain,
+        paths.home() / "mcp-logs",
+        changed=rt.retell_workspace,
+        zone=rt.zone,
+    )
     rt.mcp_config = mcp_config
     rt.google = GoogleConnection(
         registry, keychain, google_config or paths.google_config_path(), env=env
