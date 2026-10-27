@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from trillion.connectors import stripe_revenue
 from trillion.connectors.mcp import signin
 from trillion.connectors.mcp.config import Loaded, MissingKey, ServerConfig, fill
 from trillion.connectors.mcp.signin import SIGN_IN_TIMEOUT_S, SignInFailed, SignIns
@@ -60,6 +61,8 @@ class ServerState:
     # Where to sign in, while it waits for the person to (status "signing_in").
     sign_in_url: str = ""
     offered: list[Offered] = field(default_factory=list)
+    # Built-in tools that come and go with this server (stripe_revenue), by name.
+    companions: list[str] = field(default_factory=list)
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
 
@@ -72,8 +75,11 @@ class McpServers:
         logs: Path,
         *,
         changed: Callable[[], None] | None = None,
+        zone: Callable[[], str | None] | None = None,
     ) -> None:
         self._registry = registry
+        # The user's timezone, for a companion that adds up a period.
+        self._zone = zone
         # Told whenever the servers listed change (added, turned on or off, retuned,
         # removed), so what depends on which connectors there are can follow.
         self._changed = changed
@@ -313,11 +319,23 @@ class McpServers:
                     read_only_hint=o.read_only_hint,
                 )
             )
+        # Registered with the server's tools, so a retune that changes the risk of the
+        # tool a companion calls changes the companion's too.
+        for extra in stripe_revenue.companions(
+            server, offered, self._caller(server), zone=self._zone
+        ):
+            try:
+                self._registry.register(extra)
+            except RegistryError as e:
+                logger.warning("MCP companion for %s not offered: %s", server.name, e)
+                continue
+            state.companions.append(extra.definition.name)
 
     def _unregister(self, state: ServerState) -> None:
-        for t in state.tools:
-            self._registry.unregister(t.name)
+        for name in [*(t.name for t in state.tools), *state.companions]:
+            self._registry.unregister(name)
         state.tools = []
+        state.companions = []
         state.skipped = {}
 
     def _caller(self, server: ServerConfig) -> Any:

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from trillion.connectors.mcp.tool import McpTool
+from trillion.connectors.stripe_revenue import StripeRevenue
 from trillion.spine.contract import JSON, Risk, Tool, ToolDefinition
 from trillion.spine.registry import runs_unattended
 from trillion.tools.describe import NAME as DESCRIBE_SELF
@@ -74,7 +75,7 @@ def eligible(d: ToolDefinition | None) -> bool:
 def connector(name: str, tool: Tool | None) -> str | None:
     """The connector a tool belongs to, by the name its tile has: an MCP server's
     title, or a built-in connector's. None for anything else (files, the web)."""
-    if isinstance(tool, McpTool):
+    if isinstance(tool, McpTool | StripeRevenue):
         return tool.title
     return next((title for prefix, title in _PREFIXES if name.startswith(prefix)), None)
 
