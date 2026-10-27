@@ -232,7 +232,10 @@ class Boards:
             widget.clear()
             # No `at` in `after`: `_stamp` gives it now.
             widget.update({"id": before["id"], **copy.deepcopy(after)})
-            widget["live"] = {"reads": reads, "every": live.every(widget)}
+            widget["live"] = {
+                "reads": reads,
+                "every": live.every({**widget, "live": {"reads": reads}}),
+            }
 
         return await self._in_place(conversation_id, before, change)
 

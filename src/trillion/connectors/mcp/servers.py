@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from trillion.connectors import stripe_revenue
 from trillion.connectors.mcp import signin
 from trillion.connectors.mcp.config import Loaded, MissingKey, ServerConfig, fill
 from trillion.connectors.mcp.signin import SIGN_IN_TIMEOUT_S, SignInFailed, SignIns
@@ -60,6 +61,8 @@ class ServerState:
     # Where to sign in, while it waits for the person to (status "signing_in").
     sign_in_url: str = ""
     offered: list[Offered] = field(default_factory=list)
+    # Built-in tools that come and go with this server (stripe_revenue), by name.
+    companions: list[str] = field(default_factory=list)
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
 
@@ -72,8 +75,11 @@ class McpServers:
         logs: Path,
         *,
         changed: Callable[[], None] | None = None,
+        zone: Callable[[], str | None] | None = None,
     ) -> None:
         self._registry = registry
+        # The user's timezone, for a companion that adds up a period.
+        self._zone = zone
         # Told whenever the servers listed change (added, turned on or off, retuned,
         # removed), so what depends on which connectors there are can follow.
         self._changed = changed
@@ -164,7 +170,8 @@ class McpServers:
             return
         state.config = server
         if state.status == "connected":
-            self._unregister(state)
+            # Re-registered at once, so what it held stays its own.
+            self._unregister(state, hand_on=False)
             self._register(state, state.offered)
         self._tell()
 
@@ -313,12 +320,40 @@ class McpServers:
                     read_only_hint=o.read_only_hint,
                 )
             )
+        self._add_companions(state)
 
-    def _unregister(self, state: ServerState) -> None:
-        for t in state.tools:
-            self._registry.unregister(t.name)
+    def _add_companions(self, state: ServerState) -> None:
+        """Register the built-in tools this server brings, from the tools it actually
+        registered. Registered with the server's tools, so a retune that changes the
+        risk of the tool a companion calls changes the companion's too. A name already
+        taken belongs to another server of the same kind: the first keeps it."""
+        server = state.config
+        remotes = [t.remote for t in state.tools]
+        for extra in stripe_revenue.companions(
+            server, remotes, self._caller(server), zone=self._zone
+        ):
+            name = extra.definition.name
+            if self._registry.get(name) is not None:
+                continue
+            try:
+                self._registry.register(extra)
+            except RegistryError as e:
+                logger.warning("MCP companion for %s not offered: %s", server.name, e)
+                continue
+            state.companions.append(name)
+
+    def _unregister(self, state: ServerState, *, hand_on: bool = True) -> None:
+        held = bool(state.companions)
+        for name in [*(t.name for t in state.tools), *state.companions]:
+            self._registry.unregister(name)
         state.tools = []
+        state.companions = []
         state.skipped = {}
+        if held and hand_on:
+            # Another connected server of the same kind takes over what this one held.
+            for other in self.states.values():
+                if other is not state and other.status == "connected" and other.tools:
+                    self._add_companions(other)
 
     def _caller(self, server: ServerConfig) -> Any:
         async def call(tool: str, args: JSON, timeout: float) -> Outcome:

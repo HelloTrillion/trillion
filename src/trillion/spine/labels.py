@@ -43,6 +43,7 @@ LABELS: dict[str, str] = {
     "slack_conversations": "List Slack conversations",
     "slack_read": "Read a Slack conversation",
     "slack_post": "Post to Slack",
+    "stripe_revenue": "Add up Stripe revenue",
 }
 
 
