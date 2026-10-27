@@ -555,6 +555,14 @@ def test_expand_stat():
     assert blocks_of({**OLD_OF["stat"], "tone": "neutral"})[0]["tone"] == "neutral"
 
 
+def test_a_stat_says_its_label_once():
+    # The title already says it: not again under the number.
+    (block,) = blocks_of({**OLD_OF["stat"], "title": "Total"})
+    assert "label" not in block and block["value"] == "$41.20"
+    (block,) = blocks_of({**OLD_OF["stat"], "title": "Spend"})
+    assert block["label"] == "Total"
+
+
 def test_expand_chart_table_note_timeline():
     assert blocks_of({**OLD_OF["chart"], "unit": "$"}) == [
         {
