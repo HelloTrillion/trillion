@@ -19,6 +19,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -46,7 +47,7 @@ from trillion.persona.prompt import Identity, scheduled, volatile_context
 from trillion.scheduler.runner import AskFailed, Built, Busy, NoModel
 from trillion.scheduler.store import Schedule
 from trillion.spine.contract import ToolContext, Via
-from trillion.spine.registry import ROUTINE_NOTHING, ToolRegistry
+from trillion.spine.registry import ROUTINE_BOARD, ROUTINE_NOTHING, ToolRegistry
 from trillion.spine.router import Router
 from trillion.spine.untrusted import is_outside
 from trillion.storage.sqlite.conversation_store import Kind, SqliteConversationStore
@@ -87,6 +88,28 @@ def _has_widgets(board: Mapping[str, Any] | None) -> bool:
     return board is not None and bool(board.get("widgets"))
 
 
+def _widget_ids(board: Mapping[str, Any] | None) -> frozenset[str]:
+    widgets = board.get("widgets", []) if board is not None else []
+    return frozenset(str(w.get("id")) for w in widgets if isinstance(w, Mapping))
+
+
+@dataclass(frozen=True, kw_only=True)
+class RoutineDeps:
+    """What only a routine's run needs of the running app."""
+
+    boards: Callable[[], BoardsLike | None] = lambda: None
+    # The run's eligible reads, so a widget it puts up is kept fresh (live widgets).
+    reads: live.Reads | None = None
+    day_setup: Callable[[], day.SetUp] = day.SetUp
+    # Whether a page open on a conversation is taking input or running a turn there.
+    busy: Callable[[str], bool] = lambda conversation_id: False
+    # Tells a page open on a conversation that a run changed it.
+    ran: Callable[[str], Awaitable[None]] | None = None
+    # The conversations a routine is building in now: one writer per conversation, so
+    # a page's turn there is refused until it is done (`Session`).
+    holds: set[str] = field(default_factory=set)
+
+
 def routine_request(s: Schedule, recipe: str | None = None) -> str:
     """What a routine's run is asked: its name, then the day's recipe or its own
     request, the user's notes, and for its own conversation what to do with it."""
@@ -115,11 +138,7 @@ class Asker:
         zone: Callable[[], str | None],
         clock: Callable[[], int],
         owner: str,
-        boards: Callable[[], BoardsLike | None] = lambda: None,
-        reads: live.Reads | None = None,
-        day_setup: Callable[[], day.SetUp] = day.SetUp,
-        busy: Callable[[str], bool] = lambda conversation_id: False,
-        ran: Callable[[str], Awaitable[None]] | None = None,
+        routines: RoutineDeps | None = None,
     ) -> None:
         self._provider = provider
         self._router = router
@@ -131,14 +150,11 @@ class Asker:
         self._zone = zone
         self._clock = clock
         self._owner = owner
-        self._boards = boards
-        # The run's eligible reads, so a widget it puts up is kept fresh (live widgets).
-        self._reads = reads
-        self._day_setup = day_setup
-        # Whether her turn is running on a page open on a conversation: a run waits.
-        self._busy = busy
-        # Tells a page open on the conversation that a run wrote there.
-        self._ran = ran
+        self.routines = routines or RoutineDeps()
+        # The widgets a routine's failed run left on a day board, by conversation: its
+        # own, so the next run may replace them. In memory: after a restart such a
+        # board counts as built by hand, which only ever leaves it alone.
+        self._left: dict[str, frozenset[str]] = {}
 
     async def __call__(self, schedule: Schedule) -> str:
         """A plain timed ask, in a background conversation of its own."""
@@ -162,8 +178,9 @@ class Asker:
             conversation, _ = await self._conversations.day_conversation(
                 self._owner, date.isoformat(), day.title(date), now
             )
-            boards = self._boards()
-            if boards is not None and _has_widgets(await boards.current(conversation)):
+            boards = self.routines.boards()
+            board = await boards.current(conversation) if boards is not None else None
+            if _has_widgets(board) and _widget_ids(board) != self._left.get(conversation):
                 return None
             return self._free(conversation)
         mine = schedule.conversation_id
@@ -175,27 +192,51 @@ class Asker:
     def _free(self, conversation_id: str) -> str:
         """The conversation, unless her turn is running on a page open there: the run
         would write between its messages. It waits for a later tick (`Busy`)."""
-        if self._busy(conversation_id):
+        if conversation_id in self.routines.holds or self.routines.busy(conversation_id):
             raise Busy
         return conversation_id
 
     async def build(self, schedule: Schedule, conversation_id: str) -> Built:
-        """Run a routine in its conversation."""
-        recipe = None
-        if schedule.target == "day":
-            date = day.today(self._clock(), self._zone())
-            recipe = day.recipe(
-                self._day_setup(), date, self._zone() or "", self._identity(), routine=True
-            )
-        run = _Run(self, schedule, conversation_id, target=conversation_id)
-        await run.go(routine_request(schedule, recipe))
-        if run.wrote and self._ran is not None:
+        """Run a routine in its conversation, holding it: the one writer there until
+        it is done. `Busy` if a page is taking input or running a turn there."""
+        r = self.routines
+        self._free(conversation_id)
+        # Taken with no await since the check, so a page can never start in between.
+        r.holds.add(conversation_id)
+        try:
+            recipe = None
+            if schedule.target == "day":
+                date = day.today(self._clock(), self._zone())
+                recipe = day.recipe(
+                    r.day_setup(), date, self._zone() or "", self._identity(), routine=True
+                )
+            run = _Run(self, schedule, conversation_id, target=conversation_id)
             try:
-                await self._ran(conversation_id)
-            except Exception as e:
-                # The page catches up when it next opens the conversation.
-                logger.warning("a page could not reload after a routine: %s", type(e).__name__)
-        return run.built()
+                await run.go(routine_request(schedule, recipe))
+            except BaseException:
+                await self._after(run, failed=True)
+                raise
+            await self._after(run, failed=False)
+            return run.built()
+        finally:
+            r.holds.discard(conversation_id)
+
+    async def _after(self, run: _Run, *, failed: bool) -> None:
+        """Remember a board a failed run left, as the routine's own, and tell a page open
+        on the conversation whenever the run changed it. Never raises."""
+        conversation = run.conversation
+        try:
+            if not failed:
+                self._left.pop(conversation, None)
+            elif run.touched:
+                boards = self.routines.boards()
+                board = await boards.current(conversation) if boards is not None else None
+                self._left[conversation] = _widget_ids(board)
+            if (run.wrote or run.touched) and self.routines.ran is not None:
+                await self.routines.ran(conversation)
+        except Exception as e:
+            # The page catches up when it next opens the conversation.
+            logger.warning("after a routine's run: %s", type(e).__name__)
 
 
 class _Run:
@@ -214,10 +255,13 @@ class _Run:
         self.began = False
         self.last: list[str] = []
         self.created = False
-        # A routine keeps what it said only once it has something to tell (AGT-6).
-        self.held: list[tuple[Kind, Msg]] = []
+        # A routine keeps what it said only once it has something to tell (AGT-6), each
+        # message with the time it was said.
+        self.held: list[tuple[Kind, Msg, int]] = []
         self.shown = False
         self.nothing = False
+        # Whether a board tool changed the board, whatever came of the run.
+        self.touched = False
         # Whether the run saved anything in its conversation, board or messages.
         self.wrote = False
         self.stop = ""
@@ -265,7 +309,7 @@ class _Run:
                     await a._conversations.create(self.conversation, a._owner, now_ms, "scheduled")
                     await a._conversations.append(self.conversation, a._owner, asked, ask, now_ms)
                 else:
-                    self.held.append((asked, ask))
+                    self.held.append((asked, ask, now_ms))
                 self.created = True
 
         async def settle(usage: Usage, cost_usd: float | None) -> None:
@@ -321,7 +365,7 @@ class _Run:
             await ensure()
             kind: Kind = "assistant" if msg.role == "assistant" else "tool_results"
             if self.routine:
-                self.held.append((kind, msg))
+                self.held.append((kind, msg, a._clock()))
             else:
                 await a._conversations.append(self.conversation, a._owner, kind, msg, a._clock())
 
@@ -348,9 +392,13 @@ class _Run:
                 )
             raise
         finally:
-            if self.routine and a._reads is not None:
-                # Its reads are this run's: nothing later remembers them.
-                a._reads.end(self.conversation, self.turn)
+            reads = a.routines.reads
+            if self.routine and reads is not None:
+                # Its reads are this run's: nothing later remembers them. Kept under its
+                # own turn, so a page on this conversation closing mid-run (which ends
+                # only its own turns, and `Refresher.forget`, which holds no reads)
+                # never drops them.
+                reads.end(self.conversation, self.turn)
         await settle(done.usage, done.cost_usd)
         self.stop = done.stop
         if done.stop == "provider_error":
@@ -364,26 +412,29 @@ class _Run:
         """A routine's call that succeeded: a board shown, nothing to say, or a read
         a widget it puts up can remember."""
         a = self.a
+        reads = a.routines.reads
+        if ev.name in ROUTINE_BOARD:
+            self.touched = True
         if ev.name in _PUTS_UP:
             self.shown = True
         elif ev.name == ROUTINE_NOTHING:
             self.nothing = True
-        elif a._reads is not None and live.eligible(a._registry.definition(ev.name)):
+        elif reads is not None and live.eligible(a._registry.definition(ev.name)):
             title = live.connector(ev.name, a._registry.get(ev.name))
             if title is not None:
-                a._reads.record(self.conversation, self.turn, ev.name, ev.args, title)
+                reads.record(self.conversation, self.turn, ev.name, ev.args, title)
 
     async def _keep(self) -> None:
         """Save a routine's run in its conversation, unless it came to nothing."""
         a = self.a
         if self.shown:
             # A board shown and then taken off again is no board.
-            boards = a._boards()
+            boards = a.routines.boards()
             self.shown = boards is None or _has_widgets(await boards.current(self.conversation))
         # Nothing to tell and no board: nothing of it is kept. A board she put up and
         # then judged not worth telling stays, with what made it, but nobody is told.
         if self.built().outcome == "nothing" and not self.shown:
             return
+        # One statement: a tool call is never kept without its result.
+        await a._conversations.append_run(self.conversation, a._owner, self.held)
         self.wrote = True
-        for kind, msg in self.held:
-            await a._conversations.append(self.conversation, a._owner, kind, msg, a._clock())

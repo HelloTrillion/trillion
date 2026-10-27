@@ -32,7 +32,7 @@ from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp
 from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
 from trillion.scheduler import when
-from trillion.scheduler.ask import Asker
+from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
@@ -264,6 +264,8 @@ class Runtime:
     # remembers so it can be kept fresh (the live widgets spec).
     reads: Reads = field(default_factory=Reads)
     by_conversation: dict[str, Any] = field(default_factory=dict)
+    # Conversations a routine is building in now: a page's turn there waits (one writer).
+    routine_holds: set[str] = field(default_factory=set)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     _asides: int = 0
     # The widget types the workspace tools were last told, so an unchanged list is
@@ -404,6 +406,12 @@ class Runtime:
         """Her own turn is running on this conversation: a refresh waits for it."""
         session = self.by_conversation.get(conversation_id)
         return session is not None and session.busy()
+
+    def page_writing(self, conversation_id: str) -> bool:
+        """A page open on this conversation is taking input or running a turn there:
+        a routine waits, so the two never write between each other's messages."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and session.writing()
 
     async def routine_ran(self, conversation_id: str) -> None:
         """A routine wrote in a conversation: a page open on it, with no turn running,
@@ -721,12 +729,15 @@ async def open_runtime(
         zone=rt.zone,
         clock=lambda: rt.clock(),
         owner=OWNER,
-        # Made below; a routine runs only once the scheduler ticks, after this returns.
-        boards=lambda: rt.boards,
-        reads=rt.reads,
-        day_setup=rt.day_setup,
-        busy=rt.turn_running,
-        ran=rt.routine_ran,
+        routines=RoutineDeps(
+            # Made below; a routine runs only once the scheduler ticks, after this returns.
+            boards=lambda: rt.boards,
+            reads=rt.reads,
+            day_setup=rt.day_setup,
+            busy=rt.page_writing,
+            ran=rt.routine_ran,
+            holds=rt.routine_holds,
+        ),
     )
     rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
     for name in (REMINDER, ASK, LIST, CANCEL):

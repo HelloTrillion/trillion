@@ -178,3 +178,16 @@ async def test_routine_nothing_runs_only_in_a_routine(spine: Spine) -> None:
     # Someone there: offered to nobody, and refused by the tool itself if called.
     typed = await router.execute(call, spine.ctx(via="text"))
     assert typed.status == "failed"
+
+
+def test_an_offered_view_is_live_and_filtered(spine: Spine) -> None:
+    router, _ = routed(spine)
+    reg = router._registry
+    view = reg.offered(lambda d: d.category != CATEGORY)
+    assert view.definition(ROUTINE_NOTHING) is None and view.get(ROUTINE_NOTHING) is None
+    assert "confirm_pending_action" in {d.name for d in view.definitions()}
+    late = Counted("late_read", "test")
+    reg.register(late, module="tests.spine")
+    assert view.get("late_read") is late  # registered after the view was taken
+    assert "late_read" in {d.name for d in view.definitions()}
+    assert ROUTINE_NOTHING not in {d.name for d in view.definitions()}

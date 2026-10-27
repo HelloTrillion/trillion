@@ -289,3 +289,29 @@ async def test_a_plain_timed_ask_is_untouched(store: SqliteScheduleStore) -> Non
     (n,) = door.notices
     assert (n.kind, n.text, n.conversation_id) == ("ask", "Two urgent emails.", None)
     assert routines.built == []
+
+
+async def test_a_day_with_words_but_no_board_was_not_built(store: SqliteScheduleStore) -> None:
+    await store.create(routine(target="day"))
+    said = Built(shown=False, nothing=False, said="Here is your day.")
+    sched, door, _ = make(store, DUE, routines=Routines(said, place="d1"))
+    await sched.tick()
+    (n,) = door.notices
+    assert (n.kind, n.title) == ("failed", "Your day couldn't be built")
+    (run,) = await runs(store, "a1b2c3d4")
+    assert (run.status, run.detail) == ("failed", "no board")
+    s = await store.get("a1b2c3d4")
+    assert s is not None and s.failures == 1
+
+
+async def test_resuming_a_one_off_whose_time_passed_ends_it(store: SqliteScheduleStore) -> None:
+    await store.create(routine(repeat=None))
+    await store.pause("local", "a1b2c3d4", DUE - MINUTE)
+    later = DUE + 60 * MINUTE
+    assert await resume(store, "local", "a1b2c3d4", later)
+    s = await store.get("a1b2c3d4")
+    assert s is not None and (s.status, s.next_due_ms, s.paused_ms) == ("done", None, None)
+    routines = Routines(BOARD)
+    sched, door, _ = make(store, later, routines=routines)
+    await sched.tick()
+    assert door.notices == [] and routines.built == []

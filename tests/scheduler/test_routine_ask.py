@@ -15,13 +15,13 @@ from tests.brain.fakes import say, use
 from tests.scheduler.conftest import schedule
 from tests.scheduler.test_ask import Recording, count
 from trillion.api.runtime import Runtime, open_runtime
-from trillion.brain.types import ContextBlock, TextBlock, ToolResultBlock
+from trillion.brain.types import ContextBlock, ProviderError, TextBlock, ToolResultBlock
 from trillion.connectors.mcp.config import ServerConfig
 from trillion.connectors.mcp.tool import McpTool, Offered, Outcome
 from trillion.persona import day
 from trillion.persona.prompt import system_blocks
-from trillion.scheduler.ask import ROUTINE_RUN, SHOW_OR_NOTHING, Asker
-from trillion.scheduler.runner import Busy
+from trillion.scheduler.ask import ROUTINE_RUN, SHOW_OR_NOTHING, Asker, RoutineDeps
+from trillion.scheduler.runner import AskFailed, Busy
 from trillion.scheduler.store import Schedule
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import JSON, Risk
@@ -60,10 +60,14 @@ def asker(rt: Runtime, provider: Recording | None, **kw: Any) -> Asker:
         zone=lambda: NY,
         clock=rt.clock,
         owner="local",
-        boards=lambda: rt.boards,
-        reads=rt.reads,
-        day_setup=rt.day_setup,
-        **kw,
+        routines=RoutineDeps(
+            **{
+                "boards": lambda: rt.boards,
+                "reads": rt.reads,
+                "day_setup": rt.day_setup,
+                **kw,
+            }
+        ),
     )
 
 
@@ -342,3 +346,23 @@ async def test_a_page_open_there_is_told_after_the_run(rt: Runtime) -> None:
     assert told == [target]
     await a.build(routine(), target)  # nothing kept: nobody to tell
     assert told == [target]
+
+
+async def test_a_board_a_failed_run_left_is_the_routines_to_replace(rt: Runtime) -> None:
+    told: list[str] = []
+
+    async def ran(conversation_id: str) -> None:
+        told.append(conversation_id)
+
+    a = asker(rt, Recording(show(NOTE), ProviderError("rate_limited")), ran=ran)
+    s = routine(target="day", title="Build my day")
+    target = await a.place(s)
+    assert target is not None
+    with pytest.raises(AskFailed):
+        await a.build(s, target)
+    assert await rt.boards.current(target) is not None  # type: ignore[union-attr]
+    assert told == [target]  # a page open there is shown the board it left
+    assert await a.place(s) == target  # not taken for a day built by hand
+    # Once the user changes it, it is theirs.
+    await rt.boards.show(target, "Mine", [KPIS])  # type: ignore[union-attr]
+    assert await a.place(s) is None

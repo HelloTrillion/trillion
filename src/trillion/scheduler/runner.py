@@ -34,6 +34,7 @@ from typing import Literal, Protocol, TypeVar
 from trillion.scheduler.store import (
     LATE_MS,
     PAUSE_AFTER,
+    PAUSE_AFTER_WORDS,
     Kind,
     Notice,
     NoticeKind,
@@ -79,6 +80,7 @@ RunAsk = Callable[[Schedule], Awaitable[str]]
 T = TypeVar("T")
 Outcome = Literal["ready", "nothing"]
 DAY_READY = "Your day is ready"
+DAY_FAILED = "Your day couldn't be built"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -128,13 +130,9 @@ async def resume(store: ScheduleStore, owner_id: str, schedule_id: str, now_ms: 
     return await store.resume(owner_id, schedule_id, following)
 
 
-# PAUSE_AFTER, in words.
-_TIMES = {3: "three"}.get(PAUSE_AFTER, str(PAUSE_AFTER))
-
-
 def paused_title(s: Schedule) -> str:
     """The one notice that says a routine paused itself."""
-    return f"{s.title} failed {_TIMES} times, so I've paused it"
+    return f"{s.title} failed {PAUSE_AFTER_WORDS} times, so I've paused it"
 
 
 class _Handled(Exception):
@@ -414,6 +412,10 @@ class Scheduler:
             logger.info("routine %s skipped: its day already has a board", s.id)
             await self._store.finish(run.id, "skipped", self._clock(), detail="already built")
             return
+        if s.target == "day" and built.outcome == "ready" and not built.shown:
+            # Words but no board: the day was not built, and the user hears that.
+            await self._notice(run, s, "failed", None, "failed", "no board", title=DAY_FAILED)
+            return
         try:
             await self._store.succeeded(s.id)
         except Exception as e:
@@ -427,7 +429,9 @@ class Scheduler:
         # of the host's, spoken once like a reminder's (D3).
         title = ready_title(s)
         status: RunStatus = "late" if late else "delivered"
-        await self._notice(run, s, "ready", f"{title}.", status, conversation_id=target)
+        await self._notice(
+            run, s, "ready", f"{title}.", status, title=title, conversation_id=target
+        )
 
     async def _notice(
         self,
@@ -438,12 +442,12 @@ class Scheduler:
         status: RunStatus,
         detail: str | None = None,
         *,
+        title: str | None = None,
         conversation_id: str | None = None,
     ) -> None:
         now = self._clock()
-        title = ready_title(s) if kind == "ready" else s.title
-        if kind == "failed" and s.target is not None:
-            title = await self._failed_routine(s, now) or title
+        # A routine's failure is counted with its notice, once (`pauses_as`).
+        pauses = paused_title(s) if kind == "failed" and s.target is not None else None
         # The notice and the run's end are one change: a crash between them can never
         # leave the run to be tried again with its notice already written.
         notice = await self._store.finish_with_notice(
@@ -454,29 +458,20 @@ class Scheduler:
             owner_id=s.owner_id,
             source_id=s.id,
             kind=kind,
-            title=title,
+            title=title or s.title,
             text=text,
             due_ms=run.due_ms,
             late=now - run.due_ms > LATE_MS,
             conversation_id=conversation_id,
+            pauses_as=pauses,
         )
         if notice is None:
             logger.warning("run %s was already finished", run.id)
             return
+        if pauses is not None and notice.title == pauses:
+            logger.info("routine %s failed %d times in a row: paused", s.id, PAUSE_AFTER)
         try:
             await self._door.added(notice)
         except Exception as e:
             # It stays held: the next page that opens gets it.
             logger.warning("the door could not take notice %s: %s", notice.id, type(e).__name__)
-
-    async def _failed_routine(self, s: Schedule, now: int) -> str | None:
-        """Count a routine's failure. The one that pauses it says so, as its title."""
-        try:
-            _, paused = await self._store.failed(s.id, now)
-        except Exception as e:
-            logger.warning("routine %s: failure not counted: %s", s.id, type(e).__name__)
-            return None
-        if paused:
-            logger.info("routine %s failed %d times in a row: paused", s.id, PAUSE_AFTER)
-            return paused_title(s)
-        return None

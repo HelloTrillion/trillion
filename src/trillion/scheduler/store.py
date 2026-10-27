@@ -36,8 +36,9 @@ NoticeStatus = Literal["held", "delivered"]
 LATE_MS = 120_000
 # A routine's notes, at most: what to watch and what to leave out, not a document.
 NOTES_MAX = 1000
-# Failed runs in a row after which a routine pauses itself (AGT-8).
+# Failed runs in a row after which a routine pauses itself (AGT-8), and in words.
 PAUSE_AFTER = 3
+PAUSE_AFTER_WORDS = "three"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -144,11 +145,6 @@ class ScheduleStore(Protocol):
         """Where an 'own' routine's runs go from now on."""
         ...
 
-    async def failed(self, schedule_id: str, now_ms: int) -> tuple[int, bool]:
-        """Count one more failed run in a row, pausing the routine at `PAUSE_AFTER`.
-        Returns the count, and whether this paused it."""
-        ...
-
     async def succeeded(self, schedule_id: str) -> None:
         """A run that finished: the failures in a row start again from none."""
         ...
@@ -199,10 +195,14 @@ class ScheduleStore(Protocol):
         due_ms: int,
         late: bool,
         conversation_id: str | None = None,
+        pauses_as: str | None = None,
     ) -> Notice | None:
         """Finish a running (or interrupted) run and write its notice, together, so a
         crash between the two can never leave a run to be tried again with its notice
-        already written. None, and nothing written, if the run was not running."""
+        already written. None, and nothing written, if the run was not running.
+
+        `pauses_as`, for a routine's failure: it is counted in the same change, and
+        the notice that pauses the routine (`PAUSE_AFTER`) takes this title."""
         ...
 
     async def notice(self, notice_id: str) -> Notice | None: ...

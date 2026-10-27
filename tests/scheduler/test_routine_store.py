@@ -80,17 +80,53 @@ async def test_only_a_routine_pauses(store: SqliteScheduleStore) -> None:
     assert not await store.pause("local", "a1b2c3d4", DUE)
 
 
-async def test_failures_count_up_pause_once_and_reset(store: SqliteScheduleStore) -> None:
+async def running(store: SqliteScheduleStore, due: int) -> int:
+    """A run of the routine, claimed and running."""
+    await store.enqueue("a1b2c3d4", due, DUE, 300, 0)
+    run = await store.claim("w", due, 0)
+    assert run is not None and run.due_ms == due
+    return run.id
+
+
+async def fail(store: SqliteScheduleStore, run_id: int) -> str | None:
+    n = await store.finish_with_notice(
+        run_id,
+        "failed",
+        run_id,
+        owner_id="local",
+        source_id="a1b2c3d4",
+        kind="failed",
+        title="Monday revenue",
+        text=None,
+        due_ms=1,
+        late=False,
+        pauses_as="paused now",
+    )
+    return n.title if n is not None else None
+
+
+async def test_failures_count_with_their_notice_pause_once_and_reset(
+    store: SqliteScheduleStore,
+) -> None:
     await store.create(routine(target="own"))
-    assert await store.failed("a1b2c3d4", 1) == (1, False)
+    assert await fail(store, await running(store, 1)) == "Monday revenue"
     await store.succeeded("a1b2c3d4")
-    counts = [await store.failed("a1b2c3d4", n) for n in range(1, PAUSE_AFTER + 2)]
-    assert counts == [(1, False), (2, False), (3, True), (4, False)]
+    titles = [await fail(store, await running(store, due)) for due in range(2, PAUSE_AFTER + 3)]
+    assert titles == ["Monday revenue", "Monday revenue", "paused now", "Monday revenue"]
     s = await store.get("a1b2c3d4")
-    assert s is not None and s.failures == 4 and s.paused_ms == 3
+    assert s is not None and s.failures == 4 and s.paused_ms is not None
     assert await store.resume("local", "a1b2c3d4", DUE)
     s = await store.get("a1b2c3d4")
     assert s is not None and s.failures == 0
+
+
+async def test_a_run_already_finished_is_not_counted(store: SqliteScheduleStore) -> None:
+    await store.create(routine(target="own"))
+    run_id = await running(store, 1)
+    assert await fail(store, run_id) == "Monday revenue"
+    assert await fail(store, run_id) is None  # finished: no notice, and no count
+    s = await store.get("a1b2c3d4")
+    assert s is not None and s.failures == 1
 
 
 async def test_a_ready_notice_carries_the_conversation(store: SqliteScheduleStore) -> None:

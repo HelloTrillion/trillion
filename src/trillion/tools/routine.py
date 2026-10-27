@@ -17,7 +17,9 @@ _ONLY_ROUTINES = "Only a routine's run can end with nothing to say."
 
 def for_session(kind: str, conversation_id: str) -> frozenset[str]:
     """Which routine tools a page's turn in this conversation is offered: none yet.
-    `routine_nothing` never is; it belongs to a routine's run alone."""
+    `routine_nothing` never is; it belongs to a routine's run alone. Task 2 offers
+    routine_narrow and routine_widen here, in a routine's own conversation and in the
+    day conversation when a day routine exists."""
     return frozenset()
 
 

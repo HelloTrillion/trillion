@@ -8,6 +8,7 @@ same file.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -235,27 +236,6 @@ class SqliteScheduleStore:
                 (conversation_id, schedule_id),
             )
 
-    async def failed(self, schedule_id: str, now_ms: int) -> tuple[int, bool]:
-        async with self._tx() as conn:
-            async with conn.execute(
-                "UPDATE schedules SET failures = failures + 1 WHERE id = ? RETURNING failures,"
-                " paused_ms",
-                (schedule_id,),
-            ) as cur:
-                row = await cur.fetchone()
-            if row is None:
-                return 0, False
-            count = int(row["failures"])
-            pausing = False
-            if count >= PAUSE_AFTER and row["paused_ms"] is None:
-                # Only one with runs still to come: a finished one has nothing to pause.
-                done = await conn.execute(
-                    "UPDATE schedules SET paused_ms = ? WHERE id = ? AND status = 'active'",
-                    (now_ms, schedule_id),
-                )
-                pausing = done.rowcount == 1
-        return count, pausing
-
     async def succeeded(self, schedule_id: str) -> None:
         async with self._tx() as conn:
             await conn.execute(
@@ -378,6 +358,7 @@ class SqliteScheduleStore:
         due_ms: int,
         late: bool,
         conversation_id: str | None = None,
+        pauses_as: str | None = None,
     ) -> Notice | None:
         n = Notice(
             id=uuid.uuid4().hex,
@@ -403,6 +384,8 @@ class SqliteScheduleStore:
             ) as cur:
                 if await cur.fetchone() is None:
                     return None
+            if pauses_as is not None and await self._count_failure(conn, source_id, now_ms):
+                n = dataclasses.replace(n, title=pauses_as)
             await conn.execute(
                 "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
                 " due_ms, late, created_ms, status, conversation_id) VALUES (?, ?, 'schedule',"
@@ -412,7 +395,7 @@ class SqliteScheduleStore:
                     owner_id,
                     source_id,
                     kind,
-                    title,
+                    n.title,
                     text,
                     due_ms,
                     int(late),
@@ -426,6 +409,24 @@ class SqliteScheduleStore:
                 (status, now_ms, detail, n.id, run_id),
             )
         return n
+
+    @staticmethod
+    async def _count_failure(conn: aiosqlite.Connection, schedule_id: str, now_ms: int) -> bool:
+        """One more failed run in a row, in the transaction that writes its notice, so
+        a run is counted once. True when this one pauses the routine (`PAUSE_AFTER`);
+        a finished one has no runs left to pause."""
+        async with conn.execute(
+            "UPDATE schedules SET failures = failures + 1 WHERE id = ?"
+            " RETURNING failures, paused_ms, status",
+            (schedule_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or int(row["failures"]) < PAUSE_AFTER or row["paused_ms"] is not None:
+            return False
+        if row["status"] != "active":
+            return False
+        await conn.execute("UPDATE schedules SET paused_ms = ? WHERE id = ?", (now_ms, schedule_id))
+        return True
 
     async def notice(self, notice_id: str) -> Notice | None:
         async with self._conn.execute("SELECT * FROM notices WHERE id = ?", (notice_id,)) as cur:

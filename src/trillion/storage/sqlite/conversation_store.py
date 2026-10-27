@@ -227,6 +227,30 @@ class SqliteConversationStore:
         await self._touched(conversation_id, owner_id, kind, msgs, now_ms)
         return ids
 
+    async def append_run(
+        self, conversation_id: str, owner_id: str, rows: Sequence[tuple[Kind, Msg, int]]
+    ) -> None:
+        """Save a whole run's messages, each with its kind and time, in one statement:
+        kept all or none, so a tool call is never kept without its result."""
+        if not rows:
+            return
+        values: list[object] = []
+        for kind, msg, at in rows:
+            values += [
+                owner_id,
+                conversation_id,
+                msg.role,
+                kind,
+                json.dumps([_dump(b) for b in msg.blocks], ensure_ascii=False),
+                _dump_raw(msg.raw),
+                at,
+            ]
+        marks = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        cols = "owner_id, conversation_id, role, kind, blocks_json, raw_json, created_at"
+        await self._conn.execute(f"INSERT INTO messages ({cols}) VALUES {marks}", values)  # noqa: S608 - placeholders only
+        # Recency only: none of these is the user's, so none names the conversation.
+        await self._touched(conversation_id, owner_id, "assistant", [], max(r[2] for r in rows))
+
     async def _touched(
         self, conversation_id: str, owner_id: str, kind: Kind, msgs: Sequence[Msg], now_ms: int
     ) -> None:

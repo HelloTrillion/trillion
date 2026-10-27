@@ -95,6 +95,8 @@ WATCH_HOLD_S = 15.0
 SURFACE = "web"
 # The day board is built at most this often per conversation, however often it is asked.
 DAY_BUILD_EVERY_MS = 60_000
+# The error a page is sent when a routine is building in its conversation.
+ROUTINE_BUILDING = "routine_building"
 # How the page shows the saved recipe: a small line, never the user's words.
 DAY_BUILD_SHOWN = "Building your day"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
@@ -172,6 +174,16 @@ def routine_run(msg: Msg) -> str | None:
 
 
 @dataclass(frozen=True, kw_only=True)
+class _Loaded:
+    """A conversation as read from the store, before a session takes it."""
+
+    shown: list[dict[str, str]]
+    turn: int
+    summary: str | None
+    rows: list[tuple[int, Kind, Msg]]
+
+
+@dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
 
@@ -206,6 +218,9 @@ class Session:
         self._history: list[Msg] = []
         self._kinds: list[Kind] = []
         self._ids: list[int] = []
+        # Messages this session has saved, counted: a reload that read the store while
+        # one was saved would lose it, and is dropped (`reloaded`).
+        self._saves = 0
         self._summary: str | None = None
         # The turns in which she read something from outside: a page, a file, or a
         # timed ask's answer, which may quote an email (MEM-5).
@@ -312,7 +327,9 @@ class Session:
         session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
         shown: list[dict[str, str]] = []
         if resumed:
-            shown = await session._load()
+            loaded = await session._read()
+            session._take(loaded)
+            shown = loaded.shown
             found = await rt.conversations.kind_of(session.id, OWNER)
             session.kind, session.day = found if found is not None else ("chat", None)
             if rt.web is not None:
@@ -356,10 +373,9 @@ class Session:
             raise
         return session
 
-    async def _load(self) -> list[dict[str, str]]:
+    async def _read(self) -> _Loaded:
         """Read the conversation from the store: the page and the turn count get every
-        message; the model gets the latest summary and what came after it (BRN-5).
-        Returns the lines the page shows."""
+        message; the model gets the latest summary and what came after it (BRN-5)."""
         rt = self._rt
         shown: list[dict[str, str]] = []
         turn = 0
@@ -375,24 +391,34 @@ class Session:
             elif kind in ("user", "assistant") and text:
                 shown.append({"role": msg.role, "text": text})
         summary, rows = await rt.conversations.context(self.id, OWNER)
-        self._turn, self._summary = turn, summary
-        self._ids[:] = [message_id for message_id, _, _ in rows]
-        self._kinds[:] = [kind for _, kind, _ in rows]
-        self._history[:] = [msg for _, _, msg in rows]
-        return shown
+        return _Loaded(shown=shown, turn=turn, summary=summary, rows=rows)
+
+    def _take(self, loaded: _Loaded) -> None:
+        """Make what was read this session's own. No await: nothing comes between."""
+        self._turn, self._summary = loaded.turn, loaded.summary
+        self._ids[:] = [message_id for message_id, _, _ in loaded.rows]
+        self._kinds[:] = [kind for _, kind, _ in loaded.rows]
+        self._history[:] = [msg for _, _, msg in loaded.rows]
 
     async def reloaded(self) -> bool:
         """A routine wrote here with nobody's turn running: read the conversation again
         and show the page what is there now, history and board. It delivers nothing:
-        notices reach the user only through the door (SUR-9). False, and nothing done,
-        while a turn runs or before the page has its history."""
-        if self._closed or not self._started or self.busy():
+        notices reach the user only through the door (SUR-9).
+
+        False, and nothing changed, while a turn runs or input is taken, before the page
+        has its history, or when anything was saved here while it read: the page then
+        catches up when it next opens the conversation."""
+        if self._closed or not self._started or self.writing():
             return False
-        rt = self._rt
-        shown = await self._load()
+        saved = self._saves
+        loaded = await self._read()
+        if self._closed or self.writing() or self._saves != saved:
+            return False
+        self._take(loaded)
         # Her last reply here is history now: nothing of it can be trimmed.
         self._tail = None
-        await self._send("history", messages=shown)
+        rt = self._rt
+        await self._send("history", messages=loaded.shown)
         await self._send(
             "board", board=for_page(await self._board(), rt.zone(), rt.refreshing(self.id))
         )
@@ -450,6 +476,19 @@ class Session:
     def busy(self) -> bool:
         """Her turn, or her saying something, is running here: a refresh waits."""
         return self._task is not None and not self._task.done()
+
+    def writing(self) -> bool:
+        """Busy, or taking in something the user did that may start a turn: a routine
+        waits rather than write between this page's messages."""
+        return self.busy() or self._taking > 0
+
+    async def _routine_building(self) -> bool:
+        """A routine is building in this conversation: it is the one writer here until
+        done, so what would start a turn is refused, and the page told why."""
+        if self.id not in self._rt.routine_holds:
+            return False
+        await self._error(ROUTINE_BUILDING)
+        return True
 
     async def close(self) -> None:
         self._rt.sessions.discard(self)
@@ -673,6 +712,8 @@ class Session:
     async def _take_text(self, text: str, *, ask: bool = False) -> None:
         if self._task is not None:
             await self._error("busy")
+        elif await self._routine_building():
+            return
         else:
             self._spoken = None
             await self._stop_listening()
@@ -700,6 +741,8 @@ class Session:
             return
         async with self._taking_input():
             if self._task is not None or self._history or self._greeted:
+                return
+            if await self._routine_building():
                 return
             self._greeted = True
             await self._stop_listening()
@@ -732,6 +775,8 @@ class Session:
                 or self.day != date.isoformat()
                 or (last is not None and now - last < DAY_BUILD_EVERY_MS)
             ):
+                return
+            if await self._routine_building():
                 return
             await self._stop_listening()
             # Never an approval: the recipe is the app's words, not the user's.
@@ -1492,7 +1537,10 @@ class Session:
             only_her = not text and bool(listener.raw_text())
             if only_her:
                 logger.info("spoken turn in session %s dropped: her echo", self.id)
-            if text:
+            if text and await self._routine_building():
+                # Heard, but a routine is building here: nothing is saved or answered.
+                pass
+            elif text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
                 usable = draft is not None and self._usable(draft, text)
@@ -1556,6 +1604,9 @@ class Session:
             await self._tapped(pending_id, decision)
 
     async def _tapped(self, pending_id: str, decision: Literal["confirm", "cancel"]) -> None:
+        if await self._routine_building():
+            # The card stays: tapped again once the routine is done, it is answered.
+            return
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
@@ -2175,6 +2226,7 @@ class Session:
     async def _save(self, kind: Kind, msg: Msg) -> None:
         # Something after her last reply: it is no longer the one to trim.
         self._tail = None
+        self._saves += 1
         self._history.append(msg)
         self._kinds.append(kind)
         message_id = await self._rt.conversations.append(
@@ -2425,6 +2477,7 @@ class Session:
         """Like `_save`, for several at once: in the history before the write, so a turn
         that starts meanwhile has them, and taken out again if the write fails. Only
         these: a message saved meanwhile stays, wherever they now are."""
+        self._saves += 1
         self._tail = None
         self._history.extend(msgs)
         self._kinds.extend([kind] * len(msgs))
