@@ -12,6 +12,8 @@ from typing import Literal, Protocol
 from trillion.scheduler.when import Repeat
 
 Kind = Literal["reminder", "ask"]
+# Where a routine puts its board: today's day conversation, or a conversation of its own.
+Target = Literal["day", "own"]
 ScheduleStatus = Literal["active", "done", "cancelled"]
 RunStatus = Literal[
     "queued",
@@ -23,11 +25,19 @@ RunStatus = Literal[
     "failed",
     "interrupted",
     "cancelled",
+    # A routine not run: paused, or its day already built by hand.
+    "skipped",
+    # A routine that ran and found nothing worth the user's attention (AGT-6).
+    "nothing",
 ]
-NoticeKind = Literal["reminder", "ask", "missed", "failed"]
+NoticeKind = Literal["reminder", "ask", "missed", "failed", "ready"]
 NoticeStatus = Literal["held", "delivered"]
 # A notice that arrives more than this after its due time says so ("due 4:00 pm").
 LATE_MS = 120_000
+# A routine's notes, at most: what to watch and what to leave out, not a document.
+NOTES_MAX = 1000
+# Failed runs in a row after which a routine pauses itself (AGT-8).
+PAUSE_AFTER = 3
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -44,6 +54,15 @@ class Schedule:
     status: ScheduleStatus
     created_ms: int
     created_in: str
+    # A routine: a timed ask with a target. None for a plain timed ask or a reminder.
+    target: Target | None = None
+    # An 'own' routine's conversation, made on its first run.
+    conversation_id: str | None = None
+    notes: str = ""
+    # Paused when set: not run, and its due time not moved on.
+    paused_ms: int | None = None
+    # Failed runs in a row.
+    failures: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -89,6 +108,8 @@ class Notice:
     delivered_ms: int | None
     delivered_to: str | None
     notified_ms: int | None
+    # The conversation a routine's notice opens; None for any other.
+    conversation_id: str | None = None
 
 
 class ScheduleStore(Protocol):
@@ -110,6 +131,27 @@ class ScheduleStore(Protocol):
         ...
 
     async def cancel(self, owner_id: str, schedule_id: str, now_ms: int) -> bool: ...
+
+    async def pause(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:
+        """Pause an active routine. Its due time stays where it was."""
+        ...
+
+    async def resume(self, owner_id: str, schedule_id: str, next_due_ms: int | None) -> bool:
+        """Resume a paused routine from `next_due_ms`, with its failures forgotten."""
+        ...
+
+    async def set_conversation(self, schedule_id: str, conversation_id: str) -> None:
+        """Where an 'own' routine's runs go from now on."""
+        ...
+
+    async def failed(self, schedule_id: str, now_ms: int) -> tuple[int, bool]:
+        """Count one more failed run in a row, pausing the routine at `PAUSE_AFTER`.
+        Returns the count, and whether this paused it."""
+        ...
+
+    async def succeeded(self, schedule_id: str) -> None:
+        """A run that finished: the failures in a row start again from none."""
+        ...
 
     async def claim(
         self, worker: str, now_ms: int, retry_before_ms: int, kind: Kind | None = None
@@ -156,6 +198,7 @@ class ScheduleStore(Protocol):
         text: str | None,
         due_ms: int,
         late: bool,
+        conversation_id: str | None = None,
     ) -> Notice | None:
         """Finish a running (or interrupted) run and write its notice, together, so a
         crash between the two can never leave a run to be tried again with its notice

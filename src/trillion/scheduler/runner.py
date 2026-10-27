@@ -13,6 +13,11 @@ past their timeout: a reminder is tried once more, or reported missed; a timed a
 whose tools may already have acted, is reported failed and never run again. One schedule or run
 that breaks is logged and skipped, never allowed to hold up the rest.
 
+A routine is a timed ask with a target (the routines spec): run as one, in today's day
+conversation or its own, where it builds a board. A board becomes a 'ready' notice
+naming the conversation to open; nothing worth saying, no notice at all (AGT-6). A
+paused routine is not run, and after three failures in a row it pauses itself.
+
 The runner never touches a surface. It writes notices and tells the door (SUR-9).
 """
 
@@ -23,10 +28,12 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol, TypeVar
 
 from trillion.scheduler.store import (
     LATE_MS,
+    PAUSE_AFTER,
     Kind,
     Notice,
     NoticeKind,
@@ -62,6 +69,57 @@ class AskFailed(Exception):
 
 
 RunAsk = Callable[[Schedule], Awaitable[str]]
+T = TypeVar("T")
+Outcome = Literal["ready", "said", "nothing"]
+DAY_READY = "Your day is ready"
+
+
+@dataclass(frozen=True, kw_only=True)
+class Built:
+    """What a routine's run came to: whether it put up a board, whether she called
+    `routine_nothing`, and her last words."""
+
+    shown: bool
+    nothing: bool
+    said: str
+
+    @property
+    def outcome(self) -> Outcome:
+        # A board is there whatever she said after it: the user should know.
+        if self.shown:
+            return "ready"
+        if self.nothing or not self.said.strip():
+            return "nothing"
+        return "said"
+
+
+class Routines(Protocol):
+    """How a routine is run (`ask.py`): where it lands, then the run itself."""
+
+    async def place(self, s: Schedule) -> str | None:
+        """The conversation this run builds in, made if missing. None to skip it: a
+        day already built by hand is never overwritten."""
+        ...
+
+    async def build(self, s: Schedule, conversation_id: str) -> Built: ...
+
+
+def ready_title(s: Schedule) -> str:
+    """The ready line: "Your Monday revenue is ready", or "Your day is ready"."""
+    return DAY_READY if s.target == "day" else f"Your {s.title} is ready"
+
+
+# PAUSE_AFTER, in words.
+_TIMES = {3: "three"}.get(PAUSE_AFTER, str(PAUSE_AFTER))
+
+
+def paused_title(s: Schedule) -> str:
+    """The one notice that says a routine paused itself."""
+    return f"{s.title} failed {_TIMES} times, so I've paused it"
+
+
+class _Handled(Exception):
+    """A run's failure was dealt with: blocked or reported."""
 
 
 class DoorLike(Protocol):
@@ -80,6 +138,7 @@ class Scheduler:
         run_ask: RunAsk,
         door: DoorLike,
         *,
+        routines: Routines | None = None,
         tick_s: float = TICK_S,
         ask_timeout_s: float = ASK_TIMEOUT_S,
         worker: str | None = None,
@@ -88,6 +147,7 @@ class Scheduler:
         self._clock = clock
         self._run_ask = run_ask
         self._door = door
+        self._routines = routines
         self.tick_s = tick_s
         self._ask_timeout_s = ask_timeout_s
         # Who claims runs: this process. A run another one left running was interrupted.
@@ -263,34 +323,86 @@ class Scheduler:
         if s.kind == "reminder":
             await self._notice(run, s, "reminder", s.body, "late" if late else "delivered")
             return
+        if s.target is not None and s.paused_ms is not None:
+            logger.info("routine %s is paused: not run", s.id)
+            await self._store.finish(run.id, "skipped", now, detail="paused")
+            return
         if now - run.due_ms > ASK_WINDOW_MS:
             await self._notice(run, s, "missed", None, "missed", "more than an hour late")
             return
+        if s.target is not None:
+            await self._routine(run, s, late)
+            return
+        try:
+            said = await self._attempt(run, s, lambda: self._run_ask(s))
+        except _Handled:
+            return
+        if not said.strip():
+            await self._notice(run, s, "failed", None, "failed", "no reply")
+            return
+        await self._notice(run, s, "ask", said, "late" if late else "delivered")
+
+    async def _attempt(self, run: Run, s: Schedule, work: Callable[[], Awaitable[T]]) -> T:
+        """Run an ask within its timeout. No model blocks the run; any failure is
+        reported once and never retried. Either way it raises `_Handled`."""
         limit = asyncio.timeout(self._ask_timeout_s)
         try:
             async with limit:
-                said = await self._run_ask(s)
+                return await work()
         except NoModel:
             await self._store.block(run.id, self._clock(), "no model")
-            return
         except TimeoutError:
             # Ours only if the limit ran out; one raised inside the ask is its failure.
             why = (
                 f"timed out after {self._ask_timeout_s:g} s" if limit.expired() else "TimeoutError"
             )
             await self._notice(run, s, "failed", None, "failed", why)
-            return
         except AskFailed as e:
             await self._notice(run, s, "failed", None, "failed", e.why[:200])
-            return
         except Exception as e:
             logger.warning("timed ask %s failed: %s", s.id, type(e).__name__)
             await self._notice(run, s, "failed", None, "failed", type(e).__name__)
+        raise _Handled
+
+    async def _routine(self, run: Run, s: Schedule, late: bool) -> None:
+        """Run a routine where it lands, and tell the user only when there is
+        something to see."""
+        routines = self._routines
+        if routines is None:
+            await self._notice(run, s, "failed", None, "failed", "routines are not set up")
             return
-        if not said.strip():
-            await self._notice(run, s, "failed", None, "failed", "no reply")
+
+        async def work() -> tuple[str | None, Built | None]:
+            target = await routines.place(s)
+            if target is None:
+                return None, None
+            if s.target == "own" and target != s.conversation_id:
+                await self._store.set_conversation(s.id, target)
+            return target, await routines.build(s, target)
+
+        try:
+            target, built = await self._attempt(run, s, work)
+        except _Handled:
             return
-        await self._notice(run, s, "ask", said, "late" if late else "delivered")
+        if target is None or built is None:
+            # The day was built by hand: hers stays, and nobody is told anything.
+            logger.info("routine %s skipped: its day already has a board", s.id)
+            await self._store.finish(run.id, "skipped", self._clock(), detail="already built")
+            return
+        try:
+            await self._store.succeeded(s.id)
+        except Exception as e:
+            logger.warning("routine %s: failures not reset: %s", s.id, type(e).__name__)
+        status: RunStatus = "late" if late else "delivered"
+        match built.outcome:
+            case "ready":
+                await self._notice(run, s, "ready", None, status, conversation_id=target)
+            case "said":
+                await self._notice(run, s, "ask", built.said, status, conversation_id=target)
+            case "nothing":
+                # Nothing worth the user's attention: a log line, never a notice (AGT-6).
+                logger.info("routine %s had nothing to say", s.id)
+                await self._store.finish(run.id, "nothing", self._clock(), detail="nothing")
 
     async def _notice(
         self,
@@ -300,8 +412,13 @@ class Scheduler:
         text: str | None,
         status: RunStatus,
         detail: str | None = None,
+        *,
+        conversation_id: str | None = None,
     ) -> None:
         now = self._clock()
+        title = ready_title(s) if kind == "ready" else s.title
+        if kind == "failed" and s.target is not None:
+            title = await self._failed_routine(s, now) or title
         # The notice and the run's end are one change: a crash between them can never
         # leave the run to be tried again with its notice already written.
         notice = await self._store.finish_with_notice(
@@ -312,10 +429,11 @@ class Scheduler:
             owner_id=s.owner_id,
             source_id=s.id,
             kind=kind,
-            title=s.title,
+            title=title,
             text=text,
             due_ms=run.due_ms,
             late=now - run.due_ms > LATE_MS,
+            conversation_id=conversation_id,
         )
         if notice is None:
             logger.warning("run %s was already finished", run.id)
@@ -325,3 +443,15 @@ class Scheduler:
         except Exception as e:
             # It stays held: the next page that opens gets it.
             logger.warning("the door could not take notice %s: %s", notice.id, type(e).__name__)
+
+    async def _failed_routine(self, s: Schedule, now: int) -> str | None:
+        """Count a routine's failure. The one that pauses it says so, as its title."""
+        try:
+            _, paused = await self._store.failed(s.id, now)
+        except Exception as e:
+            logger.warning("routine %s: failure not counted: %s", s.id, type(e).__name__)
+            return None
+        if paused:
+            logger.info("routine %s failed %d times in a row: paused", s.id, PAUSE_AFTER)
+            return paused_title(s)
+        return None

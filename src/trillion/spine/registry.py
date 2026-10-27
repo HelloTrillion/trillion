@@ -21,7 +21,13 @@ _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
 # Families an unattended run never gets, whatever their risk: a run nobody watches does
 # not change what runs later (AGT-9), and has no page to show a board on (SUR-1).
 # A standing rule is the user's own word: a run nobody is watching never changes one.
-UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules"})
+# A routine's own tools change a routine, or end its run: never a plain timed ask's.
+UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules", "routine"})
+# What a routine's run gets besides (the routines spec, D5): the board tools, on its own
+# conversation only (the router checks which), and the way to say it has nothing.
+# Named here so the spine needs nothing from the tools (tests check the names still match).
+ROUTINE_BOARD = frozenset({"workspace_show", "workspace_update", "workspace_remove"})
+ROUTINE_NOTHING = "routine_nothing"
 
 
 class RegistryError(ValueError):
@@ -34,6 +40,19 @@ def runs_unattended(d: ToolDefinition) -> bool:
     left asking first is registered irreversible), and nothing that changes the schedule.
     `unattended()` offers exactly these, and the router refuses the rest by name."""
     return d.risk not in GATED and d.category not in UNATTENDED_NEVER
+
+
+def runs_in_routine(d: ToolDefinition) -> bool:
+    """Whether a routine's run may use this tool: what any unattended run may, the
+    three board tools, and `routine_nothing`. Each a read of the family it says it is,
+    so nothing else can take one of their names and be let through."""
+    if runs_unattended(d):
+        return True
+    if d.risk is not Risk.READ:
+        return False
+    return (d.name in ROUTINE_BOARD and d.category == "workspace") or (
+        d.name == ROUTINE_NOTHING and d.category == "routine"
+    )
 
 
 def validate(tool: Tool, module: str, definition: ToolDefinition | None = None) -> None:
@@ -153,6 +172,16 @@ class ToolRegistry:
         view = _ReadOnly()
         for name, d in self._definitions.items():
             if runs_unattended(d):
+                view._tools[name] = self._tools[name]
+                view._definitions[name] = d
+        return view
+
+    def routine(self) -> ToolRegistry:
+        """The view for a routine's run: the unattended view, plus the board tools and
+        `routine_nothing` (`runs_in_routine`). Read-only, and taken when the run starts."""
+        view = _ReadOnly()
+        for name, d in self._definitions.items():
+            if runs_in_routine(d):
                 view._tools[name] = self._tools[name]
                 view._definitions[name] = d
         return view

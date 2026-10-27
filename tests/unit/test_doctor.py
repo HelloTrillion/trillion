@@ -139,12 +139,12 @@ def test_setup_prepares_the_machine_and_can_be_run_again(
 ) -> None:
     prepared(home)
     first = capsys.readouterr().out
-    assert "database ready (13 updates applied)" in first and "Start it with: trillion run" in first
+    assert "database ready (14 updates applied)" in first and "Start it with: trillion run" in first
     assert (home / "trillion.db").exists() and (home / "persona").is_dir()
     prepared(home)  # a second run finishes what is there and changes nothing
     assert "already prepared: nothing to do" in capsys.readouterr().out
     assert examine()["Database"] == Check(
-        name="Database", status="ok", detail="up to date (13 migrations)"
+        name="Database", status="ok", detail="up to date (14 migrations)"
     )
 
 
@@ -559,7 +559,9 @@ def scheduled(home: Path, *runs: tuple[str, int]) -> None:
     prepared(home)
     with closing(sqlite3.connect(home / "trillion.db")) as db, db:
         db.execute(
-            "INSERT INTO schedules VALUES ('a1b2c3d4', 'local', 'ask', 'Email', 'Check.',"
+            "INSERT INTO schedules (id, owner_id, kind, title, body, zone, at_local, repeat,"
+            " next_due_ms, status, created_ms, created_in)"
+            " VALUES ('a1b2c3d4', 'local', 'ask', 'Email', 'Check.',"
             " 'America/New_York', '2026-10-26T09:00', '{\"every\": \"weekday\"}',"
             " 1793019600000, 'active', 0, 'c1')"
         )

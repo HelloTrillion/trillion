@@ -703,23 +703,23 @@ async def open_runtime(
     rt.schedules = schedules
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
-    rt.scheduler = Scheduler(
-        schedules,
-        lambda: rt.clock(),
-        Asker(
-            provider=lambda: rt.provider,
-            router=router,
-            registry=registry,
-            conversations=rt.conversations,
-            system=rt.system,
-            identity=lambda: rt.identity,
-            granted_roots=lambda: rt.granted_roots,
-            zone=rt.zone,
-            clock=lambda: rt.clock(),
-            owner=OWNER,
-        ),
-        rt.door,
+    asker = Asker(
+        provider=lambda: rt.provider,
+        router=router,
+        registry=registry,
+        conversations=rt.conversations,
+        system=rt.system,
+        identity=lambda: rt.identity,
+        granted_roots=lambda: rt.granted_roots,
+        zone=rt.zone,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+        # Made below; a routine runs only once the scheduler ticks, after this returns.
+        boards=lambda: rt.boards,
+        reads=rt.reads,
+        day_setup=rt.day_setup,
     )
+    rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):

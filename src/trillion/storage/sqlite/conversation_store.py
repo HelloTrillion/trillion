@@ -28,9 +28,10 @@ Kind = Literal["user", "tap", "assistant", "tool_results"]
 USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
 # A day is a page's too: the one conversation per date where she builds the user's day.
-ConversationKind = Literal["chat", "scheduled", "day"]
+# A routine is a page's as well: one routine's own, where each of its runs puts its board.
+ConversationKind = Literal["chat", "scheduled", "day", "routine"]
 # The kinds a page opens, lists, renames and deletes.
-_PAGE_KINDS = "kind IN ('chat', 'day')"
+_PAGE_KINDS = "kind IN ('chat', 'day', 'routine')"
 TitleSource = Literal["words", "model", "user"]
 TITLE_MAX = 80
 WORDS_TITLE_MAX = 60
@@ -166,6 +167,17 @@ class SqliteConversationStore:
         if row is None:  # pragma: no cover - the insert or the row before it is there
             raise RuntimeError("the day conversation was neither found nor made")
         return str(row["id"]), created
+
+    async def routine_conversation(self, owner_id: str, title: str, now_ms: int) -> str:
+        """A new conversation of a routine's own, titled with its name. The title is
+        saved as the user's, so her naming never replaces it."""
+        conversation_id = uuid.uuid4().hex
+        await self._conn.execute(
+            "INSERT INTO conversations (id, owner_id, created_at, kind, title, title_source)"
+            " VALUES (?, ?, ?, 'routine', ?, 'user')",
+            (conversation_id, owner_id, now_ms, tidy_title(title)),
+        )
+        return conversation_id
 
     async def append(
         self, conversation_id: str, owner_id: str, kind: Kind, msg: Msg, now_ms: int
