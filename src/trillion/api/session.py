@@ -2497,6 +2497,7 @@ class Session:
                 due_ms=n.due_ms,
                 due=n.due,
                 late=n.late,
+                conversation_id=n.conversation_id,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

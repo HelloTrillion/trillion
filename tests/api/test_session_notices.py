@@ -487,6 +487,25 @@ async def test_the_notice_event_carries_its_due_time_in_words(rt: Runtime) -> No
     await session.close()
 
 
+async def test_the_ready_notice_event_carries_the_conversation_it_opens(rt: Runtime) -> None:
+    assert rt.schedules is not None and rt.door is not None
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    n = await written(
+        rt.schedules,
+        kind="ready",
+        text="Your Monday revenue is ready.",
+        title="Your Monday revenue is ready",
+        due_ms=DUE,
+        now_ms=rt.clock(),
+        conversation_id="conv-1",
+    )
+    await rt.door.added(n)
+    (shown,) = page.all("notice")
+    assert shown["kind"] == "ready" and shown["conversation_id"] == "conv-1"
+    await session.close()
+
+
 async def test_a_page_whose_start_fails_is_not_left_to_take_notices(
     rt: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

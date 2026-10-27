@@ -2358,6 +2358,33 @@ button.connected-danger {
   font-style: italic;
 }
 
+/* A routine's Pause or Resume, and Delete, side by side. */
+.reminders-actions {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+/* Open, beside where a routine lands: a link-sized button in the line. */
+button.reminders-open {
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--color-accent);
+}
+
+/* A routine's ready line: one quiet line, with Open to go to what it built. */
+.notice.ready-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.ready-open {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
 .reminders-recent {
   margin: 0;
   padding-left: 18px;

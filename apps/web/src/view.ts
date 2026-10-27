@@ -22,7 +22,7 @@ export function labelOf(label: unknown, tool: unknown): string {
 export type CardStatus = 'waiting' | 'working' | 'done' | 'declined' | 'failed' | 'unknown' | 'closed';
 
 /** What a reminder or timed ask left: her words, or a missed or failed one with none. */
-export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed';
+export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed' | 'ready';
 
 export type Entry =
   | { readonly kind: 'user'; readonly text: string }
@@ -55,6 +55,8 @@ export type Entry =
       /** When it was due, in words, in the schedule's own zone: "4:00 pm", "Fri 4:00 pm". */
       readonly due: string;
       readonly late: boolean;
+      /** The conversation a routine's ready line opens; null for any other notice. */
+      readonly conversationId: string | null;
     };
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
@@ -190,6 +192,7 @@ const ERRORS: Readonly<Record<string, string>> = {
   no_model: 'No model is set up yet, so there is nobody to answer. Open Model settings.',
   no_listening: 'She cannot hear yet. Open Settings, under Hearing, and choose how.',
   busy: 'Still answering the last message.',
+  routine_building: "She's building this conversation's routine right now. Try again in a moment.",
   bad_message: 'That message could not be sent.',
   internal: 'Something failed inside Trillion. The log has the details.',
 };
@@ -255,14 +258,15 @@ function speechOf(raw: unknown): Speech | null {
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 
-const NOTICE_KINDS: readonly NoticeKind[] = ['reminder', 'ask', 'missed', 'failed'];
+const NOTICE_KINDS: readonly NoticeKind[] = ['reminder', 'ask', 'missed', 'failed', 'ready'];
 
 function scheduledOf(msg: ServerMsg): Entry | null {
   const what = NOTICE_KINDS.find((k) => k === msg['kind']);
   const id = str(msg['id']);
   if (!what || !id) return null;
-  // Only she writes words; a missed or failed one never carries any (D7).
-  const words = what === 'reminder' || what === 'ask' ? str(msg['text']) : '';
+  // Only she writes words; a missed or failed one never carries any (D7). A ready line's
+  // words are the host's, kept so it reads as it was spoken.
+  const words = what === 'missed' || what === 'failed' ? '' : str(msg['text']);
   const dueMs = typeof msg['due_ms'] === 'number' ? msg['due_ms'] : 0;
   return {
     kind: 'scheduled',
@@ -274,8 +278,18 @@ function scheduledOf(msg: ServerMsg): Entry | null {
     // The core's words, in the zone the user set it in. This browser's clock only if none.
     due: str(msg['due']) || localClock(dueMs),
     late: msg['late'] === true,
+    conversationId: what === 'ready' ? str(msg['conversation_id']) || null : null,
   };
 }
+
+/** The conversation a routine's ready notice says is ready, to mark unread; null for any other message. */
+export function readyConversation(msg: ServerMsg): string | null {
+  if (msg.type !== 'notice' || msg['code'] !== 'schedule' || msg['kind'] !== 'ready') return null;
+  return str(msg['conversation_id']) || null;
+}
+
+// Refused, not taken: what was typed goes back in the box.
+const REFUSED: ReadonlySet<string> = new Set(['busy', 'routine_building']);
 
 /** A reply is over: what waited for it joins the conversation, in order. */
 function release(view: View): View {
@@ -542,8 +556,8 @@ function step(view: View, msg: ServerMsg): View {
     }
     case 'error': {
       const code = str(msg['code']);
-      if (code !== 'busy') {
-        // Any error but busy ends what was sent: a later busy must not pull it back.
+      if (!REFUSED.has(code)) {
+        // Any error but a refusal ends what was sent: a later busy must not pull it back.
         view = { ...view, pending: null };
       }
       // Her own sentence for a leg that is down (VOI-14, SUR-8), when the core sends one.
@@ -560,7 +574,7 @@ function step(view: View, msg: ServerMsg): View {
         const why = PROVIDER_ERRORS[str(msg['kind'])]?.replace('The model provider', 'The voice provider');
         return { ...view, banner: sentence || `${why ?? 'The voice provider failed.'} She is answering in text.` };
       }
-      if (code === 'busy' && view.pending !== null) {
+      if (REFUSED.has(code) && view.pending !== null) {
         // The message was refused, not taken: back in the box, and off the screen.
         return {
           ...view,
@@ -568,7 +582,7 @@ function step(view: View, msg: ServerMsg): View {
           draft: view.pending,
           pending: null,
           busy: busyOf(view.orb, view.noticeSpeaking),
-          banner: ERRORS['busy'] ?? null,
+          banner: ERRORS[code] ?? null,
         };
       }
       const text =

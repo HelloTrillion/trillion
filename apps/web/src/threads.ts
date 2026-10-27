@@ -311,6 +311,11 @@ export interface ThreadList {
   close(): void;
   readonly isOpen: boolean;
   retitle(id: string, title: string): void;
+  /** A routine built this conversation while the user was elsewhere: marked until opened. */
+  markUnread(id: string): void;
+  /** Opened: the mark goes. */
+  markRead(id: string): void;
+  isUnread(id: string): boolean;
   /** Listeners hear of a close before the list hides, so focus can still be moved out of it. */
   onToggle(listener: (open: boolean) => void): void;
 }
@@ -350,6 +355,14 @@ function liveText(region: HTMLElement): (text: string) => void {
   };
 }
 
+/** A small dot, read out as "unread" with its row's name. */
+function unreadMark(): HTMLElement {
+  const mark = el('span', 'thread-unread connected-dot connected-dot-on');
+  mark.setAttribute('role', 'img');
+  mark.setAttribute('aria-label', 'unread');
+  return mark;
+}
+
 let uid = 0;
 const nextId = (what: string): string => `thread-${what}-${++uid}`;
 
@@ -365,6 +378,8 @@ export function createThreads(d: ThreadsDeps): ThreadList {
   let activeId: string | null = null;
   let renaming: string | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  // The page's own: set by a ready notice, cleared on open, and gone on reload.
+  const unread = new Set<string>();
 
   const searchWrap = el('label', 'panel-search threads-search');
   const search = el('input');
@@ -394,7 +409,9 @@ export function createThreads(d: ThreadsDeps): ThreadList {
   const dayRow = button('thread-day', '');
   const dayName = el('span', 'thread-name', 'Your day');
   const dayDate = el('small', 'thread-time');
-  dayRow.append(icon('day', 16), dayName, dayDate);
+  const dayMark = unreadMark();
+  dayMark.hidden = true;
+  dayRow.append(icon('day', 16), dayName, dayMark, dayDate);
   dayRow.addEventListener('click', () => {
     dayRow.disabled = true;
     void d
@@ -416,6 +433,7 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     const on = today !== null && today === d.current();
     if (on) dayRow.setAttribute('aria-current', 'true');
     else dayRow.removeAttribute('aria-current');
+    dayMark.hidden = today === null || !unread.has(today);
   }
 
   function say(text: string, canRetry = false): void {
@@ -523,7 +541,9 @@ export function createThreads(d: ThreadsDeps): ThreadList {
     name.id = nextId('name');
     const when = el('small', 'thread-time', rowTime(t.lastMessageAt, d.now()));
     when.id = nextId('time');
-    li.setAttribute('aria-labelledby', `${name.id} ${when.id}`);
+    const mark = unread.has(t.id) ? unreadMark() : null;
+    if (mark) mark.id = nextId('unread');
+    li.setAttribute('aria-labelledby', [name.id, mark?.id, when.id].filter(Boolean).join(' '));
     const dots = button('thread-more', '⋯');
     dots.tabIndex = -1;
     dots.setAttribute('aria-label', `More for ${untitled(t)}`);
@@ -534,7 +554,9 @@ export function createThreads(d: ThreadsDeps): ThreadList {
       menu(t, li);
     });
     if (t.day) li.append(icon('day', 14));
-    li.append(name, when, dots);
+    li.append(name);
+    if (mark) li.append(mark);
+    li.append(when, dots);
     li.addEventListener('click', () => {
       if (renaming !== t.id) choose(t.id);
     });
@@ -868,6 +890,18 @@ export function createThreads(d: ThreadsDeps): ThreadList {
       threads = retitle(threads, id, title);
       if (isOpen) draw();
     },
+    markUnread(id) {
+      if (unread.has(id)) return;
+      unread.add(id);
+      if (isOpen) draw();
+      else drawDay();
+    },
+    markRead(id) {
+      if (!unread.delete(id)) return;
+      if (isOpen) draw();
+      else drawDay();
+    },
+    isUnread: (id) => unread.has(id),
     onToggle(listener) {
       listeners.push(listener);
     },
