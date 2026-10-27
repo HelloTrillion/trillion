@@ -31,7 +31,7 @@ import uuid
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
-from trillion.spine.deny_floor import fold
+from trillion.spine import deny_floor
 
 # Where the walk can be done properly: every step opened relative to the last.
 WALKS = os.name == "posix" and os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW")
@@ -51,8 +51,10 @@ def locate(
     """The granted folder `path` is under, and the names from it down to the file.
     `folder` allows the granted folder itself, with no names below it.
 
-    Links the user already has on the way are followed once, here. The comparison
-    folds case and Unicode the way the deny floor does."""
+    Links the user already has on the way are followed once, here, and the deny floor
+    is applied to where they lead: a folder swapped for a link to `.git` after the
+    tool's own check is refused here, and the walk refuses any link after this.
+    Granted folders are matched the way the deny floor matches them."""
     given = path.expanduser()
     # The folders on the way are resolved; the last name is not, so a link there is
     # met by the walk and refused rather than followed. A folder being listed is the
@@ -62,10 +64,13 @@ def locate(
     )
     for root in roots:
         top = root.expanduser().resolve(strict=False)
-        n = len(top.parts)
-        if tuple(fold(p) for p in resolved.parts[:n]) == tuple(fold(p) for p in top.parts):
-            names = resolved.parts[n:]
+        if deny_floor.inside(resolved, top):
+            names = resolved.parts[len(top.parts) :]
             if (names or folder) and all(name not in ("", ".", "..") for name in names):
+                place = top.joinpath(*names)
+                reason = deny_floor.refused(place, tuple(roots))
+                if reason is not None:
+                    raise Escaped(reason)
                 return top, names
     raise Escaped("the path is not inside a folder the user granted")
 
