@@ -147,6 +147,9 @@ class Overlap:
     her_at: float = 0.0
     # How many words were heard when she was ducked: what follows confirms them.
     ducked_on: int = 0
+    # Words heard over her so far, and when that last changed (`_quiet_s`).
+    words_seen: int = 0
+    word_at: float = 0.0
 
 
 # Saved with a message sent by tapping a widget's ask, ahead of its words. It tells her
@@ -1247,6 +1250,7 @@ class Session:
                         # Ended by the recognizer, even on a word that leads on.
                         done=done or listener.turn_done,
                         elapsed_s=elapsed,
+                        quiet_s=self._quiet_s(ov),
                     )
                 else:
                     decision = decide(
@@ -1318,6 +1322,15 @@ class Session:
         now = ov.listener.sent_s
         end = timeline.ended_final(now_s=now)
         return end is not None and now >= end
+
+    def _quiet_s(self, ov: Overlap) -> float:
+        """How long since the last word of anyone's was heard over her: words still
+        coming, theirs or taken for hers, mean they are still talking."""
+        count = len(ov.listener.heard_words())
+        now = self._now()
+        if count != ov.words_seen:
+            ov.words_seen, ov.word_at = count, now
+        return now - ov.word_at
 
     def _fresh(self, ov: Overlap) -> list[Word]:
         """Their words among those not dealt with yet, in order."""
@@ -1436,6 +1449,8 @@ class Session:
         await self._leave_watch(ov)
         ov.ducked_on = len(ov.listener.text().split())
         ov.started = self._now()
+        # Words still coming are counted from the duck on (`_quiet_s`).
+        ov.words_seen, ov.word_at = len(ov.listener.heard_words()), ov.started
         logger.info("talked over in session %s: deciding", self.id)
         await self._send("overlap.duck")
         ov.wake.set()
