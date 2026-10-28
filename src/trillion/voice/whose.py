@@ -31,6 +31,13 @@ _HER_SILENT = 0.01  # below this she is too quiet to learn from
 LEARNED_ENOUGH = 5
 # with her level taken this much either side of the word.
 WIDEN_S = 0.3
+# Her echo is one of the words she was saying then: this many either side of where she
+# had got to, by time, allowing for her echo coming back late.
+NEAR_WORDS = 3
+# Until her echo is learned, a word that is not hers is judged as if this much of her
+# came back at most. The page cancels her echo, so little of it reaches the microphone,
+# and the cautious start took the user's own words for hers.
+UNLEARNED_SHARE = 0.2
 
 # Mean microphone level over a span of the recognizer's clock.
 Level = Callable[[float, float], float]
@@ -43,12 +50,22 @@ def _her_peak(timeline: Timeline, t0: float, t1: float) -> float:
 
 
 def matched(word: Word, timeline: Timeline) -> bool:
-    """Whether the word is one of the sentence she was playing then. "twenty-six" or
+    """Whether the word is one she was saying then: of the sentence playing, and near
+    where she had got to in it (`NEAR_WORDS`), not anywhere in it, so the user's own
+    "what" over her is not her "what" from the start of the sentence. "twenty-six" or
     "$5" is several words: matched only if all of them are."""
-    s = timeline.at(word.mid_s)
-    if s is None:
+    found = timeline.placed(word.mid_s)
+    if found is None:
         return False
-    hers = set(words_of(f"{s.written} {s.spoken}"))
+    s, start, end = found
+    where = min(1.0, max(0.0, (word.mid_s - start) / max(end - start, WINDOW_S)))
+    hers: set[str] = set()
+    for form in {s.written, s.spoken}:
+        said = words_of(form)
+        if not said:
+            continue
+        i = round(where * (len(said) - 1))
+        hers.update(said[max(0, i - NEAR_WORDS) : i + NEAR_WORDS + 1])
     heard = words_of(word.text)
     return bool(heard) and all(matches(w, hers, stop=is_stop(w)) for w in heard)
 
@@ -77,6 +94,8 @@ def whose(
             return "hers"
         her = _her_peak(timeline, word.start_s - WIDEN_S, word.end_s + WIDEN_S)
         return "theirs" if loud >= max(2 * OVER_ECHO * share * her, floor) else "hers"
+    if learned < LEARNED_ENOUGH:
+        share = min(share, UNLEARNED_SHARE)
     expected = timeline.her_level(word.start_s, word.end_s) * share
     return "theirs" if loud >= max(expected * OVER_ECHO, floor) else "hers"
 
