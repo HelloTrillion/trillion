@@ -199,6 +199,31 @@ describe('view', () => {
     expect(feed([{ type: 'host' }]).entries).toEqual([]);
   });
 
+  it('draws a heads-up from history as it arrived: her line, Join, detail and why it was held', () => {
+    const v = feed([
+      {
+        type: 'history',
+        messages: [
+          { role: 'notice', kind: 'heads_up', id: 'n1', title: 'Meeting soon', text: 'Your 10:00 starts soon.', link: 'https://meet.example.com/a', detail: 'Planning at 10:00 am', quiet: 'quiet hours' },
+          { role: 'notice', kind: 'heads_up', id: 'n2', title: 'Meeting soon', text: null, link: 'javascript:alert(1)', detail: 'Standup at 11:00 am', quiet: null },
+        ],
+      },
+    ]);
+    expect(v.entries).toEqual([
+      { kind: 'scheduled', id: 'n1', what: 'heads_up', title: 'Meeting soon', text: 'Your 10:00 starts soon.', dueMs: 0, due: '', late: false, conversationId: null, link: 'https://meet.example.com/a', detail: 'Planning at 10:00 am', quiet: 'quiet hours', spoken: false },
+      // With no line it is still there, by its title and detail; only an https link is kept.
+      { kind: 'scheduled', id: 'n2', what: 'heads_up', title: 'Meeting soon', text: null, dueMs: 0, due: '', late: false, conversationId: null, link: null, detail: 'Standup at 11:00 am', quiet: null, spoken: false },
+    ]);
+    // A live notice for one already drawn from history is not drawn twice.
+    const again = feed([{ type: 'notice', code: 'schedule', id: 'n1', kind: 'heads_up', title: 'Meeting soon', text: 'x' }], v);
+    expect(again.entries).toHaveLength(2);
+  });
+
+  it('draws a history notice it does not know as nothing', () => {
+    const v = feed([{ type: 'history', messages: [{ role: 'notice', kind: 'win', id: 'n1', title: 'x' }, { role: 'user', text: 'a' }] }]);
+    expect(v.entries).toEqual([{ kind: 'user', text: 'a' }]);
+  });
+
   it('restores a conversation from history', () => {
     const v = feed([{ type: 'history', messages: [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }] }]);
     expect(v.entries.map((e) => e.kind)).toEqual(['user', 'assistant']);

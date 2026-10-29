@@ -19,7 +19,7 @@ from trillion.api.session import Session
 from trillion.attention.meetings import Meetings
 from trillion.attention.quiet import MEETING
 from trillion.attention.runner import AttentionRunner
-from trillion.brain.types import TextBlock
+from trillion.brain.types import ContextBlock, TextBlock
 from trillion.scheduler.store import Notice
 from trillion.secrets.store import MemoryStore
 
@@ -174,3 +174,79 @@ async def test_her_line_is_saved_without_the_detail(rt: Runtime) -> None:
     said = [b.text for _, m in history for b in m.blocks if isinstance(b, TextBlock)]
     assert LINE in said and not any("Planning with Sam at" in t for t in said)
     await session.close()
+
+
+class Holds:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
+        return "quiet hours"
+
+
+JOIN = "https://meet.example.com/abc-defg-hij"
+
+
+async def test_a_reload_shows_a_heads_up_as_it_arrived(rt: Runtime) -> None:
+    assert rt.door is not None
+    rt.provider = Gated(say(LINE))
+    rt.door.quiet = Holds()
+    runner, _ = meetings_in(rt, Calendar([event(summary="Planning with Sam", hangoutLink=JOIN)]))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await runner.tick()
+    await idle(session)
+    await rt.door.drain()
+    (live,) = page.all("notice")
+    history = await rt.conversations.history(session.id, "local")
+    # The app's note, then her line: the note is never hers (PER-11).
+    assert [k for k, _ in history] == ["tap", "assistant"]
+    note = history[0][1]
+    assert note.role == "user" and isinstance(note.blocks[0], ContextBlock)
+    # The invite's words stay out of what the model rereads: only the notice's id.
+    assert "Planning with Sam" not in str(note) and JOIN not in str(note)
+    await session.close()
+    again = Page(rt)
+    reopened = await Session.start(rt, again.send, session.id)
+    (shown,) = again.all("history")
+    assert shown["messages"] == [
+        {
+            "role": "notice",
+            "kind": "heads_up",
+            "id": live["id"],
+            "title": "Meeting soon",
+            "text": LINE,
+            "link": JOIN,
+            "detail": live["detail"],
+            "quiet": "quiet hours",
+        }
+    ]
+    assert live["detail"].startswith("Planning with Sam at ")
+    await reopened.close()
+
+
+async def test_a_reload_shows_a_heads_up_with_no_line_by_its_note_alone(rt: Runtime) -> None:
+    rt.provider = None
+    runner, _ = meetings_in(rt, Calendar([event(summary="Planning with Sam")]))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await runner.tick()
+    await idle(session)
+    (live,) = page.all("notice")
+    history = await rt.conversations.history(session.id, "local")
+    # Never saved as her message (PER-11, MEM-5).
+    assert [k for k, _ in history] == ["tap"]
+    await session.close()
+    again = Page(rt)
+    reopened = await Session.start(rt, again.send, session.id)
+    (shown,) = again.all("history")
+    assert shown["messages"] == [
+        {
+            "role": "notice",
+            "kind": "heads_up",
+            "id": live["id"],
+            "title": "Meeting soon",
+            "text": None,
+            "link": None,
+            "detail": live["detail"],
+            "quiet": None,
+        }
+    ]
+    await reopened.close()

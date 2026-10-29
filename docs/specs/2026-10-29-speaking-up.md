@@ -243,8 +243,12 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
   - New table `attention_finds` (`key` unique per owner, `watcher`, `first_seen_ms`, `notice_id`, `status`: `claimed` | `told` | `silent` | `dismissed`, `dismissed_ms`, `detail`). A find is `claimed` before anything is said; it becomes `told` or `silent`. One left `claimed` by a stop or a failure is never told again (D5): at the next start it is marked `told` if its notice was written, and otherwise Settings shows it as lost.
   - New table `attention_state` (per watcher: `last_check_ms`, `cursor`, `last_error`, `notes`).
 - `Delivery` gains `spoken: bool`, `quiet: str | None` (the reason), `link` and `detail`. The
-  session speaks only `spoken` ones. A `heads_up` is saved as her message, like a
-  reminder, and its turn is marked read (D4).
+  session speaks only `spoken` ones. A `heads_up` is saved first as the app's note
+  (its generic title, its notice's id, the held reason; never the detail or the
+  link, which are someone else's words and stay in the notice), then, with a line,
+  her message, like a reminder; its turn is marked read (D4). With no line the note
+  is saved alone, never as her message. A reload draws each again from its note and
+  its notice, as it arrived: her line or its title, Join, the detail and the reason.
 - The page's notice shows the Join button for a link (`signInTab`-style: in the app,
   `openExternal`), and the quiet reason.
 

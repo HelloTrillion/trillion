@@ -489,13 +489,16 @@ function step(view: View, msg: ServerMsg): View {
       return { ...sent(view, str(msg['text'])), hearing: '', pending: null };
     case 'history': {
       const rows = Array.isArray(msg['messages']) ? (msg['messages'] as Record<string, unknown>[]) : [];
-      const entries: Entry[] = rows.map((r) =>
-        r['role'] === 'user'
-          ? { kind: 'user', text: str(r['text']) }
-          : r['role'] === 'host'
-            ? hostOf(r)
-            : { kind: 'assistant', text: str(r['text']), interrupted: false },
-      );
+      const entries: Entry[] = rows.flatMap((r): Entry[] => {
+        if (r['role'] === 'user') return [{ kind: 'user', text: str(r['text']) }];
+        if (r['role'] === 'host') return [hostOf(r)];
+        // A heads-up kept by the app: drawn as it arrived, with Join, detail and reason.
+        if (r['role'] === 'notice') {
+          const e = scheduledOf({ ...r, type: 'notice', spoken: false });
+          return e && e.kind === 'scheduled' ? [{ ...e, dueMs: 0, due: '', late: false }] : [];
+        }
+        return [{ kind: 'assistant', text: str(r['text']), interrupted: false }];
+      });
       return { ...view, entries };
     }
     case 'host':
