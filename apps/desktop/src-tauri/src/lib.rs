@@ -3,11 +3,13 @@
 //! closing the window hides it, quitting stops the server.
 
 mod locate;
+mod orb;
 mod port;
 mod record;
 mod running;
 mod server;
 mod shell;
+mod talk;
 mod token;
 mod tray;
 #[cfg(target_os = "macos")]
@@ -18,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::CapabilityBuilder;
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::webview::{PermissionKind, PermissionResponse};
@@ -26,6 +28,7 @@ use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State, Url, Webview, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
 };
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 
 use locate::Located;
@@ -100,6 +103,27 @@ struct Shell {
     splash_url: Mutex<Option<Url>>,
     /// Ports whose page has been given its capability (they cannot be taken back).
     capable: Mutex<HashSet<u16>>,
+    /// The talk shortcut registered for the page, and how it is used.
+    talk: Mutex<TalkShortcut>,
+    /// What the page last reported, for the orb and the menu-bar icon.
+    reported: Mutex<Reported>,
+}
+
+#[derive(Default)]
+struct TalkShortcut {
+    accelerator: Option<String>,
+    toggle: bool,
+}
+
+#[derive(Default)]
+struct Reported {
+    state: String,
+    /// When she went idle, to hide the orb a little after.
+    idle_since: Option<Instant>,
+    /// Bumped on every report, so a delayed hide only acts on the latest.
+    seq: u64,
+    icon: Option<orb::Icon>,
+    orb_shown: bool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -141,7 +165,7 @@ fn open_in_browser(app: AppHandle, shell: State<'_, Shell>) -> Result<(), String
     }
 }
 
-pub(crate) fn show_main(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN) {
         let _ = window.unminimize();
         let _ = window.show();
@@ -158,6 +182,15 @@ fn set_splash(app: &AppHandle, splash: Splash) {
 fn show_splash(app: &AppHandle) {
     let shell = app.state::<Shell>();
     *lock(&shell.page_port) = None;
+    {
+        let mut r = lock(&shell.reported);
+        r.state = "idle".into();
+        r.idle_since = None;
+        r.seq += 1;
+        r.orb_shown = false;
+    }
+    orb::hide(app);
+    tray::set_icon(app, orb::Icon::Idle);
     let Some(window) = app.get_webview_window(MAIN) else {
         return;
     };
@@ -375,6 +408,9 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
     };
     drop(token);
     allow_page(app, port);
+    if let Err(e) = orb::create(app, port) {
+        eprintln!("trillion: could not make the floating orb: {e}");
+    }
     {
         // Under the run lock, so a Retry or Quit cannot slip in between.
         let shell = app.state::<Shell>();
@@ -391,9 +427,11 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
     None
 }
 
-/// The capability for the server's page, for its exact origin. Added once per port:
-/// a capability cannot be taken back, so a later start on another port leaves the
-/// earlier port's in place. It allows nothing yet; the desktop bridge adds to it.
+/// The capability for the server's page and the orb, for their exact origin: the
+/// bridge's commands and listening for events, nothing else. Added once per port: a
+/// capability cannot be taken back, so a later start on another port leaves the
+/// earlier port's in place. That one cannot be used: neither window will load that
+/// origin again (`may_navigate`, the orb's own check), only the proven port's.
 fn allow_page(app: &AppHandle, port: u16) {
     let shell = app.state::<Shell>();
     if !lock(&shell.capable).insert(port) {
@@ -401,7 +439,13 @@ fn allow_page(app: &AppHandle, port: u16) {
     }
     let capability = CapabilityBuilder::new(format!("server-page-{port}"))
         .remote(format!("http://127.0.0.1:{port}/*"))
-        .window(MAIN);
+        .windows([MAIN, orb::LABEL])
+        .permission("core:event:allow-listen")
+        .permission("core:event:allow-unlisten")
+        .permission("allow-set-talk-shortcut")
+        .permission("allow-report-state")
+        .permission("allow-show-main")
+        .permission("allow-open-external");
     if let Err(e) = app.add_capability(capability) {
         eprintln!("trillion: could not set what the page may do: {e}");
     }
@@ -483,6 +527,146 @@ fn may_navigate(app: &AppHandle, url: &Url) -> bool {
     false
 }
 
+#[derive(Serialize)]
+struct Registered {
+    global: bool,
+}
+
+/// The page's talk shortcut, made to work from any app. Each call replaces the last;
+/// null takes it away. Anything D6 refuses is not registered (`global: false`).
+#[tauri::command]
+fn set_talk_shortcut(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    accelerator: Option<String>,
+    mode: String,
+) -> Registered {
+    let shortcuts = app.global_shortcut();
+    let _ = shortcuts.unregister_all();
+    let mut talk = lock(&shell.talk);
+    talk.toggle = mode == "toggle";
+    talk.accelerator = None;
+    let global = match accelerator.as_deref() {
+        Some(a) if talk::may_be_global(a) => shortcuts.register(a).is_ok(),
+        _ => false,
+    };
+    if global {
+        talk.accelerator = accelerator;
+    }
+    tray::set_talk_label(
+        &app,
+        talk.accelerator.as_deref().map(talk::label).as_deref(),
+    );
+    Registered { global }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct OrbReport {
+    state: String,
+    caption: String,
+}
+
+/// The page's orb state and caption: to the orb window as they are, the menu-bar icon
+/// when the state changes, and the orb shown or hidden by D5.
+#[tauri::command]
+fn report_state(app: AppHandle, shell: State<'_, Shell>, state: String, caption: String) {
+    if !talk::known_state(&state) {
+        return;
+    }
+    let (icon_changed, seq) = {
+        let mut r = lock(&shell.reported);
+        if state == "idle" {
+            if r.state != "idle" || r.idle_since.is_none() {
+                r.idle_since = Some(Instant::now());
+            }
+        } else {
+            r.idle_since = None;
+        }
+        r.state = state.clone();
+        r.seq += 1;
+        let icon = orb::icon_for(&state);
+        let changed = r.icon != Some(icon);
+        r.icon = Some(icon);
+        (changed.then_some(icon), r.seq)
+    };
+    if let Some(icon) = icon_changed {
+        tray::set_icon(&app, icon);
+    }
+    let idle = state == "idle";
+    let _ = app.emit_to(orb::LABEL, "orb", OrbReport { state, caption });
+    place_orb(&app);
+    if idle {
+        // Look again once she has been idle long enough for it to go.
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(orb::LINGER + Duration::from_millis(50));
+            if lock(&app.state::<Shell>().reported).seq == seq {
+                place_orb(&app);
+            }
+        });
+    }
+}
+
+/// Shows or hides the orb for what she is doing and where the main window is.
+fn place_orb(app: &AppHandle) {
+    let main_away = app
+        .get_webview_window(MAIN)
+        .is_none_or(|w| !w.is_visible().unwrap_or(false) || !w.is_focused().unwrap_or(false));
+    let shell = app.state::<Shell>();
+    let mut r = lock(&shell.reported);
+    let idle_for = r.idle_since.map(|t| t.elapsed());
+    let show = orb::should_show(&r.state, main_away, r.orb_shown, idle_for);
+    if show != r.orb_shown {
+        r.orb_shown = show;
+        drop(r);
+        if show {
+            orb::show(app);
+        } else {
+            orb::hide(app);
+        }
+    }
+}
+
+/// The orb was clicked: bring the main window forward.
+#[tauri::command]
+fn show_main(app: AppHandle) {
+    show_main_window(&app);
+}
+
+/// A sign-in or a link: opened in the user's browser (D7), web addresses only.
+#[tauri::command]
+fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    let url = talk::web_url(&url).ok_or("only web addresses open")?;
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// The Talk item in the menu bar: in toggle mode it is the shortcut pressed and let
+/// go; otherwise it brings the window forward to talk there.
+pub(crate) fn talk_from_menu(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    let toggle = {
+        let talk = lock(&shell.talk);
+        talk.toggle && talk.accelerator.is_some()
+    };
+    if toggle {
+        send_talk(app, "down");
+        send_talk(app, "up");
+    } else {
+        show_main_window(app);
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct Talk {
+    state: &'static str,
+}
+
+fn send_talk(app: &AppHandle, state: &'static str) {
+    let _ = app.emit_to(MAIN, "talk", Talk { state });
+}
+
 fn stop_server(app: &AppHandle) {
     let shell = app.state::<Shell>();
     let server = {
@@ -514,7 +698,25 @@ fn quit_on_signals(app: &AppHandle) {
 
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        // The page opens its own links (desktop.ts `routeLinks`).
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // Always, focused or not: while it is registered the page ignores the
+                    // key itself, so this is its only source.
+                    let state = match event.state {
+                        ShortcutState::Pressed => "down",
+                        ShortcutState::Released => "up",
+                    };
+                    send_talk(app, state);
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -532,7 +734,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             splash_state,
             retry,
-            open_in_browser
+            open_in_browser,
+            set_talk_shortcut,
+            report_state,
+            show_main,
+            open_external
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -554,19 +760,21 @@ pub fn run() {
             start(app.handle());
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // Closing hides: she keeps running in the menu bar (D4).
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == MAIN {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
+            WindowEvent::CloseRequested { api, .. } if window.label() == MAIN => {
+                api.prevent_close();
+                let _ = window.hide();
+                place_orb(window.app_handle());
             }
+            // The main window coming forward or going behind decides the orb.
+            WindowEvent::Focused(_) if window.label() == MAIN => place_orb(window.app_handle()),
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("the Trillion app");
     app.run(|app, event| match event {
-        RunEvent::Reopen { .. } => show_main(app),
+        RunEvent::Reopen { .. } => show_main_window(app),
         RunEvent::Exit => stop_server(app),
         _ => {}
     });
