@@ -79,6 +79,9 @@ no line at all: they would only be shown.
   read for this, so the quiet check costs no request: a read on its way or one that
   failed leaves it standing, and it answers only while it is three minutes fresh.
   With Calendar not connected it is "can't tell", and the read is forgotten.
+  The watcher reads for this whenever Calendar is connected and either heads-ups or
+  "While you are in a meeting" is on; with heads-ups off it makes no heads-ups, and
+  nothing from the read goes to the model.
 
 ### Urgent email
 

@@ -155,6 +155,8 @@ describe('the Speaking up panel', () => {
     expect(input(root, 'limit').value).toBe('500');
     expect(input(root, 'from').value).toBe('22:00');
     expect(input(root, 'meeting').checked).toBe(true);
+    // The meeting hold reads the calendar even with heads-ups off, and says so.
+    expect(text).toContain('reads your Google Calendar every minute even with Meetings off');
     expect(text).toContain('Works here');
     expect(text).toContain("A call in this same browser can't be told apart; the meeting check covers it.");
     expect(text).toContain("Can't tell here: macOS keeps Focus private from apps here");

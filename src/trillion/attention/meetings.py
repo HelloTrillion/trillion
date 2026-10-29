@@ -19,7 +19,9 @@ model sees the title, when, who else (at most three names) and whether there is 
 link: never the description or the place, which are longer, someone else's words, and
 not needed for one line.
 
-The last good read is kept in memory, so the quiet check costs no request. A read on
+It reads while heads-ups are on, and also while they are off but "While you are in a
+meeting" is on, then making no heads-ups. The last good read is kept in memory, so
+the quiet check costs no request. A read on
 its way or one that failed leaves it as it was; it answers only while it is three
 minutes fresh, and never with Calendar disconnected (D11).
 """
@@ -265,7 +267,8 @@ class Meetings:
         self._read: tuple[int, list[_Event]] | None = None
 
     def enabled(self, settings: AttentionSettings) -> bool:
-        return settings.on(NAME) and self.calendar.connected()
+        # Read for heads-ups, and for the meeting hold even with heads-ups off.
+        return (settings.on(NAME) or settings.meeting) and self.calendar.connected()
 
     async def check(self, ctx: WatchContext) -> list[Find]:
         now = ctx.now_ms
@@ -295,6 +298,9 @@ class Meetings:
             except Exception as err:
                 logger.info("meetings: an event skipped: %s", type(err).__name__)
         self._read = (now, events)
+        if not ctx.settings.on(NAME):
+            # Read only for the meeting hold: no heads-ups.
+            return []
         # Up to one interval late, so a check that lands just past the start still
         # shows it (unspoken, since it is fresh only until the start).
         return [

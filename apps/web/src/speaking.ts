@@ -504,7 +504,7 @@ export function createSpeaking(host: Host, api: Api, changed: () => void): { ope
 
     if (s.meeting !== undefined) {
       parts.push(
-        toggle('meeting', s.meeting, 'While you are in a meeting', ['From your calendar: a timed meeting with other people, under way now. A heads-up for the next one still speaks.'], (on) => ({ meeting: on })),
+        toggle('meeting', s.meeting, 'While you are in a meeting', ['From your calendar: a timed meeting with other people, under way now. A heads-up for the next one still speaks. While this is on, Trillion reads your Google Calendar every minute even with Meetings off; nothing from it goes to your model provider unless Meetings is on.'], (on) => ({ meeting: on })),
       );
     }
     const mic = st.probes.mic;

@@ -60,7 +60,7 @@ Before she speaks a notice, she asks whether another app is using the microphone
 - **Same browser.** When Trillion and a call share one browser, the probe can't see the call.
 - **WebKit.** The desktop app and Safari both leave out every WebKit helper process. So a call in Safari while using the desktop app, or in another WebKit app while using Safari, isn't seen either.
 
-The meeting rule covers both: a meeting on the calendar holds her voice whatever the probe says. Settings says so.
+The meeting rule covers both: with Google Calendar connected and "While you are in a meeting" on, a meeting on the calendar holds her voice whatever the probe says, even with meeting heads-ups off (the calendar is then read for this alone). Settings says so.
 
 ## Desktop app on Windows and Linux
 

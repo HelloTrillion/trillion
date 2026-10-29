@@ -422,12 +422,38 @@ async def test_a_moved_meeting_is_a_new_heads_up(rig: Rig) -> None:
     ]
 
 
-async def test_meetings_switched_off_are_not_read(rig: Rig) -> None:
-    rig.settings = replace(DEFAULT, watchers={"meetings": False})
+async def test_heads_ups_and_the_meeting_hold_both_off_are_not_read(rig: Rig) -> None:
+    rig.settings = replace(DEFAULT, watchers={"meetings": False}, meeting=False)
     r, w = await rig.runner()
     await r.tick()
     assert rig.cal.asked == [] and rig.door.notices == []
     assert w.in_meeting() is None
+
+
+async def test_with_heads_ups_off_the_calendar_is_still_read_for_the_meeting_hold(
+    rig: Rig,
+) -> None:
+    rig.settings = replace(DEFAULT, watchers={"meetings": False})
+    rig.clock = FakeClock(START + 10 * MIN)
+    r, w = await rig.runner()
+    await r.tick()
+    # Read, so "While you are in a meeting" can hold her voice, but no heads-up.
+    assert len(rig.cal.asked) == 1 and rig.door.notices == []
+    assert w.in_meeting() is True
+
+
+async def test_with_heads_ups_off_a_meeting_due_now_is_not_told(rig: Rig) -> None:
+    rig.settings = replace(DEFAULT, watchers={"meetings": False})
+    r, _ = await rig.runner()
+    await r.tick()  # five minutes before the start: a heads-up would be due
+    assert len(rig.cal.asked) == 1 and rig.door.notices == []
+
+
+async def test_heads_ups_on_and_the_meeting_hold_off_still_tell(rig: Rig) -> None:
+    rig.settings = replace(DEFAULT, meeting=False)
+    r, _ = await rig.runner()
+    await r.tick()
+    assert len(rig.door.notices) == 1
 
 
 async def test_with_calendar_not_connected_it_is_not_read(rig: Rig) -> None:
