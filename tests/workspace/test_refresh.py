@@ -238,8 +238,12 @@ async def test_one_in_flight_at_a_time(world: World) -> None:
     world.filler.stream = slow  # type: ignore[method-assign]
     first = asyncio.create_task(world.step())
     second = asyncio.create_task(world.step())
-    for _ in range(100):
-        await asyncio.sleep(0)
+    # Until the first is inside, however slow the machine; then a moment more for
+    # the second to have had its chance to get in too.
+    async with asyncio.timeout(5):
+        while not inside:
+            await asyncio.sleep(0.005)
+    await asyncio.sleep(0.05)
     assert inside == [1] and world.refresher.in_flight == (world.s.id, "w1")
     gate.set()
     assert sorted(await asyncio.gather(first, second)) == [0, 1]
@@ -358,17 +362,19 @@ async def test_her_change_mid_refresh_wins_and_is_no_failure(world: World) -> No
     world.refresher.seen(world.s.id, True)
     world.clock.advance(16)
     gate = asyncio.Event()
+    started = asyncio.Event()
     real = world.filler.stream
 
     async def slow(**kw: Any) -> AsyncIterator[ModelEvent]:
+        started.set()
         await gate.wait()
         async for ev in real(**kw):
             yield ev
 
     world.filler.stream = slow  # type: ignore[method-assign]
     running = asyncio.create_task(world.step())
-    for _ in range(100):
-        await asyncio.sleep(0)
+    # Until the fill-in is running, however slow the machine.
+    await asyncio.wait_for(started.wait(), 5)
     # Her turn changes the widget while the fill-in runs.
     mine = {**KPIS, "metrics": [{"label": "MRR", "value": "$9"}, {"label": "New", "value": "1"}]}
     await world.rt.boards.update(world.s.id, "w1", mine, turn=2)
