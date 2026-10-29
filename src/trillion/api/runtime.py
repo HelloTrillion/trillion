@@ -19,6 +19,7 @@ import aiosqlite
 from trillion import paths
 from trillion.api.jobs import Jobs
 from trillion.attention import settings as watch_prefs
+from trillion.attention.meetings import GoogleCalendar, Meetings
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
 from trillion.brain import compact
@@ -841,7 +842,6 @@ async def open_runtime(
     rt.quiet = Quiet(settings=lambda: rt.attention_settings, zone=rt.zone, host=rt.live_host)
     rt.door.quiet = rt.quiet
     rt.attention_store = SqliteAttentionStore(attention_conn)
-    # No watchers yet: each is added with `rt.attention.add` as it is built.
     rt.attention = AttentionRunner(
         rt.attention_store,
         schedules,
@@ -854,6 +854,10 @@ async def open_runtime(
         google=lambda: rt.google,
         registry=registry,
     )
+    meetings = Meetings(GoogleCalendar(lambda: rt.google), clock=lambda: rt.clock(), zone=rt.zone)
+    rt.attention.add(meetings)
+    # Its last read says whether a meeting is under way, so the quiet check asks no one.
+    rt.quiet.in_meeting = meetings.in_meeting
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
