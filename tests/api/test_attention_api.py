@@ -77,7 +77,7 @@ def test_finds_are_listed_and_dismissed(make: Any) -> None:
     assert store is not None
     call(app, store.claim, "local", "email", ["email:m1"], app.rt.clock())
     (row,) = app.client.get(f"{PATH}/finds", headers=app.auth).json()["finds"]
-    assert row["key"] == "email:m1" and row["status"] == "silent" and row["watcher"] == "email"
+    assert row["key"] == "email:m1" and row["status"] == "claimed" and row["watcher"] == "email"
     r = app.client.post(f"{PATH}/finds/email:m1/dismiss", headers=app.auth, json={})
     assert r.status_code == 200
     assert r.json()["finds"][0]["status"] == "dismissed"
@@ -127,3 +127,93 @@ def test_the_page_says_where_it_runs_in_its_hello(make: Any) -> None:
     assert _hello(app, host="netscape") == "other"
     assert _hello(app, host=7) == "other"
     assert _hello(app) == "other"
+
+
+def test_a_find_left_claimed_shows_as_lost_with_its_detail(make: Any) -> None:
+    app: App = make()
+    store = app.rt.attention_store
+    assert store is not None
+    long_ago = app.rt.clock() - 10 * 60_000
+    details = {"meeting:e1+x": "Planning at 10:00 am"}
+    call(app, lambda: store.claim("local", "meetings", ["meeting:e1+x"], long_ago, details=details))
+    (row,) = app.client.get(f"{PATH}/finds", headers=app.auth).json()["finds"]
+    assert (row["status"], row["detail"]) == ("lost", "Planning at 10:00 am")
+    # A key with a plus in it can be dismissed.
+    r = app.client.post(f"{PATH}/finds/meeting:e1+x/dismiss", headers=app.auth, json={})
+    assert r.status_code == 200 and r.json()["finds"][0]["status"] == "dismissed"
+
+
+def test_a_probe_that_did_not_answer_is_told_apart_from_cant_tell(make: Any) -> None:
+    app: App = make()
+    assert app.rt.quiet is not None
+
+    async def mic() -> tuple[Answer, bool]:
+        return None, False
+
+    async def focus() -> tuple[Answer, bool]:
+        return None, True
+
+    async def probe(name: str) -> tuple[Answer, bool]:
+        return await (mic() if name == "mic" else focus())
+
+    app.rt.quiet.probe = probe  # type: ignore[method-assign]
+    found = app.client.get(f"{PATH}/settings", headers=app.auth).json()["status"]["probes"]
+    assert found["mic"]["status"] == "didn't answer"
+    assert found["focus"]["status"] == "can't tell"
+
+
+def test_saving_settings_does_not_ask_the_probes_again(make: Any) -> None:
+    app: App = make()
+    assert app.rt.quiet is not None
+    asked: list[str] = []
+
+    async def probe(name: str) -> tuple[Answer, bool]:
+        asked.append(name)
+        return False, True
+
+    app.rt.quiet.probe = probe  # type: ignore[method-assign]
+    app.client.get(f"{PATH}/settings", headers=app.auth)
+    assert sorted(asked) == ["focus", "mic"]
+    r = app.client.put(f"{PATH}/settings", headers=app.auth, json={"mic": False})
+    assert r.status_code == 200 and r.json()["status"]["probes"]["mic"]["status"] == "works"
+    assert len(asked) == 2
+
+
+def test_turning_a_watcher_on_starts_it_from_now(make: Any) -> None:
+    app: App = make()
+    store = app.rt.attention_store
+    assert store is not None
+    probes(app, mic=None, focus=None)
+    call(app, lambda: store.checked("local", "email", 1000, cursor="old-place"))
+    call(app, store.set_notes, "local", "email", "Not the newsletters.")
+    r = app.client.put(f"{PATH}/settings", headers=app.auth, json={"watchers": {"email": True}})
+    assert r.status_code == 200
+    s = call(app, store.state, "local", "email")
+    # The backlog is never read (D2); the notes are the user's and stay.
+    assert (s.last_check_ms, s.cursor, s.notes) == (None, None, "Not the newsletters.")
+    # Already on: its place is kept.
+    call(app, lambda: store.checked("local", "email", 2000, cursor="here"))
+    app.client.put(f"{PATH}/settings", headers=app.auth, json={"watchers": {"email": True}})
+    assert call(app, store.state, "local", "email").cursor == "here"
+
+
+def test_changes_saved_at_once_are_both_kept(make: Any) -> None:
+    app: App = make()
+    probes(app, mic=None, focus=None)
+
+    async def both() -> None:
+        import asyncio
+
+        import httpx
+
+        transport = httpx.ASGITransport(app=app.client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            done = await asyncio.gather(
+                c.put(f"{PATH}/settings", headers=app.auth, json={"mic": False}),
+                c.put(f"{PATH}/settings", headers=app.auth, json={"focus": False}),
+            )
+        assert [r.status_code for r in done] == [200, 200], [r.text for r in done]
+
+    call(app, both)
+    s = app.rt.attention_settings
+    assert (s.mic, s.focus) == (False, False)

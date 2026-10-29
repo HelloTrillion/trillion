@@ -119,6 +119,9 @@ class Notice:
     link: str | None = None
     # After this it is shown, not spoken: a heads-up after the meeting began is noise.
     fresh_until_ms: int | None = None
+    # What a watcher's find was, in the host's words, for the page only: never spoken,
+    # never on the system notification, never saved as her message.
+    detail: str | None = None
 
 
 def https_link(link: str | None) -> str | None:
@@ -245,10 +248,14 @@ class ScheduleStore(Protocol):
         now_ms: int,
         link: str | None = None,
         fresh_until_ms: int | None = None,
+        detail: str | None = None,
+        notice_id: str | None = None,
     ) -> Notice:
         """A watcher's heads-up, held for the door: due now, from `attention`, its find's
         `key` as its source. `text` is None when no model wrote her line: it is shown by
-        its title and never spoken. Raises `ValueError` for a link that is not https."""
+        its title and its `detail`, and never spoken. `notice_id`, when given, is its id:
+        the runner records it on the finds first. Raises `ValueError` for a link that is
+        not https."""
         ...
 
     async def notice(self, notice_id: str) -> Notice | None: ...

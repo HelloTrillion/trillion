@@ -281,7 +281,7 @@ async def test_the_running_scheduler_builds_it_and_says_it_is_ready(rt: Runtime)
     assert rt.schedules is not None and rt.scheduler is not None and rt.door is not None
     shown: list[tuple[str, str]] = []
 
-    def notify(title: str, body: str) -> bool:
+    def notify(title: str, body: str, *, silent: bool = False) -> bool:
         shown.append((title, body))
         return True
 

@@ -110,7 +110,7 @@ SHIPPED = {
         "613e24ac9ccd3341281cba89b58e5352d32632474ee570a101c5c69e6dbb7b19"
     ),
     "014_routines.sql": "8f464a56fa9e92e11293af638c5f14e72da1bf8517858e17fac9af055588bedf",
-    "015_attention.sql": "2e26c49798c8daaf5a0c5955a419ec04d5ac35711a98bf55330f5f6d4ef185e7",
+    "015_attention.sql": "cce2497b7bb1199dffb1f7925dbe37c8c8d621a19cbd416d27497a023bb58ea6",
 }
 
 

@@ -49,10 +49,12 @@ class FakePage:
 class FakeNotify:
     def __init__(self, shows: bool = True) -> None:
         self.shown: list[tuple[str, str]] = []
+        self.silent: list[bool] = []
         self._shows = shows
 
-    def __call__(self, title: str, body: str) -> bool:
+    def __call__(self, title: str, body: str, *, silent: bool = False) -> bool:
         self.shown.append((title, body))
+        self.silent.append(silent)
         return self._shows
 
 

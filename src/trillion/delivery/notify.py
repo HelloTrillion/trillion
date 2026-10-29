@@ -4,6 +4,10 @@ Each platform's own tool, run as an argument list and never through a shell, wit
 the words passed as arguments or as environment values, never spliced into a
 script. A notification that can't be shown is logged by its kind and returns
 False: the notice it was for stays held either way.
+
+A `silent` one asks for no sound: it is for a notice whose voice was held (D7), so a
+chime would undo the point. macOS shows `display notification` without a sound unless
+given `sound name`, which is never given here.
 """
 
 from __future__ import annotations
@@ -29,21 +33,29 @@ TITLE_ENV, BODY_ENV = "TRILLION_NOTIFY_TITLE", "TRILLION_NOTIFY_BODY"
 # PowerShell's own app id: Windows shows a toast only for an app it knows.
 _WINDOWS_APP = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
 # Fixed text: the title and body reach it through the environment, as text nodes.
-_TOAST = "\n".join(
-    (
-        "$ErrorActionPreference = 'Stop'",
-        "$null = [Windows.UI.Notifications.ToastNotificationManager,"
-        " Windows.UI.Notifications, ContentType = WindowsRuntime]",
-        "$kind = [Windows.UI.Notifications.ToastTemplateType]::ToastText02",
-        "$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($kind)",
-        "$lines = $xml.GetElementsByTagName('text')",
-        f"$null = $lines.Item(0).AppendChild($xml.CreateTextNode($env:{TITLE_ENV}))",
-        f"$null = $lines.Item(1).AppendChild($xml.CreateTextNode($env:{BODY_ENV}))",
-        "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)",
-        "[Windows.UI.Notifications.ToastNotificationManager]::"
-        f"CreateToastNotifier('{_WINDOWS_APP}').Show($toast)",
-    )
+_TOAST_START = (
+    "$ErrorActionPreference = 'Stop'",
+    "$null = [Windows.UI.Notifications.ToastNotificationManager,"
+    " Windows.UI.Notifications, ContentType = WindowsRuntime]",
+    "$kind = [Windows.UI.Notifications.ToastTemplateType]::ToastText02",
+    "$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($kind)",
+    "$lines = $xml.GetElementsByTagName('text')",
+    f"$null = $lines.Item(0).AppendChild($xml.CreateTextNode($env:{TITLE_ENV}))",
+    f"$null = $lines.Item(1).AppendChild($xml.CreateTextNode($env:{BODY_ENV}))",
 )
+# <audio silent="true"/> under <toast>: no sound for this one.
+_TOAST_SILENT = (
+    "$audio = $xml.CreateElement('audio')",
+    "$audio.SetAttribute('silent', 'true')",
+    "$null = $xml.DocumentElement.AppendChild($audio)",
+)
+_TOAST_END = (
+    "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)",
+    "[Windows.UI.Notifications.ToastNotificationManager]::"
+    f"CreateToastNotifier('{_WINDOWS_APP}').Show($toast)",
+)
+_TOAST = "\n".join((*_TOAST_START, *_TOAST_END))
+_TOAST_QUIET = "\n".join((*_TOAST_START, *_TOAST_SILENT, *_TOAST_END))
 # osascript hands what follows the script to its run handler: no quoting at all.
 _APPLESCRIPT = (
     "on run argv",
@@ -100,7 +112,13 @@ def _system_powershell(env: Mapping[str, str]) -> str | None:
 
 
 def command(
-    title: str, body: str, *, platform: str, which: Which, env: Mapping[str, str]
+    title: str,
+    body: str,
+    *,
+    platform: str,
+    which: Which,
+    env: Mapping[str, str],
+    silent: bool = False,
 ) -> tuple[list[str], dict[str, str]] | None:
     """The argument list, and environment values, that show one notification here.
     None where there is nothing to show it with."""
@@ -116,14 +134,16 @@ def command(
         exe = _system_powershell(env) or which("powershell.exe") or which("powershell")
         if exe is None:
             return None
-        encoded = base64.b64encode(_TOAST.encode("utf-16-le")).decode("ascii")
+        toast = _TOAST_QUIET if silent else _TOAST
+        encoded = base64.b64encode(toast.encode("utf-16-le")).decode("ascii")
         args = [exe, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
         return args, {TITLE_ENV: t, BODY_ENV: b}
     exe = which("notify-send")
     if exe is None:
         return None
+    hush = ["--hint=boolean:suppress-sound:true"] if silent else []
     # Escaped inside the cut, so the escaped body is what the limit applies to.
-    return [exe, "--app-name=Trillion", "--", t, cut(body, markup=True)], {}
+    return [exe, "--app-name=Trillion", *hush, "--", t, cut(body, markup=True)], {}
 
 
 def notify(
@@ -134,10 +154,12 @@ def notify(
     run: Run = subprocess.run,
     which: Which = shutil.which,
     env: Mapping[str, str] | None = None,
+    silent: bool = False,
 ) -> bool:
-    """Show one notification. True only when the platform's tool said it did."""
+    """Show one notification, with no sound when `silent`. True only when the
+    platform's tool said it did."""
     environ = os.environ if env is None else env
-    found = command(title, body, platform=platform, which=which, env=environ)
+    found = command(title, body, platform=platform, which=which, env=environ, silent=silent)
     if found is None:
         logger.info("no way to show a system notification on %s", platform)
         return False

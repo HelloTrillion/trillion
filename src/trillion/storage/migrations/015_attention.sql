@@ -3,7 +3,9 @@
 -- A watcher's notice comes from `attention`, with `source_id` the find's key. It is a
 -- heads_up: her one line about a meeting, an email or a payment. `link` is where its
 -- button opens (https only), and `fresh_until_ms` is when it stops being worth saying
--- out loud: delivered after that, it is shown and not spoken.
+-- out loud: delivered after that, it is shown and not spoken. `detail` is a short line
+-- the host makes from the find ("Planning at 10:00 am"), for the page only: never
+-- spoken, never on the system notification, never saved as her message.
 --
 -- The source and kind CHECKs have to widen, and SQLite cannot widen one in place, so
 -- the table is made again under its own name and its rows put back, as 014 did. A
@@ -37,7 +39,9 @@ CREATE TABLE notices (
     -- A meeting's join link. Only https: it is opened by a tap, and came from an invite.
     link             TEXT CHECK (link IS NULL OR (link LIKE 'https://_%' AND length(link) <= 2000)),
     -- After this it is shown, not spoken. NULL: spoken whenever it arrives.
-    fresh_until_ms   INTEGER
+    fresh_until_ms   INTEGER,
+    -- What the find was, for the page only, so a notice with no line still says.
+    detail           TEXT CHECK (detail IS NULL OR length(detail) <= 300)
 );
 INSERT INTO notices
     (id, owner_id, source, source_id, kind, title, text, due_ms, late, created_ms, status,
@@ -49,16 +53,21 @@ DROP TABLE notices_before_015;
 CREATE INDEX notices_held ON notices (owner_id, status, created_ms);
 
 -- Everything a watcher found, so each is told at most once, across restarts (D5).
--- told: it became a notice; silent: judged not worth saying (D6); dismissed: the user
--- set it aside, kept for the dedup window as a soft delete.
+-- claimed: found, and being told now (one left so by a stop or a failure is never told
+-- again); told: it became a notice; silent: judged not worth saying (D6); dismissed:
+-- the user set it aside, kept for the dedup window as a soft delete.
 CREATE TABLE attention_finds (
     owner_id       TEXT NOT NULL REFERENCES owners(id),
     key            TEXT NOT NULL,
     watcher        TEXT NOT NULL,
     first_seen_ms  INTEGER NOT NULL,
-    notice_id      TEXT REFERENCES notices(id),
-    status         TEXT NOT NULL CHECK (status IN ('told', 'silent', 'dismissed')),
+    -- Recorded before the notice is written, so a stop between the two can be put
+    -- right at the next start: hence no foreign key.
+    notice_id      TEXT,
+    status         TEXT NOT NULL CHECK (status IN ('claimed', 'told', 'silent', 'dismissed')),
     dismissed_ms   INTEGER,
+    -- What it was, in the host's words (as the notice's detail), for recent finds.
+    detail         TEXT CHECK (detail IS NULL OR length(detail) <= 300),
     PRIMARY KEY (owner_id, key)
 );
 CREATE INDEX attention_finds_recent ON attention_finds (owner_id, first_seen_ms DESC);

@@ -2,7 +2,13 @@
 
 `host` is where Trillion's own page runs (`desktop`, or a browser family): the
 recording processes that belong to it are Trillion's own, so they don't count. A call
-in that same browser is invisible here; the meeting rule covers it.
+in that same browser is invisible here; the meeting rule covers it. The desktop and
+Safari hosts leave out every WebKit helper, so a call in Safari while the desktop app
+is in use (or in another WebKit app while Safari is) is not seen either.
+
+On Linux, streams that record what is playing (monitors) or only meter the level
+("Peak detect", as volume controls make) are not someone on the mic. Telling apart a
+recording of a sink's `.monitor` source by the source's name is left for later.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ import json
 import os
 import struct
 import sys
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -168,13 +175,14 @@ class _MacAudio:
     def _address(self, code: str) -> _Address:
         return _Address(_fourcc(code), self.GLOBAL, self.MAIN)
 
-    def _get(self, obj: int, code: str, out: Any) -> bool:
+    def _get(self, obj: int, code: str, out: Any) -> int | None:
+        """Fills `out`; how many bytes it filled, or None when it failed."""
         address = self._address(code)
         size = ctypes.c_uint32(ctypes.sizeof(out))
         status = self._ca.AudioObjectGetPropertyData(
             obj, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(out)
         )
-        return int(status) == 0
+        return int(size.value) if int(status) == 0 else None
 
     def processes(self) -> list[int] | None:
         # 'prs#': kAudioHardwarePropertyProcessObjectList; older systems refuse it.
@@ -186,21 +194,23 @@ class _MacAudio:
         if int(status) != 0:
             return None
         items = (ctypes.c_uint32 * (size.value // 4))()
-        if not self._get(self.SYSTEM, "prs#", items):
+        filled = self._get(self.SYSTEM, "prs#", items)
+        if filled is None:
             return None
-        return [int(i) for i in items]
+        # A process can go away between the two calls: only what was filled is real.
+        return [int(i) for i in items[: filled // 4]]
 
     def pid(self, obj: int) -> int | None:
         out = ctypes.c_int32()
-        return int(out.value) if self._get(obj, "ppid", out) else None
+        return int(out.value) if self._get(obj, "ppid", out) is not None else None
 
     def recording(self, obj: int) -> bool | None:
         out = ctypes.c_uint32()
-        return bool(out.value) if self._get(obj, "piri", out) else None
+        return bool(out.value) if self._get(obj, "piri", out) is not None else None
 
     def bundle_id(self, obj: int) -> str | None:
         ref = ctypes.c_void_p()
-        if not self._get(obj, "pbid", ref) or not ref.value:
+        if self._get(obj, "pbid", ref) is None or not ref.value:
             return None
         try:
             text = ctypes.create_string_buffer(1024)
@@ -210,6 +220,19 @@ class _MacAudio:
         finally:
             # The caller owns the returned CFString.
             self._cf.CFRelease(ref)
+
+
+# Loading CoreAudio and setting up its calls once is enough: kept for the process.
+_MAC: _MacAudio | None = None
+_MAC_LOCK = threading.Lock()
+
+
+def _mac_audio() -> _MacAudio:
+    global _MAC
+    with _MAC_LOCK:
+        if _MAC is None:
+            _MAC = _MacAudio()
+        return _MAC
 
 
 # --- Windows ----------------------------------------------------------------
@@ -266,9 +289,24 @@ if sys.platform == "win32":
 # --- Linux ------------------------------------------------------------------
 
 
+def _is_true(value: object) -> bool:
+    return value is True or str(value).lower() == "true"
+
+
+def _not_the_mic(props: dict[str, Any]) -> bool:
+    """A stream recording what is playing, or only metering the level."""
+    return (
+        _is_true(props.get("stream.capture.sink"))
+        or _is_true(props.get("stream.monitor"))
+        or props.get("media.name") == "Peak detect"
+    )
+
+
 def _recorders(items: Iterable[dict[str, Any]], host: str, own_pid: int) -> bool:
     mine = own(host)
     for props in items:
+        if _not_the_mic(props):
+            continue
         if _pid(props.get("application.process.id")) == own_pid:
             continue
         binary = str(props.get("application.process.binary") or "")
@@ -332,7 +370,7 @@ def _linux(run: Run, host: str, own_pid: int) -> Answer:
 
 def _system(host: str) -> Answer:
     if sys.platform == "darwin":
-        return _macos(_MacAudio(), host, os.getpid())
+        return _macos(_mac_audio(), host, os.getpid())
     if sys.platform == "win32":
         return _windows(_WinRegistry(), host)
     if sys.platform.startswith("linux"):

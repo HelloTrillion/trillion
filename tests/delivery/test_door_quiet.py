@@ -79,6 +79,7 @@ async def test_a_quiet_notice_is_delivered_unspoken_and_notified_once(
     d, shown, _ = door(store, [page], FakeQuiet("quiet hours"))
     n = await heads_up(store)
     await d.added(n)
+    await d.drain()
     (got,) = page.got
     assert got.text == "Your 10:00 with Sam starts in five minutes."
     assert (got.spoken, got.quiet) == (False, "quiet hours")
@@ -88,6 +89,7 @@ async def test_a_quiet_notice_is_delivered_unspoken_and_notified_once(
     assert kept is not None and kept.status == "delivered" and kept.notified_ms == DUE
     await d.added(n)
     await d.flush()
+    await d.drain()
     assert len(shown.shown) == 1  # once
 
 
@@ -191,3 +193,69 @@ async def test_a_quiet_check_that_never_answers_does_not_stop_the_door(
 
 def test_the_quiet_check_has_a_limit() -> None:
     assert door_module.QUIET_TIMEOUT_S == 2.5
+
+
+async def test_a_quiet_notification_makes_no_sound_and_a_held_one_is_as_before(
+    store: SqliteScheduleStore,
+) -> None:
+    page = FakePage("c1")
+    d, shown, _ = door(store, [page], FakeQuiet("quiet hours"))
+    await d.added(await heads_up(store))
+    await d.drain()
+    pages: list[FakePage] = []
+    held, held_shown, _ = door(store, pages)
+    await held.added(await heads_up(store, key="meeting:e2:1"))
+    assert (shown.silent, held_shown.silent) == ([True], [False])
+
+
+async def test_several_quiet_notices_are_notified_after_the_hand_over_not_during_it(
+    store: SqliteScheduleStore,
+) -> None:
+    import threading
+
+    gate = threading.Event()
+    shown: list[str] = []
+
+    def slow(title: str, body: str, *, silent: bool = False) -> bool:
+        gate.wait(5)
+        shown.append(title)
+        return True
+
+    pages: list[FakePage] = []
+    d, _, _ = door(store, pages, FakeQuiet("in a meeting"))
+    d.notify = slow
+    first = await heads_up(store, key="meeting:e1:1")
+    second = await heads_up(store, key="meeting:e2:1")
+    page = FakePage("c1")
+    pages.append(page)
+    try:
+        # The session waits on `offer`: the notifications must not hold it.
+        assert await asyncio.wait_for(d.offer(page), 1) == 2
+    finally:
+        gate.set()
+    await d.drain()
+    assert len(shown) == 2
+    for n in (first, second):
+        kept = await store.notice(n.id)
+        assert kept is not None and kept.notified_ms is not None
+    # Once only, however often it is offered again.
+    await d.flush()
+    await d.drain()
+    assert len(shown) == 2
+
+
+async def test_a_heads_up_carries_its_detail_for_the_page(store: SqliteScheduleStore) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    n = await store.attention_notice(
+        "local", "meeting:e1:1", title="Meeting soon", text=None, now_ms=DUE,
+        detail="Planning at 10:00 am",
+    )  # fmt: skip
+    await d.added(n)
+    (got,) = page.got
+    assert (got.title, got.text, got.detail, got.spoken) == (
+        "Meeting soon",
+        None,
+        "Planning at 10:00 am",
+        False,
+    )

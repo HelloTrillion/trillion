@@ -7,9 +7,11 @@ read from now returns what is under way as well as what is next. It skips all-da
 events, cancelled ones and ones the user declined.
 
 A heads-up is due from start - lead until the start (D9), keyed by event and start so
-a moved meeting is a new one (D5). The model sees the title, when, who else (at most
-three names) and whether there is a join link: never the description or the place,
-which are longer, someone else's words, and not needed for one line.
+a moved meeting is a new one (D5). Its detail, for the page only, is "<title> at
+<start>"; the notice's own title stays "Meeting soon", safe on a lock screen. The
+model sees the title, when, who else (at most three names) and whether there is a join
+link: never the description or the place, which are longer, someone else's words, and
+not needed for one line.
 
 The last read is kept in memory, so the quiet check costs no request. It answers only
 while it is fresh; stale, failed or never read is can't tell (D11).
@@ -239,12 +241,15 @@ class Meetings:
         return [self._find(e, now) for e in events if e.start_ms - lead_ms <= now < e.start_ms]
 
     def _find(self, e: _Event, now: int) -> Find:
+        starts = when.clock_words(self._local(e.start))
         return Find(
             key=f"meeting:{e.id}:{_iso(e.start_ms)}",
             title=e.title,
+            # Shown on the page only, so a notice with no line still says which meeting.
+            detail=f"{e.title} at {starts}",
             facts={
                 "title": e.title,
-                "starts": when.clock_words(self._local(e.start)),
+                "starts": starts,
                 "minutes_until": math.ceil((e.start_ms - now) / 60_000),
                 "with": list(e.others[:MAX_NAMES]),
                 "has_join_link": e.link is not None,

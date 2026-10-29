@@ -105,6 +105,8 @@ from trillion.workspace.refresh import Refresher
 from trillion.workspace.service import Boards
 
 logger = logging.getLogger(__name__)
+# On stop, quiet notices' notifications still on their way get this long.
+STOP_NOTIFY_S = 6.0
 
 OWNER = "local"
 # Speech outside a turn (a notice, a tap's answer, a sentence about a leg that is down)
@@ -441,6 +443,10 @@ class Runtime:
             await self.attention.stop()
         if self.scheduler is not None:
             await self.scheduler.stop()
+        if self.door is not None:
+            # Quiet notices' notifications on their way: a moment to finish, no more.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.door.drain(), STOP_NOTIFY_S)
 
     def refreshing(self, conversation_id: str) -> frozenset[str]:
         """The widgets being refreshed on this conversation now."""

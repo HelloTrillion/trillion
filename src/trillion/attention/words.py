@@ -4,7 +4,8 @@ One small call: what it is for in the instructions, the finds wrapped as untrust
 (an invite title or an email is someone else's words), the user's notes for that
 watcher beside them, no tools, a few tokens, a short timeout. Anything wrong (no
 answer, an empty or overlong one, a failure, a timeout) is no line: the notice is
-then shown by its title and not spoken, never with stock words.
+then shown by its title and not spoken, never with stock words. An answer the token
+limit cut off is half a sentence, so it is no line too.
 
 `line` always says something about the finds it is given. A watcher that lets the
 model judge whether anything is worth saying (urgent email, Task 5) decides that in
@@ -73,9 +74,10 @@ async def line(
     recorded (BRN-4), even one whose answer is not kept."""
     text: list[str] = []
     usage = Usage()
+    cut = False
 
     async def ask() -> None:
-        nonlocal usage
+        nonlocal usage, cut
         async for ev in provider.stream(
             system=[SystemBlock(text=INSTRUCTIONS, cache=False)],
             messages=[Msg(role="user", blocks=(TextBlock(text=_body(watcher, finds, notes)),))],
@@ -86,10 +88,14 @@ async def line(
                 text.append(ev.text)
             elif isinstance(ev, Done):
                 usage = usage + ev.usage
+                cut = cut or ev.stop_reason == "max_tokens"
 
     try:
         await asyncio.wait_for(ask(), timeout_s)
     except Exception as e:
         logger.info("attention %s: no line: %s", watcher, type(e).__name__)
+        return None, usage
+    if cut:
+        logger.info("attention %s: no line: cut off at the token limit", watcher)
         return None, usage
     return clean("".join(text)), usage

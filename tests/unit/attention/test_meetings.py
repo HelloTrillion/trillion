@@ -136,6 +136,8 @@ async def test_a_heads_up_is_due_at_start_less_lead_and_not_before() -> None:
         "with": ["Sam Lee"],
         "has_join_link": False,
     }
+    # For the page only: what it was, in the host's words.
+    assert f.detail == "Planning with Sam at 10:00 am"
 
 
 async def test_the_lead_comes_from_settings() -> None:

@@ -141,11 +141,15 @@ def _quiet(current: QuietHours, raw: object) -> QuietHours:
     unknown = set(raw) - {"on", "from", "to"}
     if unknown:
         raise SettingsError(f"{sorted(unknown)[0]} is not part of quiet_hours")
-    return QuietHours(
+    hours = QuietHours(
         on=_bool(raw["on"], "on") if "on" in raw else current.on,
         start=_clock(raw["from"], "from") if "from" in raw else current.start,
         end=_clock(raw["to"], "to") if "to" in raw else current.end,
     )
+    if hours.start == hours.end:
+        # Either all day or never: neither is what anyone means.
+        raise SettingsError("quiet_hours from and to must differ")
+    return hours
 
 
 def merge(current: AttentionSettings, patch: object) -> AttentionSettings:

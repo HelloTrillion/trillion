@@ -3,14 +3,19 @@ app on the mic, Focus. Each probe is a fake here; can't tell never holds her voi
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import replace
+from datetime import datetime
 
 import pytest
 
 from tests.scheduler.conftest import NY, ms
+from trillion.attention import quiet as quiet_module
 from trillion.attention.probes import Answer
-from trillion.attention.quiet import FOCUS, MEETING, MIC, QUIET_HOURS, Quiet
+from trillion.attention.probes import focus as focus_probe
+from trillion.attention.probes import mic as mic_probe
+from trillion.attention.quiet import FOCUS, MEETING, MIC, QUIET_HOURS, Quiet, Threads, probe_answer
 from trillion.attention.settings import DEFAULT, AttentionSettings, QuietHours
 from trillion.scheduler.store import Notice
 
@@ -90,6 +95,24 @@ async def test_nothing_holds_her_voice_at_noon() -> None:
 )
 async def test_quiet_hours_cross_midnight_in_the_users_zone(local: str, held: bool) -> None:
     got = await quiet(Probes()).reason(notice(), ms(local, NY))
+    assert got == (QUIET_HOURS if held else None)
+
+
+@pytest.mark.parametrize(
+    ("utc", "held"),
+    [
+        # 2026-11-01 in New York: 1:30 comes twice, once in EDT and once in EST.
+        ("2026-11-01T05:30:00+00:00", True),
+        ("2026-11-01T06:30:00+00:00", True),
+        # 7:00 EST: with summer time's offset it would read 8:00, and be let through.
+        ("2026-11-01T12:00:00+00:00", True),
+        ("2026-11-01T12:59:00+00:00", True),
+        ("2026-11-01T13:00:00+00:00", False),
+    ],
+)
+async def test_quiet_hours_on_the_night_the_clocks_go_back(utc: str, held: bool) -> None:
+    at = int(datetime.fromisoformat(utc).timestamp() * 1000)
+    got = await quiet(Probes()).reason(notice(), at)
     assert got == (QUIET_HOURS if held else None)
 
 
@@ -202,3 +225,55 @@ def test_the_reasons_are_short_words() -> None:
         "another app is using the microphone",
         "Focus is on",
     )
+
+
+def test_a_default_quiet_asks_this_computers_real_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The suite's autouse fixture puts "can't tell" in their place; undone, the wiring
+    # is the real entry points.
+    monkeypatch.undo()
+    assert quiet_module.SYSTEM_MIC is mic_probe.mic_in_use
+    assert quiet_module.SYSTEM_FOCUS is focus_probe.focus_on
+    q = Quiet(settings=lambda: DEFAULT, zone=lambda: NY, host=lambda: "chrome")
+    assert q.mic is mic_probe.mic_in_use and q.focus is focus_probe.focus_on
+
+
+def test_probe_threads_are_daemons_and_at_most_two() -> None:
+    gate = threading.Event()
+    seen: list[threading.Thread] = []
+
+    def hang() -> Answer:
+        seen.append(threading.current_thread())
+        gate.wait(5)
+        return True
+
+    threads = Threads(2)
+    try:
+        first, second = threads.submit(hang), threads.submit(hang)
+        assert first is not None and second is not None
+        # Both busy: nothing more is started.
+        assert threads.submit(hang) is None
+    finally:
+        gate.set()
+    assert first.result(2) is True and second.result(2) is True
+    assert all(t.daemon for t in seen)
+    # Free again once they finish.
+    again = threads.submit(lambda: False)
+    assert again is not None and again.result(2) is False
+
+
+async def test_a_probe_that_times_out_or_finds_every_thread_busy_did_not_answer() -> None:
+    gate = threading.Event()
+
+    def hang() -> Answer:
+        gate.wait(5)
+        return True
+
+    threads = Threads(1)
+    try:
+        assert await probe_answer("mic", hang, timeout_s=0.05, threads=threads) == (None, False)
+        # Still hung: the one thread is busy.
+        assert await probe_answer("mic", lambda: True, threads=threads) == (None, False)
+    finally:
+        gate.set()
+    assert await probe_answer("focus", lambda: None, threads=Threads(1)) == (None, True)
+    assert await probe_answer("focus", lambda: True, threads=Threads(1)) == (True, True)

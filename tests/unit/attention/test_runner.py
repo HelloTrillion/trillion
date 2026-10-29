@@ -4,6 +4,7 @@ words or none (D3), and a check that hangs or breaks."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ import pytest
 
 from tests.brain.fakes import ScriptedProvider, say
 from tests.scheduler.conftest import FakeClock
+from trillion.attention import runner
 from trillion.attention.runner import AttentionRunner, Find, Said, WatchContext
 from trillion.attention.settings import DEFAULT, AttentionSettings
 from trillion.brain.types import ModelProvider, ProviderError, TextBlock, Usage
@@ -344,3 +346,165 @@ async def test_it_starts_and_stops(world: World) -> None:
     assert r.running
     await r.stop()
     assert not r.running
+
+
+# ── After the review ────────────────────────────────────────────────────────
+
+
+@dataclass
+class Waiting(Judging):
+    """A judge that waits to be let go: a slow model."""
+
+    gate: asyncio.Event = field(default_factory=asyncio.Event)
+    started: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def judge(self, ctx: WatchContext, finds: Sequence[Find]) -> Said:
+        self.started.set()
+        await self.gate.wait()
+        return await super().judge(ctx, finds)
+
+
+async def test_the_cursor_is_saved_only_once_the_finds_are_claimed(world: World) -> None:
+    @dataclass
+    class Moving(Watcher):
+        async def check(self, ctx: WatchContext) -> list[Find]:
+            ctx.cursor = "next"
+            return [find()]
+
+    r = await world.runner(Moving())
+
+    async def broken(*args: object, **kw: object) -> list[str]:
+        raise ConnectionError
+
+    world.attention.claim = broken  # type: ignore[method-assign]
+    await r.tick()
+    s = await world.attention.state(OWNER, "meetings")
+    # Nothing claimed, so the place is not moved on: the next check reads them again.
+    assert (s.cursor, s.last_check_ms) == (None, None)
+
+
+async def test_a_watcher_can_clear_its_cursor(world: World) -> None:
+    @dataclass
+    class Clearing(Watcher):
+        async def check(self, ctx: WatchContext) -> list[Find]:
+            ctx.cursor = None
+            return []
+
+    r = await world.runner(Clearing(name="email"))
+    await world.attention.checked(OWNER, "email", NOW - 1000, cursor="c7")
+    await r.tick()
+    assert (await world.attention.state(OWNER, "email")).cursor is None
+
+
+async def test_a_telling_step_that_breaks_is_recorded_and_its_finds_stay_claimed(
+    world: World,
+) -> None:
+    @dataclass
+    class Breaking(Judging):
+        async def judge(self, ctx: WatchContext, finds: Sequence[Find]) -> Said:
+            raise ValueError("the model said: secret")
+
+    r = await world.runner(Breaking(name="email", finds=[find("email:1")]))
+    await r.tick()
+    assert world.door.notices == []
+    assert (await world.attention.state(OWNER, "email")).last_error == "ValueError"
+    (f,) = await world.attention.recent(OWNER, NOW)
+    assert f.status == "claimed"
+    # Never told again (D5).
+    world.clock.advance(600_000)
+    await r.tick()
+    assert world.door.notices == []
+
+
+async def test_a_telling_step_that_hangs_times_out(world: World) -> None:
+    w = Waiting(name="email", finds=[find("email:1")], keep=("email:1",))
+    r = await world.runner(w)
+    r._tell_timeout_s = 0.05
+    await r.tick()
+    assert world.door.notices == []
+    assert (await world.attention.state(OWNER, "email")).last_error == "TimeoutError"
+    (f,) = await world.attention.recent(OWNER, NOW)
+    assert f.status == "claimed"
+
+
+async def test_a_watcher_that_hangs_does_not_hold_up_another(world: World) -> None:
+    slow = Watcher(name="email", hang=True)
+    quick = Watcher(name="meetings", finds=[find()])
+    r = await world.runner(slow, quick, timeout_s=30.0)
+    ticking = asyncio.create_task(r.tick())
+    try:
+        async with asyncio.timeout(2):
+            while not world.door.notices:
+                await asyncio.sleep(0.01)
+    finally:
+        ticking.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ticking
+    assert len(world.door.notices) == 1
+
+
+async def test_a_judge_tells_only_finds_it_was_given(world: World) -> None:
+    @dataclass
+    class Inventing(Judging):
+        async def judge(self, ctx: WatchContext, finds: Sequence[Find]) -> Said:
+            return Said(text="Two things.", told=[find("email:made-up"), finds[0], finds[0]])
+
+    r = await world.runner(Inventing(name="email", finds=[find("email:1")]))
+    await r.tick()
+    (n,) = world.door.notices
+    assert n.source_id == "email:1"
+    assert {f.key for f in await world.attention.recent(OWNER, NOW)} == {"email:1"}
+
+
+async def test_a_finds_detail_reaches_the_notice_and_recent_finds(world: World) -> None:
+    world.provider = None
+    detailed = Find(key="meeting:e1:1", title="Planning", facts={}, detail="Planning at 10:00 am")
+    r = await world.runner(Watcher(finds=[detailed]))
+    await r.tick()
+    (n,) = world.door.notices
+    # No line: shown by its generic title and its detail.
+    assert (n.title, n.text, n.detail) == ("Meeting soon", None, "Planning at 10:00 am")
+    assert notification(n) == ("Meeting soon", READY)
+    (f,) = await world.attention.recent(OWNER, NOW)
+    assert (f.status, f.detail) == ("told", "Planning at 10:00 am")
+
+
+async def test_stop_lets_a_notice_being_told_finish(world: World) -> None:
+    w = Waiting(name="email", finds=[find("email:1")], keep=("email:1",))
+    r = await world.runner(w)
+    r.start()
+    await asyncio.wait_for(w.started.wait(), 2)
+    stopping = asyncio.create_task(r.stop())
+    await asyncio.sleep(0.05)
+    w.gate.set()
+    await asyncio.wait_for(stopping, 2)
+    (n,) = world.door.notices
+    (f,) = await world.attention.recent(OWNER, NOW)
+    assert (f.status, f.notice_id) == ("told", n.id)
+
+
+async def test_stop_cuts_off_a_notice_past_its_grace(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "STOP_GRACE_S", 0.05)
+    w = Waiting(name="email", finds=[find("email:1")], keep=("email:1",))
+    r = await world.runner(w)
+    r.start()
+    await asyncio.wait_for(w.started.wait(), 2)
+    await asyncio.wait_for(r.stop(), 2)
+    assert world.door.notices == []
+    (f,) = await world.attention.recent(OWNER, NOW)
+    assert f.status == "claimed"
+
+
+async def test_start_marks_told_a_find_whose_notice_was_written_before_a_stop(
+    world: World,
+) -> None:
+    r = await world.runner(Watcher(on=False))
+    await world.attention.claim(OWNER, "meetings", ["meeting:e1:1", "meeting:old"], NOW)
+    await world.schedules.attention_notice(
+        OWNER, "meeting:e1:1", title="Meeting soon", text=None, now_ms=NOW
+    )
+    await r.prepare()
+    rows = {f.key: f.status for f in await world.attention.recent(OWNER, NOW)}
+    assert rows == {"meeting:e1:1": "told", "meeting:old": "claimed"}

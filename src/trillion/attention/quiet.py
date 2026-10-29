@@ -9,20 +9,24 @@ The reasons, in order, the first that applies:
 3. Another app is using the microphone (the mic probe, told the live page's host).
 4. Focus is on (the Focus probe).
 
-Can't tell never holds her voice (D11). A probe runs on a small executor of its own,
-never the default one the door's notifications use, with a hard limit, and the two
-are asked together, so a probe that hangs can't stop the door; the probes themselves
-run one at a time per question.
+Can't tell never holds her voice (D11). A probe runs on a thread of its own, never
+the default executor the door's notifications use, with a hard limit, and the two are
+asked together, so a probe that hangs can't stop the door; the probes themselves run
+one at a time per question. The threads are daemons, at most two at once: a system
+call that never returns can't keep the server from exiting, and can't pile up.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from datetime import UTC, datetime
+from typing import Any
 
+from trillion.attention import probes
 from trillion.attention.probes import Answer
 from trillion.attention.probes.focus import focus_on
 from trillion.attention.probes.mic import mic_in_use
@@ -46,8 +50,39 @@ PROBE_TIMEOUT_S = 2.0
 SYSTEM_MIC: Callable[[str], Answer] = mic_in_use
 SYSTEM_FOCUS: Callable[[], Answer] = focus_on
 
+
+class Threads:
+    """Runs a probe on a daemon thread, at most `limit` at once. Full, it starts nothing
+    and says so (None): a probe hung on a system call ties up its thread, never more."""
+
+    def __init__(self, limit: int = 2) -> None:
+        self._slots = threading.BoundedSemaphore(limit)
+
+    def submit(self, fn: Callable[..., Any], *args: Any) -> Future[Any] | None:
+        if not self._slots.acquire(blocking=False):
+            return None
+        done: Future[Any] = Future()
+
+        def work() -> None:
+            try:
+                if done.set_running_or_notify_cancel():
+                    try:
+                        done.set_result(fn(*args))
+                    except BaseException as e:
+                        done.set_exception(e)
+            finally:
+                self._slots.release()
+
+        try:
+            threading.Thread(target=work, name="attention-probe", daemon=True).start()
+        except BaseException:
+            self._slots.release()
+            raise
+        return done
+
+
 # Two: one probe hung on a system call still leaves room for the other.
-_PROBES = ThreadPoolExecutor(max_workers=2, thread_name_prefix="attention-probe")
+_PROBES = Threads(2)
 
 
 def _minutes(hhmm: str) -> int:
@@ -70,17 +105,44 @@ def in_quiet_hours(hours: QuietHours, zone: str | None, now_ms: int) -> bool:
     return start <= now < end if start < end else now >= start or now < end
 
 
-async def ask_probe(
-    name: str, probe: Callable[..., Answer], *args: str, timeout_s: float = PROBE_TIMEOUT_S
-) -> Answer:
-    """A probe's answer from its own executor, or None for anything else."""
-    loop = asyncio.get_running_loop()
+async def probe_answer(
+    name: str,
+    probe: Callable[..., Answer],
+    *args: str,
+    timeout_s: float = PROBE_TIMEOUT_S,
+    threads: Threads = _PROBES,
+) -> tuple[Answer, bool]:
+    """A probe's answer from a thread of its own, and whether it answered at all: False
+    when it ran out of time, or it (or every thread) was still busy with an earlier
+    question. Settings tells that apart from a system that can't say."""
+    running = threads.submit(probe, *args)
+    if running is None:
+        logger.info("%s probe didn't answer: still busy", name)
+        return None, False
     try:
-        answer = await asyncio.wait_for(loop.run_in_executor(_PROBES, probe, *args), timeout_s)
+        answer = await asyncio.wait_for(asyncio.wrap_future(running), timeout_s)
+    except TimeoutError:
+        logger.info("%s probe didn't answer in time", name)
+        return None, False
     except Exception as e:
         logger.info("%s probe can't tell: %s", name, type(e).__name__)
-        return None
-    return answer if isinstance(answer, bool) else None
+        return None, True
+    if answer is None and probes.busy(name):
+        # The entry point found the same question still running and started nothing.
+        return None, False
+    return (answer if isinstance(answer, bool) else None), True
+
+
+async def ask_probe(
+    name: str,
+    probe: Callable[..., Answer],
+    *args: str,
+    timeout_s: float = PROBE_TIMEOUT_S,
+    threads: Threads = _PROBES,
+) -> Answer:
+    """A probe's answer, or None for anything else."""
+    answer, _ = await probe_answer(name, probe, *args, timeout_s=timeout_s, threads=threads)
+    return answer
 
 
 async def _off() -> Answer:
@@ -107,6 +169,8 @@ class Quiet:
         self.mic = mic or SYSTEM_MIC
         self.focus = focus or SYSTEM_FOCUS
         self._timeout = probe_timeout_s
+        # Its own, so a probe hung in one Quiet never starves another.
+        self._threads = Threads(2)
         # The meetings watcher puts its last read here: True while one is under way.
         self.in_meeting: Callable[[], Answer] = lambda: None
 
@@ -120,16 +184,28 @@ class Quiet:
             return MEETING
         # Asked together, so both fit in one limit; the first reason still wins.
         mic, focus = await asyncio.gather(
-            ask_probe("mic", self.mic, self.page_host(), timeout_s=self._timeout)
-            if s.mic
-            else _off(),
-            ask_probe("focus", self.focus, timeout_s=self._timeout) if s.focus else _off(),
+            self._ask("mic") if s.mic else _off(),
+            self._ask("focus") if s.focus else _off(),
         )
         if mic is True:
             return MIC
         if focus is True:
             return FOCUS
         return None
+
+    async def probe(self, name: str) -> tuple[Answer, bool]:
+        """One probe's answer ("mic" or "focus"), and whether it answered at all."""
+        if name == "mic":
+            return await probe_answer(
+                "mic", self.mic, self.page_host(), timeout_s=self._timeout, threads=self._threads
+            )
+        return await probe_answer(
+            "focus", self.focus, timeout_s=self._timeout, threads=self._threads
+        )
+
+    async def _ask(self, name: str) -> Answer:
+        answer, _ = await self.probe(name)
+        return answer
 
     def page_host(self) -> str:
         try:

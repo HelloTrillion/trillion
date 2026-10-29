@@ -115,9 +115,20 @@ class Cache:
                 self._running.discard(key)
         return answer
 
+    def busy(self, name: str) -> bool:
+        """A question of this probe's (`mic`, `focus`) is running now."""
+        with self._lock:
+            return any(key[0] == name for key in self._running)
+
     def clear(self) -> None:
         with self._lock:
             self._kept.clear()
 
 
 CACHE = Cache()
+
+
+def busy(name: str) -> bool:
+    """This probe is still answering an earlier question: an answer of None from it now
+    means "didn't answer", not "can't tell"."""
+    return CACHE.busy(name)

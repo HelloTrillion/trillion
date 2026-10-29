@@ -8,12 +8,12 @@ one another store has open.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 
 import aiosqlite
 
-from trillion.attention.store import RECENT_MS, FindRecord, WatcherState
+from trillion.attention.store import KEEP, RECENT_MS, Cursor, FindRecord, WatcherState
 from trillion.scheduler.store import NOTES_MAX
 
 
@@ -68,29 +68,63 @@ class SqliteAttentionStore:
             return {str(r["key"]) for r in await cur.fetchall()}
 
     async def claim(
-        self, owner_id: str, watcher: str, keys: Sequence[str], now_ms: int
+        self,
+        owner_id: str,
+        watcher: str,
+        keys: Sequence[str],
+        now_ms: int,
+        *,
+        details: Mapping[str, str | None] | None = None,
     ) -> list[str]:
         out: list[str] = []
+        about = details or {}
         async with self._tx() as conn:
             for key in dict.fromkeys(keys):
+                detail = about.get(key)
                 async with conn.execute(
-                    "INSERT INTO attention_finds (owner_id, key, watcher, first_seen_ms, status)"
-                    " VALUES (?, ?, ?, ?, 'silent') ON CONFLICT (owner_id, key) DO NOTHING"
+                    "INSERT INTO attention_finds"
+                    " (owner_id, key, watcher, first_seen_ms, status, detail)"
+                    " VALUES (?, ?, ?, ?, 'claimed', ?) ON CONFLICT (owner_id, key) DO NOTHING"
                     " RETURNING key",
-                    (owner_id, key, watcher, now_ms),
+                    (owner_id, key, watcher, now_ms, detail[:300] if detail else None),
                 ) as cur:
                     if await cur.fetchone() is not None:
                         out.append(key)
         return out
 
-    async def told(self, owner_id: str, keys: Sequence[str], notice_id: str) -> None:
+    async def _claimed(self, owner_id: str, keys: Sequence[str], sets: str, *args: str) -> None:
         async with self._tx() as conn:
             for key in keys:
                 await conn.execute(
-                    "UPDATE attention_finds SET status = 'told', notice_id = ?"
-                    " WHERE owner_id = ? AND key = ? AND status = 'silent'",
-                    (notice_id, owner_id, key),
+                    f"UPDATE attention_finds SET {sets}"  # noqa: S608 - fixed text only
+                    " WHERE owner_id = ? AND key = ? AND status = 'claimed'",
+                    (*args, owner_id, key),
                 )
+
+    async def telling(self, owner_id: str, keys: Sequence[str], notice_id: str) -> None:
+        await self._claimed(owner_id, keys, "notice_id = ?", notice_id)
+
+    async def told(self, owner_id: str, keys: Sequence[str], notice_id: str) -> None:
+        await self._claimed(owner_id, keys, "status = 'told', notice_id = ?", notice_id)
+
+    async def silent(self, owner_id: str, keys: Sequence[str]) -> None:
+        await self._claimed(owner_id, keys, "status = 'silent', notice_id = NULL")
+
+    async def repair(self, owner_id: str) -> int:
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE attention_finds SET status = 'told', notice_id = COALESCE("
+                " (SELECT n.id FROM notices n WHERE n.id = attention_finds.notice_id),"
+                " (SELECT n.id FROM notices n WHERE n.owner_id = attention_finds.owner_id"
+                "  AND n.source = 'attention' AND n.source_id = attention_finds.key"
+                "  ORDER BY n.created_ms LIMIT 1))"
+                " WHERE owner_id = ? AND status = 'claimed' AND ("
+                " EXISTS (SELECT 1 FROM notices n WHERE n.id = attention_finds.notice_id)"
+                " OR EXISTS (SELECT 1 FROM notices n WHERE n.owner_id = attention_finds.owner_id"
+                "  AND n.source = 'attention' AND n.source_id = attention_finds.key))",
+                (owner_id,),
+            )
+            return cur.rowcount
 
     async def dismiss(self, owner_id: str, key: str, now_ms: int) -> bool:
         async with self._tx() as conn:
@@ -104,7 +138,7 @@ class SqliteAttentionStore:
     async def recent(self, owner_id: str, now_ms: int) -> list[FindRecord]:
         async with self._conn.execute(
             "SELECT f.key, f.watcher, f.first_seen_ms, f.status, f.notice_id, f.dismissed_ms,"
-            " n.title FROM attention_finds f LEFT JOIN notices n ON n.id = f.notice_id"
+            " f.detail, n.title FROM attention_finds f LEFT JOIN notices n ON n.id = f.notice_id"
             " WHERE f.owner_id = ? AND f.first_seen_ms >= ?"
             " ORDER BY f.first_seen_ms DESC, f.rowid",
             (owner_id, now_ms - RECENT_MS),
@@ -119,6 +153,7 @@ class SqliteAttentionStore:
                 notice_id=_str(r["notice_id"]),
                 dismissed_ms=_int(r["dismissed_ms"]),
                 title=_str(r["title"]),
+                detail=_str(r["detail"]),
             )
             for r in rows
         ]
@@ -140,16 +175,25 @@ class SqliteAttentionStore:
             return [_state(r) for r in await cur.fetchall()]
 
     async def checked(
-        self, owner_id: str, watcher: str, now_ms: int, *, cursor: str | None = None
+        self, owner_id: str, watcher: str, now_ms: int, *, cursor: Cursor = KEEP
     ) -> None:
+        keep = cursor is KEEP
         async with self._tx() as conn:
             await conn.execute(
                 "INSERT INTO attention_state (owner_id, watcher, last_check_ms, cursor)"
                 " VALUES (?, ?, ?, ?) ON CONFLICT (owner_id, watcher) DO UPDATE SET"
                 " last_check_ms = excluded.last_check_ms,"
-                " cursor = COALESCE(excluded.cursor, attention_state.cursor),"
+                " cursor = CASE WHEN ? THEN attention_state.cursor ELSE excluded.cursor END,"
                 " last_error = NULL",
-                (owner_id, watcher, now_ms, cursor),
+                (owner_id, watcher, now_ms, None if keep else cursor, keep),
+            )
+
+    async def reset(self, owner_id: str, watcher: str) -> None:
+        async with self._tx() as conn:
+            await conn.execute(
+                "UPDATE attention_state SET last_check_ms = NULL, cursor = NULL"
+                " WHERE owner_id = ? AND watcher = ?",
+                (owner_id, watcher),
             )
 
     async def failed(self, owner_id: str, watcher: str, kind: str) -> None:

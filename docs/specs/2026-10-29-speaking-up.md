@@ -16,7 +16,7 @@ behind one interface, and say "can't tell" where a system can't answer.
 |---|---|---|
 | D1 | **Watchers fetch in code; the model only judges and words.** A watcher reads its source on a timer, drops what it has already seen, and hands only new candidates to one small model call with no tools. | Cheap and predictable: a full routine every ten minutes costs about fifty times more, and "already told them" would rest on the model remembering. |
 | D2 | **Three watchers.** Meetings (Google Calendar), urgent email (Gmail), payments (Stripe). Meetings are on by default once Calendar is connected; email and payments are off until the user turns them on. | What the user chose. Turning email on sends mail previews (sender, subject, a short snippet) to the model provider, so it is the user's choice, said where they make it. |
-| D3 | **Every spoken line is written by the model** from the find, wrapped as untrusted, with no tools offered. With no model reachable, the notice is shown by its title and not spoken. | PER-11: no stock speech. No tools means nothing in an email or an invite can act. |
+| D3 | **Every spoken line is written by the model** from the find, wrapped as untrusted, with no tools offered. With no line (no model reachable, or no usable answer), the notice is shown by its generic title plus its detail on the page, and not spoken. The detail is a short line the host composes from the find's own data ("Planning with Sam at 10:00 am"): never spoken, never in the system notification, never saved as her message. | PER-11: no stock speech. No tools means nothing in an email or an invite can act. |
 | D4 | **What she says from a watcher counts as read** (MEM-5), as a timed ask's answer does: a reminder or memory she makes on the strength of it is refused or kept as a claim. | An invite title or an email is someone else's words. |
 | D5 | **Once.** Each find has a stable key (`meeting:<event id>:<start>`, `email:<message id>`, `payment:<object id>:<kind>`). A key is announced at most once, across restarts. Dismissing a find is a soft delete, kept for the dedup window. | AGT-5. Announcing twice trains the user to ignore her. |
 | D6 | **Silence for nothing** (AGT-6): an email judged not urgent, or a check that finds nothing, writes a log line and no notice. | Unchanged from routines. |
@@ -44,6 +44,10 @@ logs its class name and tries again at its next interval (never sooner).
   `conferenceData`), kept only if it is `https://`.
 - The line is written when the heads-up is due. The notice shows a **Join** button
   opening the link (in the desktop app, in the default browser).
+- The notice's title is generic ("Meeting soon"); the specifics (title, time, people)
+  are only in her line and in the page's detail ("<title> at 10:00 am"). Notification
+  titles are generic for every watcher, since a lock screen is public and an invite
+  title or a subject is someone else's words.
 - **In a meeting now** (for D8) is true while an event that is timed, not declined,
   not cancelled and has at least one other attendee is under way. The runner keeps
   the last read for this, so the quiet check costs no request. With Calendar not
@@ -86,8 +90,9 @@ which returns the first reason that applies, or none. The reasons:
 4. **Focus or Do Not Disturb is on** (the Focus probe, below).
 
 A quiet notice is delivered as text with `spoken: false` and its reason, and the
-door shows the system notification for it (silent) even with a page open, since the
-user may not be looking at the page. The conversation shows the reason beside it in
+door shows the system notification for it (silent: no sound on any system) even with
+a page open, since the user may not be looking at the page. Those notifications are
+sent after the hand-over to the page, never holding it up. The conversation shows the reason beside it in
 small text ("Held: quiet hours").
 
 ## Probes, per operating system
@@ -101,7 +106,10 @@ hello: `host` = `desktop` or the browser family (`chrome`, `edge`, `firefox`,
 `safari`, `other`). The mic probe ignores the recording processes that belong to
 that host (the desktop app and WebKit's helper processes; or that browser's
 processes). So when Trillion and a call share one browser, the probe can't see the
-call; the meeting rule covers that case, and Settings says so.
+call; the meeting rule covers that case, and Settings says so. The desktop and Safari
+hosts both ignore every WebKit helper process, so a call in Safari while using the
+desktop app (or in any WebKit-based app while using Safari) isn't seen either; the
+meeting rule covers it too.
 
 | Probe | macOS | Windows | Linux |
 |---|---|---|---|
@@ -115,10 +123,10 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
 - Migration `015_attention.sql`:
   - `notices.source` gains `attention`.
   - `notices.kind` gains `heads_up`.
-  - New columns `link` (https URL or NULL) and `fresh_until_ms`.
-  - New table `attention_finds` (`key` unique per owner, `watcher`, `first_seen_ms`, `notice_id`, `status`: `told` | `silent` | `dismissed`, `dismissed_ms`).
+  - New columns `link` (https URL or NULL), `fresh_until_ms` and `detail` (the page-only line, D3).
+  - New table `attention_finds` (`key` unique per owner, `watcher`, `first_seen_ms`, `notice_id`, `status`: `claimed` | `told` | `silent` | `dismissed`, `dismissed_ms`, `detail`). A find is `claimed` before anything is said; it becomes `told` or `silent`. One left `claimed` by a stop or a failure is never told again (D5): at the next start it is marked `told` if its notice was written, and otherwise Settings shows it as lost.
   - New table `attention_state` (per watcher: `last_check_ms`, `cursor`, `last_error`, `notes`).
-- `Delivery` gains `spoken: bool`, `quiet: str | None` (the reason) and `link`. The
+- `Delivery` gains `spoken: bool`, `quiet: str | None` (the reason), `link` and `detail`. The
   session speaks only `spoken` ones. A `heads_up` is saved as her message, like a
   reminder, and its turn is marked read (D4).
 - The page's notice shows the Join button for a link (`signInTab`-style: in the app,
@@ -130,9 +138,12 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
   important email's sender, subject and preview to your model provider").
 - Meeting lead time; the payment limit; quiet hours (on/off, from, to).
 - "Another app is using the microphone" and "Focus is on" switches (both on), each
-  with this computer's probe status: "Works here", or the reason it can't tell.
+  with this computer's probe status: "Works here", the reason it can't tell, or that it
+  didn't answer (it ran out of time or was still busy; it may answer next time).
 - Each watcher's notes, with Clear; when it last checked, and its last error by kind.
-- Recent finds (14 days): told, silent or dismissed, with Dismiss.
+- Recent finds (14 days): told, silent, dismissed or lost, each with its detail, with Dismiss.
+- Turning a watcher on starts it from that moment (D2): its last check and place are
+  forgotten, its notes kept.
 - API: `GET/PUT /api/attention/settings`, `GET /api/attention/finds`,
   `POST /api/attention/finds/{key}/dismiss`, `DELETE /api/attention/notes/{watcher}`.
 

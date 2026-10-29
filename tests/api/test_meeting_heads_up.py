@@ -30,7 +30,7 @@ class Shown:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, title: str, body: str) -> bool:
+    def __call__(self, title: str, body: str, *, silent: bool = False) -> bool:
         self.calls.append((title, body))
         return True
 
@@ -120,3 +120,37 @@ async def test_a_meeting_under_way_holds_other_notices_not_the_next_heads_up(
     rt.quiet.focus = lambda: None
     assert await rt.quiet.reason(other, rt.clock()) == MEETING
     assert await rt.quiet.reason(nxt, rt.clock()) is None
+
+
+async def test_a_heads_up_with_no_line_is_shown_by_its_title_and_detail_only(
+    rt: Runtime,
+) -> None:
+    rt.provider = None
+    runner, _ = meetings_in(rt, Calendar([event(summary="Planning with Sam")]))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await runner.tick()
+    await idle(session)
+    (shown,) = page.all("notice")
+    assert (shown["title"], shown["text"], shown["spoken"]) == ("Meeting soon", None, False)
+    assert shown["detail"].startswith("Planning with Sam at ")
+    assert page.all("reply.sentence") == []
+    # The detail is the page's: never saved as her message.
+    history = await rt.conversations.history(session.id, "local")
+    assert all("Planning with Sam" not in str(m) for m in history)
+    await session.close()
+
+
+async def test_her_line_is_saved_without_the_detail(rt: Runtime) -> None:
+    rt.provider = Gated(say(LINE))
+    runner, _ = meetings_in(rt, Calendar([event(summary="Planning with Sam")]))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await runner.tick()
+    await idle(session)
+    (shown,) = page.all("notice")
+    assert shown["text"] == LINE and shown["detail"].startswith("Planning with Sam at ")
+    history = await rt.conversations.history(session.id, "local")
+    said = [b.text for _, m in history for b in m.blocks if isinstance(b, TextBlock)]
+    assert LINE in said and not any("Planning with Sam at" in t for t in said)
+    await session.close()

@@ -29,7 +29,7 @@ class Shown:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, title: str, body: str) -> bool:
+    def __call__(self, title: str, body: str, *, silent: bool = False) -> bool:
         self.calls.append((title, body))
         return True
 
@@ -611,6 +611,7 @@ async def test_a_quiet_notice_is_shown_and_notified_never_spoken(rt: Runtime) ->
         "quiet hours",
     )
     assert page.all("reply.sentence") == [] and session._task is None
+    await rt.door.drain()
     assert shown_by_computer.calls == [("Stretch", "Time to stretch.")]
     # Still hers, kept on reload.
     history = await rt.conversations.history(session.id, "local")

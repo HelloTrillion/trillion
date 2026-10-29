@@ -82,3 +82,15 @@ class Slow:
 async def test_a_slow_model_is_no_line() -> None:
     text, usage = await line(Slow(), "meetings", [FIND], "", timeout_s=0.05)
     assert text is None and usage == Usage()
+
+
+async def test_a_line_cut_off_by_the_token_limit_is_no_line() -> None:
+    from trillion.brain.types import Done, TextDelta
+
+    cut = [
+        TextDelta(text="Your 10:00 with Sam starts in"),
+        Done(stop_reason="max_tokens", usage=USAGE),
+    ]
+    text, usage = await line(ScriptedProvider(cut), "meetings", [FIND], "")
+    # Half a sentence is not said; what it cost is still recorded.
+    assert text is None and usage == USAGE

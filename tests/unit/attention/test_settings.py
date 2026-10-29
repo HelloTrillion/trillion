@@ -66,6 +66,8 @@ def test_nothing_saved_or_something_broken_reads_as_the_defaults() -> None:
         ({"quiet_hours": {"from": "25:00"}}, "from"),
         ({"quiet_hours": {"to": "8am"}}, "to"),
         ({"quiet_hours": {"on": 1}}, "on"),
+        ({"quiet_hours": {"from": "08:00"}}, "from and to must differ"),
+        ({"quiet_hours": {"from": "09:30", "to": "09:30"}}, "from and to must differ"),
         ({"mic": "on"}, "mic"),
         ({"loud": True}, "loud"),
     ],

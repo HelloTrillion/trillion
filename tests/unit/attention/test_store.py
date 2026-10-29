@@ -36,11 +36,11 @@ async def test_a_key_is_claimed_once(
     assert await store.claim(OWNER, "meetings", ["a", "b"], NOW) == ["a", "b"]
     assert await store.claim(OWNER, "meetings", ["b", "c", "c"], NOW) == ["c"]
     assert await store.known(OWNER, ["a", "c", "z"]) == {"a", "c"}
-    # Claimed and not yet told: silent until a notice says it.
+    # Claimed and not yet told: claimed until a notice says it, or the judge doesn't.
     assert {f.key: f.status for f in await store.recent(OWNER, NOW)} == {
-        "a": "silent",
-        "b": "silent",
-        "c": "silent",
+        "a": "claimed",
+        "b": "claimed",
+        "c": "claimed",
     }
 
 
@@ -112,3 +112,63 @@ async def test_notes_are_set_and_cleared(
         await store.set_notes(OWNER, "email", "x" * 1001)
     await store.clear_notes(OWNER, "email")
     assert (await store.state(OWNER, "email")).notes == ""
+
+
+async def test_a_claim_keeps_each_finds_detail(
+    db: tuple[SqliteAttentionStore, SqliteScheduleStore],
+) -> None:
+    store, _ = db
+    await store.claim(OWNER, "meetings", ["a", "b"], NOW, details={"a": "Planning at 10:00 am"})
+    rows = {f.key: f.detail for f in await store.recent(OWNER, NOW)}
+    assert rows == {"a": "Planning at 10:00 am", "b": None}
+
+
+async def test_judged_not_worth_saying_is_silent_and_told_only_from_claimed(
+    db: tuple[SqliteAttentionStore, SqliteScheduleStore],
+) -> None:
+    store, schedules = db
+    await store.claim(OWNER, "email", ["email:1", "email:2"], NOW)
+    await store.silent(OWNER, ["email:1"])
+    await store.dismiss(OWNER, "email:2", NOW)
+    n = await schedules.attention_notice(
+        OWNER, "email:2", title="Urgent email", text=None, now_ms=NOW
+    )
+    # A dismissed one is not made told behind the user's back.
+    await store.told(OWNER, ["email:1", "email:2"], n.id)
+    rows = {f.key: f.status for f in await store.recent(OWNER, NOW)}
+    assert rows == {"email:1": "silent", "email:2": "dismissed"}
+
+
+async def test_repair_marks_told_a_claimed_find_whose_notice_was_written(
+    db: tuple[SqliteAttentionStore, SqliteScheduleStore],
+) -> None:
+    store, schedules = db
+    await store.claim(OWNER, "meetings", ["by_source", "by_id", "lost"], NOW)
+    # The process stopped after writing each notice and before `told`.
+    await schedules.attention_notice(
+        OWNER, "by_source", title="Meeting soon", text=None, now_ms=NOW
+    )
+    await store.telling(OWNER, ["by_id"], "n-pending")
+    await schedules.attention_notice(
+        OWNER, "other", title="Meeting soon", text=None, now_ms=NOW, notice_id="n-pending"
+    )
+    assert await store.repair(OWNER) == 2
+    rows = {f.key: f.status for f in await store.recent(OWNER, NOW)}
+    # One with no notice stays claimed: never told again (D5), shown as lost.
+    assert rows == {"by_source": "told", "by_id": "told", "lost": "claimed"}
+    (by_id,) = [f for f in await store.recent(OWNER, NOW) if f.key == "by_id"]
+    assert by_id.notice_id == "n-pending"
+
+
+async def test_a_check_can_clear_its_cursor_and_a_reset_forgets_its_place(
+    db: tuple[SqliteAttentionStore, SqliteScheduleStore],
+) -> None:
+    store, _ = db
+    await store.checked(OWNER, "email", NOW, cursor="c1")
+    await store.checked(OWNER, "email", NOW + 1, cursor=None)
+    assert (await store.state(OWNER, "email")).cursor is None
+    await store.checked(OWNER, "email", NOW + 2, cursor="c2")
+    await store.set_notes(OWNER, "email", "Not the newsletters.")
+    await store.reset(OWNER, "email")
+    s = await store.state(OWNER, "email")
+    assert (s.last_check_ms, s.cursor, s.notes) == (None, None, "Not the newsletters.")

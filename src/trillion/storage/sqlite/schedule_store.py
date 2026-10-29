@@ -97,6 +97,7 @@ def _notice(r: aiosqlite.Row) -> Notice:
         source=r["source"],
         link=str(r["link"]) if r["link"] is not None else None,
         fresh_until_ms=_int(r["fresh_until_ms"]),
+        detail=str(r["detail"]) if r["detail"] is not None else None,
     )
 
 
@@ -479,9 +480,11 @@ class SqliteScheduleStore:
         now_ms: int,
         link: str | None = None,
         fresh_until_ms: int | None = None,
+        detail: str | None = None,
+        notice_id: str | None = None,
     ) -> Notice:
         n = Notice(
-            id=uuid.uuid4().hex,
+            id=notice_id or uuid.uuid4().hex,
             owner_id=owner_id,
             source_id=key,
             kind="heads_up",
@@ -497,13 +500,14 @@ class SqliteScheduleStore:
             source="attention",
             link=https_link(link),
             fresh_until_ms=fresh_until_ms,
+            detail=detail,
         )
         async with self._tx() as conn:
             await conn.execute(
                 "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
-                " due_ms, late, created_ms, status, link, fresh_until_ms) VALUES (?, ?,"
-                " 'attention', ?, 'heads_up', ?, ?, ?, 0, ?, 'held', ?, ?)",
-                (n.id, owner_id, key, title, text, now_ms, now_ms, n.link, fresh_until_ms),
+                " due_ms, late, created_ms, status, link, fresh_until_ms, detail) VALUES (?,"
+                " ?, 'attention', ?, 'heads_up', ?, ?, ?, 0, ?, 'held', ?, ?, ?)",
+                (n.id, owner_id, key, title, text, now_ms, now_ms, n.link, fresh_until_ms, detail),
             )
         return n
 

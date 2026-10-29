@@ -3013,6 +3013,8 @@ class Session:
                 link=n.link,
                 spoken=n.spoken,
                 quiet=n.quiet,
+                # The page's only: never spoken, never saved as her message.
+                detail=n.detail,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

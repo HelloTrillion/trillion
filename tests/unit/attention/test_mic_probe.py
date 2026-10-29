@@ -292,3 +292,65 @@ def test_bundle_prefix_needs_a_dot_boundary() -> None:
 def test_unknown_host_ignores_nothing() -> None:
     assert mic.own("netscape") == mic.HOSTS["other"]
     assert mic.own("Chrome") == mic.HOSTS["chrome"]
+
+
+# --- After the review -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "marks",
+    [
+        {"stream.capture.sink": "true"},
+        {"stream.monitor": "true"},
+        {"stream.monitor": True},
+        {"media.name": "Peak detect"},
+    ],
+)
+def test_pactl_skips_monitor_and_peak_meter_streams(marks: dict[str, object]) -> None:
+    # A volume meter or a recorder of what is playing is not someone on the mic.
+    zoom = json.loads(PACTL)[1]
+    zoom["properties"].update(marks)
+    assert mic._linux(FakeRun(pactl=json.dumps([zoom])), "other", OWN_PID) is False
+
+
+def test_pw_dump_skips_monitor_streams() -> None:
+    data = json.loads(PW_DUMP)
+    for obj in data:
+        props = (obj.get("info") or {}).get("props")
+        if isinstance(props, dict):
+            props["stream.monitor"] = "true"
+    assert mic._linux(FakeRun(pw_dump=json.dumps(data)), "other", OWN_PID) is False
+
+
+class _FakeCA:
+    """CoreAudio's two calls: the size asked for first is larger than what the second
+    fills (a process went away in between)."""
+
+    def AudioObjectGetPropertyDataSize(self, obj, address, q, qd, size):  # type: ignore[no-untyped-def]
+        size._obj.value = 16
+        return 0
+
+    def AudioObjectGetPropertyData(self, obj, address, q, qd, size, out):  # type: ignore[no-untyped-def]
+        items = out._obj
+        items[0], items[1] = 7, 9
+        size._obj.value = 8
+        return 0
+
+
+def test_macos_process_list_is_cut_to_what_the_second_call_filled() -> None:
+    audio = object.__new__(mic._MacAudio)
+    audio._ca = _FakeCA()  # type: ignore[attr-defined]
+    assert audio.processes() == [7, 9]
+
+
+def test_macos_audio_is_opened_once_and_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[object] = []
+
+    class Counting:
+        def __init__(self) -> None:
+            made.append(self)
+
+    monkeypatch.setattr(mic, "_MacAudio", Counting)
+    monkeypatch.setattr(mic, "_MAC", None)
+    first, second = mic._mac_audio(), mic._mac_audio()
+    assert first is second and len(made) == 1

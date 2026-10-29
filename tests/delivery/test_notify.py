@@ -156,3 +156,41 @@ def test_the_kept_format_characters_are_only_the_allowed_ones() -> None:
     kept = f"a‌b‍c‎d‏e؜f {flag}"
     assert n.cut(kept) == kept
     assert n.cut("a‮b") == "ab"
+
+
+def _script(args: list[str]) -> str:
+    return base64.b64decode(args[-1]).decode("utf-16-le")
+
+
+def test_windows_silent_toast_carries_silent_audio() -> None:
+    run = Recorder()
+    assert n.notify("T", "B", platform="win32", run=run, which=which, env={}, silent=True)
+    assert n.notify("T", "B", platform="win32", run=run, which=which, env={})
+    (quiet, _), (loud, _) = run.calls
+    assert "CreateElement('audio')" in _script(quiet)
+    assert "SetAttribute('silent', 'true')" in _script(quiet)
+    # A held notice's toast is as it was.
+    assert "audio" not in _script(loud)
+
+
+def test_linux_silent_notification_asks_for_no_sound() -> None:
+    run = Recorder()
+    assert n.notify("T", "B", platform="linux", run=run, which=which, env={}, silent=True)
+    ((args, _),) = run.calls
+    assert args == [
+        "/bin/notify-send",
+        "--app-name=Trillion",
+        "--hint=boolean:suppress-sound:true",
+        "--",
+        "T",
+        "B",
+    ]
+
+
+@pytest.mark.parametrize("silent", [True, False])
+def test_macos_never_names_a_sound(silent: bool) -> None:
+    run = Recorder()
+    assert n.notify("T", "B", platform="darwin", run=run, which=which, env={}, silent=silent)
+    ((args, _),) = run.calls
+    # `display notification` plays nothing unless given `sound name`.
+    assert not any("sound" in a for a in args)
