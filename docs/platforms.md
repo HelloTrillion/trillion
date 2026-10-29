@@ -1,0 +1,87 @@
+# Platforms
+
+What works on macOS, Windows and Linux, in a browser tab and in the desktop app, and why each gap is there. Every new spec has a Platforms section, and the pull request that adds it keeps this file current ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).
+
+## How to read this
+
+- The server (`trillion run`) does the work on every system. Most features live there, so they work wherever it runs.
+- The page runs in a browser tab on any system, or inside the desktop app. The desktop app is macOS only today (PRD SUR-2).
+- CI runs the Python suites on Ubuntu, macOS and Windows, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS only (`.github/workflows/ci.yml`).
+- ✓ means the code is there and its tests run in CI on that system. The manual checks in [`TESTING.md`](TESTING.md) have been written on a Mac; on Windows and Linux a ✓ is untested by hand unless the row says otherwise.
+
+## By feature
+
+| Area | macOS | Windows | Linux | Browser tab (any OS) | Desktop app (macOS) |
+|---|---|---|---|---|---|
+| Server, web app, `setup`, `doctor` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Keys in the system keychain | ✓ Keychain | ✓ Credential Manager | ✓ Secret Service (GNOME Keyring, KWallet) | as the OS | ✓ |
+| Hearing, paid: Deepgram | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Hearing, free: local Whisper | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Speaking, paid: ElevenLabs | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Speaking, free: the system voice | ✓ | ✓ | depends on the browser's voices | as the browser | ✓ WebKit's voices |
+| Speaking, free: a local OpenAI-compatible voice (Kokoro) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Talk shortcut | ✓ | ✓ | ✓ | while the tab is in front | from any app (a combination) |
+| Connectors: Google, Slack, Stripe, MCP | ✓ | ✓ | ✓ | ✓ | ✓, sign-ins in the default browser |
+| Reminders, timed asks, routines | ✓ | ✓ | ✓ | ✓ (server-side) | ✓ |
+| Background reads | ✓ | ✓ | ✓ | ✓ | ✓ |
+| System notifications | ✓ `osascript` | ✓ PowerShell toast | ✓ with `notify-send` | ✓ (shown by the server) | ✓ |
+| Speaking up: watchers, once per find, notes, her line | ✓ | ✓ | ✓ | ✓ (server-side) | ✓ |
+| Speaking up: quiet hours, in a meeting | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Speaking up: the spoken notice | ✓ | ✓ | ✓ | while a page is open | ✓, with the floating orb |
+| Speaking up: mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` or `pw-dump` | ✓, except a call in the same browser | ✓, except a call in a WebKit app |
+| Speaking up: Focus probe | best effort, mostly can't tell | can't tell | ✓ GNOME, and desktops that report Do Not Disturb | as the OS | as the OS |
+| Desktop app | ✓ unsigned dev build | not built (SUR-3c) | not built (SUR-3b) | — | — |
+
+### The gaps, and why
+
+- **No keychain on a headless Linux machine.** A key can't be saved in the app there. A local model still works. The encrypted-file store (SEC-2) is not built yet.
+- **The system voice on Linux.** The page speaks with the browser's speech synthesis. Whether a Linux browser has voices depends on how it was built and what the system has installed. Untested.
+- **The talk shortcut in a tab** works only while the tab is in front, and never with Fn. A page hears keys only while it has focus. The desktop app makes a combination work from any app.
+- **A spoken notice needs a page.** The voice runs in the page. With no page open, the notice waits for the next page and a system notification shows instead.
+- **System notifications on Linux** need `notify-send` (libnotify). Without it none is shown, and the notice still waits for the page. A silent one asks the notification daemon for no sound with a hint; a daemon may ignore it.
+- **The desktop app on Windows and Linux** is not built. See below.
+- **The mic probe and the Focus probe** have limits on each system. See the next section.
+
+## Speaking up: the probes
+
+Before she speaks a notice, she asks whether another app is using the microphone and whether Focus is on (`src/trillion/attention/probes/`). Each probe answers yes, no or can't tell. Can't tell never holds her voice. A probe runs with a 2 s limit and its answer is kept for 10 s. Settings → Speaking up shows each probe's status on this computer: works here, the reason it can't tell, or that it didn't answer.
+
+| Probe | System | What it reads | Limits |
+|---|---|---|---|
+| Mic | macOS | CoreAudio's process list through `ctypes`: each process's pid, bundle id and whether it records input. No permission prompt. | macOS 14.2 or later; older says can't tell. |
+| Mic | Windows | The registry the privacy indicator reads, under `HKCU\…\CapabilityAccessManager\ConsentStore\microphone`, packaged apps and `NonPackaged` by exe path. An app with a start time and no stop time is recording now. No admin. | Only apps Windows records there. A key it can't read → can't tell. |
+| Mic | Linux | `pactl -f json list source-outputs` (PulseAudio, and PipeWire through `pipewire-pulse`), else `pw-dump`. Streams that record what is playing (monitors) or only meter the level don't count. | Neither tool → can't tell. A recording of a speaker's monitor source, told apart only by its name, is left for later. |
+| Focus | macOS | The Focus assertions file under `~/Library/DoNotDisturb/DB/`, if this process may read it. | Recent macOS guards the folder (Full Disk Access), so it is usually can't tell. A scheduled or automatic Focus leaves no assertion and is missed. |
+| Focus | Windows | Nothing. | Windows has no documented signal a user process can read for Do Not Disturb, so it is always can't tell. |
+| Focus | Linux | `gsettings get org.gnome.desktop.notifications show-banners` (`false` is on), else the `Inhibited` property of `org.freedesktop.Notifications` over `gdbus`. | A desktop with neither → can't tell. |
+
+**Telling Trillion's own microphone apart.** The page says where it runs: the desktop app, or a browser family (Chrome, Edge, Firefox, Safari, other). The mic probe leaves out that host's own recording processes. Two blind spots follow:
+
+- **Same browser.** When Trillion and a call share one browser, the probe can't see the call.
+- **WebKit.** The desktop app and Safari both leave out every WebKit helper process. So a call in Safari while using the desktop app, or in another WebKit app while using Safari, isn't seen either.
+
+The meeting rule covers both: a meeting on the calendar holds her voice whatever the probe says. Settings says so.
+
+## Desktop app on Windows and Linux
+
+The desktop app (`apps/desktop`) builds and runs on macOS only. A Linux build is PRD SUR-3b (AppImage and `.deb`). A Windows build is part of SUR-3c, with the signed build. Each macOS-only piece, and what it needs on the other two:
+
+| Piece | Today, on macOS | Windows needs (SUR-3c) | Linux needs (SUR-3b) |
+|---|---|---|---|
+| Build and CI | `tauri build --bundles app` and `cargo test`/`clippy` on `macos-latest` | A Windows job and an installer target | A Linux job and AppImage and `.deb` targets |
+| Timers in a hidden window (`webkit.rs`) | Turns off WebKit's private hidden-page timer throttling, so voice reports stay on time with the window hidden | A spike: does WebView2 throttle a hidden window's timers, audio or socket, and what turns it off | The same spike for WebKitGTK |
+| Background throttling switch (`lib.rs`) | `BackgroundThrottlingPolicy::Disabled` on the main window | Check it has an effect on WebView2 | Check it has an effect on WebKitGTK |
+| Floating orb (`orb.rs`, `macOSPrivateApi` in `tauri.conf.json`) | Transparent, frameless, always on top, never takes focus; over full-screen apps and every Space through AppKit calls | A transparent WebView2 window that does not take focus | A transparent window needs a compositor; check it on X11 and Wayland. The full-screen and every-workspace behaviour needs its own code on each |
+| Tray icons (`tray.rs`) | Template images, so macOS tints them for the menu bar; idle, listening, speaking | Coloured icons that read on light and dark taskbars | A tray needs the AppIndicator library; coloured icons; some desktops show no tray at all |
+| Finding `trillion` (`locate.rs`, `shell.rs`) | `TRILLION_BIN`, else the login shell (`$SHELL -lc`), else `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. The login shell also gives the server the user's environment | No login shell: read the user's `PATH` from the environment and look for `trillion.exe` where the installer puts it (uv's tool folder) | An app started from a desktop menu may also lack the shell's `PATH`; the login-shell probe can work, but check it, and add the usual install places |
+| Stopping the server (`server.rs`, `record.rs`) | The child gets its own process group; Quit sends SIGTERM to the group, then SIGKILL after 5 s | No process groups or signals: put the child in a Job Object that kills it with the app, and ask it to stop first (close its input, below) | As macOS (process groups and signals) |
+| The app's own quit on a signal (`quit_on_signals`) | SIGTERM, SIGINT, SIGHUP quit the app and stop the server | The console-close and shutdown events instead | As macOS |
+| Is the server running (`running.rs`) | `kill(pid, 0)` for a live process, `proc_pidinfo` and `getpgid` to know it | `OpenProcess` and its start time | `/proc/<pid>` |
+| The input lifeline (`server.rs`, `cli/server.py`) | The app holds the server's input open; when the app goes, even by a force quit, the input closes and the server stops itself | Check that the pipe closes on a force quit and the server's reader sees it | Expected to work as on macOS; check it |
+| Global talk shortcut (`talk.rs`, `tauri-plugin-global-shortcut`) | The D6 rule: Command, Control or Option plus a key, not a common combination | Name the modifiers Ctrl, Alt and Win; leave out the combinations Windows keeps for itself | The plugin's Linux support is X11. On Wayland a global shortcut needs the desktop's own portal; until then, say it works only while the window is in front |
+| Open at login (`tauri-plugin-autostart`) | A LaunchAgent | The plugin's registry entry; check it | The plugin's autostart file; check it |
+| Microphone permission | `NSMicrophoneUsageDescription` in `Info.plist`; the webview's request is granted for the server's page only | WebView2's permission request, granted the same way; Windows' own microphone privacy switch | WebKitGTK's permission request, granted the same way |
+| The mic probe's host | Leaves out the app and WebKit's helpers | Already names `msedgewebview2` and the app's exe | Already names `webkitwebprocess` and the app's binary |
+| Signing | Not signed (dev build) | Signed installer (SUR-3c) | AppImage and `.deb` (SUR-3b) |
+
+The page side needs no change: `desktop.ts` is the same on every system, and the server already runs everywhere.

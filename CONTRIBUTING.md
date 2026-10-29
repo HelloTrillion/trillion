@@ -84,6 +84,7 @@ On Windows, run the loop in Git Bash, or run the six `uv run python scripts/…`
 - **Tests are required** for anything marked P0 in the PRD, and for every bug fix. A bug fix without a test that fails before it is not finished.
 - **Match the surrounding code.** No reformatting of files you didn't otherwise change.
 - **Write the commit message for the person reading it in a year.** Say why, not just what.
+- **Every spec has a Platforms section**: what each part does on macOS, Windows and Linux, and what it falls back to. Update [`docs/platforms.md`](docs/platforms.md) in the same pull request.
 
 ### Areas that need a maintainer review
 

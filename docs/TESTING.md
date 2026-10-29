@@ -232,6 +232,21 @@ Build the app (`apps/desktop/README.md`) and open `Trillion.app`. The first time
 | 2.12.9 | Turn on Open at login in the menu bar, log out and back in | The app starts at login. Turned off, it does not. |
 | 2.12.10 | Talk for the first time after installing | macOS asks for the microphone with "Trillion listens when you talk to her." Allowed, she hears. Denied, the page shows its microphone message instead of failing silently. |
 
+### 2.13 Speaking up (AGT-5, AGT-6, AGT-7, SUR-9, VOI-17), by hand with a connected service
+
+Connect Google (Calendar and Gmail) and, for 2.13.5, Stripe in test mode. Keep Voice off unless a check needs to hear her: then mute the computer or use headphones, and say so to anyone nearby before you start. To make a heads-up due soon, put a meeting on your calendar a few minutes ahead with another guest who has accepted, and set the lead time in Settings → Speaking up. Turn quiet hours off except in 2.13.3.
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.13.1 | With headphones and Voice on, in the desktop app: close the window and wait for a meeting's heads-up | At start − lead she says one line about the meeting, with the floating orb showing. The conversation has the line, the detail ("<title> at <time>") and a Join button when the event has a video link. Any system notification for it says only "Meeting soon". It comes once, and not again after a restart. |
+| 2.13.2 | During a meeting on your calendar with another guest, joined in a different browser from Trillion's, set a reminder for a minute ahead | The reminder arrives as text with "Held: in a meeting" under it and a silent system notification. She does not speak it, and does not read it out when the meeting ends. Then switch In a meeting off in Settings and repeat: it shows "Held: another app is using the microphone" (on macOS 14.2+, Windows, or Linux with `pactl` or `pw-dump`). |
+| 2.13.3 | Set quiet hours to cover now, and wait for a heads-up | It shows with "Held: quiet hours" and a silent system notification, and is not spoken. A reminder you set for now inside quiet hours is not held by them. |
+| 2.13.4 | Turn on Urgent email, then send yourself a message Gmail marks important ("Can you call me before 3? The contract is due today"), and one newsletter | Within about 10 minutes one notice covers the urgent one: her line, and the detail "<sender> — <subject>". The newsletter brings nothing. Mail from before you turned it on is never told. |
+| 2.13.5 | Turn on Payments, then make a charge fail in Stripe's test mode (one of Stripe's declined test cards) | Within about 10 minutes one notice says a payment failed, with the amount. A second check brings nothing new. |
+| 2.13.6 | Open Settings → Speaking up on macOS, Windows and Linux (a browser tab is enough on Windows and Linux) | "Another app is using the microphone" and "Focus is on" each show this computer's status: "Works here", the reason it can't tell (as in [`docs/platforms.md`](platforms.md)), or that it didn't answer. Nothing hangs and nothing errors. |
+| 2.13.7 | On a heads-up with a video link, press Join, once in a browser tab and once in the desktop app | In a tab it opens the meeting in a new tab. In the desktop app it opens in the default browser, not in the app. The link's host shows beside the button. |
+| 2.13.8 | In the conversation after a notice, say "stop telling me about newsletters", then "also tell me when Sam emails" | The first stands at once, or asks on a card right after a heads-up (it was someone else's words). The second always asks on a card. Settings shows the notes, and Clear empties them. |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
