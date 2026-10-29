@@ -170,6 +170,13 @@ async def test_the_mic_probe_is_asked_with_the_live_pages_host() -> None:
     assert p.hosts == ["other"]
 
 
+async def test_the_mic_probe_is_asked_with_the_host_the_notice_goes_to() -> None:
+    p = Probes(mic=True)
+    # Delivered to a Safari page while a Chrome page is the live one: Safari's.
+    assert await quiet(p, host="chrome").reason(notice(), NOON, host="safari") == MIC
+    assert p.hosts == ["safari"]
+
+
 async def test_focus_holds_her_voice() -> None:
     assert await quiet(Probes(focus=True)).reason(notice(), NOON) == FOCUS
 

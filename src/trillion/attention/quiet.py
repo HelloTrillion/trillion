@@ -7,7 +7,8 @@ The reasons, in order, the first that applies:
 2. In a meeting, from the meetings watcher's last read (`in_meeting`, can't tell
    until it is filled), unless switched off. A heads-up for the next meeting is still
    spoken.
-3. Another app is using the microphone (the mic probe, told the live page's host).
+3. Another app is using the microphone (the mic probe, told the host of the page the
+   notice goes to, else the live page's).
 4. Focus is on (the Focus probe).
 
 Can't tell never holds her voice (D11). A probe runs on a thread of its own, never
@@ -175,7 +176,8 @@ class Quiet:
         # The meetings watcher puts its last read here: True while one is under way.
         self.in_meeting: Callable[[], Answer] = lambda: None
 
-    async def reason(self, notice: Notice, now_ms: int) -> str | None:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
+        """`host` is where the page the notice goes to runs; None asks the live page's."""
         s = self._settings()
         watcher = notice.source == "attention"
         if watcher and in_quiet_hours(s.quiet_hours, self._zone(), now_ms):
@@ -185,7 +187,7 @@ class Quiet:
             return MEETING
         # Asked together, so both fit in one limit; the first reason still wins.
         mic, focus = await asyncio.gather(
-            self._ask("mic") if s.mic else _off(),
+            self._ask("mic", host) if s.mic else _off(),
             self._ask("focus") if s.focus else _off(),
         )
         if mic is True:
@@ -194,18 +196,23 @@ class Quiet:
             return FOCUS
         return None
 
-    async def probe(self, name: str) -> tuple[Answer, bool]:
-        """One probe's answer ("mic" or "focus"), and whether it answered at all."""
+    async def probe(self, name: str, host: str | None = None) -> tuple[Answer, bool]:
+        """One probe's answer ("mic" or "focus"), and whether it answered at all. The mic
+        probe leaves out `host`'s own recording, else the live page's."""
         if name == "mic":
             return await probe_answer(
-                "mic", self.mic, self.page_host(), timeout_s=self._timeout, threads=self._threads
+                "mic",
+                self.mic,
+                host or self.page_host(),
+                timeout_s=self._timeout,
+                threads=self._threads,
             )
         return await probe_answer(
             "focus", self.focus, timeout_s=self._timeout, threads=self._threads
         )
 
-    async def _ask(self, name: str) -> Answer:
-        answer, _ = await self.probe(name)
+    async def _ask(self, name: str, host: str | None = None) -> Answer:
+        answer, _ = await self.probe(name, host)
         return answer
 
     def page_host(self) -> str:

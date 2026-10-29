@@ -16,11 +16,11 @@ behind one interface, and say "can't tell" where a system can't answer.
 |---|---|---|
 | D1 | **Watchers fetch in code; the model only judges and words.** A watcher reads its source on a timer, drops what it has already seen, and hands only new candidates to one small model call with no tools. | Cheap and predictable: a full routine every ten minutes costs about fifty times more, and "already told them" would rest on the model remembering. |
 | D2 | **Three watchers.** Meetings (Google Calendar), urgent email (Gmail), payments (Stripe). Meetings are on by default once Calendar is connected; email and payments are off until the user turns them on. | What the user chose. Turning email on sends mail previews (sender, subject, a short snippet) to the model provider, so it is the user's choice, said where they make it. |
-| D3 | **Every spoken line is written by the model** from the find, wrapped as untrusted, with no tools offered. With no line (no model reachable, or no usable answer), the notice is shown by its generic title plus its detail on the page, and not spoken. The detail is a short line the host composes from the find's own data ("Planning with Sam at 10:00 am"): never spoken, never in the system notification, never saved as her message. | PER-11: no stock speech. No tools means nothing in an email or an invite can act. |
+| D3 | **Every spoken line is written by the model** from the find, wrapped as untrusted, with no tools offered. With no line (no model reachable, or no usable answer), the notice is shown by its generic title plus its detail on the page, and not spoken; the computer shows its title too (D7). The detail is a short line the host composes from the find's own data ("Planning with Sam at 10:00 am"): never spoken, never in the system notification, never saved as her message. | PER-11: no stock speech. No tools means nothing in an email or an invite can act. |
 | D4 | **What she says from a watcher counts as read** (MEM-5), as a timed ask's answer does: a reminder or memory she makes on the strength of it is refused or kept as a claim. | An invite title or an email is someone else's words. |
 | D5 | **Once.** Each find has a stable key (`meeting:<event id>:<start>`, `email:<message id>`, `payment:<object id>:<kind>`). A key is announced at most once, across restarts. Dismissing a find is a soft delete, kept for the dedup window. | AGT-5. Announcing twice trains the user to ignore her. |
 | D6 | **Silence for nothing** (AGT-6): an email judged not urgent, or a check that finds nothing, writes a log line and no notice. | Unchanged from routines. |
-| D7 | **Quiet holds the voice, never the notice.** When she should not speak, the notice still arrives in the conversation and as a silent system notification; it is not spoken. When quiet ends she does not read out what she held. | A held line read out an hour later is stale and startling. |
+| D7 | **Quiet holds the voice, never the notice.** When she should not speak, the notice still arrives in the conversation and as a silent system notification; it is not spoken. A watcher notice shown and not spoken for another reason (no line, or past its freshness) gets a system notification too, once, silent when quiet, so a hidden window or a tab in the background still surfaces it. With no page open, the held notice's notification asks the quiet check as well and is silent when quiet. When quiet ends she does not read out what she held. | A held line read out an hour later is stale and startling. |
 | D8 | **Four reasons to be quiet** (below), asked only at the moment she would speak. Quiet hours apply to watcher notices only; a reminder or timed ask the user set for a time is spoken at that time, since they chose it, but the other three reasons hold it too. | A 7:00 reminder inside 10 pm–8 am quiet hours was asked for at 7:00. Being on a call is a reason for everything. |
 | D9 | **A watcher notice is spoken only while fresh**: a meeting heads-up until the meeting starts, an email line for 30 minutes from when Gmail received it, a payment line for 30 minutes. Delivered later, it is shown, not spoken. | Speech that arrives after the fact is noise. |
 | D10 | **Feedback edits the source** (AGT-7). Each watcher has notes, as a routine does. "Stop telling me about the bank newsletters" narrows at once; "also tell me when Sam emails" widens and asks first on a card. Settings shows and clears the notes. | The same rule and mechanism routines already use. |
@@ -185,21 +185,28 @@ newsletters"); `speak_up_widen` adds anything else, on a card. Both take `watche
 
 ## Staying quiet
 
-The door asks one new question before it speaks a notice: `quiet(notice, now)`,
-which returns the first reason that applies, or none. The reasons:
+The door asks one new question before it speaks a notice: `quiet(notice, now, host)`,
+which returns the first reason that applies, or none. `host` is where the page the
+notice goes to runs (for the mic probe); with no page open it is the live page's, or
+none. It asks the same question, with the same 2.5 s limit, before a system
+notification for a notice with her words or from a watcher, which is silent when the
+answer is a reason. The reasons:
 
 1. **Quiet hours.** Default on, 22:00–08:00 in the user's zone (`USER.md`, as
    reminders use); Settings changes or turns it off. Watcher notices only (D8).
 2. **In a meeting.** From the meetings watcher's last read. Default on; Settings turns
    it off. A heads-up for the next meeting is still spoken.
-3. **Another app has the microphone** (the mic probe, below).
+3. **Another app has the microphone** (the mic probe, below, leaving out that host's own recording).
 4. **Focus or Do Not Disturb is on** (the Focus probe, below).
 
 A quiet notice is delivered as text with `spoken: false` and its reason, and the
 door shows the system notification for it (silent: no sound on any system) even with
-a page open, since the user may not be looking at the page. Those notifications are
-sent after the hand-over to the page, never holding it up. The conversation shows the reason beside it in
-small text ("Held: quiet hours").
+a page open, since the user may not be looking at the page. So does a watcher notice
+delivered unspoken for another reason (no line, or past its freshness), silent when
+quiet; it shows no reason beside it, since nothing was held. Those notifications are
+sent after the hand-over to the page, never holding it up, and each notice is notified
+once at most. The conversation shows the reason beside a held one in small text
+("Held: quiet hours").
 
 ## Probes, per operating system
 

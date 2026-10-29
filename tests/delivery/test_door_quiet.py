@@ -25,14 +25,16 @@ class FakeQuiet:
     def __init__(self, reason: str | None = None) -> None:
         self.reason_for = reason
         self.asked: list[tuple[str, int]] = []
+        self.hosts: list[str | None] = []
 
-    async def reason(self, notice: Notice, now_ms: int) -> str | None:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
         self.asked.append((notice.id, now_ms))
+        self.hosts.append(host)
         return self.reason_for
 
 
 class Broken:
-    async def reason(self, notice: Notice, now_ms: int) -> str | None:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
         raise OSError("no audio service")
 
 
@@ -132,10 +134,40 @@ async def test_a_notice_without_words_is_never_asked_about(store: SqliteSchedule
     quiet = FakeQuiet("quiet hours")
     d, shown, _ = door(store, [page], quiet)
     await d.added(await add(store, kind="missed", text=None))
-    await d.added(await heads_up(store, text=None))  # no model reached: shown by its title
+    await d.drain()
     assert quiet.asked == []
-    assert [(x.spoken, x.quiet) for x in page.got] == [(False, None), (False, None)]
+    assert [(x.spoken, x.quiet) for x in page.got] == [(False, None)]
     assert shown.shown == []
+
+
+async def test_a_heads_up_with_no_line_is_shown_and_notified_without_a_held_reason(
+    store: SqliteScheduleStore,
+) -> None:
+    page = FakePage("c1")
+    quiet = FakeQuiet("quiet hours")
+    d, shown, _ = door(store, [page], quiet)
+    n = await heads_up(store, text=None)  # no model reached: shown by its title
+    await d.added(n)
+    await d.drain()
+    # Nothing was held, so no reason beside it; the window may be hidden, so the
+    # computer shows it too, silent since it is quiet hours.
+    assert [(x.spoken, x.quiet) for x in page.got] == [(False, None)]
+    assert (shown.shown, shown.silent) == ([("Sam", "Ready in Trillion")], [True])
+    await d.flush()
+    await d.drain()
+    assert len(shown.shown) == 1  # once
+    kept = await store.notice(n.id)
+    assert kept is not None and kept.notified_ms == DUE
+
+
+async def test_a_heads_up_with_no_line_makes_a_sound_when_nothing_is_quiet(
+    store: SqliteScheduleStore,
+) -> None:
+    page = FakePage("c1")
+    d, shown, _ = door(store, [page], FakeQuiet())
+    await d.added(await heads_up(store, text=None))
+    await d.drain()
+    assert shown.silent == [False]
 
 
 async def test_a_line_delivered_after_its_moment_is_shown_not_spoken(
@@ -147,8 +179,11 @@ async def test_a_line_delivered_after_its_moment_is_shown_not_spoken(
     await d.added(await heads_up(store, key="a", fresh_until_ms=DUE - 1))
     await d.added(await heads_up(store, key="b", fresh_until_ms=DUE))
     assert [(x.spoken, x.quiet) for x in page.got] == [(False, None), (True, None)]
-    assert len(quiet.asked) == 1  # a stale one is not spoken, whatever the quiet check says
-    assert shown.shown == []
+    # A stale one is not spoken, whatever the quiet check says; it is asked only
+    # whether its notification may make a sound.
+    await d.drain()
+    # Shown, not spoken: the computer shows the stale one too, in case no one is looking.
+    assert shown.shown == [("Sam", "Ready in Trillion")]
 
 
 async def test_a_heads_up_carries_its_link(store: SqliteScheduleStore) -> None:
@@ -173,7 +208,7 @@ async def test_a_quiet_check_that_fails_does_not_hold_delivery(
 
 
 class Hangs:
-    async def reason(self, notice: Notice, now_ms: int) -> str | None:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
         await asyncio.sleep(3600)
         return "never"
 
@@ -259,3 +294,62 @@ async def test_a_heads_up_carries_its_detail_for_the_page(store: SqliteScheduleS
         "Planning at 10:00 am",
         False,
     )
+
+
+async def test_with_no_page_a_quiet_notice_is_notified_silently(
+    store: SqliteScheduleStore,
+) -> None:
+    pages: list[FakePage] = []
+    quiet = FakeQuiet("quiet hours")
+    d, shown, _ = door(store, pages, quiet)
+    await d.added(await heads_up(store))
+    assert shown.silent == [True]
+    assert quiet.hosts == [None]  # no page, so no page's host
+
+
+async def test_with_no_page_a_notice_is_notified_with_a_sound_when_nothing_is_quiet(
+    store: SqliteScheduleStore,
+) -> None:
+    d, shown, _ = door(store, [], FakeQuiet())
+    await d.added(await add(store))
+    assert shown.silent == [False]
+
+
+async def test_a_held_notice_notified_on_a_tick_asks_the_quiet_check_too(
+    store: SqliteScheduleStore,
+) -> None:
+    n = await heads_up(store, text=None)
+    d, shown, _ = door(store, [], FakeQuiet("in a meeting"))
+    await d.flush()  # as after a restart: held, never shown
+    assert shown.silent == [True]
+    kept = await store.notice(n.id)
+    assert kept is not None and kept.notified_ms == DUE
+
+
+async def test_a_held_notice_without_words_is_notified_as_before(
+    store: SqliteScheduleStore,
+) -> None:
+    quiet = FakeQuiet("quiet hours")
+    d, shown, _ = door(store, [], quiet)
+    await d.added(await add(store, kind="missed", text=None))
+    assert (quiet.asked, shown.silent) == ([], [False])
+
+
+async def test_with_no_page_a_quiet_check_that_never_answers_still_notifies(
+    store: SqliteScheduleStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(door_module, "QUIET_TIMEOUT_S", 0.05)
+    d, shown, _ = door(store, [], Hangs())
+    await asyncio.wait_for(d.added(await heads_up(store)), 5)
+    assert shown.silent == [False]  # can't tell never holds anything
+
+
+async def test_the_quiet_check_is_told_the_host_of_the_page_it_delivers_to(
+    store: SqliteScheduleStore,
+) -> None:
+    page = FakePage("c1")
+    page.state = dataclasses.replace(page.state, host="safari")
+    quiet = FakeQuiet()
+    d, _, _ = door(store, [page], quiet)
+    await d.added(await heads_up(store))
+    assert quiet.hosts == ["safari"]

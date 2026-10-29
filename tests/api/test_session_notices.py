@@ -559,7 +559,7 @@ async def test_a_page_whose_start_fails_is_not_left_to_take_notices(
 class Holds:
     """A quiet check that holds her voice for every notice."""
 
-    async def reason(self, notice: Notice, now_ms: int) -> str | None:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
         return "quiet hours"
 
 
