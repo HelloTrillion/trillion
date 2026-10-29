@@ -59,6 +59,8 @@ day_open = "trillion.tools.day:DayOpen"
 routine_nothing = "trillion.tools.routine:RoutineNothing"
 routine_narrow = "trillion.tools.routine:RoutineNarrow"
 routine_widen = "trillion.tools.routine:RoutineWiden"
+speak_up_narrow = "trillion.tools.speak_up:SpeakUpNarrow"
+speak_up_widen = "trillion.tools.speak_up:SpeakUpWiden"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]
@@ -116,7 +118,7 @@ packages = ["trillion"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*", "trillion.workspace.*"]
+module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*", "trillion.workspace.*", "trillion.attention.*"]
 strict = true
 
 [tool.pytest.ini_options]

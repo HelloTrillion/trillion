@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
+from trillion.api.attention import create_attention_router
 from trillion.api.conversations import create_conversations_router
 from trillion.api.google import create_google_router
 from trillion.api.mcp import create_callback_router, create_mcp_router
@@ -34,7 +35,7 @@ from trillion.api.persona import create_persona_router
 from trillion.api.routines import create_routines_router
 from trillion.api.runtime import Runtime
 from trillion.api.schedules import create_schedules_router
-from trillion.api.session import PROTOCOL, Session
+from trillion.api.session import PROTOCOL, Session, page_host
 from trillion.api.settings import create_router
 from trillion.api.skills import create_skills_router
 from trillion.api.slack import create_slack_router
@@ -157,7 +158,11 @@ def create_app(
 
         resume = hello.get("resume") if hello else None
         session = await Session.start(
-            rt, send, resume if isinstance(resume, str) else None, socket.send_bytes
+            rt,
+            send,
+            resume if isinstance(resume, str) else None,
+            socket.send_bytes,
+            host=page_host(hello.get("host") if hello else None),
         )
         try:
             while True:
@@ -203,6 +208,7 @@ def create_app(
     app.include_router(create_skills_router(rt))
     app.include_router(create_schedules_router(rt))
     app.include_router(create_routines_router(rt))
+    app.include_router(create_attention_router(rt))
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:

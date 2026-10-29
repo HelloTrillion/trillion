@@ -22,7 +22,7 @@ export function labelOf(label: unknown, tool: unknown): string {
 export type CardStatus = 'waiting' | 'working' | 'done' | 'declined' | 'failed' | 'unknown' | 'closed';
 
 /** What a reminder or timed ask left: her words, or a missed or failed one with none. */
-export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed' | 'ready';
+export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed' | 'ready' | 'heads_up';
 
 export type Entry =
   | { readonly kind: 'user'; readonly text: string }
@@ -58,6 +58,13 @@ export type Entry =
       readonly late: boolean;
       /** The conversation a routine's ready line opens; null for any other notice. */
       readonly conversationId: string | null;
+      /** An https link it opens, such as a meeting's Join; null when none. */
+      readonly link: string | null;
+      /** The host's own short line, for the page only: never spoken (speaking up D3). */
+      readonly detail: string | null;
+      /** Why she held her voice ("quiet hours"); null when she didn't. */
+      readonly quiet: string | null;
+      readonly spoken: boolean;
     };
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
@@ -262,7 +269,7 @@ function speechOf(raw: unknown): Speech | null {
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 
-const NOTICE_KINDS: readonly NoticeKind[] = ['reminder', 'ask', 'missed', 'failed', 'ready'];
+const NOTICE_KINDS: readonly NoticeKind[] = ['reminder', 'ask', 'missed', 'failed', 'ready', 'heads_up'];
 
 function scheduledOf(msg: ServerMsg): Entry | null {
   const what = NOTICE_KINDS.find((k) => k === msg['kind']);
@@ -283,7 +290,22 @@ function scheduledOf(msg: ServerMsg): Entry | null {
     due: str(msg['due']) || localClock(dueMs),
     late: msg['late'] === true,
     conversationId: what === 'ready' ? str(msg['conversation_id']) || null : null,
+    link: httpsLink(msg['link']),
+    detail: str(msg['detail']) || null,
+    quiet: str(msg['quiet']) || null,
+    // A core from before speaking up never said: then she spoke it.
+    spoken: msg['spoken'] !== false,
   };
+}
+
+/** Only an https link is ever opened from a notice: the server says so too, and this page checks again. */
+export function httpsLink(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    return new URL(raw).protocol === 'https:' ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 function hostOf(r: Record<string, unknown>): Entry {
@@ -467,13 +489,16 @@ function step(view: View, msg: ServerMsg): View {
       return { ...sent(view, str(msg['text'])), hearing: '', pending: null };
     case 'history': {
       const rows = Array.isArray(msg['messages']) ? (msg['messages'] as Record<string, unknown>[]) : [];
-      const entries: Entry[] = rows.map((r) =>
-        r['role'] === 'user'
-          ? { kind: 'user', text: str(r['text']) }
-          : r['role'] === 'host'
-            ? hostOf(r)
-            : { kind: 'assistant', text: str(r['text']), interrupted: false },
-      );
+      const entries: Entry[] = rows.flatMap((r): Entry[] => {
+        if (r['role'] === 'user') return [{ kind: 'user', text: str(r['text']) }];
+        if (r['role'] === 'host') return [hostOf(r)];
+        // A heads-up kept by the app: drawn as it arrived, with Join, detail and reason.
+        if (r['role'] === 'notice') {
+          const e = scheduledOf({ ...r, type: 'notice', spoken: false });
+          return e && e.kind === 'scheduled' ? [{ ...e, dueMs: 0, due: '', late: false }] : [];
+        }
+        return [{ kind: 'assistant', text: str(r['text']), interrupted: false }];
+      });
       return { ...view, entries };
     }
     case 'host':

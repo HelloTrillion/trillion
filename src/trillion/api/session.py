@@ -64,6 +64,7 @@ from trillion.persona.prompt import (
     volatile_context,
 )
 from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
+from trillion.scheduler.store import https_link
 from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
@@ -217,6 +218,58 @@ def ready_line(msg: Msg) -> dict[str, str] | None:
     opens = _READY_OPENS.search(text)
     shown = {"role": "host", "text": _READY_OPENS.sub("", text).strip()}
     return {**shown, "conversation_id": opens.group(1)} if opens else shown
+
+
+# Saved ahead of a watcher's heads-up (the speaking up spec): the app's record of a
+# notice it showed, so a reload draws it again with its Join, detail and held reason.
+# By the notice's id only: a find's detail and link are someone else's words, kept in
+# the notice, never here where the model rereads them. Never her message (PER-11).
+HEADS_UP_NOTE = (
+    "<context>\nsent by the app: it showed the user a heads-up from what it watches. "
+    "The text below is the app's record of it, not words the user typed or said, and "
+    "not yours; your line for it, if you had one, follows\n</context>"
+)
+_NOTE_ID = re.compile(r"^\(notice ([A-Za-z0-9_-]{1,64})\)$", re.MULTILINE)
+_NOTE_HELD = re.compile(r"^\(held: ([^\n()]{1,80})\)$", re.MULTILINE)
+_NOTE_WORDED = "(her line follows)"
+
+
+def heads_up_msg(d: Delivery) -> Msg:
+    """A heads-up as the app keeps it: its title, its notice, why she held it, and
+    whether her line follows."""
+    lines = [d.title, f"(notice {d.id})"]
+    if d.quiet:
+        lines.append(f"(held: {d.quiet})")
+    if d.text:
+        lines.append(_NOTE_WORDED)
+    blocks = (ContextBlock(text=HEADS_UP_NOTE), TextBlock(text="\n".join(lines)))
+    return Msg(role="user", blocks=blocks)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _HeadsUpNote:
+    id: str
+    title: str
+    quiet: str | None
+    worded: bool
+
+
+def heads_up_note(msg: Msg) -> _HeadsUpNote | None:
+    """A saved heads-up note, or None for any other message."""
+    if not any(isinstance(b, ContextBlock) and b.text == HEADS_UP_NOTE for b in msg.blocks):
+        return None
+    text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
+    found = _NOTE_ID.search(text)
+    if found is None:
+        return None
+    held = _NOTE_HELD.search(text)
+    lines = text.split("\n")
+    return _HeadsUpNote(
+        id=found.group(1),
+        title=lines[0],
+        quiet=held.group(1) if held else None,
+        worded=_NOTE_WORDED in lines,
+    )
 
 
 # Saved with a background read's result, ahead of it (the background reads spec). It
@@ -393,7 +446,7 @@ async def _keep_after_holds(
 class _Loaded:
     """A conversation as read from the store, before a session takes it."""
 
-    shown: list[dict[str, str]]
+    shown: list[dict[str, Any]]
     turn: int
     summary: str | None
     rows: list[tuple[int, Kind, Msg]]
@@ -411,11 +464,29 @@ class BuiltInput:
     via: Literal["voice", "text", "ask"] = "text"
 
 
+# Where a page can say it runs, in its hello. Anything else is "other".
+HOSTS = frozenset({"desktop", "chrome", "edge", "firefox", "safari", "other"})
+
+
+def page_host(raw: object) -> str:
+    """The hello's `host`, as one of `HOSTS`."""
+    name = raw.strip().lower() if isinstance(raw, str) else ""
+    return name if name in HOSTS else "other"
+
+
 class Session:
     def __init__(
-        self, rt: Runtime, send: Send, conversation_id: str, send_bytes: SendBytes | None = None
+        self,
+        rt: Runtime,
+        send: Send,
+        conversation_id: str,
+        send_bytes: SendBytes | None = None,
+        *,
+        host: str = "other",
     ) -> None:
         self._rt = rt
+        # Where the page runs (`page_host`): the quiet check's mic probe needs it.
+        self.host = page_host(host)
         self._raw_send = send
         self._raw_send_bytes = send_bytes
         # The page can silence her; then nothing is synthesized, so nothing is paid for.
@@ -551,7 +622,13 @@ class Session:
 
     @classmethod
     async def start(
-        cls, rt: Runtime, send: Send, resume: str | None, send_bytes: SendBytes | None = None
+        cls,
+        rt: Runtime,
+        send: Send,
+        resume: str | None,
+        send_bytes: SendBytes | None = None,
+        *,
+        host: str = "other",
     ) -> Session:
         resumed = bool(resume) and await rt.conversations.exists(str(resume), OWNER)
         if resumed:
@@ -561,8 +638,8 @@ class Session:
             other = rt.by_conversation.get(str(resume))
             if other is not None:
                 await other.replaced()
-        session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
-        shown: list[dict[str, str]] = []
+        session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes, host=host)
+        shown: list[dict[str, Any]] = []
         if resumed:
             loaded = await session._read()
             session._take(loaded)
@@ -617,17 +694,29 @@ class Session:
         """Read the conversation from the store: the page and the turn count get every
         message; the model gets the latest summary and what came after it (BRN-5)."""
         rt = self._rt
-        shown: list[dict[str, str]] = []
+        shown: list[dict[str, Any]] = []
         turn = 0
         unanswered = False
+        # A heads-up whose line is the next message.
+        awaiting: dict[str, Any] | None = None
         for kind, msg in await rt.conversations.history(self.id, OWNER):
             turn += kind in USER_INPUTS
             text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
             routine = routine_run(msg) if kind == "tap" else None
             ready = ready_line(msg) if kind == "tap" else None
             brought = background_lines(msg) if kind == "tap" else None
+            note = heads_up_note(msg) if kind == "tap" else None
             if kind == "assistant":
                 unanswered = False
+            if note is not None:
+                # Drawn again as it arrived; her line, the next message, joins it.
+                shown.append(await self._heads_up(note))
+                awaiting = shown[-1] if note.worded else None
+                continue
+            if kind == "assistant" and awaiting is not None and text:
+                awaiting["text"], awaiting = text, None
+                continue
+            awaiting = None
             if ready is not None:
                 shown.append(ready)
             elif brought is not None:
@@ -643,6 +732,27 @@ class Session:
                 shown.append({"role": msg.role, "text": text})
         summary, rows = await rt.conversations.context(self.id, OWNER)
         return _Loaded(shown=shown, turn=turn, summary=summary, rows=rows, unanswered=unanswered)
+
+    async def _heads_up(self, note: _HeadsUpNote) -> dict[str, Any]:
+        """A heads-up for the page's history, with its link and detail from its notice."""
+        kept = None
+        if self._rt.schedules is not None:
+            try:
+                kept = await self._rt.schedules.notice(note.id)
+            except Exception as e:
+                logger.warning("heads-up not read in %s: %s", self.id, type(e).__name__)
+        if kept is not None and kept.owner_id != OWNER:
+            kept = None
+        return {
+            "role": "notice",
+            "kind": "heads_up",
+            "id": note.id,
+            "title": note.title,
+            "text": None,
+            "link": https_link(kept.link) if kept is not None else None,
+            "detail": kept.detail if kept is not None else None,
+            "quiet": note.quiet,
+        }
 
     def _take(self, loaded: _Loaded) -> None:
         """Make what was read this session's own. No await: nothing comes between."""
@@ -2904,6 +3014,7 @@ class Session:
             spoken_ms=spoken[1] if spoken is not None else None,
             heard_turn=self._played,
             active_ms=self.active_ms,
+            host=self.host,
         )
 
     @contextlib.asynccontextmanager
@@ -2948,26 +3059,33 @@ class Session:
         that is no longer free raises `NotFree` before anything happens, and the door
         holds them again. The ones with her words are saved as her messages in one
         statement, so they survive a reload; then each is sent, and spoken if her
-        voice is on, best effort. A missed or failed one is shown by its title, never
-        spoken (PER-11). Speech is queued, never waited for."""
+        voice is on, best effort, if the door says to speak it. A missed or failed one
+        is shown by its title, never spoken (PER-11); a quiet one, or one past its
+        moment, is shown and not spoken. Speech is queued, never waited for."""
         rt = self._rt
         if self._closed or not free(self.facts(), rt.clock()):
             raise NotFree
-        said = [n.text for n in notices if n.text]
+        said = [n.text for n in notices if n.text and n.spoken]
         # Hers are saved as hers. A ready line is the app's, never hers: kept as its note,
         # so she never takes it for something she said, and a reload shows it with Open.
-        rows: list[tuple[Kind, Msg]] = [
-            ("tap", ready_msg(n.title, n.conversation_id))
-            if n.kind == "ready"
-            else ("assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),)))
-            for n in notices
-            if n.text
-        ]
+        # A heads-up keeps the app's note first, so a reload shows it with its Join,
+        # detail and reason, then her line if she has one; with none, the note alone.
+        rows: list[tuple[Kind, Msg]] = []
+        for n in notices:
+            if n.kind == "heads_up":
+                rows.append(("tap", heads_up_msg(n)))
+            if not n.text:
+                continue
+            if n.kind == "ready":
+                rows.append(("tap", ready_msg(n.title, n.conversation_id)))
+            else:
+                rows.append(("assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),))))
         if rows:
             await self._save_all(rows)
-        if any(n.kind == "ask" and n.text for n in notices):
-            # A timed ask's answer can quote what it read: whatever she does next on the
-            # strength of it is something she read, not something the user said (MEM-5).
+        if any(n.kind in ("ask", "heads_up") and n.text for n in notices):
+            # A timed ask's answer can quote what it read, and a heads-up is written from
+            # an invite or an email: whatever she does next on the strength of it is
+            # something she read, not something the user said (MEM-5).
             self._outside.update({self._turn, self._turn + 1})
         # Saved: from here nothing raises, or the door would hold them and they would be
         # saved twice. `_send` already logs a failed send and goes on.
@@ -2983,6 +3101,11 @@ class Session:
                 due=n.due,
                 late=n.late,
                 conversation_id=n.conversation_id,
+                link=n.link,
+                spoken=n.spoken,
+                quiet=n.quiet,
+                # The page's only: never spoken, never saved as her message.
+                detail=n.detail,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

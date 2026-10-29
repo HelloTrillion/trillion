@@ -41,7 +41,7 @@ class Shown:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, title: str, body: str) -> bool:
+    def __call__(self, title: str, body: str, *, silent: bool = False) -> bool:
         self.calls.append((title, body))
         return True
 

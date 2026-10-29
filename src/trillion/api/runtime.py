@@ -18,6 +18,12 @@ import aiosqlite
 
 from trillion import paths
 from trillion.api.jobs import Jobs
+from trillion.attention import settings as watch_prefs
+from trillion.attention.mail import GoogleMail, UrgentEmail
+from trillion.attention.meetings import GoogleCalendar, Meetings
+from trillion.attention.payments import Payments
+from trillion.attention.quiet import Quiet
+from trillion.attention.runner import AttentionRunner
 from trillion.brain import compact
 from trillion.brain.config import ModelSettings, Source, resolve
 from trillion.brain.standing import StandingRules
@@ -45,6 +51,7 @@ from trillion.spine.registry import ToolRegistry, runs_unattended
 from trillion.spine.router import Router
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
+from trillion.storage.sqlite.attention_store import SqliteAttentionStore
 from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
@@ -79,6 +86,9 @@ from trillion.tools.schedule import (
 from trillion.tools.skills import FILE as SKILL_FILE
 from trillion.tools.skills import OPEN as SKILL_OPEN
 from trillion.tools.skills import SkillFile, SkillOpen
+from trillion.tools.speak_up import NARROW as SPEAK_NARROW
+from trillion.tools.speak_up import WIDEN as SPEAK_WIDEN
+from trillion.tools.speak_up import SpeakUpNarrow, SpeakUpWiden
 from trillion.tools.web import FETCH, WebFetch
 from trillion.tools.workspace import CLOSE as BOARD_CLOSE
 from trillion.tools.workspace import REMOVE as BOARD_REMOVE
@@ -100,6 +110,8 @@ from trillion.workspace.refresh import Refresher
 from trillion.workspace.service import Boards
 
 logger = logging.getLogger(__name__)
+# On stop, quiet notices' notifications still on their way get this long.
+STOP_NOTIFY_S = 6.0
 
 OWNER = "local"
 # Speech outside a turn (a notice, a tap's answer, a sentence about a leg that is down)
@@ -254,6 +266,12 @@ class Runtime:
     # Her board per conversation: apply a change, save it, tell every page on it.
     boards: Boards | None = None
     scheduler: Scheduler | None = None
+    # Speaking up (the speaking up spec): what the watchers found, the loop that runs
+    # them beside the scheduler, the door's quiet check, and their settings.
+    attention_store: SqliteAttentionStore | None = None
+    attention: AttentionRunner | None = None
+    quiet: Quiet | None = None
+    attention_settings: watch_prefs.AttentionSettings = watch_prefs.DEFAULT
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -418,14 +436,22 @@ class Runtime:
         that keeps live widgets fresh."""
         if self.scheduler is not None:
             self.scheduler.start()
+        if self.attention is not None:
+            self.attention.start()
         if self.refresher is not None:
             self.refresher.start()
 
     async def stop_background(self) -> None:
         if self.refresher is not None:
             await self.refresher.stop()
+        if self.attention is not None:
+            await self.attention.stop()
         if self.scheduler is not None:
             await self.scheduler.stop()
+        if self.door is not None:
+            # Quiet notices' notifications on their way: a moment to finish, no more.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.door.drain(), STOP_NOTIFY_S)
 
     def refreshing(self, conversation_id: str) -> frozenset[str]:
         """The widgets being refreshed on this conversation now."""
@@ -478,6 +504,25 @@ class Runtime:
             cost_usd=pricing.cost(usage) if pricing is not None else None,
             now_ms=self.clock(),
         )
+
+    async def record_attention_usage(self, provider: ModelProvider, usage: Usage) -> None:
+        """A watcher's wording or judging call: background work, in no conversation,
+        recorded like any other (BRN-4)."""
+        pricing = provider.pricing()
+        await self.conversations.record_usage(
+            owner_id=OWNER,
+            conversation_id=None,
+            provider=provider.name,
+            model=provider.model,
+            usage=usage,
+            cost_usd=pricing.cost(usage) if pricing is not None else None,
+            now_ms=self.clock(),
+        )
+
+    def live_host(self) -> str | None:
+        """Where the live page runs, from its hello; None with no page open."""
+        live = self.door.live() if self.door is not None else None
+        return live.facts().host if live is not None else None
 
     def retell_workspace(self) -> None:
         """Tell her the widget types the connectors listed now fill (widget packs, D2).
@@ -674,6 +719,8 @@ async def open_runtime(
     chat_conn = await connect(path)
     # Schedules take explicit transactions too, so they get a connection of their own.
     schedule_conn = await connect(path)
+    # And so do the watchers' finds.
+    attention_conn = await connect(path)
     registry = ToolRegistry.discover()
     store = SqliteSpineStore(spine_conn)
     router = Router(
@@ -733,7 +780,8 @@ async def open_runtime(
         env=env,
         token=token,
         token_from_app=token_from_app,
-        _connections=[spine_conn, chat_conn, schedule_conn],
+        attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
+        _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
     )
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
@@ -802,6 +850,32 @@ async def open_runtime(
         ),
     )
     rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
+    rt.quiet = Quiet(settings=lambda: rt.attention_settings, zone=rt.zone, host=rt.live_host)
+    rt.door.quiet = rt.quiet
+    rt.attention_store = SqliteAttentionStore(attention_conn)
+    rt.attention = AttentionRunner(
+        rt.attention_store,
+        schedules,
+        rt.door,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+        provider=lambda: rt.provider,
+        settings=lambda: rt.attention_settings,
+        spent=rt.record_attention_usage,
+        google=lambda: rt.google,
+        registry=registry,
+    )
+    meetings = Meetings(GoogleCalendar(lambda: rt.google), clock=lambda: rt.clock(), zone=rt.zone)
+    rt.attention.add(meetings)
+    # Its last read says whether a meeting is under way, so the quiet check asks no one.
+    rt.quiet.in_meeting = meetings.in_meeting
+    rt.attention.add(UrgentEmail(GoogleMail(lambda: rt.google)))
+    # Reads Stripe only while a Stripe server is connected and its read never asks.
+    rt.attention.add(Payments(registry, zone=rt.zone))
+    for name in (SPEAK_NARROW, SPEAK_WIDEN):
+        speak_tool = registry.get(name)
+        if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):
+            speak_tool.bind(rt.attention_store, OWNER)
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):

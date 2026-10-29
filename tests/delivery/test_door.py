@@ -49,10 +49,12 @@ class FakePage:
 class FakeNotify:
     def __init__(self, shows: bool = True) -> None:
         self.shown: list[tuple[str, str]] = []
+        self.silent: list[bool] = []
         self._shows = shows
 
-    def __call__(self, title: str, body: str) -> bool:
+    def __call__(self, title: str, body: str, *, silent: bool = False) -> bool:
         self.shown.append((title, body))
+        self.silent.append(silent)
         return self._shows
 
 
@@ -256,8 +258,11 @@ async def test_a_hand_over_cut_short_still_finishes_and_is_never_held_again(
     d, _, _ = door(store, [page])
     n = await add(store)
     offer = asyncio.create_task(d.offer(page))
-    for _ in range(50):
-        await asyncio.sleep(0)
+    # Until the page has them, however slow the machine: a fixed number of turns
+    # was too few on a loaded CI runner.
+    async with asyncio.timeout(5):
+        while not page.got:
+            await asyncio.sleep(0.005)
     assert [x.id for x in page.got] == [n.id]
     offer.cancel()  # the scheduler stopping, say
     await asyncio.sleep(0)

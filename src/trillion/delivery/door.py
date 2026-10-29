@@ -10,6 +10,15 @@ notice just waits for it. Each notice is marked delivered before it is
 sent, and only a held one can be, so none arrives twice. A session's `deliver`
 must raise, taking none of them, if its page is no longer free when they arrive:
 the door then holds them again for the next free page.
+
+Before a notice with her words is spoken the door asks whether to hold her voice
+(`Quiet`). A quiet notice still arrives, unspoken, with its reason, and the computer
+shows it too, once and without a sound, since the user may not be looking at the
+page. A watcher's notice that is shown and not spoken (no line, or past its moment)
+is shown by the computer too, silent when quiet. Those notifications are sent after
+the hand-over, from a task of their own: the session waits on `offer`, and several of
+them can take seconds. A held notice's notification, with no page open, is silent
+when quiet too.
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -31,8 +40,13 @@ logger = logging.getLogger(__name__)
 # A page that never reports the end of what it played stops holding notices back
 # after this long. Audio arrives faster than it plays; no reply is this long.
 PLAYBACK_GRACE_MS = 120_000
+# A quiet check runs under the door's lock: one that never answers can't tell, and
+# must not stop every delivery behind it (D11).
+QUIET_TIMEOUT_S = 2.5
 # Shown for a timed ask: her answer may quote an email, and a lock screen is public.
 READY = "Ready in Trillion"
+# The kinds that carry her words, to be shown and spoken.
+_WORDED: frozenset[NoticeKind] = frozenset({"reminder", "ask", "ready", "heads_up"})
 _QUIET: dict[NoticeKind, str] = {
     "missed": "Missed: Trillion was not running at the time",
     "failed": "Didn't finish. Open Trillion to see why",
@@ -52,6 +66,9 @@ class Facts:
     heard_turn: int | None
     # When the user last did something there: the live page is the latest.
     active_ms: int
+    # Where the page runs, from its hello (`desktop` or a browser family): the mic
+    # probe leaves that host's own recording out.
+    host: str = "other"
 
     def __post_init__(self) -> None:
         # A turn sent to be heard always says when, so a page that never reports
@@ -84,6 +101,31 @@ class Delivery:
     due: str = ""
     # The conversation a routine's ready line opens; None for any other.
     conversation_id: str | None = None
+    # Said out loud as well as shown. Never for one without words, one held by a quiet
+    # reason, or one past its moment.
+    spoken: bool = False
+    # Why her voice was held ("quiet hours"), shown beside it; None when it wasn't.
+    quiet: str | None = None
+    # Where its button opens: a meeting's join link.
+    link: str | None = None
+    # What a watcher found, in the host's words, for the page only: never spoken, never
+    # on the system notification, never saved as her message.
+    detail: str | None = None
+
+
+class Quiet(Protocol):
+    """Whether to hold her voice for a notice right now. `attention/quiet.py` is the
+    real one; it decides which reasons apply to which kind of notice."""
+
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
+        """The first reason to stay quiet, in a few words, or None to speak. `host` is
+        where the page it goes to runs; None with no page."""
+        ...
+
+
+class NeverQuiet:
+    async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
+        return None
 
 
 class NotFree(Exception):
@@ -105,7 +147,10 @@ class SessionLike(Protocol):
         ...
 
 
-Notify = Callable[[str, str], bool]
+class Notify(Protocol):
+    """Shows one system notification; with `silent`, without a sound."""
+
+    def __call__(self, title: str, body: str, *, silent: bool = False) -> bool: ...
 
 
 def notification(n: Notice) -> tuple[str, str]:
@@ -125,6 +170,7 @@ class Door:
         clock: Clock,
         owner: str,
         notify: Notify = system.notify,
+        quiet: Quiet | None = None,
     ) -> None:
         self._store = store
         self._sessions = sessions
@@ -132,10 +178,14 @@ class Door:
         self._owner = owner
         # Public so a test can put a fake in its place: nothing else may call it.
         self.notify = notify
+        # Public so the runtime can put the real one in place once it is built.
+        self.quiet: Quiet = quiet or NeverQuiet()
         self._lock = asyncio.Lock()
         self._notifying = asyncio.Lock()
         # Notices whose notification was tried in this process, shown or not.
         self._tried: set[str] = set()
+        # Quiet notices' notifications on their way, after their hand-over.
+        self._sending: set[asyncio.Future[None]] = set()
 
     def live(self) -> SessionLike | None:
         """The most recently active connected page."""
@@ -150,18 +200,35 @@ class Door:
             return
         await self._notify(notice.id)
 
-    async def _notify(self, notice_id: str) -> None:
+    async def _notify(
+        self,
+        notice_id: str,
+        *,
+        held: bool = True,
+        silent: bool | None = None,
+        host: str | None = None,
+    ) -> None:
         """Show the system notification for a held notice, once. Tried once per
-        process: a notifier that can't show one isn't asked again every tick."""
+        process: a notifier that can't show one isn't asked again every tick. With
+        `held` False, for one just delivered: still once, however it was shown. With
+        `silent` None, a notice with words or from a watcher asks the quiet check."""
         async with self._notifying:
-            # As stored now, not as the caller saw it: shown once, never once delivered.
+            # As stored now, not as the caller saw it: shown once at most.
             kept = await self._store.notice(notice_id)
-            if kept is None or kept.status != "held" or kept.notified_ms is not None:
+            if kept is None or kept.notified_ms is not None:
+                return
+            if held and kept.status != "held":
+                return
+            if not held and kept.id in self._tried:
                 return
             self._tried.add(kept.id)
             title, body = notification(kept)
-            # It can take seconds: never on the event loop.
-            if await asyncio.to_thread(self.notify, title, body):
+            if silent is None:
+                silent = _asks(kept) and await self._ask(kept, self._clock(), host) is not None
+            # It can take seconds: never on the event loop. A quiet one makes no sound:
+            # her voice was held, so a chime would undo it (D7).
+            shown = await asyncio.to_thread(self.notify, title, body, silent=silent)
+            if shown:
                 await self._store.mark_notified(kept.id, self._clock())
 
     async def offer(self, session: SessionLike) -> int:
@@ -174,23 +241,34 @@ class Door:
             marked: list[str] = []
             out: list[Delivery] = []
             zones: dict[str, str] = {}
+            host = session.facts().host
+            # A watcher's notices: shown and not spoken, the computer shows them too.
+            watched: set[str] = set()
             try:
                 for n in await self._store.held(self._owner):
                     if not await self._store.mark_delivered(n.id, session.id, now):
                         continue
                     marked.append(n.id)
+                    if n.source == "attention":
+                        watched.add(n.id)
+                    # Only she writes words; a missed or failed notice has none (D7).
+                    # A ready line is the host's, and spoken once like hers (D3).
+                    text = n.text if n.kind in _WORDED else None
+                    held_by = await self._quiet(n, now, host) if text else None
                     out.append(
                         Delivery(
                             id=n.id,
                             kind=n.kind,
                             title=n.title,
-                            # Only she writes words; a missed or failed notice has none (D7).
-                            # A ready line is the host's, and spoken once like hers (D3).
-                            text=n.text if n.kind in ("reminder", "ask", "ready") else None,
+                            text=text,
                             due_ms=n.due_ms,
                             late=n.late or now - n.due_ms > LATE_MS,
                             due=await self._due(n, now, zones),
                             conversation_id=n.conversation_id,
+                            spoken=bool(text) and not _stale(n, now) and held_by is None,
+                            quiet=held_by,
+                            link=n.link,
+                            detail=n.detail,
                         )
                     )
             except BaseException:
@@ -216,9 +294,51 @@ class Door:
             logger.warning("page %s could not take notices: %s", session.id, type(e).__name__)
             await self._hold([d.id for d in out], session)
             return 0
+        quiet = [d.id for d in out if d.quiet is not None]
+        unspoken = [d.id for d in out if d.quiet is None and not d.spoken and d.id in watched]
+        if quiet or unspoken:
+            sending = asyncio.ensure_future(self._notify_after(quiet, unspoken, host))
+            self._sending.add(sending)
+            sending.add_done_callback(self._sending.discard)
         return len(out)
 
+    async def drain(self) -> None:
+        """Wait for the quiet notifications on their way: for a stop, and for tests."""
+        while self._sending:
+            await asyncio.gather(*list(self._sending), return_exceptions=True)
+
+    async def _quiet(self, n: Notice, now: int, host: str | None) -> str | None:
+        """Why to hold her voice for `n`, if anything. Past its moment it is not spoken
+        whatever the answer, so nothing is asked."""
+        if _stale(n, now):
+            return None
+        return await self._ask(n, now, host)
+
+    async def _ask(self, n: Notice, now: int, host: str | None) -> str | None:
+        """The quiet check's answer, in time. A check that fails can't tell, and can't
+        tell never holds anything."""
+        try:
+            return await asyncio.wait_for(self.quiet.reason(n, now, host=host), QUIET_TIMEOUT_S)
+        except Exception as e:
+            logger.warning("quiet check failed for notice %s: %s", n.id, type(e).__name__)
+            return None
+
+    async def _notify_after(
+        self, quiet: Sequence[str], unspoken: Sequence[str], host: str | None
+    ) -> None:
+        """Delivered and shown, but not heard: the computer shows each too, once, silent
+        for a quiet one, and an unspoken watcher's one asks first. They were already
+        taken, so a notification that fails only logs."""
+        for notice_id, silent in [(i, True) for i in quiet] + [(i, None) for i in unspoken]:
+            try:
+                await self._notify(notice_id, held=False, silent=silent, host=host)
+            except Exception as e:
+                logger.warning("notice %s was not notified: %s", notice_id, type(e).__name__)
+
     async def _due(self, n: Notice, now: int, zones: dict[str, str]) -> str:
+        if n.source != "schedule":
+            # A watcher's notice is due when it is written: no schedule, no zone of its own.
+            return ""
         if n.source_id not in zones:
             s = await self._store.get(n.source_id)
             zones[n.source_id] = s.zone if s is not None else ""
@@ -246,6 +366,15 @@ class Door:
         for n in await self._store.held(self._owner):
             if n.notified_ms is None and n.id not in self._tried:
                 await self._notify(n.id)
+
+
+def _asks(n: Notice) -> bool:
+    """A notification the quiet check may silence: one with her words, or a watcher's."""
+    return n.source == "attention" or (n.kind in _WORDED and bool(n.text))
+
+
+def _stale(n: Notice, now_ms: int) -> bool:
+    return n.fresh_until_ms is not None and now_ms > n.fresh_until_ms
 
 
 async def _finished(task: asyncio.Future[None]) -> None:

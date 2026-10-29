@@ -6,8 +6,10 @@ The scheduler and the door depend on this, never on SQLite. The SQLite store is
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
+from urllib.parse import urlsplit
 
 from trillion.scheduler.when import Repeat
 
@@ -30,7 +32,10 @@ RunStatus = Literal[
     # A routine that ran and found nothing worth the user's attention (AGT-6).
     "nothing",
 ]
-NoticeKind = Literal["reminder", "ask", "missed", "failed", "ready"]
+# heads_up: a watcher's one line about a meeting, an email or a payment.
+NoticeKind = Literal["reminder", "ask", "missed", "failed", "ready", "heads_up"]
+# Where a notice came from: a schedule's run, or a watcher (`source_id` is its find's key).
+NoticeSource = Literal["schedule", "attention"]
 NoticeStatus = Literal["held", "delivered"]
 # A notice that arrives more than this after its due time says so ("due 4:00 pm").
 LATE_MS = 120_000
@@ -111,6 +116,67 @@ class Notice:
     notified_ms: int | None
     # The conversation a routine's notice opens; None for any other.
     conversation_id: str | None = None
+    source: NoticeSource = "schedule"
+    # Where its button opens: a meeting's join link, https only.
+    link: str | None = None
+    # After this it is shown, not spoken: a heads-up after the meeting began is noise.
+    fresh_until_ms: int | None = None
+    # What a watcher's find was, in the host's words, for the page only: never spoken,
+    # never on the system notification, never saved as her message.
+    detail: str | None = None
+
+
+def https_link(link: str | None) -> str | None:
+    """A link a notice may carry: https or none. It came from someone else's invite and
+    is opened by a tap, so nothing else is kept."""
+    if link is None:
+        return None
+    # No spaces, control characters or backslashes anywhere: a parser may read past
+    # them, a browser may drop them or read "\\" as "/", and the two need not agree on
+    # where the link goes.
+    if len(link) > 2000 or any(
+        c.isspace() or ord(c) < 32 or ord(c) == 127 or c == "\\" for c in link
+    ):
+        raise ValueError("a notice's link must be https")
+    try:
+        parts = urlsplit(link)
+        host = parts.hostname
+        # Read for its check alone: a port out of range or not a number raises.
+        _ = parts.port
+    except ValueError:
+        raise ValueError("a notice's link must be https") from None
+    # A name and password before the host ("https://bank.example@elsewhere") hides
+    # where it goes.
+    if (
+        parts.scheme != "https"
+        or not link.startswith("https://")
+        or not host
+        or "@" in parts.netloc
+        or not _plain_host(host)
+    ):
+        raise ValueError("a notice's link must be https")
+    return link
+
+
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9-]{1,63}$")
+
+
+def _plain_host(host: str) -> bool:
+    """A host name a browser reads the way we do: ASCII letters, digits and dashes in
+    dotted labels, at least two. A label in another script is taken in its IDNA form;
+    one that has none, or that holds a dot of another script ("。"), is not."""
+    labels = host.split(".")
+    if len(labels) < 2:
+        return False
+    for label in labels:
+        if not label.isascii():
+            try:
+                label = label.encode("idna").decode("ascii")
+            except UnicodeError:
+                return False
+        if not _HOST_LABEL.fullmatch(label):
+            return False
+    return True
 
 
 class ScheduleStore(Protocol):
@@ -215,6 +281,26 @@ class ScheduleStore(Protocol):
         self, owner_id: str, source_id: str, title: str, now_ms: int, conversation_id: str
     ) -> Notice:
         """A ready line with no run behind it (a background read is in), held."""
+        ...
+
+    async def attention_notice(
+        self,
+        owner_id: str,
+        key: str,
+        *,
+        title: str,
+        text: str | None,
+        now_ms: int,
+        link: str | None = None,
+        fresh_until_ms: int | None = None,
+        detail: str | None = None,
+        notice_id: str | None = None,
+    ) -> Notice:
+        """A watcher's heads-up, held for the door: due now, from `attention`, its find's
+        `key` as its source. `text` is None when no model wrote her line: it is shown by
+        its title and its `detail`, and never spoken. `notice_id`, when given, is its id:
+        the runner records it on the finds first. Raises `ValueError` for a link that is
+        not https."""
         ...
 
     async def notice(self, notice_id: str) -> Notice | None: ...

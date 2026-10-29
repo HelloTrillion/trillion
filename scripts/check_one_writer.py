@@ -95,6 +95,14 @@ NOT_DECISIONS: dict[str, str] = {
         for c in ("status", "delivered_ms", "delivered_to", "notified_ms")
     },
     **{
+        f"attention_finds.{c}": "whether a watcher's find was told, once (D5): approves nothing"
+        for c in ("status", "notice_id", "dismissed_ms")
+    },
+    **{
+        f"attention_state.{c}": "a watcher's place and the user's notes on it: approves nothing"
+        for c in ("last_check_ms", "cursor", "last_error", "notes")
+    },
+    **{
         f"memories.{c}": _MIRRORED
         for c in (
             "type text source moves status version created_at as_of supersedes "

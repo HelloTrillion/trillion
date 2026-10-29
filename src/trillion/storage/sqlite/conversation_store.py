@@ -469,7 +469,8 @@ class SqliteConversationStore:
         self,
         *,
         owner_id: str,
-        conversation_id: str,
+        # None for background work in no conversation: a watcher's line.
+        conversation_id: str | None,
         provider: str,
         model: str,
         usage: Usage,

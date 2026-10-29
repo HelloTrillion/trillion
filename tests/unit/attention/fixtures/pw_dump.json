@@ -1,0 +1,90 @@
+[
+  {
+    "id": 0,
+    "type": "PipeWire:Interface:Core",
+    "version": 4,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "cookie": 1793851417,
+      "user-name": "sam",
+      "host-name": "laptop",
+      "version": "1.0.5",
+      "name": "pipewire-0",
+      "change-mask": ["props"],
+      "props": {"config.name": "pipewire.conf", "core.name": "pipewire-0"}
+    }
+  },
+  {
+    "id": 57,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "max-input-ports": 0,
+      "max-output-ports": 1,
+      "n-input-ports": 0,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "media.class": "Audio/Source",
+        "node.name": "alsa_input.pci-0000_00_1f.3.analog-stereo",
+        "node.description": "Built-in Audio Analog Stereo",
+        "object.serial": 4021
+      }
+    }
+  },
+  {
+    "id": 96,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "max-input-ports": 1,
+      "max-output-ports": 0,
+      "n-input-ports": 1,
+      "n-output-ports": 0,
+      "state": "idle",
+      "error": null,
+      "props": {
+        "application.name": "Firefox",
+        "application.process.binary": "firefox",
+        "application.process.id": 30211,
+        "media.class": "Stream/Input/Audio",
+        "media.name": "AudioCallbackDriver",
+        "node.name": "Firefox",
+        "object.serial": 4611
+      }
+    }
+  },
+  {
+    "id": 101,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "max-input-ports": 1,
+      "max-output-ports": 0,
+      "n-input-ports": 1,
+      "n-output-ports": 0,
+      "state": "running",
+      "error": null,
+      "props": {
+        "application.name": "OBS Studio",
+        "application.process.binary": "obs",
+        "application.process.id": 31002,
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Mic/Aux",
+        "node.name": "OBS",
+        "object.serial": 4630
+      }
+    }
+  },
+  {
+    "id": 77,
+    "type": "PipeWire:Interface:Link",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {"output-node-id": 57, "input-node-id": 101, "state": "active", "props": {}}
+  }
+]
