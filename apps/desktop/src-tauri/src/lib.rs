@@ -40,6 +40,8 @@ pub(crate) const MAIN: &str = "main";
 /// How long the server has to answer before the splash says it couldn't start.
 const START_LIMIT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(250);
+/// The longest caption passed on to the orb (the page sends at most 120).
+const CAPTION_MAX: usize = 200;
 
 /// What the splash shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -120,8 +122,6 @@ struct Reported {
     state: String,
     /// When she went idle, to hide the orb a little after.
     idle_since: Option<Instant>,
-    /// Bumped on every report, so a delayed hide only acts on the latest.
-    seq: u64,
     icon: Option<orb::Icon>,
     orb_shown: bool,
 }
@@ -186,11 +186,11 @@ fn show_splash(app: &AppHandle) {
         let mut r = lock(&shell.reported);
         r.state = "idle".into();
         r.idle_since = None;
-        r.seq += 1;
         r.orb_shown = false;
     }
     orb::hide(app);
     tray::set_icon(app, orb::Icon::Idle);
+    forget_shortcut(app);
     let Some(window) = app.get_webview_window(MAIN) else {
         return;
     };
@@ -408,9 +408,6 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
     };
     drop(token);
     allow_page(app, port);
-    if let Err(e) = orb::create(app, port) {
-        eprintln!("trillion: could not make the floating orb: {e}");
-    }
     {
         // Under the run lock, so a Retry or Quit cannot slip in between.
         let shell = app.state::<Shell>();
@@ -420,15 +417,29 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
         }
         *lock(&shell.page_port) = Some(port);
     }
-    if let Some(window) = app.get_webview_window(MAIN) {
-        let _ = window.navigate(page);
+    // Outside the lock: making a window waits on the main thread, which may want it.
+    let page_port = |app: &AppHandle| *lock(&app.state::<Shell>().page_port);
+    if let Err(e) = orb::point_at(app, port, page_port) {
+        eprintln!("trillion: could not make the floating orb: {e}");
+    }
+    {
+        let shell = app.state::<Shell>();
+        let run = lock(&shell.run);
+        if run.attempt != attempt {
+            return None;
+        }
+        // Sent, not waited on, so holding the lock here is safe.
+        if let Some(window) = app.get_webview_window(MAIN) {
+            let _ = window.navigate(page);
+        }
     }
     watch(app, attempt, &server);
     None
 }
 
-/// The capability for the server's page and the orb, for their exact origin: the
-/// bridge's commands and listening for events, nothing else. Added once per port: a
+/// The capabilities for the server's page and the orb, for their exact origin and each
+/// its own window: the bridge's commands each needs and listening for events, nothing
+/// else. Added once per port: a
 /// capability cannot be taken back, so a later start on another port leaves the
 /// earlier port's in place. That one cannot be used: neither window will load that
 /// origin again (`may_navigate`, the orb's own check), only the proven port's.
@@ -437,17 +448,25 @@ fn allow_page(app: &AppHandle, port: u16) {
     if !lock(&shell.capable).insert(port) {
         return;
     }
-    let capability = CapabilityBuilder::new(format!("server-page-{port}"))
-        .remote(format!("http://127.0.0.1:{port}/*"))
-        .windows([MAIN, orb::LABEL])
+    let origin = format!("http://127.0.0.1:{port}/*");
+    let page = CapabilityBuilder::new(format!("server-page-{port}"))
+        .remote(origin.clone())
+        .window(MAIN)
         .permission("core:event:allow-listen")
         .permission("core:event:allow-unlisten")
         .permission("allow-set-talk-shortcut")
         .permission("allow-report-state")
-        .permission("allow-show-main")
         .permission("allow-open-external");
-    if let Err(e) = app.add_capability(capability) {
-        eprintln!("trillion: could not set what the page may do: {e}");
+    let orb = CapabilityBuilder::new(format!("server-orb-{port}"))
+        .remote(origin)
+        .window(orb::LABEL)
+        .permission("core:event:allow-listen")
+        .permission("core:event:allow-unlisten")
+        .permission("allow-show-main");
+    for capability in [page, orb] {
+        if let Err(e) = app.add_capability(capability) {
+            eprintln!("trillion: could not set what the page may do: {e}");
+        }
     }
 }
 
@@ -521,10 +540,15 @@ fn may_navigate(app: &AppHandle, url: &Url) -> bool {
             return true;
         }
     }
-    if matches!(url.scheme(), "http" | "https") {
+    // A page address with the token is never handed to another program.
+    if matches!(url.scheme(), "http" | "https") && !carries_token(url) {
         let _ = app.opener().open_url(url.as_str(), None::<&str>);
     }
     false
+}
+
+fn carries_token(url: &Url) -> bool {
+    url.fragment().is_some_and(|f| f.contains("token="))
 }
 
 #[derive(Serialize)]
@@ -542,12 +566,16 @@ fn set_talk_shortcut(
     mode: String,
 ) -> Registered {
     let shortcuts = app.global_shortcut();
+    // Replace, not add: the old one goes first, so a new one that fails to register
+    // leaves none, and the page is told it is not global.
     let _ = shortcuts.unregister_all();
     let mut talk = lock(&shell.talk);
     talk.toggle = mode == "toggle";
     talk.accelerator = None;
     let global = match accelerator.as_deref() {
-        Some(a) if talk::may_be_global(a) => shortcuts.register(a).is_ok(),
+        Some(a) if talk::may_be_global(a) && talk::known_mode(&mode) => {
+            shortcuts.register(a).is_ok()
+        }
         _ => false,
     };
     if global {
@@ -573,34 +601,29 @@ fn report_state(app: AppHandle, shell: State<'_, Shell>, state: String, caption:
     if !talk::known_state(&state) {
         return;
     }
-    let (icon_changed, seq) = {
+    let caption = talk::clip(&caption, CAPTION_MAX).to_string();
+    let (icon_changed, linger) = {
         let mut r = lock(&shell.reported);
-        if state == "idle" {
-            if r.state != "idle" || r.idle_since.is_none() {
-                r.idle_since = Some(Instant::now());
-            }
-        } else {
-            r.idle_since = None;
-        }
+        let (since, starts) = orb::idle_mark(&r.state, r.idle_since, &state, Instant::now());
+        r.idle_since = since;
         r.state = state.clone();
-        r.seq += 1;
         let icon = orb::icon_for(&state);
         let changed = r.icon != Some(icon);
         r.icon = Some(icon);
-        (changed.then_some(icon), r.seq)
+        (changed.then_some(icon), since.filter(|_| starts))
     };
     if let Some(icon) = icon_changed {
         tray::set_icon(&app, icon);
     }
-    let idle = state == "idle";
     let _ = app.emit_to(orb::LABEL, "orb", OrbReport { state, caption });
     place_orb(&app);
-    if idle {
-        // Look again once she has been idle long enough for it to go.
+    if let Some(since) = linger {
+        // One look, once she has been idle long enough for it to go; only if she is
+        // still in this same idle.
         let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(orb::LINGER + Duration::from_millis(50));
-            if lock(&app.state::<Shell>().reported).seq == seq {
+            if lock(&app.state::<Shell>().reported).idle_since == Some(since) {
                 place_orb(&app);
             }
         });
@@ -667,7 +690,16 @@ fn send_talk(app: &AppHandle, state: &'static str) {
     let _ = app.emit_to(MAIN, "talk", Talk { state });
 }
 
+/// The page that registered the talk shortcut is gone: so is the shortcut. The next
+/// page registers its own.
+fn forget_shortcut(app: &AppHandle) {
+    let _ = app.global_shortcut().unregister_all();
+    *lock(&app.state::<Shell>().talk) = TalkShortcut::default();
+    tray::set_talk_label(app, None);
+}
+
 fn stop_server(app: &AppHandle) {
+    forget_shortcut(app);
     let shell = app.state::<Shell>();
     let server = {
         // Any start or watch in flight gives up.
@@ -724,6 +756,8 @@ pub fn run() {
         .plugin(
             // Size and place are remembered; whether it was hidden is not, so it opens shown.
             tauri_plugin_window_state::Builder::default()
+                // The orb has its own place, under the menu bar.
+                .with_denylist(&[orb::LABEL])
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::all()
                         - tauri_plugin_window_state::StateFlags::VISIBLE,
@@ -778,4 +812,20 @@ pub fn run() {
         RunEvent::Exit => stop_server(app),
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_with_the_token_is_never_opened_elsewhere() {
+        let at = |u: &str| Url::parse(u).unwrap();
+        assert!(carries_token(&at("http://127.0.0.1:7779/#token=abc")));
+        assert!(carries_token(&at("http://example.com/#x=1&token=abc")));
+        assert!(!carries_token(&at(
+            "https://accounts.google.com/o/oauth2?token=x"
+        )));
+        assert!(!carries_token(&at("https://example.com/#section")));
+    }
 }

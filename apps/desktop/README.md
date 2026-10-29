@@ -37,6 +37,8 @@ If a server is already running from a terminal, the app does not start a second 
 
 To talk from any app, the shortcut must be a combination: Command, Control or Option plus a key, such as ⌥Space. Shift may be added. A single key, a single modifier or Fn works only while the window is in front. Common combinations that every app uses, such as ⌘Space or ⌘C, are not taken. Settings says whether your shortcut works from any app.
 
+macOS may accept a shortcut that another app already uses, so Settings can say it works from any app while the other app still gets the keys. If it does nothing, record a different combination.
+
 While you talk from another app, a small floating orb shows her state and a caption. It never takes focus, so the app you are in stays in front.
 
 ## Closing and quitting

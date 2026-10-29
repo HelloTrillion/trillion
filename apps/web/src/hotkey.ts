@@ -174,7 +174,7 @@ const GLOBAL_KEY =
  *   1. It holds Command (Super), Control or Option (Alt); Shift may be added.
  *   2. The key is one of GLOBAL_KEY: a letter, digit, keypad digit, F1–F20, an arrow,
  *      Space, Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, PageUp,
- *      PageDown, or ` - = [ ] \ ; ' , . / and the ISO key. Never a modifier, never Fn.
+ *      PageDown, or ` - = [ ] \ ; ' , . /. Never a modifier, never Fn.
  *   3. Not Command or Control alone (one of them, no Option, no Shift) with a letter,
  *      Space, Tab or Backquote: every app uses those (⌘C, ⌘V, ⌘Space, ⌘Tab, ⌘`).
  *   4. Not the page's own: Command or Control alone, with or without Shift, with K,

@@ -143,6 +143,25 @@ pub fn web_url(url: &str) -> Option<url::Url> {
     (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some()).then_some(parsed)
 }
 
+/// How the page uses the shortcut.
+pub fn known_mode(mode: &str) -> bool {
+    matches!(mode, "toggle" | "hold")
+}
+
+/// The end of a caption, at most `max` characters: the page already cuts it, this is
+/// in case it does not.
+pub fn clip(caption: &str, max: usize) -> &str {
+    let count = caption.chars().count();
+    if count <= max {
+        return caption;
+    }
+    let start = caption
+        .char_indices()
+        .nth(count - max)
+        .map_or(caption.len(), |(i, _)| i);
+    &caption[start..]
+}
+
 /// The states the page reports.
 pub fn known_state(state: &str) -> bool {
     matches!(state, "idle" | "listening" | "thinking" | "speaking")
@@ -238,6 +257,25 @@ mod tests {
         ] {
             assert!(web_url(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn two_modes() {
+        assert!(known_mode("toggle"));
+        assert!(known_mode("hold"));
+        assert!(!known_mode(""));
+        assert!(!known_mode("Toggle"));
+    }
+
+    #[test]
+    fn captions_are_cut_on_a_character() {
+        assert_eq!(clip("short", 200), "short");
+        let long = "é".repeat(300);
+        let cut = clip(&long, 200);
+        assert_eq!(cut.chars().count(), 200);
+        assert!(long.ends_with(cut));
+        // The end is kept: it is what she is saying now.
+        assert_eq!(clip("abcdef", 3), "def");
     }
 
     #[test]

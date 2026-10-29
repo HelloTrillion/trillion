@@ -1,7 +1,7 @@
 //! The floating orb (D5): a small window over every app while she is talked to from
 //! elsewhere. It never takes focus, so the app the user is in stays in front.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{
     AppHandle, LogicalPosition, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -28,6 +28,30 @@ pub fn should_show(state: &str, main_away: bool, shown: bool, idle_for: Option<D
     shown && idle_for.is_some_and(|d| d < LINGER)
 }
 
+/// When she went idle, after a report of `next` that follows `prev`, and whether this
+/// report starts the linger (so one later look hides the orb).
+pub fn idle_mark(
+    prev: &str,
+    idle_since: Option<Instant>,
+    next: &str,
+    now: Instant,
+) -> (Option<Instant>, bool) {
+    if next != "idle" {
+        return (None, false);
+    }
+    match idle_since {
+        Some(since) if prev == "idle" => (Some(since), false),
+        _ => (Some(now), true),
+    }
+}
+
+/// The orb loads only the page of the server this app proved is its own.
+pub fn may_load(url: &Url, page_port: Option<u16>) -> bool {
+    page_port.is_some_and(|port| {
+        url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.port() == Some(port)
+    })
+}
+
 /// Which of the three menu-bar icons a state uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
@@ -45,14 +69,21 @@ pub fn icon_for(state: &str) -> Icon {
     }
 }
 
-/// Makes the orb window for the server's page on `port`, hidden; replaces one made
-/// for an earlier port.
-pub fn create(app: &AppHandle, port: u16) -> tauri::Result<WebviewWindow> {
-    if let Some(old) = app.get_webview_window(LABEL) {
-        let _ = old.destroy();
-    }
+/// Points the orb at the server's page on `port`: the one orb window, made hidden the
+/// first time and moved to the new page after a restart. `page_port` must already be
+/// set, since the window's own check reads it.
+pub fn point_at(
+    app: &AppHandle,
+    port: u16,
+    page_port: impl Fn(&AppHandle) -> Option<u16> + Send + 'static,
+) -> tauri::Result<()> {
     let page = Url::parse(&format!("http://127.0.0.1:{port}/orb.html"))
         .map_err(|e| tauri::Error::AssetNotFound(e.to_string()))?;
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.hide();
+        return window.navigate(page);
+    }
+    let handle = app.clone();
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(page))
         .title("Trillion")
         .inner_size(WIDTH, HEIGHT)
@@ -70,13 +101,51 @@ pub fn create(app: &AppHandle, port: u16) -> tauri::Result<WebviewWindow> {
         // A click goes to the orb at once, without first bringing the app forward.
         .accept_first_mouse(true)
         .visible(false)
-        .on_navigation(move |url| {
-            url.scheme() == "http"
-                && url.host_str() == Some("127.0.0.1")
-                && url.port() == Some(port)
-        })
+        .on_navigation(move |url| may_load(url, page_port(&handle)))
         .build()?;
-    Ok(window)
+    // AppKit is touched on the main thread only.
+    #[cfg(target_os = "macos")]
+    {
+        let on_main = window.clone();
+        app.run_on_main_thread(move || over_full_screen(&on_main))?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+    Ok(())
+}
+
+/// Lets the orb show over an app in full screen, as well as on every Space, at the
+/// level of the menu bar's own status items. Checked before use, as webkit.rs does.
+#[cfg(target_os = "macos")]
+fn over_full_screen(window: &WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::sel;
+    // NSWindowCollectionBehavior: CanJoinAllSpaces | FullScreenAuxiliary.
+    const ALL_SPACES: usize = 1 << 0;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    // NSStatusWindowLevel.
+    const STATUS_LEVEL: isize = 25;
+    let Ok(ns) = window.ns_window() else {
+        return;
+    };
+    let ns: *mut AnyObject = ns.cast();
+    if ns.is_null() {
+        return;
+    }
+    // SAFETY: `ns` is this window's live NSWindow; each selector is checked first.
+    unsafe {
+        let can: Bool = msg_send![ns, respondsToSelector: sel!(setCollectionBehavior:)];
+        if can.as_bool() {
+            let now: usize = msg_send![ns, collectionBehavior];
+            let _: () =
+                msg_send![ns, setCollectionBehavior: now | ALL_SPACES | FULL_SCREEN_AUXILIARY];
+        }
+        let can: Bool = msg_send![ns, respondsToSelector: sel!(setLevel:)];
+        if can.as_bool() {
+            let _: () = msg_send![ns, setLevel: STATUS_LEVEL];
+        }
+    }
 }
 
 /// Shows the orb at the top right of the main screen, under the menu bar.
@@ -131,6 +200,29 @@ mod tests {
     #[test]
     fn idle_alone_never_brings_it_up() {
         assert!(!should_show("idle", true, false, Some(Duration::ZERO)));
+    }
+
+    #[test]
+    fn the_orb_loads_only_the_proven_port() {
+        let at = |u: &str| Url::parse(u).unwrap();
+        assert!(may_load(&at("http://127.0.0.1:7778/orb.html"), Some(7778)));
+        assert!(!may_load(&at("http://127.0.0.1:7779/orb.html"), Some(7778)));
+        assert!(!may_load(&at("http://127.0.0.1:7778/orb.html"), None));
+        assert!(!may_load(&at("https://example.com/"), Some(7778)));
+        assert!(!may_load(&at("http://localhost:7778/orb.html"), Some(7778)));
+    }
+
+    #[test]
+    fn a_new_idle_starts_the_linger_once() {
+        let t0 = Instant::now();
+        let t1 = t0 + S;
+        // Into idle: marked now, one look later.
+        assert_eq!(idle_mark("speaking", None, "idle", t1), (Some(t1), true));
+        assert_eq!(idle_mark("", None, "idle", t1), (Some(t1), true));
+        // Still idle (a caption-only report): the mark stays, no new look.
+        assert_eq!(idle_mark("idle", Some(t0), "idle", t1), (Some(t0), false));
+        // Busy again: no mark.
+        assert_eq!(idle_mark("idle", Some(t0), "listening", t1), (None, false));
     }
 
     #[test]
