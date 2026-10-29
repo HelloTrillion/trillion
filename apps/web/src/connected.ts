@@ -11,9 +11,13 @@
  * this page, with its session token, can connect a server or loosen what it may do.
  */
 
+import { inApp, signInTab } from './desktop';
 import { icon } from './icons';
 import type { Host } from './panel';
 import type { Api } from './settings';
+
+/** Where a sign-in page opened: a tab here, the user's browser in the desktop app (D7). */
+const opened = (): string => (inApp() ? 'in your browser' : 'in the tab that opened');
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -686,11 +690,7 @@ export function createConnected(
 
   /** Opened from a click, so it is not blocked; the new tab cannot reach this page. */
   function openSignIn(url: string): void {
-    const w = window.open('', '_blank');
-    if (w) {
-      w.opener = null;
-      w.location.href = url;
-    } else window.location.assign(url);
+    if (!signInTab().go(url)) window.location.assign(url);
   }
 
   // ── Setting up a featured service ─────────────────────────────────────
@@ -762,11 +762,7 @@ export function createConnected(
       }
       // Opened now, from the click, so a pop-up blocker lets it through; it is
       // pointed at the sign-in page once the server says where that is.
-      const tab = e.how === 'sign_in' ? window.open('', '_blank') : null;
-      if (tab) {
-        tab.opener = null;
-        tab.document.title = `Signing in to ${e.title}…`;
-      }
+      const tab = e.how === 'sign_in' ? signInTab(`Signing in to ${e.title}…`) : null;
       go.disabled = true;
       status.replaceChildren(el('p', 'settings-hint', 'Connecting…'));
       const r = await send('POST', '/api/mcp/servers', { catalog: e.id, values });
@@ -777,7 +773,7 @@ export function createConnected(
         return;
       }
       const row = r.data as unknown as ServerRow;
-      if (tab && row.sign_in_url) tab.location.href = row.sign_in_url;
+      if (tab && row.sign_in_url) tab.go(row.sign_in_url);
       else tab?.close();
       await load();
       follow(row, status, actions);
@@ -798,7 +794,7 @@ export function createConnected(
       } else if (s.status === 'signing_in') {
         const p = el('div', 'connected-waiting');
         p.append(
-          el('p', '', `Finish signing in to ${s.title} in the tab that opened. This page carries on by itself.`),
+          el('p', '', `Finish signing in to ${s.title} ${opened()}. This page carries on by itself.`),
           button('Open the sign-in page again', 'quiet', () => openSignIn(s.sign_in_url)),
         );
         status.replaceChildren(p);
@@ -926,8 +922,7 @@ export function createConnected(
     }
     for (const email of accounts) {
       const choose = button(accounts.length > 1 ? `Choose files from ${email}` : 'Choose files', 'quiet', async () => {
-        const tab = window.open('', '_blank');
-        if (tab) tab.opener = null;
+        const tab = signInTab();
         const r = await send('POST', '/api/google/picker', { email });
         if (!r.ok) {
           tab?.close();
@@ -935,9 +930,8 @@ export function createConnected(
           return;
         }
         const url = String(r.data.url ?? '');
-        if (tab) tab.location.href = url;
-        else window.location.assign(url);
-        status.textContent = 'Choose the files in the tab that opened, then come back here.';
+        if (!tab.go(url)) window.location.assign(url);
+        status.textContent = `Choose the files ${opened()}, then come back here.`;
       });
       top.append(choose);
       const picked = g.files[email] ?? [];
@@ -1023,11 +1017,7 @@ export function createConnected(
     status.setAttribute('role', 'status');
     const actions = el('div', 'settings-actions');
     const go = button('Sign in with Google', 'approve connected-go', async () => {
-      const tab = window.open('', '_blank');
-      if (tab) {
-        tab.opener = null;
-        tab.document.title = 'Signing in with Google…';
-      }
+      const tab = signInTab('Signing in with Google…');
       go.disabled = true;
       const r = await send('POST', '/api/google/sign-in', { service });
       if (!r.ok) {
@@ -1037,14 +1027,13 @@ export function createConnected(
         return;
       }
       const url = String(r.data.url ?? '');
-      if (tab) tab.location.href = url;
-      else window.location.assign(url);
+      if (!tab.go(url)) window.location.assign(url);
       await load();
       googleFollow = () => {
         const a = g?.attempts[service];
         if (!a || a.status === 'signing_in') {
           const p = el('div', 'connected-waiting');
-          p.append(el('p', '', 'Finish signing in with Google in the tab that opened. This page carries on by itself.'), button('Open the sign-in page again', 'quiet', () => openSignIn(url)));
+          p.append(el('p', '', `Finish signing in with Google ${opened()}. This page carries on by itself.`), button('Open the sign-in page again', 'quiet', () => openSignIn(url)));
           status.replaceChildren(p);
         } else if (a.status === 'connected') {
           const done = el('div', 'connected-done');
@@ -1519,8 +1508,7 @@ export function createConnected(
         status.replaceChildren(el('p', 'connected-warn', 'A key is needed.'));
         return;
       }
-      const tab = p.signs_in ? window.open('', '_blank') : null;
-      if (tab) tab.opener = null;
+      const tab = p.signs_in ? signInTab() : null;
       go.disabled = true;
       status.replaceChildren(el('p', 'settings-hint', 'Connecting…'));
       const r = await send('POST', '/api/mcp/servers', { entry: p.entry, proposed: p.name, title: name.value, secrets });
@@ -1531,7 +1519,7 @@ export function createConnected(
         return;
       }
       const row = r.data as unknown as ServerRow;
-      if (tab && row.sign_in_url) tab.location.href = row.sign_in_url;
+      if (tab && row.sign_in_url) tab.go(row.sign_in_url);
       else tab?.close();
       await load();
       follow(row, status, actions);

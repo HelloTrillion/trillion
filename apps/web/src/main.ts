@@ -4,6 +4,7 @@ import './app.css';
 import { type Inline, parse } from './format';
 import { createAbout, createAppearance, createBoardSettings, createFolders, createShortcuts, createUsageSettings } from './browser';
 import { TalkKeys, type TalkPrefs } from './hotkey';
+import * as desktop from './desktop';
 import { icon } from './icons';
 import { createConnected } from './connected';
 import { createListeningSettings } from './listening';
@@ -169,6 +170,9 @@ const systemLight = matchMedia('(prefers-color-scheme: light)');
 let themeChoice: ThemeChoice = savedTheme();
 let talkPrefs: TalkPrefs = savedTalk();
 const talkKeys = new TalkKeys(talkPrefs);
+// In the desktop app: `<html data-shell="desktop">`, and whether the shell made the talk shortcut global.
+desktop.markShell();
+let talkGlobal: boolean | null = null;
 let version = '';
 const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight.matches) });
 
@@ -775,7 +779,10 @@ function render(): void {
     );
   }
   // While her voice is sounding she is speaking, whatever the core has moved on to.
-  galaxy.setState(!ready ? (view.link === 'connecting' ? 'idle' : 'error') : voice.active ? 'speaking' : view.orb);
+  const orbShown = !ready ? (view.link === 'connecting' ? 'idle' : 'error') : voice.active ? 'speaking' : view.orb;
+  galaxy.setState(orbShown);
+  // The desktop app's tray icon and floating orb follow the same state and caption (a repeat is not sent).
+  desktop.reportState(desktop.orbState(orbShown), captionOf(view));
 
   const noModel = ready && view.model === null;
   const banner =
@@ -908,8 +915,24 @@ const shortcuts = createShortcuts(
     talkKeys.use(prefs);
     saveTalk(prefs);
     panel.refresh();
+    registerTalk();
   },
+  desktop.DESKTOP ? { global: () => talkGlobal } : undefined,
 );
+/** In the desktop app, make the talk shortcut work from any app; only the latest answer counts. */
+let talkAsked = 0;
+function registerTalk(): void {
+  if (!desktop.DESKTOP) return;
+  const asked = ++talkAsked;
+  talkGlobal = null;
+  shortcuts.redraw();
+  void desktop.setTalkShortcut(talkPrefs.hotkey, talkPrefs.mode).then(({ global }) => {
+    if (asked !== talkAsked) return;
+    talkGlobal = global;
+    shortcuts.redraw();
+  });
+}
+registerTalk();
 const appearance = createAppearance(
   panel.host('appearance'),
   () => themeChoice,
@@ -1542,9 +1565,9 @@ function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
 }
 
 /** Do what the talk shortcut asked. */
-function onTalk(action: ReturnType<TalkKeys['down']>, ev: KeyboardEvent): void {
+function onTalk(action: ReturnType<TalkKeys['down']>, ev?: KeyboardEvent): void {
   if (action === null || view.link !== 'ready' || active(ob)) return;
-  ev.preventDefault();
+  ev?.preventDefault();
   if (action === 'toggle') talk();
   else if (action === 'start' && !view.mic) talk(true);
   else if (action === 'stop' && view.mic) send({ type: 'listen.stop' });
@@ -1597,6 +1620,17 @@ addEventListener('keydown', (ev) => {
 addEventListener('keyup', (ev) => onTalk(talkKeys.up({ code: ev.code }), ev));
 // A key let go in another window never arrives; start fresh when the tab comes back.
 addEventListener('blur', () => talkKeys.use(talkPrefs));
+// The desktop app's global shortcut, pressed from another app: the same logic as a key here.
+// desktop.onTalk passes it on only while this page lacks focus; with focus the page heard the key.
+desktop.onTalk((state) => {
+  const h = talkPrefs.hotkey;
+  if (!h) return;
+  if (state === 'up') {
+    onTalk(talkKeys.up({ code: h.code }));
+    return;
+  }
+  onTalk(talkKeys.down({ ...h, repeat: false, inMessageBox: false, messageEmpty: true, inOtherControl: false }));
+});
 setInterval(() => apply(expire(view, Date.now())), 15_000);
 
 // Pasting the launch link into a tab that is already open changes only the fragment.

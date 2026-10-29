@@ -8,6 +8,7 @@ import {
   fromKeydown,
   fromModifierRelease,
   keycaps,
+  globalAccelerator,
   refused,
 } from '../src/hotkey';
 
@@ -124,5 +125,34 @@ describe('hold to talk', () => {
     t.down(key('Space'));
     t.use({ hotkey: SPACE, mode: 'toggle' });
     expect(t.up(key('Space'))).toBeNull();
+  });
+});
+
+describe('globalAccelerator (the desktop app, D6)', () => {
+  const hk = (code: string, mods: Partial<Hotkey> = {}): Hotkey => ({ ...SPACE, code, ...mods });
+
+  it('writes a combination the way the global-shortcut plugin reads it', () => {
+    expect(globalAccelerator(hk('Space', { alt: true }))).toBe('Alt+Space');
+    expect(globalAccelerator(hk('KeyK', { meta: true, shift: true }))).toBe('Super+Shift+KeyK');
+    expect(globalAccelerator(hk('Digit5', { ctrl: true, alt: true }))).toBe('Control+Alt+Digit5');
+    expect(globalAccelerator(hk('F5', { meta: true }))).toBe('Super+F5');
+    expect(globalAccelerator(hk('ArrowUp', { ctrl: true }))).toBe('Control+ArrowUp');
+    expect(globalAccelerator(hk('Period', { alt: true }))).toBe('Alt+Period');
+  });
+
+  it('refuses what is not a combination', () => {
+    expect(globalAccelerator(SPACE)).toBeNull();
+    expect(globalAccelerator(hk('KeyA'))).toBeNull();
+    expect(globalAccelerator(hk('F5'))).toBeNull();
+    expect(globalAccelerator(hk('AltRight', { alt: true }))).toBeNull();
+    expect(globalAccelerator(hk('MetaRight', { meta: true }))).toBeNull();
+    expect(globalAccelerator(hk('KeyK', { shift: true }))).toBeNull();
+  });
+
+  it('refuses a modifier as the key, Fn, and keys the plugin does not know', () => {
+    expect(globalAccelerator(hk('ShiftLeft', { alt: true, shift: true }))).toBeNull();
+    expect(globalAccelerator(hk('Fn', { alt: true }))).toBeNull();
+    expect(globalAccelerator(hk('Unidentified', { alt: true }))).toBeNull();
+    expect(globalAccelerator(hk('', { alt: true }))).toBeNull();
   });
 });

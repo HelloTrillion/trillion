@@ -11,7 +11,8 @@
  * has focus.
  *
  * A web page only hears keys while its tab is in front, and never hears the Fn key:
- * macOS keeps that one to itself. Both change with the desktop app.
+ * macOS keeps that one to itself. In the desktop app a combination also works from any
+ * app (`globalAccelerator`); Fn and a modifier on its own still do not.
  *
  * Pure: no DOM. The page turns each key event into `Key` and acts on the answer.
  */
@@ -158,6 +159,33 @@ export function keycaps(h: Hotkey, mac: boolean): string[] {
           ? `Num ${h.code.slice(6)}`
           : h.code);
   return [...caps, key];
+}
+
+// The keys the global-shortcut plugin (Tauri's `global-hotkey` crate) knows by their
+// `KeyboardEvent.code` name. It matches names case-insensitively, so the code goes as is.
+const GLOBAL_KEY =
+  /^(Key[A-Z]|Digit\d|Numpad\d|F([1-9]|1\d|2[0-4])|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Escape|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
+
+/**
+ * The shortcut as the desktop app registers it to work from any app, in the plugin's
+ * accelerator syntax ("Alt+Space", "Super+Shift+KeyK"; Super is Command on a Mac), or
+ * null if it cannot be global (D6): it must hold Command, Control or Option plus a key.
+ * A modifier on its own needs Accessibility permission, and a plain key or a Shift
+ * combination would stop it being typed in every other app.
+ */
+export function globalAccelerator(h: Hotkey): string | null {
+  if (!(h.meta || h.ctrl || h.alt) || isModifier(h.code) || !GLOBAL_KEY.test(h.code)) return null;
+  const mods = (
+    [
+      ['meta', 'Super'],
+      ['ctrl', 'Control'],
+      ['alt', 'Alt'],
+      ['shift', 'Shift'],
+    ] as const
+  )
+    .filter(([m]) => h[m])
+    .map(([, name]) => name);
+  return [...mods, h.code].join('+');
 }
 
 const same = (h: Hotkey, k: Pick<Key, 'code' | 'ctrl' | 'alt' | 'shift' | 'meta'>): boolean =>

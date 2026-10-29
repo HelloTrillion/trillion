@@ -5,7 +5,7 @@
  * the core keeps.
  */
 
-import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifierRelease, isModifier, keycaps, refused } from './hotkey';
+import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifierRelease, globalAccelerator, isModifier, keycaps, refused } from './hotkey';
 import type { Host } from './panel';
 import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
@@ -74,16 +74,33 @@ function radios<T extends string>(
 
 // ── Shortcuts ────────────────────────────────────────────────────────────
 
+/**
+ * In the desktop app, the line under the talk shortcut: whether it works from any app.
+ * `global` is the shell's answer, null until it has given one. Nothing in a tab.
+ */
+export function reachLine(app: boolean, hotkey: Hotkey | null, global: boolean | null): string {
+  if (!app) return '';
+  if (!hotkey || globalAccelerator(hotkey) === null) return 'To talk from any app, record a combination such as ⌥Space.';
+  if (global === null) return '';
+  return global
+    ? 'Works from any app, even while this window is hidden.'
+    : 'Another app already uses that combination, so it works only in this window. Record another to talk from any app.';
+}
+
 export function createShortcuts(
   host: Host,
   current: () => TalkPrefs,
   choose: (prefs: TalkPrefs) => void,
-): { open(): void; summary(): string } {
+  /** In the desktop app: whether the shell registered the shortcut globally (null: not yet known). */
+  app?: { global(): boolean | null },
+): { open(): void; summary(): string; redraw(): void } {
   const { finish } = section(
     host,
     'shortcuts',
     'Shortcuts',
-    "Talk to her without reaching for the mouse. Shortcuts work while Trillion's tab is in front; one that works from any app comes with the desktop app.",
+    app
+      ? 'Talk to her without reaching for the mouse. A combination works from any app, even while this window is hidden.'
+      : "Talk to her without reaching for the mouse. Shortcuts work while Trillion's tab is in front; one that works from any app comes with the desktop app.",
   );
 
   const card = el('div', 'settings-card');
@@ -101,12 +118,13 @@ export function createShortcuts(
   buttons.append(record, space, off);
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
+  const reach = el('p', 'settings-hint');
   const fn = el(
     'p',
     'settings-hint',
     'Any key or combination works: a modifier on its own (such as Right Option), Control or Command with a key, a function key, or Space. The Fn key cannot be used here: macOS never shows it to a web page.',
   );
-  card.append(cardHead, caps, buttons, status, fn);
+  card.append(cardHead, caps, reach, buttons, status, fn);
 
   const how = radios<Mode>(
     'talk-mode',
@@ -154,6 +172,8 @@ export function createShortcuts(
     }
     record.textContent = recording ? 'Cancel' : 'Record a shortcut';
     how.set(prefs.mode);
+    reach.textContent = recording ? '' : reachLine(app !== undefined, prefs.hotkey, app?.global() ?? null);
+    reach.hidden = !reach.textContent;
   }
 
   // Recording: the next key, or combination, pressed anywhere on the page.
@@ -245,6 +265,7 @@ export function createShortcuts(
       const h = current().hotkey;
       return h ? keycaps(h, MAC).join(' ') : 'Off';
     },
+    redraw: draw,
   };
 }
 

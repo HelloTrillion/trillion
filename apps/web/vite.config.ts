@@ -10,5 +10,10 @@ export default defineConfig({
   },
   // Loopback only, like the core (never-list #6). `trillion run --dev` accepts this origin.
   server: { host: '127.0.0.1', port: 5174, strictPort: true },
-  build: { target: 'es2022', sourcemap: false },
+  build: {
+    target: 'es2022',
+    sourcemap: false,
+    // The page, and the desktop app's floating orb window.
+    rolldownOptions: { input: { main: here('index.html'), orb: here('orb.html') } },
+  },
 });
