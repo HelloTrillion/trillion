@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -113,6 +114,8 @@ def test_run_with_the_apps_token_never_prints_it(
         logging.setLogRecordFactory(factory)
     out, err = capsys.readouterr()
     assert held and held[0].token == APP_TOKEN
+    # Tools and MCP servers she starts inherit the environment: the token is not in it.
+    assert "TRILLION_SESSION_TOKEN" not in os.environ
     assert "#token=" not in out + err
     assert APP_TOKEN not in out + err
     assert "started by the desktop app" in out

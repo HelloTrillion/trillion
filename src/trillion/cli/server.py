@@ -17,8 +17,10 @@ made on purpose, later, still stops it at once.
 from __future__ import annotations
 
 import signal
+import threading
 import time
 from types import FrameType
+from typing import Any, BinaryIO
 
 import uvicorn
 
@@ -44,3 +46,21 @@ class Server(uvicorn.Server):
         captured = getattr(self, "_captured_signals", None)
         if isinstance(captured, list):
             captured.clear()
+
+
+def stop_when_closed(stream: BinaryIO, server: Any) -> threading.Thread:
+    """Stop the server when `stream` ends. The desktop app holds the other end of the
+    server's input and never writes: when the app goes, even by a force quit, the
+    input closes and the server stops the way Ctrl+C stops it."""
+
+    def wait() -> None:
+        try:
+            while stream.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
+        server.should_exit = True
+
+    thread = threading.Thread(target=wait, name="desktop-lifeline", daemon=True)
+    thread.start()
+    return thread

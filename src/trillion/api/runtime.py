@@ -282,6 +282,8 @@ class Runtime:
     # Issued fresh at every launch, or handed over by the desktop app, and held only in
     # memory (SPN-11a). `open_runtime` sets it from `session_token`.
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    # The desktop app made the token: the server answers its challenge (api/app.py).
+    token_from_app: bool = False
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)
@@ -656,9 +658,14 @@ async def open_runtime(
     google_config: Path | None = None,
     skills_config: Path | None = None,
     env: Mapping[str, str] | None = None,
+    session: str | None = None,
 ) -> Runtime:
+    """`session` is the desktop app's token, already taken out of the environment by
+    `trillion run` so nothing it starts inherits it."""
     # Checked before anything is opened, so a bad one leaves nothing behind.
-    token = session_token(os.environ if env is None else env)
+    given = os.environ if env is None else env
+    token = session_token({SESSION_TOKEN_ENV: session} if session is not None else given)
+    token_from_app = session is not None or SESSION_TOKEN_ENV in given
     path = db or paths.db_path()
     spine_conn = await connect(path)
     await migrate(spine_conn)
@@ -725,6 +732,7 @@ async def open_runtime(
         granted_roots=roots,
         env=env,
         token=token,
+        token_from_app=token_from_app,
         _connections=[spine_conn, chat_conn, schedule_conn],
     )
     describe = registry.get(DESCRIBE_SELF)

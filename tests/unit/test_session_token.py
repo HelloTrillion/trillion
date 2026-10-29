@@ -58,3 +58,26 @@ async def test_the_runtime_makes_its_own_without_one(
         assert len(rt.token) >= 43
     finally:
         await rt.close()
+
+
+async def test_a_token_handed_in_is_used_and_marked_as_the_apps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    rt = await open_runtime(persona=tmp_path, secrets=MemoryStore(), env={}, session=GOOD)
+    try:
+        assert rt.token == GOOD
+        assert rt.token_from_app
+    finally:
+        await rt.close()
+
+
+async def test_a_fresh_token_is_not_the_apps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    rt = await open_runtime(persona=tmp_path, secrets=MemoryStore(), env={})
+    try:
+        assert not rt.token_from_app
+    finally:
+        await rt.close()

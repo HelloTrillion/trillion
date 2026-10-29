@@ -192,20 +192,23 @@ async def _run(args: argparse.Namespace) -> int:
         session_token,
     )
     from trillion.brain.config import ConfigError, provider_from_env
-    from trillion.cli.server import Server
+    from trillion.cli.server import Server, stop_when_closed
     from trillion.secrets import redact
 
     for folder in args.grant:
         if not folder.expanduser().is_dir():
             sys.stderr.write(f"trillion: --grant {folder}: not a folder\n")
             return 2
-    try:
-        session_token(os.environ)  # a bad token from the app fails before anything opens
-    except SessionTokenError as e:
-        sys.stderr.write(f"trillion: {e}\n")
-        return 2
+    # Taken out of the environment at once, so no tool or MCP server she starts inherits it.
+    app_token = os.environ.pop(SESSION_TOKEN_ENV, None)
+    if app_token is not None:
+        try:
+            session_token({SESSION_TOKEN_ENV: app_token})  # a bad one fails before anything opens
+        except SessionTokenError as e:
+            sys.stderr.write(f"trillion: {e}\n")
+            return 2
     # The desktop app made this token and shows the page itself: its token is never printed.
-    from_app = SESSION_TOKEN_ENV in os.environ
+    from_app = app_token is not None
     try:
         provider_from_env()  # fail on a half-made configuration before opening anything
     except ConfigError as e:
@@ -221,7 +224,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     from trillion import build
 
-    rt = await open_runtime(granted_roots=tuple(args.grant))
+    rt = await open_runtime(granted_roots=tuple(args.grant), session=app_token)
     redact.install(lambda: _secrets_in_use(rt))
     provider = rt.provider
     try:
@@ -267,6 +270,8 @@ async def _run(args: argparse.Namespace) -> int:
             build.announce(args.port, web_dir())
         except OSError as e:
             sys.stderr.write(f"trillion: could not note the running build: {e.strerror}\n")
+        if from_app:
+            stop_when_closed(sys.stdin.buffer, server)
         await server.serve()
     finally:
         build.withdraw()
