@@ -428,3 +428,92 @@ def test_the_home_in_another_case_is_refused():
 def test_plain_leaves_posix_paths_alone():
     p: PurePath = PurePosixPath("/a/b")
     assert rules._plain(p) is p
+
+
+# ── Cloud folders macOS keeps in ~/Library ─────────────────────────────
+
+
+def cloud_why(world: dict[str, Path], rel: str) -> str | None:
+    folder = world["home"] / rel
+    folder.mkdir(parents=True, exist_ok=True)
+    library = world["home"] / "Library"
+    # ~/Library is hidden by the system, as on a real Mac.
+    return rules.why_not(
+        folder,
+        home=world["home"],
+        data_dir=world["data"],
+        protected_roots=(),
+        mounts=(),
+        system=(),
+        hidden=lambda q: q == library,
+    )
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "Library/Mobile Documents/com~apple~CloudDocs",
+        "Library/Mobile Documents/com~apple~CloudDocs/Website",
+        "Library/mobile documents/COM~APPLE~CLOUDDOCS/Website",
+        "Library/CloudStorage/Dropbox",
+        "Library/CloudStorage/Dropbox/Clients/Website",
+        "Library/CloudStorage/GoogleDrive-sam@example.com/My Drive",
+    ],
+)
+def test_icloud_drive_and_cloud_storage_may_be_shared(world, rel):
+    assert cloud_why(world, rel) is None
+
+
+@pytest.mark.parametrize(
+    ("rel", "word"),
+    [
+        ("Library/Mobile Documents", "hidden"),
+        ("Library/Mobile Documents/com~apple~Notes", "hidden"),
+        ("Library/CloudStorage", "hidden"),
+        ("Library/CloudStorage/Dropbox/.cache", "hidden"),
+        ("Library/CloudStorage/Dropbox/repo/.git", "protected"),
+    ],
+)
+def test_the_rest_of_library_and_the_rules_inside_cloud_folders_still_hold(world, rel, word):
+    reason = cloud_why(world, rel)
+    assert reason is not None and word in reason
+
+
+def test_without_the_hidden_flag_the_rest_of_library_is_still_the_apps(world):
+    for rel in ("Library/Mobile Documents", "Library/CloudStorage"):
+        folder = world["home"] / rel
+        folder.mkdir(parents=True, exist_ok=True)
+        assert "apps" in (why(world, folder) or "")
+
+
+def test_a_hidden_folder_inside_a_cloud_folder_is_refused(world):
+    dropbox = world["home"] / "Library" / "CloudStorage" / "Dropbox"
+    secret = dropbox / "Private"
+    secret.mkdir(parents=True)
+    reason = rules.why_not(
+        secret,
+        home=world["home"],
+        data_dir=world["data"],
+        protected_roots=(),
+        mounts=(),
+        system=(),
+        hidden=lambda q: q == secret,
+    )
+    assert reason is not None and "hidden" in reason
+
+
+def test_a_link_into_icloud_drive_is_judged_as_where_it_leads(world):
+    drive = world["home"] / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+    drive.mkdir(parents=True)
+    at = world["project"] / "cloud"
+    link(at, drive)
+    assert why(world, at) is None
+    notes = world["home"] / "Library" / "Mobile Documents" / "com~apple~Notes"
+    notes.mkdir()
+    other = world["project"] / "notes"
+    link(other, notes)
+    assert why(world, other) is not None
+
+
+def test_windows_appdata_has_no_cloud_exception():
+    assert "apps" in (win("C:/Users/sam/AppData/Local/CloudStorage/Dropbox") or "")

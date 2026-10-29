@@ -2,7 +2,8 @@
 
 A home folder (the user's or anyone's), a whole drive or anything mounted, system
 folders, Trillion's own folder or one holding it, the apps' own folders under home
-(`~/Library`, `~\\AppData`), anything the deny floor protects, and hidden folders or
+(`~/Library`, `~\\AppData`; but iCloud Drive and the cloud storage folders kept in
+`~/Library` may be shared), anything the deny floor protects, and hidden folders or
 folders inside one. A link is judged as the folder it leads to, so a harmless-looking
 name can't carry a share into `~/.ssh`. Names are compared folded, as the deny floor
 compares them: refusing too much here is safe.
@@ -72,6 +73,10 @@ _OTHER_HOMES: tuple[PurePath, ...] = (PurePosixPath("/root"), PurePosixPath("/va
 # Where apps keep their own files under a home folder. Hidden by the system, but the
 # flag can be taken off, so the names are refused too.
 _APP_FOLDERS = ("Library", "AppData")
+# Except where macOS keeps the user's own cloud files inside ~/Library: iCloud Drive,
+# and one folder per provider account under CloudStorage (Dropbox, Google Drive...).
+_ICLOUD_DRIVE = ("Library", "Mobile Documents", "com~apple~CloudDocs")
+_CLOUD_STORAGE = ("Library", "CloudStorage")
 
 
 def resolved(path: Path) -> Path:
@@ -171,6 +176,18 @@ def _holds(outer: PurePath, inner: PurePath) -> bool:
     return deny_floor.is_under(inner, outer)
 
 
+def _cloud_top(p: PurePath, home: PurePath) -> PurePath | None:
+    """The cloud folder `p` is in (iCloud Drive or one provider's account folder), or
+    None. The folders holding them stay the apps' own."""
+    icloud = home.joinpath(*_ICLOUD_DRIVE)
+    if deny_floor.is_under(p, icloud):
+        return type(p)(*p.parts[: len(icloud.parts)])
+    storage = home.joinpath(*_CLOUD_STORAGE)
+    if deny_floor.is_under(p, storage) and len(p.parts) > len(storage.parts):
+        return type(p)(*p.parts[: len(storage.parts) + 1])
+    return None
+
+
 def judge(
     p: PurePath,
     *,
@@ -194,9 +211,13 @@ def judge(
         return "system folders are never shared"
     names = p.parts[1:] if p.anchor else p.parts
     above = [q for q in (p, *p.parents) if q.parent != q]
+    cloud = _cloud_top(p, home)
+    if cloud is not None:
+        # ~/Library above a cloud folder is hidden by the system; what is inside isn't.
+        above = [q for q in above if deny_floor.is_under(q, cloud)]
     if any(name.startswith(".") for name in names) or any(hidden(q) for q in above):
         return "hidden folders, and folders inside them, are never shared"
-    if any(deny_floor.is_under(p, home / name) for name in _APP_FOLDERS):
+    if cloud is None and any(deny_floor.is_under(p, home / name) for name in _APP_FOLDERS):
         return "that folder holds apps' own files, which are never shared"
     if p.parent == p or any(_same(p, m) for m in mounts):
         return "a whole drive is never shared"
