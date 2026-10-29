@@ -196,7 +196,7 @@ def _newest_source(found: Path) -> float:
     root = found.parents[2] if found.name == "dist" and len(found.parents) > 2 else None
     if root is None or not (found.parent / "src").is_dir():
         return 0.0
-    sources = [found.parent / "src", found.parent / "index.html"]
+    sources = [found.parent / "src", found.parent / "index.html", found.parent / "orb.html"]
     sources += [pkg / "src" for pkg in (root / "packages").glob("*")]
     newest = 0.0
     for source in sources:

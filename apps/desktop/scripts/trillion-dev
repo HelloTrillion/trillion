@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs Trillion from this checkout, for `pnpm dev`: the app starts it like an installed one.
+root="$(cd "$(dirname "$0")/../../.." && pwd)"
+exec uv run --project "$root" trillion "$@"

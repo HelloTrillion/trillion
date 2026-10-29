@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -177,6 +178,27 @@ def build_listening(settings: ListenSettings | None, secrets: SecretStore) -> ST
     return option.build(secrets)
 
 
+# The desktop app makes the session token and hands it to the server it starts (D2).
+SESSION_TOKEN_ENV = "TRILLION_SESSION_TOKEN"  # noqa: S105 - a variable name, not a secret
+_URL_SAFE_32 = re.compile(r"[A-Za-z0-9_-]{32,}")
+
+
+class SessionTokenError(ValueError):
+    """The token handed over is too short or not URL-safe."""
+
+
+def session_token(env: Mapping[str, str]) -> str:
+    """The app's token when it gave one, else a fresh one. A bad one refuses rather than
+    falls back: the app would be left holding a token the server does not accept."""
+    given = env.get(SESSION_TOKEN_ENV)
+    if given is None:
+        return secrets.token_urlsafe(32)
+    if not _URL_SAFE_32.fullmatch(given):
+        # Never echo the value: it is a credential.
+        raise SessionTokenError(f"{SESSION_TOKEN_ENV} must be at least 32 URL-safe characters")
+    return given
+
+
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
@@ -257,8 +279,11 @@ class Runtime:
     onboarding_skipped: bool = False
     granted_roots: tuple[Path, ...]
     env: Mapping[str, str] | None = None
-    # Issued fresh at every launch and held only in memory (SPN-11a).
+    # Issued fresh at every launch, or handed over by the desktop app, and held only in
+    # memory (SPN-11a). `open_runtime` sets it from `session_token`.
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    # The desktop app made the token: the server answers its challenge (api/app.py).
+    token_from_app: bool = False
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)
@@ -633,7 +658,14 @@ async def open_runtime(
     google_config: Path | None = None,
     skills_config: Path | None = None,
     env: Mapping[str, str] | None = None,
+    session: str | None = None,
 ) -> Runtime:
+    """`session` is the desktop app's token, already taken out of the environment by
+    `trillion run` so nothing it starts inherits it."""
+    # Checked before anything is opened, so a bad one leaves nothing behind.
+    given = os.environ if env is None else env
+    token = session_token({SESSION_TOKEN_ENV: session} if session is not None else given)
+    token_from_app = session is not None or SESSION_TOKEN_ENV in given
     path = db or paths.db_path()
     spine_conn = await connect(path)
     await migrate(spine_conn)
@@ -699,6 +731,8 @@ async def open_runtime(
         onboarding_skipped=await preferences.get(OWNER, ONBOARDING_PREF) == "skipped",
         granted_roots=roots,
         env=env,
+        token=token,
+        token_from_app=token_from_app,
         _connections=[spine_conn, chat_conn, schedule_conn],
     )
     describe = registry.get(DESCRIBE_SELF)

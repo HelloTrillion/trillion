@@ -11,7 +11,8 @@
  * has focus.
  *
  * A web page only hears keys while its tab is in front, and never hears the Fn key:
- * macOS keeps that one to itself. Both change with the desktop app.
+ * macOS keeps that one to itself. In the desktop app a combination also works from any
+ * app (`globalAccelerator`); Fn and a modifier on its own still do not.
  *
  * Pure: no DOM. The page turns each key event into `Key` and acts on the answer.
  */
@@ -160,8 +161,78 @@ export function keycaps(h: Hotkey, mac: boolean): string[] {
   return [...caps, key];
 }
 
-const same = (h: Hotkey, k: Pick<Key, 'code' | 'ctrl' | 'alt' | 'shift' | 'meta'>): boolean =>
+// The keys the global-shortcut plugin (Tauri's `global-hotkey` crate) knows by their
+// `KeyboardEvent.code` name. It matches names case-insensitively, so the code goes as is.
+const GLOBAL_KEY =
+  /^(Key[A-Z]|Digit\d|Numpad\d|F([1-9]|1\d|20)|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Escape|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/;
+
+/**
+ * The shortcut as the desktop app registers it to work from any app, in the plugin's
+ * accelerator syntax, or null if it cannot be global (D6). The rule, which the shell
+ * mirrors:
+ *
+ *   1. It holds Command (Super), Control or Option (Alt); Shift may be added.
+ *   2. The key is one of GLOBAL_KEY: a letter, digit, keypad digit, F1–F20, an arrow,
+ *      Space, Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, PageUp,
+ *      PageDown, or ` - = [ ] \ ; ' , . /. Never a modifier, never Fn.
+ *   3. Not Command or Control alone (one of them, no Option, no Shift) with a letter,
+ *      Space, Tab or Backquote: every app uses those (⌘C, ⌘V, ⌘Space, ⌘Tab, ⌘`).
+ *   4. Not the page's own: Command or Control alone, with or without Shift, with K,
+ *      \ or , (the message box, the conversations, the sidebar, Settings).
+ *
+ * A modifier on its own needs Accessibility permission, and a plain key or a Shift
+ * combination would stop it being typed in every other app.
+ *
+ * Written as the modifiers in the order Super, Control, Alt, Shift, then the code, all
+ * joined with "+": "Alt+Space", "Control+Alt+KeyT", "Super+F5". Super is Command on a Mac.
+ */
+export function globalAccelerator(h: Hotkey): string | null {
+  if (!(h.meta || h.ctrl || h.alt) || isModifier(h.code) || !GLOBAL_KEY.test(h.code)) return null;
+  const primaryOnly = h.meta !== h.ctrl && !h.alt;
+  if (primaryOnly && !h.shift && /^(Key[A-Z]|Space|Tab|Backquote)$/.test(h.code)) return null;
+  if (primaryOnly && ['KeyK', 'Backslash', 'Comma'].includes(h.code)) return null;
+  const mods = (
+    [
+      ['meta', 'Super'],
+      ['ctrl', 'Control'],
+      ['alt', 'Alt'],
+      ['shift', 'Shift'],
+    ] as const
+  )
+    .filter(([m]) => h[m])
+    .map(([, name]) => name);
+  return [...mods, h.code].join('+');
+}
+
+/** The key event is the shortcut: the same key with the same modifiers. */
+export const matches = (h: Hotkey, k: Pick<Key, 'code' | 'ctrl' | 'alt' | 'shift' | 'meta'>): boolean =>
   h.code === k.code && h.ctrl === k.ctrl && h.alt === k.alt && h.shift === k.shift && h.meta === k.meta;
+const same = matches;
+
+/** Where focus is, as the talk shortcut sees it. */
+export type Context = Pick<Key, 'inMessageBox' | 'messageEmpty' | 'inOtherControl'>;
+
+/** The least of the DOM the context needs, so this module stays free of it. */
+interface Focusable {
+  closest(selector: string): unknown;
+}
+
+/**
+ * What has focus: the message box, or another field, button, the thread list or
+ * Settings, which take keys themselves. With Settings open the message box in the
+ * sidebar still talks.
+ */
+export function contextOf(target: Focusable | null, input: Focusable & { readonly value: string }, settingsOpen: boolean): Context {
+  return {
+    inMessageBox: target === input,
+    messageEmpty: input.value.trim() === '',
+    inOtherControl:
+      (settingsOpen && (target === null || target.closest('#sidebar') === null)) ||
+      (target !== null &&
+        target !== input &&
+        target.closest('input, textarea, select, button, [contenteditable], [role="listbox"]') !== null),
+  };
+}
 
 /**
  * Turns key events into talk actions. One per page: it remembers whether a lone
@@ -232,5 +303,26 @@ export class TalkKeys {
       return 'cancel';
     }
     return null;
+  }
+}
+
+/**
+ * The desktop app's global shortcut, pressed or let go (its `talk` event), turned into the
+ * same actions as a key here. A second press before a release is a repeat.
+ */
+export class ShellKeys {
+  private down = false;
+
+  constructor(private readonly keys: TalkKeys) {}
+
+  event(h: Hotkey | null, state: 'down' | 'up', ctx: Context): Action | null {
+    if (!h) return null;
+    if (state === 'up') {
+      this.down = false;
+      return this.keys.up({ code: h.code });
+    }
+    const repeat = this.down;
+    this.down = true;
+    return this.keys.down({ ...h, repeat, ...ctx });
   }
 }

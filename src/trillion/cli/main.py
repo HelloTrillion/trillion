@@ -185,15 +185,30 @@ async def _run(args: argparse.Namespace) -> int:
     import uvicorn
 
     from trillion.api.app import HOST, MAX_FRAME_BYTES, create_app, local_hosts, web_dir
-    from trillion.api.runtime import open_runtime
+    from trillion.api.runtime import (
+        SESSION_TOKEN_ENV,
+        SessionTokenError,
+        open_runtime,
+        session_token,
+    )
     from trillion.brain.config import ConfigError, provider_from_env
-    from trillion.cli.server import Server
+    from trillion.cli.server import Server, stop_when_closed
     from trillion.secrets import redact
 
     for folder in args.grant:
         if not folder.expanduser().is_dir():
             sys.stderr.write(f"trillion: --grant {folder}: not a folder\n")
             return 2
+    # Taken out of the environment at once, so no tool or MCP server she starts inherits it.
+    app_token = os.environ.pop(SESSION_TOKEN_ENV, None)
+    if app_token is not None:
+        try:
+            session_token({SESSION_TOKEN_ENV: app_token})  # a bad one fails before anything opens
+        except SessionTokenError as e:
+            sys.stderr.write(f"trillion: {e}\n")
+            return 2
+    # The desktop app made this token and shows the page itself: its token is never printed.
+    from_app = app_token is not None
     try:
         provider_from_env()  # fail on a half-made configuration before opening anything
     except ConfigError as e:
@@ -209,7 +224,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     from trillion import build
 
-    rt = await open_runtime(granted_roots=tuple(args.grant))
+    rt = await open_runtime(granted_roots=tuple(args.grant), session=app_token)
     redact.install(lambda: _secrets_in_use(rt))
     provider = rt.provider
     try:
@@ -233,6 +248,7 @@ async def _run(args: argparse.Namespace) -> int:
         # or to another site, and the page removes it from the address bar on load.
         base = DEV_ORIGIN if args.dev else f"http://{HOST}:{args.port}"
         url = f"{base}/#token={rt.token}"
+        open_line = "started by the desktop app" if from_app else url
         model = (
             f"{provider.name} ({provider.model})"
             if provider
@@ -241,19 +257,22 @@ async def _run(args: argparse.Namespace) -> int:
         grants = ", ".join(str(r) for r in rt.granted_roots) or "none"
         sys.stdout.write(
             f"Trillion is running on this machine only.\n"
-            f"  open:    {url}\n"
+            f"  open:    {open_line}\n"
             f"  model:   {model}\n"
             f"  folders: {grants}\n"
             f"Press Ctrl+C to stop.\n"
         )
         sys.stdout.flush()
-        if not args.no_open:
+        if not args.no_open and not from_app:
             webbrowser.open(url)
         try:
             # So `trillion doctor` can tell whether this is the build on disk (ONB-11).
             build.announce(args.port, web_dir())
         except OSError as e:
             sys.stderr.write(f"trillion: could not note the running build: {e.strerror}\n")
+        # No stdin (launchd, a detached run) means no app holding the other end.
+        if from_app and sys.stdin is not None:
+            stop_when_closed(sys.stdin.buffer, server)
         await server.serve()
     finally:
         build.withdraw()

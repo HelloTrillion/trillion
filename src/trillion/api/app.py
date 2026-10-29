@@ -9,10 +9,12 @@ reachable before a valid `hello`.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,6 +49,10 @@ MAX_FRAME_BYTES = 1 << 20
 CLOSE_UNAUTHENTICATED = 4401
 CLOSE_FORBIDDEN = 4403
 ENV_WEB_DIR = "TRILLION_WEB_DIR"
+# The desktop app asks this before it shows the page: only the server it started can
+# answer, because only it holds the token (a squatter on the port cannot).
+DESKTOP_HELLO = "/api/desktop/hello"
+_NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 _HEADERS = {
     "Content-Security-Policy": (
@@ -112,7 +118,9 @@ def create_app(
         # it cannot make the browser send our Host header.
         if request.headers.get("host") not in hosts:
             return PlainTextResponse("forbidden", status_code=403)
-        if request.url.path.startswith("/api/") and request.method != "OPTIONS":
+        # The challenge proves the token without sending it, so it needs none.
+        challenge = request.url.path == DESKTOP_HELLO
+        if request.url.path.startswith("/api/") and request.method != "OPTIONS" and not challenge:
             refusal = _api_refusal(request, rt.token, origins)
             if refusal is not None:
                 return refusal
@@ -168,6 +176,16 @@ def create_app(
             await session.close()
             with _quiet():
                 await socket.close()
+
+    if rt.token_from_app:
+
+        @app.get(DESKTOP_HELLO)
+        async def desktop_hello(request: Request) -> JSONResponse:
+            nonce = request.query_params.get("n", "")
+            if not _NONCE.fullmatch(nonce):
+                return JSONResponse({"error": "bad_request"}, status_code=400)
+            mac = hmac.new(rt.token.encode(), nonce.encode(), hashlib.sha256).hexdigest()
+            return JSONResponse({"mac": mac})
 
     app.include_router(create_router(rt))
     app.include_router(create_persona_router(rt))
