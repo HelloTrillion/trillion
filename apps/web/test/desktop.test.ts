@@ -1,7 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SPACE } from '../src/hotkey';
-import { inApp, markShell, onOrb, onTalk, openExternal, orbState, reportState, setTalkShortcut, showMain, signInTab } from '../src/desktop';
+import { SPACE, contextOf } from '../src/hotkey';
+import {
+  inApp,
+  markShell,
+  onOrb,
+  onTalk,
+  openExternal,
+  orbState,
+  reportState,
+  resetReports,
+  routeLinks,
+  setTalkShortcut,
+  showMain,
+  signInTab,
+} from '../src/desktop';
 import { reachLine } from '../src/browser';
 
 type Handler = (e: { payload: unknown }) => void;
@@ -23,6 +36,8 @@ function stubTauri(answers: Record<string, unknown> = {}) {
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 afterEach(() => {
+  resetReports();
+  vi.useRealTimers();
   delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
   delete document.documentElement.dataset['shell'];
   vi.restoreAllMocks();
@@ -84,17 +99,12 @@ describe('in the app', () => {
     await expect(setTalkShortcut({ ...SPACE, alt: true }, 'toggle')).resolves.toEqual({ global: false });
   });
 
-  it('feeds the talk event on only while the page does not have focus', async () => {
+  it('passes on every talk event, focused or not: the shell is the only source of that shortcut', async () => {
     const t = stubTauri();
     const seen: string[] = [];
-    let focused = true;
-    const off = onTalk((s) => seen.push(s), () => focused);
+    const off = onTalk((s) => seen.push(s));
     await flush();
     expect(t.listen).toHaveBeenCalledWith('talk', expect.any(Function));
-    t.emit('talk', { state: 'down' });
-    t.emit('talk', { state: 'up' });
-    expect(seen).toEqual([]);
-    focused = false;
     t.emit('talk', { state: 'down' });
     t.emit('talk', { state: 'up' });
     t.emit('talk', { state: 'sideways' });
@@ -103,17 +113,88 @@ describe('in the app', () => {
     expect(t.unlisten).toHaveBeenCalled();
   });
 
-  it('sends the orb state and caption, once per change', async () => {
+  it('sends a state change at once, and gathers caption changes for a moment', () => {
+    vi.useFakeTimers();
     const t = stubTauri();
+    const sent = () => t.invoke.mock.calls.filter(([c]) => c === 'report_state').map(([, a]) => a);
     reportState('listening', '');
     reportState('listening', '');
+    expect(sent()).toEqual([{ state: 'listening', caption: '' }]);
+    reportState('listening', 'Hel');
     reportState('listening', 'Hello');
-    reportState('speaking', 'Hello');
-    expect(t.invoke.mock.calls.filter(([c]) => c === 'report_state').map(([, a]) => a)).toEqual([
+    expect(sent()).toHaveLength(1);
+    vi.advanceTimersByTime(120);
+    expect(sent()).toEqual([
       { state: 'listening', caption: '' },
       { state: 'listening', caption: 'Hello' },
-      { state: 'speaking', caption: 'Hello' },
     ]);
+    reportState('speaking', 'Hello');
+    expect(sent()).toHaveLength(3);
+    // A caption that goes back to the one sent before the timer fires sends nothing.
+    reportState('speaking', 'Hello there');
+    reportState('speaking', 'Hello');
+    vi.advanceTimersByTime(500);
+    expect(sent()).toHaveLength(3);
+    // A state change takes the latest caption with it and drops the waiting one.
+    reportState('speaking', 'Bye');
+    reportState('idle', 'Bye now');
+    vi.advanceTimersByTime(500);
+    expect(sent().slice(3)).toEqual([{ state: 'idle', caption: 'Bye now' }]);
+  });
+
+  it('sends only the end of a long caption', () => {
+    const t = stubTauri();
+    reportState('speaking', 'word '.repeat(200));
+    const caption = (t.invoke.mock.calls[0]?.[1] as { caption: string }).caption;
+    expect(caption.length).toBeLessThanOrEqual(120);
+    expect(caption.startsWith('…')).toBe(true);
+  });
+
+  it('opens links meant for a new tab in the browser', () => {
+    const t = stubTauri();
+    const stop = routeLinks();
+    const a = document.createElement('a');
+    a.href = 'https://example.com/docs';
+    a.target = '_blank';
+    const inner = document.createElement('span');
+    a.append(inner);
+    document.body.append(a);
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+    inner.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(t.invoke).toHaveBeenCalledWith('open_external', { url: 'https://example.com/docs' });
+
+    const same = document.createElement('a');
+    same.href = 'https://example.com/here';
+    document.body.append(same);
+    const ev2 = new MouseEvent('click', { bubbles: true, cancelable: true });
+    same.dispatchEvent(ev2);
+    expect(ev2.defaultPrevented).toBe(false);
+
+    const mail = document.createElement('a');
+    mail.href = 'mailto:someone@example.com';
+    mail.target = '_blank';
+    document.body.append(mail);
+    const ev3 = new MouseEvent('click', { bubbles: true, cancelable: true });
+    mail.dispatchEvent(ev3);
+    expect(ev3.defaultPrevented).toBe(false);
+    stop();
+    a.remove();
+    same.remove();
+    mail.remove();
+  });
+
+  it('leaves links alone outside the app', () => {
+    const stop = routeLinks();
+    const a = document.createElement('a');
+    a.href = 'https://example.com/docs';
+    a.target = '_blank';
+    document.body.append(a);
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+    a.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+    stop();
+    a.remove();
   });
 
   it('names the galaxy states the way the shell does', () => {
@@ -199,9 +280,34 @@ describe('the Settings line under the talk shortcut (D6)', () => {
     expect(reachLine(true, opt, true)).toBe('Works from any app, even while this window is hidden.');
   });
   it('says when the shell could not take a combination', () => {
-    expect(reachLine(true, opt, false)).toMatch(/another app/i);
+    expect(reachLine(true, opt, false)).toBe("That combination couldn't be used from other apps; try another, such as ⌥Space.");
   });
   it('says nothing until the shell has answered', () => {
     expect(reachLine(true, opt, null)).toBe('');
+  });
+});
+
+describe("contextOf: what has focus, for a talk key or the shell's talk event", () => {
+  const page = () => {
+    document.body.innerHTML =
+      '<aside id="sidebar"><textarea id="input"></textarea><button id="b">x</button></aside><dialog id="settings"><input id="field"></dialog>';
+    return document.getElementById('input') as HTMLTextAreaElement;
+  };
+  it('the message box, and whether it is empty', () => {
+    const input = page();
+    expect(contextOf(input, input, false)).toEqual({ inMessageBox: true, messageEmpty: true, inOtherControl: false });
+    input.value = 'hi';
+    expect(contextOf(input, input, false)).toEqual({ inMessageBox: true, messageEmpty: false, inOtherControl: false });
+  });
+  it('another field or a button takes keys itself', () => {
+    const input = page();
+    expect(contextOf(document.getElementById('b'), input, false).inOtherControl).toBe(true);
+    expect(contextOf(document.body, input, false).inOtherControl).toBe(false);
+  });
+  it('with Settings open only the sidebar talks', () => {
+    const input = page();
+    expect(contextOf(document.getElementById('field'), input, true).inOtherControl).toBe(true);
+    expect(contextOf(null, input, true).inOtherControl).toBe(true);
+    expect(contextOf(input, input, true).inOtherControl).toBe(false);
   });
 });

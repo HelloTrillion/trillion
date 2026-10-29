@@ -3,7 +3,7 @@ import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
 import { createAbout, createAppearance, createBoardSettings, createFolders, createShortcuts, createUsageSettings } from './browser';
-import { TalkKeys, type TalkPrefs } from './hotkey';
+import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, matches } from './hotkey';
 import * as desktop from './desktop';
 import { icon } from './icons';
 import { createConnected } from './connected';
@@ -170,9 +170,12 @@ const systemLight = matchMedia('(prefers-color-scheme: light)');
 let themeChoice: ThemeChoice = savedTheme();
 let talkPrefs: TalkPrefs = savedTalk();
 const talkKeys = new TalkKeys(talkPrefs);
-// In the desktop app: `<html data-shell="desktop">`, and whether the shell made the talk shortcut global.
+// In the desktop app: `<html data-shell="desktop">`, links for a new tab open in the browser, and
+// whether the shell made the talk shortcut global (then the shell alone reports that key).
 desktop.markShell();
+desktop.routeLinks();
 let talkGlobal: boolean | null = null;
+let shellKeys = new ShellKeys(talkKeys);
 let version = '';
 const galaxy = createGalaxy(canvas, { theme: shownTheme(themeChoice, systemLight.matches) });
 
@@ -917,7 +920,19 @@ const shortcuts = createShortcuts(
     panel.refresh();
     registerTalk();
   },
-  desktop.DESKTOP ? { global: () => talkGlobal } : undefined,
+  desktop.DESKTOP
+    ? {
+        global: () => talkGlobal,
+        // While a new shortcut is recorded the old one is let go, so its keys reach the recorder.
+        recording: (on) => {
+          if (on) {
+            ++talkAsked;
+            talkGlobal = null;
+            void desktop.setTalkShortcut(null, talkPrefs.mode);
+          } else registerTalk();
+        },
+      }
+    : undefined,
 );
 /** In the desktop app, make the talk shortcut work from any app; only the latest answer counts. */
 let talkAsked = 0;
@@ -925,6 +940,7 @@ function registerTalk(): void {
   if (!desktop.DESKTOP) return;
   const asked = ++talkAsked;
   talkGlobal = null;
+  shellKeys = new ShellKeys(talkKeys);
   shortcuts.redraw();
   void desktop.setTalkShortcut(talkPrefs.hotkey, talkPrefs.mode).then(({ global }) => {
     if (asked !== talkAsked) return;
@@ -1545,7 +1561,7 @@ function talk(held = false): void {
 }
 micBtn.addEventListener('click', () => talk());
 /** What the talk shortcut can see of one key event. */
-function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
+function keyOf(ev: KeyboardEvent): Key {
   const target = ev.target instanceof HTMLElement ? ev.target : null;
   return {
     code: ev.code,
@@ -1554,15 +1570,13 @@ function keyOf(ev: KeyboardEvent): Parameters<TalkKeys['down']>[0] {
     shift: ev.shiftKey,
     meta: ev.metaKey,
     repeat: ev.repeat,
-    inMessageBox: target === input,
-    messageEmpty: input.value.trim() === '',
-    // Another field, a button, the thread list, or Settings takes keys itself. With Settings open the message box
-    // in the sidebar still talks.
-    inOtherControl:
-      (panel.isOpen && (target === null || target.closest('#sidebar') === null)) ||
-      (target !== null && target !== input && target.closest('input, textarea, select, button, [contenteditable], [role="listbox"]') !== null),
+    ...contextOf(target, input, panel.isOpen),
   };
 }
+
+/** The desktop app has the talk shortcut: the page leaves that key to it, so it never counts twice. */
+const shellHas = (k: Pick<Key, 'code' | 'ctrl' | 'alt' | 'shift' | 'meta'>): boolean =>
+  talkGlobal === true && talkPrefs.hotkey !== null && matches(talkPrefs.hotkey, k);
 
 /** Do what the talk shortcut asked. */
 function onTalk(action: ReturnType<TalkKeys['down']>, ev?: KeyboardEvent): void {
@@ -1611,25 +1625,30 @@ addEventListener('keydown', (ev) => {
     toggleThreads();
     return;
   }
-  onTalk(talkKeys.down(keyOf(ev)), ev);
+  const key = keyOf(ev);
+  if (!shellHas(key)) onTalk(talkKeys.down(key), ev);
   if (ev.key.toLowerCase() === 'k' && primary(ev)) {
     ev.preventDefault();
     focusInput();
   }
 });
-addEventListener('keyup', (ev) => onTalk(talkKeys.up({ code: ev.code }), ev));
-// A key let go in another window never arrives; start fresh when the tab comes back.
-addEventListener('blur', () => talkKeys.use(talkPrefs));
-// The desktop app's global shortcut, pressed from another app: the same logic as a key here.
-// desktop.onTalk passes it on only while this page lacks focus; with focus the page heard the key.
+addEventListener('keyup', (ev) => {
+  if (talkGlobal === true && ev.code === talkPrefs.hotkey?.code) return; // the shell reports its release
+  onTalk(talkKeys.up({ code: ev.code }), ev);
+});
+// A key let go in another window never arrives; start fresh when the tab comes back. Not while the
+// desktop app has the shortcut: it reports the release wherever focus is, and a hold must end.
+addEventListener('blur', () => {
+  if (talkGlobal !== true) talkKeys.use(talkPrefs);
+});
+// The desktop app's global shortcut: the same logic as a key here. With this window in front a
+// field or Settings with focus still keeps it, as it would the key; from another app nothing here does.
 desktop.onTalk((state) => {
-  const h = talkPrefs.hotkey;
-  if (!h) return;
-  if (state === 'up') {
-    onTalk(talkKeys.up({ code: h.code }));
-    return;
-  }
-  onTalk(talkKeys.down({ ...h, repeat: false, inMessageBox: false, messageEmpty: true, inOtherControl: false }));
+  const target = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const ctx = document.hasFocus()
+    ? contextOf(target, input, panel.isOpen)
+    : { inMessageBox: false, messageEmpty: true, inOtherControl: false };
+  onTalk(shellKeys.event(talkPrefs.hotkey, state, ctx));
 });
 setInterval(() => apply(expire(view, Date.now())), 15_000);
 

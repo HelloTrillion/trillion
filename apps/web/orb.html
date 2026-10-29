@@ -56,6 +56,7 @@
         animation: none;
         opacity: 0.7;
       }
+      /* The pill around the caption. */
       .float-caption {
         max-width: 100%;
         padding: 4px 10px;
@@ -66,13 +67,17 @@
         font-size: 12px;
         line-height: 1.35;
         text-align: center;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
       }
       .float-caption[hidden] {
         display: none;
+      }
+      /* Two lines, the newest at the bottom: older words go out of sight at the top. */
+      .float-lines {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        max-height: 2.7em;
+        overflow: hidden;
       }
       @keyframes breathe {
         0%,

@@ -8,7 +8,9 @@ import {
   fromKeydown,
   fromModifierRelease,
   keycaps,
+  ShellKeys,
   globalAccelerator,
+  matches,
   refused,
 } from '../src/hotkey';
 
@@ -133,11 +135,15 @@ describe('globalAccelerator (the desktop app, D6)', () => {
 
   it('writes a combination the way the global-shortcut plugin reads it', () => {
     expect(globalAccelerator(hk('Space', { alt: true }))).toBe('Alt+Space');
-    expect(globalAccelerator(hk('KeyK', { meta: true, shift: true }))).toBe('Super+Shift+KeyK');
+    expect(globalAccelerator(hk('KeyT', { ctrl: true, alt: true }))).toBe('Control+Alt+KeyT');
+    expect(globalAccelerator(hk('KeyK', { meta: true, alt: true, shift: true }))).toBe('Super+Alt+Shift+KeyK');
     expect(globalAccelerator(hk('Digit5', { ctrl: true, alt: true }))).toBe('Control+Alt+Digit5');
     expect(globalAccelerator(hk('F5', { meta: true }))).toBe('Super+F5');
+    expect(globalAccelerator(hk('F20', { alt: true }))).toBe('Alt+F20');
     expect(globalAccelerator(hk('ArrowUp', { ctrl: true }))).toBe('Control+ArrowUp');
     expect(globalAccelerator(hk('Period', { alt: true }))).toBe('Alt+Period');
+    expect(globalAccelerator(hk('KeyT', { meta: true, ctrl: true }))).toBe('Super+Control+KeyT');
+    expect(globalAccelerator(hk('KeyT', { meta: true, shift: true }))).toBe('Super+Shift+KeyT');
   });
 
   it('refuses what is not a combination', () => {
@@ -149,10 +155,66 @@ describe('globalAccelerator (the desktop app, D6)', () => {
     expect(globalAccelerator(hk('KeyK', { shift: true }))).toBeNull();
   });
 
-  it('refuses a modifier as the key, Fn, and keys the plugin does not know', () => {
+  it('refuses a modifier as the key, Fn, keys past F20, and keys the plugin does not know', () => {
     expect(globalAccelerator(hk('ShiftLeft', { alt: true, shift: true }))).toBeNull();
     expect(globalAccelerator(hk('Fn', { alt: true }))).toBeNull();
+    expect(globalAccelerator(hk('F21', { alt: true }))).toBeNull();
     expect(globalAccelerator(hk('Unidentified', { alt: true }))).toBeNull();
     expect(globalAccelerator(hk('', { alt: true }))).toBeNull();
+  });
+
+  it('refuses Command or Control alone with a letter, Space, Tab or `: every app uses those', () => {
+    for (const code of ['KeyC', 'KeyV', 'KeyT', 'Space', 'Tab', 'Backquote']) {
+      expect(globalAccelerator(hk(code, { meta: true }))).toBeNull();
+      expect(globalAccelerator(hk(code, { ctrl: true }))).toBeNull();
+    }
+  });
+
+  it("refuses the page's own shortcuts", () => {
+    for (const mod of ['meta', 'ctrl'] as const) {
+      expect(globalAccelerator(hk('KeyK', { [mod]: true }))).toBeNull();
+      expect(globalAccelerator(hk('KeyK', { [mod]: true, shift: true }))).toBeNull();
+      expect(globalAccelerator(hk('Backslash', { [mod]: true }))).toBeNull();
+      expect(globalAccelerator(hk('Comma', { [mod]: true }))).toBeNull();
+    }
+  });
+});
+
+describe('ShellKeys: the global shortcut pressed while another app is in front', () => {
+  const OPT_SPACE = combo('Space', { alt: true });
+  const ctx = { inMessageBox: false, messageEmpty: true, inOtherControl: false };
+
+  it('toggle: each press toggles, a release does nothing, a repeated press is ignored', () => {
+    const keys = new ShellKeys(new TalkKeys({ hotkey: OPT_SPACE, mode: 'toggle' }));
+    expect(keys.event(OPT_SPACE, 'down', ctx)).toBe('toggle');
+    expect(keys.event(OPT_SPACE, 'down', ctx)).toBeNull();
+    expect(keys.event(OPT_SPACE, 'up', ctx)).toBeNull();
+    expect(keys.event(OPT_SPACE, 'down', ctx)).toBe('toggle');
+  });
+
+  it('hold: press starts, release stops', () => {
+    const keys = new ShellKeys(new TalkKeys({ hotkey: OPT_SPACE, mode: 'hold' }));
+    expect(keys.event(OPT_SPACE, 'down', ctx)).toBe('start');
+    expect(keys.event(OPT_SPACE, 'up', ctx)).toBe('stop');
+    expect(keys.event(OPT_SPACE, 'up', ctx)).toBeNull();
+  });
+
+  it('a focused field or Settings still blocks it, as a key would', () => {
+    const keys = new ShellKeys(new TalkKeys({ hotkey: OPT_SPACE, mode: 'toggle' }));
+    expect(keys.event(OPT_SPACE, 'down', { ...ctx, inOtherControl: true })).toBeNull();
+  });
+
+  it('does nothing with no shortcut', () => {
+    const keys = new ShellKeys(new TalkKeys({ hotkey: null, mode: 'toggle' }));
+    expect(keys.event(null, 'down', ctx)).toBeNull();
+    expect(keys.event(null, 'up', ctx)).toBeNull();
+  });
+});
+
+describe('matches', () => {
+  it('is the same key and modifiers', () => {
+    const h = combo('Space', { alt: true });
+    expect(matches(h, { code: 'Space', ctrl: false, alt: true, shift: false, meta: false })).toBe(true);
+    expect(matches(h, { code: 'Space', ctrl: false, alt: false, shift: false, meta: false })).toBe(false);
   });
 });

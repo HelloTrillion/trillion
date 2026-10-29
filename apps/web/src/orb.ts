@@ -17,19 +17,31 @@ export function createOrb(root: HTMLElement): () => void {
   const caption = document.createElement('span');
   caption.className = 'float-caption';
   caption.hidden = true;
+  const lines = document.createElement('span');
+  lines.className = 'float-lines';
+  const words = document.createElement('span');
+  lines.append(words);
+  caption.append(lines);
   root.replaceChildren(ball, caption);
   root.addEventListener('click', () => showMain());
   return onOrb(({ state, caption: text }) => {
     root.dataset['state'] = state;
     root.setAttribute('aria-label', text ? `Trillion: ${text}` : 'Open Trillion');
-    caption.textContent = tail(text, 90);
+    // Bounded here too; the CSS keeps the last two lines in sight.
+    words.textContent = tail(text, 90);
     caption.hidden = !text;
   });
 }
 
 const root = typeof document !== 'undefined' ? document.getElementById('float') : null;
 if (root) {
-  // The main page's theme, kept in this origin's storage.
-  document.documentElement.dataset['theme'] = shownTheme(savedTheme(), matchMedia('(prefers-color-scheme: light)').matches);
+  // The main page's theme, kept in this origin's storage; it follows a change there, or the computer's.
+  const light = matchMedia('(prefers-color-scheme: light)');
+  const theme = (): void => {
+    document.documentElement.dataset['theme'] = shownTheme(savedTheme(), light.matches);
+  };
+  theme();
+  light.addEventListener('change', theme);
+  addEventListener('storage', theme);
   createOrb(root);
 }

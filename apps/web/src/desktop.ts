@@ -10,28 +10,38 @@
  *   set_talk_shortcut  {accelerator: string | null, mode: 'toggle' | 'hold'}
  *                                                                      -> {global: boolean}
  *                      Registers the talk shortcut to work from any app, replacing the
- *                      last one; null unregisters. The accelerator is in the
- *                      global-shortcut plugin's syntax, modifiers first in the order
- *                      Super, Control, Alt, Shift, then the key's `KeyboardEvent.code`:
- *                      "Alt+Space", "Super+Shift+KeyK", "Control+Alt+F5". It always
- *                      holds Super, Control or Alt (D6; see `globalAccelerator`).
- *                      `global` is false when the shell could not register it.
+ *                      last one; null unregisters (the page sends null while Settings
+ *                      records a new shortcut, and registers again after). The
+ *                      accelerator is in the global-shortcut plugin's syntax, modifiers
+ *                      first in the order Super, Control, Alt, Shift, then the key's
+ *                      `KeyboardEvent.code`: "Alt+Space", "Control+Alt+KeyT", "Super+F5".
+ *                      It always passes D6, whose exact rule is on `globalAccelerator`
+ *                      in hotkey.ts. `global` is false when the shell could not register it.
  *   report_state       {state: 'idle' | 'listening' | 'thinking' | 'speaking', caption: string}
  *                                                                      -> void
- *                      Sent by the main page whenever either changes (never twice the
- *                      same). The shell sets the tray icon and forwards it to the orb
- *                      window as an `orb` event, showing or hiding that window (D5).
+ *                      Sent by the main page: a state change at once, a caption-only
+ *                      change at most every 120 ms, never the same pair twice. The
+ *                      caption is at most 120 characters, the end of what she says
+ *                      (starting with "…" when cut). The shell sets the tray icon and
+ *                      forwards it to the orb window as an `orb` event, showing or
+ *                      hiding that window (D5).
  *   show_main          (no arguments)                                  -> void
  *                      Sent by the orb window when clicked: show and focus the main one.
  *
  * Events, by `event.listen`:
  *
  *   talk  {state: 'down' | 'up'}   To the main page: the global shortcut was pressed or
- *                                  let go. Used only while the page lacks focus; with
- *                                  focus the page heard the key itself.
+ *                                  let go. Always sent, focused or not: macOS gives a
+ *                                  registered shortcut to the shell even when this window
+ *                                  is in front. While it is registered the page ignores
+ *                                  that key itself, so the shell is its only source.
+ *
+ * Links: in the app a click on an http(s) link with target="_blank" opens it in the
+ * browser by open_external (`routeLinks`); the shell handles no links itself.
  *   orb   {state, caption}         To the orb window: the payload of report_state.
  */
 
+import { tail } from './captions';
 import { type Hotkey, type Mode, globalAccelerator } from './hotkey';
 
 export type ShellState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -79,7 +89,7 @@ function subscribe(event: string, handler: (payload: unknown) => void): () => vo
       if (stopped) un();
       else stop = un;
     })
-    .catch(() => {});
+    .catch((err: unknown) => console.warn(`Trillion: could not listen for "${event}" from the desktop app`, err));
   return () => {
     stopped = true;
     stop?.();
@@ -106,22 +116,69 @@ export async function setTalkShortcut(hotkey: Hotkey | null, mode: Mode): Promis
   }
 }
 
-/** The global shortcut's presses, only while this page does not have focus. */
-export function onTalk(handler: (state: TalkState) => void, hasFocus: () => boolean = () => document.hasFocus()): () => void {
+/** The global shortcut's presses and releases, focused or not. */
+export function onTalk(handler: (state: TalkState) => void): () => void {
   return subscribe('talk', (p) => {
     const state = (p as { state?: unknown } | null)?.state;
-    if ((state === 'down' || state === 'up') && !hasFocus()) handler(state);
+    if (state === 'down' || state === 'up') handler(state);
   });
 }
 
-let lastReport = '';
+/** How long caption-only changes gather before they go: a streamed reply changes every few ms. */
+export const CAPTION_GATHER_MS = 120;
+export const CAPTION_MAX = 120;
+
+let sent: OrbReport | null = null;
+let waiting: OrbReport | null = null;
+let gather: ReturnType<typeof setTimeout> | undefined;
+
+function sendReport(r: OrbReport): void {
+  clearTimeout(gather);
+  gather = undefined;
+  waiting = null;
+  sent = r;
+  call('report_state', { state: r.state, caption: r.caption }).catch(() => {});
+}
+
 /** Tell the shell what the orb is doing and what she is saying; a repeat is not sent. */
 export function reportState(state: ShellState, caption: string): void {
   if (!inApp()) return;
-  const key = JSON.stringify([state, caption]);
-  if (key === lastReport) return;
-  lastReport = key;
-  call('report_state', { state, caption }).catch(() => {});
+  const next: OrbReport = { state, caption: tail(caption, CAPTION_MAX) };
+  if (sent?.state !== next.state) {
+    sendReport(next);
+    return;
+  }
+  if (sent.caption === next.caption) {
+    clearTimeout(gather);
+    gather = undefined;
+    waiting = null;
+    return;
+  }
+  waiting = next;
+  gather ??= setTimeout(() => {
+    if (waiting) sendReport(waiting);
+  }, CAPTION_GATHER_MS);
+}
+
+/** For tests: forget what was sent. */
+export function resetReports(): void {
+  clearTimeout(gather);
+  gather = undefined;
+  waiting = null;
+  sent = null;
+}
+
+/** In the app, links meant for a new tab open in the user's browser instead of the app. */
+export function routeLinks(doc: Document = document): () => void {
+  if (!inApp()) return () => {};
+  const onClick = (ev: MouseEvent): void => {
+    const a = ev.target instanceof Element ? ev.target.closest('a[target="_blank"]') : null;
+    if (!(a instanceof HTMLAnchorElement) || !/^https?:$/.test(a.protocol)) return;
+    ev.preventDefault();
+    void openExternal(a.href);
+  };
+  doc.addEventListener('click', onClick, true);
+  return () => doc.removeEventListener('click', onClick, true);
 }
 
 /** The galaxy's orb states, as the shell names them. */

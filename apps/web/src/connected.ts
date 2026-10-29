@@ -1475,7 +1475,7 @@ export function createConnected(
         p.local
           ? 'This program runs with your permissions and can do anything you can. Trillion controls what it asks it to do, not what it does on its own. Only add servers you trust.'
           : p.signs_in
-            ? 'If it asks you to sign in, a tab opens for that.'
+            ? `If it asks you to sign in, ${inApp() ? 'your browser opens' : 'a tab opens'} for that.`
             : 'Its key is sent with every request.',
       ),
     );

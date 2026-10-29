@@ -84,15 +84,18 @@ export function reachLine(app: boolean, hotkey: Hotkey | null, global: boolean |
   if (global === null) return '';
   return global
     ? 'Works from any app, even while this window is hidden.'
-    : 'Another app already uses that combination, so it works only in this window. Record another to talk from any app.';
+    : "That combination couldn't be used from other apps; try another, such as ⌥Space.";
 }
 
 export function createShortcuts(
   host: Host,
   current: () => TalkPrefs,
   choose: (prefs: TalkPrefs) => void,
-  /** In the desktop app: whether the shell registered the shortcut globally (null: not yet known). */
-  app?: { global(): boolean | null },
+  /**
+   * In the desktop app: whether the shell registered the shortcut globally (null: not yet
+   * known), and recording starting and ending, so the old shortcut is let go meanwhile.
+   */
+  app?: { global(): boolean | null; recording(on: boolean): void },
 ): { open(): void; summary(): string; redraw(): void } {
   const { finish } = section(
     host,
@@ -187,6 +190,7 @@ export function createShortcuts(
     other = false;
     removeEventListener('keydown', onDown, true);
     removeEventListener('keyup', onUp, true);
+    app?.recording(false);
     draw();
   }
 
@@ -235,6 +239,7 @@ export function createShortcuts(
       return;
     }
     recording = true;
+    app?.recording(true);
     status.textContent = '';
     addEventListener('keydown', onDown, true);
     addEventListener('keyup', onUp, true);
