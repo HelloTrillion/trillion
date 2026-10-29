@@ -660,6 +660,10 @@ fn show_main(app: AppHandle) {
 #[tauri::command]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
     let url = talk::web_url(&url).ok_or("only web addresses open")?;
+    // A page address with the token is never handed to another program.
+    if carries_token(&url) {
+        return Err("only web addresses open".into());
+    }
     app.opener()
         .open_url(url.as_str(), None::<&str>)
         .map_err(|e| e.to_string())

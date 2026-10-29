@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "dev": "TRILLION_BIN=$PWD/scripts/trillion-dev tauri dev",
-    "build": "tauri build --bundles app",
+    "bundle": "tauri build --bundles app",
     "tauri": "tauri"
   },
   "devDependencies": {

@@ -36,9 +36,10 @@
  *                                  is in front. While it is registered the page ignores
  *                                  that key itself, so the shell is its only source.
  *
+ *   orb   {state, caption}         To the orb window: the payload of report_state.
+ *
  * Links: in the app a click on an http(s) link with target="_blank" opens it in the
  * browser by open_external (`routeLinks`); the shell handles no links itself.
- *   orb   {state, caption}         To the orb window: the payload of report_state.
  */
 
 import { tail } from './captions';

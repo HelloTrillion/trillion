@@ -56,6 +56,7 @@ The page talks to the shell through `apps/web/src/desktop.ts`, which uses Tauri'
 
 - `Runtime.token` uses `TRILLION_SESSION_TOKEN` when set and at least 32 characters of `[A-Za-z0-9_-]`; otherwise refuses to start ("TRILLION_SESSION_TOKEN must be at least 32 URL-safe characters") rather than fall back silently. Unset: a fresh token as today. Never logged, never written (SPN-11a).
 - `trillion run` prints the open link only when it made the token itself.
+- A token set in a terminal's own environment puts `trillion run` in this mode too: no link, no browser, and closing its input (Ctrl+D) stops it. Only the app should set it.
 
 ## The risk, checked first
 

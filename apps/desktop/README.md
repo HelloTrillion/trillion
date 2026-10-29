@@ -18,7 +18,7 @@ pnpm -C apps/desktop dev
 ## Build
 
 ```sh
-pnpm -C apps/desktop build
+pnpm -C apps/desktop bundle
 ```
 
 The app lands at `apps/desktop/src-tauri/target/release/bundle/macos/Trillion.app`. It is not signed, so the first time you open it, right-click it and choose Open.

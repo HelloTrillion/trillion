@@ -270,7 +270,8 @@ async def _run(args: argparse.Namespace) -> int:
             build.announce(args.port, web_dir())
         except OSError as e:
             sys.stderr.write(f"trillion: could not note the running build: {e.strerror}\n")
-        if from_app:
+        # No stdin (launchd, a detached run) means no app holding the other end.
+        if from_app and sys.stdin is not None:
             stop_when_closed(sys.stdin.buffer, server)
         await server.serve()
     finally:

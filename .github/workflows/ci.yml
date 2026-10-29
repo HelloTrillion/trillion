@@ -155,7 +155,7 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - name: The app builds (unsigned, not run)
-        run: pnpm -C apps/desktop build
+        run: pnpm -C apps/desktop bundle
         working-directory: .
 
   galaxy-snapshots:
