@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, Protocol
+from urllib.parse import urlsplit
 
 from trillion.scheduler.when import Repeat
 
@@ -129,7 +130,23 @@ def https_link(link: str | None) -> str | None:
     is opened by a tap, so nothing else is kept."""
     if link is None:
         return None
-    if not link.startswith("https://") or len(link) <= len("https://") or len(link) > 2000:
+    # No spaces or control characters anywhere: a parser may read past them, a browser
+    # may drop them, and the two need not agree on where the link goes.
+    if len(link) > 2000 or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in link):
+        raise ValueError("a notice's link must be https")
+    try:
+        parts = urlsplit(link)
+        host = parts.hostname
+    except ValueError:
+        raise ValueError("a notice's link must be https") from None
+    # A name and password before the host ("https://bank.example@elsewhere") hides
+    # where it goes.
+    if (
+        parts.scheme != "https"
+        or not link.startswith("https://")
+        or not host
+        or "@" in parts.netloc
+    ):
         raise ValueError("a notice's link must be https")
     return link
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.api.test_session import Gated, Page, idle
+from tests.api.test_widget_ask import tool_results
 from tests.brain.fakes import say, use
 from tests.scheduler.conftest import FakeClock
 from tests.unit.attention.test_meetings import MIN, START, Calendar, event
@@ -58,7 +59,7 @@ def meetings_in(rt: Runtime, cal: Calendar) -> tuple[AttentionRunner, Meetings]:
 async def test_the_runtime_runs_meetings_and_the_quiet_check_asks_it(rt: Runtime) -> None:
     assert rt.attention is not None and rt.quiet is not None
     runner, w = meetings_in(rt, Calendar([event(start=START - 10 * MIN)]))
-    # Calendar not connected here: the runtime's own watcher is skipped, can't tell.
+    # Before the watcher's first read it can't tell.
     assert rt.quiet.in_meeting() is None
     await runner.tick()
     assert rt.quiet.in_meeting() is True and w.in_meeting() is True
@@ -83,7 +84,8 @@ async def test_an_invite_title_with_instructions_can_not_act(rt: Runtime) -> Non
     await idle(session)
     (shown,) = page.all("notice")
     assert (shown["kind"], shown["title"], shown["text"]) == ("heads_up", "Meeting soon", LINE)
-    # Her line was written from the title only inside the untrusted wrap, with no tools.
+    # The title reached her line's call only inside the untrusted wrap, and that call
+    # was offered no tools.
     (_, messages), *_ = provider.calls
     (block,) = messages[0].blocks
     assert isinstance(block, TextBlock)
@@ -96,6 +98,24 @@ async def test_an_invite_title_with_instructions_can_not_act(rt: Runtime) -> Non
     assert rt.schedules is not None
     assert await rt.schedules.active("local") == []
     assert len(provider.calls) == 3  # her line, the turn that tried, its answer
+    (refused,) = tool_results(provider)
+    assert '"error_kind": "from_reading"' in refused
+    await session.close()
+
+
+async def test_without_the_heads_up_the_same_turn_sets_the_reminder(rt: Runtime) -> None:
+    # The control: what refused it above was the heads-up, not the reminder itself.
+    args = {"when": "2030-01-07T10:00", "say": "Wire the money.", "title": "Wire"}
+    provider = Gated(use("reminder_set", args), say("Done."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "ok"})
+    await idle(session)
+    assert rt.schedules is not None
+    (set_up,) = await rt.schedules.active("local")
+    assert set_up.title == "Wire"
+    assert all("from_reading" not in r for r in tool_results(provider))
     await session.close()
 
 

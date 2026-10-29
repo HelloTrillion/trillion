@@ -5,7 +5,8 @@ The reasons, in order, the first that applies:
 1. Quiet hours, in the user's zone as reminders tell it. Watcher notices only: a
    reminder or timed ask was set for its time by the user. An unknown zone skips it.
 2. In a meeting, from the meetings watcher's last read (`in_meeting`, can't tell
-   until it is filled). A heads-up for the next meeting is still spoken.
+   until it is filled), unless switched off. A heads-up for the next meeting is still
+   spoken.
 3. Another app is using the microphone (the mic probe, told the live page's host).
 4. Focus is on (the Focus probe).
 
@@ -180,7 +181,7 @@ class Quiet:
         if watcher and in_quiet_hours(s.quiet_hours, self._zone(), now_ms):
             return QUIET_HOURS
         next_meeting = watcher and notice.source_id.startswith(MEETING_KEY)
-        if not next_meeting and self._meeting() is True:
+        if s.meeting and not next_meeting and self._meeting() is True:
             return MEETING
         # Asked together, so both fit in one limit; the first reason still wins.
         mic, focus = await asyncio.gather(

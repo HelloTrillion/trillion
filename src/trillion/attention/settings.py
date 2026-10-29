@@ -4,9 +4,10 @@ Its shape, as saved and as the page sends it (every key optional on a change):
 
     {
       "watchers": {"meetings": true, "email": false, "payments": false},
-      "meeting_lead_min": 5,                       # 1-30
+      "meeting_lead_min": 5,                       # 2-30
       "payment_limit": null | {"amount_minor": 50000, "currency": "usd"},
       "quiet_hours": {"on": true, "from": "22:00", "to": "08:00"},
+      "meeting": true,                             # hold while in a meeting
       "mic": true,                                 # hold for another app on the mic
       "focus": true                                # hold while Focus is on
     }
@@ -32,10 +33,14 @@ WATCHERS = ("meetings", "email", "payments")
 _WATCHERS_ON: Mapping[str, bool] = MappingProxyType(
     {"meetings": True, "email": False, "payments": False}
 )
-LEAD_MIN, LEAD_MAX = 1, 30
+# At least two minutes: the watcher reads every minute on a 15 s tick, so checks land
+# 60-75 s apart, and a one-minute window could fall between two of them.
+LEAD_MIN, LEAD_MAX = 2, 30
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _CURRENCY = re.compile(r"^[a-z]{3}$")
-_KEYS = frozenset({"watchers", "meeting_lead_min", "payment_limit", "quiet_hours", "mic", "focus"})
+_KEYS = frozenset(
+    {"watchers", "meeting_lead_min", "payment_limit", "quiet_hours", "meeting", "mic", "focus"}
+)
 
 
 class SettingsError(ValueError):
@@ -62,6 +67,8 @@ class AttentionSettings:
     meeting_lead_min: int = 5
     payment_limit: PaymentLimit | None = None
     quiet_hours: QuietHours = field(default_factory=QuietHours)
+    # Hold her voice while a meeting is under way.
+    meeting: bool = True
     mic: bool = True
     focus: bool = True
 
@@ -83,6 +90,7 @@ class AttentionSettings:
                 "from": self.quiet_hours.start,
                 "to": self.quiet_hours.end,
             },
+            "meeting": self.meeting,
             "mic": self.mic,
             "focus": self.focus,
         }
@@ -168,6 +176,8 @@ def merge(current: AttentionSettings, patch: object) -> AttentionSettings:
         s = replace(s, payment_limit=_limit(patch["payment_limit"]))
     if "quiet_hours" in patch:
         s = replace(s, quiet_hours=_quiet(s.quiet_hours, patch["quiet_hours"]))
+    if "meeting" in patch:
+        s = replace(s, meeting=_bool(patch["meeting"], "meeting"))
     if "mic" in patch:
         s = replace(s, mic=_bool(patch["mic"], "mic"))
     if "focus" in patch:

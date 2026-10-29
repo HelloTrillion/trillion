@@ -4,17 +4,24 @@ and whether one is under way now, for the quiet check.
 Every minute it reads the primary Google calendar through the client and account the
 calendar tools use. Google's `timeMin` bounds an event's end, not its start, so one
 read from now returns what is under way as well as what is next. It skips all-day
-events, cancelled ones and ones the user declined.
+events, cancelled ones, ones that are not plain events (focus time, out of office,
+working location), and every one the user has not said yes or maybe to: anyone can put
+an invite on someone's calendar, so an unanswered one is no heads-up, no link and no
+meeting. An event counts when the user accepted it or said maybe, organised it, or
+made it on their own calendar with nobody invited.
 
-A heads-up is due from start - lead until the start (D9), keyed by event and start so
-a moved meeting is a new one (D5). Its detail, for the page only, is "<title> at
+A heads-up is due from start - lead, and is still taken up to one interval after the
+start, since reads land 60-75 s apart and one may fall just past it; it is spoken only
+until the start (D9). It is keyed by event and start so a moved meeting is a new one
+(D5). Its detail, for the page only, is "<title> at
 <start>"; the notice's own title stays "Meeting soon", safe on a lock screen. The
 model sees the title, when, who else (at most three names) and whether there is a join
 link: never the description or the place, which are longer, someone else's words, and
 not needed for one line.
 
-The last read is kept in memory, so the quiet check costs no request. It answers only
-while it is fresh; stale, failed or never read is can't tell (D11).
+The last good read is kept in memory, so the quiet check costs no request. A read on
+its way or one that failed leaves it as it was; it answers only while it is three
+minutes fresh, and never with Calendar disconnected (D11).
 """
 
 from __future__ import annotations
@@ -116,7 +123,10 @@ class _Event:
     end_ms: int
     start: datetime
     title: str
-    others: tuple[str, ...]
+    names: tuple[str, ...]
+    # Someone else is in it: a guest who has not declined, an organiser who is not the
+    # user, or a guest list Google left out.
+    shared: bool
     link: str | None
 
 
@@ -140,21 +150,44 @@ def _time(raw: object) -> datetime | None:
     return dt if dt.tzinfo is not None else None
 
 
-def _people(raw: object) -> tuple[bool, tuple[str, ...]]:
-    """Whether the user declined, and the other people's names. Rooms are not people."""
-    declined, names = False, []
+# What the user's own answer must be for an invite to count.
+_GOING = frozenset({"accepted", "tentative"})
+
+
+@dataclass(frozen=True)
+class _People:
+    # The user's own answer, or None when the guest list has no entry for them.
+    mine: str | None
+    # Others who have not declined, by the name they gave: an address is not shown.
+    names: tuple[str, ...]
+    # Whether anyone else who has not declined is on the list, named or not.
+    others: bool
+
+
+def _people(raw: object) -> _People:
+    """The user's answer and who else is coming. Rooms are not people; nor is anyone
+    who declined."""
+    mine: str | None = None
+    names: list[str] = []
+    others = False
     for a in raw if isinstance(raw, list) else []:
         if not isinstance(a, dict):
             continue
         if a.get("self") is True:
-            declined = a.get("responseStatus") == "declined"
+            answer = a.get("responseStatus")
+            mine = answer if isinstance(answer, str) else "needsAction"
             continue
-        if a.get("resource") is True:
+        if a.get("resource") is True or a.get("responseStatus") == "declined":
             continue
-        name = a.get("displayName") or str(a.get("email") or "").split("@")[0]
+        others = True
+        name = a.get("displayName")
         if isinstance(name, str) and name.strip():
             names.append(_one_line(name, MAX_NAME))
-    return declined, tuple(names)
+    return _People(mine=mine, names=tuple(names), others=others)
+
+
+def _is_me(raw: object) -> bool:
+    return isinstance(raw, dict) and raw.get("self") is True
 
 
 def _link(e: Mapping[str, Any]) -> str | None:
@@ -179,14 +212,26 @@ def _link(e: Mapping[str, Any]) -> str | None:
 
 
 def _event(e: object) -> _Event | None:
-    """An event worth knowing about, or None: all-day, cancelled, declined, unreadable."""
+    """An event the user is going to, or None: all-day, cancelled, not a plain event,
+    declined or unanswered, unreadable."""
     if not isinstance(e, dict) or e.get("status") == "cancelled" or not e.get("id"):
+        return None
+    kind = e.get("eventType")
+    if kind is not None and kind != "default":
         return None
     start, end = _time(e.get("start")), _time(e.get("end"))
     if start is None or end is None:
         return None
-    declined, others = _people(e.get("attendees"))
-    if declined:
+    people = _people(e.get("attendees"))
+    organiser = _is_me(e.get("organizer"))
+    if people.mine == "declined":
+        return None
+    if people.mine is None:
+        # No guest entry for the user: only their own event counts.
+        going = organiser or _is_me(e.get("creator"))
+    else:
+        going = people.mine in _GOING or organiser
+    if not going:
         return None
     return _Event(
         id=str(e["id"]),
@@ -194,7 +239,8 @@ def _event(e: object) -> _Event | None:
         end_ms=int(end.timestamp() * 1000),
         start=start,
         title=_one_line(e.get("summary") or "(no title)", MAX_TITLE),
-        others=others,
+        names=people.names,
+        shared=people.others or not organiser or e.get("attendeesOmitted") is True,
         link=_link(e),
     )
 
@@ -214,7 +260,8 @@ class Meetings:
         self.calendar = calendar
         self._clock = clock
         self._zone = zone
-        # The last good read: when, and the events in it. None until one succeeds.
+        # The last good read: when, and the events in it. None until one succeeds, and
+        # again once Calendar is disconnected.
         self._read: tuple[int, list[_Event]] | None = None
 
     def enabled(self, settings: AttentionSettings) -> bool:
@@ -223,9 +270,10 @@ class Meetings:
     async def check(self, ctx: WatchContext) -> list[Find]:
         now = ctx.now_ms
         lead_ms = ctx.settings.meeting_lead_min * 60_000
+        late_ms = int(self.interval_s * 1000)
         ahead_min = max(AHEAD_MIN, ctx.settings.meeting_lead_min) + 1
-        # A failed read is no read: the quiet check can't tell until the next one.
-        self._read = None
+        # The last good read stands while this one is on its way, and if it fails: how
+        # fresh it is decides whether it still says anything.
         found = await self.calendar.events(
             {
                 "timeMin": _iso(now),
@@ -233,12 +281,25 @@ class Meetings:
                 "singleEvents": "true",
                 "orderBy": "startTime",
                 "maxResults": str(MAX_RESULTS),
+                # Not focus time, out of office or working location.
+                "eventTypes": "default",
             }
         )
         items = found.get("items")
-        events = [e for raw in (items if isinstance(items, list) else []) if (e := _event(raw))]
+        events: list[_Event] = []
+        for raw in items if isinstance(items, list) else []:
+            # One odd event is skipped, not the whole read.
+            try:
+                if (e := _event(raw)) is not None:
+                    events.append(e)
+            except Exception as err:
+                logger.info("meetings: an event skipped: %s", type(err).__name__)
         self._read = (now, events)
-        return [self._find(e, now) for e in events if e.start_ms - lead_ms <= now < e.start_ms]
+        # Up to one interval late, so a check that lands just past the start still
+        # shows it (unspoken, since it is fresh only until the start).
+        return [
+            self._find(e, now) for e in events if e.start_ms - lead_ms <= now < e.start_ms + late_ms
+        ]
 
     def _find(self, e: _Event, now: int) -> Find:
         starts = when.clock_words(self._local(e.start))
@@ -250,8 +311,8 @@ class Meetings:
             facts={
                 "title": e.title,
                 "starts": starts,
-                "minutes_until": math.ceil((e.start_ms - now) / 60_000),
-                "with": list(e.others[:MAX_NAMES]),
+                "minutes_until": max(0, math.ceil((e.start_ms - now) / 60_000)),
+                "with": list(e.names[:MAX_NAMES]),
                 "has_join_link": e.link is not None,
             },
             fresh_until_ms=e.start_ms,
@@ -269,16 +330,19 @@ class Meetings:
         return dt
 
     def in_meeting(self) -> Answer:
-        """True while a timed meeting with someone else is under way, by the last read;
-        None when that read can't say (not connected, none yet, failed, stale)."""
+        """True while a timed meeting with someone else is under way, by the last good
+        read; None when there is none, it is stale, or Calendar is not connected."""
         try:
-            if self._read is None or not self.calendar.connected():
+            if not self.calendar.connected():
+                self._read = None
                 return None
         except Exception as e:
             logger.info("meetings: can't tell if connected: %s", type(e).__name__)
+            return None
+        if self._read is None:
             return None
         read_ms, events = self._read
         now = self._clock()
         if now - read_ms > FRESH_MS:
             return None
-        return any(e.others and e.start_ms <= now < e.end_ms for e in events)
+        return any(e.shared and e.start_ms <= now < e.end_ms for e in events)

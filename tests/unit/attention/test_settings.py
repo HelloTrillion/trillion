@@ -22,7 +22,7 @@ def test_the_defaults_say_meetings_on_the_rest_off() -> None:
     assert s.watchers == {"meetings": True, "email": False, "payments": False}
     assert s.meeting_lead_min == 5 and s.payment_limit is None
     assert s.quiet_hours == QuietHours(on=True, start="22:00", end="08:00")
-    assert s.mic and s.focus
+    assert s.meeting and s.mic and s.focus
     assert s.on("meetings") and not s.on("email") and not s.on("nobody")
 
 
@@ -34,9 +34,11 @@ def test_it_round_trips_through_json() -> None:
             "meeting_lead_min": 10,
             "payment_limit": {"amount_minor": 50_000, "currency": "USD"},
             "quiet_hours": {"on": False, "from": "23:30", "to": "06:00"},
+            "meeting": False,
             "mic": False,
         },
     )
+    assert s.meeting is False
     assert s.watchers == {"meetings": True, "email": True, "payments": False}
     assert s.payment_limit == PaymentLimit(amount_minor=50_000, currency="usd")
     assert s.quiet_hours == QuietHours(on=False, start="23:30", end="06:00")
@@ -56,6 +58,8 @@ def test_nothing_saved_or_something_broken_reads_as_the_defaults() -> None:
     ("patch", "says"),
     [
         ({"meeting_lead_min": 0}, "meeting_lead_min"),
+        # A one-minute window can fall between two reads a minute and more apart.
+        ({"meeting_lead_min": 1}, "meeting_lead_min"),
         ({"meeting_lead_min": 31}, "meeting_lead_min"),
         ({"meeting_lead_min": True}, "meeting_lead_min"),
         ({"watchers": {"slack": True}}, "slack"),
@@ -69,12 +73,17 @@ def test_nothing_saved_or_something_broken_reads_as_the_defaults() -> None:
         ({"quiet_hours": {"from": "08:00"}}, "from and to must differ"),
         ({"quiet_hours": {"from": "09:30", "to": "09:30"}}, "from and to must differ"),
         ({"mic": "on"}, "mic"),
+        ({"meeting": "on"}, "meeting"),
         ({"loud": True}, "loud"),
     ],
 )
 def test_a_bad_change_is_refused_by_name(patch: dict[str, Any], says: str) -> None:
     with pytest.raises(SettingsError, match=says):
         merge(DEFAULT, patch)
+
+
+def test_the_shortest_lead_is_two_minutes() -> None:
+    assert merge(DEFAULT, {"meeting_lead_min": 2}).meeting_lead_min == 2
 
 
 def test_the_payment_limit_can_be_turned_off_again() -> None:

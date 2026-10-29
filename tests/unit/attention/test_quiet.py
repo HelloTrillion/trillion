@@ -149,6 +149,13 @@ async def test_in_a_meeting_holds_her_voice() -> None:
     assert await quiet(Probes(), meeting=False).reason(notice(), NOON) is None
 
 
+async def test_the_meeting_switch_turns_that_reason_off() -> None:
+    off = replace(DEFAULT, meeting=False)
+    assert await quiet(Probes(), off, meeting=True).reason(notice(), NOON) is None
+    # The other reasons still hold.
+    assert await quiet(Probes(mic=True), off, meeting=True).reason(notice(), NOON) == MIC
+
+
 async def test_a_heads_up_for_the_next_meeting_is_still_spoken_in_one() -> None:
     q = quiet(Probes(), meeting=True)
     assert await q.reason(notice(key="meeting:e2:1800000000000"), NOON) is None

@@ -36,22 +36,37 @@ logs its class name and tries again at its next interval (never sooner).
 ### Meetings
 
 - Every 60 s, reads the primary calendar for the next 15 minutes (`events.list`,
-  `singleEvents=true`, `orderBy=startTime`), through the Google client the calendar
-  tools use. Skips all-day events, cancelled ones, and ones the user declined.
-- A heads-up is due at **start − lead** (lead: 5 minutes, Settings: 1–30). The find
-  carries the title, start, the other attendees' names (at most three), and a join
-  link when the event has one (`hangoutLink`, else the first `video` entry point in
-  `conferenceData`), kept only if it is `https://`.
+  `singleEvents=true`, `orderBy=startTime`, `eventTypes=default`), through the Google
+  client the calendar tools use, with a 15 s limit. Skips all-day events, cancelled
+  ones, ones that are not plain events (focus time, out of office, working location),
+  and one it can't read (the rest of the read stands).
+- **Only events the user is going to count.** An event counts when the user's own
+  answer is accepted or maybe (`tentative`), when they organised it
+  (`organizer.self`), or when it has no guest entry for them and they made it on
+  their own calendar. An invite they declined or have not answered (`needsAction`)
+  never counts: no heads-up, no link, not a meeting. Anyone can put an invite on
+  someone's calendar.
+- A heads-up is due at **start − lead** (lead: 5 minutes, Settings: 2–30) and is
+  taken up to one interval after the start, since reads land 60–75 s apart; past
+  the start it is shown, not spoken (D9). The find carries the title, start, the
+  names other guests gave (at most three; a guest with no name is not named, and
+  their address is never sent), and a join link when the event has one
+  (`hangoutLink`, else the first `video` entry point in `conferenceData`), kept only
+  if it is plainly `https://` to a host (no user name or password, no spaces or
+  control characters, at most 2000 characters).
 - The line is written when the heads-up is due. The notice shows a **Join** button
   opening the link (in the desktop app, in the default browser).
 - The notice's title is generic ("Meeting soon"); the specifics (title, time, people)
   are only in her line and in the page's detail ("<title> at 10:00 am"). Notification
   titles are generic for every watcher, since a lock screen is public and an invite
   title or a subject is someone else's words.
-- **In a meeting now** (for D8) is true while an event that is timed, not declined,
-  not cancelled and has at least one other attendee is under way. The runner keeps
-  the last read for this, so the quiet check costs no request. With Calendar not
-  connected it is "can't tell".
+- **In a meeting now** (for D8) is true while an event that counts (above), timed and
+  with someone else in it, is under way. Someone else is a guest who has not
+  declined (named or not, a room is not), an organiser who is not the user, or a
+  guest list Google left out (`attendeesOmitted`). The watcher keeps its last good
+  read for this, so the quiet check costs no request: a read on its way or one that
+  failed leaves it standing, and it answers only while it is three minutes fresh.
+  With Calendar not connected it is "can't tell", and the read is forgotten.
 
 ### Urgent email
 
@@ -84,8 +99,8 @@ which returns the first reason that applies, or none. The reasons:
 
 1. **Quiet hours.** Default on, 22:00–08:00 in the user's zone (`USER.md`, as
    reminders use); Settings changes or turns it off. Watcher notices only (D8).
-2. **In a meeting.** From the meetings watcher's last read. A heads-up for the next
-   meeting is still spoken.
+2. **In a meeting.** From the meetings watcher's last read. Default on; Settings turns
+   it off. A heads-up for the next meeting is still spoken.
 3. **Another app has the microphone** (the mic probe, below).
 4. **Focus or Do Not Disturb is on** (the Focus probe, below).
 
@@ -137,8 +152,9 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
 - A switch per watcher, with what it reads and what leaves the machine ("Sends each
   important email's sender, subject and preview to your model provider").
 - Meeting lead time; the payment limit; quiet hours (on/off, from, to).
-- "Another app is using the microphone" and "Focus is on" switches (both on), each
-  with this computer's probe status: "Works here", the reason it can't tell, or that it
+- An "In a meeting" switch (on), and "Another app is using the microphone" and
+  "Focus is on" switches (both on), the last two each with this computer's probe
+  status: "Works here", the reason it can't tell, or that it
   didn't answer (it ran out of time or was still busy; it may answer next time).
 - Each watcher's notes, with Clear; when it last checked, and its last error by kind.
 - Recent finds (14 days): told, silent, dismissed or lost, each with its detail, with Dismiss.

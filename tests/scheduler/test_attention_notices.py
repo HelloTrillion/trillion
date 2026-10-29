@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.scheduler.conftest import NY, runs, written
+from trillion.scheduler.store import https_link
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -62,6 +63,44 @@ async def test_only_an_https_link_is_kept(store: SqliteScheduleStore, link: str)
             " 'T', 1, 0, 1, 'held', ?)",
             (link,),
         )
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://",
+        "https:///path",
+        "https://:443/x",
+        "HTTPS://meet.example.com/abc",
+        "https://user:pass@meet.example.com/abc",
+        "https://meet.example.com@elsewhere.example.com/x",
+        "https://meet.example.com/a b",
+        "https://meet.example.com/a\tb",
+        "https://meet.example.com/a\nb",
+        "https://meet.example.com/\x00",
+        "https://meet.example.com/\x7f",
+        " https://meet.example.com/abc",
+        "https://[::1/x",
+        "https://meet.example.com/" + "x" * 2000,
+    ],
+)
+def test_a_link_that_is_not_plainly_https_somewhere_is_refused(link: str) -> None:
+    with pytest.raises(ValueError):
+        https_link(link)
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        MEET,
+        "https://meet.example.com",
+        "https://zoom.example.com/j/123?pwd=abc#x",
+        "https://meet.example.com:8443/abc",
+        "https://meet.example.com/" + "x" * (2000 - len("https://meet.example.com/")),
+    ],
+)
+def test_a_plain_https_link_is_kept(link: str) -> None:
+    assert https_link(link) == link
 
 
 async def test_a_schedule_notice_is_still_a_schedules(store: SqliteScheduleStore) -> None:

@@ -63,6 +63,16 @@ def test_settings_are_saved_and_kept(make: Any) -> None:
     assert call(app, app.rt.preferences.get, "local", "attention") == saved
 
 
+def test_the_in_a_meeting_switch_is_read_and_saved(make: Any) -> None:
+    app: App = make()
+    probes(app, mic=False, focus=False)
+    body = app.client.get(f"{PATH}/settings", headers=app.auth).json()
+    assert body["settings"]["meeting"] is True
+    r = app.client.put(f"{PATH}/settings", headers=app.auth, json={"meeting": False})
+    assert r.status_code == 200 and r.json()["settings"]["meeting"] is False
+    assert app.rt.attention_settings.meeting is False
+
+
 def test_a_bad_setting_is_refused_with_why(make: Any) -> None:
     app: App = make()
     r = app.client.put(f"{PATH}/settings", headers=app.auth, json={"meeting_lead_min": 60})
