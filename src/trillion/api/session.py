@@ -2948,12 +2948,13 @@ class Session:
         that is no longer free raises `NotFree` before anything happens, and the door
         holds them again. The ones with her words are saved as her messages in one
         statement, so they survive a reload; then each is sent, and spoken if her
-        voice is on, best effort. A missed or failed one is shown by its title, never
-        spoken (PER-11). Speech is queued, never waited for."""
+        voice is on, best effort, if the door says to speak it. A missed or failed one
+        is shown by its title, never spoken (PER-11); a quiet one, or one past its
+        moment, is shown and not spoken. Speech is queued, never waited for."""
         rt = self._rt
         if self._closed or not free(self.facts(), rt.clock()):
             raise NotFree
-        said = [n.text for n in notices if n.text]
+        said = [n.text for n in notices if n.text and n.spoken]
         # Hers are saved as hers. A ready line is the app's, never hers: kept as its note,
         # so she never takes it for something she said, and a reload shows it with Open.
         rows: list[tuple[Kind, Msg]] = [
@@ -2965,9 +2966,10 @@ class Session:
         ]
         if rows:
             await self._save_all(rows)
-        if any(n.kind == "ask" and n.text for n in notices):
-            # A timed ask's answer can quote what it read: whatever she does next on the
-            # strength of it is something she read, not something the user said (MEM-5).
+        if any(n.kind in ("ask", "heads_up") and n.text for n in notices):
+            # A timed ask's answer can quote what it read, and a heads-up is written from
+            # an invite or an email: whatever she does next on the strength of it is
+            # something she read, not something the user said (MEM-5).
             self._outside.update({self._turn, self._turn + 1})
         # Saved: from here nothing raises, or the door would hold them and they would be
         # saved twice. `_send` already logs a failed send and goes on.
@@ -2983,6 +2985,9 @@ class Session:
                 due=n.due,
                 late=n.late,
                 conversation_id=n.conversation_id,
+                link=n.link,
+                spoken=n.spoken,
+                quiet=n.quiet,
             )
         if said and rt.tts is not None and rt.speech is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

@@ -30,7 +30,10 @@ RunStatus = Literal[
     # A routine that ran and found nothing worth the user's attention (AGT-6).
     "nothing",
 ]
-NoticeKind = Literal["reminder", "ask", "missed", "failed", "ready"]
+# heads_up: a watcher's one line about a meeting, an email or a payment.
+NoticeKind = Literal["reminder", "ask", "missed", "failed", "ready", "heads_up"]
+# Where a notice came from: a schedule's run, or a watcher (`source_id` is its find's key).
+NoticeSource = Literal["schedule", "attention"]
 NoticeStatus = Literal["held", "delivered"]
 # A notice that arrives more than this after its due time says so ("due 4:00 pm").
 LATE_MS = 120_000
@@ -111,6 +114,21 @@ class Notice:
     notified_ms: int | None
     # The conversation a routine's notice opens; None for any other.
     conversation_id: str | None = None
+    source: NoticeSource = "schedule"
+    # Where its button opens: a meeting's join link, https only.
+    link: str | None = None
+    # After this it is shown, not spoken: a heads-up after the meeting began is noise.
+    fresh_until_ms: int | None = None
+
+
+def https_link(link: str | None) -> str | None:
+    """A link a notice may carry: https or none. It came from someone else's invite and
+    is opened by a tap, so nothing else is kept."""
+    if link is None:
+        return None
+    if not link.startswith("https://") or len(link) <= len("https://") or len(link) > 2000:
+        raise ValueError("a notice's link must be https")
+    return link
 
 
 class ScheduleStore(Protocol):
@@ -215,6 +233,22 @@ class ScheduleStore(Protocol):
         self, owner_id: str, source_id: str, title: str, now_ms: int, conversation_id: str
     ) -> Notice:
         """A ready line with no run behind it (a background read is in), held."""
+        ...
+
+    async def attention_notice(
+        self,
+        owner_id: str,
+        key: str,
+        *,
+        title: str,
+        text: str | None,
+        now_ms: int,
+        link: str | None = None,
+        fresh_until_ms: int | None = None,
+    ) -> Notice:
+        """A watcher's heads-up, held for the door: due now, from `attention`, its find's
+        `key` as its source. `text` is None when no model wrote her line: it is shown by
+        its title and never spoken. Raises `ValueError` for a link that is not https."""
         ...
 
     async def notice(self, notice_id: str) -> Notice | None: ...

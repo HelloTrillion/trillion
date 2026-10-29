@@ -26,6 +26,7 @@ from trillion.scheduler.store import (
     Run,
     RunStatus,
     Schedule,
+    https_link,
 )
 from trillion.scheduler.when import read_repeat
 
@@ -93,6 +94,9 @@ def _notice(r: aiosqlite.Row) -> Notice:
         delivered_to=str(r["delivered_to"]) if r["delivered_to"] is not None else None,
         notified_ms=_int(r["notified_ms"]),
         conversation_id=str(r["conversation_id"]) if r["conversation_id"] is not None else None,
+        source=r["source"],
+        link=str(r["link"]) if r["link"] is not None else None,
+        fresh_until_ms=_int(r["fresh_until_ms"]),
     )
 
 
@@ -462,6 +466,44 @@ class SqliteScheduleStore:
                 " due_ms, late, created_ms, status, conversation_id) VALUES (?, ?, 'schedule',"
                 " ?, 'ready', ?, ?, ?, 0, ?, 'held', ?)",
                 (n.id, owner_id, source_id, n.title, n.text, now_ms, now_ms, conversation_id),
+            )
+        return n
+
+    async def attention_notice(
+        self,
+        owner_id: str,
+        key: str,
+        *,
+        title: str,
+        text: str | None,
+        now_ms: int,
+        link: str | None = None,
+        fresh_until_ms: int | None = None,
+    ) -> Notice:
+        n = Notice(
+            id=uuid.uuid4().hex,
+            owner_id=owner_id,
+            source_id=key,
+            kind="heads_up",
+            title=title,
+            text=text,
+            due_ms=now_ms,
+            late=False,
+            created_ms=now_ms,
+            status="held",
+            delivered_ms=None,
+            delivered_to=None,
+            notified_ms=None,
+            source="attention",
+            link=https_link(link),
+            fresh_until_ms=fresh_until_ms,
+        )
+        async with self._tx() as conn:
+            await conn.execute(
+                "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
+                " due_ms, late, created_ms, status, link, fresh_until_ms) VALUES (?, ?,"
+                " 'attention', ?, 'heads_up', ?, ?, ?, 0, ?, 'held', ?, ?)",
+                (n.id, owner_id, key, title, text, now_ms, now_ms, n.link, fresh_until_ms),
             )
         return n
 
