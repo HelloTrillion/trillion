@@ -9,8 +9,9 @@ never sooner. What it finds is claimed by key first, so a key is told at most on
 across restarts (D5); nothing new is a log line and nothing else (D6). New finds from
 one check become one notice: her one line about all of them, written by `words.line`
 (D3), or none, when it is shown by the watcher's title and the finds' details,
-unspoken. Telling has a 20 s limit of its own; one that fails or runs out leaves its
-finds claimed, never told twice. At start the runner marks told the claimed finds
+unspoken. Finds all past their freshness get no line: they would only be shown.
+Telling has a 20 s limit of its own; one that fails or runs out leaves its finds
+claimed, never told twice. At start the runner marks told the claimed finds
 whose notice was written before a stop.
 
 A notice's title is the watcher's own ("Meeting soon"), never the find's: the system
@@ -329,7 +330,7 @@ class AttentionRunner:
                 return None
         else:
             told, text = finds, None
-            if provider is not None:
+            if provider is not None and not _all_stale(finds, ctx.now_ms):
                 text, usage = await words.line(provider, w.name, finds, ctx.notes)
                 await self._spend(provider, usage)
         keys = [f.key for f in told]
@@ -359,6 +360,12 @@ class AttentionRunner:
             await self._spent(provider, usage)
         except Exception as e:
             logger.warning("attention usage not recorded: %s", type(e).__name__)
+
+
+def _all_stale(finds: Sequence[Find], now_ms: int) -> bool:
+    """Every find is past its freshness (a heads-up read after the meeting began): it
+    will be shown, never spoken (D9), so no call is paid for a line."""
+    return all(f.fresh_until_ms is not None and f.fresh_until_ms <= now_ms for f in finds)
 
 
 def _link(link: str | None) -> str | None:

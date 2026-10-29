@@ -6,9 +6,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
+import pytest
+
 from tests.brain.fakes import USAGE, ScriptedProvider, say
 from trillion.attention.runner import Find
-from trillion.attention.words import INSTRUCTIONS, MAX_CHARS, line
+from trillion.attention.words import INSTRUCTIONS, MAX_CHARS, clean, line, sayable
 from trillion.brain.types import (
     ModelEvent,
     Msg,
@@ -94,3 +96,34 @@ async def test_a_line_cut_off_by_the_token_limit_is_no_line() -> None:
     text, usage = await line(ScriptedProvider(cut), "meetings", [FIND], "")
     # Half a sentence is not said; what it cost is still recorded.
     assert text is None and usage == USAGE
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Call Sam back on 555-123-4567 today.",
+        "Call the bank on 0800 123 456.",
+        "Your code is 482913.",
+        "Sign in at https://bank.example.com to fix it.",
+        "Sign in at www.bank.example.com now.",
+        "Reply to help@bank.example.com today.",
+        "Open hxxps://x.example://now.",
+    ],
+)
+async def test_a_line_with_a_link_address_or_long_number_is_never_said(said: str) -> None:
+    # A find is someone else's words: whatever it gets the model to repeat, a number to
+    # call, a link or a code is never spoken. The notice is shown by title, unspoken.
+    assert not sayable(said) and clean(said) is None
+    assert (await line(ScriptedProvider(say(said)), "email", [FIND], ""))[0] is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Your 10:00 with Sam starts in five minutes.",
+        "A payment of 1,250.00 USD from Jo Park just failed.",
+        "A 12,500.00 USD charge came in at 9:41 am on October 29.",
+    ],
+)
+def test_times_amounts_and_dates_are_still_said(said: str) -> None:
+    assert sayable(said) and clean(said) == said

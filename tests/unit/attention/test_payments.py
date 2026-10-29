@@ -54,10 +54,12 @@ def charge(
     created: int = NOW // 1000 - 60,
     name: str | None = "Jo Park",
     description: str | None = None,
+    livemode: bool = True,
 ) -> dict[str, Any]:
     return {
         "id": cid,
         "object": "charge",
+        "livemode": livemode,
         "amount": amount,
         "currency": currency,
         "created": created,
@@ -93,12 +95,15 @@ def dispute(did: str, *, amount: int = 9_900, created: int = NOW // 1000 - 60) -
 @dataclass
 class FakeStripe:
     """The Stripe server's `stripe_api_read`: answers GetCharges and GetDisputes from
-    its lists, newest first, by `created[gte]`, a page at a time."""
+    its lists, newest first, by `created[gte]`, a page at a time. Signed in to a live
+    account or a sandbox (`live`): it reads that mode unless `livemode` asks for the
+    other, which it has none of."""
 
     charges: list[dict[str, Any]] = field(default_factory=list)
     disputes: list[dict[str, Any]] = field(default_factory=list)
     page: int = 100
     down: bool = False
+    live: bool = True
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     async def __call__(self, tool: str, args: Any, timeout: float) -> Outcome:
@@ -110,8 +115,14 @@ class FakeStripe:
             args["stripe_api_operation_id"]
         ]
         p = args["parameters"]
+        mode = args.get("livemode", self.live)
         rows = sorted(
-            (r for r in rows if r["created"] >= p["created"]["gte"]), key=lambda r: -r["created"]
+            (
+                r
+                for r in rows
+                if r["created"] >= p["created"]["gte"] and r.get("livemode", True) is mode
+            ),
+            key=lambda r: -r["created"],
         )
         if "starting_after" in p:
             ids = [r["id"] for r in rows]
@@ -141,8 +152,10 @@ def registry_with(fake: FakeStripe, risk: Risk | None = Risk.READ) -> ToolRegist
     return reg
 
 
-def watcher(fake: FakeStripe, risk: Risk | None = Risk.READ) -> Payments:
-    return Payments(registry_with(fake, risk), zone=lambda: "America/Denver")
+def watcher(
+    fake: FakeStripe, risk: Risk | None = Risk.READ, *, livemode: bool | None = None
+) -> Payments:
+    return Payments(registry_with(fake, risk), zone=lambda: "America/Denver", livemode=livemode)
 
 
 def ctx(
@@ -183,13 +196,32 @@ async def test_it_reads_charges_and_disputes_since_its_place_through_stripe_api_
     assert fake.reads() == [
         {
             "stripe_api_operation_id": op,
-            "livemode": True,
             "parameters": {"created": {"gte": since // 1000}, "limit": 100},
         }
         for op in ("GetCharges", "GetDisputes")
     ]
     # Its place moves on, looking back five minutes for what Stripe writes late.
     assert c.cursor == str(NOW - LAG_MS)
+
+
+@pytest.mark.parametrize("live", [True, False])
+async def test_it_reads_in_the_mode_the_connection_is_in(live: bool) -> None:
+    # No livemode is sent: a sandbox or test key sees its test charges, a live
+    # connection its live ones.
+    fake = FakeStripe([charge("ch_live"), charge("ch_test", livemode=False)], live=live)
+    (f,) = await watcher(fake).check(ctx(FakeClock(NOW)))
+    assert f.key == ("payment:ch_live:failed" if live else "payment:ch_test:failed")
+    assert all("livemode" not in r for r in fake.reads())
+
+
+@pytest.mark.parametrize("livemode", [True, False])
+async def test_a_mode_asked_for_is_the_one_read(livemode: bool) -> None:
+    fake = FakeStripe([charge("ch_live"), charge("ch_test", livemode=False)], live=True)
+    found = await watcher(fake, livemode=livemode).check(ctx(FakeClock(NOW)))
+    assert [f.key for f in found] == (
+        ["payment:ch_live:failed"] if livemode else ["payment:ch_test:failed"]
+    )
+    assert all(r["livemode"] is livemode for r in fake.reads())
 
 
 async def test_its_place_never_moves_back_and_never_reaches_far_back() -> None:
@@ -261,20 +293,21 @@ async def test_with_no_limit_no_payment_is_large_but_failures_and_disputes_still
     assert sorted(f.key for f in found) == ["payment:ch_1:failed", "payment:dp_1:dispute"]
 
 
-async def test_no_email_address_card_or_address_reaches_the_facts() -> None:
+async def test_no_email_address_card_address_or_description_reaches_the_facts() -> None:
     fake = FakeStripe(
         [
-            charge("ch_1", description="Order for jo@example.com"),
+            charge("ch_1", description="Order 7 for jo@example.com, call 555 0199"),
             charge("ch_2", name="jo@example.com"),
             charge("ch_3", name=None),
         ]
     )
     found = await watcher(fake).check(ctx(FakeClock(NOW)))
     facts = json.dumps([f.facts for f in found])
-    for secret in ("jo@example.com", "4242", "visa", "Main St", "12345", "555"):
+    for secret in ("jo@example.com", "4242", "visa", "Main St", "12345", "555", "Order"):
         assert secret not in facts
     by = {f.key: f for f in found}
-    assert by["payment:ch_1:failed"].facts["description"] == "Order for [address]"
+    # The description is someone's free text: never read at all.
+    assert "description" not in by["payment:ch_1:failed"].facts
     # A name that is an address is no name; none is nothing.
     assert "customer" not in by["payment:ch_2:failed"].facts
     assert "customer" not in by["payment:ch_3:failed"].facts

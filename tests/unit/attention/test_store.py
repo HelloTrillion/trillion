@@ -126,8 +126,10 @@ async def test_a_note_is_added_as_a_line_until_they_are_full(
     # Full: nothing is cut, nothing changes.
     assert not await store.add_note(OWNER, "email", "x" * 1000)
     assert (await store.state(OWNER, "email")).notes.endswith("sam@example.com")
-    with pytest.raises(ValueError):
-        await store.add_note(OWNER, "email", "two\nlines")
+    # One line by any of Python's line breaks, not only a newline.
+    for broken in ("two\nlines", "two\rlines", "two\u2028lines", "two\x1clines", "", "  "):
+        with pytest.raises(ValueError):
+            await store.add_note(OWNER, "email", broken)
     # The last check and place are untouched by a note.
     await store.checked(OWNER, "payments", NOW, cursor="c1")
     assert await store.add_note(OWNER, "payments", "Only over $500.")

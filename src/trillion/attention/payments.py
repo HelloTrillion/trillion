@@ -15,10 +15,14 @@ filter by status, so failed and large ones are picked here) and disputes created
 since (`GetDisputes`). At most three pages of each. The first check after it is
 turned on only marks the moment (D2).
 
-What Stripe returns is someone else's words (a customer's name, a description), so
-it reaches the model only wrapped as untrusted (`words.line`). Never a card's
-details, an address or an email address: a customer is named by the name Stripe has,
-or not at all.
+It reads in the mode the connection is in: `livemode` is left out, so the server
+reads the account or sandbox the user signed in to (or whose key it holds), as
+Stripe's MCP tools do by default. A test-mode connection sees its test charges.
+
+What Stripe returns is someone else's words (a customer's name), so it reaches the
+model only wrapped as untrusted (`words.line`). A charge's description is free text
+anyone paying can shape, so it is never read. Never a card's details, an address or
+an email address: a customer is named by the name Stripe has, or not at all.
 """
 
 from __future__ import annotations
@@ -57,12 +61,10 @@ MAX_PAGES = 3
 # Under the runner's 20 s limit for the whole check, at most six calls.
 CALL_TIMEOUT_S = 6.0
 NAME_MAX = 80
-DESCRIPTION_MAX = 120
 # What a Stripe object id looks like ("ch_3Nx..."); anything else is not kept.
 _ID = re.compile(r"^[A-Za-z0-9_]{1,80}$")
 # A Stripe enum value ("card_declined", "fraudulent").
 _CODE = re.compile(r"^[a-z_]{1,40}$")
-_EMAIL = re.compile(r"\S+@\S+")
 _KIND_WORDS = {"failed": "Failed payment", "large": "Large payment", "dispute": "Dispute"}
 
 
@@ -99,14 +101,6 @@ def _name(charge: Mapping[str, Any]) -> str:
     return _one_line(raw, NAME_MAX)
 
 
-def _description(raw: object) -> str:
-    """A charge's description, someone's free text: one short line, any address in it
-    taken out."""
-    if not isinstance(raw, str) or not raw.strip():
-        return ""
-    return _one_line(_EMAIL.sub("[address]", raw), DESCRIPTION_MAX)
-
-
 def _int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -132,11 +126,12 @@ class Payments:
         registry: ToolRegistry,
         *,
         zone: Callable[[], str | None] = lambda: None,
-        livemode: bool = True,
+        livemode: bool | None = None,
     ) -> None:
         self._registry = registry
         self._zone = zone
-        # As stripe_revenue reads by default: the account's live data.
+        # None: left out, so the server reads in the connection's own mode (live, or the
+        # sandbox or test key it was given). True or False asks for that mode.
         self._livemode = livemode
 
     def _stripe(self) -> StripeRevenue | None:
@@ -196,14 +191,10 @@ class Payments:
             params: JSON = {"created": {"gte": since_ms // 1000}, "limit": PAGE_SIZE}
             if after:
                 params["starting_after"] = after
-            reply = await stripe.api_read(
-                {
-                    "stripe_api_operation_id": operation,
-                    "livemode": self._livemode,
-                    "parameters": params,
-                },
-                CALL_TIMEOUT_S,
-            )
+            args: JSON = {"stripe_api_operation_id": operation, "parameters": params}
+            if self._livemode is not None:
+                args["livemode"] = self._livemode
+            reply = await stripe.api_read(args, CALL_TIMEOUT_S)
             if not reply.ok:
                 # The kind only: the server's words could quote a customer.
                 raise StripeError
@@ -269,10 +260,8 @@ class Payments:
             return []
         currency = currency.lower()
         customer = _name(c)
+        # Never the description: free text from whoever pays, kept from the model.
         extra: JSON = {}
-        description = _description(c.get("description"))
-        if description:
-            extra["description"] = description
         status = c.get("status")
         if status == "failed":
             code = c.get("failure_code")

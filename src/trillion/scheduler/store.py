@@ -6,6 +6,7 @@ The scheduler and the door depend on this, never on SQLite. The SQLite store is
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
@@ -130,13 +131,18 @@ def https_link(link: str | None) -> str | None:
     is opened by a tap, so nothing else is kept."""
     if link is None:
         return None
-    # No spaces or control characters anywhere: a parser may read past them, a browser
-    # may drop them, and the two need not agree on where the link goes.
-    if len(link) > 2000 or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in link):
+    # No spaces, control characters or backslashes anywhere: a parser may read past
+    # them, a browser may drop them or read "\\" as "/", and the two need not agree on
+    # where the link goes.
+    if len(link) > 2000 or any(
+        c.isspace() or ord(c) < 32 or ord(c) == 127 or c == "\\" for c in link
+    ):
         raise ValueError("a notice's link must be https")
     try:
         parts = urlsplit(link)
         host = parts.hostname
+        # Read for its check alone: a port out of range or not a number raises.
+        _ = parts.port
     except ValueError:
         raise ValueError("a notice's link must be https") from None
     # A name and password before the host ("https://bank.example@elsewhere") hides
@@ -146,9 +152,31 @@ def https_link(link: str | None) -> str | None:
         or not link.startswith("https://")
         or not host
         or "@" in parts.netloc
+        or not _plain_host(host)
     ):
         raise ValueError("a notice's link must be https")
     return link
+
+
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9-]{1,63}$")
+
+
+def _plain_host(host: str) -> bool:
+    """A host name a browser reads the way we do: ASCII letters, digits and dashes in
+    dotted labels, at least two. A label in another script is taken in its IDNA form;
+    one that has none, or that holds a dot of another script ("。"), is not."""
+    labels = host.split(".")
+    if len(labels) < 2:
+        return False
+    for label in labels:
+        if not label.isascii():
+            try:
+                label = label.encode("idna").decode("ascii")
+            except UnicodeError:
+                return False
+        if not _HOST_LABEL.fullmatch(label):
+            return False
+    return True
 
 
 class ScheduleStore(Protocol):

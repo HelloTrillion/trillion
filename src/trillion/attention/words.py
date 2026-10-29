@@ -5,7 +5,9 @@ One small call: what it is for in the instructions, the finds wrapped as untrust
 watcher beside them, no tools, a few tokens, a short timeout. Anything wrong (no
 answer, an empty or overlong one, a failure, a timeout) is no line: the notice is
 then shown by its title and not spoken, never with stock words. An answer the token
-limit cut off is half a sentence, so it is no line too.
+limit cut off is half a sentence, so it is no line too. So is one that holds a link,
+an email address or a long run of digits (`sayable`): whatever a find talks the model
+into, she never reads out a number to call, a link or a code.
 
 `line` always says something about the finds it is given. A watcher that lets the
 model judge whether anything is worth saying (urgent email) decides that in its own
@@ -18,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -43,12 +46,22 @@ INSTRUCTIONS = (
 )
 
 _QUOTES = "\"'`\u201c\u201d\u2018\u2019*_"
+# What a line read from someone else's words must never say aloud: a link, an email
+# address, or a long run of digits (a phone number, a code, an account), however the
+# finds were dressed up. Such a line is dropped, so the notice is shown, unspoken.
+_UNSAYABLE = re.compile(r"://|www\.|[^\s@]+@[^\s@]+\.[^\s@]+|\d(?:[ -]*\d){5,}", re.IGNORECASE)
+
+
+def sayable(line: str) -> bool:
+    """No link, address or long number in it: fit to be said aloud."""
+    return _UNSAYABLE.search(line) is None
 
 
 def clean(text: str) -> str | None:
-    """The model's answer as one line to speak, or None when it is not one."""
+    """The model's answer as one line to speak, or None when it is not one (empty,
+    too long, or something never to be said: `sayable`)."""
     out = " ".join(text.split()).strip(_QUOTES).strip()
-    if not out or len(out) > MAX_CHARS:
+    if not out or len(out) > MAX_CHARS or not sayable(out):
         return None
     return out
 

@@ -397,6 +397,8 @@ async def test_reads_75_s_apart_never_miss_the_shortest_lead(rig: Rig, phase_s: 
         rig.clock.advance(75_000)
     (n,) = rig.door.notices
     assert n.source_id == "meeting:e1:2026-10-29T16:00:00Z"
+    # Made before the start, so it is still fresh and spoken (D9), not merely shown.
+    assert n.created_ms < START and n.fresh_until_ms == START
 
 
 async def test_a_heads_up_first_read_just_after_the_start_is_shown_not_fresh(rig: Rig) -> None:

@@ -215,7 +215,8 @@ class SqliteAttentionStore:
             )
 
     async def add_note(self, owner_id: str, watcher: str, line: str) -> bool:
-        if "\n" in line or not line.strip():
+        # Every line break Python reads, not only "\n": the notes are read back by lines.
+        if len(line.splitlines()) != 1 or not line.strip():
             raise ValueError("a note is one line")
         async with self._tx() as conn:
             await conn.execute(

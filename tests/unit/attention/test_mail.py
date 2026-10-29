@@ -18,10 +18,12 @@ from tests.brain.fakes import ScriptedProvider, say
 from tests.scheduler.conftest import FakeClock
 from tests.unit.attention.test_runner import Door
 from trillion.attention.mail import (
+    AT_ONCE,
     FRESH_MS,
     LAG_MS,
     LIST_PATH,
     METADATA,
+    Gone,
     GoogleMail,
     NotConnected,
     UrgentEmail,
@@ -32,6 +34,7 @@ from trillion.attention.mail import (
 from trillion.attention.runner import AttentionRunner, WatchContext
 from trillion.attention.settings import DEFAULT, AttentionSettings
 from trillion.brain.types import TextBlock, Usage
+from trillion.connectors.google.client import GoogleCallError
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.attention_store import SqliteAttentionStore
@@ -49,11 +52,12 @@ def message(
     sender: str = "Sam Lee <sam@example.com>",
     subject: str = "Contract today",
     snippet: str = "Can you sign and send it back before five?",
+    sent: int = NOW - MIN,
 ) -> dict[str, Any]:
     return {
         "id": mid,
         "snippet": snippet,
-        "internalDate": str(NOW - MIN),
+        "internalDate": str(sent),
         "payload": {
             "headers": [
                 {"name": "From", "value": sender},
@@ -66,6 +70,11 @@ def message(
     }
 
 
+def verdict(urgent: Mapping[str, bool], line: str = LINE) -> str:
+    """The judge's answer as the model writes it."""
+    return json.dumps({"urgent": dict(urgent), "line": line})
+
+
 @dataclass
 class Gmail:
     found: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -73,6 +82,12 @@ class Gmail:
     boom: bool = False
     listed: list[Mapping[str, str]] = field(default_factory=list)
     got: list[tuple[str, Mapping[str, Any]]] = field(default_factory=list)
+    # Each read takes this long; these ids fail as given.
+    slow_s: float = 0.0
+    fail: dict[str, Exception] = field(default_factory=dict)
+    busy: int = 0
+    most: int = 0
+    done: list[str] = field(default_factory=list)
 
     def connected(self) -> bool:
         return self.on
@@ -85,6 +100,16 @@ class Gmail:
 
     async def message(self, message_id: str, params: Mapping[str, Any]) -> dict[str, Any]:
         self.got.append((message_id, dict(params)))
+        self.busy += 1
+        self.most = max(self.most, self.busy)
+        try:
+            if self.slow_s:
+                await asyncio.sleep(self.slow_s)
+            if message_id in self.fail:
+                raise self.fail[message_id]
+        finally:
+            self.busy -= 1
+        self.done.append(message_id)
         return self.found[message_id]
 
 
@@ -137,14 +162,14 @@ async def test_it_lists_unread_important_mail_since_its_place_and_asks_for_metad
     f = found[0]
     assert f.key == "email:m1"
     assert f.facts == {
-        "id": "m1",
         "from": "Sam Lee <sam@example.com>",
         "subject": "Contract today",
         "date": "Thu, 29 Oct 2026 09:58:00 -0600",
         "preview": "Can you sign and send it back before five?",
     }
     assert f.detail == "Sam Lee — Contract today"
-    assert f.fresh_until_ms == NOW + FRESH_MS and f.link is None
+    # Fresh for half an hour from when Gmail received it, not from when it was found.
+    assert f.fresh_until_ms == NOW - MIN + FRESH_MS and f.link is None
     # Never the body.
     assert "U0VDUkVU" not in str(found)
 
@@ -158,6 +183,74 @@ async def test_its_place_moves_on_but_looks_back_for_mail_filed_late() -> None:
     c = ctx(clock, cursor=str(NOW - MIN))
     await UrgentEmail(Gmail()).check(c)
     assert c.cursor == str(NOW - MIN)
+
+
+async def test_mail_that_came_long_ago_is_shown_not_spoken() -> None:
+    clock = FakeClock(NOW)
+    old = message("m1", sent=NOW - 2 * 60 * MIN)
+    (f,) = await UrgentEmail(Gmail({"m1": old})).check(ctx(clock))
+    assert f.fresh_until_ms is not None and f.fresh_until_ms < NOW
+    # A date in the future is never fresher than now.
+    ahead = message("m1", sent=NOW + 60 * MIN)
+    (f,) = await UrgentEmail(Gmail({"m1": ahead})).check(ctx(clock))
+    assert f.fresh_until_ms == NOW + FRESH_MS
+    # Gmail not saying: from now.
+    unsaid = message("m1")
+    del unsaid["internalDate"]
+    (f,) = await UrgentEmail(Gmail({"m1": unsaid})).check(ctx(clock))
+    assert f.fresh_until_ms == NOW + FRESH_MS
+
+
+async def test_a_long_gap_reads_a_day_back_at_most() -> None:
+    clock = FakeClock(NOW)
+    gmail = Gmail()
+    await UrgentEmail(gmail).check(ctx(clock, cursor=str(NOW - 7 * 24 * 60 * MIN)))
+    assert f"after:{(NOW - 24 * 60 * MIN) // 1000}" in gmail.listed[0]["q"]
+
+
+async def test_one_deadline_covers_the_list_and_every_read() -> None:
+    # Each read is quick, but twenty of them five at a time are not.
+    clock = FakeClock(NOW)
+    gmail = Gmail({f"m{i}": message(f"m{i}") for i in range(20)}, slow_s=0.05)
+    c = ctx(clock, cursor="123000")
+    with pytest.raises(TimeoutError):
+        await UrgentEmail(gmail, fetch_timeout_s=0.12).check(c)
+    assert c.cursor == "123000"
+    # No read is left running after the check fails.
+    finished = len(gmail.done)
+    await asyncio.sleep(0.1)
+    assert len(gmail.done) == finished and gmail.busy == 0
+
+
+async def test_reads_run_a_few_at_a_time() -> None:
+    clock = FakeClock(NOW)
+    gmail = Gmail({f"m{i}": message(f"m{i}") for i in range(12)}, slow_s=0.01)
+    found = await UrgentEmail(gmail).check(ctx(clock))
+    assert len(found) == 12 and gmail.most == AT_ONCE
+
+
+async def test_a_message_gone_since_the_list_is_skipped_but_a_failure_fails_the_check() -> None:
+    clock = FakeClock(NOW)
+    gmail = Gmail({"m1": message("m1"), "m2": message("m2")}, fail={"m1": Gone()})
+    found = await UrgentEmail(gmail).check(ctx(clock))
+    assert [f.key for f in found] == ["email:m2"]
+    # Anything else fails the check as itself, and the other reads are stopped.
+    gmail = Gmail(
+        {"m1": message("m1"), "m2": message("m2")},
+        fail={"m1": ConnectionError("down")},
+        slow_s=0.01,
+    )
+    c = ctx(clock, cursor="123000")
+    with pytest.raises(ConnectionError):
+        await UrgentEmail(gmail).check(c)
+    assert c.cursor == "123000"
+
+
+async def test_the_snippet_is_read_as_the_sender_wrote_it() -> None:
+    clock = FakeClock(NOW)
+    escaped = message("m1", snippet="Tom &amp; Jerry&#39;s &quot;plan&quot;")
+    (f,) = await UrgentEmail(Gmail({"m1": escaped})).check(ctx(clock))
+    assert f.facts["preview"] == 'Tom & Jerry\'s "plan"'
 
 
 async def test_a_failed_read_leaves_its_place() -> None:
@@ -226,20 +319,31 @@ async def test_the_notes_watch_lines_reach_the_query() -> None:
 @pytest.mark.parametrize(
     ("text", "got"),
     [
-        ('{"urgent": ["m1"], "line": "Sam wrote."}', (["m1"], "Sam wrote.")),
-        ('```json\n{"urgent": ["m1"], "line": "Sam wrote."}\n```', (["m1"], "Sam wrote.")),
-        ('{"urgent": [], "line": ""}', ([], None)),
-        ('{"urgent": ["m9", "m1", "m1", 3], "line": "x"}', (["m1"], "x")),
+        ('{"urgent": {"1": true, "2": false}, "line": "Sam wrote."}', (["1"], "Sam wrote.")),
+        ('```json\n{"urgent": {"1": true}, "line": "Sam wrote."}\n```', (["1"], "Sam wrote.")),
+        (
+            'Here you go: {"urgent": {"2": true}, "line": "Ana wrote."} Hope that helps.',
+            (["2"], "Ana wrote."),
+        ),
+        ('{"urgent": {"1": false, "2": false}, "line": ""}', ([], None)),
+        ('{"urgent": {}, "line": ""}', ([], None)),
+        # Numbers it was not given, and anything but true, are not urgent.
+        ('{"urgent": {"9": true, "1": "yes", "2": 1}, "line": "x"}', ([], "x")),
+        # Urgent with no usable line: told, unspoken.
+        ('{"urgent": {"1": true}, "line": 3}', (["1"], None)),
+        ('{"urgent": {"1": true}}', (["1"], None)),
+        ('{"urgent": {"1": true}, "line": "  "}', (["1"], None)),
+        ('{"urgent": {"1": true}, "line": "Call 555-123-4567."}', (["1"], None)),
         ("Sam wrote about the contract.", None),
-        ('{"urgent": "m1", "line": "x"}', None),
-        ('["m1"]', None),
-        ('{"urgent": ["m1"]}', None),
+        ('{"urgent": ["1"], "line": "x"}', None),
+        ('["1"]', None),
+        ('{"urgent": {"1": tru', None),
     ],
 )
-def test_the_answer_is_strict_json_naming_given_ids(
+def test_the_answer_is_strict_json_judging_each_given_number(
     text: str, got: tuple[list[str], str | None] | None
 ) -> None:
-    assert answer(text, ["m1", "m2"]) == got
+    assert answer(text, ["1", "2"]) == got
 
 
 async def judged(provider: ScriptedProvider, notes: str = "") -> Any:
@@ -251,7 +355,7 @@ async def judged(provider: ScriptedProvider, notes: str = "") -> Any:
 
 
 async def test_the_judge_is_one_call_with_no_tools_and_the_mail_wrapped() -> None:
-    provider = ScriptedProvider(say(json.dumps({"urgent": ["m1"], "line": LINE})))
+    provider = ScriptedProvider(say(verdict({"1": True, "2": False})))
     said = await judged(provider, notes="Not the newsletters.")
     assert said.text == LINE and [f.key for f in said.told] == ["email:m1"]
     assert said.usage != Usage()
@@ -261,8 +365,22 @@ async def test_the_judge_is_one_call_with_no_tools_and_the_mail_wrapped() -> Non
     assert isinstance(block, TextBlock)
     inside, notes = block.text.split("</untrusted_tool_result>", 1)
     assert "Contract today" in inside and "Contract today" not in notes
+    # Numbered for the judge; Gmail's ids never reach it.
+    assert '"n": "1"' in inside and '"n": "2"' in inside
+    assert "m1" not in block.text and "m2" not in block.text
     # The user's notes are theirs: outside the untrusted part.
     assert "Not the newsletters." in notes and "Not the newsletters." not in inside
+
+
+async def test_each_number_is_judged_on_its_own() -> None:
+    said = await judged(ScriptedProvider(say(verdict({"1": False, "2": True}))))
+    assert [f.key for f in said.told] == ["email:m2"]
+
+
+async def test_a_line_repeating_a_number_or_link_from_the_mail_is_not_said() -> None:
+    for line in ("Sam says call 555 123 4567.", "Sam wants you at https://x.example."):
+        said = await judged(ScriptedProvider(say(verdict({"1": True}, line))))
+        assert [f.key for f in said.told] == ["email:m1"] and said.text is None
 
 
 async def test_an_answer_that_does_not_parse_says_nothing() -> None:
@@ -323,6 +441,12 @@ class Rig:
         r.add(UrgentEmail(self.gmail))
         return r
 
+    def found_now(self) -> None:
+        """Its mail came a minute before the check that finds it."""
+        sent = NOW + 10 * MIN - MIN
+        for m in self.gmail.found.values():
+            m["internalDate"] = str(sent)
+
 
 @pytest.fixture
 async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
@@ -345,13 +469,14 @@ async def turned_on(rig: Rig) -> AttentionRunner:
 
 async def test_urgent_mail_is_one_notice_with_its_detail(rig: Rig) -> None:
     rig.gmail.found["m2"] = message("m2", sender="Ana <ana@example.com>", subject="Server down")
-    rig.provider = ScriptedProvider(say(json.dumps({"urgent": ["m1", "m2"], "line": LINE})))
+    rig.found_now()
+    rig.provider = ScriptedProvider(say(verdict({"1": True, "2": True})))
     r = await turned_on(rig)
     await r.tick()
     (n,) = rig.door.notices
     assert (n.kind, n.title, n.text) == ("heads_up", "Important email", LINE)
     assert n.detail == "Sam Lee — Contract today; Ana — Server down"
-    assert n.fresh_until_ms == rig.clock() + FRESH_MS
+    assert n.fresh_until_ms == rig.clock() - MIN + FRESH_MS
     # Once: the next check finds the same mail and says nothing more.
     rig.clock.advance(10 * MIN)
     await r.tick()
@@ -359,7 +484,7 @@ async def test_urgent_mail_is_one_notice_with_its_detail(rig: Rig) -> None:
 
 
 async def test_mail_judged_not_urgent_is_silent(rig: Rig) -> None:
-    rig.provider = ScriptedProvider(say('{"urgent": [], "line": ""}'))
+    rig.provider = ScriptedProvider(say('{"urgent": {"1": false}, "line": ""}'))
     r = await turned_on(rig)
     await r.tick()
     assert rig.door.notices == []
@@ -376,7 +501,7 @@ async def test_an_answer_that_does_not_parse_is_no_notice(rig: Rig) -> None:
 
 
 async def test_urgent_with_no_usable_line_is_shown_by_title_and_detail(rig: Rig) -> None:
-    rig.provider = ScriptedProvider(say(json.dumps({"urgent": ["m1"], "line": "x" * 400})))
+    rig.provider = ScriptedProvider(say(verdict({"1": True}, "x" * 400)))
     r = await turned_on(rig)
     await r.tick()
     (n,) = rig.door.notices
@@ -401,8 +526,12 @@ class _Google:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
+    gone = False
+
     async def call(self, client: object, email: str, method: str, path: str, **kw: Any) -> Any:
         self.calls.append((client, email, method, path, kw))
+        if self.gone:
+            raise GoogleCallError("not_found", "Google found nothing with that id")
         return {"messages": []}
 
 
@@ -437,6 +566,12 @@ async def test_google_mail_asks_as_the_first_gmail_account() -> None:
     assert LIST_PATH == "/gmail/v1/users/me/messages"
     with pytest.raises(ValueError):
         await mail.message("../drafts", METADATA)
+    # A message gone since the list is Gone; the list's own failure is Google's.
+    conn.google.gone = True
+    with pytest.raises(Gone):
+        await mail.message("m1", METADATA)
+    with pytest.raises(GoogleCallError):
+        await mail.messages({"q": "x"})
 
 
 async def test_google_mail_not_connected() -> None:

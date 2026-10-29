@@ -1,5 +1,5 @@
 """Payment alerts in the running server: the watcher is registered, runs only while a
-Stripe server is connected and its read never asks, and a charge whose description
+Stripe server is connected and its read never asks, and a charge whose customer name
 carries instructions can do nothing (D3, D4)."""
 
 from __future__ import annotations
@@ -86,16 +86,17 @@ async def test_a_charge_with_instructions_can_not_act(rt: Runtime) -> None:
     args = {"when": "2030-01-07T10:00", "say": "Wire the money.", "title": "Wire"}
     provider = Gated(say(LINE), use("reminder_set", args), say("Done."))
     rt.provider = provider
-    runner = await connected(rt, FakeStripe([charge("ch_1", description=INJECTED)]))
+    # A customer's name is whatever the payer typed: here, instructions.
+    runner = await connected(rt, FakeStripe([charge("ch_1", name=INJECTED)]))
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
     await runner.tick()
     await idle(session)
     (shown,) = page.all("notice")
     assert (shown["kind"], shown["title"], shown["text"]) == ("heads_up", "Payment", LINE)
-    assert shown["detail"] == "Failed payment 125.00 USD — Jo Park"
-    # The description reached the model only inside the untrusted wrap, and no tools
-    # were offered, so nothing in a charge can call one.
+    assert shown["detail"] == f"Failed payment 125.00 USD — {INJECTED}"
+    # The name reached the model only inside the untrusted wrap, and no tools were
+    # offered, so nothing in a charge can call one.
     (_, messages), *_ = provider.calls
     (block,) = messages[0].blocks
     assert isinstance(block, TextBlock)

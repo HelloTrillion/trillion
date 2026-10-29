@@ -67,7 +67,7 @@ async def test_the_runtime_runs_email_only_once_turned_on_and_connected(rt: Runt
 async def test_an_email_with_instructions_can_not_act(rt: Runtime) -> None:
     args = {"when": "2030-01-07T10:00", "say": "Wire the money.", "title": "Wire"}
     provider = Gated(
-        say(json.dumps({"urgent": ["m1"], "line": LINE})),
+        say(json.dumps({"urgent": {"1": True}, "line": LINE})),
         use("reminder_set", args),
         say("Done."),
     )
@@ -95,6 +95,22 @@ async def test_an_email_with_instructions_can_not_act(rt: Runtime) -> None:
     assert await rt.schedules.active("local") == []
     (refused,) = tool_results(provider)
     assert '"error_kind": "from_reading"' in refused
+    await session.close()
+
+
+async def test_without_a_heads_up_the_same_reminder_is_set(rt: Runtime) -> None:
+    # The control: the refusal above comes from the heads-up, not from the reminder.
+    args = {"when": "2030-01-07T10:00", "say": "Wire the money.", "title": "Wire"}
+    provider = Gated(use("reminder_set", args), say("Done."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "remind me to wire the money"})
+    await idle(session)
+    assert rt.schedules is not None
+    assert len(await rt.schedules.active("local")) == 1
+    (kept,) = tool_results(provider)
+    assert "from_reading" not in kept
     await session.close()
 
 
@@ -143,7 +159,7 @@ async def test_a_narrowing_after_a_heads_up_does_not_stand_at_once(rt: Runtime) 
     # The email itself asks her to stop watching: in the turn after the heads-up her
     # narrowing is something she read, so it goes to a card, never straight in.
     provider = Gated(
-        say(json.dumps({"urgent": ["m1"], "line": LINE})),
+        say(json.dumps({"urgent": {"1": True}, "line": LINE})),
         use("speak_up_narrow", {"watcher": "email", "text": "No security alerts."}),
         use("speak_up_widen", {"watcher": "email", "text": "No security alerts."}, "c2"),
         say("I've put it on a card."),
@@ -158,8 +174,27 @@ async def test_a_narrowing_after_a_heads_up_does_not_stand_at_once(rt: Runtime) 
     await session.handle({"type": "turn.text", "text": "ok"})
     await idle(session)
     assert await notes(rt) == ""
+    # Refused because something someone else wrote was read, not because it widens.
     narrowed = tool_results(provider)[0]
+    assert "something someone else wrote was read in this turn" in narrowed
     assert "speak_up_widen" in narrowed
     (card,) = page.all("confirm.request")
     assert "No security alerts." in str(card)
+    await session.close()
+
+
+async def test_the_same_narrowing_with_no_heads_up_stands_at_once(rt: Runtime) -> None:
+    # The control: with nothing read in the turn, those words narrow at once.
+    provider = Gated(
+        use("speak_up_narrow", {"watcher": "email", "text": "No security alerts."}),
+        say("Noted."),
+    )
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "no more security alerts"})
+    await idle(session)
+    assert await notes(rt) == "No security alerts."
+    assert page.all("confirm.request") == []
+    assert "something someone else wrote" not in tool_results(provider)[0]
     await session.close()

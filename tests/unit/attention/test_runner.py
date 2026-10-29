@@ -268,6 +268,24 @@ async def test_a_failing_words_call_shows_the_notice_by_title_unspoken(world: Wo
     assert n.title == "Meeting soon" and n.text is None
 
 
+async def test_finds_all_past_their_freshness_get_no_line(world: World) -> None:
+    # Read after the meeting began: shown, never spoken, so no call is paid for words.
+    late = [find("meeting:e1:1", fresh_until_ms=NOW), find("meeting:e2:1", fresh_until_ms=NOW - 1)]
+    r = await world.runner(Watcher(finds=late))
+    await r.tick()
+    (n,) = world.door.notices
+    assert n.text is None and n.fresh_until_ms == NOW - 1
+    assert world.provider is not None and world.provider.calls == []
+
+
+async def test_one_fresh_find_among_late_ones_still_gets_a_line(world: World) -> None:
+    finds = [find("meeting:e1:1", fresh_until_ms=NOW), find("meeting:e2:1", fresh_until_ms=NOW + 1)]
+    r = await world.runner(Watcher(finds=finds))
+    await r.tick()
+    (n,) = world.door.notices
+    assert n.text == LINE
+
+
 async def test_with_no_model_the_notice_is_shown_by_title(world: World) -> None:
     world.provider = None
     r = await world.runner(Watcher(finds=[find()]))

@@ -82,6 +82,21 @@ async def test_only_an_https_link_is_kept(store: SqliteScheduleStore, link: str)
         " https://meet.example.com/abc",
         "https://[::1/x",
         "https://meet.example.com/" + "x" * 2000,
+        # A backslash a browser reads as a slash, so the host is elsewhere.
+        "https://host\\evil.example.com/",
+        "https://meet.example.com\\@evil.example.com/",
+        # A dot of another script, which a browser reads as a dot.
+        "https://host\u3002evil.example.com/",
+        "https://host\uff0eevil.example.com/",
+        # A host name with no IDNA form, or not a plain name at all.
+        "https://\u00e9" + "x" * 70 + ".example.com/",
+        "https://meet_room.example.com/",
+        "https://meet.example.com:99999/",
+        "https://meet.example.com:abc/",
+        "https://.",
+        "https://meet..example.com/",
+        "https://localhost/",
+        "https://[::1]/",
     ],
 )
 def test_a_link_that_is_not_plainly_https_somewhere_is_refused(link: str) -> None:
@@ -97,6 +112,9 @@ def test_a_link_that_is_not_plainly_https_somewhere_is_refused(link: str) -> Non
         "https://zoom.example.com/j/123?pwd=abc#x",
         "https://meet.example.com:8443/abc",
         "https://meet.example.com/" + "x" * (2000 - len("https://meet.example.com/")),
+        # A name in another script is kept: it has a plain IDNA form.
+        "https://b\u00fccher.example/x",
+        "https://192.0.2.1/x",
     ],
 )
 def test_a_plain_https_link_is_kept(link: str) -> None:
