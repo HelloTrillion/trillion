@@ -14,7 +14,8 @@ column, and checks it against the table below.
 - Every other column a statement changes is listed as not a decision, with why.
   A new one fails until someone says which it is: that is the point.
 - A user's file that decides what she may reach is written by one module only:
-  nothing else names the file or the function that says where it is.
+  nothing else names the file or the function that says where it is. This is a
+  check on names, not on what code does: a path built some other way would pass it.
 
     python3 scripts/check_one_writer.py [--selftest]
 """

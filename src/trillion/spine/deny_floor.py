@@ -61,11 +61,11 @@ def fold(s: str) -> str:
 _FOLDED_SEGMENTS: frozenset[str] = frozenset(fold(s) for s in PROTECTED_SEGMENTS)
 
 
-def _folded_parts(p: Path) -> tuple[str, ...]:
+def _folded_parts(p: PurePath) -> tuple[str, ...]:
     return tuple(fold(part) for part in p.parts)
 
 
-def is_under(p: Path, root: Path) -> bool:
+def is_under(p: PurePath, root: PurePath) -> bool:
     """Under `root` by any spelling: for what is protected, refusing too much is safe."""
     rp, rr = _folded_parts(p), _folded_parts(root)
     return rp[: len(rr)] == rr
@@ -134,7 +134,7 @@ def spellings(p: Path) -> tuple[Path, ...]:
     return (p,) if c == p else (p, c)
 
 
-def protected_reason(p: Path, protected_roots: tuple[Path, ...]) -> str | None:
+def protected_reason(p: PurePath, protected_roots: tuple[Path, ...]) -> str | None:
     """Why one spelling of a resolved path is protected wherever it is, or None. Shared
     with the rule for folders that can never be shared, so the two never drift."""
     if _has_stream(p):

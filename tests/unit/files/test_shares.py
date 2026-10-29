@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ def store(home: Path) -> Shares:
             data_dir=home / ".trillion",
             protected_roots=(),
             mounts=(),
+            system=(),
             hidden=lambda _p: False,
         )
 
@@ -136,7 +138,10 @@ def test_a_default_name_that_is_taken_gets_a_number(store, home):
     assert (first.name, second.name) == ("Clients", "Clients 2")
 
 
-@pytest.mark.parametrize("bad", ["", "   ", "x" * 61, "two\nlines", "a\rb", "tab\x07"])
+@pytest.mark.parametrize(
+    "bad",
+    ["", "   ", "x" * 61, "two\nlines", "a\rb", "tab\x07", "evil\u202etxt", "zero\u200bwidth"],
+)
 def test_a_bad_name_is_refused(store, home, bad):
     with pytest.raises(ShareError):
         store.put(folder(home, "Clients"), name=bad)
@@ -288,10 +293,13 @@ def test_removing_a_routine_removes_its_shares(store, home):
         ' "scope": "everyone", "added_ms": 1}]}',
         '{"version": 1, "shares": [{"id": "f_1", "name": "a", "path": "/x", "access": "all",'
         ' "scope": "everyone", "added_ms": 1}]}',
+        b'{"version": 1, "shares": [], "x": "\xff\xfe"}',  # not UTF-8
+        "[" * 100_000,  # deep enough to overflow the parser
     ],
 )
 def test_a_damaged_file_is_never_overwritten_and_no_shares_apply(store, home, text):
-    store.path.write_text(text, encoding="utf-8")
+    raw = text if isinstance(text, bytes) else text.encode("utf-8")
+    store.path.write_bytes(raw)
     problem = store.problem()
     assert problem is not None and "damaged" in problem and str(store.path) in problem
     assert store.all() == []
@@ -300,7 +308,17 @@ def test_a_damaged_file_is_never_overwritten_and_no_shares_apply(store, home, te
         store.put(folder(home, "Clients"))
     with pytest.raises(ShareError, match="damaged"):
         store.remove_routine("r1")
-    assert store.path.read_text(encoding="utf-8") == text
+    assert store.path.read_bytes() == raw
+
+
+def test_a_run_only_share_still_applies_while_the_file_is_damaged(store, home):
+    store.path.write_text("{not json", encoding="utf-8")
+    grant = store.add_run_only(folder(home, "Granted"))
+    assert store.all() == [grant]
+    assert store.in_scope(EVERYONE)[0] == (grant.path,)
+    assert store.change(grant.id, access="read").access == "read"
+    store.remove(grant.id)
+    assert store.all() == []
 
 
 def test_two_shares_of_one_path_in_the_file_is_damage(store, home):
@@ -406,6 +424,11 @@ def test_a_new_share_widens():
     assert widens(None, access="read", scope=EVERYONE)
 
 
+def test_saving_a_granted_folder_widens_whatever_the_access():
+    grant = replace(_share("change"), run_only=True)
+    assert widens(grant, access="read", scope=routine_scope("r1"))
+
+
 @pytest.mark.parametrize(
     ("old", "access", "scope", "wider"),
     [
@@ -427,3 +450,45 @@ def test_the_default_file_is_in_trillions_folder(monkeypatch, tmp_path):
     monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "th"))
     assert paths.folders_config_path() == tmp_path / "th" / "folders.json"
     assert Shares().path == tmp_path / "th" / "folders.json"
+
+
+def test_names_that_read_the_same_are_one_name(store, home):
+    store.put(folder(home, "A"), name="Strasse")
+    with pytest.raises(ShareError, match="name"):
+        store.put(folder(home, "B"), name="STRA\u00dfE")  # sharp s
+    with pytest.raises(ShareError, match="name"):
+        store.put(folder(home, "C"), name="\uff33trasse")  # full-width S
+    assert store.get("stra\u00dfe") is not None
+
+
+def test_a_share_whose_folder_became_a_link_reaches_nothing(store, home, tmp_path):
+    web = folder(home, "Website")
+    share = store.put(web)
+    elsewhere = folder(tmp_path, "elsewhere")
+    web.rmdir()
+    try:
+        web.symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this account may not create symlinks")
+    assert store.state(share) == "moved or replaced by a link"
+    assert store.in_scope(EVERYONE) == ((), ())
+
+
+def test_a_share_that_cannot_be_resolved_reaches_nothing(store, home, monkeypatch):
+    share = store.put(folder(home, "Website"))
+
+    def boom(_p: Path) -> Path:
+        raise RuntimeError("loop")
+
+    monkeypatch.setattr("trillion.files.shares.resolved", boom)
+    assert store.state(share) == "moved or replaced by a link"
+
+
+def test_a_granted_name_a_saved_share_took_is_numbered(store, home):
+    grant = store.add_run_only(folder(home, "a", "Clients"))
+    # Another process saved a share named Clients after the grant was made.
+    other = Shares(store.path, rules=lambda _p: None)
+    other.put(folder(home, "b", "Elsewhere"), name="clients")
+    names = [s.name for s in store.all()]
+    assert names == ["clients", "Clients 2"]
+    assert store.get(grant.id).name == "Clients 2"

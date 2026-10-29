@@ -6,9 +6,13 @@ from the next tool call with no restart, and written whole: a temporary file, a
 rename, then a read back (OPS-2). This module is the only one that reads or writes
 it (scripts/check_one_writer.py).
 
-A damaged file is never overwritten: no shares apply until the user fixes or
+A damaged file is never overwritten: no saved shares apply until the user fixes or
 removes it, because a guess at what it meant could share more than they chose.
-Shares from `--grant` live only for the run and are never written.
+Shares from `--grant` live only for the run and are never written; they still apply
+while the file is damaged, since they were never in it.
+
+The lock is per instance: the runtime owns exactly one `Shares`, so every change in
+the process goes through one lock.
 """
 
 from __future__ import annotations
@@ -70,7 +74,8 @@ def widens(old: Share | None, *, access: str, scope: str) -> bool:
     """Whether making `old` into this reaches more than it does now. A new share, more
     access, or a scope that is not the same or narrower all widen; only narrowing may
     happen without the user's tap (D3)."""
-    if old is None or (access == "change" and old.access == "read"):
+    # Saving a `--grant` folder keeps it past this run: that reaches more too.
+    if old is None or old.run_only or (access == "change" and old.access == "read"):
         return True
     # Everyone to one routine narrows; one routine to another reaches a new one.
     return scope != old.scope and not (old.scope == EVERYONE and scope != EVERYONE)
@@ -88,7 +93,16 @@ def _clean_name(raw: str) -> str:
     # Newlines and other control characters would break her prompt's list of shares.
     if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
         raise ShareError("a folder's name must be one line")
+    # Invisible format characters (right-to-left overrides, zero-width spaces) could
+    # make one name look like another on the card.
+    if any(unicodedata.category(c) == "Cf" for c in name):
+        raise ShareError("a folder's name can't have invisible characters")
     return name
+
+
+def _name_key(name: str) -> str:
+    """Names that read the same are the same name: full-width, long s, any case."""
+    return fold(name)
 
 
 def _row(share: Share) -> dict[str, Any]:
@@ -146,7 +160,7 @@ def _parse(raw: object) -> list[Share] | None:
     # Two of one id, name or path: which one is meant is a guess, so none applies.
     for key in (
         lambda s: s.id,
-        lambda s: s.name.casefold(),
+        lambda s: _name_key(s.name),
         lambda s: _key(s.path),
     ):
         if len({key(s) for s in out}) != len(out):
@@ -173,14 +187,16 @@ class Shares:
 
     def _load(self) -> tuple[list[Share], str | None]:
         try:
-            text = self.path.read_text(encoding="utf-8")
+            raw = self.path.read_bytes()
         except FileNotFoundError:
             return [], None
         except OSError:
             return [], self._damaged()
         try:
-            shares = _parse(json.loads(text))
-        except ValueError:
+            # Bytes that aren't UTF-8 are a ValueError; nesting deep enough to overflow
+            # the parser is a RecursionError. Both are damage, never a crash of the turn.
+            shares = _parse(json.loads(raw.decode("utf-8")))
+        except (ValueError, RecursionError):
             shares = None
         return (shares, None) if shares is not None else ([], self._damaged())
 
@@ -230,10 +246,20 @@ class Shares:
         return self._load()[1]
 
     def all(self) -> list[Share]:
-        """Saved shares, then this run's. A saved share of a granted folder wins."""
+        """Saved shares, then this run's. A saved share of a granted folder wins, and a
+        granted folder whose name a saved share has since taken is numbered."""
         saved = self._load()[0]
         held = {_key(s.path) for s in saved}
-        return saved + [s for s in self._run_only if _key(s.path) not in held]
+        with self._lock:
+            named = list(saved)
+            for i, grant in enumerate(self._run_only):
+                if _key(grant.path) in held:
+                    continue
+                if any(_name_key(s.name) == _name_key(grant.name) for s in named):
+                    grant = replace(grant, name=self._free_name(grant.path.name, named))
+                    self._run_only[i] = grant
+                named.append(grant)
+            return named
 
     def get(self, ref: str) -> Share | None:
         """A share by its id, or by its name in any case."""
@@ -241,12 +267,19 @@ class Shares:
         by_id = [s for s in shares if s.id == ref]
         if by_id:
             return by_id[0]
-        folded = ref.strip().casefold()
-        return next((s for s in shares if s.name.casefold() == folded), None)
+        folded = _name_key(ref.strip())
+        return next((s for s in shares if _name_key(s.name) == folded), None)
 
     def state(self, share: Share) -> str | None:
         """Why a share reaches nothing right now, or None when it reaches its folder.
         A missing folder is only "not found": nothing is removed for being missing."""
+        # A folder swapped for a link would carry the share wherever the link leads.
+        try:
+            moved = _key(resolved(share.path)) != _key(share.path)
+        except (OSError, RuntimeError, ValueError):
+            moved = True
+        if moved:
+            return "moved or replaced by a link"
         if not share.path.is_dir():
             return "not found"
         return self._rules(share.path)
@@ -299,10 +332,10 @@ class Shares:
     @staticmethod
     def _free_name(base: str, others: list[Share]) -> str:
         """The folder's own name, numbered when another share already has it."""
-        taken = {s.name.casefold() for s in others}
+        taken = {_name_key(s.name) for s in others}
         base = _clean_name(base[:MAX_NAME])
         name, n = base, 2
-        while name.casefold() in taken:
+        while _name_key(name) in taken:
             suffix = f" {n}"
             name, n = base[: MAX_NAME - len(suffix)] + suffix, n + 1
         return name
@@ -310,7 +343,7 @@ class Shares:
     @staticmethod
     def _unique(name: str, others: list[Share]) -> str:
         name = _clean_name(name)
-        if any(s.name.casefold() == name.casefold() for s in others):
+        if any(_name_key(s.name) == _name_key(name) for s in others):
             raise ShareError(f"another shared folder is already named {name}")
         return name
 
