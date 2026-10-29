@@ -30,7 +30,7 @@ import {
   saved,
 } from './onboarding';
 import { createPanel, type Surface } from './panel';
-import { MAC, primary, shortcut } from './platform';
+import { MAC, pageHost, primary, shortcut } from './platform';
 import {
   type Theme as ThemeChoice,
   saveBarge,
@@ -45,7 +45,9 @@ import {
 } from './prefs';
 import { announcement, statusText } from './announce';
 import { readyLine } from './ready';
+import { renderScheduled } from './notice';
 import { createReminders } from './reminders';
+import { createSpeaking } from './speaking';
 import { createSidebar, revealForCard } from './sidebar';
 import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from './threads';
 import { type Api, createSettings } from './settings';
@@ -66,10 +68,8 @@ import {
   type ServerMsg,
   boardOpen,
   type View,
-  dueLabel,
   expire,
   micFailed,
-  quietLine,
   reduce,
   sent,
   toolLabel,
@@ -647,13 +647,8 @@ function renderEntry(e: Entry): HTMLElement {
     case 'scheduled': {
       // A routine's: one line that opens what it built.
       if (e.what === 'ready') return readyLine(e.title, e.conversationId, openReady);
-      // A missed or failed one has no words of hers: a quiet line, never her speech.
-      if (e.text === null) return el('p', 'notice scheduled-quiet', quietLine(e));
-      const box = el('div', 'msg assistant');
-      box.append(...formatted(e.text));
-      // Late: when it was due, so "now" in her words is not taken for now.
-      if (e.late) box.append(el('span', 'mark', dueLabel(e.due)));
-      return box;
+      // Her line, or its title when she has none; Join, the detail and why she held it.
+      return renderScheduled(e, formatted);
     }
     case 'card': {
       if (approvals.onBoard(e.pendingId)) {
@@ -966,6 +961,7 @@ const connected = createConnected(panel.host('connected'), api, () => {
 });
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh(), openReady);
+const speaking = createSpeaking(panel.host('speaking'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
@@ -989,6 +985,7 @@ panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', 
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
+panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
@@ -1240,7 +1237,8 @@ function connect(): void {
   socket = ws;
   ws.addEventListener('open', () => {
     retryMs = 1000;
-    send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY) });
+    // `host`: where the page runs, so the mic check leaves this app's own recording out.
+    send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY), host: pageHost(navigator, desktop.DESKTOP) });
   });
   ws.binaryType = 'arraybuffer';
   ws.addEventListener('message', (ev) => {

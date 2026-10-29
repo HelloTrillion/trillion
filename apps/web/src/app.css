@@ -2423,6 +2423,64 @@ button.reminders-open {
   overflow-wrap: anywhere;
 }
 
+/* ── Speaking up ─────────────────────────────────────────────────────── */
+
+/* A notice's Join, with where it goes beside it, so a link is seen before it is opened. */
+.notice-join {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.notice-join-button {
+  padding: 2px 12px;
+  font-size: 12px;
+}
+.notice-host {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+/* The host's line and why she held it: small, under the notice. */
+.notice-detail,
+.notice-held {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.notice-held {
+  font-style: italic;
+}
+.notice-block {
+  display: grid;
+  gap: 2px;
+}
+.notice-block > .notice {
+  margin: 0;
+}
+
+.speaking-hours {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+/* Short values: a number, an amount, a time. */
+.speaking-row input,
+.speaking-hours .settings-row input {
+  flex: 0 1 160px;
+}
+.speaking-row input.speaking-currency {
+  flex: 0 0 64px;
+  text-transform: lowercase;
+}
+.speaking-notes-text {
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Open only to notice the user cutting in: nothing is sent (VOI-15d). */
 #mic.watching {
   border-color: var(--color-accent);

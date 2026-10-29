@@ -16,6 +16,8 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   usage: ['M4 17a8 8 0 1 1 16 0', 'M12 17l4-5'],
   // A clock: what is set to come back at a time.
   reminders: ['M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17z', 'M12 7.5V12l3 2'],
+  // A speech bubble: she speaks up first.
+  speaking: ['M4.5 5.5h15v10h-8l-4 3.5v-3.5h-3z', 'M8.5 10.5h7'],
   about: ['M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17z', 'M12 11v5.5', 'M12 7.8h.01'],
   // A turning arrow: fetch a live widget's numbers again now.
   refresh: ['M19.5 12a7.5 7.5 0 1 1-2.2-5.3', 'M19.5 4.5V8H16'],

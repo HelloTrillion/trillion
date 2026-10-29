@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detect, primary, shortcut } from '../src/platform';
+import { detect, pageHost, primary, shortcut } from '../src/platform';
 import { shownTheme } from '../src/prefs';
 
 describe('which desktop', () => {
@@ -48,5 +48,31 @@ describe('the theme', () => {
     expect(shownTheme('system', false)).toBe('dark');
     expect(shownTheme('dark', true)).toBe('dark');
     expect(shownTheme('light', false)).toBe('light');
+  });
+});
+
+describe('where the page runs, for its hello', () => {
+  const CHROME = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+  const EDGE = `${CHROME} Edg/141.0.0.0`;
+  const FIREFOX = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:144.0) Gecko/20100101 Firefox/144.0';
+  const SAFARI = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+
+  it('is the desktop app whatever the browser engine says', () => {
+    expect(pageHost({ userAgent: SAFARI }, true)).toBe('desktop');
+  });
+
+  it('reads the brands first, Edge before Chrome', () => {
+    const brands = (...names: string[]) => ({ userAgentData: { brands: names.map((brand) => ({ brand })) }, userAgent: CHROME });
+    expect(pageHost(brands('Not=A?Brand', 'Chromium', 'Microsoft Edge'), false)).toBe('edge');
+    expect(pageHost(brands('Google Chrome', 'Chromium', 'Not=A?Brand'), false)).toBe('chrome');
+  });
+
+  it('falls back to the user agent', () => {
+    expect(pageHost({ userAgent: EDGE }, false)).toBe('edge');
+    expect(pageHost({ userAgent: CHROME }, false)).toBe('chrome');
+    expect(pageHost({ userAgent: FIREFOX }, false)).toBe('firefox');
+    expect(pageHost({ userAgent: SAFARI }, false)).toBe('safari');
+    expect(pageHost({ userAgent: 'curl/8.0' }, false)).toBe('other');
+    expect(pageHost({}, false)).toBe('other');
   });
 });

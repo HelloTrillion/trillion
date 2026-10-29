@@ -344,6 +344,10 @@ describe('notices from reminders and timed asks', () => {
         due: '4:00 pm',
         late: false,
         conversationId: null,
+        link: null,
+        detail: null,
+        quiet: null,
+        spoken: true,
       },
     ]);
   });
