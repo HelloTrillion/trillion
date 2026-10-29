@@ -193,11 +193,20 @@ async def _run(args: argparse.Namespace) -> int:
     )
     from trillion.brain.config import ConfigError, provider_from_env
     from trillion.cli.server import Server, stop_when_closed
+    from trillion.files.shares import ShareError, Shares
     from trillion.secrets import redact
 
+    # A `--grant` folder is a share for this run only, under the same rule as any other
+    # share (the shared folders spec, D4, D10): refused before anything is opened.
+    shares = Shares()
     for folder in args.grant:
         if not folder.expanduser().is_dir():
             sys.stderr.write(f"trillion: --grant {folder}: not a folder\n")
+            return 2
+        try:
+            shares.add_run_only(folder)
+        except ShareError as e:
+            sys.stderr.write(f"trillion: --grant {folder}: {e}\n")
             return 2
     # Taken out of the environment at once, so no tool or MCP server she starts inherits it.
     app_token = os.environ.pop(SESSION_TOKEN_ENV, None)
@@ -224,7 +233,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     from trillion import build
 
-    rt = await open_runtime(granted_roots=tuple(args.grant), session=app_token)
+    rt = await open_runtime(shares=shares, session=app_token)
     redact.install(lambda: _secrets_in_use(rt))
     provider = rt.provider
     try:

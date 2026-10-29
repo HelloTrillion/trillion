@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from trillion import paths
-from trillion.spine.contract import JSON, ToolDefinition
+from trillion.spine.contract import JSON, Risk, ToolDefinition
 
 try:
     import fcntl
@@ -26,6 +26,9 @@ except ImportError:  # Windows: resolve() already returns the on-disk spelling t
 else:
     # macOS only: ask the kernel for the path of an open descriptor, as stored on disk.
     _F_GETPATH = getattr(fcntl, "F_GETPATH", None)
+
+# What a write in a folder shared `read` is told (the shared folders spec, D11).
+READ_ONLY = "that folder is shared read only"
 
 PROTECTED_SEGMENTS: frozenset[str] = frozenset({".git", ".ssh", ".aws", ".gnupg"})
 
@@ -173,6 +176,23 @@ def refused(p: Path, granted_roots: tuple[Path, ...]) -> str | None:
     return None
 
 
+def _read_only(p: Path, granted_roots: tuple[Path, ...], read_only_roots: tuple[Path, ...]) -> bool:
+    """Whether the innermost share holding `p` is read only. Where shares nest, the
+    innermost decides; two of the same folder, one of them read only, are read only."""
+    deepest, locked = -1, False
+    shares = [(g, False) for g in granted_roots] + [(r, True) for r in read_only_roots]
+    for root, read_only in shares:
+        for form in spellings(root.expanduser().resolve()):
+            if not inside(p, form):
+                continue
+            depth = len(form.parts)
+            if depth > deepest:
+                deepest, locked = depth, read_only
+            elif depth == deepest:
+                locked = locked or read_only
+    return locked
+
+
 def reads_as_path(raw: str) -> bool:
     """Whether a value names a place on a disk, rather than an id or an address."""
     s = raw.strip()
@@ -187,8 +207,17 @@ def reads_as_path(raw: str) -> bool:
 
 
 def check(
-    defn: ToolDefinition, args: JSON, policy: DenyPolicy, granted_roots: tuple[Path, ...]
+    defn: ToolDefinition,
+    args: JSON,
+    policy: DenyPolicy,
+    granted_roots: tuple[Path, ...],
+    *,
+    read_only_roots: tuple[Path, ...] = (),
 ) -> Denial | None:
+    """`read_only_roots` are the shares that are `read` only (D11). Any tool that is
+    not a read counts as a write there, so a connected server or a skill naming a path
+    is held the same as the file tools."""
+    writes = defn.risk is not Risk.READ and bool(read_only_roots)
     for name in defn.outside_path_args:
         raw = args.get(name)
         if not isinstance(raw, str) or not reads_as_path(raw):
@@ -206,6 +235,8 @@ def check(
             denial = _check_one(name, form, policy, everywhere)
             if denial is not None:
                 return denial
+            if writes and _read_only(form, granted_roots, read_only_roots):
+                return Denial(name, READ_ONLY)
     for name in defn.path_args:
         if name not in args:
             continue
@@ -225,4 +256,6 @@ def check(
             denial = _check_one(name, form, policy, granted_roots)
             if denial is not None:
                 return denial
+            if writes and _read_only(form, granted_roots, read_only_roots):
+                return Denial(name, READ_ONLY)
     return None

@@ -43,6 +43,7 @@ from trillion.brain.types import (
     TextBlock,
     Usage,
 )
+from trillion.files.shares import EVERYONE, routine_scope
 from trillion.persona import day
 from trillion.persona.prompt import Identity, scheduled, volatile_context
 from trillion.scheduler.runner import AskFailed, Built, Busy, NoModel
@@ -144,9 +145,9 @@ class Asker:
         router: Router,
         registry: ToolRegistry,
         conversations: SqliteConversationStore,
-        system: Callable[[], list[SystemBlock]],
+        system: Callable[[str], list[SystemBlock]],
         identity: Callable[[], Identity],
-        granted_roots: Callable[[], tuple[Path, ...]],
+        shares: Callable[[str], tuple[tuple[Path, ...], tuple[Path, ...]]],
         zone: Callable[[], str | None],
         clock: Callable[[], int],
         owner: str,
@@ -158,7 +159,9 @@ class Asker:
         self._conversations = conversations
         self._system = system
         self._identity = identity
-        self._roots = granted_roots
+        # By scope: the folders a run reaches and those of them read only, read at each
+        # call, so a share removed mid-run reaches nothing from the next call on.
+        self._shares = shares
         self._zone = zone
         self._clock = clock
         self._owner = owner
@@ -261,6 +264,8 @@ class _Run:
         self.target = target
         self.routine = target is not None
         self.via: Via = "routine" if self.routine else "schedule"
+        # A routine reaches everyone's shares and its own; a timed ask, everyone's (D9).
+        self.scope = routine_scope(schedule.id) if self.routine else EVERYONE
         self.turn = ROUTINE_TURN if self.routine else 1
         self.tools = asker._registry.routine() if self.routine else asker._registry.unattended()
         self.outside = False
@@ -300,7 +305,7 @@ class _Run:
         if provider is None:
             raise NoModel
         system = [
-            *await asyncio.to_thread(a._system),
+            *await asyncio.to_thread(a._system, self.scope),
             SystemBlock(text=scheduled(a._identity())),
         ]
         zone = a._zone() or ""
@@ -319,7 +324,6 @@ class _Run:
         # A routine's request is the host's, saved as a tap is: never the user's words,
         # and it advances no turn of theirs.
         asked: Kind = "tap" if self.routine else "user"
-        roots = a._roots()
         pricing = provider.pricing()
         spent = Usage()
         cost: float | None = 0.0 if pricing is not None else None
@@ -352,6 +356,7 @@ class _Run:
             )
 
         def ctx(call_id: str) -> ToolContext:
+            roots, read_only = a._shares(self.scope)
             return ToolContext(
                 owner_id=a._owner,
                 session_id=self.conversation,
@@ -359,6 +364,7 @@ class _Run:
                 call_id=call_id,
                 via=self.via,
                 granted_roots=roots,
+                read_only_roots=read_only,
                 read_outside=self.outside,
                 routine_target=self.target,
             )

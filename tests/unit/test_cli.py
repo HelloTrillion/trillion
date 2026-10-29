@@ -61,6 +61,19 @@ def test_run_refuses_a_grant_that_is_not_a_folder(
     assert "not a folder" in capsys.readouterr().err
 
 
+def test_run_refuses_a_grant_that_can_never_be_shared(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path))
+    home = Path.home()
+    assert main(["run", "--no-open", "--grant", str(home)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"trillion: --grant {home}: ")
+    assert len(err.strip().splitlines()) == 1
+    assert not (tmp_path / "trillion.db").exists()  # refused before anything was opened
+    assert not (tmp_path / "folders.json").exists()  # and a grant is never written
+
+
 APP_TOKEN = "Zq" * 21 + "x"  # 43 URL-safe characters, as the desktop app makes
 
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from tests.api.test_server import App, home, make  # noqa: F401
 from tests.scheduler.conftest import FakeClock, ms, schedule
+from trillion.files.shares import routine_scope
 from trillion.scheduler.when import Repeat
 
 PATH = "/api/routines"
@@ -178,3 +179,16 @@ def test_a_routine_deleted_while_it_runs_says_nothing_when_it_ends(make: Any) ->
         )
     )
     assert n is None and portal.call(s.held, "local") == []
+
+
+def test_deleting_a_routine_removes_its_shared_folders_and_no_others(make: Any) -> None:
+    app: App = make()
+    stopped(app, ms("2099-10-24T12:00"))
+    routine(app)
+    mine, everyone = app.granted.parent / "mine", app.granted.parent / "everyone"
+    mine.mkdir()
+    everyone.mkdir()
+    app.rt.shares.put(mine, name="Reports", scope=routine_scope(RID))
+    app.rt.shares.put(everyone, name="Website")
+    assert tap(app, "DELETE", f"{PATH}/{RID}").status_code == 200
+    assert [s.name for s in app.rt.shares.all() if not s.run_only] == ["Website"]

@@ -29,7 +29,11 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     granted = tmp_path / "granted"
     granted.mkdir()
     runtime = await open_runtime(
-        granted_roots=(granted,), persona=tmp_path, secrets=MemoryStore(), env={"TZ": "UTC"}
+        share_rules=lambda _p: None,
+        granted_roots=(granted,),
+        persona=tmp_path,
+        secrets=MemoryStore(),
+        env={"TZ": "UTC"},
     )
     yield runtime
     await runtime.close()

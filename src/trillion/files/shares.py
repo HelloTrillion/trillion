@@ -285,18 +285,16 @@ class Shares:
             return "not found"
         return self._rules(share.path)
 
+    def reached(self, scope: str) -> list[Share]:
+        """The shares a turn reaches now. Her own turns pass `everyone`; a routine's run
+        passes its own scope and gets everyone's too."""
+        return [s for s in self.all() if s.scope in (EVERYONE, scope) and self.state(s) is None]
+
     def in_scope(self, scope: str) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
-        """The folders a turn reaches, and those of them shared read only. Her own turns
-        pass `everyone`; a routine's run passes its own scope and gets everyone's too."""
-        roots: list[Path] = []
-        read_only: list[Path] = []
-        for share in self.all():
-            if share.scope not in (EVERYONE, scope) or self.state(share) is not None:
-                continue
-            roots.append(share.path)
-            if share.access == "read":
-                read_only.append(share.path)
-        return tuple(roots), tuple(read_only)
+        """The folders a turn reaches, and those of them shared read only."""
+        shares = self.reached(scope)
+        roots = tuple(s.path for s in shares)
+        return roots, tuple(s.path for s in shares if s.access == "read")
 
     # ── Changing ──────────────────────────────────────────────────────
 

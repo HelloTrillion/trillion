@@ -26,7 +26,7 @@ async def test_the_report_is_generated_from_the_live_registry(tmp_path: Path) ->
 
     assert report["version"] == __version__
     assert report["model"] == {"provider": "p", "model": "m"}
-    assert report["shared_folders"] == [str(tmp_path)]
+    assert report["shared_folders"] == [{"path": str(tmp_path), "access": "read and change"}]
     listed = {t["name"]: t for t in report["tools"]}
     # Every registered tool, and nothing else: nothing invented, nothing forgotten.
     assert set(listed) == {d.name for d in registry.definitions()}
@@ -36,6 +36,26 @@ async def test_the_report_is_generated_from_the_live_registry(tmp_path: Path) ->
     )
     assert "only a tap" in listed["file_overwrite"]["confirmation"]
     assert "cannot do" in report["note"]
+
+
+async def test_shares_are_listed_by_name_and_access(tmp_path: Path) -> None:
+    tool = DescribeSelf()
+    inner = tmp_path / "inner"
+    tool.bind(lambda: (), dict, lambda: {tmp_path: "Website project"})
+    here = ToolContext(
+        owner_id="local",
+        session_id="s",
+        turn=1,
+        call_id="c",
+        via="text",
+        granted_roots=(tmp_path, inner),
+        read_only_roots=(inner,),
+    )
+    report = json.loads((await DescribeSelf.execute(tool, {}, here)).content)
+    assert report["shared_folders"] == [
+        {"name": "Website project", "path": str(tmp_path), "access": "read and change"},
+        {"path": str(inner), "access": "read only"},
+    ]
 
 
 async def test_unbound_it_claims_nothing(tmp_path: Path) -> None:

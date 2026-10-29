@@ -35,10 +35,18 @@ from trillion.connectors.mcp.config import load as mcp_load
 from trillion.connectors.mcp.servers import McpServers
 from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
+from trillion.files.rules import why_not
+from trillion.files.shares import EVERYONE, ShareError, Shares
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
-from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
+from trillion.persona.prompt import (
+    Identity,
+    SharedFolder,
+    load_identity,
+    load_soul,
+    system_blocks,
+)
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
@@ -295,7 +303,9 @@ class Runtime:
     profile: setup.Profile | None = None
     # The user put onboarding off. It is offered again only when they ask.
     onboarding_skipped: bool = False
-    granted_roots: tuple[Path, ...]
+    # The folders the user shared, read live on every call (the shared folders spec):
+    # the one store in the process, so every change goes through its lock.
+    shares: Shares
     env: Mapping[str, str] | None = None
     # Issued fresh at every launch, or handed over by the desktop app, and held only in
     # memory (SPN-11a). `open_runtime` sets it from `session_token`.
@@ -321,6 +331,33 @@ class Runtime:
     _told: list[str] | None = None
     # When each day conversation was last asked to build its board (epoch ms).
     day_built: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def granted_roots(self) -> tuple[Path, ...]:
+        """The folders her own turns reach, read now."""
+        return self.shares.in_scope(EVERYONE)[0]
+
+    def in_scope(self, scope: str = EVERYONE) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """The folders a turn in `scope` reaches now, and those of them that are read only."""
+        return self.shares.in_scope(scope)
+
+    def shared(self, scope: str = EVERYONE) -> list[SharedFolder]:
+        """The shares in scope by name, for her prompt and describe_self."""
+        return [
+            SharedFolder(name=s.name, path=s.path, read_only=s.access == "read")
+            for s in self.shares.reached(scope)
+        ]
+
+    def routine_removed(self, routine_id: str) -> None:
+        """A removed routine's shares go with it. Never raises: a damaged folders file
+        leaves them, and they reach nothing while it is damaged anyway."""
+        try:
+            gone = self.shares.remove_routine(routine_id)
+        except (ShareError, OSError) as e:
+            logger.warning("a removed routine's shares were kept: %s", type(e).__name__)
+            return
+        if gone:
+            logger.info("removed %d share(s) with their routine", gone)
 
     def out_of_turn(self) -> int:
         """A fresh number for speech outside a turn, never reused in this process."""
@@ -420,13 +457,13 @@ class Runtime:
         self.skills_on = entries
         return lines
 
-    def system(self) -> list[SystemBlock]:
-        """The system blocks a turn gets, read now: rules, folders and the skills that
-        are on. Blocking, like `skill_lines`."""
+    def system(self, scope: str = EVERYONE) -> list[SystemBlock]:
+        """The system blocks a turn gets, read now: rules, the folders shared with
+        `scope` and the skills that are on. Blocking, like `skill_lines`."""
         return system_blocks(
             self.identity,
             self.soul,
-            self.granted_roots,
+            self.shared(scope),
             [(r.id, r.text) for r in self.rules.all()],
             skills=self.skill_lines(),
         )
@@ -694,6 +731,8 @@ ONBOARDING_PREF = "onboarding"
 async def open_runtime(
     *,
     granted_roots: tuple[Path, ...] = (),
+    shares: Shares | None = None,
+    share_rules: Callable[[Path], str | None] = why_not,
     db: Path | None = None,
     persona: Path | None = None,
     memory: Path | None = None,
@@ -706,11 +745,18 @@ async def open_runtime(
     session: str | None = None,
 ) -> Runtime:
     """`session` is the desktop app's token, already taken out of the environment by
-    `trillion run` so nothing it starts inherits it."""
+    `trillion run` so nothing it starts inherits it.
+
+    `granted_roots` become this run's shares, as `--grant` folders do (D10), judged by
+    `share_rules` when no `shares` is given: tests pass a judge that lets a temporary
+    folder be shared. A folder that can't be shared raises `ShareError`."""
     # Checked before anything is opened, so a bad one leaves nothing behind.
     given = os.environ if env is None else env
     token = session_token({SESSION_TOKEN_ENV: session} if session is not None else given)
     token_from_app = session is not None or SESSION_TOKEN_ENV in given
+    store_of_shares = shares if shares is not None else Shares(rules=share_rules)
+    for folder in granted_roots:
+        store_of_shares.add_run_only(folder)
     path = db or paths.db_path()
     spine_conn = await connect(path)
     await migrate(spine_conn)
@@ -731,9 +777,8 @@ async def open_runtime(
         # The page reports a card once it is really on screen; only then can it be approved.
         require_delivery=True,
     )
-    roots = tuple(r.expanduser().resolve() for r in granted_roots)
     # Finish what a crash interrupted before anything new can be proposed (SPN-17a).
-    await router.recover(roots)
+    await router.recover(store_of_shares.in_scope(EVERYONE)[0])
     await router.forget_settled_arguments()
     preferences = SqlitePreferences(chat_conn)
     keychain = secrets if secrets is not None else KeychainStore()
@@ -776,7 +821,7 @@ async def open_runtime(
         persona_dir=persona or paths.persona_dir(),
         profile=setup.load(persona),
         onboarding_skipped=await preferences.get(OWNER, ONBOARDING_PREF) == "skipped",
-        granted_roots=roots,
+        shares=store_of_shares,
         env=env,
         token=token,
         token_from_app=token_from_app,
@@ -785,7 +830,9 @@ async def open_runtime(
     )
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
-        describe.bind(registry.definitions, rt.facts)
+        describe.bind(
+            registry.definitions, rt.facts, lambda: {s.path: s.name for s in rt.shares.all()}
+        )
     web = registry.get(FETCH)
     if isinstance(web, WebFetch):
         rt.web = web
@@ -823,7 +870,7 @@ async def open_runtime(
         skill_tool = registry.get(name)
         if isinstance(skill_tool, SkillOpen | SkillFile):
             skill_tool.bind(rt.skills)
-    schedules = SqliteScheduleStore(schedule_conn)
+    schedules = SqliteScheduleStore(schedule_conn, cancelled=rt.routine_removed)
     rt.schedules = schedules
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
@@ -835,7 +882,7 @@ async def open_runtime(
         conversations=rt.conversations,
         system=rt.system,
         identity=lambda: rt.identity,
-        granted_roots=lambda: rt.granted_roots,
+        shares=rt.in_scope,
         zone=rt.zone,
         clock=lambda: rt.clock(),
         owner=OWNER,

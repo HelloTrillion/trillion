@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from trillion import __version__
@@ -56,15 +57,32 @@ class DescribeSelf(BaseTool):
     def __init__(self) -> None:
         self._definitions: Callable[[], Sequence[ToolDefinition]] = lambda: ()
         self._facts: Callable[[], Mapping[str, Any]] = dict
+        self._names: Callable[[], Mapping[Path, str]] = dict
 
     def bind(
         self,
         definitions: Callable[[], Sequence[ToolDefinition]],
         facts: Callable[[], Mapping[str, Any]],
+        names: Callable[[], Mapping[Path, str]] = dict,
     ) -> None:
-        """Called once at startup with the live registry and the runtime's own facts."""
+        """Called once at startup with the live registry, the runtime's own facts and
+        the shares' names by folder."""
         self._definitions = definitions
         self._facts = facts
+        self._names = names
+
+    def _shared(self, ctx: ToolContext) -> list[dict[str, str]]:
+        """The folders this call reaches, as the context has them now, by name."""
+        names = self._names()
+        read_only = set(ctx.read_only_roots)
+        out: list[dict[str, str]] = []
+        for root in ctx.granted_roots:
+            entry = {"path": str(root)}
+            if root in names:
+                entry = {"name": names[root], **entry}
+            entry["access"] = "read only" if root in read_only else "read and change"
+            out.append(entry)
+        return out
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         tools = [
@@ -79,7 +97,7 @@ class DescribeSelf(BaseTool):
         report = {
             "version": __version__,
             **self._facts(),
-            "shared_folders": [str(r) for r in ctx.granted_roots],
+            "shared_folders": self._shared(ctx),
             "tools": tools,
             "note": (
                 "This list is complete. Anything not listed here, you cannot do: say so "

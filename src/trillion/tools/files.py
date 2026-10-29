@@ -142,7 +142,11 @@ def _target(tool: BaseTool, args: JSON, ctx: ToolContext) -> Path:
     raw = Path(str(args["path"])).expanduser()
     target = raw.parent.resolve(strict=False) / raw.name
     denial = deny_floor.check(
-        tool.definition, {"path": str(target)}, deny_floor.DenyPolicy.default(), ctx.granted_roots
+        tool.definition,
+        {"path": str(target)},
+        deny_floor.DenyPolicy.default(),
+        ctx.granted_roots,
+        read_only_roots=ctx.read_only_roots,
     )
     if denial is not None:
         raise Escaped(denial.reason)

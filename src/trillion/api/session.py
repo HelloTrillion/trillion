@@ -2817,13 +2817,17 @@ class Session:
         turn: int | None = None,
     ) -> ToolContext:
         at = self._turn if turn is None else turn
+        # Read at each call, and at each tap, so a share changed in Settings applies to
+        # the very next call and to a card approved after it (SPN-2c).
+        roots, read_only = self._rt.in_scope()
         return ToolContext(
             owner_id=OWNER,
             session_id=self.id,
             turn=at,
             call_id=call_id,
             via=via or self._via,
-            granted_roots=self._rt.granted_roots,
+            granted_roots=roots,
+            read_only_roots=read_only,
             read_outside=at in self._outside,
         )
 

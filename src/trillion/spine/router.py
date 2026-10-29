@@ -364,7 +364,13 @@ class Router:
         if error is not None:
             return await audited(risk, _refused(Refusal.INVALID_ARGS, error.message[:300]))
 
-        denial = deny_floor.check(tool.definition, call.args, self._policy, ctx.granted_roots)
+        denial = deny_floor.check(
+            tool.definition,
+            call.args,
+            self._policy,
+            ctx.granted_roots,
+            read_only_roots=ctx.read_only_roots,
+        )
         if denial is not None:
             return await audited(risk, _refused(Refusal.DENIED_BY_FLOOR, denial.reason))
 
@@ -539,7 +545,13 @@ class Router:
             )
             return _refused(Refusal.UNKNOWN_TOOL)
 
-        denial = deny_floor.check(tool.definition, a.args, self._policy, ctx.granted_roots)
+        denial = deny_floor.check(
+            tool.definition,
+            a.args,
+            self._policy,
+            ctx.granted_roots,
+            read_only_roots=ctx.read_only_roots,
+        )
         if denial is not None:
             await self._move(
                 a.id,
@@ -631,7 +643,13 @@ class Router:
         tool = self._get(a.tool)
         if tool is None:
             return _refused(Refusal.UNKNOWN_TOOL)
-        denial = deny_floor.check(tool.definition, a.args, self._policy, ctx.granted_roots)
+        denial = deny_floor.check(
+            tool.definition,
+            a.args,
+            self._policy,
+            ctx.granted_roots,
+            read_only_roots=ctx.read_only_roots,
+        )
         if denial is not None:
             return _refused(Refusal.DENIED_BY_FLOOR, denial.reason)
         pre = await self._precheck(tool, a.args, ctx)
