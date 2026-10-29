@@ -215,6 +215,23 @@ Keep Voice off. Connect a service whose reads run without a card (for example St
 | 2.11.5 | Start the read again, then press stop while she is replying | Her reply stops. The read carries on and is brought in at the next pause. |
 | 2.11.6 | Ask her to read a file on this computer | The read runs in the turn: no "working in background" chip and no "in background" line. |
 
+### 2.12 The desktop app (SUR-2, SPN-11a), by hand on a Mac
+
+Build the app (`apps/desktop/README.md`) and open `Trillion.app`. The first time, right-click it and choose Open, since the build is not signed. Quit any `trillion run` in a terminal unless a check says otherwise. Mute the Mac or use headphones for 2.12.4.
+
+| # | Scenario | Passes when |
+|---|---|---|
+| 2.12.1 | Open the app with no server running | The splash shows the orb and "Starting Trillion…", then the app opens in the same window. No browser tab opens and no link is printed. |
+| 2.12.2 | Start `trillion run` in a terminal, then open the app | The splash says "Trillion is already running from a terminal" with **Open in browser** and **Retry**. Open in browser opens that server's port in the default browser. No second server starts. |
+| 2.12.3 | Make `trillion` unfindable (for example set `TRILLION_BIN` to a missing path), then open the app | The splash says "Trillion isn't installed" with the install command and Retry. |
+| 2.12.4 | Set the talk shortcut to ⌥Space in Settings. Close the window, switch to another app and press ⌥Space | Settings said it works from any app. The floating orb appears top right and shows listening, thinking and speaking with her caption. She answers aloud. Talking over her stops her (barge-in). The other app keeps focus the whole time. The orb hides about 3 s after she finishes; clicking it brings the main window forward. |
+| 2.12.5 | Record a single key or ⌘Space as the talk shortcut | Settings says: "To talk from any app, record a combination such as ⌥Space." The shortcut works only while the window is in front. |
+| 2.12.6 | Sign in to Google from Settings | The sign-in opens in the default browser, not in the app, and finishes there. Google shows as connected in the app. |
+| 2.12.7 | Quit from the menu bar (or ⌘Q) | The server stops: nothing listens on its port and `running.json` is gone. |
+| 2.12.8 | Force quit the app (Activity Monitor), then open it again | The server stops itself within about 10 s. The next launch starts normally, without the "already running" message. |
+| 2.12.9 | Turn on Open at login in the menu bar, log out and back in | The app starts at login. Turned off, it does not. |
+| 2.12.10 | Talk for the first time after installing | macOS asks for the microphone with "Trillion listens when you talk to her." Allowed, she hears. Denied, the page shows its microphone message instead of failing silently. |
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
