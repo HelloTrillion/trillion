@@ -6,7 +6,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 
 - The server (`trillion run`) does the work on every system. Most features live there, so they work wherever it runs.
 - The page runs in a browser tab on any system, or inside the desktop app. The desktop app is macOS only today (PRD SUR-2).
-- CI runs the Python suites on Ubuntu, macOS and Windows, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS only (`.github/workflows/ci.yml`).
+- CI runs every Python test directory on Ubuntu, macOS and Windows, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS only (`.github/workflows/ci.yml`).
 - ✓ means the code is there and its tests run in CI on that system. The manual checks in [`TESTING.md`](TESTING.md) have been written on a Mac; on Windows and Linux a ✓ is untested by hand unless the row says otherwise.
 
 ## By feature

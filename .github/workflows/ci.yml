@@ -71,8 +71,9 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - name: Unit, integration, brain and server tests
-        run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills
+      # Every directory under tests/ but tests/spine, which the Spine job runs.
+      - name: Every test directory but the spine's
+        run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills tests/delivery tests/scheduler tests/storage tests/workspace
 
   spine:
     name: Spine safety suite (${{ matrix.os }})
