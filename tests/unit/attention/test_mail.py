@@ -17,7 +17,7 @@ import pytest
 from tests.brain.fakes import ScriptedProvider, say
 from tests.scheduler.conftest import FakeClock
 from tests.unit.attention.test_runner import Door
-from trillion.attention.email import (
+from trillion.attention.mail import (
     FRESH_MS,
     LAG_MS,
     LIST_PATH,

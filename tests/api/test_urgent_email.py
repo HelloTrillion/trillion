@@ -17,10 +17,10 @@ from tests.api.test_session import Gated, Page, idle
 from tests.api.test_widget_ask import tool_results
 from tests.brain.fakes import say, use
 from tests.scheduler.conftest import FakeClock
-from tests.unit.attention.test_email import MIN, NOW, Gmail, message
+from tests.unit.attention.test_mail import MIN, NOW, Gmail, message
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import Session
-from trillion.attention.email import UrgentEmail
+from trillion.attention.mail import UrgentEmail
 from trillion.attention.runner import AttentionRunner
 from trillion.brain.types import TextBlock
 from trillion.secrets.store import MemoryStore

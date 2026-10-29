@@ -12,7 +12,7 @@ she watches by way of her own line. Nobody watching (a timed ask, a routine, a
 refresh), a tapped ask and a channel never change them.
 
 A note `watch: name@example.com` asks the email watcher to read that sender's mail too
-(`attention/email.py`); it can only come through a card.
+(`attention/mail.py`); it can only come through a card.
 """
 
 from __future__ import annotations

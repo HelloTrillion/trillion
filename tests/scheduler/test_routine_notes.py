@@ -456,6 +456,42 @@ WIDENINGS = [
 ]
 
 
+# A short stem counts only as one of its own words: "bank" is not "ban", "notes" not
+# "not" (the review's). Every form of the stem itself still counts.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Stop telling me about the bank newsletters",
+        "stop showing bank fees",
+        "skip bank holidays",
+        "never mention my notes",
+        "stop showing the cute charts",
+        "hide the caption",
+    ],
+)
+def test_a_word_that_only_starts_like_a_short_stem_still_narrows(text: str) -> None:
+    assert narrows_routine(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "stop showing banned words",
+        "stop banning slack",
+        "skip the ban",
+        "no bans",
+        "stop showing none of it",
+        "stop showing nothing",
+        "never mention hidden rows",
+        "stop cutting slack",
+        "don't cut slack",
+        "skip the capped ones",
+    ],
+)
+def test_every_form_of_a_short_stem_still_counts(text: str) -> None:
+    assert not narrows_routine(text)
+
+
 @pytest.mark.parametrize("text", NARROWINGS)
 def test_the_spec_s_narrowings_narrow(text: str) -> None:
     assert narrows_routine(text)

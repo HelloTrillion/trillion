@@ -80,13 +80,39 @@ _SHOWN = frozenset(
 )
 # Every word that narrows, limits or negates, matched as the start of a word. A
 # narrowing holds exactly one, its opener: a second turns it round ("stop skipping
-# Slack", "fewer exclusions"), so it goes to a card.
+# Slack", "fewer exclusions"), so it goes to a card. The shortest stems start many
+# words that have nothing to do with them ("bank", "now", "cute"), so those are
+# matched only as one of the forms in `_SHORT_FORMS`.
 _NARROWING_STEMS = (
     "stop", "never", "no", "not", "don", "less", "fewer", "skip", "hid", "drop", "exclu",
     "omit", "remov", "cut", "limit", "filter", "restrict", "strict", "without", "only",
     "ignor", "leav", "forget", "miss", "avoid", "block", "ban", "mute", "silenc", "narrow",
     "reduc", "trim", "shorter", "smaller",
 )  # fmt: skip
+# A short stem's own words: every form of it that narrows, limits or negates. A word
+# missing here that should be counted would let a second narrowing through, so a form
+# is left out only when it plainly means something else.
+_SHORT_FORMS: dict[str, frozenset[str]] = {
+    "no": frozenset("no none nobody noone nor nowhere nothing nope non".split()),
+    "not": frozenset("not nothing".split()),
+    "don": frozenset("don don't dont".split()),
+    "hid": frozenset("hid hide hides hiding hidden".split()),
+    "cut": frozenset("cut cuts cutting cutoff cutoffs cutback cutbacks cutout cutouts".split()),
+    "ban": frozenset("ban bans banned banning banish banished banishing".split()),
+    "cap": frozenset("cap caps capped capping".split()),
+}
+
+
+def _has_stem(word: str, stems: tuple[str, ...]) -> bool:
+    """Whether `word` is one of `stems`'s words: a short stem's own forms, a longer
+    stem as the start of the word."""
+    for stem in stems:
+        forms = _SHORT_FORMS.get(stem)
+        if word in forms if forms is not None else word.startswith(stem):
+            return True
+    return False
+
+
 _LEAD = re.compile(r"^(?:(?:please|from now on|ok|okay)\b[\s,]*)+")
 # Plain words only: no `;`, `:`, `/` or quotes that could chain a second request on.
 # No commas, and a full stop only inside a number ("$1.50"): either could chain a
@@ -157,7 +183,7 @@ def narrows_routine(text: str) -> bool:
     if not words or len(words) > _MAX_WORDS or any(_widens(w) for w in words):
         return False
     # Exactly one narrowing word: the opener ("do not" counts once, as "not").
-    if len([w for w in words if w.startswith(_NARROWING_STEMS)]) != 1:
+    if len([w for w in words if _has_stem(w, _NARROWING_STEMS)]) != 1:
         return False
     verb = next((o for o in _VERB_OPENERS if said.startswith(o + " ")), None)
     if verb is not None:
@@ -167,7 +193,7 @@ def narrows_routine(text: str) -> bool:
     if noun is None:
         return False
     rest = _WORD.findall(said[len(noun) :])
-    return bool(rest) and not any(_verbish(w) or w.startswith(_LIMITS) for w in rest)
+    return bool(rest) and not any(_verbish(w) or _has_stem(w, _LIMITS) for w in rest)
 
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:

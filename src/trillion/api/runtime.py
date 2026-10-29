@@ -19,7 +19,7 @@ import aiosqlite
 from trillion import paths
 from trillion.api.jobs import Jobs
 from trillion.attention import settings as watch_prefs
-from trillion.attention.email import GoogleMail, UrgentEmail
+from trillion.attention.mail import GoogleMail, UrgentEmail
 from trillion.attention.meetings import GoogleCalendar, Meetings
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
