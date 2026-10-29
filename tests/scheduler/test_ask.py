@@ -92,7 +92,7 @@ def asker(rt: Runtime, provider: ScriptedProvider | None) -> Asker:
         conversations=rt.conversations,
         system=lambda scope: system_blocks(rt.identity, rt.soul, rt.shared(scope)),
         identity=lambda: rt.identity,
-        shares=rt.in_scope,
+        shares=rt.reach,
         zone=lambda: "America/New_York",
         clock=rt.clock,
         owner="local",

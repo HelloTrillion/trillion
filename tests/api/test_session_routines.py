@@ -74,7 +74,7 @@ def asker(rt: Runtime, provider: Recording | None) -> Asker:
         conversations=rt.conversations,
         system=lambda scope: system_blocks(rt.identity, rt.soul, rt.shared(scope)),
         identity=lambda: rt.identity,
-        shares=rt.in_scope,
+        shares=rt.reach,
         zone=lambda: NY,
         clock=rt.clock,
         owner="local",

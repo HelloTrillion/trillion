@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -492,3 +493,57 @@ def test_a_granted_name_a_saved_share_took_is_numbered(store, home):
     names = [s.name for s in store.all()]
     assert names == ["clients", "Clients 2"]
     assert store.get(grant.id).name == "Clients 2"
+
+
+# ── The view code on the event loop reads ───────────────────────────
+
+
+def test_the_view_is_empty_until_looked_at_then_follows_each_change(
+    store: Shares, home: Path
+) -> None:
+    assert store.known(EVERYONE) == ((), ())
+    a = folder(home, "Documents", "A")
+    share = store.put(a, access="change")
+    assert store.known(EVERYONE) == ((a,), ())
+    store.change(share.id, access="read")
+    assert store.known(EVERYONE) == ((a,), (a,))  # narrowing applies at once
+    store.remove(share.id)
+    assert store.known(EVERYONE) == ((), ())
+
+
+def test_refresh_looks_again_when_the_file_changes_or_the_view_is_old(home: Path) -> None:
+    now = [0.0]
+    store = Shares(
+        home / ".trillion" / "folders.json", rules=lambda _p: None, monotonic=lambda: now[0]
+    )
+    a = folder(home, "A")
+    store.put(a)
+    a.rmdir()
+    store.refresh()
+    assert store.known(EVERYONE)[0] == (a,)  # a moment ago, and the file is the same
+    now[0] += 3.0
+    store.refresh()
+    assert store.known(EVERYONE)[0] == ()
+    # Edited by hand: seen at the next refresh, however recent the view.
+    b = folder(home, "B")
+    other = Shares(store.path, rules=lambda _p: None)
+    other.put(b)
+    store.refresh()
+    assert store.known(EVERYONE)[0] == (b,)
+
+
+def test_a_look_begun_before_a_change_never_replaces_its_view(home: Path) -> None:
+    during: list[Callable[[], object]] = []
+
+    def judge(_p: Path) -> str | None:
+        # The change lands while the look is still at the folders.
+        while during:
+            during.pop()()
+        return None
+
+    store = Shares(home / ".trillion" / "folders.json", rules=judge)
+    a = folder(home, "A")
+    share = store.put(a, access="change")
+    during.append(lambda: store.change(share.id, access="read"))
+    store._look()
+    assert store.known(EVERYONE) == ((a,), (a,))  # the change's view, not the older one

@@ -7,6 +7,7 @@ them (PER-2).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Sequence
@@ -153,7 +154,8 @@ def _shared_line(folder: Path | SharedFolder) -> str:
     if isinstance(folder, Path):
         return f"- {folder}"
     access = "read only" if folder.read_only else "read and change"
-    return f"- {folder.name}: {_near_home(folder.path)} ({access})"
+    # Quoted, so a name can never read as more of the line than a name.
+    return f"- {json.dumps(folder.name, ensure_ascii=False)}: {_near_home(folder.path)} ({access})"
 
 
 def system_blocks(

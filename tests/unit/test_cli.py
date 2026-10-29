@@ -74,6 +74,38 @@ def test_run_refuses_a_grant_that_can_never_be_shared(
     assert not (tmp_path / "folders.json").exists()  # and a grant is never written
 
 
+def test_run_takes_a_grant_relative_to_where_it_was_started(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from functools import partial
+
+    from trillion.files import shares
+
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    # Temporary folders sit where no share may be; this test is about the spelling.
+    monkeypatch.setattr(shares, "Shares", partial(shares.Shares, rules=lambda _p: None))
+    (tmp_path / "project").mkdir()
+    monkeypatch.chdir(tmp_path)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        port = taken.getsockname()[1]
+        # Past the grant, it stops at the port: the relative folder was taken.
+        assert main(["run", "--no-open", "--port", str(port), "--grant", "project"]) == 2
+    err = capsys.readouterr().err
+    assert "full path" not in err and f"port {port} is already in use" in err
+
+
+def test_the_folders_line_says_when_a_saved_share_holds_a_grant_back() -> None:
+    from trillion.cli.main import _folders_line
+
+    a, b, c = Path("/x/a"), Path("/x/b"), Path("/x/c")
+    narrower = {b: "saved as read only", c: "saved for one routine only"}
+    assert _folders_line((a, b), narrower) == (
+        f"{a}, {b} (saved as read only), {c} (saved for one routine only)"
+    )
+    assert _folders_line((), {}) == "none"
+
+
 APP_TOKEN = "Zq" * 21 + "x"  # 43 URL-safe characters, as the desktop app makes
 
 

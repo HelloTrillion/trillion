@@ -108,7 +108,9 @@ async def run_turn(
     registry: ToolRegistry,
     system: Sequence[SystemBlock],
     history: Sequence[Msg],
-    ctx: Callable[[str], ToolContext],
+    # Async, so the host may look at the shared folders off the event loop (the
+    # shared folders spec): each call gets them as they are at that call.
+    ctx: Callable[[str], Awaitable[ToolContext]],
     emit: Callable[[LoopEvent], Awaitable[None]],
     save: Callable[[Msg], Awaitable[None]],
     limits: Limits | None = None,
@@ -163,7 +165,7 @@ async def run_turn(
                 status="refused", reason=Refusal.INVALID_ARGS, detail=u.invalid
             )
         else:
-            context = ctx(u.id)
+            context = await ctx(u.id)
             handed = None
             if background is not None and definition is not None:
                 handed = await background(u, definition, context)

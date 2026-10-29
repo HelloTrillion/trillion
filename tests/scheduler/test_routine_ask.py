@@ -61,7 +61,7 @@ def asker(rt: Runtime, provider: Recording | None, **kw: Any) -> Asker:
         conversations=rt.conversations,
         system=lambda scope: system_blocks(rt.identity, rt.soul, rt.shared(scope)),
         identity=lambda: rt.identity,
-        shares=rt.in_scope,
+        shares=rt.reach,
         zone=lambda: NY,
         clock=rt.clock,
         owner="local",
@@ -436,7 +436,7 @@ async def test_a_run_reaches_everyones_shares_and_its_own_only(rt: Runtime, tmp_
     assert "in Everyone" in results[2]
     # Her prompt lists what the run reaches, by name, and nothing else.
     system = provider.calls[0][0][0].text
-    assert "- Mine: " in system and "- Everyone: " in system and "Theirs" not in system
+    assert '- "Mine": ' in system and '- "Everyone": ' in system and "Theirs" not in system
 
 
 async def test_a_timed_ask_reaches_everyones_shares_only(rt: Runtime, tmp_path: Path) -> None:

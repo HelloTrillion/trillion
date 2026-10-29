@@ -180,6 +180,13 @@ async def _setup(args: argparse.Namespace) -> int:
     return await _run(args)
 
 
+def _folders_line(roots: tuple[Path, ...], narrower: dict[Path, str]) -> str:
+    """The folders she reaches, and any `--grant` that a saved share holds back."""
+    shown = [f"{r} ({narrower[r]})" if r in narrower else str(r) for r in roots]
+    shown += [f"{p} ({why})" for p, why in narrower.items() if p not in roots]
+    return ", ".join(shown) or "none"
+
+
 async def _run(args: argparse.Namespace) -> int:
     # Imported here so `trillion --version` stays instant.
     import uvicorn
@@ -193,21 +200,29 @@ async def _run(args: argparse.Namespace) -> int:
     )
     from trillion.brain.config import ConfigError, provider_from_env
     from trillion.cli.server import Server, stop_when_closed
-    from trillion.files.shares import ShareError, Shares
+    from trillion.files.shares import EVERYONE, ShareError, Shares
     from trillion.secrets import redact
 
     # A `--grant` folder is a share for this run only, under the same rule as any other
     # share (the shared folders spec, D4, D10): refused before anything is opened.
     shares = Shares()
+    # A grant that matched a folder already saved keeps the saved share's access and
+    # who it is for: the folders line says so.
+    narrower: dict[Path, str] = {}
     for folder in args.grant:
         if not folder.expanduser().is_dir():
             sys.stderr.write(f"trillion: --grant {folder}: not a folder\n")
             return 2
         try:
-            shares.add_run_only(folder)
+            # Relative to where it was started, as the shell gave it.
+            share = shares.add_run_only(folder.expanduser().resolve())
         except ShareError as e:
             sys.stderr.write(f"trillion: --grant {folder}: {e}\n")
             return 2
+        if share.scope != EVERYONE:
+            narrower[share.path] = "saved for one routine only"
+        elif share.access == "read":
+            narrower[share.path] = "saved as read only"
     # Taken out of the environment at once, so no tool or MCP server she starts inherits it.
     app_token = os.environ.pop(SESSION_TOKEN_ENV, None)
     if app_token is not None:
@@ -263,7 +278,7 @@ async def _run(args: argparse.Namespace) -> int:
             if provider
             else "not set up yet (the app will ask)"
         )
-        grants = ", ".join(str(r) for r in rt.granted_roots) or "none"
+        grants = _folders_line(rt.granted_roots, narrower)
         sys.stdout.write(
             f"Trillion is running on this machine only.\n"
             f"  open:    {open_line}\n"

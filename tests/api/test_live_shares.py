@@ -4,7 +4,9 @@ it would run, her prompt lists the shares by name, and `--grant` folders are thi
 
 from __future__ import annotations
 
+import itertools
 import json
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -16,7 +18,9 @@ from tests.brain.fakes import ScriptedProvider, say, use
 from trillion import paths
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import Session
+from trillion.files.shares import Shares
 from trillion.secrets.store import MemoryStore
+from trillion.spine.deny_floor import READ_ONLY
 
 
 @pytest.fixture
@@ -95,7 +99,7 @@ async def test_a_card_approved_after_its_share_became_read_only_is_refused(
     rt.shares.change(share.id, access="read")
     resolved = await tap(session, page)
     assert resolved["status"] == "refused"
-    assert resolved["detail"] == "that folder is shared read only"
+    assert resolved["detail"] == READ_ONLY
     assert not (project / "a.txt").exists()
     await session.close()
 
@@ -110,12 +114,12 @@ async def test_her_prompt_lists_the_shares_in_scope_by_name_each_turn(
     session, _, provider = await started(rt, say("Hi."), say("Hi again."))
     await ask(session, "hello")
     first = provider.calls[0][0][0].text
-    assert f"- Website project: {project} (read and change)" in first
+    assert f'- "Website project": {project} (read and change)' in first
     assert "Notes" not in first  # one routine's share is not hers
     rt.shares.put(notes, name="Notes", access="read")
     await ask(session, "hello again")
     second = provider.calls[-1][0][0].text
-    assert f"- Notes: {notes} (read only)" in second
+    assert f'- "Notes": {notes} (read only)' in second
     await session.close()
 
 
@@ -127,7 +131,7 @@ def test_the_prompt_spells_a_folder_under_home_from_the_tilde() -> None:
         Identity(), "", [SharedFolder(name="Website project", path=folder, read_only=False)]
     )
     spelled = str(Path("~") / "Documents" / "Clients" / "Website")
-    assert f"- Website project: {spelled} (read and change)" in block.text
+    assert f'- "Website project": {spelled} (read and change)' in block.text
 
 
 async def test_grant_folders_are_shares_for_this_run_and_never_written(
@@ -151,5 +155,33 @@ async def test_grant_folders_are_shares_for_this_run_and_never_written(
         rt.shares.put(other, name="Other")
         saved = json.loads(paths.folders_config_path().read_text(encoding="utf-8"))
         assert [s["name"] for s in saved["shares"]] == ["Other"]
+    finally:
+        await rt.close()
+
+
+async def test_no_share_is_looked_at_on_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    """A share on a hung network drive must never stall a conversation: every look at
+    a share's folder during a turn and a tap runs off the loop's thread."""
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    looked: list[bool] = []
+    loop_thread = threading.current_thread()
+
+    def judge(_p: Path) -> str | None:
+        looked.append(threading.current_thread() is loop_thread)
+        return None
+
+    ticks = itertools.count(step=10.0)  # every view is old: each refresh looks again
+    store = Shares(rules=judge, monotonic=lambda: next(ticks))
+    store.put(project, access="change")
+    rt = await open_runtime(shares=store, persona=tmp_path, secrets=MemoryStore(), env={})
+    try:
+        looked.clear()
+        session, page, _ = await started(rt, create(project, "c1"), say("Shall I?"), say("Done."))
+        await ask(session, "make a file")
+        assert (await tap(session, page))["status"] == "succeeded"
+        await session.close()
+        assert looked and not any(looked)
     finally:
         await rt.close()

@@ -603,3 +603,15 @@ def test_an_apps_icloud_documents_folder_may_be_shared(world, rel):
 )
 def test_the_rest_of_an_apps_icloud_container_is_refused(world, rel):
     assert cloud_why(world, rel) is not None
+
+
+@pytest.mark.parametrize("name", ["Two\nlines", "Tab\there", "Bell\x07", "Para\u2029graph"])
+def test_a_folder_with_a_control_character_or_line_break_anywhere_is_refused(world, name):
+    above = world["home"] / "Documents" / name
+    for p in (above, above / "inside"):
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pytest.skip("this disk does not allow that name")
+        reason = why(world, p)
+        assert reason is not None and "control character" in reason

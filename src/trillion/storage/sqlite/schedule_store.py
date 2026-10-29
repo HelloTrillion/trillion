@@ -11,7 +11,7 @@ import asyncio
 import dataclasses
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import aiosqlite
@@ -103,7 +103,10 @@ def _notice(r: aiosqlite.Row) -> Notice:
 
 class SqliteScheduleStore:
     def __init__(
-        self, conn: aiosqlite.Connection, *, cancelled: Callable[[str], None] | None = None
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        cancelled: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._conn = conn
         # Told the id of each routine cancelled, whichever way: what was kept for it
@@ -225,7 +228,7 @@ class SqliteScheduleStore:
                     (now_ms, schedule_id),
                 )
         if routine and self._cancelled is not None:
-            self._cancelled(schedule_id)
+            await self._cancelled(schedule_id)
         return gone
 
     async def pause(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:

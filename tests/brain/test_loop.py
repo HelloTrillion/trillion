@@ -53,7 +53,7 @@ class Run:
         self.events: list[LoopEvent] = []
         self.saved: list[Msg] = []
 
-    def ctx(self, call_id: str) -> ToolContext:
+    async def ctx(self, call_id: str) -> ToolContext:
         return ToolContext(
             owner_id="local",
             session_id="s1",

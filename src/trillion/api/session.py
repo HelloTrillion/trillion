@@ -2056,7 +2056,7 @@ class Session:
         response = await self._rt.router.resolve(
             pending_id,
             decision,
-            self._ctx(f"tap-{uuid.uuid4().hex}", via="tap", turn=self._turn + 1),
+            await self._ctx(f"tap-{uuid.uuid4().hex}", via="tap", turn=self._turn + 1),
         )
         if self._read_outside(None, response):
             # What she says and does on the result is something she read (MEM-5), as
@@ -2809,7 +2809,7 @@ class Session:
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    def _ctx(
+    async def _ctx(
         self,
         call_id: str,
         via: Literal["voice", "text", "tap", "channel"] | None = None,
@@ -2817,9 +2817,10 @@ class Session:
         turn: int | None = None,
     ) -> ToolContext:
         at = self._turn if turn is None else turn
-        # Read at each call, and at each tap, so a share changed in Settings applies to
-        # the very next call and to a card approved after it (SPN-2c).
-        roots, read_only = self._rt.in_scope()
+        # Looked at for each call and each tap, off the event loop. A tap's context is
+        # the one the router checks the approved card against, so a share removed or
+        # set to read only since the card was raised refuses it (SPN-2c).
+        roots, read_only = await self._rt.reach()
         return ToolContext(
             owner_id=OWNER,
             session_id=self.id,

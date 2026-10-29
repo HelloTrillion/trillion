@@ -13,6 +13,13 @@ while the file is damaged, since they were never in it.
 
 The lock is per instance: the runtime owns exactly one `Shares`, so every change in
 the process goes through one lock.
+
+Looking at a share's folder touches the disk, and a share on a hung network drive
+would stall whatever looks. So what the shares reach is kept as a view: `known*` read
+it without touching the disk, for code on the event loop; `refresh` (in a thread)
+looks again when the file changed or the view is a moment old; every change through
+this store makes a fresh view before it returns, so narrowing applies to the very
+next call.
 """
 
 from __future__ import annotations
@@ -43,6 +50,8 @@ VERSION = 1
 MAX_NAME = 60
 _ROUTINE = re.compile(r"routine:[A-Za-z0-9_-]{1,64}")
 _ID_LETTERS = string.ascii_lowercase + string.digits
+# How long a view of the shares' folders is trusted before `refresh` looks again.
+VIEW_FOR_S = 2.0
 # On Windows, replacing a file another thread has open fails for a moment.
 _REPLACE_TRIES, _REPLACE_WAIT = 5, 0.05
 
@@ -60,6 +69,20 @@ class Share:
     scope: str  # "everyone" or "routine:<id>"
     added_ms: int
     run_only: bool = False  # from `--grant`: listed for this run, never written
+
+
+@dataclass(frozen=True)
+class _View:
+    """The shares, and those whose folder is there to reach, as last looked at."""
+
+    stamp: tuple[int, int] | None  # the file's (mtime_ns, size), None when there is none
+    at: float
+    shares: tuple[Share, ...]
+    reaching: tuple[Share, ...]
+
+
+def _in(scope: str, share: Share) -> bool:
+    return share.scope in (EVERYONE, scope)
 
 
 def routine_scope(routine_id: str) -> str:
@@ -175,6 +198,7 @@ class Shares:
         *,
         rules: Callable[[Path], str | None] = why_not,
         clock: Callable[[], int] = lambda: int(time.time() * 1000),
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.path = path if path is not None else paths.folders_config_path()
         self._rules = rules
@@ -182,6 +206,11 @@ class Shares:
         self._run_only: list[Share] = []
         # Every change reads, edits and writes the whole file: one at a time.
         self._lock = threading.RLock()
+        self._monotonic = monotonic
+        # Read without the lock by code that must not wait (`known`): replaced whole.
+        self._view: _View | None = None
+        # Counts changes, so a slow look begun before one never replaces its view.
+        self._changes = 0
 
     # ── The file ──────────────────────────────────────────────────────
 
@@ -285,16 +314,74 @@ class Shares:
             return "not found"
         return self._rules(share.path)
 
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            st = self.path.stat()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return (-1, -1)
+        return st.st_mtime_ns, st.st_size
+
+    def _look(self) -> _View:
+        """Look at the file and every share's folder now, and keep what was seen unless
+        a change came in meanwhile (its own view is newer). Blocking."""
+        with self._lock:
+            changes = self._changes
+        stamp = self._stamp()
+        shares = tuple(self.all())
+        view = _View(
+            stamp=stamp,
+            at=self._monotonic(),
+            shares=shares,
+            reaching=tuple(s for s in shares if self.state(s) is None),
+        )
+        with self._lock:
+            if changes == self._changes:
+                self._view = view
+        return view
+
+    def _changed(self) -> None:
+        """After a change: the view is made again before the change returns."""
+        with self._lock:
+            self._changes += 1
+            self._look()
+
+    def refresh(self) -> None:
+        """Look again if the file changed or the view is a moment old. Blocking: code on
+        the event loop runs it in a thread, then reads `known`."""
+        view = self._view
+        if (
+            view is not None
+            and view.stamp == self._stamp()
+            and self._monotonic() - view.at < VIEW_FOR_S
+        ):
+            return
+        self._look()
+
     def reached(self, scope: str) -> list[Share]:
-        """The shares a turn reaches now. Her own turns pass `everyone`; a routine's run
-        passes its own scope and gets everyone's too."""
-        return [s for s in self.all() if s.scope in (EVERYONE, scope) and self.state(s) is None]
+        """The shares a turn reaches, looked at now. Her own turns pass `everyone`; a
+        routine's run passes its own scope and gets everyone's too. Blocking."""
+        return [s for s in self._look().reaching if _in(scope, s)]
 
     def in_scope(self, scope: str) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
-        """The folders a turn reaches, and those of them shared read only."""
-        shares = self.reached(scope)
-        roots = tuple(s.path for s in shares)
-        return roots, tuple(s.path for s in shares if s.access == "read")
+        """The folders a turn reaches, and those of them shared read only. Blocking."""
+        return _paths(self.reached(scope))
+
+    def known_all(self) -> list[Share]:
+        """Every share as last looked at, with no disk work. Empty before any look."""
+        view = self._view
+        return list(view.shares) if view is not None else []
+
+    def known_reached(self, scope: str) -> list[Share]:
+        """`reached` as last looked at, with no disk work: for the event loop. Before
+        any look it is empty, so it never reaches more than it should."""
+        view = self._view
+        return [s for s in view.reaching if _in(scope, s)] if view is not None else []
+
+    def known(self, scope: str) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """`in_scope` as last looked at, with no disk work."""
+        return _paths(self.known_reached(scope))
 
     # ── Changing ──────────────────────────────────────────────────────
 
@@ -392,6 +479,7 @@ class Shares:
             self._write(shares)
             if grant is not None:
                 self._run_only.remove(grant)
+            self._changed()
             return new
 
     def change(
@@ -418,6 +506,7 @@ class Shares:
                 self._run_only = [new if s is old else s for s in self._run_only]
             else:
                 self._write([new if s.id == share_id else s for s in self._saved()])
+            self._changed()
             return new
 
     def _find(self, share_id: str) -> Share:
@@ -437,6 +526,7 @@ class Shares:
                 self._run_only.remove(old)
             else:
                 self._write([s for s in self._saved() if s.id != share_id])
+            self._changed()
             return old
 
     def remove_routine(self, routine_id: str) -> int:
@@ -447,6 +537,7 @@ class Shares:
             kept = [s for s in saved if s.scope != scope]
             if len(kept) != len(saved):
                 self._write(kept)
+                self._changed()
             return len(saved) - len(kept)
 
     def add_run_only(self, raw_path: Path) -> Share:
@@ -469,4 +560,9 @@ class Shares:
                 run_only=True,
             )
             self._run_only.append(share)
+            self._changed()
             return share
+
+
+def _paths(shares: list[Share]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    return tuple(s.path for s in shares), tuple(s.path for s in shares if s.access == "read")

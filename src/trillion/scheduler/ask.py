@@ -147,7 +147,7 @@ class Asker:
         conversations: SqliteConversationStore,
         system: Callable[[str], list[SystemBlock]],
         identity: Callable[[], Identity],
-        shares: Callable[[str], tuple[tuple[Path, ...], tuple[Path, ...]]],
+        shares: Callable[[str], Awaitable[tuple[tuple[Path, ...], tuple[Path, ...]]]],
         zone: Callable[[], str | None],
         clock: Callable[[], int],
         owner: str,
@@ -160,7 +160,7 @@ class Asker:
         self._system = system
         self._identity = identity
         # By scope: the folders a run reaches and those of them read only, read at each
-        # call, so a share removed mid-run reaches nothing from the next call on.
+        # call (off the event loop), so a share removed mid-run reaches nothing after.
         self._shares = shares
         self._zone = zone
         self._clock = clock
@@ -355,8 +355,8 @@ class _Run:
                 now_ms=a._clock(),
             )
 
-        def ctx(call_id: str) -> ToolContext:
-            roots, read_only = a._shares(self.scope)
+        async def ctx(call_id: str) -> ToolContext:
+            roots, read_only = await a._shares(self.scope)
             return ToolContext(
                 owner_id=a._owner,
                 session_id=self.conversation,

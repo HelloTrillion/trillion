@@ -334,25 +334,29 @@ class Runtime:
 
     @property
     def granted_roots(self) -> tuple[Path, ...]:
-        """The folders her own turns reach, read now."""
-        return self.shares.in_scope(EVERYONE)[0]
+        """The folders her own turns reach, as last looked at: no disk work, so it is
+        safe on the event loop."""
+        return self.shares.known(EVERYONE)[0]
 
-    def in_scope(self, scope: str = EVERYONE) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
-        """The folders a turn in `scope` reaches now, and those of them that are read only."""
-        return self.shares.in_scope(scope)
+    async def reach(self, scope: str = EVERYONE) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """The folders a turn in `scope` reaches now, and those of them read only. The
+        folders are looked at in a thread: a share on a hung drive never stalls the loop."""
+        await asyncio.to_thread(self.shares.refresh)
+        return self.shares.known(scope)
 
     def shared(self, scope: str = EVERYONE) -> list[SharedFolder]:
-        """The shares in scope by name, for her prompt and describe_self."""
+        """The shares in scope by name, for her prompt. Blocking: run it in a thread."""
+        self.shares.refresh()
         return [
             SharedFolder(name=s.name, path=s.path, read_only=s.access == "read")
-            for s in self.shares.reached(scope)
+            for s in self.shares.known_reached(scope)
         ]
 
-    def routine_removed(self, routine_id: str) -> None:
-        """A removed routine's shares go with it. Never raises: a damaged folders file
-        leaves them, and they reach nothing while it is damaged anyway."""
+    async def routine_removed(self, routine_id: str) -> None:
+        """A removed routine's shares go with it, written in a thread. Never raises: a
+        damaged folders file leaves them, and they reach nothing while it is damaged."""
         try:
-            gone = self.shares.remove_routine(routine_id)
+            gone = await asyncio.to_thread(self.shares.remove_routine, routine_id)
         except (ShareError, OSError) as e:
             logger.warning("a removed routine's shares were kept: %s", type(e).__name__)
             return
@@ -756,7 +760,10 @@ async def open_runtime(
     token_from_app = session is not None or SESSION_TOKEN_ENV in given
     store_of_shares = shares if shares is not None else Shares(rules=share_rules)
     for folder in granted_roots:
-        store_of_shares.add_run_only(folder)
+        # A folder given relative to where Trillion was started, as a shell gives it.
+        store_of_shares.add_run_only(folder.expanduser().resolve())
+    # The first look, so her first turn's view is there to read without the disk.
+    await asyncio.to_thread(store_of_shares.refresh)
     path = db or paths.db_path()
     spine_conn = await connect(path)
     await migrate(spine_conn)
@@ -778,7 +785,7 @@ async def open_runtime(
         require_delivery=True,
     )
     # Finish what a crash interrupted before anything new can be proposed (SPN-17a).
-    await router.recover(store_of_shares.in_scope(EVERYONE)[0])
+    await router.recover(store_of_shares.known(EVERYONE)[0])
     await router.forget_settled_arguments()
     preferences = SqlitePreferences(chat_conn)
     keychain = secrets if secrets is not None else KeychainStore()
@@ -831,7 +838,7 @@ async def open_runtime(
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(
-            registry.definitions, rt.facts, lambda: {s.path: s.name for s in rt.shares.all()}
+            registry.definitions, rt.facts, lambda: {s.path: s.name for s in rt.shares.known_all()}
         )
     web = registry.get(FETCH)
     if isinstance(web, WebFetch):
@@ -882,7 +889,7 @@ async def open_runtime(
         conversations=rt.conversations,
         system=rt.system,
         identity=lambda: rt.identity,
-        shares=rt.in_scope,
+        shares=rt.reach,
         zone=rt.zone,
         clock=lambda: rt.clock(),
         owner=OWNER,

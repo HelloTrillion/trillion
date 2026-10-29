@@ -28,7 +28,10 @@ else:
     _F_GETPATH = getattr(fcntl, "F_GETPATH", None)
 
 # What a write in a folder shared `read` is told (the shared folders spec, D11).
-READ_ONLY = "that folder is shared read only"
+READ_ONLY = (
+    "that folder is shared read only; change it to read and change in Settings to let her "
+    "write there"
+)
 
 PROTECTED_SEGMENTS: frozenset[str] = frozenset({".git", ".ssh", ".aws", ".gnupg"})
 
@@ -166,17 +169,23 @@ def _check_one(
     return None
 
 
-def refused(p: Path, granted_roots: tuple[Path, ...]) -> str | None:
+def refused(
+    p: Path, granted_roots: tuple[Path, ...], *, read_only_roots: tuple[Path, ...] = ()
+) -> str | None:
     """Why a path already resolved is refused, or None. For the file tools, on the very
-    path they are about to walk to, after any folder on the way may have changed."""
+    path they are about to walk to, after any folder on the way may have changed. A
+    write passes `read_only_roots`, so a link swapped in to a read only share is caught
+    here too (D11)."""
     for form in spellings(p):
         denial = _check_one("path", form, DenyPolicy.default(), granted_roots)
         if denial is not None:
             return denial.reason
+        if read_only_roots and read_only(form, granted_roots, read_only_roots):
+            return READ_ONLY
     return None
 
 
-def _read_only(p: Path, granted_roots: tuple[Path, ...], read_only_roots: tuple[Path, ...]) -> bool:
+def read_only(p: Path, granted_roots: tuple[Path, ...], read_only_roots: tuple[Path, ...]) -> bool:
     """Whether the innermost share holding `p` is read only. Where shares nest, the
     innermost decides; two of the same folder, one of them read only, are read only."""
     deepest, locked = -1, False
@@ -191,6 +200,13 @@ def _read_only(p: Path, granted_roots: tuple[Path, ...], read_only_roots: tuple[
             elif depth == deepest:
                 locked = locked or read_only
     return locked
+
+
+def _local(raw: str) -> bool:
+    """A full path on this computer. A relative one given to a connected server names
+    a place in its own world, not one under the user's shares."""
+    s = raw.strip()
+    return s.startswith(("/", "~", "\\\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", s))
 
 
 def reads_as_path(raw: str) -> bool:
@@ -235,7 +251,7 @@ def check(
             denial = _check_one(name, form, policy, everywhere)
             if denial is not None:
                 return denial
-            if writes and _read_only(form, granted_roots, read_only_roots):
+            if writes and _local(raw) and read_only(form, granted_roots, read_only_roots):
                 return Denial(name, READ_ONLY)
     for name in defn.path_args:
         if name not in args:
@@ -256,6 +272,6 @@ def check(
             denial = _check_one(name, form, policy, granted_roots)
             if denial is not None:
                 return denial
-            if writes and _read_only(form, granted_roots, read_only_roots):
+            if writes and read_only(form, granted_roots, read_only_roots):
                 return Denial(name, READ_ONLY)
     return None

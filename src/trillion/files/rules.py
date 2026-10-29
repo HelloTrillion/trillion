@@ -22,6 +22,7 @@ import os
 import stat
 import sys
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
@@ -270,6 +271,10 @@ def why_not(
     default to this computer's own; tests pass their own."""
     if "\x00" in str(path):
         return "that folder could not be found"
+    # A newline or other control character in a folder's path would break the line her
+    # prompt lists it on, and no folder a person made needs one.
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in str(path)):
+        return "a folder whose name has a control character or line break is never shared"
     try:
         p = resolved(path)
         home_ = resolved(home if home is not None else Path.home())
