@@ -19,6 +19,7 @@ import aiosqlite
 from trillion import paths
 from trillion.api.jobs import Jobs
 from trillion.attention import settings as watch_prefs
+from trillion.attention.email import GoogleMail, UrgentEmail
 from trillion.attention.meetings import GoogleCalendar, Meetings
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
@@ -84,6 +85,9 @@ from trillion.tools.schedule import (
 from trillion.tools.skills import FILE as SKILL_FILE
 from trillion.tools.skills import OPEN as SKILL_OPEN
 from trillion.tools.skills import SkillFile, SkillOpen
+from trillion.tools.speak_up import NARROW as SPEAK_NARROW
+from trillion.tools.speak_up import WIDEN as SPEAK_WIDEN
+from trillion.tools.speak_up import SpeakUpNarrow, SpeakUpWiden
 from trillion.tools.web import FETCH, WebFetch
 from trillion.tools.workspace import CLOSE as BOARD_CLOSE
 from trillion.tools.workspace import REMOVE as BOARD_REMOVE
@@ -864,6 +868,11 @@ async def open_runtime(
     rt.attention.add(meetings)
     # Its last read says whether a meeting is under way, so the quiet check asks no one.
     rt.quiet.in_meeting = meetings.in_meeting
+    rt.attention.add(UrgentEmail(GoogleMail(lambda: rt.google)))
+    for name in (SPEAK_NARROW, SPEAK_WIDEN):
+        speak_tool = registry.get(name)
+        if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):
+            speak_tool.bind(rt.attention_store, OWNER)
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):

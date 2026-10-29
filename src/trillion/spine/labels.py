@@ -27,6 +27,7 @@ LABELS: dict[str, str] = {
     "reminder_set": "Set a reminder",
     "schedule_cancel": "Cancel a schedule",
     "routine_widen": "Add to a routine",
+    "speak_up_widen": "Speak up about more",
     "memory_forget": "Forget a memory",
     # Google and Slack tools ask unless the user let them run on their own.
     "gmail_search": "Search your mail",

@@ -114,6 +114,27 @@ async def test_notes_are_set_and_cleared(
     assert (await store.state(OWNER, "email")).notes == ""
 
 
+async def test_a_note_is_added_as_a_line_until_they_are_full(
+    db: tuple[SqliteAttentionStore, SqliteScheduleStore],
+) -> None:
+    store, _ = db
+    assert await store.add_note(OWNER, "email", "Not the bank newsletters.")
+    assert await store.add_note(OWNER, "email", "watch: sam@example.com")
+    assert (await store.state(OWNER, "email")).notes == (
+        "Not the bank newsletters.\nwatch: sam@example.com"
+    )
+    # Full: nothing is cut, nothing changes.
+    assert not await store.add_note(OWNER, "email", "x" * 1000)
+    assert (await store.state(OWNER, "email")).notes.endswith("sam@example.com")
+    with pytest.raises(ValueError):
+        await store.add_note(OWNER, "email", "two\nlines")
+    # The last check and place are untouched by a note.
+    await store.checked(OWNER, "payments", NOW, cursor="c1")
+    assert await store.add_note(OWNER, "payments", "Only over $500.")
+    s = await store.state(OWNER, "payments")
+    assert (s.last_check_ms, s.cursor, s.notes) == (NOW, "c1", "Only over $500.")
+
+
 async def test_a_claim_keeps_each_finds_detail(
     db: tuple[SqliteAttentionStore, SqliteScheduleStore],
 ) -> None:

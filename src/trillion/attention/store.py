@@ -123,4 +123,9 @@ class AttentionStore(Protocol):
         """Raises `ValueError` past `NOTES_MAX`."""
         ...
 
+    async def add_note(self, owner_id: str, watcher: str, line: str) -> bool:
+        """Add one line to a watcher's notes, if it still fits in `NOTES_MAX`. False,
+        and nothing changed, when it would not."""
+        ...
+
     async def clear_notes(self, owner_id: str, watcher: str) -> None: ...

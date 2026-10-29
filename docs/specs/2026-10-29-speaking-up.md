@@ -79,6 +79,34 @@ logs its class name and tries again at its next interval (never sooner).
   untrusted: it answers which are urgent and one line for all of them together, or
   nothing. Output that does not parse is treated as nothing (logged). At most one
   email notice per check.
+- The query is `is:unread is:important after:<s>`, or with senders to watch
+  `is:unread after:<s> {is:important from:a@example.com …}` (`{}` is Gmail's or), at
+  most 20 (`maxResults`). Each message is read with `format=metadata` and
+  `metadataHeaders` From, Subject and Date. Its place is kept in the watcher's
+  cursor and moves to five minutes before each check (never back), so mail Gmail
+  files a moment late is still read; one already found is never told again (D5).
+- The judge answers strict JSON, `{"urgent": [<ids>], "line": "<sentence>"}`. Ids it
+  was not given are ignored; urgent ones with no usable line are shown by title and
+  detail, unspoken (D3). With no model there is no judging, and nothing is said.
+- The detail is "<sender's name, else address> — <subject>".
+
+### Notes
+
+Each watcher's notes are lines of the user's words, given to its model call beside
+the finds, outside the untrusted part. Two tools edit them, as `routine_narrow` and
+`routine_widen` edit a routine's, with the same test (`narrows_routine`):
+`speak_up_narrow` adds a plain narrowing at once ("stop telling me about
+newsletters"); `speak_up_widen` adds anything else, on a card. Both take `watcher`
+(meetings, email or payments) and `text`, one line; the notes hold 1,000 characters.
+
+- A line `watch: name@example.com` asks the email watcher to read that sender's
+  unread mail too, important or not. Only a plain address is taken, at most ten, so
+  a note can't add other search words. It can only come through a card.
+- The turn after a heads-up counts as read (D4): there a narrowing does not stand at
+  once either, it goes to a card, as a standing rule does after a read. So an email
+  can't change what she watches through her own line.
+- Never from a run nobody watches, a tapped ask, a refresh or a channel; neither tool
+  is offered to an unattended run.
 
 ### Payments
 

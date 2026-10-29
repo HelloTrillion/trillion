@@ -214,5 +214,24 @@ class SqliteAttentionStore:
                 (owner_id, watcher, notes),
             )
 
+    async def add_note(self, owner_id: str, watcher: str, line: str) -> bool:
+        if "\n" in line or not line.strip():
+            raise ValueError("a note is one line")
+        async with self._tx() as conn:
+            await conn.execute(
+                "INSERT INTO attention_state (owner_id, watcher) VALUES (?, ?)"
+                " ON CONFLICT (owner_id, watcher) DO NOTHING",
+                (owner_id, watcher),
+            )
+            # Checked in the same statement, so two notes at once never pass the cap.
+            cur = await conn.execute(
+                "UPDATE attention_state SET notes = CASE WHEN notes = '' THEN ?1"
+                " ELSE notes || char(10) || ?1 END"
+                " WHERE owner_id = ?2 AND watcher = ?3"
+                " AND length(notes) + (CASE WHEN notes = '' THEN 0 ELSE 1 END) + length(?1) <= ?4",
+                (line, owner_id, watcher, NOTES_MAX),
+            )
+            return cur.rowcount == 1
+
     async def clear_notes(self, owner_id: str, watcher: str) -> None:
         await self.set_notes(owner_id, watcher, "")

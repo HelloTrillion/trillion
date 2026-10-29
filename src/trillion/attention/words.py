@@ -8,9 +8,9 @@ then shown by its title and not spoken, never with stock words. An answer the to
 limit cut off is half a sentence, so it is no line too.
 
 `line` always says something about the finds it is given. A watcher that lets the
-model judge whether anything is worth saying (urgent email, Task 5) decides that in
-its own call and hands the runner a `Said` (`runner.Judge`); it can still use `clean`
-and `INSTRUCTIONS`' shape for its line.
+model judge whether anything is worth saying (urgent email) decides that in its own
+call and hands the runner a `Said` (`runner.Judge`), shown the finds by `body` and
+its line kept by `clean`.
 """
 
 from __future__ import annotations
@@ -53,7 +53,9 @@ def clean(text: str) -> str | None:
     return out
 
 
-def _body(watcher: str, finds: Sequence[Find], notes: str) -> str:
+def body(watcher: str, finds: Sequence[Find], notes: str) -> str:
+    """What the model is shown: the finds' facts wrapped as untrusted, and the user's
+    notes for the watcher beside them."""
     data = json.dumps([f.facts for f in finds], ensure_ascii=False, indent=1)
     body = wrap(f"attention_{watcher}", data)
     if notes.strip():
@@ -80,7 +82,7 @@ async def line(
         nonlocal usage, cut
         async for ev in provider.stream(
             system=[SystemBlock(text=INSTRUCTIONS, cache=False)],
-            messages=[Msg(role="user", blocks=(TextBlock(text=_body(watcher, finds, notes)),))],
+            messages=[Msg(role="user", blocks=(TextBlock(text=body(watcher, finds, notes)),))],
             tools=[],
             max_tokens=LINE_TOKENS,
         ):
