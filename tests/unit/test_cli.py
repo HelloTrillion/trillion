@@ -1,7 +1,9 @@
+import logging
 import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -56,6 +58,65 @@ def test_run_refuses_a_grant_that_is_not_a_folder(
 ) -> None:
     assert main(["run", "--no-open", "--grant", str(tmp_path / "missing")]) == 2
     assert "not a folder" in capsys.readouterr().err
+
+
+APP_TOKEN = "Zq" * 21 + "x"  # 43 URL-safe characters, as the desktop app makes
+
+
+def test_run_refuses_a_malformed_token_from_the_app(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path))
+    monkeypatch.setenv("TRILLION_SESSION_TOKEN", "short/one")
+    assert main(["run", "--no-open"]) == 2
+    out, err = capsys.readouterr()
+    assert err == "trillion: TRILLION_SESSION_TOKEN must be at least 32 URL-safe characters\n"
+    assert "short/one" not in out + err
+    assert not (tmp_path / "trillion.db").exists()  # refused before anything was opened
+
+
+def test_run_with_the_apps_token_never_prints_it(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import webbrowser
+
+    from trillion.api import runtime
+    from trillion.cli import server
+    from trillion.secrets.store import MemoryStore
+
+    for name in ("TRILLION_OPENAI_BASE_URL", "TRILLION_MODEL", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path))
+    monkeypatch.setenv("TRILLION_SESSION_TOKEN", APP_TOKEN)
+    real_open = runtime.open_runtime
+    held: list[Any] = []
+
+    async def open_without_keychain(**kwargs: Any) -> Any:
+        rt = await real_open(**kwargs, persona=tmp_path, secrets=MemoryStore())
+        held.append(rt)
+        return rt
+
+    async def serve(self: Any, sockets: Any = None) -> None:
+        return None
+
+    opened: list[str] = []
+    monkeypatch.setattr(runtime, "open_runtime", open_without_keychain)
+    monkeypatch.setattr(server.Server, "serve", serve)
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    factory = logging.getLogRecordFactory()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    try:
+        assert main(["run", "--port", str(port)]) == 0
+    finally:
+        logging.setLogRecordFactory(factory)
+    out, err = capsys.readouterr()
+    assert held and held[0].token == APP_TOKEN
+    assert "#token=" not in out + err
+    assert APP_TOKEN not in out + err
+    assert "started by the desktop app" in out
+    assert opened == []  # the app shows the page itself
 
 
 def test_run_explains_a_half_configured_local_model(
