@@ -247,7 +247,8 @@ class Shares:
 
     def all(self) -> list[Share]:
         """Saved shares, then this run's. A saved share of a granted folder wins, and a
-        granted folder whose name a saved share has since taken is numbered."""
+        granted folder whose name a saved share has since taken is numbered. That
+        renaming sticks: reading the list can change a run-only share's name."""
         saved = self._load()[0]
         held = {_key(s.path) for s in saved}
         with self._lock:

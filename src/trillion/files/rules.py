@@ -76,6 +76,9 @@ _APP_FOLDERS = ("Library", "AppData")
 # Except where macOS keeps the user's own cloud files inside ~/Library: iCloud Drive,
 # and one folder per provider account under CloudStorage (Dropbox, Google Drive...).
 _ICLOUD_DRIVE = ("Library", "Mobile Documents", "com~apple~CloudDocs")
+# An app's iCloud folder the user sees (an Obsidian vault): <container>/Documents.
+_MOBILE_DOCUMENTS = ("Library", "Mobile Documents")
+_APP_ICLOUD = "Documents"
 _CLOUD_STORAGE = ("Library", "CloudStorage")
 
 
@@ -139,7 +142,9 @@ def marked_hidden(path: PurePath) -> bool:
 
 def mount_point(path: Path) -> bool:
     """Another drive starts here. Compares devices with the folder above, which also
-    finds what `os.path.ismount` misses (`/System/Volumes/Data` on macOS)."""
+    finds what `os.path.ismount` misses (`/System/Volumes/Data` on macOS). So a folder
+    that is a mount of its own (a btrfs subvolume, a ZFS dataset, its own partition)
+    can't be shared itself, though the folders inside it can."""
     if path.parent == path:
         return True
     try:
@@ -177,11 +182,20 @@ def _holds(outer: PurePath, inner: PurePath) -> bool:
 
 
 def _cloud_top(p: PurePath, home: PurePath) -> PurePath | None:
-    """The cloud folder `p` is in (iCloud Drive or one provider's account folder), or
-    None. The folders holding them stay the apps' own."""
+    """The cloud folder `p` is in (iCloud Drive, an app's iCloud Documents folder, or
+    one provider's account folder), or None. The folders holding them, and the rest of
+    an app's iCloud container, stay the apps' own."""
     icloud = home.joinpath(*_ICLOUD_DRIVE)
     if deny_floor.is_under(p, icloud):
         return type(p)(*p.parts[: len(icloud.parts)])
+    mobile = home.joinpath(*_MOBILE_DOCUMENTS)
+    depth = len(mobile.parts) + 2
+    if (
+        deny_floor.is_under(p, mobile)
+        and len(p.parts) >= depth
+        and deny_floor.fold(p.parts[depth - 1]) == deny_floor.fold(_APP_ICLOUD)
+    ):
+        return type(p)(*p.parts[:depth])
     storage = home.joinpath(*_CLOUD_STORAGE)
     if deny_floor.is_under(p, storage) and len(p.parts) > len(storage.parts):
         return type(p)(*p.parts[: len(storage.parts) + 1])
@@ -207,14 +221,19 @@ def judge(
     reason = deny_floor.protected_reason(p, protected)
     if reason is not None:
         return reason
+    # A system folder that holds the home folder (`/var/home` on Fedora Silverblue) or
+    # Trillion's data is where the user's own files are kept, not the system's.
+    system = [s for s in system if not _holds(s, home) and not _holds(s, data)]
     if any(deny_floor.is_under(p, s) for s in system):
         return "system folders are never shared"
     names = p.parts[1:] if p.anchor else p.parts
     above = [q for q in (p, *p.parents) if q.parent != q]
     cloud = _cloud_top(p, home)
-    if cloud is not None:
-        # ~/Library above a cloud folder is hidden by the system; what is inside isn't.
-        above = [q for q in above if deny_floor.is_under(q, cloud)]
+    # Folders the system hides above a cloud folder (~/Library) or a drive (/Volumes
+    # on macOS) say nothing about what is inside: ask only from there down.
+    stop = cloud or next((m for m in mounts if deny_floor.is_under(p, m)), None)
+    if stop is not None:
+        above = [q for q in above if deny_floor.is_under(q, stop)]
     if any(name.startswith(".") for name in names) or any(hidden(q) for q in above):
         return "hidden folders, and folders inside them, are never shared"
     if cloud is None and any(deny_floor.is_under(p, home / name) for name in _APP_FOLDERS):

@@ -517,3 +517,89 @@ def test_a_link_into_icloud_drive_is_judged_as_where_it_leads(world):
 
 def test_windows_appdata_has_no_cloud_exception():
     assert "apps" in (win("C:/Users/sam/AppData/Local/CloudStorage/Dropbox") or "")
+
+
+# ── Drives the system hides above, homes under /var, iCloud app folders ──
+
+
+def test_a_folder_on_a_drive_is_allowed_though_the_drives_folder_is_hidden(world):
+    # On macOS /Volumes carries UF_HIDDEN; that says nothing about the drives in it.
+    photos = world["drive"] / "Photos"
+    photos.mkdir()
+    reason = rules.why_not(
+        photos,
+        home=world["home"],
+        data_dir=world["data"],
+        protected_roots=(),
+        mounts=(world["drive"],),
+        system=(),
+        hidden=lambda q: q == world["volumes"],
+    )
+    assert reason is None
+
+
+def test_a_hidden_folder_on_a_drive_is_still_refused(world):
+    secret = world["drive"] / "Private"
+    secret.mkdir()
+    reason = rules.why_not(
+        secret,
+        home=world["home"],
+        data_dir=world["data"],
+        protected_roots=(),
+        mounts=(world["drive"],),
+        system=(),
+        hidden=lambda q: q in (world["volumes"], secret),
+    )
+    assert reason is not None and "hidden" in reason
+
+
+def _var_home(raw: str) -> str | None:
+    return rules.judge(
+        PurePosixPath(raw),
+        home=PurePosixPath("/var/home/sam"),
+        data=PurePosixPath("/var/home/sam/.trillion"),
+        system=rules.POSIX_SYSTEM,
+    )
+
+
+def test_a_home_under_var_is_not_a_system_folder():
+    assert _var_home("/var/home/sam/Documents/Website") is None
+    assert "home folder is never" in (_var_home("/var/home/sam") or "")
+    assert "someone's home" in (_var_home("/var/home/other") or "")
+    assert "holds a home" in (_var_home("/var") or "")
+    assert "system" in (_var_home("/usr/local") or "")
+
+
+def test_a_system_folder_holding_the_data_folder_is_not_refused_as_system():
+    reason = rules.judge(
+        PurePosixPath("/opt/work/project"),
+        home=PurePosixPath("/home/sam"),
+        data=PurePosixPath("/opt/work/.trillion"),
+        system=rules.POSIX_SYSTEM,
+    )
+    assert reason is None
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "Library/Mobile Documents/iCloud~md~obsidian/Documents",
+        "Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault",
+        "Library/Mobile Documents/iCloud~md~obsidian/documents/Vault",
+    ],
+)
+def test_an_apps_icloud_documents_folder_may_be_shared(world, rel):
+    assert cloud_why(world, rel) is None
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "Library/Mobile Documents/iCloud~md~obsidian",
+        "Library/Mobile Documents/iCloud~md~obsidian/Data",
+        "Library/Mobile Documents/Documents",
+        "Library/Mobile Documents/iCloud~md~obsidian/Documents/.obsidian",
+    ],
+)
+def test_the_rest_of_an_apps_icloud_container_is_refused(world, rel):
+    assert cloud_why(world, rel) is not None
