@@ -21,6 +21,7 @@ from trillion.api.jobs import Jobs
 from trillion.attention import settings as watch_prefs
 from trillion.attention.mail import GoogleMail, UrgentEmail
 from trillion.attention.meetings import GoogleCalendar, Meetings
+from trillion.attention.payments import Payments
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
 from trillion.brain import compact
@@ -869,6 +870,8 @@ async def open_runtime(
     # Its last read says whether a meeting is under way, so the quiet check asks no one.
     rt.quiet.in_meeting = meetings.in_meeting
     rt.attention.add(UrgentEmail(GoogleMail(lambda: rt.google)))
+    # Reads Stripe only while a Stripe server is connected and its read never asks.
+    rt.attention.add(Payments(registry, zone=rt.zone))
     for name in (SPEAK_NARROW, SPEAK_WIDEN):
         speak_tool = registry.get(name)
         if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):

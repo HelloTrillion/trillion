@@ -111,6 +111,9 @@ const ERROR_KINDS: Readonly<Record<string, string>> = {
   HttpError: 'the service answered with an error',
   RefreshError: 'the sign-in needs renewing',
   PermissionError: 'it was not allowed',
+  // The payments watcher: Stripe's read tool is set to ask first, so it can't run on its own.
+  AsksFirst: 'Stripe is set to ask first, so it can’t check on its own',
+  StripeError: 'Stripe did not answer',
 };
 
 export function errorKindText(kind: string): string {

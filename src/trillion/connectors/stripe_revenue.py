@@ -25,7 +25,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trillion.connectors.mcp.config import ServerConfig
-from trillion.connectors.mcp.tool import CATEGORY, Call
+from trillion.connectors.mcp.tool import CATEGORY, Call, Outcome
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     GATED,
@@ -466,6 +466,12 @@ class StripeRevenue(BaseTool):
             return ToolResult(ok=False, content=str(e), effect="none", error_kind="refused")
         out = self._result(period, current, previous, by, keys, now, before)
         return ToolResult(ok=True, content=json.dumps(out, ensure_ascii=False), effect="confirmed")
+
+    async def api_read(self, args: JSON, timeout_s: float) -> Outcome:
+        """One `stripe_api_read` call through the connected server, for code that reads
+        Stripe on its own (payment alerts). Whether it may run unattended is the
+        caller's to check, by this tool's risk; never past the server's timeout."""
+        return await self._call(READ_TOOL, args, min(self._timeout, timeout_s))
 
     async def _ask(self, tool: str, args: JSON, budget: _Budget) -> tuple[str, str]:
         """One call to the server: its text, or why there is none."""

@@ -110,6 +110,7 @@ describe('speaking up, in words', () => {
     expect(checkText({ last_check_ms: now - 30_000, last_error: null, notes: '' }, now)).toBe('Last checked 30 s ago.');
     expect(checkText({ last_check_ms: now - 600_000, last_error: 'TimeoutError', notes: '' }, now)).toBe('Last checked 10 min ago. Last time: it took too long.');
     expect(checkText({ last_check_ms: null, last_error: null, notes: '' }, now)).toBe('Not checked yet.');
+    expect(checkText({ last_check_ms: null, last_error: 'AsksFirst', notes: '' }, now)).toBe('Not checked yet. Last time: Stripe is set to ask first, so it can’t check on its own.');
   });
 
   it('turns an amount into the currency’s minor unit, without floats', () => {

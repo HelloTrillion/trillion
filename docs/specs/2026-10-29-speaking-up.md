@@ -112,13 +112,26 @@ newsletters"); `speak_up_widen` adds anything else, on a card. Both take `watche
 
 - Every 10 minutes, through the connected Stripe server's `stripe_api_read` tool, as
   `stripe_revenue.py` calls it: charges created since the last check that failed;
-  successful charges at or above the limit (Settings; off until set, in the
-  account's default currency); disputes created since the last check.
+  successful charges at or above the limit (Settings; off until set, in the limit's
+  own currency, so a charge in another currency is not compared); disputes created
+  since the last check.
+- Two reads, `GetCharges` and `GetDisputes`, each with `created[gte]` and
+  `limit` 100, newest first, following `starting_after` for at most three pages.
+  Stripe's charge list can't filter by status, so failed and large ones are picked in
+  code. Its place moves to five minutes before each check (never back, never more
+  than a day back); the first check after turning it on starts from that moment.
 - Only when that tool runs without asking. If the user set it to ask first, the
-  watcher does not run and Settings says why (an unattended run gets only tools that
-  never ask, as in the reminders spec D5).
-- The find carries amount, currency, kind, and the customer's name or email when
-  Stripe has one. One line per check covering everything found.
+  watcher does not read and Settings says why (its last error is `AsksFirst`; an
+  unattended run gets only tools that never ask, as in the reminders spec D5). It is
+  found by the `stripe_revenue` companion, which exists only while a Stripe server
+  from the catalogue is connected with `stripe_api_read`, and carries that tool's risk.
+- The find (`payment:<object id>:<failed|large|dispute>`) carries kind, the amount in
+  major units with its currency ("125.00 USD"), when it was created in the user's
+  zone, the customer's name when Stripe has one on the charge, Stripe's failure code
+  or dispute reason, and the charge's description with any address taken out.
+  Never an email address (a name that holds one is not taken), a card's details or
+  an address. The detail is "<Failed payment|Large payment|Dispute> <amount>", with
+  " — <name>" when there is one. One line per check covering everything found.
 
 ## Staying quiet
 
