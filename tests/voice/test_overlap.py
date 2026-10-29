@@ -4,8 +4,10 @@ import pytest
 
 from trillion.voice.overlap import (
     ACK_AFTER_S,
+    CONFIRM_MAX_S,
     CONFIRM_S,
     DECIDE_BY_S,
+    STILL_TALKING_S,
     confirm,
     decide,
     is_filler,
@@ -130,6 +132,27 @@ def test_one_word_of_theirs_alone_waits_then_carries_on() -> None:
     assert confirm("tuesday", "", done=False, elapsed_s=CONFIRM_S) == "carry_on"
     assert confirm("", "", done=False, elapsed_s=0.3) == "wait"
     assert confirm("", "", done=True, elapsed_s=CONFIRM_S) == "carry_on"
+
+
+def test_while_they_are_still_talking_it_keeps_listening() -> None:
+    # Live: five words in the first second, three wrongly taken for her echo; it gave
+    # up at one second while they were still talking. Words still coming keep it open.
+    talking = STILL_TALKING_S / 2
+    assert confirm("can", "you", done=False, elapsed_s=CONFIRM_S, quiet_s=talking) == "wait"
+    assert confirm("can", "you", done=False, elapsed_s=1.6, quiet_s=talking) == "wait"
+    # A third word of theirs in that time stops her, as it always did.
+    assert confirm("can", "you tell", done=False, elapsed_s=1.6, quiet_s=talking) == "interrupt"
+    # Gone quiet: it carries on, as before.
+    quiet = STILL_TALKING_S + 0.1
+    assert confirm("can", "you", done=False, elapsed_s=CONFIRM_S, quiet_s=quiet) == "carry_on"
+    # Never past the longest wait, however long the words keep coming.
+    assert confirm("can", "you", done=False, elapsed_s=CONFIRM_MAX_S, quiet_s=talking) == "carry_on"
+
+
+def test_with_nothing_of_theirs_it_still_carries_on_at_once() -> None:
+    # Only her echo is still coming: no word of theirs, so nothing to wait for.
+    talking = STILL_TALKING_S / 2
+    assert confirm("", "", done=False, elapsed_s=CONFIRM_S, quiet_s=talking) == "carry_on"
 
 
 def test_new_words_of_theirs_after_the_duck_stop_her() -> None:

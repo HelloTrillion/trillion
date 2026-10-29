@@ -27,6 +27,12 @@ DECIDE_BY_S = 1.5
 # While watching, words that were not hers duck her; unless more of theirs follow
 # within this long, it was her echo misheard, and she carries on.
 CONFIRM_S = 1.0
+# But while words keep coming, they are still talking: it listens on, up to this long.
+# Early on her echo is not learned yet, and some of their words pass for hers; a second
+# was too short to hear the third of theirs (live: five words, three taken for hers).
+CONFIRM_MAX_S = 2.0
+# A word heard within this long means someone is still talking.
+STILL_TALKING_S = 0.6
 # This many words of theirs, before or after the duck, are the user; and this many
 # in a turn the recognizer has ended.
 _CONFIRMED_STRAYS = 3
@@ -178,13 +184,21 @@ def matches(w: str, hers: Collection[str], *, stop: bool = False) -> bool:
     return any(_inflects(w, h) or _inflects(h, w) for h in hers)
 
 
-def confirm(candidate: str, after: str, *, done: bool, elapsed_s: float) -> Decision:
+def confirm(
+    candidate: str,
+    after: str,
+    *,
+    done: bool,
+    elapsed_s: float,
+    quiet_s: float | None = None,
+) -> Decision:
     """Words of theirs ducked her (the candidate); `after` is what has been heard since.
     Only their words come here: her echo is told apart before (`voice/whose.py`). A stop
     word stops her at once. Acknowledgements and fillers carry on as `decide` lets them.
     Three words stop her, and so do two that the recognizer has ended a turn on; a word
     alone may be her echo misheard and louder than most, so nothing more by
-    `CONFIRM_S` carries on."""
+    `CONFIRM_S` carries on, unless words are still coming (`quiet_s`, how long since
+    the last word of anyone's): then it listens on, up to `CONFIRM_MAX_S`."""
     heard = _words(candidate) + _words(after)
     if not heard:
         return "carry_on" if elapsed_s >= CONFIRM_S else "wait"
@@ -198,4 +212,7 @@ def confirm(candidate: str, after: str, *, done: bool, elapsed_s: float) -> Deci
     said = [w for w in heard if w not in _ACKS]
     if len(said) >= _CONFIRMED_STRAYS or (done and len(said) >= _ENDED_STRAYS):
         return "interrupt"
-    return "carry_on" if elapsed_s >= CONFIRM_S else "wait"
+    talking = quiet_s is not None and quiet_s < STILL_TALKING_S and not done
+    if elapsed_s >= CONFIRM_MAX_S or (elapsed_s >= CONFIRM_S and not talking):
+        return "carry_on"
+    return "wait"

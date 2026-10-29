@@ -272,3 +272,43 @@ def test_her_peak_nearby_sets_the_bar_for_her_own_words() -> None:
     # Peak 0.4: the bar is 2 x 2.5 x 0.1 x 0.4 = 0.2. The mean (0.145) would make it 0.07.
     assert whose(W("send", 10.3), tl, mic(0.15), share=0.1, learned=5) == "hers"
     assert whose(W("send", 10.3), tl, mic(0.21), share=0.1, learned=5) == "theirs"
+
+
+# ── Her words count where she was saying them, not anywhere in the sentence ──
+
+
+def _long() -> Timeline:
+    # Twelve words over 3 s: she says about four a second.
+    text = "What I would do first is check the invoices before you pay them"
+    tl = Timeline()
+    tl.sentence(1, written=text, spoken=text, levels=[0.2] * 150)
+    tl.start(1, at_s=10.0)  # plays 10.0 to 13.0
+    tl.finish()
+    return tl
+
+
+def test_her_word_heard_where_she_said_it_is_hers() -> None:
+    tl = _long()
+    # "invoices" is her ninth word: said around 12.1 s, heard a little after.
+    assert matched(W("invoices", 12.1), tl)
+    assert matched(W("invoices", 12.5), tl)  # her echo, a moment late
+
+
+def test_a_word_of_hers_said_far_from_where_she_was_is_theirs_to_judge() -> None:
+    # Live: the user's own "what" or "you" over her taken for her echo because the word
+    # was somewhere in her sentence, and dropped from what they said.
+    tl = _long()
+    assert not matched(W("what", 12.4), tl)  # she said "what" at the start
+    assert not matched(W("invoices", 10.2), tl)  # she had not got there yet
+
+
+def test_an_unlearned_echo_does_not_swallow_their_words() -> None:
+    # Before her echo is learned, a word that is not hers is theirs at a normal
+    # speaking level: the page cancels her echo, so it rarely reaches the microphone.
+    tl = _tl()
+    share = EchoShare()
+    assert share.learned == 0
+    level = 0.2 * 0.6  # their voice at sixty percent of hers
+    assert whose(W("tuesday", 10.8), tl, mic(level), share=share.value, learned=0) == "theirs"
+    # A whisper at echo level is still her echo misheard.
+    assert whose(W("tuesday", 10.8), tl, mic(0.02), share=share.value, learned=0) == "hers"

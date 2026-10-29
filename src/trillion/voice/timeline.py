@@ -146,14 +146,19 @@ class Timeline:
     def at(self, t: float) -> Spoken | None:
         """The sentence playing at `t` on the recognizer's clock, margins included.
         Where margins overlap, the sentence nearest `t` wins."""
-        best: Spoken | None = None
+        found = self.placed(t)
+        return found[0] if found is not None else None
+
+    def placed(self, t: float) -> tuple[Spoken, float, float] | None:
+        """As `at`, with the sentence's start and end on the clock."""
+        best: tuple[Spoken, float, float] | None = None
         best_gap = 0.0
         for s, start, end in self._spans():
             if not start - LEAD_S <= t <= end + TAIL_S:
                 continue
             gap = max(start - t, t - end, 0.0)
             if best is None or gap < best_gap:
-                best, best_gap = s, gap
+                best, best_gap = (s, start, end), gap
         return best
 
     def her_level(self, t0: float, t1: float) -> float:
