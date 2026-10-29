@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "server-page",
+  "description": "The server's page in the main window. It may call only what is listed here: nothing yet; the desktop bridge adds its own commands.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": []
+}

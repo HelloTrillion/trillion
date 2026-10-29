@@ -1,0 +1,15 @@
+{
+  "name": "@hellotrillion/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Trillion as a Mac app: starts the server, a splash, the menu bar.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "TRILLION_BIN=$PWD/scripts/trillion-dev tauri dev",
+    "build": "tauri build --bundles app",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

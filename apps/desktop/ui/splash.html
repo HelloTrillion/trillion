@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trillion</title>
+    <style>
+      /* The splash is bundled in the app and loads before the server, so it cannot use the
+         web app's tokens.css: these mirror its values (packages/galaxy/tokens.css). */
+      :root {
+        --bg: rgb(14 15 19);
+        --text-0: rgb(240 240 236);
+        --text-1: rgb(155 155 151);
+        --surface: rgb(22 23 29);
+        --border: rgb(240 240 236 / 0.08);
+        --accent: rgb(45 212 168);
+        --accent-soft: rgb(45 212 168 / 0.35);
+        --memory: rgb(167 139 250 / 0.45);
+        --font-ui: -apple-system, BlinkMacSystemFont, system-ui, 'Helvetica Neue', Arial, sans-serif;
+        --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+        color-scheme: dark light;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: rgb(246 246 243);
+          --text-0: rgb(22 23 29);
+          --text-1: rgb(85 86 92);
+          --surface: rgb(255 255 255);
+          --border: rgb(22 23 29 / 0.1);
+          --accent: rgb(8 119 91);
+          --accent-soft: rgb(8 119 91 / 0.3);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text-0);
+        font-family: var(--font-ui);
+        -webkit-user-select: none;
+        user-select: none;
+        cursor: default;
+      }
+      main {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        padding: 24px;
+        text-align: center;
+      }
+      .orb {
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 50% 50%, var(--accent) 0%, var(--accent-soft) 45%, transparent 70%),
+          radial-gradient(circle at 62% 38%, var(--memory) 0%, transparent 55%);
+        box-shadow: 0 0 60px var(--accent-soft);
+        animation: breathe 3.2s ease-in-out infinite;
+      }
+      [data-state='failed'] .orb,
+      [data-state='stopped'] .orb,
+      [data-state='missing'] .orb,
+      [data-state='elsewhere'] .orb {
+        animation: none;
+        opacity: 0.55;
+      }
+      @keyframes breathe {
+        0%,
+        100% {
+          transform: scale(0.92);
+          opacity: 0.8;
+        }
+        50% {
+          transform: scale(1);
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .orb {
+          animation: none;
+        }
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+      }
+      p {
+        margin: 0;
+        max-width: 460px;
+        color: var(--text-1);
+        line-height: 1.45;
+      }
+      code {
+        font-family: var(--font-mono);
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      pre {
+        margin: 0;
+        width: min(720px, 100%);
+        max-height: 40vh;
+        overflow: auto;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        color: var(--text-1);
+        font: 12px/1.5 var(--font-mono);
+        text-align: left;
+        white-space: pre-wrap;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+      }
+      button {
+        font: inherit;
+        font-size: 14px;
+        padding: 8px 16px;
+        border-radius: 9999px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text-0);
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--bg);
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body data-state="starting">
+    <main>
+      <div class="orb" aria-hidden="true"></div>
+      <h1 id="title">Starting Trillion…</h1>
+      <p id="detail" hidden></p>
+      <pre id="lines" hidden></pre>
+      <div class="actions">
+        <button id="browser" type="button" hidden>Open in browser</button>
+        <button id="retry" class="primary" type="button" hidden>Retry</button>
+      </div>
+    </main>
+    <script>
+      // What each state says. The shell sends {state, port?, lines?} as `splash` events.
+      const COPY = {
+        starting: { title: 'Starting Trillion…' },
+        elsewhere: {
+          title: 'Trillion is already running from a terminal',
+          detail: 'Open it in your browser, or stop it there and retry.',
+          browser: true,
+          retry: 'Retry',
+        },
+        missing: {
+          title: "Trillion isn't installed",
+          detail: 'Install it, then retry: <code>uv tool install trillion-0.0.1-py3-none-any.whl</code>',
+          retry: 'Retry',
+        },
+        failed: { title: "Trillion couldn't start", retry: 'Retry' },
+        stopped: { title: 'Trillion stopped', retry: 'Restart' },
+      };
+      const tauri = window.__TAURI__;
+      const $ = (id) => document.getElementById(id);
+
+      function show(splash) {
+        const copy = COPY[splash.state] ?? COPY.starting;
+        document.body.dataset.state = splash.state;
+        $('title').textContent = copy.title;
+        $('detail').hidden = !copy.detail;
+        $('detail').innerHTML = copy.detail ?? '';
+        const lines = splash.lines ?? [];
+        $('lines').hidden = lines.length === 0;
+        $('lines').textContent = lines.join('\n');
+        $('browser').hidden = !copy.browser;
+        $('retry').hidden = !copy.retry;
+        $('retry').textContent = copy.retry ?? 'Retry';
+      }
+
+      $('retry').addEventListener('click', () => tauri.core.invoke('retry'));
+      $('browser').addEventListener('click', () => tauri.core.invoke('open_in_browser'));
+      tauri.event.listen('splash', (event) => show(event.payload));
+      tauri.core.invoke('splash_state').then(show);
+    </script>
+  </body>
+</html>

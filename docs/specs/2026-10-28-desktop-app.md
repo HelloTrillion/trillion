@@ -61,6 +61,8 @@ The page talks to the shell through `apps/web/src/desktop.ts`, which uses Tauri'
 
 The voice session runs in the main window's page. A hidden macOS webview may suspend the microphone, audio playback or timers. The first task is a spike: build the shell, hide the window, talk by the global shortcut, and confirm she hears, answers aloud (muted test: audio events, not sound) and can be interrupted. If hidden fails, keep the window "hidden" by moving it off-screen and out of the window list instead. If that fails too, stop and report before building the rest.
 
+**Found (2026-10-28):** hidden or off-screen, the page kept its audio running and its socket open (background throttling off), but WebKit clamped its timers to 1 s (10 ticks of a 100 ms interval in 10 s), which would make voice.ts's sentence-reached-speaker reports late. **Chosen:** the app also turns off WebKit's private hidden-page timer throttling preference (`apps/desktop/src-tauri/src/webkit.rs`, used only if this WebKit has it), which brought a hidden window back to 97 of 100 ticks, at most 106 ms apart.
+
 ## Build and CI
 
 - `apps/desktop`: `src-tauri` (Rust crate `trillion-desktop`), `ui/splash.html`, `package.json` with `@tauri-apps/cli` scripts `dev` and `build` (`--bundles app`, unsigned).

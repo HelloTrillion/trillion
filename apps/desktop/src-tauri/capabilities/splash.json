@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "splash",
+  "description": "The bundled splash: hears the start state and asks to retry or open a server started elsewhere.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-splash-state",
+    "allow-retry",
+    "allow-open-in-browser"
+  ]
+}

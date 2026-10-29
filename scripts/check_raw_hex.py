@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HEX = re.compile(r"(?<![&\w])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
 SUFFIXES = {".ts", ".tsx", ".css", ".html", ".glsl"}
-SKIP = {"node_modules", "dist", ".vite"}
+SKIP = {"node_modules", "dist", ".vite", "target"}  # target: the desktop app's Rust build output
 ALLOWED_NAME = "tokens.css"
 
 
