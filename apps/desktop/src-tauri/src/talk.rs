@@ -29,7 +29,6 @@ fn global_key(code: &str) -> bool {
         "Comma",
         "Period",
         "Slash",
-        "IntlBackslash",
         "ArrowUp",
         "ArrowDown",
         "ArrowLeft",

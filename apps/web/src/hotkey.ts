@@ -164,7 +164,7 @@ export function keycaps(h: Hotkey, mac: boolean): string[] {
 // The keys the global-shortcut plugin (Tauri's `global-hotkey` crate) knows by their
 // `KeyboardEvent.code` name. It matches names case-insensitively, so the code goes as is.
 const GLOBAL_KEY =
-  /^(Key[A-Z]|Digit\d|Numpad\d|F([1-9]|1\d|20)|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Escape|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
+  /^(Key[A-Z]|Digit\d|Numpad\d|F([1-9]|1\d|20)|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Escape|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/;
 
 /**
  * The shortcut as the desktop app registers it to work from any app, in the plugin's
