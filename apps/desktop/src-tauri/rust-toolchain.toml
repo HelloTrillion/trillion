@@ -1,0 +1,5 @@
+[toolchain]
+# The Rust this app is built and checked with, here and in CI.
+channel = "1.93.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

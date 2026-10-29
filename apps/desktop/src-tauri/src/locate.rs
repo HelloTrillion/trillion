@@ -10,6 +10,15 @@ pub const FALLBACKS: [&str; 3] = [
     "/usr/local/bin/trillion",
 ];
 
+/// What looking found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Located {
+    Found(PathBuf),
+    /// `TRILLION_BIN` names something that is not a program.
+    NotRunnable(PathBuf),
+    Missing,
+}
+
 /// `TRILLION_BIN` wins when set; else the login shell's answer, when it names an
 /// executable file; else the first executable fallback.
 pub fn locate(
@@ -17,17 +26,21 @@ pub fn locate(
     shell_answer: Option<&str>,
     home: Option<&Path>,
     is_exec: &dyn Fn(&Path) -> bool,
-) -> Option<PathBuf> {
+) -> Located {
     if let Some(bin) = env_bin.filter(|b| !b.is_empty()) {
         // Set on purpose: a wrong path is reported, not quietly replaced.
         let bin = PathBuf::from(bin);
-        return is_exec(&bin).then_some(bin);
+        return if is_exec(&bin) {
+            Located::Found(bin)
+        } else {
+            Located::NotRunnable(bin)
+        };
     }
     // `command -v` can answer with an alias or a function: only a path counts.
     if let Some(answer) = shell_answer.map(str::trim).filter(|a| a.starts_with('/')) {
         let answer = PathBuf::from(answer);
         if is_exec(&answer) {
-            return Some(answer);
+            return Located::Found(answer);
         }
     }
     FALLBACKS
@@ -37,6 +50,7 @@ pub fn locate(
             None => Some(PathBuf::from(f)),
         })
         .find(|p| is_exec(p))
+        .map_or(Located::Missing, Located::Found)
 }
 
 /// A file someone may run.
@@ -68,21 +82,24 @@ mod tests {
             Some(Path::new(HOME)),
             &exec,
         );
-        assert_eq!(found, Some(PathBuf::from("/x/trillion")));
+        assert_eq!(found, Located::Found(PathBuf::from("/x/trillion")));
     }
 
     #[test]
     fn an_env_var_naming_nothing_is_missing_not_a_fallback() {
         let exec = files(&["/opt/homebrew/bin/trillion"]);
         let found = locate(Some("/nope"), None, Some(Path::new(HOME)), &exec);
-        assert_eq!(found, None);
+        assert_eq!(found, Located::NotRunnable(PathBuf::from("/nope")));
     }
 
     #[test]
     fn an_empty_env_var_is_unset() {
         let exec = files(&["/opt/homebrew/bin/trillion"]);
         let found = locate(Some(""), None, Some(Path::new(HOME)), &exec);
-        assert_eq!(found, Some(PathBuf::from("/opt/homebrew/bin/trillion")));
+        assert_eq!(
+            found,
+            Located::Found(PathBuf::from("/opt/homebrew/bin/trillion"))
+        );
     }
 
     #[test]
@@ -94,7 +111,10 @@ mod tests {
             Some(Path::new(HOME)),
             &exec,
         );
-        assert_eq!(found, Some(PathBuf::from("/Users/u/.cargo/bin/trillion")));
+        assert_eq!(
+            found,
+            Located::Found(PathBuf::from("/Users/u/.cargo/bin/trillion"))
+        );
     }
 
     #[test]
@@ -109,7 +129,7 @@ mod tests {
             let found = locate(None, Some(answer), Some(Path::new(HOME)), &exec);
             assert_eq!(
                 found,
-                Some(PathBuf::from("/usr/local/bin/trillion")),
+                Located::Found(PathBuf::from("/usr/local/bin/trillion")),
                 "{answer}"
             );
         }
@@ -124,29 +144,32 @@ mod tests {
         ]);
         assert_eq!(
             locate(None, None, Some(Path::new(HOME)), &all),
-            Some(PathBuf::from("/Users/u/.local/bin/trillion"))
+            Located::Found(PathBuf::from("/Users/u/.local/bin/trillion"))
         );
         let two = files(&["/opt/homebrew/bin/trillion", "/usr/local/bin/trillion"]);
         assert_eq!(
             locate(None, None, Some(Path::new(HOME)), &two),
-            Some(PathBuf::from("/opt/homebrew/bin/trillion"))
+            Located::Found(PathBuf::from("/opt/homebrew/bin/trillion"))
         );
         let one = files(&["/usr/local/bin/trillion"]);
         assert_eq!(
             locate(None, None, Some(Path::new(HOME)), &one),
-            Some(PathBuf::from("/usr/local/bin/trillion"))
+            Located::Found(PathBuf::from("/usr/local/bin/trillion"))
         );
     }
 
     #[test]
     fn no_home_skips_the_home_fallback() {
         let exec = files(&["/Users/u/.local/bin/trillion"]);
-        assert_eq!(locate(None, None, None, &exec), None);
+        assert_eq!(locate(None, None, None, &exec), Located::Missing);
     }
 
     #[test]
     fn nothing_is_missing() {
         let none = files(&[]);
-        assert_eq!(locate(None, None, Some(Path::new(HOME)), &none), None);
+        assert_eq!(
+            locate(None, None, Some(Path::new(HOME)), &none),
+            Located::Missing
+        );
     }
 }

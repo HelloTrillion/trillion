@@ -26,8 +26,8 @@ the same page; the desktop adds only what a tab cannot do.
 3. Find `trillion`: `TRILLION_BIN` if set; else ask the login shell (`$SHELL -lc 'command -v trillion'`, since apps opened from the Finder do not get the shell's PATH); else `~/.local/bin/trillion`, `/opt/homebrew/bin/trillion`, `/usr/local/bin/trillion`. Not found → the splash says "Trillion isn't installed" with the install command and Retry.
 4. Pick the port: 7777, else the first free one from 7778 to 7799.
 5. Run `trillion run --no-open --port N` with `TRILLION_SESSION_TOKEN` set, the user's login-shell environment otherwise. Keep the last 40 lines of its output.
-6. Poll `GET http://127.0.0.1:N/` every 250 ms, for at most 30 s. Answered → navigate the main window to `http://127.0.0.1:N/#token=…`. The child exits or time runs out → the splash shows "Trillion couldn't start", the last lines of output, and Retry.
-7. Quit stops the child (SIGTERM, then SIGKILL after 5 s). If the child dies while running, the window shows the splash's stopped state with Restart.
+6. Poll `GET http://127.0.0.1:N/` every 250 ms, for at most 30 s. Answered → the app challenges it (`GET /api/desktop/hello?n=<nonce>`, answered with HMAC-SHA256 of the nonce under the token, only by a server given its token), so a program that took the port is never shown the token; proved → navigate the main window to `http://127.0.0.1:N/#token=…`. The child exits or time runs out → the splash shows "Trillion couldn't start", the last lines of output, and Retry.
+7. Quit stops the child's process group (SIGTERM, then SIGKILL after 5 s). If the child dies while running, the window shows the splash's stopped state with Restart. The app holds the child's input open and never writes to it; when the app goes, even by a force quit, the input closes and the server stops itself. A record of the child (no token) lets the next launch stop one that was left behind instead of taking it for D3.
 
 ## Windows and the menu bar
 

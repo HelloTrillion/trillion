@@ -146,6 +146,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --filter @hellotrillion/desktop
         working-directory: .
+      # The toolchain is pinned in src-tauri/rust-toolchain.toml; rustup installs it here.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked

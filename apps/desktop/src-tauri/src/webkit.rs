@@ -16,10 +16,21 @@ pub fn keep_timers_when_hidden(window: &WebviewWindow) {
         // SAFETY: `inner` is the live WKWebView; the setter is called only if it exists.
         unsafe {
             let wk: *mut AnyObject = webview.inner().cast();
+            if wk.is_null() {
+                return;
+            }
+            // `configuration` hands back a copy, but the copy shares the live
+            // WKPreferences object, so a change to it reaches this webview.
             let config: *mut AnyObject = msg_send![wk, configuration];
+            if config.is_null() {
+                return;
+            }
             let prefs: *mut AnyObject = msg_send![config, preferences];
+            if prefs.is_null() {
+                return;
+            }
             let known: Bool = msg_send![prefs, respondsToSelector: setter];
-            if prefs.is_null() || !known.as_bool() {
+            if !known.as_bool() {
                 eprintln!("trillion: this WebKit cannot keep timers running in a hidden window; voice reports may be up to 1 s late");
                 return;
             }
