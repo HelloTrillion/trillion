@@ -38,6 +38,7 @@ from trillion.attention import words
 from trillion.attention.settings import AttentionSettings
 from trillion.attention.store import KEEP, AttentionStore, Cursor
 from trillion.brain.types import ModelProvider, Usage
+from trillion.connectors.google.client import GoogleCallError
 from trillion.scheduler.store import Notice, ScheduleStore, https_link
 from trillion.spine.clock import Clock
 
@@ -276,8 +277,8 @@ class AttentionRunner:
             finds = await asyncio.wait_for(w.check(ctx), self._check_timeout_s)
         except Exception as e:
             # The kind only: a message could carry an email subject or an invite title.
-            logger.warning("attention %s check failed: %s", w.name, type(e).__name__)
-            await self._store.failed(self._owner, w.name, type(e).__name__)
+            logger.warning("attention %s check failed: %s", w.name, error_kind(e))
+            await self._store.failed(self._owner, w.name, error_kind(e))
             return
         by_key = {f.key: f for f in finds}
         new = await self._store.claim(
@@ -301,8 +302,8 @@ class AttentionRunner:
             notice = await asyncio.wait_for(self._tell(w, ctx, finds), self._tell_timeout_s)
         except Exception as e:
             # Its finds stay claimed: never told twice (D5), shown in Settings as lost.
-            logger.warning("attention %s telling failed: %s", w.name, type(e).__name__)
-            await self._store.failed(self._owner, w.name, type(e).__name__)
+            logger.warning("attention %s telling failed: %s", w.name, error_kind(e))
+            await self._store.failed(self._owner, w.name, error_kind(e))
             return
         if notice is None:
             return
@@ -360,6 +361,16 @@ class AttentionRunner:
             await self._spent(provider, usage)
         except Exception as e:
             logger.warning("attention usage not recorded: %s", type(e).__name__)
+
+
+def error_kind(e: BaseException) -> str:
+    """A failure as Settings words it: a Google call's own kind ("signed_out"), else
+    the class name, never a message. A group is told by its first."""
+    while isinstance(e, BaseExceptionGroup) and e.exceptions:
+        e = e.exceptions[0]
+    if isinstance(e, GoogleCallError):
+        return e.kind
+    return type(e).__name__
 
 
 def _all_stale(finds: Sequence[Find], now_ms: int) -> bool:

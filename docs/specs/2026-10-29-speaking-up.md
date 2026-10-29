@@ -257,7 +257,9 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
   "Focus is on" switches (both on), the last two each with this computer's probe
   status: "Works here", the reason it can't tell, or that it
   didn't answer (it ran out of time or was still busy; it may answer next time).
-- Each watcher's notes, with Clear; when it last checked, and its last error by kind.
+- Each watcher's notes, with Clear; when it last checked, and its last error by kind
+  (its class name, or a Google call's own kind such as `signed_out`; a group of
+  failures by its first), in plain words.
 - Recent finds (14 days): told, silent, dismissed or lost, each with its detail, with Dismiss.
 - Turning a watcher on starts it from that moment (D2): its last check and place are
   forgotten, its notes kept.

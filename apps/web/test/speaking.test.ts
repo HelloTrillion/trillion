@@ -4,6 +4,7 @@ import type { Host } from '../src/panel';
 import {
   checkText,
   createSpeaking,
+  errorKindText,
   fromMinor,
   plainWhy,
   probeText,
@@ -111,6 +112,12 @@ describe('speaking up, in words', () => {
     expect(checkText({ last_check_ms: now - 600_000, last_error: 'TimeoutError', notes: '' }, now)).toBe('Last checked 10 min ago. Last time: it took too long.');
     expect(checkText({ last_check_ms: null, last_error: null, notes: '' }, now)).toBe('Not checked yet.');
     expect(checkText({ last_check_ms: null, last_error: 'AsksFirst', notes: '' }, now)).toBe('Not checked yet. Last time: Stripe is set to ask first, so it can’t check on its own.');
+    expect(errorKindText('NotConnected')).toBe('the Google account isn’t connected');
+    expect(errorKindText('StripeError')).toBe('Stripe did not answer');
+    expect(errorKindText('signed_out')).toBe('the Google sign-in ended; connect it again');
+    expect(errorKindText('busy')).toBe('Google said too many requests; it tries again later');
+    // A kind with no words of its own is still named, never hidden.
+    expect(errorKindText('ValueError')).toBe('an error (ValueError)');
   });
 
   it('turns an amount into the currency’s minor unit, without floats', () => {

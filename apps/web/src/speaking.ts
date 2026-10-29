@@ -102,18 +102,23 @@ export function ago(ms: number): string {
   return `${Math.round(hours / 24)} days ago`;
 }
 
-// A check's failure arrives by its kind only (never a message, which could quote an email).
+// A check's failure arrives by its kind only (never a message, which could quote an
+// email): a class name, or a Google call's own kind.
 const ERROR_KINDS: Readonly<Record<string, string>> = {
   TimeoutError: 'it took too long',
-  ConnectionError: 'the service could not be reached',
-  ConnectError: 'the service could not be reached',
-  HTTPError: 'the service answered with an error',
-  HttpError: 'the service answered with an error',
-  RefreshError: 'the sign-in needs renewing',
-  PermissionError: 'it was not allowed',
+  // Calendar or Gmail is not connected, or Google sign-in is not set up.
+  NotConnected: 'the Google account isn’t connected',
   // The payments watcher: Stripe's read tool is set to ask first, so it can't run on its own.
   AsksFirst: 'Stripe is set to ask first, so it can’t check on its own',
   StripeError: 'Stripe did not answer',
+  signed_out: 'the Google sign-in ended; connect it again',
+  unreachable: 'Google could not be reached',
+  not_allowed: 'Trillion was not given that access; connect it again',
+  api_off: 'that Google API is switched off in your Google Cloud project',
+  busy: 'Google said too many requests; it tries again later',
+  refused: 'Google refused the request',
+  not_found: 'Google found nothing there',
+  failed: 'Google answered with an error',
 };
 
 export function errorKindText(kind: string): string {

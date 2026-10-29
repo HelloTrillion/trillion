@@ -18,6 +18,7 @@ from trillion.attention import runner
 from trillion.attention.runner import AttentionRunner, Find, Said, WatchContext
 from trillion.attention.settings import DEFAULT, AttentionSettings
 from trillion.brain.types import ModelProvider, ProviderError, TextBlock, Usage
+from trillion.connectors.google.client import GoogleCallError
 from trillion.delivery.door import READY, notification
 from trillion.scheduler.store import Notice
 from trillion.storage.db import connect
@@ -258,6 +259,43 @@ async def test_a_check_that_breaks_is_logged_by_its_kind_only(
         await r.tick()
     assert (await world.attention.state(OWNER, "meetings")).last_error == "ConnectionError"
     assert "ConnectionError" in caplog.text and "secret meeting" not in caplog.text
+
+
+@dataclass
+class Raising(Watcher):
+    error: BaseException = field(default_factory=Exception)
+
+    async def check(self, ctx: WatchContext) -> list[Find]:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        # A Google call says what went wrong by its own kind, which Settings words.
+        (GoogleCallError("signed_out", "sam@example.com is not signed in"), "signed_out"),
+        (GoogleCallError("busy", "too many requests"), "busy"),
+        # A group is recorded by its first, never as "ExceptionGroup".
+        (ExceptionGroup("reads", [TimeoutError(), ValueError()]), "TimeoutError"),
+        (
+            ExceptionGroup("outer", [ExceptionGroup("inner", [GoogleCallError("api_off", "x")])]),
+            "api_off",
+        ),
+    ],
+)
+async def test_a_check_that_fails_is_recorded_by_a_kind_settings_can_word(
+    world: World, caplog: pytest.LogCaptureFixture, error: BaseException, kind: str
+) -> None:
+    r = await world.runner(Raising(error=error))
+    with caplog.at_level(logging.INFO):
+        await r.tick()
+    assert (await world.attention.state(OWNER, "meetings")).last_error == kind
+    assert "sam@example.com" not in caplog.text and "ExceptionGroup" not in caplog.text
+
+
+def test_a_failures_kind() -> None:
+    assert runner.error_kind(NotImplementedError()) == "NotImplementedError"
+    assert runner.error_kind(ExceptionGroup("empty?", [KeyError()])) == "KeyError"
 
 
 async def test_a_failing_words_call_shows_the_notice_by_title_unspoken(world: World) -> None:
