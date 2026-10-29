@@ -3,6 +3,7 @@ and a watcher's line delivered after its moment is shown, not spoken (D9)."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 
@@ -10,6 +11,7 @@ import pytest
 
 from tests.delivery.test_door import DUE, FakeNotify, FakePage, add
 from tests.scheduler.conftest import FakeClock
+from trillion.delivery import door as door_module
 from trillion.delivery.door import Door, Quiet
 from trillion.scheduler.store import Notice
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -166,3 +168,26 @@ async def test_a_quiet_check_that_fails_does_not_hold_delivery(
     assert (got.spoken, got.quiet) == (True, None)  # can't tell never holds her voice
     assert "OSError" in caplog.text and "no audio service" not in caplog.text
     assert shown.shown == []
+
+
+class Hangs:
+    async def reason(self, notice: Notice, now_ms: int) -> str | None:
+        await asyncio.sleep(3600)
+        return "never"
+
+
+async def test_a_quiet_check_that_never_answers_does_not_stop_the_door(
+    store: SqliteScheduleStore, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(door_module, "QUIET_TIMEOUT_S", 0.05)
+    page = FakePage("c1")
+    d, _, _ = door(store, [page], Hangs())
+    with caplog.at_level(logging.WARNING, logger="trillion.delivery.door"):
+        await asyncio.wait_for(d.added(await heads_up(store)), 5)
+    (got,) = page.got
+    assert (got.spoken, got.quiet) == (True, None)
+    assert "TimeoutError" in caplog.text
+
+
+def test_the_quiet_check_has_a_limit() -> None:
+    assert door_module.QUIET_TIMEOUT_S == 2.5

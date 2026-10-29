@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
@@ -132,6 +132,53 @@ def test_cache_is_safe_across_threads() -> None:
     for t in threads:
         t.join()
     assert results == [True] * 1600
+
+
+def test_a_probe_runs_once_at_a_time_per_key() -> None:
+    """A second caller while one is running gets the last answer (or can't tell) and
+    starts nothing: a hung system call ties up one thread, never a pile of them."""
+    cache = probes.Cache(ttl_s=0.0)
+    started, release = threading.Event(), threading.Event()
+    count = {"n": 0}
+
+    def slow() -> probes.Answer:
+        count["n"] += 1
+        started.set()
+        release.wait(5)
+        return True
+
+    first = threading.Thread(target=lambda: cache.get(("mic", "x"), slow))
+    first.start()
+    assert started.wait(5)
+    assert cache.get(("mic", "x"), slow) is None
+    release.set()
+    first.join()
+    assert count["n"] == 1
+    # Done: the next caller runs it again (the answer expired at once here), and one
+    # who comes while that runs gets the last answer.
+    started.clear()
+    release.clear()
+    again = threading.Thread(target=lambda: cache.get(("mic", "x"), slow))
+    again.start()
+    assert started.wait(5)
+    assert cache.get(("mic", "x"), slow) is True
+    release.set()
+    again.join()
+
+
+def test_a_chain_of_commands_shares_one_deadline() -> None:
+    now = [0.0]
+    asked: list[tuple[str, float]] = []
+
+    def run_for(args: Sequence[str], timeout_s: float) -> str | None:
+        asked.append((args[0], timeout_s))
+        now[0] += 1.5  # each one takes most of the time it may
+        return None
+
+    bounded = probes.within(2.0, run_for, clock=lambda: now[0])
+    assert bounded(["pactl"]) is None and bounded(["pw-dump"]) is None
+    assert bounded(["more"]) is None
+    assert asked == [("pactl", 2.0), ("pw-dump", 0.5)]
 
 
 def test_entry_points_cache_and_never_raise(monkeypatch: pytest.MonkeyPatch) -> None:

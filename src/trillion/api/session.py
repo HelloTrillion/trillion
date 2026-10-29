@@ -411,11 +411,29 @@ class BuiltInput:
     via: Literal["voice", "text", "ask"] = "text"
 
 
+# Where a page can say it runs, in its hello. Anything else is "other".
+HOSTS = frozenset({"desktop", "chrome", "edge", "firefox", "safari", "other"})
+
+
+def page_host(raw: object) -> str:
+    """The hello's `host`, as one of `HOSTS`."""
+    name = raw.strip().lower() if isinstance(raw, str) else ""
+    return name if name in HOSTS else "other"
+
+
 class Session:
     def __init__(
-        self, rt: Runtime, send: Send, conversation_id: str, send_bytes: SendBytes | None = None
+        self,
+        rt: Runtime,
+        send: Send,
+        conversation_id: str,
+        send_bytes: SendBytes | None = None,
+        *,
+        host: str = "other",
     ) -> None:
         self._rt = rt
+        # Where the page runs (`page_host`): the quiet check's mic probe needs it.
+        self.host = page_host(host)
         self._raw_send = send
         self._raw_send_bytes = send_bytes
         # The page can silence her; then nothing is synthesized, so nothing is paid for.
@@ -551,7 +569,13 @@ class Session:
 
     @classmethod
     async def start(
-        cls, rt: Runtime, send: Send, resume: str | None, send_bytes: SendBytes | None = None
+        cls,
+        rt: Runtime,
+        send: Send,
+        resume: str | None,
+        send_bytes: SendBytes | None = None,
+        *,
+        host: str = "other",
     ) -> Session:
         resumed = bool(resume) and await rt.conversations.exists(str(resume), OWNER)
         if resumed:
@@ -561,7 +585,7 @@ class Session:
             other = rt.by_conversation.get(str(resume))
             if other is not None:
                 await other.replaced()
-        session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes)
+        session = cls(rt, send, str(resume) if resumed else uuid.uuid4().hex, send_bytes, host=host)
         shown: list[dict[str, str]] = []
         if resumed:
             loaded = await session._read()
@@ -2904,6 +2928,7 @@ class Session:
             spoken_ms=spoken[1] if spoken is not None else None,
             heard_turn=self._played,
             active_ms=self.active_ms,
+            host=self.host,
         )
 
     @contextlib.asynccontextmanager

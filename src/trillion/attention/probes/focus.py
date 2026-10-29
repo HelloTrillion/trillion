@@ -15,7 +15,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from trillion.attention.probes import CACHE, Answer, Run, guarded, run
+from trillion.attention.probes import CACHE, Answer, Run, guarded, within
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def _system() -> Answer:
     if sys.platform == "win32":
         return _windows()
     if sys.platform.startswith("linux"):
-        return _linux(run)
+        return _linux(within())
     return None
 
 

@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from trillion.attention.probes import CACHE, Answer, Run, guarded, run
+from trillion.attention.probes import CACHE, Answer, Run, guarded, within
 
 MIC_KEY = (
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
@@ -336,7 +336,7 @@ def _system(host: str) -> Answer:
     if sys.platform == "win32":
         return _windows(_WinRegistry(), host)
     if sys.platform.startswith("linux"):
-        return _linux(run, host, os.getpid())
+        return _linux(within(), host, os.getpid())
     return None
 
 

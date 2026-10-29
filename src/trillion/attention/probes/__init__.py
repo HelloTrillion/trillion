@@ -28,7 +28,7 @@ TTL_S = 10.0
 CREATE_NO_WINDOW = 0x08000000
 
 
-def run(args: Sequence[str]) -> str | None:
+def run(args: Sequence[str], timeout_s: float = TIMEOUT_S) -> str | None:
     """Run an argument list, never a shell, with the probe timeout."""
     exe = shutil.which(args[0])
     if exe is None:
@@ -42,7 +42,7 @@ def run(args: Sequence[str]) -> str | None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=TIMEOUT_S,
+            timeout=timeout_s,
             creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as e:
@@ -52,6 +52,26 @@ def run(args: Sequence[str]) -> str | None:
         logger.debug("probe command %s exited %s", args[0], done.returncode)
         return None
     return done.stdout
+
+
+def within(
+    total_s: float = TIMEOUT_S,
+    run_for: Callable[[Sequence[str], float], str | None] = run,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> Run:
+    """A `Run` whose commands share one deadline: a fallback chain (pactl, then
+    pw-dump) answers within the probe timeout, not one timeout per command."""
+    end = clock() + total_s
+
+    def bounded(args: Sequence[str]) -> str | None:
+        left = end - clock()
+        # Too little left to start a process and read it: can't tell.
+        if left < 0.05:
+            return None
+        return run_for(args, left)
+
+    return bounded
 
 
 def guarded(name: str, probe: Callable[[], Answer]) -> Answer:
@@ -65,24 +85,34 @@ def guarded(name: str, probe: Callable[[], Answer]) -> Answer:
 
 
 class Cache:
-    """Answers kept for TTL_S per key. Probes run from several threads, so it locks."""
+    """Answers kept for TTL_S per key, and one run at a time per key: a caller who comes
+    while one runs gets the last answer, or can't tell, and starts nothing, so a system
+    call that hangs ties up one thread, never a pile. Probes run from several threads,
+    so it locks."""
 
     def __init__(self, ttl_s: float = TTL_S, clock: Callable[[], float] = time.monotonic) -> None:
         self._ttl = ttl_s
         self._clock = clock
         self._lock = threading.Lock()
         self._kept: dict[tuple[str, str], tuple[float, Answer]] = {}
+        self._running: set[tuple[str, str]] = set()
 
     def get(self, key: tuple[str, str], compute: Callable[[], Answer]) -> Answer:
-        now = self._clock()
         with self._lock:
             hit = self._kept.get(key)
-        if hit is not None and now - hit[0] < self._ttl:
-            return hit[1]
-        # Computed outside the lock: a slow probe must not hold up other keys.
-        answer = compute()
-        with self._lock:
-            self._kept[key] = (self._clock(), answer)
+            if hit is not None and self._clock() - hit[0] < self._ttl:
+                return hit[1]
+            if key in self._running:
+                return hit[1] if hit is not None else None
+            self._running.add(key)
+        try:
+            # Computed outside the lock: a slow probe must not hold up other keys.
+            answer = compute()
+            with self._lock:
+                self._kept[key] = (self._clock(), answer)
+        finally:
+            with self._lock:
+                self._running.discard(key)
         return answer
 
     def clear(self) -> None:

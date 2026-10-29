@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 # A page that never reports the end of what it played stops holding notices back
 # after this long. Audio arrives faster than it plays; no reply is this long.
 PLAYBACK_GRACE_MS = 120_000
+# A quiet check runs under the door's lock: one that never answers can't tell, and
+# must not stop every delivery behind it (D11).
+QUIET_TIMEOUT_S = 2.5
 # Shown for a timed ask: her answer may quote an email, and a lock screen is public.
 READY = "Ready in Trillion"
 # The kinds that carry her words, to be shown and spoken.
@@ -59,6 +62,9 @@ class Facts:
     heard_turn: int | None
     # When the user last did something there: the live page is the latest.
     active_ms: int
+    # Where the page runs, from its hello (`desktop` or a browser family): the mic
+    # probe leaves that host's own recording out.
+    host: str = "other"
 
     def __post_init__(self) -> None:
         # A turn sent to be heard always says when, so a page that never reports
@@ -269,7 +275,7 @@ class Door:
         if _stale(n, now):
             return None
         try:
-            return await self.quiet.reason(n, now)
+            return await asyncio.wait_for(self.quiet.reason(n, now), QUIET_TIMEOUT_S)
         except Exception as e:
             logger.warning("quiet check failed for notice %s: %s", n.id, type(e).__name__)
             return None
