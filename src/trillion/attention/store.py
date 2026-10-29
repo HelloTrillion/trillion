@@ -103,16 +103,27 @@ class AttentionStore(Protocol):
 
     async def states(self, owner_id: str) -> list[WatcherState]: ...
 
+    def generation(self, owner_id: str, watcher: str) -> int:
+        """Moves on at each `reset`: a check started before one must not undo it."""
+        ...
+
     async def checked(
-        self, owner_id: str, watcher: str, now_ms: int, *, cursor: Cursor = KEEP
-    ) -> None:
+        self,
+        owner_id: str,
+        watcher: str,
+        now_ms: int,
+        *,
+        cursor: Cursor = KEEP,
+        generation: int | None = None,
+    ) -> bool:
         """A check finished: when, and the cursor it moved to (`KEEP` keeps the old one,
-        None clears it). Clears the last error."""
+        None clears it). Clears the last error. With `generation`, from before a reset,
+        it writes nothing and says False."""
         ...
 
     async def reset(self, owner_id: str, watcher: str) -> None:
         """Turned on again: no last check and no cursor, so it starts from now (D2).
-        Its notes stay."""
+        Its notes stay. A check on its way meanwhile can't put them back."""
         ...
 
     async def failed(self, owner_id: str, watcher: str, kind: str) -> None:

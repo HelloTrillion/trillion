@@ -38,7 +38,8 @@ BROWSERS = frozenset({"chrome", "edge", "firefox", "safari", "other"})
 _MIC_WHY = {
     "darwin": "needs macOS 14.2 or later",
     "win32": "Windows did not say which apps use the microphone",
-    "linux": "needs pactl or pw-dump",
+    # `pactl -f json` came with PulseAudio 16; pipewire-pulse has it too.
+    "linux": "needs pactl (PulseAudio 16 or later, or pipewire-pulse) or pw-dump",
 }
 _FOCUS_WHY = {
     "darwin": "macOS keeps Focus private from apps here",

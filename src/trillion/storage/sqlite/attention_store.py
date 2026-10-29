@@ -39,6 +39,9 @@ class SqliteAttentionStore:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
         self._lock = asyncio.Lock()
+        # Each watcher's resets in this process. In memory: a restart leaves no check
+        # on its way.
+        self._generations: dict[tuple[str, str], int] = {}
 
     @asynccontextmanager
     async def _tx(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -174,11 +177,23 @@ class SqliteAttentionStore:
         ) as cur:
             return [_state(r) for r in await cur.fetchall()]
 
+    def generation(self, owner_id: str, watcher: str) -> int:
+        return self._generations.get((owner_id, watcher), 0)
+
     async def checked(
-        self, owner_id: str, watcher: str, now_ms: int, *, cursor: Cursor = KEEP
-    ) -> None:
+        self,
+        owner_id: str,
+        watcher: str,
+        now_ms: int,
+        *,
+        cursor: Cursor = KEEP,
+        generation: int | None = None,
+    ) -> bool:
         keep = cursor is KEEP
         async with self._tx() as conn:
+            # Under the lock a reset takes too: compared and written as one.
+            if generation is not None and generation != self.generation(owner_id, watcher):
+                return False
             await conn.execute(
                 "INSERT INTO attention_state (owner_id, watcher, last_check_ms, cursor)"
                 " VALUES (?, ?, ?, ?) ON CONFLICT (owner_id, watcher) DO UPDATE SET"
@@ -187,9 +202,12 @@ class SqliteAttentionStore:
                 " last_error = NULL",
                 (owner_id, watcher, now_ms, None if keep else cursor, keep),
             )
+        return True
 
     async def reset(self, owner_id: str, watcher: str) -> None:
         async with self._tx() as conn:
+            key = (owner_id, watcher)
+            self._generations[key] = self._generations.get(key, 0) + 1
             await conn.execute(
                 "UPDATE attention_state SET last_check_ms = NULL, cursor = NULL"
                 " WHERE owner_id = ? AND watcher = ?",

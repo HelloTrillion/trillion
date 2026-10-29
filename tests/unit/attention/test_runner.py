@@ -564,3 +564,43 @@ async def test_start_marks_told_a_find_whose_notice_was_written_before_a_stop(
     await r.prepare()
     rows = {f.key: f.status for f in await world.attention.recent(OWNER, NOW)}
     assert rows == {"meeting:e1:1": "told", "meeting:old": "claimed"}
+
+
+async def test_a_check_on_its_way_when_turned_off_and_on_does_not_undo_the_reset(
+    world: World,
+) -> None:
+    gate, started = asyncio.Event(), asyncio.Event()
+
+    @dataclass
+    class Slow(Watcher):
+        async def check(self, ctx: WatchContext) -> list[Find]:
+            started.set()
+            await gate.wait()
+            ctx.cursor = "old place"
+            return [find()]
+
+    r = await world.runner(Slow())
+    await world.attention.checked(OWNER, "meetings", NOW - 60_000, cursor="older")
+    ticking = asyncio.create_task(r.tick())
+    await started.wait()
+    await world.attention.reset(OWNER, "meetings")  # turned off and on meanwhile
+    gate.set()
+    await ticking
+    s = await world.attention.state(OWNER, "meetings")
+    # It starts from the moment it was turned on (D2): no last check, no place.
+    assert (s.last_check_ms, s.cursor) == (None, None)
+    assert world.door.notices == []
+    (f,) = await world.attention.recent(OWNER, NOW)
+    assert f.status == "silent"
+
+
+async def test_a_check_from_before_a_reset_writes_nothing(world: World) -> None:
+    await world.runner()
+    store = world.attention
+    before = store.generation(OWNER, "email")
+    await store.reset(OWNER, "email")
+    assert not await store.checked(OWNER, "email", NOW, cursor="x", generation=before)
+    assert (await store.state(OWNER, "email")).last_check_ms is None
+    after = store.generation(OWNER, "email")
+    assert await store.checked(OWNER, "email", NOW, cursor="x", generation=after)
+    assert (await store.state(OWNER, "email")).cursor == "x"

@@ -229,8 +229,8 @@ meeting rule covers it too.
 
 | Probe | macOS | Windows | Linux |
 |---|---|---|---|
-| **Mic in use by another app** | CoreAudio through `ctypes`: the process list (`kAudioHardwarePropertyProcessObjectList`), and per process its pid, bundle id and whether it is recording input. macOS 14.2+; older → can't tell. No permission prompt. | The registry the privacy indicator reads, `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone` (packaged apps, and `NonPackaged` by exe path): an app with `LastUsedTimeStart` set and `LastUsedTimeStop` = 0 is recording now. `winreg`, no admin. | `pactl -f json list source-outputs` (PulseAudio, and PipeWire through `pipewire-pulse`), by `application.process.binary`; without `pactl`, `pw-dump` input streams; neither → can't tell. |
-| **Focus / Do Not Disturb** | Best effort: the Focus assertions file under `~/Library/DoNotDisturb/DB/` if this process can read it without extra permission; otherwise can't tell. | Best effort: can't tell unless a documented, readable signal is found in the spike (Task 2). | GNOME: `gsettings get org.gnome.desktop.notifications show-banners` = `false` → on. Otherwise the `Inhibited` property of `org.freedesktop.Notifications` over `gdbus`, where the desktop has it (KDE, others). Neither → can't tell. |
+| **Mic in use by another app** | CoreAudio through `ctypes`: the process list (`kAudioHardwarePropertyProcessObjectList`), and per process its pid, bundle id and whether it is recording input. macOS 14.2+; older → can't tell. No permission prompt. | The registry the privacy indicator reads, `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone` (packaged apps, and `NonPackaged` by exe path): an app with `LastUsedTimeStart` set and `LastUsedTimeStop` = 0 is recording now. `winreg`, no admin. | `pactl -f json list source-outputs` (PulseAudio 16 or later, and PipeWire through `pipewire-pulse`), by `application.process.binary`; without `pactl`, or with one too old for `-f json`, `pw-dump` input streams; neither → can't tell. |
+| **Focus / Do Not Disturb** | Best effort: the Focus assertions file under `~/Library/DoNotDisturb/DB/` if this process can read it without extra permission; otherwise can't tell. | Nothing: Windows has no documented signal a user process can read for Do Not Disturb, so it is always can't tell. | GNOME: `gsettings get org.gnome.desktop.notifications show-banners` = `false` → on. Otherwise the `Inhibited` property of `org.freedesktop.Notifications` over `gdbus`, on desktops that report Do Not Disturb there. Neither → can't tell. |
 
 Commands run as argument lists, never through a shell, with a 2 s timeout.
 
@@ -266,7 +266,8 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
   failures by its first), in plain words.
 - Recent finds (14 days): told, silent, dismissed or lost, each with its detail, with Dismiss.
 - Turning a watcher on starts it from that moment (D2): its last check and place are
-  forgotten, its notes kept.
+  forgotten, its notes kept. A check already on its way then writes no place and
+  tells nothing (its finds are kept as silent).
 - API: `GET/PUT /api/attention/settings`, `GET /api/attention/finds`,
   `POST /api/attention/finds/{key}/dismiss`, `DELETE /api/attention/notes/{watcher}`.
 
@@ -284,10 +285,10 @@ per watcher per check, and none when nothing is new.
 |---|---|---|---|---|---|
 | Watchers, dedup, notes, writing | ✓ | ✓ | ✓ | ✓ (server-side) | ✓ |
 | Quiet hours, in a meeting | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Spoken notice | ✓ | ✓ | ✓ | while a tab is open | ✓, with the floating orb (macOS app only) |
-| System notification | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` or `pw-dump` | ✓, except a call in the same browser | ✓ |
-| Focus probe | best effort | best effort | ✓ GNOME, KDE | as the OS | as the OS |
+| Spoken notice | ✓ | ✓ | ✓ | while a page is open | ✓, with the floating orb (macOS app only) |
+| System notification | ✓ `osascript` | ✓ PowerShell toast | ✓ with `notify-send` | ✓ (shown by the server) | ✓ |
+| Mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` (PulseAudio 16+ or `pipewire-pulse`) or `pw-dump` | ✓, except a call in the same browser | ✓, except a call in a WebKit app |
+| Focus probe | best effort, mostly can't tell | can't tell | ✓ GNOME, and desktops that report Do Not Disturb | as the OS | as the OS |
 
 ## Out of scope
 

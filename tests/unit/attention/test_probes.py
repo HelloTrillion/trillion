@@ -12,8 +12,9 @@ from typing import Any
 
 import pytest
 
-from trillion.attention import probes
+from trillion.attention import probes, quiet
 from trillion.attention.probes import focus, mic
+from trillion.attention.quiet import Threads
 
 
 @pytest.fixture(autouse=True)
@@ -201,18 +202,25 @@ def test_entry_points_cache_and_never_raise(monkeypatch: pytest.MonkeyPatch) -> 
 # --- the real system ---------------------------------------------------------
 
 
+# Through the quiet check's own path: a thread of its own with its time limit, so a
+# cold system service (CoreAudio on a fresh runner) reports "didn't answer", never a
+# hang or a flake.
+
+
 @pytest.mark.parametrize("host", ["desktop", "chrome", "other"])
-def test_real_mic_probe_answers_in_time(host: str) -> None:
+async def test_real_mic_probe_answers_in_time(host: str) -> None:
     start = time.monotonic()
-    answer = mic.mic_in_use(host)
-    assert answer is None or isinstance(answer, bool)
+    answer, answered = await quiet.probe_answer("mic", mic.mic_in_use, host, threads=Threads(1))
     assert time.monotonic() - start < 3.0
+    assert answer is None or isinstance(answer, bool)
+    assert answered or answer is None  # "didn't answer" says nothing
 
 
-def test_real_focus_probe_answers_in_time() -> None:
+async def test_real_focus_probe_answers_in_time() -> None:
     start = time.monotonic()
-    answer = focus.focus_on()
-    assert answer is None or isinstance(answer, bool)
+    answer, answered = await quiet.probe_answer("focus", focus.focus_on, threads=Threads(1))
     assert time.monotonic() - start < 3.0
+    assert answer is None or isinstance(answer, bool)
+    assert answered or answer is None
     if sys.platform == "win32":
         assert answer is None

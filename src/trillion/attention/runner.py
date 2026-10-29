@@ -260,6 +260,8 @@ class AttentionRunner:
             logger.error("attention %s failed: %s", w.name, type(e).__name__)
 
     async def _run(self, w: Watcher, settings: AttentionSettings, now: int) -> None:
+        # Taken first: a reset after this (turned off and on) outranks this check.
+        generation = self._store.generation(self._owner, w.name)
         state = await self._store.state(self._owner, w.name)
         ctx = WatchContext(
             owner=self._owner,
@@ -287,7 +289,15 @@ class AttentionRunner:
         # Only once what it found is claimed: a stop before this reads them again,
         # and the claim keeps any from being told twice.
         moved: Cursor = ctx.cursor if ctx.cursor != state.cursor else KEEP
-        await self._store.checked(self._owner, w.name, now, cursor=moved)
+        if not await self._store.checked(
+            self._owner, w.name, now, cursor=moved, generation=generation
+        ):
+            # Turned off and on while it read: it starts from that moment (D2), so
+            # what this read found is not told.
+            logger.info("attention %s: reset while checking", w.name)
+            if new:
+                await self._store.silent(self._owner, new)
+            return
         if not new:
             logger.info("attention %s: nothing new", w.name)
             return

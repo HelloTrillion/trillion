@@ -28,7 +28,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Speaking up: watchers, once per find, notes, her line | ✓ | ✓ | ✓ | ✓ (server-side) | ✓ |
 | Speaking up: quiet hours, in a meeting | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Speaking up: the spoken notice | ✓ | ✓ | ✓ | while a page is open | ✓, with the floating orb |
-| Speaking up: mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` or `pw-dump` | ✓, except a call in the same browser | ✓, except a call in a WebKit app |
+| Speaking up: mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` (PulseAudio 16+ or `pipewire-pulse`) or `pw-dump` | ✓, except a call in the same browser | ✓, except a call in a WebKit app |
 | Speaking up: Focus probe | best effort, mostly can't tell | can't tell | ✓ GNOME, and desktops that report Do Not Disturb | as the OS | as the OS |
 | Desktop app | ✓ unsigned dev build | not built (SUR-3c) | not built (SUR-3b) | — | — |
 
@@ -50,7 +50,7 @@ Before she speaks a notice, she asks whether another app is using the microphone
 |---|---|---|---|
 | Mic | macOS | CoreAudio's process list through `ctypes`: each process's pid, bundle id and whether it records input. No permission prompt. | macOS 14.2 or later; older says can't tell. |
 | Mic | Windows | The registry the privacy indicator reads, under `HKCU\…\CapabilityAccessManager\ConsentStore\microphone`, packaged apps and `NonPackaged` by exe path. An app with a start time and no stop time is recording now. No admin. | Only apps Windows records there. A key it can't read → can't tell. |
-| Mic | Linux | `pactl -f json list source-outputs` (PulseAudio, and PipeWire through `pipewire-pulse`), else `pw-dump`. Streams that record what is playing (monitors) or only meter the level don't count. | Neither tool → can't tell. A recording of a speaker's monitor source, told apart only by its name, is left for later. |
+| Mic | Linux | `pactl -f json list source-outputs` (PulseAudio, and PipeWire through `pipewire-pulse`), else `pw-dump`. Streams that record what is playing (monitors) or only meter the level don't count. | `pactl -f json` needs PulseAudio 16 or later, or `pipewire-pulse`; an older `pactl` falls back to `pw-dump`. Neither tool → can't tell. A recording of a speaker's monitor source, told apart only by its name, is left for later. |
 | Focus | macOS | The Focus assertions file under `~/Library/DoNotDisturb/DB/`, if this process may read it. | Recent macOS guards the folder (Full Disk Access), so it is usually can't tell. A scheduled or automatic Focus leaves no assertion and is missed. |
 | Focus | Windows | Nothing. | Windows has no documented signal a user process can read for Do Not Disturb, so it is always can't tell. |
 | Focus | Linux | `gsettings get org.gnome.desktop.notifications show-banners` (`false` is on), else the `Inhibited` property of `org.freedesktop.Notifications` over `gdbus`. | A desktop with neither → can't tell. |
