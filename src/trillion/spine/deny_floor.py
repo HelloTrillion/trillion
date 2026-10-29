@@ -65,7 +65,7 @@ def _folded_parts(p: Path) -> tuple[str, ...]:
     return tuple(fold(part) for part in p.parts)
 
 
-def _is_under(p: Path, root: Path) -> bool:
+def is_under(p: Path, root: Path) -> bool:
     """Under `root` by any spelling: for what is protected, refusing too much is safe."""
     rp, rr = _folded_parts(p), _folded_parts(root)
     return rp[: len(rr)] == rr
@@ -80,7 +80,7 @@ CASE_BLIND = sys.platform in ("darwin", "win32")
 def inside(p: Path, root: Path) -> bool:
     """Under a granted folder, comparing names the way this system's disks do."""
     if CASE_BLIND:
-        return _is_under(p, root)
+        return is_under(p, root)
     rp, rr = p.parts, root.parts
     return rp[: len(rr)] == rr
 
@@ -128,26 +128,36 @@ def canonical(p: Path) -> Path:
     return _on_disk(prefix).joinpath(*reversed(tail))
 
 
-def _spellings(p: Path) -> tuple[Path, ...]:
+def spellings(p: Path) -> tuple[Path, ...]:
+    """The path as given and, when it differs, as it is spelled on disk."""
     c = canonical(p)
     return (p,) if c == p else (p, c)
+
+
+def protected_reason(p: Path, protected_roots: tuple[Path, ...]) -> str | None:
+    """Why one spelling of a resolved path is protected wherever it is, or None. Shared
+    with the rule for folders that can never be shared, so the two never drift."""
+    if _has_stream(p):
+        return "a name with a colon in it is not allowed"
+    folded = _folded_parts(p)
+    hit = _FOLDED_SEGMENTS.intersection(folded)
+    if hit:
+        return f"the path touches a protected directory ({sorted(hit)[0]})"
+    if folded and _is_env_file(folded[-1]):
+        return "environment files are protected"
+    for root in protected_roots:
+        if any(is_under(p, r) for r in spellings(root)):
+            return "Trillion's own files are protected"
+    return None
 
 
 def _check_one(
     name: str, p: Path, policy: DenyPolicy, granted_roots: tuple[Path, ...]
 ) -> Denial | None:
-    if _has_stream(p):
-        return Denial(name, "a name with a colon in it is not allowed")
-    folded = _folded_parts(p)
-    hit = _FOLDED_SEGMENTS.intersection(folded)
-    if hit:
-        return Denial(name, f"the path touches a protected directory ({sorted(hit)[0]})")
-    if folded and _is_env_file(folded[-1]):
-        return Denial(name, "environment files are protected")
-    for root in policy.protected_roots:
-        if any(_is_under(p, r) for r in _spellings(root)):
-            return Denial(name, "Trillion's own files are protected")
-    grants = [s for g in granted_roots for s in _spellings(g.expanduser().resolve())]
+    reason = protected_reason(p, policy.protected_roots)
+    if reason is not None:
+        return Denial(name, reason)
+    grants = [s for g in granted_roots for s in spellings(g.expanduser().resolve())]
     if not any(inside(p, g) for g in grants):
         return Denial(name, "the path is outside the folders the user granted")
     return None
@@ -156,7 +166,7 @@ def _check_one(
 def refused(p: Path, granted_roots: tuple[Path, ...]) -> str | None:
     """Why a path already resolved is refused, or None. For the file tools, on the very
     path they are about to walk to, after any folder on the way may have changed."""
-    for form in _spellings(p):
+    for form in spellings(p):
         denial = _check_one("path", form, DenyPolicy.default(), granted_roots)
         if denial is not None:
             return denial.reason
@@ -186,7 +196,7 @@ def check(
         if "\x00" in raw:
             return Denial(name, "the path could not be resolved")
         try:
-            forms = _spellings(_resolve(raw))
+            forms = spellings(_resolve(raw))
         except (OSError, RuntimeError, ValueError):
             return Denial(name, "the path could not be resolved")
         # Protected wherever it is, granted folder or not (SEC-10): every form is
@@ -207,7 +217,7 @@ def check(
             return Denial(name, "the path could not be resolved")
         try:
             p = _resolve(raw)
-            forms = _spellings(p)
+            forms = spellings(p)
         except (OSError, RuntimeError, ValueError):
             return Denial(name, "the path could not be resolved")
         # Deny if EITHER the spelling asked for or the one on disk hits a rule.

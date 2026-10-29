@@ -74,3 +74,9 @@ def slack_config_path() -> Path:
 def channels_config_path() -> Path:
     """Who may talk to her on Slack and Telegram (SUR-5). Tokens are in the keychain."""
     return home() / "channels.json"
+
+
+def folders_config_path() -> Path:
+    """The folders the user shared with her, each with its access and who it is for.
+    Only `trillion.files.shares` reads or writes it (scripts/check_one_writer.py)."""
+    return home() / "folders.json"
