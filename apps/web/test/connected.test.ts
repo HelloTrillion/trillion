@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
   chatText,
   connectedSummary,
+  createConnected,
   filterCatalog,
   inkFor,
   readingTools,
@@ -109,5 +111,96 @@ describe('sourceTiles', () => {
     expect(ids(state([], all), google([]))).toEqual([]);
     expect(ids(state([], all), google(['sam@example.com']))).toEqual(['google-calendar']);
     expect(ids(state([], all), { services: {} })).toEqual([]);
+  });
+});
+
+describe('start and browse (Home)', () => {
+  beforeAll(() => {
+    Element.prototype.scrollIntoView ??= function () {};
+    globalThis.CSS ??= {} as typeof CSS;
+    CSS.escape ??= (v: string) => v;
+  });
+
+  const catalog = [
+    entry('linear', 'Linear', 'Tasks and projects'),
+    entry('notion', 'Notion', 'Docs and files'),
+    entry('stripe', 'Stripe', 'Money'),
+  ];
+  const stripe = {
+    name: 'stripe',
+    title: 'Stripe',
+    catalog: 'stripe',
+    transport: 'http',
+    runs: '',
+    status: 'connected',
+    problem: '',
+    sign_in_url: '',
+    signs_in: false,
+    signed_in: true,
+    missing: null,
+    keys: [],
+    keys_in_file: [],
+    disabled: false,
+    tools: [],
+    skipped: {},
+  };
+
+  function make() {
+    const host = Object.assign(document.createElement('div'), { open: true, showModal() {}, close() {} });
+    document.body.replaceChildren(host);
+    const api = async (_method: string, path: string) =>
+      path === '/api/mcp'
+        ? new Response(JSON.stringify({ config_path: 'mcp.json', servers: [stripe], problems: {}, catalog }), { status: 200 })
+        : new Response('{}', { status: 404 });
+    const c = createConnected(host as never, api, () => {});
+    return { host, c };
+  }
+
+  const tileOf = (host: HTMLElement, title: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>('.connected-tile')].find((t) => t.getAttribute('aria-label')?.startsWith(`${title}:`))!;
+
+  for (const [id, title] of [
+    ['linear', 'Linear'],
+    ['stripe', 'Stripe'],
+  ] as const) {
+    it(`start('${id}') opens the same view as tapping its tile`, async () => {
+      const tapped = make();
+      await tapped.c.open();
+      tileOf(tapped.host, title).click();
+      const want = tapped.host.innerHTML;
+
+      // Called just after Settings opens, before its data has come.
+      const started = make();
+      void started.c.open();
+      await started.c.start(id);
+      expect(started.host.innerHTML).toBe(want);
+    });
+  }
+
+  it('start shows the setup form for one not set up, and its card for one that is', async () => {
+    const { host, c } = make();
+    void c.open();
+    await c.start('linear');
+    expect(host.querySelector('h2')?.textContent).toBe('Linear');
+    await c.start('stripe');
+    expect(host.querySelector('h2')?.textContent).toBe('Connected tools');
+    expect(host.querySelector('[data-server="stripe"]')).not.toBeNull();
+  });
+
+  it('browse(category) shows the gallery with that kind chosen', async () => {
+    const { host, c } = make();
+    await c.open();
+    c.browse('Docs and files');
+    const pressed = [...host.querySelectorAll('.connected-chip[aria-pressed="true"]')].map((b) => b.textContent);
+    expect(pressed).toEqual(['Docs and files']);
+    const shown = [...host.querySelectorAll('.connected-tile:not(.connected-own)')].map((t) => t.querySelector('strong')?.textContent);
+    expect(shown).toEqual(['Notion']);
+  });
+
+  it('browse before the data has come chooses the kind once it does', async () => {
+    const { host, c } = make();
+    c.browse('Money');
+    await c.open();
+    expect([...host.querySelectorAll('.connected-chip[aria-pressed="true"]')].map((b) => b.textContent)).toEqual(['Money']);
   });
 });

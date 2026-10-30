@@ -301,7 +301,15 @@ export function createConnected(
   host: Host,
   api: Api,
   changed: () => void,
-): { open(): Promise<void>; reveal(key: string): void; summary(): string; load(): Promise<void>; tiles(): SourceTile[] } {
+): {
+  open(): Promise<void>;
+  reveal(key: string): void;
+  start(catalogId: string): Promise<void>;
+  browse(category: string): void;
+  summary(): string;
+  load(): Promise<void>;
+  tiles(): SourceTile[];
+} {
   let last: Connected | null = null;
   let g: GoogleState | null = null;
   let sl: SlackState | null = null;
@@ -327,7 +335,17 @@ export function createConnected(
     return entry ? mark(entry.color, entry.glyph, size, entry.id) : plainMark(size);
   };
 
-  async function load(): Promise<Connected | null> {
+  // A read under way, so a caller that needs the data waits for it rather than asking twice.
+  let loading: Promise<Connected | null> | null = null;
+
+  function load(): Promise<Connected | null> {
+    loading ??= read().finally(() => {
+      loading = null;
+    });
+    return loading;
+  }
+
+  async function read(): Promise<Connected | null> {
     try {
       const [r, rg, rs] = await Promise.all([
         api('GET', '/api/mcp'),
@@ -471,26 +489,31 @@ export function createConnected(
     return wrap;
   }
 
+  /** The card an entry already has under Your connections (its key), or null when it is not set up. */
+  function setUpAs(e: CatalogEntry, c: Connected): string | null {
+    if (e.how === 'google') {
+      const on = !!e.service && (g?.services[e.service]?.accounts.length ?? 0) > 0;
+      return on ? `google:${e.service}` : null;
+    }
+    if (e.how === 'slack' || e.how === 'telegram') return chatConnected(e.how) ? `chat:${e.how}` : null;
+    return c.servers.find((s) => s.catalog === e.id)?.name ?? null;
+  }
+
+  /** What tapping an entry's tile does, and what Home's Connect does: its card if set up, else its own setup. */
+  function act(e: CatalogEntry, c: Connected): void {
+    const key = setUpAs(e, c);
+    if (key) {
+      expanded = key;
+      drawHome();
+      form.querySelector(`[data-server="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } else if (e.how === 'google') drawGoogle(e);
+    else if (e.how === 'slack' || e.how === 'telegram') drawChat(e, e.how);
+    else drawSetup(e);
+  }
+
   function tile(e: CatalogEntry, c: Connected): HTMLElement {
-    const googleKey = e.how === 'google' && e.service ? `google:${e.service}` : '';
-    const googleOn = googleKey ? (g?.services[e.service ?? '']?.accounts.length ?? 0) > 0 : false;
-    const chat = e.how === 'slack' || e.how === 'telegram' ? e.how : null;
-    const connected = googleOn
-      ? { name: googleKey }
-      : chat
-        ? chatConnected(chat)
-          ? { name: `chat:${chat}` }
-          : undefined
-        : c.servers.find((s) => s.catalog === e.id);
-    const t = button('', 'connected-tile', () => {
-      if (connected) {
-        expanded = connected.name;
-        drawHome();
-        form.querySelector(`[data-server="${CSS.escape(connected.name)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      } else if (e.how === 'google') drawGoogle(e);
-      else if (chat) drawChat(e, chat);
-      else drawSetup(e);
-    });
+    const connected = setUpAs(e, c);
+    const t = button('', 'connected-tile', () => act(e, c));
     const words = el('span', 'connected-tile-words');
     words.append(el('strong', '', e.title), el('small', '', e.blurb));
     // Google signs in with one click only once this copy has a Google app to sign in as.
@@ -1551,6 +1574,31 @@ export function createConnected(
       window.setTimeout(() => {
         form.querySelector(`[data-server="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'center' });
       }, 300);
+    },
+    /**
+     * Home's Connect: run that entry's tile action, as a tap on it would. Called just after
+     * Settings opens, so it waits for that open (which resets the view) and for the data.
+     */
+    async start(catalogId: string) {
+      await Promise.resolve();
+      if (loading) await loading;
+      else if (!last) await load();
+      const e = byCatalog(catalogId);
+      if (!e || !last) return;
+      chatRedraw = null;
+      googleFollow = null;
+      act(e, last);
+      watch();
+    },
+    /** Home's "+N more": the gallery, showing only that kind of app. */
+    browse(cat: string) {
+      category = cat;
+      query = '';
+      expanded = '';
+      view = 'home';
+      googleFollow = null;
+      chatRedraw = null;
+      if (last) drawHome();
     },
     summary: () => connectedSummary(last),
     // The board's source tiles need the servers before Settings is ever opened.

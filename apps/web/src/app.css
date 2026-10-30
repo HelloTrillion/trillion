@@ -6335,3 +6335,581 @@ button.reminders-open {
     animation: none;
   }
 }
+
+/* ── Home (home.ts): the empty workspace's morning screen ─────────────── */
+
+.home {
+  --home-line: color-mix(in srgb, var(--color-text-0) 9%, transparent);
+  --home-soft: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  --home-shadow: rgb(0 0 0 / 0.32);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-top: 10px;
+}
+:root[data-theme='light'] .home {
+  --home-line: color-mix(in srgb, var(--color-text-0) 11%, transparent);
+  --home-shadow: rgb(22 23 29 / 0.12);
+}
+
+/* The header: the date, a big greeting, one line, and the button. */
+.home-head {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  padding: 8px 2px 4px;
+}
+/* A faint wash of her colour behind the greeting, like light from the orb. */
+.home-head::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -40px auto auto -60px;
+  width: min(520px, 90%);
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent);
+  filter: blur(8px);
+  pointer-events: none;
+}
+.home-date {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+}
+.home-hello {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 4.6cqi, 42px);
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -0.028em;
+  color: var(--color-text-0);
+  background: linear-gradient(115deg, var(--color-text-0) 35%, color-mix(in srgb, var(--color-accent) 70%, var(--color-text-0)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  overflow-wrap: anywhere;
+}
+.home-lede {
+  margin: 10px 0 0;
+  max-width: 46ch;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+.home-build,
+.home-build:hover:not(:disabled) {
+  margin-top: 18px;
+  padding: 11px 22px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-bg-0);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--color-accent) 14%, transparent),
+    0 8px 26px color-mix(in srgb, var(--color-accent) 28%, transparent);
+  transition:
+    transform var(--motion-fast),
+    box-shadow var(--motion-base),
+    opacity var(--motion-fast);
+}
+.home-build:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--color-accent) 20%, transparent),
+    0 12px 34px color-mix(in srgb, var(--color-accent) 38%, transparent);
+}
+.home-build:active:not(:disabled) {
+  transform: translateY(0);
+}
+.home-build:focus-visible {
+  outline-offset: 4px;
+}
+.home-build:disabled {
+  opacity: 0.8;
+}
+@container workspace (min-width: 600px) {
+  /* Words on the left, the button at their foot on the right. */
+  .home-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 24px;
+    align-items: end;
+  }
+  .home-date,
+  .home-hello,
+  .home-lede {
+    grid-column: 1;
+  }
+  .home-build,
+  .home-build:hover:not(:disabled) {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: end;
+    margin: 0 0 2px;
+  }
+}
+
+/* The meter: the count, a thin bar, and the one next step. */
+.home-meter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 28px;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--home-line);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+}
+.home-meter[hidden] {
+  display: none;
+}
+.home-meter-top {
+  flex: 1 1 200px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.home-meter-count {
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-0);
+}
+.home-meter-bar {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--home-soft);
+  overflow: hidden;
+}
+.home-meter-bar::-webkit-meter-bar {
+  height: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--home-soft);
+}
+.home-meter-bar::-webkit-meter-optimum-value,
+.home-meter-bar::-webkit-meter-suboptimum-value,
+.home-meter-bar::-webkit-meter-even-less-good-value {
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 55%, transparent), var(--color-accent));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+.home-meter-bar::-moz-meter-bar {
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 55%, transparent), var(--color-accent));
+}
+.home-next {
+  flex: 2 1 320px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  min-width: 0;
+}
+.home-next[hidden] {
+  display: none;
+}
+.home-next-text {
+  flex: 1 1 220px;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--color-text-1);
+}
+.home-next-done {
+  color: var(--w-good-text);
+  font-weight: 600;
+}
+
+/* The grid of tiles: one column, two from 600px of workspace, three from 960px. */
+.home-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+@container workspace (min-width: 600px) {
+  .home-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container workspace (min-width: 960px) {
+  .home-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.home-tile {
+  --brand: var(--color-accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 16px 14px;
+  box-sizing: border-box;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--home-line);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+  transition:
+    transform var(--motion-base) cubic-bezier(0.2, 0.7, 0.2, 1),
+    border-color var(--motion-base),
+    box-shadow var(--motion-base);
+}
+.home-tile:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 16px 36px var(--home-shadow);
+}
+/* Ready: the first service's own colour at the edge, stronger on hover. */
+.home-tile[data-state='ready'] {
+  border-color: color-mix(in srgb, var(--brand) 30%, var(--home-line));
+}
+.home-tile[data-state='ready']::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 18px;
+  right: 18px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brand) 80%, transparent), transparent);
+  pointer-events: none;
+}
+.home-tile[data-state='ready']:hover {
+  border-color: color-mix(in srgb, var(--brand) 62%, var(--home-line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent),
+    0 16px 36px color-mix(in srgb, var(--brand) 16%, var(--home-shadow));
+}
+
+/* Tiles arrive one after another, rising a little. */
+.home-in {
+  animation: home-rise 560ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+@keyframes home-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+.home-tile-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.home-tile-words {
+  flex: 1;
+  min-width: 0;
+}
+.home-tile-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.home-tile-what {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--color-text-1);
+}
+
+.home-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.home-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.home-badge[data-tone='ready'] {
+  background: var(--w-good-tint);
+  color: var(--w-good-text);
+}
+.home-badge[data-tone='ready']::before {
+  box-shadow: 0 0 6px currentColor;
+}
+.home-badge[data-tone='built_in'] {
+  background: var(--w-neutral-tint);
+  color: var(--color-text-1);
+}
+.home-badge[data-tone='asks_first'] {
+  background: var(--w-attention-tint);
+  color: var(--w-attention-text);
+}
+.home-badge[data-tone='connect'] {
+  border-color: var(--home-line);
+  color: var(--color-text-2);
+}
+.home-badge[data-tone='connect']::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+/* The sample: a fixed frame that fades out at its foot, never read out or reached. */
+.home-preview {
+  position: relative;
+  height: 176px;
+  margin-top: 14px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-0) 20%, transparent);
+  box-shadow: inset 0 0 0 1px var(--home-soft);
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.home-preview-frame {
+  height: 100%;
+  padding: 12px 14px 0;
+  box-sizing: border-box;
+  -webkit-mask-image: linear-gradient(to bottom, black 58%, transparent 96%);
+  mask-image: linear-gradient(to bottom, black 58%, transparent 96%);
+  transition:
+    filter var(--motion-slow),
+    opacity var(--motion-slow);
+}
+.home-sample {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-bg-0) 55%, transparent);
+  border: 1px solid var(--home-line);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+/* Locked: the sample is dimmed and drained of colour, and the connect panel sits over its foot. */
+.home-tile:is([data-state='connect'], [data-state='asks_first']) .home-preview-frame {
+  filter: grayscale(0.85) blur(0.4px);
+  opacity: 0.42;
+}
+.home-tile:is([data-state='connect'], [data-state='asks_first']):hover .home-preview-frame {
+  filter: grayscale(0.55);
+  opacity: 0.6;
+}
+
+.home-tile-foot {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin-top: 12px;
+}
+.home-tile:is([data-state='connect'], [data-state='asks_first']) .home-tile-foot {
+  margin-top: -58px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--home-line);
+  background: color-mix(in srgb, var(--color-bg-1) 72%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: 0 -10px 30px color-mix(in srgb, var(--color-bg-0) 40%, transparent);
+}
+.home-marks {
+  display: inline-flex;
+  gap: 4px;
+}
+.home-from {
+  font-size: 12.5px;
+  color: var(--color-text-1);
+}
+.home-why {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--color-text-1);
+}
+.home-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Connect buttons: the service's mark, then its name. */
+.home-connect,
+.home-connect:hover:not(:disabled),
+.home-reveal,
+.home-reveal:hover:not(:disabled),
+.home-more,
+.home-more:hover:not(:disabled),
+.home-retry,
+.home-retry:hover:not(:disabled) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;
+  border: 1px solid var(--home-line);
+  background: var(--home-soft);
+  color: var(--color-text-0);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    transform var(--motion-fast);
+}
+.home-connect .connected-mark-xs {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 9.5px;
+}
+.home-connect:hover:not(:disabled),
+.home-reveal:hover:not(:disabled),
+.home-more:hover:not(:disabled),
+.home-retry:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.home-connect:active:not(:disabled),
+.home-reveal:active:not(:disabled) {
+  transform: scale(0.98);
+}
+/* One service, one obvious button. */
+.home-connect-one,
+.home-connect-one:hover:not(:disabled),
+.home-connect-next,
+.home-connect-next:hover:not(:disabled),
+.home-reveal,
+.home-reveal:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.home-connect-one:hover:not(:disabled),
+.home-connect-next:hover:not(:disabled),
+.home-reveal:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.home-reveal,
+.home-reveal:hover:not(:disabled),
+.home-more,
+.home-more:hover:not(:disabled),
+.home-retry,
+.home-retry:hover:not(:disabled) {
+  padding: 6px 12px;
+}
+.home-more,
+.home-more:hover:not(:disabled) {
+  border-style: dashed;
+  background: transparent;
+  color: var(--color-text-1);
+}
+
+/* Waiting for the first answer: quiet tiles at their final size, so nothing jumps. */
+.home-tile-wait {
+  min-height: 300px;
+  overflow: hidden;
+}
+.home-tile-wait:hover {
+  transform: none;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+}
+.home-tile-wait::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, var(--home-soft) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: home-shimmer 1.8s ease-in-out infinite;
+}
+@keyframes home-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+
+.home-failed {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--home-line);
+  text-align: center;
+}
+.home-failed-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-1);
+}
+
+.home-foot {
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+
+/* Still, for those who asked for less motion: no entrances, no lifts, no shimmer. */
+@media (prefers-reduced-motion: reduce) {
+  .home,
+  .home *,
+  .home *::before,
+  .home *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .home-tile:hover,
+  .home-build:hover:not(:disabled) {
+    transform: none;
+  }
+}

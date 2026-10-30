@@ -245,6 +245,11 @@ export interface BoardOptions {
   readonly onRefresh?: (id: string) => void;
   /** The clock; tests set it. */
   readonly now?: () => Date;
+  /**
+   * Home (home.ts): drawn in place of the empty state when given. Called each time the empty
+   * state arrives afresh, so the caller can show Home anew.
+   */
+  readonly home?: () => HTMLElement;
 }
 
 interface Card {
@@ -454,6 +459,7 @@ export function createBoardView(opts: BoardOptions): BoardView {
   }
 
   function empty(): HTMLElement {
+    if (opts.home) return opts.home();
     const box = h('div', 'bd-empty bd-new');
     const glow = h('div', 'bd-empty-glow');
     glow.setAttribute('aria-hidden', 'true');

@@ -38,7 +38,11 @@ import {
   saveMic,
   saveTalk,
   saveTheme,
+  lastHomeDate,
+  saveHomeDate,
+  saveHomeDaily,
   savedBarge,
+  savedHomeDaily,
   savedMic,
   savedTalk,
   savedTheme,
@@ -60,6 +64,7 @@ import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
+import { createHome, localDate, shouldOpenHome } from './home';
 import { createApprovals, outcomeWords } from './approvals';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
@@ -950,7 +955,7 @@ const appearance = createAppearance(
     panel.refresh();
   },
 );
-const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh());
+const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh(), { get: savedHomeDaily, set: saveHomeDaily });
 // Shares, read and changed through the routes: Settings and the Folders panel share them.
 const shares = createShares(api);
 const routineChoices = (): Promise<Choice[]> => loadRoutines(api);
@@ -992,10 +997,45 @@ const folders = createSharedFolders(panel.host('folders'), {
     render();
   },
 });
+// Home (SUR-1a): the empty workspace's morning screen. Its buttons open Settings over it; closing
+// Settings comes back to Home (backToHome), so a tile turns ready where the user left it.
+let backToHome = false;
+// Whether the board view is showing Home rather than her widgets.
+let homeShown = false;
+// Once per page load, at the first board: whether today's first load opens Home (D2).
+let homeChecked = false;
+function fromHome(): void {
+  backToHome = workspace.showing === 'board';
+}
+const home = createHome({
+  fetchHome: () => okJson(api('GET', '/api/workspace/home')),
+  onBuild: () => void buildFromHome(),
+  onConnect: (id) => {
+    fromHome();
+    openSettings('connected');
+    void connected.start(id);
+  },
+  onBrowse: (category) => {
+    fromHome();
+    connected.browse(category);
+    openSettings('connected');
+  },
+  onReveal: (key) => {
+    fromHome();
+    connected.reveal(key);
+    openSettings('connected');
+  },
+});
 const connected = createConnected(panel.host('connected'), api, () => {
   panel.refresh();
   // A connector set up or removed puts its tile on, or takes it off, the cards that name it.
   if (workspace.showing === 'board') showBoard();
+  // And Home's tiles follow what is connected now.
+  void home.refresh();
+});
+// Back from a sign-in in another tab or the browser: Home reads the state again.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void home.refresh();
 });
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh(), openReady);
@@ -1021,7 +1061,7 @@ panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'mic
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
-panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
+panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
@@ -1217,6 +1257,41 @@ const day = createDayOpener({
 
 // A `day.open` waiting for her to finish; a newer one replaces it.
 let cancelDayOpen: () => void = () => undefined;
+
+// The day conversation Home's button opened, until its board has widgets to show.
+let homeDay: string | null = null;
+/** Home's Build my briefing, or Open today's briefing: Your day, as its row opens it (D9). */
+async function buildFromHome(): Promise<void> {
+  threads.close();
+  const result = await day.open();
+  const id = day.id;
+  if (result !== 'opened' || id === null) {
+    // Nothing is coming: the button rests again.
+    homeDay = null;
+    void home.refresh();
+    return;
+  }
+  homeDay = id;
+  // Already there (no switch, so no new board): show it now if it is built.
+  if (view.conversationId === id) homeTakesBoard();
+}
+/**
+ * The day's board, once it has widgets, replaces Home: opened again if she had put it away.
+ * Until then Home stays up while she builds it. True when this opened the board itself.
+ */
+function homeTakesBoard(): boolean {
+  if (homeDay === null) return false;
+  if (view.conversationId !== homeDay) {
+    homeDay = null;
+    return false;
+  }
+  const board = view.board;
+  if (!board || board.widgets.length === 0) return false;
+  homeDay = null;
+  if (board.open) return false;
+  openBoard();
+  return true;
+}
 
 const threads = createThreads({
   root: threadsEl,
@@ -1455,9 +1530,18 @@ function connect(): void {
     if (built) threads.markUnread(built);
     if (msg.type === 'board') {
       seen.ready();
-      onBoard();
+      if (!homeTakesBoard()) onBoard();
       seen.sync();
       day.board(view.board);
+      if (!homeChecked) {
+        homeChecked = true;
+        openHomeOnce();
+      }
+    }
+    // A build Home asked for was refused (no model, say): its button rests again.
+    if (msg.type === 'error' && homeDay !== null) {
+      homeDay = null;
+      void home.refresh();
     }
     // Her folder browser moved (or a click here did): the panel shows where it is now.
     if (msg.type === 'folders') {
@@ -1739,6 +1823,11 @@ if (kitAt) showKit(true);
 // Settings is open: then it waits behind a chip in the sidebar.
 const boardChip = $<HTMLButtonElement>('board-chip');
 const boardView = createBoardView({
+  // The empty workspace is Home, read afresh each time it arrives.
+  home: () => {
+    void home.show();
+    return home.el;
+  },
   onRemove: (id) => send({ type: 'board.remove', id }),
   onShowcase: () => openShowcase(workspace),
   onRefresh: (id) => send({ type: 'board.refresh', id }),
@@ -1763,6 +1852,8 @@ function showBoard(): void {
   boardChip.hidden = true;
   const pinned = approvals.pinned();
   approvals.strip.draw(pinned.items);
+  // Nothing to draw, so Home is drawn instead (board.ts's empty state).
+  homeShown = !(view.board?.open && view.board.widgets.length) && pinned.items.length === 0;
   // A board she put away is not drawn under an approval that opened it.
   boardView.draw(view.board?.open ? view.board : null, {
     any: pinned.items.length > 0,
@@ -1771,7 +1862,7 @@ function showBoard(): void {
     asksOff: asksOff || pinned.waiting,
   });
   // Already showing: this only changes the title; the cards were redrawn in place.
-  workspace.open(boardTitle(view.board), boardView.el, 'board');
+  workspace.open(homeShown ? 'Home' : boardTitle(view.board), boardView.el, 'board');
   showWorkspaceState();
   // Shown now: the board was opened (a redraw of a board already shown changes nothing).
   seen.sync(true);
@@ -1788,8 +1879,9 @@ function openBoard(): void {
 function onBoard(): void {
   const board = view.board;
   if (workspace.showing === 'board') {
-    // The Folders panel keeps the workspace up, over an empty board if need be.
-    if (board?.open || approvals.holds() || folderPanel.isOpen) showBoard();
+    // The Folders panel keeps the workspace up, over an empty board if need be, and Home stays
+    // up until a board opens: a reconnect or a switch does not take it away.
+    if (board?.open || approvals.holds() || folderPanel.isOpen || homeShown) showBoard();
     else workspace.close();
     return;
   }
@@ -1798,7 +1890,26 @@ function onBoard(): void {
   else showBoard();
 }
 boardChip.addEventListener('click', openBoard);
+function openHomeOnce(): void {
+  const onboarding = obDue || active(ob);
+  // The introduction comes first; Home waits for the next load.
+  if (onboarding) return;
+  const today = localDate(new Date());
+  const on = savedHomeDaily();
+  const open = shouldOpenHome(lastHomeDate(), today, on, onboarding, view.board?.open === true);
+  if (on) saveHomeDate(today);
+  // Nothing else has the stage: not a board, Settings, the sample board or the kit.
+  if (open && !workspace.isOpen && !showcaseAt && !kit) showBoard();
+}
 workspace.onClose((id, replaced) => {
+  // Settings opened from Home closed by itself: Home comes back.
+  const back = backToHome && id !== 'board' && !replaced;
+  if (id !== 'board') backToHome = false;
+  if (back) {
+    queueMicrotask(() => {
+      if (!workspace.isOpen) showBoard();
+    });
+  }
   if (id === 'board') {
     boardView.dispose();
     approvals.closed(replaced);

@@ -302,7 +302,18 @@ export function createAppearance(host: Host, current: () => Theme, choose: (t: T
 /** The core's preference: live widgets refresh while the board is open. On unless turned off. */
 export const WIDGETS_FRESH_PATH = '/api/settings/workspace';
 
-export function createBoardSettings(host: Host, api: Api, changed: () => void): { open(): Promise<void>; summary(): string } {
+/** Home's once-a-day opening, kept in this browser (prefs.ts). */
+export interface HomeDaily {
+  get(): boolean;
+  set(on: boolean): void;
+}
+
+export function createBoardSettings(
+  host: Host,
+  api: Api,
+  changed: () => void,
+  home?: HomeDaily,
+): { open(): Promise<void>; summary(): string } {
   const { finish } = section(host, 'board', 'Board', 'Widgets she builds from a connected service can keep their numbers up to date.');
   const row = el('label', 'settings-check');
   const box = el('input');
@@ -318,7 +329,26 @@ export function createBoardSettings(host: Host, api: Api, changed: () => void): 
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  finish(row, status);
+  // Beside it, the browser's own switch: the morning screen, once a day.
+  let daily: HTMLInputElement | null = null;
+  const extra: HTMLElement[] = [];
+  if (home) {
+    const homeRow = el('label', 'settings-check');
+    daily = el('input');
+    daily.type = 'checkbox';
+    daily.setAttribute('role', 'switch');
+    daily.id = 'board-home-daily';
+    const homeWords = el('span');
+    homeWords.append(
+      el('strong', '', 'Show Home when I open Trillion'),
+      el('small', '', 'The first time you open her each day, the workspace opens to Home. Kept in this browser only.'),
+    );
+    homeRow.append(daily, homeWords);
+    const box2 = daily;
+    box2.addEventListener('change', () => home.set(box2.checked));
+    extra.push(homeRow);
+  }
+  finish(row, status, ...extra);
 
   let on = true;
   const take = async (r: Response): Promise<void> => {
@@ -358,6 +388,7 @@ export function createBoardSettings(host: Host, api: Api, changed: () => void): 
       status.textContent = '';
       await load();
       box.checked = on;
+      if (daily && home) daily.checked = home.get();
       host.showModal();
     },
     summary: () => (on ? 'Kept fresh' : 'Snapshots'),
