@@ -97,7 +97,8 @@ describe('onboarding', () => {
   it('reads more of the ways people introduce themselves', () => {
     expect(nameFrom('you can call me Sam')).toBe('Sam');
     expect(nameFrom('I go by Sam')).toBe('Sam');
-    expect(nameFrom('Sam please')).toBe('Sam');
+    expect(nameFrom('Sam, please')).toBe('Sam');
+    expect(nameFrom('Sam Please')).toBe('Sam Please'); // no comma, no lead-in: could be a name
     expect(nameFrom('ok, call me Sam please.')).toBe('Sam');
     expect(nameFrom('Please')).toBe('Please'); // a name, not a filler
   });
@@ -114,7 +115,6 @@ describe('onboarding', () => {
     expect(her('you can be called Nova')).toBe('Nova');
     expect(her('be called Nova')).toBe('Nova');
     expect(her('you can be Nova')).toBe('Nova');
-    expect(her('just make it Nova')).toBe('Nova');
     expect(her('your new name is Nova')).toBe('Nova');
     expect(her('change your name to Nova')).toBe('Nova');
     expect(her('change to Nova')).toBe('Nova');
@@ -122,6 +122,7 @@ describe('onboarding', () => {
     expect(her('ok call you Nova')).toBe('Nova');
     // A name that only starts like a lead-in stays whole.
     expect(her('Make')).toBe('Make');
+    expect(her('Make It Rain')).toBe('Make It Rain');
     expect(her('Nova')).toBe('Nova');
     expect(said(run(['Sam', 'keep it']))).toContain('Trillion it stays.');
   });

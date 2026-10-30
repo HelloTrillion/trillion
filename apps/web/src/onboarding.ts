@@ -86,7 +86,6 @@ const RENAME = leadIn(
     String.raw`rename yourself(?: to)?`,
     String.raw`(?:you can )?be called`,
     String.raw`you can be`,
-    String.raw`make it`,
     String.raw`your (?:new )?name(?:'s| is)`,
     String.raw`change (?:your name )?to`,
     String.raw`let'?s go with|how about|you(?:'re| are)|go with`,
@@ -96,10 +95,12 @@ const KEEP_IT = /^(?:keep(?: it)?|same|stay|no change|default|(?:that|it|this)(?
 
 /** "I'm Sam." and "call me Sam" both mean Sam. */
 export function nameFrom(text: string, lead: RegExp = INTRO): string {
-  return text
-    .trim()
-    .replace(lead, '')
-    .replace(/[\s,]+please[.!\s]*$/i, '')
+  const said = text.trim();
+  const name = said.replace(lead, '');
+  // "Sam, please" and "call me Sam please" end in a filler; a bare "Sam Please" may be a name.
+  const please = name === said ? /\s*,\s*please[.!\s]*$/i : /[\s,]+please[.!\s]*$/i;
+  return name
+    .replace(please, '')
     .replace(/[.!,;:\s]+$/, '')
     .replace(/\s+/g, ' ');
 }
