@@ -6691,7 +6691,9 @@ button.reminders-open {
 /* The sample: a fixed frame that fades out at its foot, never read out or reached. */
 .home-preview {
   position: relative;
-  height: 176px;
+  /* At least its fixed frame, and taller in a row of taller tiles, so every foot sits at the bottom. */
+  flex: 1 0 176px;
+  min-height: 176px;
   margin-top: 14px;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg-0) 20%, transparent);
