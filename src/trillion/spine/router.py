@@ -434,14 +434,17 @@ class Router:
         if represented_from is None:
             waiting = await self._waiting(ctx, name, target, args_hash(frozen), token, now)
             if waiting is not None:
-                # A model can repeat a call in one turn. The card for it is already up:
-                # a second would leave one behind, waiting forever, once the other ran.
+                # A model can repeat a call in one turn. Its card already waits: a second
+                # would leave one behind, waiting forever, once the other ran.
                 logger.info("pending action %s proposed again for %s", waiting.id, name)
                 return RouterResponse(
                     status="confirmation_required",
                     pending_id=waiting.id,
                     summary=waiting.summary,
-                    detail="already waiting for the user's OK; the card is on their screen",
+                    detail=(
+                        "already proposed; no new card was opened, the first one is still"
+                        " waiting for the user's decision"
+                    ),
                     already_asked=True,
                 )
         action = PendingAction(
@@ -474,10 +477,17 @@ class Router:
     async def _waiting(
         self, ctx: ToolContext, tool: str, target: str, h: str, token: str | None, now: int
     ) -> PendingAction | None:
-        """The open, unexpired card in this session for exactly this call, if there is one.
-        A changed target (another precondition token) is a new proposal, not this one."""
+        """The open, unexpired card proposed this turn in this session for exactly this
+        call, if there is one. A changed target (another precondition token) is a new
+        proposal. So is a repeat on a later turn: handing back the older card would let it
+        be confirmed on the turn it was proposed again (SPN-2), so that one supersedes."""
         for a in await self._store.open_for_target(ctx.owner_id, ctx.session_id, tool, target):
-            if a.args_hash == h and a.precondition_token == token and a.expires_at > now:
+            if (
+                a.created_turn == ctx.turn
+                and a.args_hash == h
+                and a.precondition_token == token
+                and a.expires_at > now
+            ):
                 return a
         return None
 
