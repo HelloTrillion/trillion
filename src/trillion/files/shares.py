@@ -115,6 +115,47 @@ def _key(path: Path) -> str:
     return fold(str(path)) if CASE_BLIND else str(path)
 
 
+# Variation selectors 15 and 16 only choose how the character before them is drawn
+# (text or emoji); the zero-width joiner joins emoji into one ("👨‍👩‍👧").
+_PRESENTATION = frozenset("\ufe0e\ufe0f")
+_ZWJ = "\u200d"
+
+
+def _emoji(c: str) -> bool:
+    """A pictograph, or a skin tone that changes the one before it."""
+    if len(c) != 1:
+        return False
+    o = ord(c)
+    return unicodedata.category(c) == "So" or 0x1F000 <= o <= 0x1FAFF
+
+
+def hidden_marks(text: str) -> bool:
+    """Whether `text` holds a character nobody sees that could make it read as something
+    else: a direction override or isolate, a zero-width space or joiner in a word, a
+    soft hyphen, a tag or other variation selector. Emoji drawn as they should be (a
+    variation selector, a joiner between two emoji) are not hidden: they are seen."""
+    for i, c in enumerate(text):
+        if c in _PRESENTATION:
+            continue
+        if c == _ZWJ:
+            before = text[i - 1] if i > 0 else ""
+            if before in _PRESENTATION and i > 1:
+                before = text[i - 2]
+            after = text[i + 1] if i + 1 < len(text) else ""
+            if _emoji(before) and _emoji(after):
+                continue
+            return True
+        o = ord(c)
+        if (
+            unicodedata.category(c) == "Cf"
+            or o == 0x034F
+            or 0xFE00 <= o <= 0xFE0D
+            or 0xE0100 <= o <= 0xE01EF
+        ):
+            return True
+    return False
+
+
 def _clean_name(raw: str) -> str:
     name = raw.strip()
     if not name or len(name) > MAX_NAME:
@@ -124,7 +165,7 @@ def _clean_name(raw: str) -> str:
         raise ShareError("a folder's name must be one line")
     # Invisible format characters (right-to-left overrides, zero-width spaces) could
     # make one name look like another on the card.
-    if any(unicodedata.category(c) == "Cf" for c in name):
+    if hidden_marks(name):
         raise ShareError("a folder's name can't have invisible characters")
     return name
 

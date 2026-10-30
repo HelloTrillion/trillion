@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -38,6 +39,7 @@ from trillion.files.shares import (
     ShareError,
     Shares,
     WidensError,
+    hidden_marks,
     routine_scope,
     widens,
 )
@@ -53,8 +55,8 @@ from trillion.spine.contract import (
     ToolResult,
 )
 from trillion.spine.deny_floor import CASE_BLIND, fold
-from trillion.spine.neutralize import neutralize
-from trillion.spine.router import SUMMARY_LIMIT, safe_summary
+from trillion.spine.neutralize import FENCE, ROLE, neutralize
+from trillion.spine.router import SUMMARY_LIMIT
 
 CATEGORY = "files"
 BROWSE, SHARE, UNSHARE = "folders_browse", "folder_share", "folder_unshare"
@@ -87,6 +89,14 @@ _UNSHOWABLE = (
     "can't be shared from here: the user can share it in Settings, Shared folders"
 )
 _SPACED = "a folder's path can't start or end with a space: give it exactly"
+_SPACED_NAME = (
+    "that folder's name starts or ends with a space, which a card can't show plainly: "
+    "the user can share it in Settings, Shared folders"
+)
+_LOOKS_LIKE_ANOTHER = (
+    "on a card this folder's path would read as another folder's, so it can't be "
+    "shared from here: the user can share it in Settings, Shared folders"
+)
 _ACCESS = {"read": "read only", "change": "read and change"}
 # What marks a folder's path or name on a card as one thing. A part holding one could
 # seem to end early ("Docs”, read only, for everyone“"), so it is refused.
@@ -130,11 +140,44 @@ class Panel(Protocol):
 
 
 def near_home(p: Path) -> str:
-    """A folder under the home folder spelled from `~`, as the user would say it."""
-    home = Path.home()
-    if p == home or not p.is_relative_to(home):
-        return str(p)
-    return f"~{os.sep}{p.relative_to(home)}"
+    """A folder under the home folder spelled from `~`, as the user would say it. The
+    home folder as it really is counts too (`/var/home/sam` where `/home` is a link),
+    since the folders she names are resolved."""
+    given = Path.home()
+    try:
+        real = rules.resolved(given)
+    except (OSError, RuntimeError, ValueError):
+        real = given
+    for home in dict.fromkeys((given, real)):
+        if p != home and p.is_relative_to(home):
+            return f"~{os.sep}{p.relative_to(home)}"
+    return str(p)
+
+
+def _misleading(part: str) -> bool:
+    """Whether a part of the card (a path, a name, a routine's title) holds what could
+    make it read as something else: a line break or control character, a character
+    nobody sees outside an emoji, a role or fence marker, or the card's own quote marks.
+    Ordinary names pass however they are composed: "Café" in either form, "Ideas…",
+    "Brand™", "½", full-width letters, emoji."""
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in part):
+        return True
+    if hidden_marks(part) or _OPEN in part or _CLOSE in part:
+        return True
+    return ROLE.search(part) is not None or FENCE.search(part) is not None
+
+
+def _shown_as_another(real: Path) -> bool:
+    """Whether the card, as the router draws it (NFKC: "™" as "TM", "ﬁ" as "fi"), would
+    name a different folder that is there. Blocking."""
+    shown = neutralize(str(real))[0]
+    if shown == unicodedata.normalize("NFC", str(real)):
+        return False
+    try:
+        other = Path(shown)
+        return other.exists() and not os.path.samefile(other, real)
+    except (OSError, ValueError):
+        return True
 
 
 def _same(a: Path, b: Path) -> bool:
@@ -449,16 +492,15 @@ class FolderShare(_FolderTool):
         scope = EVERYONE if _everyone(said) else (routine[0] if routine else f"?{said}")
         return json.dumps({"folder": str(_real(str(args["path"]))), "scope": scope})
 
-    def _unshowable(self, args: JSON) -> str | None:
-        """Why the card could not show exactly what is approved, or None."""
-        text = self.describe(args).text
-        if len(text) > SUMMARY_LIMIT:
+    def _unshowable(self, args: JSON, real: Path) -> str | None:
+        """Why the card could not name what is approved unmistakably, or None."""
+        # Cut to what a card shows after the router makes it safe, which can lengthen it.
+        if len(neutralize(self.describe(args).text)[0]) > SUMMARY_LIMIT:
             return _TOO_LONG
-        if any(_OPEN in part or _CLOSE in part for part in self._parts(args)):
+        where, name, _access, who = self._parts(args)
+        if any(_misleading(part) for part in (str(real), where, name, who)):
             return _UNSHOWABLE
-        # The router makes the card's text safe to show; anything it would change (a
-        # line break, a direction override, an invisible character) is not shown as is.
-        return _UNSHOWABLE if safe_summary(text) != text else None
+        return None
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         shares = self._shares
@@ -467,7 +509,9 @@ class FolderShare(_FolderTool):
         # The path is used exactly as given everywhere, so the card and the share agree.
         raw = str(args["path"])
         if raw != raw.strip():
-            return Precondition.failed(_SPACED)
+            # A folder really named so is the user's to share, where they see it.
+            named = await asyncio.to_thread(Path(raw).expanduser().is_dir)
+            return Precondition.failed(_SPACED_NAME if named else _SPACED)
         if raw.lower() == THIS:
             # A safety net: the card must name the folder itself, frozen as shown.
             panel = self._panel(ctx.session_id)
@@ -499,7 +543,9 @@ class FolderShare(_FolderTool):
                 "that path leads to another folder (a link, or another spelling): call "
                 "folder_share with the folder's own path: " + quoted(str(real))
             )
-        why = self._unshowable(args)
+        why = self._unshowable(args, real)
+        if why is None and await asyncio.to_thread(_shown_as_another, real):
+            why = _LOOKS_LIKE_ANOTHER
         return Precondition.failed(why) if why is not None else Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
@@ -510,13 +556,15 @@ class FolderShare(_FolderTool):
         if scope is None:
             return _refused(why or _UNAVAILABLE)
         folder = Path(str(args["path"])).expanduser()
+        # The default name from the folder as it is on disk, as the card spelled it.
+        real = await asyncio.to_thread(_real, str(args["path"]))
         access: Access = "change" if args.get("access") == "change" else "read"
         try:
             # `expect`: still the folder the card named, or nothing is shared.
             share = await asyncio.to_thread(
                 shares.put,
                 folder,
-                name=self._name(args, folder),
+                name=self._name(args, real),
                 access=access,
                 scope=scope,
                 expect=folder,

@@ -18,7 +18,7 @@ from tests.brain.fakes import ScriptedProvider, say, use
 from tests.scheduler.conftest import schedule
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import Session
-from trillion.files import browse
+from trillion.files import browse, rules
 from trillion.files.shares import routine_scope
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import ToolCall, ToolContext, Via
@@ -454,7 +454,7 @@ async def test_a_long_path_is_cut_in_the_note() -> None:
     from trillion.tools.folders import host_note
 
     note = host_note(View(place=Path("/x") / ("a" * 400)))
-    assert len(note) < 300 and note.endswith('…"')
+    assert len(note) < 300 and note.endswith('\u2026"')
 
 
 # --- the card says exactly what is shared (I2, I3, I4) ----------------------------
@@ -493,7 +493,7 @@ async def test_a_path_through_a_link_must_name_the_folder_itself(
     assert json.dumps(str(home / "Desktop")) in r.detail
 
 
-@pytest.mark.parametrize("odd", ["Web‮site", "Web​site", "Web\nsite"])
+@pytest.mark.parametrize("odd", ["Web\u202esite", "Web\u200bsite", "Web\nsite"])
 async def test_a_folder_a_card_cant_show_as_it_is_is_refused(
     rt: Runtime, panel: Panel, home: Path, odd: str
 ) -> None:
@@ -510,7 +510,7 @@ async def test_a_folder_a_card_cant_show_as_it_is_is_refused(
 async def test_a_quote_mark_in_a_folder_name_is_refused(
     rt: Runtime, panel: Panel, home: Path
 ) -> None:
-    folder = home / "Documents" / "Docs”, read only, for everyone“"
+    folder = home / "Documents" / "Docs\u201d, read only, for everyone\u201c"
     folder.mkdir()
     r = await call(rt, "folder_share", {"path": str(folder)})
     assert r.status == "refused" and "can't show" in r.detail
@@ -523,7 +523,7 @@ async def test_a_bad_or_taken_name_fails_before_the_card(
     taxes = home / "Documents" / "Taxes"
     r = await call(rt, "folder_share", {"path": str(taxes), "name": "desk"})
     assert r.status == "refused" and "already named" in r.detail
-    r = await call(rt, "folder_share", {"path": str(taxes), "name": "Tax​es"})
+    r = await call(rt, "folder_share", {"path": str(taxes), "name": "Tax\u200bes"})
     assert r.status == "refused" and "invisible" in r.detail
     assert await rt.spine_store.list_by_status(_proposed()) == []
 
@@ -609,3 +609,87 @@ async def test_unsharing_keeps_access_it_was_not_asked_to_change(
     r = await call(rt, "folder_unshare", {"name": "Desk", "scope": "Monday revenue"})
     assert r.status == "succeeded", r
     assert rt.shares.all()[0].access == "read"  # never written back to change
+
+
+# --- ordinary names show on the card as they are (N1-N4) -------------------------
+
+
+@pytest.mark.parametrize(
+    "plain",
+    [
+        "Cafe\u0301",  # an accent kept as its own mark, as macOS keeps names
+        "Ideas\u2026",
+        "Brand\u2122",
+        "\u00bd done",
+        "\u2764\ufe0f Love",  # an emoji drawn as emoji (VS16)
+        "\U0001f468\u200d\U0001f469\u200d\U0001f467",  # one family emoji, joined
+        "\uff26ull width",
+    ],
+)
+async def test_an_ordinary_folder_name_raises_a_card(
+    rt: Runtime, panel: Panel, home: Path, plain: str
+) -> None:
+    folder = home / "Documents" / plain
+    folder.mkdir()
+    r = await call(rt, "folder_share", {"path": str(rules.resolved(folder))})
+    assert r.status == "confirmation_required", r
+
+
+async def test_a_zero_width_joiner_inside_a_word_is_still_refused(
+    rt: Runtime, panel: Panel, home: Path
+) -> None:
+    folder = home / "Documents" / "Web\u200dsite"
+    folder.mkdir()
+    r = await call(rt, "folder_share", {"path": str(folder)})
+    assert r.status == "refused"
+
+
+async def test_a_folder_the_card_would_show_as_another_is_refused(
+    rt: Runtime, panel: Panel, home: Path
+) -> None:
+    docs = home / "Documents"
+    (docs / "files").mkdir()
+    lookalike = docs / "\uff46iles"  # a full-width f is drawn as "f" on the card
+    try:
+        lookalike.mkdir()
+    except FileExistsError:
+        pytest.skip("this disk takes the two names as one")
+    r = await call(rt, "folder_share", {"path": str(lookalike), "name": "Lookalike"})
+    assert r.status == "refused"
+    assert "another folder" in r.detail
+
+
+async def test_the_default_name_is_the_folder_as_it_is_on_disk(
+    rt: Runtime, panel: Panel, home: Path
+) -> None:
+    if not (home / "DOCUMENTS").exists():
+        pytest.skip("this disk tells case apart")
+    given = home / "documents" / "taxes"
+    pid = await card(rt, panel, {"path": str(given)})
+    r = await rt.router.resolve(pid, "confirm", ctx("tap", turn=2))
+    assert r.status == "succeeded", r
+    (share,) = rt.shares.all()
+    assert share.name == "Taxes"
+
+
+def test_a_folder_under_a_home_reached_by_a_link_is_spelled_from_the_tilde(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = tmp_path / "linked-home"
+    try:
+        link.symlink_to(home, target_is_directory=True)
+    except OSError:
+        pytest.skip("this system can't make a link here")
+    monkeypatch.setenv("HOME", str(link))
+    monkeypatch.setenv("USERPROFILE", str(link))
+    assert near_home(home / "Documents") == f"~{os.sep}Documents"
+
+
+async def test_a_folder_named_with_a_space_at_the_end_points_to_settings(
+    rt: Runtime, panel: Panel, home: Path
+) -> None:
+    folder = home / "Documents" / "Spaced "
+    folder.mkdir()
+    r = await call(rt, "folder_share", {"path": str(folder)})
+    assert r.status == "refused"
+    assert "Settings, Shared folders" in r.detail

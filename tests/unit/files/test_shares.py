@@ -619,3 +619,23 @@ def test_narrowing_a_granted_share_keeps_it_this_runs(store, home):
     narrowed = store.narrow(grant.id, access="read")
     assert narrowed.run_only and narrowed.access == "read"
     assert not store.path.exists() or on_disk(store)["shares"] == []
+
+
+@pytest.mark.parametrize(
+    ("text", "hidden"),
+    [
+        ("\U0001f468\u200d\U0001f469\u200d\U0001f467", False),
+        ("\u2764\ufe0f Love", False),
+        ("\U0001f44b\U0001f3fd\u200d\u2642\ufe0f", False),
+        ("Caf\u00e9 Ideas\u2026 Brand\u2122", False),
+        ("Web\u200dsite", True),
+        ("Web\u200bsite", True),
+        ("abc\u202edef", True),
+        ("soft\u00adhyphen", True),
+        ("\u200d\U0001f468", True),
+    ],
+)
+def test_only_marks_nobody_sees_outside_emoji_are_hidden(text: str, hidden: bool) -> None:
+    from trillion.files.shares import hidden_marks
+
+    assert hidden_marks(text) is hidden
