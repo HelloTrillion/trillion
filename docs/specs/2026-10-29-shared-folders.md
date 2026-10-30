@@ -117,10 +117,13 @@ the card.
 
 ## Desktop app
 
-`apps/desktop` adds Tauri's dialog plugin and one command, `pick_folder`, that opens
-the system folder picker (`NSOpenPanel` on macOS, the common file dialog on Windows,
-the XDG portal or GTK dialog on Linux) and returns the chosen path to the page through
-the existing bridge. The page then shows the form. The picker's answer is a path the
+`apps/desktop` adds one command, `pick_folder`, that opens the system folder picker
+(`NSOpenPanel` on macOS, the common item dialog on Windows, the GTK dialog on Linux,
+which goes through the desktop portal where GTK is set up to) and returns the chosen
+path to the page through the existing bridge. It uses `rfd`, the library Tauri's
+dialog plugin is built on, directly: the plugin adds a script to every page that
+replaces `alert` and `confirm`, and on the server's page, which may not call the
+plugin, `confirm()` would always count as yes. The page then shows the form. The picker's answer is a path the
 user chose, but it goes through `POST /api/folders` and D4 like any other.
 
 ## Platforms
@@ -132,7 +135,7 @@ user chose, but it goes through `POST /api/folders` and D4 like any other.
 | Places | Home, Desktop, Documents, Downloads, `/Volumes/*` | Home, Desktop, Documents, Downloads (known folders, so a redirected Documents is found), drive letters | Home, XDG Desktop/Documents/Download (`xdg-user-dir`, falling back to the English names), `/media/<user>/*`, `/run/media/<user>/*`, `/mnt/*` | Same as the core's system |
 | Hidden folders left out | Name starts with `.`, or `UF_HIDDEN` | Hidden or system attribute | Name starts with `.` | — |
 | Names compared | Case-insensitive (as the deny floor does) | Case-insensitive | Case-sensitive | — |
-| System folder picker | `NSOpenPanel` (desktop app) | Common item dialog (desktop app) | XDG portal, GTK fallback (desktop app) | Not available: a browser never gives the page a real path, so the panel is used |
+| System folder picker | `NSOpenPanel` (desktop app) | Common item dialog (desktop app) | GTK dialog, through the portal where GTK uses it (desktop app) | Not available: a browser never gives the page a real path, so the panel is used |
 
 Under WSL the Windows home folder (`/mnt/c/Users/<user>`) is not treated as a home:
 only the Linux one is. It is a folder on a mounted drive like any other.

@@ -30,6 +30,9 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Speaking up: the spoken notice | ✓ | ✓ | ✓ | while a page is open | ✓, with the floating orb |
 | Speaking up: mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` (PulseAudio 16+ or `pipewire-pulse`) or `pw-dump` | ✓, except a call in the same browser | ✓, except a call in a WebKit app |
 | Speaking up: Focus probe | best effort, mostly can't tell | can't tell | ✓ GNOME, and desktops that report Do Not Disturb | as the OS | as the OS |
+| Shared folders: shares, the card, Settings | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Shared folders: the folder browser | ✓ | ✓ | ✓ | ✓ (drawn by the page from the server's listing) | ✓ |
+| Shared folders: the system folder picker | — | — | — | not available | ✓ `NSOpenPanel` |
 | Desktop app | ✓ unsigned dev build | not built (SUR-3c) | not built (SUR-3b) | — | — |
 
 ### The gaps, and why
@@ -39,6 +42,9 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 - **The talk shortcut in a tab** works only while the tab is in front, and never with Fn. A page hears keys only while it has focus. The desktop app makes a combination work from any app.
 - **A spoken notice needs a page.** The voice runs in the page. With no page open, the notice waits for the next page and a system notification shows instead.
 - **System notifications on Linux** need `notify-send` (libnotify). Without it none is shown, and the notice still waits for the page. A silent one asks the notification daemon for no sound with a hint; a daemon may ignore it.
+- **No system folder picker in a browser tab.** A browser never gives the page a folder's real path, so Add a folder opens the folder browser instead. The desktop app's picker (`rfd`) would be the common item dialog on Windows and the GTK dialog on Linux, but the desktop app is not built there yet.
+- **The folder browser's places differ by system** (`src/trillion/files/browse.py`): Home, Desktop, Documents and Downloads everywhere (Windows known folders, so a redirected Documents is found; on Linux `xdg-user-dir`, falling back to the English names); drives are `/Volumes/*` on macOS, drive letters with a disk on Windows, and `/media/<user>/*`, `/run/media/<user>/*` and `/mnt/*` on Linux. Hidden folders are a leading `.` everywhere, plus the hidden flag on macOS and the hidden or system attribute on Windows. Names compare without case on macOS and Windows and with case on Linux.
+- **Folders that can't be shared** are the same rule on every system (`src/trillion/files/rules.py`): a home folder, another user's home, a drive root or mount point, system folders, Trillion's data folder, `~/Library` and `AppData` (iCloud Drive, folders under `~/Library/CloudStorage` and iCloud app folders excepted), hidden and protected folders. Under WSL, `/mnt/c/Users/<user>` is a folder on a mounted drive, not a home.
 - **The desktop app on Windows and Linux** is not built. See below.
 - **The mic probe and the Focus probe** have limits on each system. See the next section.
 
