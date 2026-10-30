@@ -115,6 +115,9 @@ class RouterResponse:
     tool: str | None = None
     # The background job a "started" read runs as, so she can say which is on its way.
     job: str | None = None
+    # The same call was proposed again while its card waited: no new card. Never sent
+    # to the model; `detail` tells it.
+    already_asked: bool = False
 
     def to_model(self) -> str:
         """The JSON the model sees. Only fields that carry information."""
@@ -398,7 +401,8 @@ class Router:
         if tool.definition.risk in GATED:
             response = await self._propose(tool, call.args, ctx, represented_from=None)
             proposed = response.status == "confirmation_required"
-            return await audited(risk, response, "proposed" if proposed else "refused")
+            asked = "duplicate" if response.already_asked else "proposed"
+            return await audited(risk, response, asked if proposed else "refused")
 
         result = await self._run(tool, call.args, ctx)
         if guard is not None:
@@ -427,6 +431,19 @@ class Router:
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)
             return _refused(Refusal.PRECONDITION_FAILED, "the action could not be described")
+        if represented_from is None:
+            waiting = await self._waiting(ctx, name, target, args_hash(frozen), token, now)
+            if waiting is not None:
+                # A model can repeat a call in one turn. The card for it is already up:
+                # a second would leave one behind, waiting forever, once the other ran.
+                logger.info("pending action %s proposed again for %s", waiting.id, name)
+                return RouterResponse(
+                    status="confirmation_required",
+                    pending_id=waiting.id,
+                    summary=waiting.summary,
+                    detail="already waiting for the user's OK; the card is on their screen",
+                    already_asked=True,
+                )
         action = PendingAction(
             id=self._new_id(),
             owner_id=ctx.owner_id,
@@ -453,6 +470,16 @@ class Router:
         return RouterResponse(
             status="confirmation_required", pending_id=action.id, summary=action.summary
         )
+
+    async def _waiting(
+        self, ctx: ToolContext, tool: str, target: str, h: str, token: str | None, now: int
+    ) -> PendingAction | None:
+        """The open, unexpired card in this session for exactly this call, if there is one.
+        A changed target (another precondition token) is a new proposal, not this one."""
+        for a in await self._store.open_for_target(ctx.owner_id, ctx.session_id, tool, target):
+            if a.args_hash == h and a.precondition_token == token and a.expires_at > now:
+                return a
+        return None
 
     async def resolve(
         self, pending_id: str, decision: Literal["confirm", "cancel"], ctx: ToolContext
