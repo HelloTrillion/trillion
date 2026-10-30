@@ -119,6 +119,13 @@ def _key(path: Path) -> str:
 # (text or emoji); the zero-width joiner joins emoji into one ("👨‍👩‍👧").
 _PRESENTATION = frozenset("\ufe0e\ufe0f")
 _ZWJ = "\u200d"
+# The zero-width non-joiner keeps two letters apart, as Persian and Indic names spell
+# words with it.
+_ZWNJ = "\u200c"
+
+
+def _letter(c: str) -> bool:
+    return len(c) == 1 and unicodedata.category(c)[0] in ("L", "M")
 
 
 def _emoji(c: str) -> bool:
@@ -133,10 +140,17 @@ def hidden_marks(text: str) -> bool:
     """Whether `text` holds a character nobody sees that could make it read as something
     else: a direction override or isolate, a zero-width space or joiner in a word, a
     soft hyphen, a tag or other variation selector. Emoji drawn as they should be (a
-    variation selector, a joiner between two emoji) are not hidden: they are seen."""
+    variation selector, a joiner between two emoji) are not hidden: they are seen, and
+    so is a non-joiner between two letters, which changes how they are written."""
     for i, c in enumerate(text):
         if c in _PRESENTATION:
             continue
+        if c == _ZWNJ:
+            before = text[i - 1] if i > 0 else ""
+            after = text[i + 1] if i + 1 < len(text) else ""
+            if _letter(before) and _letter(after):
+                continue
+            return True
         if c == _ZWJ:
             before = text[i - 1] if i > 0 else ""
             if before in _PRESENTATION and i > 1:

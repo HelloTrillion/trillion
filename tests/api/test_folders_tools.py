@@ -693,3 +693,12 @@ async def test_a_folder_named_with_a_space_at_the_end_points_to_settings(
     r = await call(rt, "folder_share", {"path": str(folder)})
     assert r.status == "refused"
     assert "Settings, Shared folders" in r.detail
+
+
+async def test_a_name_with_a_non_joiner_between_letters_raises_a_card(
+    rt: Runtime, panel: Panel, home: Path
+) -> None:
+    folder = home / "Documents" / "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"
+    folder.mkdir()
+    r = await call(rt, "folder_share", {"path": str(rules.resolved(folder))})
+    assert r.status == "confirmation_required", r

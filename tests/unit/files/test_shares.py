@@ -633,6 +633,13 @@ def test_narrowing_a_granted_share_keeps_it_this_runs(store, home):
         ("abc\u202edef", True),
         ("soft\u00adhyphen", True),
         ("\u200d\U0001f468", True),
+        ("\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", False),  # Persian
+        ("\u0915\u094d\u200c\u0937", False),  # Devanagari, after a virama (a mark)
+        ("\u200cname", True),
+        ("name\u200c", True),
+        ("na\u200c\u200cme", True),
+        ("na\u200c me", True),
+        ("1\u200c2", True),
     ],
 )
 def test_only_marks_nobody_sees_outside_emoji_are_hidden(text: str, hidden: bool) -> None:
