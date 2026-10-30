@@ -168,6 +168,36 @@ describe('the board', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('draws Home in place of the empty state when given one, fresh each time it arrives', () => {
+    const made: HTMLElement[] = [];
+    const { view } = mount({
+      home: () => {
+        const el = document.createElement('div');
+        el.className = 'home';
+        made.push(el);
+        return el;
+      },
+    });
+    view.draw(null);
+    expect(view.el.querySelector('.home')).toBe(made[0]);
+    expect(view.el.querySelector('.bd-empty')).toBeNull();
+    // Still empty: Home stays as it is.
+    view.draw(board());
+    expect(made).toHaveLength(1);
+    // Widgets replace it; empty again, it arrives afresh.
+    view.draw(board(meeting));
+    expect(view.el.querySelector('.home')).toBeNull();
+    view.draw(null);
+    expect(made).toHaveLength(2);
+    expect(view.el.querySelector('.home')).toBe(made[1]);
+  });
+
+  it('keeps the old empty state without Home', () => {
+    const { view } = mount();
+    view.draw(null);
+    expect(view.el.querySelector('.bd-empty-title')?.textContent).toBe('Ask her to show you something');
+  });
+
   it('draws a widget from before blocks with an empty body, and the rest of the board', () => {
     const { view } = mount();
     const old: Widget = { id: 'old', type: 'stat', size: 'small', title: 'Spend', value: '$1,240' };
@@ -634,6 +664,24 @@ describe('Settings: Keep widgets fresh', () => {
     expect(calls.at(-1)).toEqual(['PUT', WIDGETS_FRESH_PATH, { widgets_fresh: true }]);
     expect(box?.checked).toBe(true);
     expect(s.summary()).toBe('Kept fresh');
+  });
+
+  it('has the browser\'s own switch for Home once a day, when given one', async () => {
+    const api = async () => new Response('{}', { status: 200 });
+    let on = true;
+    const h = host();
+    const s = createBoardSettings(h, api, () => {}, { get: () => on, set: (v) => void (on = v) });
+    await s.open();
+    const daily = h.querySelector<HTMLInputElement>('#board-home-daily')!;
+    expect(daily.closest('label')?.textContent).toContain('Show Home when I open Trillion');
+    expect(daily.checked).toBe(true);
+    daily.checked = false;
+    daily.dispatchEvent(new Event('change'));
+    expect(on).toBe(false);
+    // Without it, no such switch.
+    const h2 = host();
+    await createBoardSettings(h2, api, () => {}).open();
+    expect(h2.querySelector('#board-home-daily')).toBeNull();
   });
 
   it('is on when the core has nothing to say, and puts the switch back when saving fails', async () => {

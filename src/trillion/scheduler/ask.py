@@ -56,6 +56,7 @@ from trillion.storage.sqlite.conversation_store import Kind, SqliteConversationS
 from trillion.workspace import live
 from trillion.workspace.board import Board
 from trillion.workspace.board import summary as board_summary
+from trillion.workspace.home import DEFAULT, Layout
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,10 @@ def _widget_ids(board: Mapping[str, Any] | None) -> frozenset[str]:
     return frozenset(str(w.get("id")) for w in widgets if isinstance(w, Mapping))
 
 
+async def _default_layout() -> Layout:
+    return DEFAULT
+
+
 @dataclass(frozen=True, kw_only=True)
 class RoutineDeps:
     """What only a routine's run needs of the running app."""
@@ -112,6 +117,8 @@ class RoutineDeps:
     # The run's eligible reads, so a widget it puts up is kept fresh (live widgets).
     reads: live.Reads | None = None
     day_setup: Callable[[], day.SetUp] = day.SetUp
+    # Home as the user arranged it, which the day's recipe follows (the Home spec, D15).
+    home_layout: Callable[[], Awaitable[Layout]] = _default_layout
     # Whether a page open on a conversation is taking input or running a turn there.
     busy: Callable[[str], bool] = lambda conversation_id: False
     # Tells a page open on a conversation that a run changed it.
@@ -223,7 +230,12 @@ class Asker:
             if schedule.target == "day":
                 date = day.today(self._clock(), self._zone())
                 recipe = day.recipe(
-                    r.day_setup(), date, self._zone() or "", self._identity(), routine=True
+                    r.day_setup(),
+                    date,
+                    self._zone() or "",
+                    self._identity(),
+                    routine=True,
+                    layout=await r.home_layout(),
                 )
             run = _Run(self, schedule, conversation_id, target=conversation_id)
             try:

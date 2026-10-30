@@ -783,6 +783,33 @@ _READABLE = ("text/", "application/json", "application/xml", "application/csv")
 MAX_FILE = 2_000_000
 
 
+def _quoted(text: str) -> str:
+    """A Drive query string literal: backslashes and quotes escaped."""
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def drive_query(args: JSON) -> str:
+    """The Drive `q` for drive_search: words, a time it changed after, or both. A date
+    with no time is that day's start in UTC; a time must carry its offset."""
+    words = str(args.get("words") or "").strip()
+    since = str(args.get("changed_since") or "").strip()
+    if not words and not since:
+        raise _Problem("give words to search for, changed_since, or both")
+    parts = []
+    if words:
+        w = _quoted(words)
+        parts.append(f"(name contains {w} or fullText contains {w})")
+    if since:
+        when = _when(since, "changed_since")
+        moment = (
+            datetime.fromisoformat(when["dateTime"]).astimezone(UTC)
+            if "dateTime" in when
+            else datetime.fromisoformat(when["date"]).replace(tzinfo=UTC)
+        )
+        parts.append(f"modifiedTime > '{moment:%Y-%m-%dT%H:%M:%SZ}'")
+    return " and ".join([*parts, "trashed = false"])
+
+
 class DriveSearch(GoogleTool):
     service = "drive"
     remote = "search files"
@@ -794,32 +821,30 @@ class DriveSearch(GoogleTool):
     def blurb(self) -> str:
         return (
             "Search the Google Drive files the user chose to share with you, by words in"
-            " their name or text. You can see only files they picked, never the rest of"
-            " their Drive; if the one they mean is not found, ask them to add it in"
-            " Settings → Connected tools → Google Drive → Choose files. Returns each file's"
-            " id (for drive_read), name, kind, owner and when it changed."
+            " their name or text, by when they changed (changed_since: a date, or a date and"
+            " time with its offset; newest first), or both. You can see only files they"
+            " picked, never the rest of their Drive; if the one they mean is not found, ask"
+            " them to add it in Settings → Connected tools → Google Drive → Choose files."
+            " Returns each file's id (for drive_read), name, kind, owner and when it changed."
         )
 
     def properties(self) -> dict[str, Any]:
         return {
             "words": {"type": "string", "maxLength": 200},
+            "changed_since": {"type": "string", "maxLength": 40},
             "max": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS},
         }
 
-    def required(self) -> Sequence[str]:
-        return ("words",)
-
     async def run(self, account: str, args: JSON) -> str:
-        words = str(args["words"]).replace("\\", "\\\\").replace("'", "\\'")
         found = await self.call(
             account,
             "GET",
             "/drive/v3/files",
             params={
-                "q": f"(name contains '{words}' or fullText contains '{words}')"
-                " and trashed = false",
+                "q": drive_query(args),
                 "pageSize": int(args.get("max", 10)),
                 "fields": "files(id,name,mimeType,modifiedTime,owners(displayName))",
+                # Newest first, so "what changed since" reads from the top.
                 "orderBy": "modifiedTime desc",
             },
         )

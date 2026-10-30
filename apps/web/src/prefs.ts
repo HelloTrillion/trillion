@@ -95,3 +95,16 @@ const BARGE_KEY = 'trillion-barge';
 export const savedBarge = (): boolean => get(BARGE_KEY) !== 'off';
 
 export const saveBarge = (on: boolean): void => set(BARGE_KEY, on ? 'on' : 'off');
+
+const HOME_KEY = 'trillion-home-daily';
+const HOME_DATE_KEY = 'trillion-home-date';
+
+/** Whether the first load of each day opens the workspace to Home (D2). On unless turned off. */
+export const savedHomeDaily = (): boolean => get(HOME_KEY) !== 'off';
+
+export const saveHomeDaily = (on: boolean): void => set(HOME_KEY, on ? 'on' : 'off');
+
+/** The local date Home last opened by itself on, or null. */
+export const lastHomeDate = (): string | null => get(HOME_DATE_KEY);
+
+export const saveHomeDate = (date: string): void => set(HOME_DATE_KEY, date);

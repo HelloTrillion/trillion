@@ -26,6 +26,7 @@ from trillion.scheduler.runner import AskFailed, Busy
 from trillion.scheduler.store import Schedule
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import JSON, Risk
+from trillion.workspace.home import Layout, clean
 
 NY = "America/New_York"
 KPIS = {
@@ -449,3 +450,21 @@ async def test_a_timed_ask_reaches_everyones_shares_only(rt: Runtime, tmp_path: 
     (_, sent) = provider.calls[-1]
     results = [b.content for m in sent for b in m.blocks if isinstance(b, ToolResultBlock)]
     assert "outside the folders" in results[0] and "in Mine" not in results[0]
+
+
+async def test_a_day_routine_follows_homes_layout(rt: Runtime) -> None:
+    provider = Recording(show(NOTE), say("A quiet day."))
+    gone = clean({"removed": ["tasks", "kpis"]})
+
+    async def layout() -> Layout:
+        return gone
+
+    a = asker(rt, provider, home_layout=layout)
+    s = routine(target="day", title="Build my day", body="build my day")
+    target = await a.place(s)
+    assert target is not None
+    await a.build(s, target)
+    history = await rt.conversations.history(target, "local")
+    (text,) = [b.text for b in history[0][1].blocks if isinstance(b, TextBlock)]
+    assert "Leave off: Reminders (tasks), Revenue (kpis)." in text
+    assert "schedule_list" not in text

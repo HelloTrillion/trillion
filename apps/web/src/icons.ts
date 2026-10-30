@@ -26,6 +26,9 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   // A turning arrow: fetch a live widget's numbers again now.
   refresh: ['M19.5 12a7.5 7.5 0 1 1-2.2-5.3', 'M19.5 4.5V8H16'],
   close: ['M6.5 6.5l11 11M17.5 6.5l-11 11'],
+  plus: ['M12 5.5v13M5.5 12h13'],
+  // Six dots: a handle to drag by.
+  grip: ['M8 9h.01M12 9h.01M16 9h.01M8 15h.01M12 15h.01M16 15h.01'],
   menu: ['M4 7h16M4 12h16M4 17h16'],
   // A window with a panel down its left side: show or hide the sidebar.
   sidebar: ['M3.5 5.5h17v13h-17z', 'M9.5 5.5v13'],

@@ -1218,7 +1218,9 @@ class Session:
             self._via = "ask"
             self.active_ms = now
             self._arrived = self._starting("tap")
-            text = day.recipe(rt.day_setup(), date, zone or "", rt.identity)
+            text = day.recipe(
+                rt.day_setup(), date, zone or "", rt.identity, layout=await rt.home_layout()
+            )
             built = await self._build_input("tap", text, marker=DAY_BUILD)
             await self._commit_input("tap", built)
             # Only once it is saved: a build that failed to save can be asked for again.

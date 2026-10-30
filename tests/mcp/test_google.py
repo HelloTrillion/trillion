@@ -372,6 +372,49 @@ async def test_a_google_doc_is_read_as_text(spine: Spine, google: GoogleConnecti
     assert "The plan, as text." in (await spine.call("drive_read", {"file_id": "f1"})).to_model()
 
 
+def test_the_drive_query_from_words_a_time_or_both() -> None:
+    from trillion.connectors.google.tools import _Problem, drive_query
+
+    assert drive_query({"words": "plan"}) == (
+        "(name contains 'plan' or fullText contains 'plan') and trashed = false"
+    )
+    # Quotes and backslashes cannot end the string early.
+    assert drive_query({"words": "Sam's \\ plan"}) == (
+        "(name contains 'Sam\\'s \\\\ plan' or fullText contains 'Sam\\'s \\\\ plan')"
+        " and trashed = false"
+    )
+    assert drive_query({"changed_since": "2026-10-29"}) == (
+        "modifiedTime > '2026-10-29T00:00:00Z' and trashed = false"
+    )
+    assert drive_query({"changed_since": "2026-10-29T09:30:00-07:00", "words": "plan"}) == (
+        "(name contains 'plan' or fullText contains 'plan')"
+        " and modifiedTime > '2026-10-29T16:30:00Z' and trashed = false"
+    )
+    for bad in (
+        {},
+        {"words": "  "},
+        {"changed_since": "yesterday"},
+        {"changed_since": "2026-10-29T09:30:00"},
+        {"changed_since": "2026-10-29' or trashed = true or '"},
+    ):
+        with pytest.raises(_Problem):
+            drive_query(bad)
+
+
+async def test_drive_search_by_time_alone(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "drive")
+    google.set_free({"drive_search": "read"})
+    r = await spine.call("drive_search", {"changed_since": "2026-10-29"})
+    assert r.status == "succeeded"
+    params = next(c for c in fake.calls if c[1].endswith("/files"))[2]
+    assert params["q"] == "modifiedTime > '2026-10-29T00:00:00Z' and trashed = false"
+    assert params["orderBy"] == "modifiedTime desc"
+    nothing = await spine.call("drive_search", {})
+    assert nothing.status in ("refused", "failed")
+
+
 async def test_an_expired_token_is_refreshed_quietly(
     spine: Spine, google: GoogleConnection, fake: FakeGoogle
 ) -> None:

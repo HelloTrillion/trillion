@@ -72,6 +72,8 @@ from trillion.tools.folders import BROWSE as FOLDERS_BROWSE
 from trillion.tools.folders import SHARE as FOLDER_SHARE
 from trillion.tools.folders import UNSHARE as FOLDER_UNSHARE
 from trillion.tools.folders import FoldersBrowse, FolderShare, FolderUnshare, Look
+from trillion.tools.home import ARRANGE as HOME_ARRANGE
+from trillion.tools.home import HomeArrange
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
@@ -116,6 +118,8 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
+from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
+from trillion.workspace.home import HOME_LAYOUT_PREF, Layout, clean
 from trillion.workspace.live import Reads
 from trillion.workspace.packs import told
 from trillion.workspace.refresh import Refresher
@@ -339,6 +343,9 @@ class Runtime:
     _told: list[str] | None = None
     # When each day conversation was last asked to build its board (epoch ms).
     day_built: dict[str, int] = field(default_factory=dict)
+    # Held while Home's layout is read, changed and saved, so the page and her tool
+    # never write over each other's change.
+    _arranging: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def granted_roots(self) -> tuple[Path, ...]:
@@ -441,6 +448,11 @@ class Runtime:
                 " once, the board is kept with the conversation, and they are only there"
                 " while the user has the page open"
             ),
+            "home": (
+                "Home is the morning screen of the nine widgets a briefing can hold;"
+                " home_arrange reorders them, takes one off or adds it back at once, and"
+                " the user can undo it there. Your day leaves off what is off Home"
+            ),
             "talking on slack or telegram": (
                 "the user can let people message you on Slack or Telegram; there you only"
                 " answer, with no tools, and only people the user allowed"
@@ -467,6 +479,34 @@ class Runtime:
                 loop.call_soon_threadsafe(start)
 
         return tell
+
+    async def home_layout(self) -> Layout:
+        """Home as the user arranged it (the Home spec, D13), cleaned as it is read. A
+        record that is not JSON at all is the default: Home never fails to draw."""
+        try:
+            return clean(await self.preferences.get(OWNER, HOME_LAYOUT_PREF))
+        except ValueError:
+            logger.warning("Home's saved layout could not be read; using the default")
+            return DEFAULT_LAYOUT
+
+    async def arrange_home(
+        self, change: Callable[[Layout], Layout], *, by: str | None = None
+    ) -> tuple[Layout, bool]:
+        """The one writer of Home's layout: `change` maps the saved layout to the new
+        one. Saved and every open page told (`home` frame, with `by` when she made it)
+        only when it changed. Answers the layout and whether it changed."""
+        async with self._arranging:
+            was = await self.home_layout()
+            now = change(was)
+            if now == was:
+                return now, False
+            await self.preferences.put(OWNER, HOME_LAYOUT_PREF, now.to_json(), self.clock())
+        for session in list(self.sessions):
+            if by is None:
+                await session.send("home")
+            else:
+                await session.send("home", by=by)
+        return now, True
 
     async def send_board(self, conversation_id: str, board: Board | None) -> None:
         """Every page open on this conversation draws the board as it now is."""
@@ -630,6 +670,11 @@ class Runtime:
             ),
             ("gmail", DAY_READS["gmail"], bool(saved and saved.with_service("gmail"))),
             ("slack", DAY_READS["slack"], self.slack is not None and bool(self.slack.token())),
+            (
+                "google-drive",
+                DAY_READS["google-drive"],
+                bool(saved and saved.with_service("drive")),
+            ),
         ):
             if on:
                 readable[source] = all(self._reads_freely(t) for t in tools)
@@ -638,12 +683,15 @@ class Runtime:
         for s in states:
             # A server whose tools are not known yet (starting, or down) is left out.
             if s.config.catalog and not s.config.disabled and s.tools:
-                readable[s.config.catalog] = any(self._reads_freely(t.name) for t in s.tools)
+                # Two servers for one entry: it is readable if either one is.
+                free = any(self._reads_freely(t.name) for t in s.tools)
+                readable[s.config.catalog] = readable.get(s.config.catalog, False) or free
                 catalog.append(s.config.catalog)
         return SetUp(
             calendar=readable.get("google-calendar", False),
             gmail=readable.get("gmail", False),
             slack=readable.get("slack", False),
+            drive=readable.get("google-drive", False),
             catalog=frozenset(c for c in catalog if readable[c]),
             asks_first=tuple(dict.fromkeys(i for i, ok in readable.items() if not ok)),
         )
@@ -934,6 +982,7 @@ async def open_runtime(
             boards=lambda: rt.boards,
             reads=rt.reads,
             day_setup=rt.day_setup,
+            home_layout=rt.home_layout,
             busy=rt.page_writing,
             ran=rt.routine_ran,
             holds=rt.routine_holds,
@@ -1020,6 +1069,9 @@ async def open_runtime(
     day_tool = registry.get(DAY_OPEN)
     if isinstance(day_tool, DayOpen):
         day_tool.bind(rt.open_day, OWNER)
+    home_tool = registry.get(HOME_ARRANGE)
+    if isinstance(home_tool, HomeArrange):
+        home_tool.bind(rt.home_layout, rt.arrange_home, OWNER)
     for name in (KEEP, DROP, NEVER, LIST_RULES):
         rule_tool = registry.get(name)
         if isinstance(rule_tool, RuleKeep | RuleDrop | RuleNever | RuleList):

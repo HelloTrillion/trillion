@@ -168,6 +168,17 @@ class SqliteConversationStore:
             raise RuntimeError("the day conversation was neither found nor made")
         return str(row["id"]), created
 
+    async def find_day(self, owner_id: str, day: str) -> str | None:
+        """The day conversation for a date, or None: unlike `day_conversation`, it
+        never makes one, so only looking leaves no empty day behind."""
+        async with self._conn.execute(
+            "SELECT id FROM conversations"
+            " WHERE owner_id = ? AND kind = 'day' AND day = ? AND deleted_at IS NULL",
+            (owner_id, day),
+        ) as c:
+            row = await c.fetchone()
+        return str(row["id"]) if row is not None else None
+
     async def routine_conversation(self, owner_id: str, title: str, now_ms: int) -> str:
         """A new conversation of a routine's own, titled with its name. The title is
         saved as the user's, so her naming never replaces it."""

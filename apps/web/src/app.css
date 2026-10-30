@@ -6335,3 +6335,965 @@ button.reminders-open {
     animation: none;
   }
 }
+
+/* ── Home (home.ts): the empty workspace's morning screen ─────────────── */
+
+.home {
+  --home-line: color-mix(in srgb, var(--color-text-0) 9%, transparent);
+  --home-soft: color-mix(in srgb, var(--color-text-0) 5%, transparent);
+  --home-shadow: rgb(0 0 0 / 0.32);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-top: 10px;
+}
+:root[data-theme='light'] .home {
+  --home-line: color-mix(in srgb, var(--color-text-0) 11%, transparent);
+  --home-shadow: rgb(22 23 29 / 0.12);
+}
+
+/* The header: the date, a big greeting, one line, and the button. */
+.home-head {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  padding: 8px 2px 4px;
+}
+/* A faint wash of her colour behind the greeting, like light from the orb. */
+.home-head::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -40px auto auto -60px;
+  width: min(520px, 90%);
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent);
+  filter: blur(8px);
+  pointer-events: none;
+}
+.home-date {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+}
+.home-hello {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 4.6cqi, 42px);
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -0.028em;
+  color: var(--color-text-0);
+  background: linear-gradient(115deg, var(--color-text-0) 35%, color-mix(in srgb, var(--color-accent) 70%, var(--color-text-0)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  overflow-wrap: anywhere;
+}
+.home-lede {
+  margin: 10px 0 0;
+  max-width: 46ch;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+.home-build,
+.home-build:hover:not(:disabled) {
+  margin-top: 18px;
+  padding: 11px 22px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-bg-0);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--color-accent) 14%, transparent),
+    0 8px 26px color-mix(in srgb, var(--color-accent) 28%, transparent);
+  transition:
+    transform var(--motion-fast),
+    box-shadow var(--motion-base),
+    opacity var(--motion-fast);
+}
+.home-build:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--color-accent) 20%, transparent),
+    0 12px 34px color-mix(in srgb, var(--color-accent) 38%, transparent);
+}
+.home-build:active:not(:disabled) {
+  transform: translateY(0);
+}
+.home-build:focus-visible {
+  outline-offset: 4px;
+}
+.home-build:disabled {
+  opacity: 0.8;
+}
+@container workspace (min-width: 600px) {
+  /* Words on the left, the button at their foot on the right. */
+  .home-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 24px;
+    align-items: end;
+  }
+  .home-date,
+  .home-hello,
+  .home-lede {
+    grid-column: 1;
+  }
+  .home-build,
+  .home-build:hover:not(:disabled) {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: end;
+    margin: 0 0 2px;
+  }
+}
+
+/* The meter: the count, a thin bar, and the one next step. */
+.home-meter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 28px;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--home-line);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+}
+.home-meter[hidden] {
+  display: none;
+}
+.home-meter-top {
+  flex: 1 1 200px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.home-meter-count {
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-0);
+}
+.home-meter-bar {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--home-soft);
+  overflow: hidden;
+}
+.home-meter-bar::-webkit-meter-bar {
+  height: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--home-soft);
+}
+.home-meter-bar::-webkit-meter-optimum-value,
+.home-meter-bar::-webkit-meter-suboptimum-value,
+.home-meter-bar::-webkit-meter-even-less-good-value {
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 55%, transparent), var(--color-accent));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+.home-meter-bar::-moz-meter-bar {
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 55%, transparent), var(--color-accent));
+}
+.home-next {
+  flex: 2 1 320px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  min-width: 0;
+}
+.home-next[hidden] {
+  display: none;
+}
+.home-next-text {
+  flex: 1 1 220px;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--color-text-1);
+}
+.home-next-done {
+  color: var(--w-good-text);
+  font-weight: 600;
+}
+
+/* The grid of tiles: one column, two from 600px of workspace, three from 960px. */
+.home-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+@container workspace (min-width: 600px) {
+  .home-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container workspace (min-width: 960px) {
+  .home-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.home-tile {
+  --brand: var(--color-accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 16px 14px;
+  box-sizing: border-box;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--home-line);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+  transition:
+    transform var(--motion-base) cubic-bezier(0.2, 0.7, 0.2, 1),
+    border-color var(--motion-base),
+    box-shadow var(--motion-base);
+}
+.home-tile:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 16px 36px var(--home-shadow);
+}
+/* Ready: the first service's own colour at the edge, stronger on hover. */
+.home-tile[data-state='ready'] {
+  border-color: color-mix(in srgb, var(--brand) 30%, var(--home-line));
+}
+.home-tile[data-state='ready']::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 18px;
+  right: 18px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brand) 80%, transparent), transparent);
+  pointer-events: none;
+}
+.home-tile[data-state='ready']:hover {
+  border-color: color-mix(in srgb, var(--brand) 62%, var(--home-line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent),
+    0 16px 36px color-mix(in srgb, var(--brand) 16%, var(--home-shadow));
+}
+
+/* Tiles arrive one after another, rising a little. */
+.home-in {
+  animation: home-rise 560ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+@keyframes home-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+.home-tile-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.home-tile-words {
+  flex: 1;
+  min-width: 0;
+}
+.home-tile-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.home-tile-what {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--color-text-1);
+}
+
+.home-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.home-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.home-badge[data-tone='ready'] {
+  background: var(--w-good-tint);
+  color: var(--w-good-text);
+}
+.home-badge[data-tone='ready']::before {
+  box-shadow: 0 0 6px currentColor;
+}
+.home-badge[data-tone='built_in'] {
+  background: var(--w-neutral-tint);
+  color: var(--color-text-1);
+}
+.home-badge[data-tone='asks_first'] {
+  background: var(--w-attention-tint);
+  color: var(--w-attention-text);
+}
+.home-badge[data-tone='connect'] {
+  border-color: var(--home-line);
+  color: var(--color-text-2);
+}
+.home-badge[data-tone='connect']::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+/* The sample: a fixed frame that fades out at its foot, never read out or reached. */
+.home-preview {
+  position: relative;
+  /* At least its fixed frame, and taller in a row of taller tiles, so every foot sits at the bottom. */
+  flex: 1 0 176px;
+  min-height: 176px;
+  margin-top: 14px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-0) 20%, transparent);
+  box-shadow: inset 0 0 0 1px var(--home-soft);
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.home-preview-frame {
+  height: 100%;
+  padding: 12px 14px 0;
+  box-sizing: border-box;
+  -webkit-mask-image: linear-gradient(to bottom, black 58%, transparent 96%);
+  mask-image: linear-gradient(to bottom, black 58%, transparent 96%);
+  transition:
+    filter var(--motion-slow),
+    opacity var(--motion-slow);
+}
+.home-sample {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-bg-0) 55%, transparent);
+  border: 1px solid var(--home-line);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-2);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+/* Locked: the sample is dimmed and drained of colour, and the connect panel sits over its foot. */
+.home-tile:is([data-state='connect'], [data-state='asks_first']) .home-preview-frame {
+  filter: grayscale(0.85) blur(0.4px);
+  opacity: 0.42;
+}
+.home-tile:is([data-state='connect'], [data-state='asks_first']):hover .home-preview-frame {
+  filter: grayscale(0.55);
+  opacity: 0.6;
+}
+
+.home-tile-foot {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin-top: 12px;
+}
+.home-tile:is([data-state='connect'], [data-state='asks_first']) .home-tile-foot {
+  margin-top: -58px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--home-line);
+  background: color-mix(in srgb, var(--color-bg-1) 72%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: 0 -10px 30px color-mix(in srgb, var(--color-bg-0) 40%, transparent);
+}
+.home-marks {
+  display: inline-flex;
+  gap: 4px;
+}
+.home-from {
+  font-size: 12.5px;
+  color: var(--color-text-1);
+}
+.home-why {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--color-text-1);
+}
+.home-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Connect buttons: the service's mark, then its name. */
+.home-connect,
+.home-connect:hover:not(:disabled),
+.home-reveal,
+.home-reveal:hover:not(:disabled),
+.home-more,
+.home-more:hover:not(:disabled),
+.home-retry,
+.home-retry:hover:not(:disabled) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;
+  border: 1px solid var(--home-line);
+  background: var(--home-soft);
+  color: var(--color-text-0);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    transform var(--motion-fast);
+}
+.home-connect .connected-mark-xs {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 9.5px;
+}
+.home-connect:hover:not(:disabled),
+.home-reveal:hover:not(:disabled),
+.home-more:hover:not(:disabled),
+.home-retry:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.home-connect:active:not(:disabled),
+.home-reveal:active:not(:disabled) {
+  transform: scale(0.98);
+}
+/* One service, one obvious button. */
+.home-connect-one,
+.home-connect-one:hover:not(:disabled),
+.home-connect-next,
+.home-connect-next:hover:not(:disabled),
+.home-reveal,
+.home-reveal:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.home-connect-one:hover:not(:disabled),
+.home-connect-next:hover:not(:disabled),
+.home-reveal:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.home-reveal,
+.home-reveal:hover:not(:disabled),
+.home-more,
+.home-more:hover:not(:disabled),
+.home-retry,
+.home-retry:hover:not(:disabled) {
+  padding: 6px 12px;
+}
+.home-more,
+.home-more:hover:not(:disabled) {
+  border-style: dashed;
+  background: transparent;
+  color: var(--color-text-1);
+}
+
+/* Waiting for the first answer: quiet tiles at their final size, so nothing jumps. */
+.home-tile-wait {
+  min-height: 300px;
+  overflow: hidden;
+}
+.home-tile-wait:hover {
+  transform: none;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+}
+.home-tile-wait::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, var(--home-soft) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: home-shimmer 1.8s ease-in-out infinite;
+}
+@keyframes home-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+
+.home-failed {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--home-line);
+  text-align: center;
+}
+.home-failed-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-1);
+}
+
+.home-foot {
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+
+/* ── Arranging Home: the grip, the ×, the lifted tile, Add widgets and the toast ── */
+
+/* The lifted tile is placed inside the grid. */
+.home-grid {
+  position: relative;
+}
+.home-dragging {
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* While one tile is in hand, the others hold still under the pointer. */
+.home-dragging .home-tile:not(.home-lifted, .home-held):hover {
+  transform: none;
+}
+
+/* The grip: a small handle at the top of the tile, quiet until the tile is hovered or focused. */
+.home-grip,
+.home-grip:hover:not(:disabled) {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  translate: -50% 0;
+  display: grid;
+  place-items: center;
+  /* A small mark in a target big enough to hit; it sits in the tile's top padding. */
+  width: 48px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: grab;
+  /* Touch moves the tile, never the page. */
+  touch-action: none;
+  opacity: 0;
+  transition:
+    opacity var(--motion-fast),
+    color var(--motion-fast),
+    background var(--motion-fast);
+}
+.home-grip .icon {
+  stroke-width: 3;
+}
+.home-tile:hover .home-grip,
+.home-tile:focus-within .home-grip,
+.home-held .home-grip,
+.home-lifted .home-grip {
+  opacity: 1;
+}
+.home-grip:hover:not(:disabled),
+.home-grip:focus-visible {
+  color: var(--color-text-0);
+  background: var(--home-soft);
+}
+.home-grip:focus-visible {
+  outline-offset: 0;
+}
+.home-lifted .home-grip,
+.home-lifted .home-grip:hover:not(:disabled) {
+  cursor: grabbing;
+}
+
+/* The ×: a small round button on the tile's corner, also quiet until hover or focus. */
+.home-remove,
+.home-remove:hover:not(:disabled) {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--home-line);
+  background: var(--color-bg-2);
+  color: var(--color-text-1);
+  box-shadow: 0 4px 12px var(--home-shadow);
+  opacity: 0;
+  scale: 0.8;
+  transition:
+    opacity var(--motion-fast),
+    scale var(--motion-fast),
+    color var(--motion-fast),
+    border-color var(--motion-fast);
+}
+.home-tile:hover .home-remove,
+.home-tile:focus-within .home-remove {
+  opacity: 1;
+  scale: 1;
+}
+.home-remove:hover:not(:disabled),
+.home-remove:focus-visible {
+  color: var(--color-text-0);
+  border-color: color-mix(in srgb, var(--color-text-0) 30%, transparent);
+}
+.home-lifted .home-remove,
+.home-held .home-remove {
+  opacity: 0;
+}
+
+/* On touch there is no hover: the grip is always there, a little larger, and the × shows quietly. */
+@media (hover: none) {
+  .home-tile:has(.home-grip) {
+    padding-top: 26px;
+  }
+  .home-grip,
+  .home-grip:hover:not(:disabled) {
+    top: 0;
+    width: 64px;
+    height: 26px;
+    opacity: 0.8;
+  }
+  .home-remove,
+  .home-remove:hover:not(:disabled) {
+    opacity: 0.85;
+    scale: 1;
+  }
+}
+
+/* In hand: lifted off the grid with a soft shadow, a touch larger, following the pointer. */
+.home-tile.home-lifted {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  margin: 0;
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--home-line));
+  /* Denser glass than a resting tile, so the tiles it passes over don't show through. */
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 92%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    0 28px 56px var(--home-shadow),
+    0 8px 18px var(--home-shadow);
+  transition:
+    border-color var(--motion-base),
+    box-shadow var(--motion-base);
+  cursor: grabbing;
+  will-change: transform;
+}
+/* Picked up from the keyboard: raised where it stands. */
+.home-tile.home-held {
+  z-index: 2;
+  transform: translateY(-4px) scale(1.02);
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--home-line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent),
+    0 24px 48px var(--home-shadow);
+}
+/* Where it will land: a dashed outline in her colour. */
+.home-placeholder {
+  box-sizing: border-box;
+  border-radius: var(--radius-lg);
+  border: 1.5px dashed color-mix(in srgb, var(--color-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+  list-style: none;
+}
+
+/* Add widgets: a dashed tile at the end of the grid while anything is removed. */
+.home-add {
+  display: flex;
+  flex-direction: column;
+  min-height: 150px;
+  min-width: 0;
+}
+.home-add-open,
+.home-add-open:hover:not(:disabled) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 24px 16px;
+  border-radius: var(--radius-lg);
+  border: 1.5px dashed color-mix(in srgb, var(--color-text-0) 18%, transparent);
+  background: transparent;
+  color: var(--color-text-1);
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    color var(--motion-fast);
+}
+.home-add-open:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  color: var(--color-text-0);
+}
+.home-add-open[hidden],
+.home-add-panel[hidden],
+.home-reset[hidden],
+.home-toast[hidden] {
+  /* Over the hover rules, which also set display. */
+  display: none !important;
+}
+.home-add-plus {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--home-line);
+  background: var(--home-soft);
+  color: var(--color-accent);
+  transition: transform var(--motion-base) cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.home-add-open:hover:not(:disabled) .home-add-plus {
+  transform: rotate(90deg);
+}
+
+/* Its panel: the removed tiles, each with its badge and Add, and Reset Home under them. */
+.home-add-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--home-line);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+  animation: home-rise 280ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.home-add-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.home-add-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.home-add-close,
+.home-add-close:hover:not(:disabled) {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-1);
+}
+.home-add-close:hover:not(:disabled) {
+  background: var(--home-soft);
+  color: var(--color-text-0);
+}
+.home-add-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-add-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--home-soft);
+  background: var(--home-soft);
+}
+.home-add-row-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.home-add-row-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.home-add-row-what {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--color-text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.home-add-row .home-badge {
+  margin-top: 0;
+}
+.home-add-one,
+.home-add-one:hover:not(:disabled) {
+  padding: 5px 14px;
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.home-add-one:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.home-reset,
+.home-reset:hover:not(:disabled) {
+  align-self: center;
+  padding: 4px 12px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 12.5px;
+}
+.home-reset:hover:not(:disabled) {
+  border-color: var(--home-line);
+  color: var(--color-text-0);
+}
+/* At the foot of the panel, however few rows are above it. */
+.home-add-panel .home-reset {
+  margin-top: auto;
+}
+
+.home-foot-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* "Inbox removed", with Undo: it rides at the foot of the pane while there is more to scroll. */
+.home-toast {
+  position: sticky;
+  bottom: 16px;
+  z-index: 6;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100% - 32px);
+  padding: 7px 7px 7px 18px;
+  box-sizing: border-box;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--home-line);
+  background: var(--glass-dense);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 14px 36px var(--home-shadow);
+  font-size: 13.5px;
+  color: var(--color-text-0);
+  animation: home-rise 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.home-toast-text {
+  min-width: 0;
+}
+.home-undo,
+.home-undo:hover:not(:disabled) {
+  flex: none;
+  padding: 5px 14px;
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  font-weight: 600;
+}
+.home-undo:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+.home-undo[hidden] {
+  display: none;
+}
+
+/* Still, for those who asked for less motion: no entrances, no lifts, no shimmer. */
+@media (prefers-reduced-motion: reduce) {
+  .home,
+  .home *,
+  .home *::before,
+  .home *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .home-tile:hover,
+  .home-tile.home-held,
+  .home-build:hover:not(:disabled),
+  .home-add-open:hover:not(:disabled) .home-add-plus {
+    transform: none;
+  }
+}
