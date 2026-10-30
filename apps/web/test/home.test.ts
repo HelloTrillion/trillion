@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  type HomeData,
   type HomeOptions,
   brandColor,
   changeLine,
   createHome,
+  dayBoardStep,
+  endsBuild,
+  frameKeeps,
   greeting,
+  ledeLine,
+  returnsToHome,
   homeOf,
   localDate,
   sampleFor,
@@ -98,9 +102,10 @@ function payload(over: Record<string, unknown> = {}): Record<string, unknown> {
   };
 }
 
-function setup(over: Partial<HomeOptions> = {}, data: unknown = payload()) {
+function setup(over: Partial<HomeOptions> & { ownRegion?: boolean } = {}, data: unknown = payload()) {
   const calls = { build: 0, connect: [] as string[], browse: [] as string[], reveal: [] as string[], said: [] as string[] };
   const fetchHome = vi.fn(async () => data);
+  const { ownRegion, ...rest } = over;
   const home = createHome({
     fetchHome,
     onBuild: () => void calls.build++,
@@ -109,8 +114,9 @@ function setup(over: Partial<HomeOptions> = {}, data: unknown = payload()) {
     onReveal: (k) => void calls.reveal.push(k),
     now: () => MORNING,
     reducedMotion: () => false,
-    announce: (t) => void calls.said.push(t),
-    ...over,
+    // Without one, Home speaks through its own region.
+    ...(ownRegion ? {} : { announce: (t: string) => void calls.said.push(t) }),
+    ...rest,
   });
   document.body.replaceChildren(home.el);
   return { home, calls, fetchHome };
@@ -174,6 +180,52 @@ describe('words', () => {
   });
 });
 
+describe('main.ts decisions', () => {
+  const frame = { boardOpen: false, approvals: false, folders: false, homeShown: false };
+
+  it('keeps the workspace up for a closed board only when something holds it, Home included', () => {
+    expect(frameKeeps(frame)).toBe(false);
+    expect(frameKeeps({ ...frame, homeShown: true })).toBe(true);
+    expect(frameKeeps({ ...frame, boardOpen: true })).toBe(true);
+    expect(frameKeeps({ ...frame, approvals: true })).toBe(true);
+    expect(frameKeeps({ ...frame, folders: true })).toBe(true);
+  });
+
+  it('comes back to Home only when Settings opened from Home closes by itself', () => {
+    expect(returnsToHome(true, 'settings', false)).toBe(true);
+    expect(returnsToHome(false, 'settings', false)).toBe(false);
+    // Replaced by something else: that has the stage now.
+    expect(returnsToHome(true, 'settings', true)).toBe(false);
+    // Home itself closing never reopens it.
+    expect(returnsToHome(true, 'board', false)).toBe(false);
+  });
+
+  it('opens the day board Home asked for once it has widgets, and never over Settings', () => {
+    const empty = { open: true, widgets: [] };
+    const built = { open: true, widgets: [{}] };
+    const putAway = { open: false, widgets: [{}] };
+    expect(dayBoardStep(null, 'day', built, 'board')).toBe('forget');
+    expect(dayBoardStep('day', 'other', built, 'board')).toBe('forget');
+    expect(dayBoardStep('day', 'day', null, 'board')).toBe('wait');
+    expect(dayBoardStep('day', 'day', empty, 'board')).toBe('wait');
+    expect(dayBoardStep('day', 'day', built, 'board')).toBe('shown');
+    expect(dayBoardStep('day', 'day', putAway, 'board')).toBe('open');
+    expect(dayBoardStep('day', 'day', putAway, null)).toBe('open');
+    expect(dayBoardStep('day', 'day', putAway, 'settings')).toBe('chip');
+  });
+
+  it('ends a build on its turn finishing, a refusal, or an error during it, and not otherwise', () => {
+    expect(endsBuild({ type: 'turn.complete' }, null, 'day', true)).toBe(false);
+    expect(endsBuild({ type: 'turn.complete' }, 'day', 'day', true)).toBe(true);
+    expect(endsBuild({ type: 'turn.complete' }, 'day', 'other', true)).toBe(false);
+    expect(endsBuild({ type: 'error', code: 'no_model' }, 'day', 'other', false)).toBe(true);
+    expect(endsBuild({ type: 'error', code: 'listening' }, 'day', 'day', true)).toBe(false);
+    expect(endsBuild({ type: 'error', code: 'model' }, 'day', 'day', true)).toBe(true);
+    expect(endsBuild({ type: 'error', code: 'model' }, 'day', 'day', false)).toBe(false);
+    expect(endsBuild({ type: 'board' }, 'day', 'day', true)).toBe(false);
+  });
+});
+
 describe('once a day', () => {
   it('opens on the first load of a date, and not the second', () => {
     expect(shouldOpenHome(null, '2026-10-30', true, false, false)).toBe(true);
@@ -208,6 +260,16 @@ describe('Home', () => {
     expect(el.querySelector('.home-next-text')?.textContent).toBe('Connect Slack next: one sign-in adds Mentions');
     expect(el.querySelectorAll('.home-grid > li')).toHaveLength(5);
     expect(el.querySelector('.home-foot')?.textContent).toBe('Want something else on your board? Just ask her.');
+  });
+
+  it('is a labelled section, and names her in the line under the greeting', async () => {
+    const { home } = setup();
+    expect(home.el.tagName).toBe('SECTION');
+    expect(home.el.getAttribute('aria-label')).toBe('Home');
+    await home.show();
+    expect(home.el.querySelector('.home-lede')?.textContent).toBe(ledeLine('Trillion'));
+    expect(ledeLine('Trillion')).toBe('Here’s what your briefing can show. Connect more and Trillion will see more.');
+    expect(ledeLine('')).toBe('Here’s what your briefing can show. Connect more and she’ll see more.');
   });
 
   it('greets without a name when there is none', async () => {
@@ -290,9 +352,41 @@ describe('Home', () => {
     b.click();
     expect(calls.build).toBe(1);
 
+    // A read while building keeps it busy.
+    await home.refresh();
+    expect(b.disabled).toBe(true);
+    expect(b.textContent).toBe('Building your briefing…');
+    b.click();
+    expect(calls.build).toBe(1);
+    // Its board came: it rests.
+    home.built();
+    expect(b.disabled).toBe(false);
+    expect(b.textContent).toBe('Build my briefing');
+
     const open = setup({}, payload({ briefing: 'open' }));
     await open.home.show();
     expect(open.home.el.querySelector('.home-build')?.textContent).toBe('Open today’s briefing');
+  });
+
+  it('rests Build when the briefing moves on, or after a while if nothing comes', async () => {
+    vi.useFakeTimers();
+    try {
+      let data = payload();
+      const { home } = setup({ fetchHome: async () => data, buildTimeoutMs: 1000 });
+      await home.show();
+      const b = home.el.querySelector<HTMLButtonElement>('.home-build')!;
+      b.click();
+      data = payload({ briefing: 'open' });
+      await home.refresh();
+      expect(b.disabled).toBe(false);
+      expect(b.textContent).toBe('Open today’s briefing');
+      b.click();
+      expect(b.disabled).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(b.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says when everything is connected, with no button', async () => {
@@ -355,6 +449,38 @@ describe('Home', () => {
     await home.refresh();
     expect(calls.said).toEqual(['Mentions is ready.']);
     expect(tileEl(home.el, 'mentions').dataset['state']).toBe('ready');
+  });
+
+  it('says a tile turned ready on coming back from Settings, through a region that stays in the page', async () => {
+    let data = payload();
+    const { home, calls } = setup({ fetchHome: async () => data, ownRegion: true });
+    await home.show();
+    tileEl(home.el, 'mentions').querySelector<HTMLButtonElement>('.home-connect')!.click();
+    expect(calls.connect).toEqual(['slack']);
+    // Settings takes the workspace: Home is out of the page while the sign-in finishes.
+    home.el.remove();
+    data = payload({ tiles: (payload()['tiles'] as Record<string, unknown>[]).map((t) => (t['id'] === 'mentions' ? { ...t, state: 'ready' } : t)) });
+    await home.refresh();
+    // Settings closes: Home is back and shown again.
+    document.body.append(home.el);
+    await home.show();
+    const live = document.querySelector<HTMLElement>('.home-live')!;
+    expect(live.textContent).toBe('Mentions is ready.');
+    expect(home.el.contains(live)).toBe(false);
+    expect(live.getAttribute('aria-live')).toBe('polite');
+    // The tiles still arrive as on any show.
+    expect(tileEl(home.el, 'mentions').classList.contains('home-in')).toBe(true);
+  });
+
+  it('reads once at startup when connections load right behind the first show', async () => {
+    const { home, fetchHome } = setup();
+    const shown = home.show();
+    await home.refresh();
+    await shown;
+    expect(fetchHome).toHaveBeenCalledTimes(1);
+    // Later, a refresh reads again.
+    await home.refresh();
+    expect(fetchHome).toHaveBeenCalledTimes(2);
   });
 
   it('does not read while it is off screen', async () => {

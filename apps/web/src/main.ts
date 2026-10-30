@@ -64,7 +64,7 @@ import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
-import { createHome, localDate, shouldOpenHome } from './home';
+import { createHome, dayBoardStep, endsBuild, frameKeeps, localDate, returnsToHome, shouldOpenHome } from './home';
 import { createApprovals, outcomeWords } from './approvals';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
@@ -1268,6 +1268,7 @@ async function buildFromHome(): Promise<void> {
   if (result !== 'opened' || id === null) {
     // Nothing is coming: the button rests again.
     homeDay = null;
+    home.built();
     void home.refresh();
     return;
   }
@@ -1280,15 +1281,17 @@ async function buildFromHome(): Promise<void> {
  * Until then Home stays up while she builds it. True when this opened the board itself.
  */
 function homeTakesBoard(): boolean {
-  if (homeDay === null) return false;
-  if (view.conversationId !== homeDay) {
-    homeDay = null;
-    return false;
-  }
-  const board = view.board;
-  if (!board || board.widgets.length === 0) return false;
+  const step = dayBoardStep(homeDay, view.conversationId, view.board, workspace.showing);
+  if (step === 'wait') return false;
+  // Arrived, or went elsewhere: either way Build is no longer waiting.
+  if (homeDay !== null) home.built();
   homeDay = null;
-  if (board.open) return false;
+  if (step === 'forget' || step === 'shown') return false;
+  // Never over Settings: the sidebar's chip says the board is there, as onBoard does.
+  if (step === 'chip') {
+    boardChip.hidden = false;
+    return true;
+  }
   openBoard();
   return true;
 }
@@ -1524,6 +1527,8 @@ function connect(): void {
       unwatchPending = false;
     }
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
+    // Whether a turn was running before this message, for an error that ends Home's build.
+    const busyBefore = view.busy;
     apply(reduce(view, msg));
     // A routine finished somewhere else: its conversation is marked until opened.
     const built = unreadFor(msg, view);
@@ -1538,9 +1543,10 @@ function connect(): void {
         openHomeOnce();
       }
     }
-    // A build Home asked for was refused (no model, say): its button rests again.
-    if (msg.type === 'error' && homeDay !== null) {
+    // The build Home asked for ended without a board (refused, failed, or finished empty): its button rests again.
+    if (endsBuild({ type: msg.type, code: msg['code'] }, homeDay, view.conversationId, busyBefore)) {
       homeDay = null;
+      home.built();
       void home.refresh();
     }
     // Her folder browser moved (or a click here did): the panel shows where it is now.
@@ -1881,7 +1887,7 @@ function onBoard(): void {
   if (workspace.showing === 'board') {
     // The Folders panel keeps the workspace up, over an empty board if need be, and Home stays
     // up until a board opens: a reconnect or a switch does not take it away.
-    if (board?.open || approvals.holds() || folderPanel.isOpen || homeShown) showBoard();
+    if (frameKeeps({ boardOpen: board?.open === true, approvals: approvals.holds(), folders: folderPanel.isOpen, homeShown })) showBoard();
     else workspace.close();
     return;
   }
@@ -1903,8 +1909,13 @@ function openHomeOnce(): void {
 }
 workspace.onClose((id, replaced) => {
   // Settings opened from Home closed by itself: Home comes back.
-  const back = backToHome && id !== 'board' && !replaced;
+  const back = returnsToHome(backToHome, id, replaced);
   if (id !== 'board') backToHome = false;
+  // Put away: a build Home was waiting on no longer opens anything by itself.
+  if (!replaced && !back && homeDay !== null) {
+    homeDay = null;
+    home.built();
+  }
   if (back) {
     queueMicrotask(() => {
       if (!workspace.isOpen) showBoard();

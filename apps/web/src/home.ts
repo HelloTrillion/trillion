@@ -229,6 +229,8 @@ export interface HomeOptions {
   readonly reducedMotion?: () => boolean;
   /** Says a line politely; by default Home's own live region. */
   readonly announce?: (text: string) => void;
+  /** How long Build stays busy at most, so a build the core drops never leaves it stuck. */
+  readonly buildTimeoutMs?: number;
 }
 
 export interface Home {
@@ -237,6 +239,80 @@ export interface Home {
   show(): Promise<void>;
   /** Connections changed: read the state again, if Home is on screen. */
   refresh(): Promise<void>;
+  /** The build Home asked for is over (its board came, or it failed): Build rests again. */
+  built(): void;
+}
+
+/** The longest Build stays busy. */
+export const BUILD_TIMEOUT_MS = 60_000;
+/** A refresh this soon after a show still reading is that same read (the startup double). */
+export const SHOW_SETTLE_MS = 500;
+
+/** The line under the greeting: her name when there is one. */
+export function ledeLine(agentName: string): string {
+  const who = agentName.trim();
+  return `Here’s what your briefing can show. Connect more and ${who ? `${who} will` : 'she’ll'} see more.`;
+}
+
+// ── main.ts's decisions about Home, pure so they can be tested ──────────
+
+/**
+ * A board frame arrived while the board view is up: keep it up (redraw) or close the workspace.
+ * Her board open, an approval pinned, the Folders panel, or Home showing all keep it up.
+ */
+export function frameKeeps(f: { readonly boardOpen: boolean; readonly approvals: boolean; readonly folders: boolean; readonly homeShown: boolean }): boolean {
+  return f.boardOpen || f.approvals || f.folders || f.homeShown;
+}
+
+/** Something closed in the workspace: whether Home comes back (Settings opened from Home, closed by itself). */
+export function returnsToHome(fromHome: boolean, closedId: string | null, replaced: boolean): boolean {
+  return fromHome && closedId !== 'board' && !replaced;
+}
+
+/** What to do with the day board Home's button asked for, as a board frame arrives. */
+export type DayBoardStep =
+  /** Nothing asked, or not the day's conversation: forget it. */
+  | 'forget'
+  /** Still empty: she is building it, Home stays. */
+  | 'wait'
+  /** Open with widgets: the board shows itself (onBoard). */
+  | 'shown'
+  /** Built but put away: open it again. */
+  | 'open'
+  /** Settings has the stage: the sidebar's chip says it is there. */
+  | 'chip';
+
+export function dayBoardStep(
+  homeDay: string | null,
+  conversation: string | null,
+  board: { readonly open: boolean; readonly widgets: readonly unknown[] } | null,
+  showing: string | null,
+): DayBoardStep {
+  if (homeDay === null || conversation !== homeDay) return 'forget';
+  if (!board || board.widgets.length === 0) return 'wait';
+  if (showing === 'settings') return 'chip';
+  return board.open ? 'shown' : 'open';
+}
+
+/** Refusals that mean a build never started. */
+const BUILD_REFUSALS = new Set(['no_model', 'busy', 'routine_building']);
+
+/**
+ * Whether a message ends the build Home asked for: the day's turn finished, a refusal of it,
+ * or an error during that turn. Unrelated errors (the microphone, say) leave it alone.
+ */
+export function endsBuild(
+  msg: { readonly type: string; readonly code?: unknown },
+  homeDay: string | null,
+  conversation: string | null,
+  busyBefore: boolean,
+): boolean {
+  if (homeDay === null) return false;
+  const day = conversation === homeDay;
+  if (msg.type === 'turn.complete') return day;
+  if (msg.type !== 'error') return false;
+  const code = typeof msg.code === 'string' ? msg.code : '';
+  return BUILD_REFUSALS.has(code) || (day && busyBefore && code !== 'listening' && code !== 'no_listening');
 }
 
 const PLACEHOLDERS = 9;
@@ -252,19 +328,20 @@ export function createHome(opts: HomeOptions): Home {
   const clock = opts.now ?? ((): Date => new Date());
   const still = opts.reducedMotion ?? ((): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches);
 
-  const el = h('div', 'home');
+  const el = h('section', 'home');
   el.setAttribute('aria-label', 'Home');
 
   // Header: the date, the greeting, one line, and the button.
   const head = h('header', 'home-head');
   const date = h('p', 'home-date');
   const hello = h('h3', 'home-hello');
-  const lede = h('p', 'home-lede', 'Here’s what your briefing can show. Connect more and she’ll see more.');
+  const lede = h('p', 'home-lede', ledeLine(''));
   const build = btn('Build my briefing', 'home-build', () => {
-    if (build.disabled) return;
-    build.disabled = true;
-    build.setAttribute('aria-busy', 'true');
-    build.textContent = data?.briefing === 'open' ? 'Opening your briefing…' : 'Building your briefing…';
+    if (building) return;
+    building = true;
+    // A build the core drops says nothing: the button rests again after a while.
+    buildTimer = setTimeout(built, opts.buildTimeoutMs ?? BUILD_TIMEOUT_MS);
+    drawButton();
     opts.onBuild();
   });
   head.append(date, hello, lede, build);
@@ -284,13 +361,22 @@ export function createHome(opts: HomeOptions): Home {
   grid.setAttribute('aria-label', 'What your briefing can show');
   const foot = h('p', 'home-foot', 'Want something else on your board? Just ask her.');
 
-  // Without a region from the page, Home speaks through its own.
-  const live = h('p', 'visually-hidden');
-  live.setAttribute('role', 'status');
-  live.setAttribute('aria-live', 'polite');
-  const say = opts.announce ?? ((text: string): void => void (live.textContent = text));
+  // Without a region from the page, Home speaks through its own, kept in the document: Home itself
+  // is taken out while Settings is over it, and a line said then must still be heard.
+  let live: HTMLElement | null = null;
+  const say =
+    opts.announce ??
+    ((text: string): void => {
+      if (!live?.isConnected) {
+        live = h('p', 'visually-hidden home-live');
+        live.setAttribute('role', 'status');
+        live.setAttribute('aria-live', 'polite');
+        document.body.append(live);
+      }
+      live.textContent = text;
+    });
 
-  el.append(head, meterBox, grid, foot, live);
+  el.append(head, meterBox, grid, foot);
 
   let data: HomeData | null = null;
   let previews: Omit<DrawnBlocks, 'el'>[] = [];
@@ -298,14 +384,36 @@ export function createHome(opts: HomeOptions): Home {
   let gen = 0;
   // A show whose read was overtaken by a refresh still has its tiles arrive.
   let arriving = false;
+  // Build was pressed and its board has not come: reads keep the button busy.
+  let building = false;
+  let buildTimer: ReturnType<typeof setTimeout> | null = null;
+  // A show still reading, and when it started, so a refresh right behind it is not a second read.
+  let showing: { readonly at: number; readonly read: Promise<void> } | null = null;
+
+  function drawButton(): void {
+    build.disabled = building;
+    if (building) {
+      build.setAttribute('aria-busy', 'true');
+      build.textContent = data?.briefing === 'open' ? 'Opening your briefing…' : 'Building your briefing…';
+    } else {
+      build.removeAttribute('aria-busy');
+      build.textContent = data?.briefing === 'open' ? 'Open today’s briefing' : 'Build my briefing';
+    }
+  }
+
+  function built(): void {
+    if (buildTimer !== null) clearTimeout(buildTimer);
+    buildTimer = null;
+    building = false;
+    drawButton();
+  }
 
   function drawHead(): void {
     const now = clock();
     date.textContent = dateLine(now);
     hello.textContent = greeting(now.getHours(), data?.user_name ?? '');
-    build.disabled = false;
-    build.removeAttribute('aria-busy');
-    build.textContent = data?.briefing === 'open' ? 'Open today’s briefing' : 'Build my briefing';
+    lede.textContent = ledeLine(data?.agent_name ?? '');
+    drawButton();
   }
 
   function drawMeter(): void {
@@ -494,7 +602,10 @@ export function createHome(opts: HomeOptions): Home {
       }
       return;
     }
-    const line = arrive ? '' : changeLine(data, got);
+    // Said on a show too: back from Settings is when a sign-in turns a tile ready.
+    const line = changeLine(data, got);
+    // The briefing moved on (built, or a new day): whatever Build was waiting for is over.
+    if (building && data && data.briefing !== got.briefing) built();
     data = got;
     drawHead();
     drawMeter();
@@ -509,7 +620,21 @@ export function createHome(opts: HomeOptions): Home {
 
   return {
     el,
-    show: () => read(true),
-    refresh: () => (el.isConnected ? read(false) : Promise.resolve()),
+    show() {
+      const r = read(true);
+      const mine = { at: Date.now(), read: r };
+      showing = mine;
+      void r.finally(() => {
+        if (showing === mine) showing = null;
+      });
+      return r;
+    },
+    refresh() {
+      if (!el.isConnected) return Promise.resolve();
+      // At startup the connections load just behind the first show: that show's read will do.
+      if (showing && Date.now() - showing.at < SHOW_SETTLE_MS) return showing.read;
+      return read(false);
+    },
+    built,
   };
 }
