@@ -193,14 +193,14 @@ def check_port(host: str, port: int) -> Check:
     if _is_trillion(host, port):
         return Check(name=name, status="ok", detail=f"{port}: Trillion is already running on it")
     # Suggest a port that is free now, not one that may be just as busy.
-    spare = next(
-        (p for p in range(port + 1, min(port + 1 + _NEARBY, 65536)) if _bindable(host, p)), None
-    )
-    instead = (
-        f"start on another: trillion run --port {spare}"
-        if spare is not None
-        else "start on another with trillion run --port (the next few are busy too)"
-    )
+    nearby = range(port + 1, min(port + 1 + _NEARBY, 65536))
+    spare = next((p for p in nearby if _bindable(host, p)), None)
+    if spare is not None:
+        instead = f"start on another: trillion run --port {spare}"
+    elif nearby:
+        instead = "start on another with trillion run --port (the next few are busy too)"
+    else:
+        instead = "start on another with trillion run --port, choosing a lower one"
     return Check(
         name=name,
         status="warn",
