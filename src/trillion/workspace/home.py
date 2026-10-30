@@ -109,20 +109,16 @@ def _join(names: list[str]) -> str:
 
 def _next(tiles: list[dict[str, Any]], google_ready: bool) -> dict[str, str] | None:
     """D8: the first tile to connect whose service signs in with one click, else the
-    first tile to connect. Asks-first tiles are set up already, so never suggested."""
+    first tile to connect. Asks-first tiles are set up already, so never suggested, and
+    nor is a service already set up (a server still starting) that needs no new sign-in."""
     locked = [t for t in tiles if t["state"] == "connect"]
-    if not locked:
-        return None
+    open_ = [(t, s) for t in locked for s in t["services"] if not s["settings_key"]]
     pick = next(
-        (
-            (t, s["id"])
-            for t in locked
-            for s in t["services"]
-            # One already set up (a server still starting) needs no new sign-in.
-            if _one_click(BY_ID[s["id"]], google_ready) and not s["settings_key"]
-        ),
-        (locked[0], locked[0]["services"][0]["id"]),
+        ((t, s["id"]) for t, s in open_ if _one_click(BY_ID[s["id"]], google_ready)),
+        (open_[0][0], open_[0][1]["id"]) if open_ else None,
     )
+    if pick is None:
+        return None
     tile, service = pick
     one_click = _one_click(BY_ID[service], google_ready)
     adds = _join([t["title"] for t in locked if any(s["id"] == service for s in t["services"])])

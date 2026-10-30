@@ -215,3 +215,30 @@ def test_nothing_to_connect_when_the_rest_only_ask_first() -> None:
     )
     out = build(setup, {"gmail": "google:gmail"})
     assert out["ready"] == 8 and out["next"] is None
+
+
+def test_next_never_names_a_service_already_set_up() -> None:
+    setup = SetUp(
+        calendar=True,
+        gmail=True,
+        slack=True,
+        drive=True,
+        catalog=frozenset({"linear", "stripe"}),
+    )
+    # Sentry is set up but still starting, and GitHub needs a key: Vercel signs in.
+    out = build(setup, {"sentry": "my-sentry"}, google_ready=False)
+    assert out["next"] == {
+        "tile": "checks",
+        "service": "vercel",
+        "text": "Connect Vercel next: one sign-in adds What's broken",
+    }
+    # Every service of the one locked tile is set up: nothing new to suggest.
+    every = {s: s for s in ("github", "sentry", "vercel", "supabase")}
+    assert build(setup, every)["next"] is None
+    # A key-only service is the fallback once it is the only one left unset.
+    keyed = {s: s for s in ("sentry", "vercel", "supabase")}
+    assert build(setup, keyed)["next"] == {
+        "tile": "checks",
+        "service": "github",
+        "text": "Connect GitHub next to add What's broken",
+    }

@@ -208,3 +208,26 @@ def test_it_makes_no_network_call(app: App, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(socket, "create_connection", refuse)
     monkeypatch.setattr(socket, "getaddrinfo", refuse)
     assert get(app)["total"] == 9
+
+
+def test_a_deleted_day_is_not_a_built_briefing(app: App) -> None:
+    portal = app.client.portal
+    assert portal is not None
+    cid = portal.call(_day, app)
+    board = {"title": "Your day", "open": True, "next_id": 2, "widgets": [{"id": "w1"}]}
+    portal.call(app.rt.board_store.put, cid, OWNER, board, NOW)
+    assert get(app)["briefing"] == "open"
+    assert portal.call(app.rt.conversations.delete, cid, OWNER, NOW)
+    assert get(app)["briefing"] == "build"
+    # Looking made no fresh day in its place.
+    assert app.rows("SELECT count(*) FROM conversations WHERE kind = 'day'") == [(1,)]
+
+
+def test_a_server_still_starting_is_to_connect_with_its_card(app: App) -> None:
+    assert app.rt.mcp is not None
+    raw = {"url": "https://x.example/mcp", "catalog": "sentry"}
+    app.rt.mcp.states["my-sentry"] = ServerState(config=parse_server("my-sentry", raw), tools=[])
+    out = get(app)
+    assert tile(out, "checks")["state"] == "connect"
+    sentry = service(out, "checks", "sentry")
+    assert (sentry["state"], sentry["settings_key"]) == ("connect", "my-sentry")

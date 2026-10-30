@@ -18,8 +18,9 @@ from trillion.workspace.packs import PACK_OF
 
 # What a day conversation is called in the thread list.
 TITLE = "Your day"
-# The most widgets the day board holds: a glance, not a report.
-MAX_DAY_WIDGETS = 8
+# The most widgets the day board holds: a glance, not a report, but room for all
+# nine of Home's tiles (workspace/home.py).
+MAX_DAY_WIDGETS = 9
 # What she calls a connector where its catalogue title says more than she reads there.
 _SHORT = {"atlassian": "Jira"}
 NOTHING_CONNECTED = "Connect your calendar and inbox to see your day here."
@@ -97,7 +98,8 @@ def rows(setup: SetUp, user_name: str) -> list[str]:
         )
     if setup.drive:
         out.append(
-            "Google Drive (drive_search): files changed since yesterday. Show them as files."
+            "Google Drive (drive_search with changed_since set to yesterday): files changed "
+            "since yesterday. Show them as files."
         )
     for pack, what in _PACK_ROWS:
         members = [i for i, p in PACK_OF.items() if p == pack and i in setup.catalog]

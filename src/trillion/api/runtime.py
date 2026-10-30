@@ -643,7 +643,9 @@ class Runtime:
         for s in states:
             # A server whose tools are not known yet (starting, or down) is left out.
             if s.config.catalog and not s.config.disabled and s.tools:
-                readable[s.config.catalog] = any(self._reads_freely(t.name) for t in s.tools)
+                # Two servers for one entry: it is readable if either one is.
+                free = any(self._reads_freely(t.name) for t in s.tools)
+                readable[s.config.catalog] = readable.get(s.config.catalog, False) or free
                 catalog.append(s.config.catalog)
         return SetUp(
             calendar=readable.get("google-calendar", False),

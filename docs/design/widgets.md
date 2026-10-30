@@ -214,7 +214,7 @@ She reads each source with her own tools, so every card is live. A source with n
 | Building pack | `checks` or `errors`, only if something is failing |
 | Her reminders | `tasks` or `due_soon` |
 
-She shows at most 8 widgets, the most urgent first, then says two short sentences about what matters most. She does not read the board out. With nothing connected she shows a callout that says how to connect a calendar.
+She shows at most 9 widgets, the most urgent first, then says two short sentences about what matters most. She does not read the board out. With nothing connected she shows a callout that says how to connect a calendar.
 
 To personalise it, give her a standing rule, such as "on my day board, skip mentions". The recipe tells her to follow her rules for the day board.
 

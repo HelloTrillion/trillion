@@ -8,6 +8,7 @@ The states themselves are decided in `workspace/home.py`.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter
@@ -16,6 +17,7 @@ from trillion.api.runtime import OWNER, Runtime
 from trillion.connectors.google.config import SERVICES
 from trillion.connectors.mcp.catalog import ENTRIES
 from trillion.persona import day
+from trillion.persona.day import SetUp
 from trillion.workspace.home import home
 
 # Google's built-in services by catalogue id ("calendar" is "google-calendar").
@@ -52,13 +54,19 @@ async def briefing_built(rt: Runtime) -> bool:
 def create_home_router(rt: Runtime) -> APIRouter:
     router = APIRouter()
 
+    def looked() -> tuple[SetUp, dict[str, str], bool]:
+        # Google signs in with one click only once this copy has an app to sign in as.
+        ready = rt.google is not None and rt.google.client() is not None
+        return rt.day_setup(), configured(rt), ready
+
     @router.get("/api/workspace/home")
     async def read() -> dict[str, Any]:
+        # The keychain and the disk can be slow: never on the event loop.
+        setup, found, google_ready = await asyncio.to_thread(looked)
         return home(
-            rt.day_setup(),
-            configured(rt),
-            # Google signs in with one click only once this copy has an app to sign in as.
-            google_ready=rt.google is not None and rt.google.client() is not None,
+            setup,
+            found,
+            google_ready=google_ready,
             briefing_built=await briefing_built(rt),
             identity=rt.identity,
         )

@@ -353,6 +353,25 @@ async def test_only_what_she_may_read_without_asking(rt: Runtime) -> None:
     )
 
 
+async def test_two_servers_for_one_entry_are_read_if_either_may_be(rt: Runtime) -> None:
+    from trillion.connectors.mcp.config import parse_server
+    from trillion.connectors.mcp.servers import ServerState, ToolInfo
+    from trillion.persona.day import SetUp
+
+    assert rt.mcp is not None
+    # Either order: the free one is not undone by the one that asks.
+    for name, risk in (("linear_a", Risk.READ), ("linear_b", Risk.IRREVERSIBLE)):
+        rt.registry.register(_Read(f"mcp_{name}_list", risk))
+        config = parse_server(name, {"url": "https://x.example/mcp", "catalog": "linear"})
+        info = ToolInfo(
+            name=f"mcp_{name}_list", remote="list", description="", risk="", read_only_hint=True
+        )
+        rt.mcp.states[name] = ServerState(config=config, tools=[info])
+    assert rt.day_setup() == SetUp(catalog=frozenset({"linear"}))
+    rt.mcp.states = dict(reversed(list(rt.mcp.states.items())))
+    assert rt.day_setup() == SetUp(catalog=frozenset({"linear"}))
+
+
 async def test_drive_is_read_only_when_its_search_runs_without_asking(rt: Runtime) -> None:
     from trillion.connectors.google.config import Account
     from trillion.persona.day import SetUp
