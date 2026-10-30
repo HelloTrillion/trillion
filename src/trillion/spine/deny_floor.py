@@ -247,7 +247,7 @@ def check(
     """`read_only_roots` are the shares that are `read` only (D11). Any tool that is
     not a read counts as a write there, so a connected server or a skill naming a path
     is held the same as the file tools."""
-    writes = defn.risk is not Risk.READ and bool(read_only_roots)
+    writes = defn.risk is not Risk.READ and defn.writes_paths and bool(read_only_roots)
     for name in defn.outside_path_args:
         raw = args.get(name)
         if not isinstance(raw, str) or not reads_as_path(raw):

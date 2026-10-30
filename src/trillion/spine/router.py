@@ -150,7 +150,7 @@ def _tool_detail(text: str) -> str:
     return neutralize(text)[0][:_TOOL_DETAIL_LIMIT]
 
 
-def _safe_summary(text: str) -> str:
+def safe_summary(text: str) -> str:
     """The approval card is what the user consents to (SPN-2a). Whatever a tool put in it
     (a model-chosen file name, say) is neutralized, kept to one line with no control or
     format characters (no bidi overrides), and cut to a length a card can show."""
@@ -422,7 +422,7 @@ class Router:
         frozen: dict[str, Any] = json.loads(canonical_json(dict(args)))
         try:
             target = tool.target(frozen)
-            summary = _safe_summary(tool.describe(frozen).text)
+            summary = safe_summary(tool.describe(frozen).text)
             token = _fingerprint(tool, frozen)
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)

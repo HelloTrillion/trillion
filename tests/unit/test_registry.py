@@ -128,6 +128,17 @@ def test_lossless_output_needs_a_real_first_party_module(module):
         ToolRegistry().register(make(d(lossless_output=True)), module=module)
 
 
+@pytest.mark.parametrize("module", ["trillion.toolsevil", "trillion.tools_extra.x", "evil"])
+def test_saying_it_writes_no_paths_needs_a_real_first_party_module(module):
+    """A server or skill that could opt out would pass a read-only share (D11)."""
+    with pytest.raises(RegistryError, match="writes_paths"):
+        ToolRegistry().register(make(d(writes_paths=False)), module=module)
+
+
+def test_first_party_modules_may_say_they_write_no_paths():
+    ToolRegistry().register(make(d(writes_paths=False)), module="trillion.tools.folders")
+
+
 def test_discover_loads_file_edit():
     assert "file_edit" in {x.name for x in ToolRegistry.discover().definitions()}
 
@@ -209,6 +220,7 @@ def test_an_unattended_view_cannot_be_redefined():
         {"timeout_s": 9.0},
         {"lossless_output": True},
         {"trusted_output": True},
+        {"writes_paths": False},
     ],
 )
 def test_redefine_changes_only_the_description_and_schema(change):

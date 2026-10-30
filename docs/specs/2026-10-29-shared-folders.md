@@ -65,7 +65,7 @@ app adds the system's own folder picker.
 | Tool | Risk | What it does |
 |---|---|---|
 | `folders_browse(place)` | read | Opens or moves the browser. `place` is `places`, a path, a name from the folder the browser now shows ("Clients"), or `up`. Returns the folder's path and its folder names (D5), wrapped as untrusted. Sends the page the panel (below). Refused outside D7, or past the fence (D6), with the reason in words. |
-| `folder_share(path, name?, access?, scope?)` | irreversible, not recoverable | Raises the card: "Share ~/Documents/Clients/Website with Trillion as Website project, read and change, for everyone". `path` may be `this`, meaning the folder the browser shows. `access` defaults to `read`; `scope` defaults to `everyone`, or a routine named by its title. Checks D4 when called and again when approved. On approval writes the share. |
+| `folder_share(path, name?, access?, scope?)` | irreversible, not recoverable | Raises the card: "Share ~/Documents/Clients/Website with Trillion as Website project, read and change, for everyone". `path` is the folder's own full path: the card names exactly what is shared, so `this` (the folder the browser shows) is refused with that folder's path to call again with, and a path through a link is refused with the folder it leads to. `access` defaults to `read`; `scope` defaults to `everyone`, or a routine named by its title. Checks D4 when called and again when approved. On approval writes the share. |
 | `folder_unshare(name, access?, scope?)` | write | With only `name`, removes the share. With `access: read`, lowers it. With a routine `scope`, narrows it. Refuses a change that would widen (D3: that is `folder_share`'s job, on a card). Never asks. |
 
 All three carry `category="files"`. `folders_browse` has a 5 s timeout and lists one
@@ -178,6 +178,10 @@ only the Linux one is. It is a folder on a mounted drive like any other.
 - Folder names under the home folder can be personal ("Divorce", "Medical"). They
   leave only while the user is browsing and only to the model provider already in
   use; with a local model nothing leaves. The Settings line says this.
+- Folder names seen while browsing don't mark the turn as read from outside (MEM-5), so
+  the user can go on browsing in it. A memory she writes in that turn therefore still
+  counts as the user's words; the names reach her wrapped as untrusted data, and her host
+  note after a click gives the path as a quoted string after a fixed sentence.
 - Search (`file_search`, OPS-7) is not built yet; when it is, it searches only inside
   the shares in scope, and this spec's D4 is the same fence it needs.
 - Agents (AGT-1) get a `folders` field in their manifest naming shares by name when

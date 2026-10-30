@@ -42,6 +42,10 @@ class ToolDefinition:
     # connected server's own files, or an id that only looks like a path. Any value
     # that reads as a path is still refused if it touches anything protected (SEC-10).
     outside_path_args: tuple[str, ...] = ()
+    # Whether a tool that is not a read changes what its paths name, so a `read` share
+    # refuses it (D11). Only a first-party tool that names a folder without writing in it
+    # (sharing one) may say False; the registry holds every other tool to True.
+    writes_paths: bool = True
     recoverable: bool = True
     trusted_output: bool = False
     # Wrapped as untrusted like any result, but escaped reversibly instead of neutralized

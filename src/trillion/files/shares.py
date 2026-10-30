@@ -62,6 +62,10 @@ class ShareError(ValueError):
     """A share that cannot be made or changed. The message is safe to show the user."""
 
 
+class WidensError(ShareError):
+    """A change asked to narrow a share would let it reach more."""
+
+
 @dataclass(frozen=True, kw_only=True)
 class Share:
     id: str
@@ -413,6 +417,15 @@ class Shares:
         raised and again when it is approved. Blocking."""
         return self._folder(raw_path)
 
+    def check_name(self, name: str, folder: Path) -> str:
+        """`name` as a share of `folder` would get it, cleaned, or `ShareError` when it
+        is not a name or another share has it. The share already of that folder, if
+        any, does not count. Nothing is written: her card asks this before it is shown,
+        so a bad name fails then, not after the tap. Blocking."""
+        key = _key(folder)
+        others = [s for s in self.all() if _key(s.path) != key]
+        return self._unique(name, others)
+
     @staticmethod
     def _check(access: str, scope: str) -> None:
         if access not in ACCESS:
@@ -451,11 +464,15 @@ class Shares:
         name: str | None = None,
         access: Access = "read",
         scope: str = EVERYONE,
+        expect: Path | None = None,
     ) -> Share:
         """Share a folder, or change its share: one path is one share, and the later
-        request decides. A granted folder shared here is saved from then on."""
+        request decides. A granted folder shared here is saved from then on. With
+        `expect`, the folder must still be that one (the one her card named)."""
         self._check(access, scope)
         path = self._folder(raw_path)
+        if expect is not None and _key(path) != _key(expect):
+            raise ShareError("that folder changed since the card was shown, so nothing was shared")
         key = _key(path)
         with self._lock:
             saved = self._saved()
@@ -519,6 +536,22 @@ class Shares:
                 self._write([new if s.id == share_id else s for s in self._saved()])
             self._changed()
             return new
+
+    def narrow(
+        self, share_id: str, *, access: Access | None = None, scope: str | None = None
+    ) -> Share:
+        """Lower a share to `access` or give it to `scope` only, judged against the share
+        as it is now, under the lock: a change made meanwhile (in Settings) is never
+        widened back. Only what is asked is written; anything that would reach more
+        raises `ShareError`. A `--grant` share stays this run's."""
+        with self._lock:
+            old = self._find(share_id)
+            to_access, to_scope = access or old.access, scope or old.scope
+            if widens(replace(old, run_only=False), access=to_access, scope=to_scope):
+                raise WidensError(
+                    "that would let Trillion reach more, so it goes on a card the user taps"
+                )
+            return self.change(share_id, access=access, scope=scope)
 
     def _find(self, share_id: str) -> Share:
         """A share to change. This run's are found even when the file is damaged; a

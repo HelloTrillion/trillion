@@ -100,6 +100,9 @@ def validate(tool: Tool, module: str, definition: ToolDefinition | None = None) 
         raise RegistryError(f"{d.name}: trusted_output is reserved for first-party tools")
     if d.lossless_output and not first_party:
         raise RegistryError(f"{d.name}: lossless_output is reserved for first-party tools")
+    if not d.writes_paths and not first_party:
+        # A server or skill that could say it writes nothing would pass a read share.
+        raise RegistryError(f"{d.name}: writes_paths is reserved for first-party tools")
     if d.risk in GATED and isinstance(tool, BaseTool) and type(tool).describe is BaseTool.describe:
         raise RegistryError(f"{d.name}: gated tools must implement describe() (SPN-2a)")
 

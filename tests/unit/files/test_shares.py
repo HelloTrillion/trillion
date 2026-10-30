@@ -572,3 +572,50 @@ def test_of_two_looks_ending_out_of_order_the_later_begun_is_kept(home: Path) ->
     inside.append(gone_then_look)
     store._look()  # begun first, ends last, still seeing the folder
     assert store.known(EVERYONE) == ((), ())
+
+
+# ── For her tools: checks that write nothing, and narrowing under the lock ──
+
+
+def test_a_name_is_checked_without_writing(store, home):
+    web = folder(home, "Documents", "Website")
+    notes = folder(home, "Documents", "Notes")
+    store.put(web, name="Website project")
+    assert store.check_name("  Website project ", web) == "Website project"  # its own
+    with pytest.raises(ShareError, match="already named"):
+        store.check_name("website PROJECT", notes)
+    with pytest.raises(ShareError, match="one line"):
+        store.check_name("two\nlines", notes)
+    assert len(on_disk(store)["shares"]) == 1
+
+
+def test_a_share_is_refused_when_its_folder_is_not_the_one_expected(store, home):
+    web = folder(home, "Documents", "Website")
+    other = folder(home, "Documents", "Other")
+    with pytest.raises(ShareError, match="changed since the card"):
+        store.put(web, expect=other)
+    assert store.all() == []
+    assert store.put(web, expect=web).path == web.resolve()
+
+
+def test_narrowing_judges_the_share_as_it_is_now(store, home):
+    web = folder(home, "Documents", "Website")
+    share = store.put(web, access="change")
+    store.change(share.id, access="read")  # Settings lowered it meanwhile
+    narrowed = store.narrow(share.id, scope=routine_scope("a1b2c3d4"))
+    assert (narrowed.access, narrowed.scope) == ("read", routine_scope("a1b2c3d4"))
+    with pytest.raises(ShareError, match="reach more"):
+        store.narrow(share.id, access="change")
+    with pytest.raises(ShareError, match="reach more"):
+        store.narrow(share.id, scope=routine_scope("ffff0000"))
+    with pytest.raises(ShareError, match="reach more"):
+        store.narrow(share.id, scope=EVERYONE)
+    assert store.all()[0].scope == routine_scope("a1b2c3d4")
+
+
+def test_narrowing_a_granted_share_keeps_it_this_runs(store, home):
+    web = folder(home, "Documents", "Website")
+    grant = store.add_run_only(web)
+    narrowed = store.narrow(grant.id, access="read")
+    assert narrowed.run_only and narrowed.access == "read"
+    assert not store.path.exists() or on_disk(store)["shares"] == []

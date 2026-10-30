@@ -127,6 +127,26 @@ async def test_a_tool_that_names_a_path_outside_the_shares_is_judged_too(tmp_pat
     )
 
 
+def test_a_tool_that_writes_no_paths_is_not_held_by_a_read_share(tmp_path: Path) -> None:
+    """Sharing a folder inside a read share names it without writing in it; it is still
+    refused anything protected (SEC-10)."""
+    defn = ToolDefinition(
+        name="t",
+        description="d",
+        input_schema={"type": "object"},
+        risk=Risk.IRREVERSIBLE,
+        category="files",
+        timeout_s=1.0,
+        outside_path_args=("path",),
+        writes_paths=False,
+    )
+    policy = deny_floor.DenyPolicy(protected_roots=())
+    inner = {"path": str(tmp_path / "Sub")}
+    assert deny_floor.check(defn, inner, policy, (tmp_path,), read_only_roots=(tmp_path,)) is None
+    secret = {"path": str(tmp_path / ".ssh")}
+    assert deny_floor.check(defn, secret, policy, (tmp_path,), read_only_roots=(tmp_path,))
+
+
 @pytest.mark.parametrize("risk", [Risk.WRITE, Risk.IRREVERSIBLE, Risk.SPEND])
 def test_any_tool_that_is_not_a_read_counts_as_a_write(tmp_path: Path, risk: Risk) -> None:
     defn = ToolDefinition(
