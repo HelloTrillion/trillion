@@ -547,3 +547,28 @@ def test_a_look_begun_before_a_change_never_replaces_its_view(home: Path) -> Non
     during.append(lambda: store.change(share.id, access="read"))
     store._look()
     assert store.known(EVERYONE) == ((a,), (a,))  # the change's view, not the older one
+
+
+def test_of_two_looks_ending_out_of_order_the_later_begun_is_kept(home: Path) -> None:
+    ticks = iter(range(1000))
+    inside: list[Callable[[], object]] = []
+
+    def judge(_p: Path) -> str | None:
+        # The first look is at the folder when it goes, and a second look runs then.
+        while inside:
+            inside.pop()()
+        return None
+
+    store = Shares(
+        home / ".trillion" / "folders.json", rules=judge, monotonic=lambda: float(next(ticks))
+    )
+    a = folder(home, "A")
+    store.put(a)
+
+    def gone_then_look() -> None:
+        a.rmdir()
+        store._look()
+
+    inside.append(gone_then_look)
+    store._look()  # begun first, ends last, still seeing the folder
+    assert store.known(EVERYONE) == ((), ())

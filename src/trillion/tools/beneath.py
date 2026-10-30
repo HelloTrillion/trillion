@@ -69,7 +69,11 @@ def locate(
         given.resolve(strict=False) if folder else given.parent.resolve(strict=False) / given.name
     )
     for root in roots:
-        top = root.expanduser().resolve(strict=False)
+        forms = deny_floor.root_forms(root)
+        # A granted folder now reached through a link reaches nothing (the deny floor).
+        if not forms:
+            continue
+        top = forms[0]
         if deny_floor.inside(resolved, top):
             names = resolved.parts[len(top.parts) :]
             if (names or folder) and all(name not in ("", ".", "..") for name in names):

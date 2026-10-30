@@ -201,25 +201,25 @@ def test_a_read_share_holds_however_var_is_spelled(tmp_path: Path) -> None:
     inner.mkdir()
     defn = FileCreate.definition
     policy = deny_floor.DenyPolicy(protected_roots=())
-    for root, locked, target in (
-        (linked, linked / "inner", real / "inner" / "a"),
-        (real, real / "inner", linked / "inner" / "a"),
-    ):
+    # Shares are kept resolved; the path asked for may be spelled either way.
+    for target in (real / "inner" / "a", linked / "inner" / "a"):
         denial = deny_floor.check(
-            defn, {"path": str(target)}, policy, (root,), read_only_roots=(locked,)
+            defn, {"path": str(target)}, policy, (real,), read_only_roots=(inner,)
         )
-        assert denial is not None and denial.reason == READ_ONLY, (root, locked, target)
-    # And a change share inside a read share, spelled the other way, may be written.
-    assert (
-        deny_floor.check(
-            defn,
-            {"path": str(linked / "inner" / "a")},
-            policy,
-            (real, inner),
-            read_only_roots=(linked,),
+        assert denial is not None and denial.reason == READ_ONLY, target
+    # A change share inside a read share may be written, however the path is spelled.
+    for target in (real / "inner" / "a", linked / "inner" / "a"):
+        assert (
+            deny_floor.check(
+                defn, {"path": str(target)}, policy, (real, inner), read_only_roots=(real,)
+            )
+            is None
         )
-        is None
+    # A share spelled through a link reaches nothing: it is refused, never followed.
+    denial = deny_floor.check(
+        defn, {"path": str(real / "a")}, policy, (linked,), read_only_roots=()
     )
+    assert denial is not None and "outside" in denial.reason
 
 
 @pytest.mark.skipif(not deny_floor.CASE_BLIND, reason="names differ by case only where disks do")
@@ -237,3 +237,38 @@ def test_a_read_share_holds_whatever_the_case(tmp_path: Path) -> None:
             defn, {"path": str(target)}, policy, (root,), read_only_roots=(locked,)
         )
         assert denial is not None and denial.reason == READ_ONLY
+
+
+async def test_a_share_swapped_for_a_link_reaches_nothing_even_from_the_view(
+    tmp_path: Path,
+) -> None:
+    """Within the moment the view of the shares is trusted, the share's folder is
+    renamed and a link put in its place: nothing under it is read or written."""
+    from trillion.files.shares import EVERYONE, Shares
+    from trillion.tools.files import FileRead
+
+    share = tmp_path / "Website"
+    share.mkdir()
+    (share / "f.txt").write_text("old", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "f.txt").write_text("SECRET", encoding="utf-8")
+    store = Shares(tmp_path / "folders.json", rules=lambda _p: None, monotonic=lambda: 0.0)
+    store.put(share, access="read")
+    share.rename(tmp_path / "moved")
+    symlink_or_skip(share, elsewhere)
+    store.refresh()  # a moment ago and the file unchanged: the view is kept
+    roots, read_only = store.known(EVERYONE)
+    assert roots == (share,)
+    ctx = _ctx(roots, read_only)
+    policy = deny_floor.DenyPolicy(protected_roots=())
+    for defn, args in (
+        (FileRead.definition, {"path": str(share / "f.txt")}),
+        (FileCreate.definition, {"path": str(share / "new.txt"), "content": "x"}),
+    ):
+        denial = deny_floor.check(defn, args, policy, roots, read_only_roots=read_only)
+        assert denial is not None and "outside" in denial.reason, defn.name
+    read = await FileRead().execute({"path": str(share / "f.txt")}, ctx)
+    assert not read.ok and "SECRET" not in read.content
+    made = await FileCreate().execute({"path": str(share / "n.txt"), "content": "x"}, ctx)
+    assert not made.ok and not (elsewhere / "n.txt").exists()

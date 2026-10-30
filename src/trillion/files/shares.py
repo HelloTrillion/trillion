@@ -19,7 +19,9 @@ would stall whatever looks. So what the shares reach is kept as a view: `known*`
 it without touching the disk, for code on the event loop; `refresh` (in a thread)
 looks again when the file changed or the view is a moment old; every change through
 this store makes a fresh view before it returns, so narrowing applies to the very
-next call.
+next call. That look runs while the change holds the lock, so it waits on a slow
+drive: callers on the event loop (the Settings routes, her tools) run every change
+in a thread.
 """
 
 from __future__ import annotations
@@ -76,7 +78,7 @@ class _View:
     """The shares, and those whose folder is there to reach, as last looked at."""
 
     stamp: tuple[int, int] | None  # the file's (mtime_ns, size), None when there is none
-    at: float
+    at: float  # when the look that made it began
     shares: tuple[Share, ...]
     reaching: tuple[Share, ...]
 
@@ -328,16 +330,19 @@ class Shares:
         a change came in meanwhile (its own view is newer). Blocking."""
         with self._lock:
             changes = self._changes
+            began = self._monotonic()
         stamp = self._stamp()
         shares = tuple(self.all())
         view = _View(
             stamp=stamp,
-            at=self._monotonic(),
+            at=began,
             shares=shares,
             reaching=tuple(s for s in shares if self.state(s) is None),
         )
         with self._lock:
-            if changes == self._changes:
+            # Two looks can end out of order: only the one begun later is kept.
+            newer = self._view is None or began >= self._view.at
+            if changes == self._changes and newer:
                 self._view = view
         return view
 

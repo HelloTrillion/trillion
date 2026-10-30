@@ -157,13 +157,27 @@ def protected_reason(p: PurePath, protected_roots: tuple[Path, ...]) -> str | No
     return None
 
 
+def root_forms(root: Path) -> tuple[Path, ...]:
+    """The spellings of a granted folder, or none when resolving it changes it. Shares
+    are kept resolved, so a change means a folder on the way was swapped for a link
+    since: the share reaches nothing, rather than wherever the link now leads."""
+    given = root.expanduser()
+    try:
+        real = given.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return ()
+    if real != given and not (CASE_BLIND and fold(str(real)) == fold(str(given))):
+        return ()
+    return spellings(real)
+
+
 def _check_one(
     name: str, p: Path, policy: DenyPolicy, granted_roots: tuple[Path, ...]
 ) -> Denial | None:
     reason = protected_reason(p, policy.protected_roots)
     if reason is not None:
         return Denial(name, reason)
-    grants = [s for g in granted_roots for s in spellings(g.expanduser().resolve())]
+    grants = [s for g in granted_roots for s in root_forms(g)]
     if not any(inside(p, g) for g in grants):
         return Denial(name, "the path is outside the folders the user granted")
     return None
@@ -191,7 +205,7 @@ def read_only(p: Path, granted_roots: tuple[Path, ...], read_only_roots: tuple[P
     deepest, locked = -1, False
     shares = [(g, False) for g in granted_roots] + [(r, True) for r in read_only_roots]
     for root, read_only in shares:
-        for form in spellings(root.expanduser().resolve()):
+        for form in root_forms(root):
             if not inside(p, form):
                 continue
             depth = len(form.parts)

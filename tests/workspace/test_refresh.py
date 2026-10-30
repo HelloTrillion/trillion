@@ -529,3 +529,32 @@ async def test_a_refreshed_name_never_reaches_her_context(world: World) -> None:
     # Her own title names it when she gave one.
     refreshed["widgets"][0]["title"] = "Next meeting"
     assert 'w1 next up "Next meeting"' in summary(refreshed)
+
+
+async def test_each_replayed_read_gets_the_shares_as_they_are_then(world: World) -> None:
+    """A widget kept fresh in the background reads the folders afresh, off the event
+    loop, for every read: never a view left over from before."""
+    asked: list[str] = []
+    seen: list[tuple[tuple[Path, ...], tuple[Path, ...]]] = []
+    folder = Path("/shared/now")
+
+    async def reach() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        asked.append("reach")
+        return (folder,), (folder,)
+
+    dispatch = world.rt.router.dispatch
+
+    async def spy(call: Any, ctx: Any, *rest: Any) -> Any:
+        seen.append((ctx.granted_roots, ctx.read_only_roots))
+        return await dispatch(call, ctx, *rest)
+
+    world.refresher._shares = reach
+    world.refresher._router = type("R", (), {"dispatch": staticmethod(spy)})()
+    world.clock.advance(16)
+    await world.s.handle({"type": "board.seen", "on": True})
+    assert await world.step() == 1
+    assert asked == ["reach"] and seen == [((folder,), (folder,))]
+
+
+def test_the_runtime_hands_the_refresher_its_live_shares(world: World) -> None:
+    assert world.refresher._shares == world.rt.reach

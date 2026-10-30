@@ -963,7 +963,7 @@ async def open_runtime(
         enabled=lambda: rt.widgets_fresh,
         tell=rt.send_refreshing,
         spent=rt.record_refresh_usage,
-        granted_roots=lambda: rt.granted_roots,
+        shares=rt.reach,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)
