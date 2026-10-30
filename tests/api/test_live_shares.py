@@ -21,6 +21,7 @@ from trillion.api.session import Session
 from trillion.files.shares import Shares
 from trillion.secrets.store import MemoryStore
 from trillion.spine.deny_floor import READ_ONLY
+from trillion.tools.folders import near_home
 
 
 @pytest.fixture
@@ -114,12 +115,13 @@ async def test_her_prompt_lists_the_shares_in_scope_by_name_each_turn(
     session, _, provider = await started(rt, say("Hi."), say("Hi again."))
     await ask(session, "hello")
     first = provider.calls[0][0][0].text
-    assert f'- "Website project": {project} (read and change)' in first
+    # Spelled from `~` where it is under home, as on Windows' temporary folder.
+    assert f'- "Website project": {near_home(project)} (read and change)' in first
     assert "Notes" not in first  # one routine's share is not hers
     rt.shares.put(notes, name="Notes", access="read")
     await ask(session, "hello again")
     second = provider.calls[-1][0][0].text
-    assert f'- "Notes": {notes} (read only)' in second
+    assert f'- "Notes": {near_home(notes)} (read only)' in second
     await session.close()
 
 

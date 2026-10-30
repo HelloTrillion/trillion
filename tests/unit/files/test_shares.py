@@ -297,6 +297,18 @@ def test_removing_a_routine_removes_its_shares(store, home):
         b'{"version": 1, "shares": [], "x": "\xff\xfe"}',  # not UTF-8
         "[" * 100_000,  # deep enough to overflow the parser
     ],
+    # Short ids: the test's id rides in an environment variable, which Windows caps.
+    ids=[
+        "not-json",
+        "a-list",
+        "version-2",
+        "no-shares",
+        "share-missing-fields",
+        "relative-path",
+        "unknown-access",
+        "not-utf8",
+        "too-deep",
+    ],
 )
 def test_a_damaged_file_is_never_overwritten_and_no_shares_apply(store, home, text):
     raw = text if isinstance(text, bytes) else text.encode("utf-8")

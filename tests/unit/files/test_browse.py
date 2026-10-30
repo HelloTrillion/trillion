@@ -467,6 +467,9 @@ def test_crumbs_start_at_the_place(world: dict[str, Path]) -> None:
 # --- places (D8), per system -----------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the startup disk is a macOS link to /, which Windows has not"
+)
 def test_macos_places(world: dict[str, Path], tmp_path: Path) -> None:
     home = world["home"]
     volumes = world["tmp"] / "Volumes"
@@ -807,7 +810,9 @@ def test_names_that_are_not_one_folder(world: dict[str, Path], name: str) -> Non
 def test_an_unknown_user_is_a_problem_not_an_error(world: dict[str, Path]) -> None:
     got = browse.step(world["home"], "~nosuchuser-trillion/x", fence=fence(world))
     assert got.to == world["home"]
-    assert got.problem == "that folder could not be found"
+    # POSIX can't expand it; Windows makes it a folder beside the home folder, which
+    # the fence refuses. Either way a problem in words, never an error.
+    assert got.problem in ("that folder could not be found", browse.OUTSIDE)
 
 
 def test_a_fence_that_cannot_be_built_is_a_problem(
