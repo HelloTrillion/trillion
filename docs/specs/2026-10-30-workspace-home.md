@@ -25,7 +25,10 @@ and it makes connecting the next service the obvious next step.
 | D9 | **Build my briefing is Your day.** It opens today's day conversation and builds it, the same call as the Your day row (`day.open()`). When today's day board already has widgets, the button reads "Open today's briefing" and only opens it. | One briefing, one recipe (ONB-3: the page only asks). |
 | D10 | **Recent files joins Your day.** `persona/day.py` gains a Google Drive row (`drive_search` with `changed_since` set to yesterday: files changed since yesterday, shown as `files`), and `SetUp` gains `drive`, using the same readable-without-asking test as the other Google services. `drive_search` gains an optional `changed_since` (a date, or a date and time with its offset), and needs `words`, `changed_since` or both. It sees only the files the user picked (the `drive.file` scope), not the whole Drive. | D3: every tile has a row. |
 | D11 | **Home refreshes when connections change** (the Connected panel's change callback, and returning from a sign-in) and each time it is shown. It never polls. | It must turn a tile green the moment a sign-in finishes. |
-| D12 | **Out of scope:** weather (there is no weather source), choosing or reordering tiles, live numbers on Home, opening Home by voice (asking "what's my day?" already builds the briefing). The sample board stays reachable at `#showcase`, but no button links to it. | Keep it to one screen that works well. |
+| D12 | **Out of scope:** weather (there is no weather source), live numbers on Home, opening Home by voice (asking "what's my day?" already builds the briefing). The sample board stays reachable at `#showcase`, but no button links to it. | Keep it to one screen that works well. |
+| D13 | **The user arranges Home, by hand or by asking.** Tiles can be dragged into a new order, removed, and added back; she can do the same with `home_arrange`. The layout is one record kept by the core (a preference, `home_layout`), so it is the same in every browser and the desktop app. | The user asked to arrange it both ways, and to get a removed widget back. |
+| D14 | **A removed widget is never gone.** It moves to "Add widgets" at the end of the grid, which lists every removed tile with its state and an Add button. Removing shows "Inbox removed" with Undo. "Reset Home" there restores the default order with nothing removed. | Removing must be safe to try. |
+| D15 | **The briefing follows Home.** Your day leaves off the widgets removed from Home, does not read a source whose every tile is removed, and orders the board as Home is ordered. | Home is the briefing's menu: arranging one arranges the other. |
 
 ## The route
 
@@ -156,6 +159,61 @@ uses the workspace's glass surfaces and type scale, like the board's cards.
 - After a refresh that changes a state, the panel's live region says "Mentions is
   ready".
 
+## Arranging Home
+
+**The layout record** (`workspace/home.py`, kept under the preference key
+`home_layout` through `rt.preferences`): `{"order": [tile ids], "removed": [tile ids]}`.
+Reading it is forgiving: unknown ids are dropped, duplicates keep their first place,
+and a tile missing from `order` (a new default in a later version) is appended in
+default order. No record means the default order with nothing removed.
+
+**The route.** `GET /api/workspace/home` returns `tiles` in the user's order without
+the removed ones, and `removed`: the removed tiles, each in the same shape as a tile
+(state and services included), in default order. `ready` and `total` count only the
+tiles shown, and D8's suggestion only considers tiles shown. `PUT
+/api/workspace/home/layout` takes `{"order": [...], "removed": [...]}`, cleans it as
+above, saves it, answers with the full Home JSON, and tells every open page
+(`{"type": "home"}` frame) so another tab, or a page while she arranges, redraws.
+
+**Her tool, `home_arrange`.** WRITE, reversible, never asks: it only moves her own
+host's tiles and every change can be undone in one tap. Arguments, all optional:
+`order` (tile ids; the ones named come first in that order, the rest keep their
+relative order after them), `remove` (ids), `add` (ids; an added tile goes back at
+its default place unless `order` names it), `reset` (true: default layout). With no
+arguments it changes nothing and returns the layout. The result lists the tiles shown
+in order and those removed, by id and title. The description lists the nine ids with
+their titles so she can map "the revenue one" to `kpis`. It is refused on turns
+nobody is watching (a routine, a timed ask, a refresh) and from channels; otherwise it
+runs, including after a read from outside, since the change is visible on Home and
+undone with one tap. After it runs the page is told (`{"type": "home"}`) and, if the
+workspace is not showing something else, Home opens so the user sees the change.
+
+**Your day (D15).** `persona/day.py`'s recipe takes the layout: it leaves out a row
+whose every tile is removed, names the removed widgets it must not show ("Leave off:
+Revenue, What's broken"), and asks for the board in Home's order. Reminders removed
+means `schedule_list` is not read for the board.
+
+**The page.**
+- **Drag.** Each tile has a grip in its head (shown on hover and focus, always on touch).
+  Dragging it with a pointer (mouse, pen or touch, through pointer events, not HTML5
+  drag and drop) lifts the tile and moves a placeholder through the grid; dropping
+  saves. Escape during a drag puts it back.
+- **Keyboard.** The grip is a button: Space or Enter picks the tile up, arrow keys move
+  it one place, Space or Enter drops it, Escape cancels. The live region says "Inbox,
+  picked up, position 3 of 8", "moved to position 4 of 8", "dropped".
+- **Remove.** A × in each tile's head ("Remove Inbox from Home") takes it off at once,
+  with a toast "Inbox removed" and Undo for 6 seconds.
+- **Add widgets.** After the grid, while anything is removed, a dashed tile "Add
+  widgets (2)" opens a small panel listing the removed tiles, each with its badge and
+  an Add button, and "Reset Home" at the bottom. With nothing removed the dashed tile is
+  not shown, and "Reset Home" moves to the foot line, shown only when the order
+  differs from the default.
+- **Saving.** Every change is drawn at once and sent with `PUT`; if it fails the layout
+  goes back and the toast says "Couldn't save that change". A `home` frame redraws from
+  the route without animation if no drag is under way (one in progress finishes first).
+- Motion follows the rest of Home: tiles slide to new places (FLIP), and nothing moves
+  under reduced motion.
+
 ## Platforms
 
 | Part | macOS | Windows | Linux | Browser | Desktop app |
@@ -168,6 +226,8 @@ Everything is served by the core and drawn by the page, so it's the same everywh
 `docs/platforms.md` gains a "Workspace Home" row.
 
 ## Testing
+
+- Arranging: `tests/workspace/test_home.py` cleans layouts (unknown, duplicate, missing ids) and orders and removes tiles, with the meter and D8 over shown tiles only; `tests/api/test_home_api.py` covers `PUT`, the `home` frame, and the route after a removal; `tests/api/test_home_arrange.py` covers the tool's arguments, refusal on routine, timed ask, refresh and channel, and that it never raises a card; the day recipe tests cover removed rows, "Leave off" and the order; `apps/web/test/home.test.ts` covers drag with pointer events, the keyboard grip and its announcements, remove with Undo, Add widgets, Reset Home, a failed save reverting, and a `home` frame redrawing.
 
 - `tests/unit/workspace/test_home.py`:
   - each tile's state from `SetUp` and the configured set: ready, asks first, connect,
