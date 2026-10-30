@@ -39,7 +39,11 @@ async def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator
 
 async def boot(home: Path, *replies: Any) -> Runtime:
     rt = await open_runtime(
-        granted_roots=(home / "granted",), persona=home, secrets=MemoryStore(), env={}
+        share_rules=lambda _p: None,
+        granted_roots=(home / "granted",),
+        persona=home,
+        secrets=MemoryStore(),
+        env={},
     )
     rt.provider = ScriptedProvider(*replies)
     _OPEN.append(rt)

@@ -271,16 +271,19 @@ export function whenIdle(idle: () => boolean, then: () => void, capMs = DAY_OPEN
   return () => clearInterval(timer);
 }
 
-/** What Escape does, in one order: she stops first, then the thread list closes, then the workspace. */
+/** What Escape does, in one order: she stops first, then the thread list closes, then the
+ * Folders panel (its form first), then the workspace. */
 export function escapeAction(s: {
   readonly busy: boolean;
   readonly speaking: boolean;
   readonly listening: boolean;
   readonly listOpen: boolean;
+  readonly foldersOpen?: boolean;
   readonly workspaceOpen: boolean;
-}): 'interrupt' | 'list' | 'workspace' | null {
+}): 'interrupt' | 'list' | 'folders' | 'workspace' | null {
   if (s.busy || s.speaking || s.listening) return 'interrupt';
   if (s.listOpen) return 'list';
+  if (s.foldersOpen) return 'folders';
   if (s.workspaceOpen) return 'workspace';
   return null;
 }

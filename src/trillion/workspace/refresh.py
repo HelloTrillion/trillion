@@ -93,7 +93,7 @@ class Refresher:
         enabled: Callable[[], bool],
         tell: Callable[[str, str, bool], Awaitable[None]],
         spent: Callable[[str, ModelProvider, Usage], Awaitable[None]],
-        granted_roots: Callable[[], tuple[Path, ...]] = lambda: (),
+        shares: Callable[[], Awaitable[tuple[tuple[Path, ...], tuple[Path, ...]]]] | None = None,
         tick_s: float = TICK_S,
     ) -> None:
         self._boards = boards
@@ -110,7 +110,8 @@ class Refresher:
         self._tell = tell
         # Records a model call's usage with a conversation.
         self._spent = spent
-        self._roots = granted_roots
+        # The folders her own turns reach, looked at off the event loop for each read.
+        self._shares = shares
         self.tick_s = tick_s
         self._seen: set[str] = set()
         # In order; a refresh the user asked for goes first.
@@ -309,13 +310,15 @@ class Refresher:
             definition = self._definition(name)
             if definition is None or not live.eligible(definition):
                 return False
+            roots, read_only = await self._shares() if self._shares is not None else ((), ())
             ctx = ToolContext(
                 owner_id=self._owner,
                 session_id=conversation_id,
                 turn=turn,
                 call_id=f"refresh-{self._count}-{i}",
                 via="refresh",
-                granted_roots=self._roots(),
+                granted_roots=roots,
+                read_only_roots=read_only,
             )
             r = await self._router.dispatch(ToolCall(name=name, args=dict(args)), ctx)
             if r.status != "succeeded":

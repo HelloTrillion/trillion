@@ -18,6 +18,7 @@ from trillion.api.runtime import Runtime, open_runtime
 from trillion.brain.types import ContextBlock, ProviderError, TextBlock, ToolResultBlock
 from trillion.connectors.mcp.config import ServerConfig
 from trillion.connectors.mcp.tool import McpTool, Offered, Outcome
+from trillion.files.shares import EVERYONE, routine_scope
 from trillion.persona import day
 from trillion.persona.prompt import system_blocks
 from trillion.scheduler.ask import ROUTINE_RUN, SHOW_OR_NOTHING, Asker, RoutineDeps
@@ -42,7 +43,11 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     granted = tmp_path / "granted"
     granted.mkdir()
     runtime = await open_runtime(
-        granted_roots=(granted,), persona=tmp_path, secrets=MemoryStore(), env={}
+        share_rules=lambda _p: None,
+        granted_roots=(granted,),
+        persona=tmp_path,
+        secrets=MemoryStore(),
+        env={},
     )
     yield runtime
     await runtime.close()
@@ -54,9 +59,9 @@ def asker(rt: Runtime, provider: Recording | None, **kw: Any) -> Asker:
         router=rt.router,
         registry=rt.registry,
         conversations=rt.conversations,
-        system=lambda: system_blocks(rt.identity, rt.soul, rt.granted_roots),
+        system=lambda scope: system_blocks(rt.identity, rt.soul, rt.shared(scope)),
         identity=lambda: rt.identity,
-        granted_roots=lambda: rt.granted_roots,
+        shares=rt.reach,
         zone=lambda: NY,
         clock=rt.clock,
         owner="local",
@@ -398,3 +403,49 @@ async def test_a_run_is_told_its_board_and_where_its_reply_goes(rt: Runtime) -> 
     (text,) = [b.text for b in asked.blocks if isinstance(b, TextBlock)]
     assert "the user gets a short ready line" in text
     assert "your reply stays in this routine's conversation" in text
+
+
+async def test_a_run_reaches_everyones_shares_and_its_own_only(rt: Runtime, tmp_path: Path) -> None:
+    folders = {}
+    for name, scope in (
+        ("Mine", routine_scope("a1b2c3d4")),
+        ("Theirs", routine_scope("ffff0000")),
+        ("Everyone", EVERYONE),
+    ):
+        folder = tmp_path / name.lower()
+        folder.mkdir()
+        (folder / "note.txt").write_text(f"in {name}", encoding="utf-8")
+        rt.shares.put(folder, name=name, access="read", scope=scope)
+        folders[name] = folder
+    provider = Recording(
+        *(
+            use("file_read", {"path": str(folders[n] / "note.txt")}, f"c{i}")
+            for i, n in enumerate(folders)
+        ),
+        show(NOTE, call_id="s9"),
+        say("Read."),
+    )
+    a = asker(rt, provider)
+    target = await a.place(routine())
+    assert target is not None
+    await a.build(routine(), target)
+    history = await rt.conversations.history(target, "local")
+    results = [b.content for _, m in history for b in m.blocks if isinstance(b, ToolResultBlock)]
+    assert "in Mine" in results[0]
+    assert "in Theirs" not in results[1] and "outside the folders" in results[1]
+    assert "in Everyone" in results[2]
+    # Her prompt lists what the run reaches, by name, and nothing else.
+    system = provider.calls[0][0][0].text
+    assert '- "Mine": ' in system and '- "Everyone": ' in system and "Theirs" not in system
+
+
+async def test_a_timed_ask_reaches_everyones_shares_only(rt: Runtime, tmp_path: Path) -> None:
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    (mine / "note.txt").write_text("in Mine", encoding="utf-8")
+    rt.shares.put(mine, name="Mine", scope=routine_scope("a1b2c3d4"))
+    provider = Recording(use("file_read", {"path": str(mine / "note.txt")}, "c1"), say("No."))
+    await asker(rt, provider)(schedule(kind="ask", body="Read my note."))
+    (_, sent) = provider.calls[-1]
+    results = [b.content for m in sent for b in m.blocks if isinstance(b, ToolResultBlock)]
+    assert "outside the folders" in results[0] and "in Mine" not in results[0]

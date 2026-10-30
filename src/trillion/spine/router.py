@@ -75,7 +75,9 @@ ResponseStatus = Literal[
 
 _DETAIL_LIMIT = 2000
 _TOOL_DETAIL_LIMIT = 300
-_SUMMARY_LIMIT = 200
+# The longest card summary: what a card can show. Public, so a tool can refuse a
+# card that would be cut rather than show part of what it does.
+SUMMARY_LIMIT = 200
 _UNHASHABLE = "unhashable"
 _TARGET_CHANGED = "the target changed since you were asked"
 _NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
@@ -148,7 +150,7 @@ def _tool_detail(text: str) -> str:
     return neutralize(text)[0][:_TOOL_DETAIL_LIMIT]
 
 
-def _safe_summary(text: str) -> str:
+def safe_summary(text: str) -> str:
     """The approval card is what the user consents to (SPN-2a). Whatever a tool put in it
     (a model-chosen file name, say) is neutralized, kept to one line with no control or
     format characters (no bidi overrides), and cut to a length a card can show."""
@@ -156,7 +158,7 @@ def _safe_summary(text: str) -> str:
     for ws in ("\r\n", "\n", "\r", "\t"):
         clean = clean.replace(ws, " ")
     clean = "".join(c for c in clean if unicodedata.category(c) not in ("Cc", "Cf"))
-    return clean[:_SUMMARY_LIMIT]
+    return clean[:SUMMARY_LIMIT]
 
 
 def _lossless_note(text: str) -> str | None:
@@ -364,7 +366,13 @@ class Router:
         if error is not None:
             return await audited(risk, _refused(Refusal.INVALID_ARGS, error.message[:300]))
 
-        denial = deny_floor.check(tool.definition, call.args, self._policy, ctx.granted_roots)
+        denial = deny_floor.check(
+            tool.definition,
+            call.args,
+            self._policy,
+            ctx.granted_roots,
+            read_only_roots=ctx.read_only_roots,
+        )
         if denial is not None:
             return await audited(risk, _refused(Refusal.DENIED_BY_FLOOR, denial.reason))
 
@@ -414,7 +422,7 @@ class Router:
         frozen: dict[str, Any] = json.loads(canonical_json(dict(args)))
         try:
             target = tool.target(frozen)
-            summary = _safe_summary(tool.describe(frozen).text)
+            summary = safe_summary(tool.describe(frozen).text)
             token = _fingerprint(tool, frozen)
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)
@@ -539,7 +547,13 @@ class Router:
             )
             return _refused(Refusal.UNKNOWN_TOOL)
 
-        denial = deny_floor.check(tool.definition, a.args, self._policy, ctx.granted_roots)
+        denial = deny_floor.check(
+            tool.definition,
+            a.args,
+            self._policy,
+            ctx.granted_roots,
+            read_only_roots=ctx.read_only_roots,
+        )
         if denial is not None:
             await self._move(
                 a.id,
@@ -631,7 +645,13 @@ class Router:
         tool = self._get(a.tool)
         if tool is None:
             return _refused(Refusal.UNKNOWN_TOOL)
-        denial = deny_floor.check(tool.definition, a.args, self._policy, ctx.granted_roots)
+        denial = deny_floor.check(
+            tool.definition,
+            a.args,
+            self._policy,
+            ctx.granted_roots,
+            read_only_roots=ctx.read_only_roots,
+        )
         if denial is not None:
             return _refused(Refusal.DENIED_BY_FLOOR, denial.reason)
         pre = await self._precheck(tool, a.args, ctx)

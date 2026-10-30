@@ -35,10 +35,18 @@ from trillion.connectors.mcp.config import load as mcp_load
 from trillion.connectors.mcp.servers import McpServers
 from trillion.connectors.slack.connection import SlackConnection
 from trillion.delivery.door import Door
+from trillion.files.rules import why_not
+from trillion.files.shares import EVERYONE, ShareError, Shares
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
-from trillion.persona.prompt import Identity, load_identity, load_soul, system_blocks
+from trillion.persona.prompt import (
+    Identity,
+    SharedFolder,
+    load_identity,
+    load_soul,
+    system_blocks,
+)
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
@@ -60,6 +68,10 @@ from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.day import DAY_OPEN, DayOpen, Where
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
+from trillion.tools.folders import BROWSE as FOLDERS_BROWSE
+from trillion.tools.folders import SHARE as FOLDER_SHARE
+from trillion.tools.folders import UNSHARE as FOLDER_UNSHARE
+from trillion.tools.folders import FoldersBrowse, FolderShare, FolderUnshare, Look
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
@@ -295,7 +307,11 @@ class Runtime:
     profile: setup.Profile | None = None
     # The user put onboarding off. It is offered again only when they ask.
     onboarding_skipped: bool = False
-    granted_roots: tuple[Path, ...]
+    # The folders the user shared, read live on every call (the shared folders spec):
+    # the one store in the process, so every change goes through its lock.
+    shares: Shares
+    # How the folder browser looks at this computer; tests give it a temporary one.
+    folder_look: Look = field(default_factory=Look)
     env: Mapping[str, str] | None = None
     # Issued fresh at every launch, or handed over by the desktop app, and held only in
     # memory (SPN-11a). `open_runtime` sets it from `session_token`.
@@ -315,12 +331,51 @@ class Runtime:
     # Slow reads running in the background, per conversation (the background reads spec).
     jobs: Jobs = field(default_factory=lambda: Jobs(clock=_now_ms))
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
+    # Pages being told the shares changed.
+    _telling: set[asyncio.Task[None]] = field(default_factory=set)
     _asides: int = 0
     # The widget types the workspace tools were last told, so an unchanged list is
     # not built and validated again.
     _told: list[str] | None = None
     # When each day conversation was last asked to build its board (epoch ms).
     day_built: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def granted_roots(self) -> tuple[Path, ...]:
+        """The folders her own turns reach, as last looked at: no disk work, so it is
+        safe on the event loop."""
+        return self.shares.known(EVERYONE)[0]
+
+    async def reach(self, scope: str = EVERYONE) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """The folders a turn in `scope` reaches now, and those of them read only. The
+        folders are looked at in a thread: a share on a hung drive never stalls the loop."""
+        await asyncio.to_thread(self.shares.refresh)
+        return self.shares.known(scope)
+
+    def shared(self, scope: str = EVERYONE) -> list[SharedFolder]:
+        """The shares in scope by name, for her prompt. Blocking: run it in a thread."""
+        self.shares.refresh()
+        return [
+            SharedFolder(name=s.name, path=s.path, read_only=s.access == "read")
+            for s in self.shares.known_reached(scope)
+        ]
+
+    async def routine_titles(self) -> list[tuple[str, str]]:
+        """Each routine's (id, title), for a share given to one routine by its title."""
+        if self.schedules is None:
+            return []
+        return [(s.id, s.title) for s in await self.schedules.active(OWNER) if s.target]
+
+    async def routine_removed(self, routine_id: str) -> None:
+        """A removed routine's shares go with it, written in a thread. Never raises: a
+        damaged folders file leaves them, and they reach nothing while it is damaged."""
+        try:
+            gone = await asyncio.to_thread(self.shares.remove_routine, routine_id)
+        except (ShareError, OSError) as e:
+            logger.warning("a removed routine's shares were kept: %s", type(e).__name__)
+            return
+        if gone:
+            logger.info("removed %d share(s) with their routine", gone)
 
     def out_of_turn(self) -> int:
         """A fresh number for speech outside a turn, never reused in this process."""
@@ -392,6 +447,27 @@ class Runtime:
             ),
         }
 
+    async def send_shares(self) -> None:
+        """Every open page: the shares changed, so it reads them again (`GET /api/folders`)."""
+        for session in list(self.sessions):
+            await session.send("shares")
+
+    def shares_changed(self, loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+        """What the shares store calls after a change, from whatever thread made it: the
+        pages are told on the event loop, never from the worker thread itself."""
+
+        def start() -> None:
+            task = loop.create_task(self.send_shares())
+            # Held until it ends: a task nothing refers to can be collected mid-way.
+            self._telling.add(task)
+            task.add_done_callback(self._telling.discard)
+
+        def tell() -> None:
+            with contextlib.suppress(RuntimeError):  # the loop has closed: no page is left
+                loop.call_soon_threadsafe(start)
+
+        return tell
+
     async def send_board(self, conversation_id: str, board: Board | None) -> None:
         """Every page open on this conversation draws the board as it now is."""
         for session in list(self.sessions):
@@ -420,13 +496,13 @@ class Runtime:
         self.skills_on = entries
         return lines
 
-    def system(self) -> list[SystemBlock]:
-        """The system blocks a turn gets, read now: rules, folders and the skills that
-        are on. Blocking, like `skill_lines`."""
+    def system(self, scope: str = EVERYONE) -> list[SystemBlock]:
+        """The system blocks a turn gets, read now: rules, the folders shared with
+        `scope` and the skills that are on. Blocking, like `skill_lines`."""
         return system_blocks(
             self.identity,
             self.soul,
-            self.granted_roots,
+            self.shared(scope),
             [(r.id, r.text) for r in self.rules.all()],
             skills=self.skill_lines(),
         )
@@ -694,6 +770,8 @@ ONBOARDING_PREF = "onboarding"
 async def open_runtime(
     *,
     granted_roots: tuple[Path, ...] = (),
+    shares: Shares | None = None,
+    share_rules: Callable[[Path], str | None] = why_not,
     db: Path | None = None,
     persona: Path | None = None,
     memory: Path | None = None,
@@ -706,11 +784,21 @@ async def open_runtime(
     session: str | None = None,
 ) -> Runtime:
     """`session` is the desktop app's token, already taken out of the environment by
-    `trillion run` so nothing it starts inherits it."""
+    `trillion run` so nothing it starts inherits it.
+
+    `granted_roots` become this run's shares, as `--grant` folders do (D10), judged by
+    `share_rules` when no `shares` is given: tests pass a judge that lets a temporary
+    folder be shared. A folder that can't be shared raises `ShareError`."""
     # Checked before anything is opened, so a bad one leaves nothing behind.
     given = os.environ if env is None else env
     token = session_token({SESSION_TOKEN_ENV: session} if session is not None else given)
     token_from_app = session is not None or SESSION_TOKEN_ENV in given
+    store_of_shares = shares if shares is not None else Shares(rules=share_rules)
+    for folder in granted_roots:
+        # A folder given relative to where Trillion was started, as a shell gives it.
+        store_of_shares.add_run_only(folder.expanduser().resolve())
+    # The first look, so her first turn's view is there to read without the disk.
+    await asyncio.to_thread(store_of_shares.refresh)
     path = db or paths.db_path()
     spine_conn = await connect(path)
     await migrate(spine_conn)
@@ -731,9 +819,8 @@ async def open_runtime(
         # The page reports a card once it is really on screen; only then can it be approved.
         require_delivery=True,
     )
-    roots = tuple(r.expanduser().resolve() for r in granted_roots)
     # Finish what a crash interrupted before anything new can be proposed (SPN-17a).
-    await router.recover(roots)
+    await router.recover(store_of_shares.known(EVERYONE)[0])
     await router.forget_settled_arguments()
     preferences = SqlitePreferences(chat_conn)
     keychain = secrets if secrets is not None else KeychainStore()
@@ -776,16 +863,19 @@ async def open_runtime(
         persona_dir=persona or paths.persona_dir(),
         profile=setup.load(persona),
         onboarding_skipped=await preferences.get(OWNER, ONBOARDING_PREF) == "skipped",
-        granted_roots=roots,
+        shares=store_of_shares,
         env=env,
         token=token,
         token_from_app=token_from_app,
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
     )
+    store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
-        describe.bind(registry.definitions, rt.facts)
+        describe.bind(
+            registry.definitions, rt.facts, lambda: {s.path: s.name for s in rt.shares.known_all()}
+        )
     web = registry.get(FETCH)
     if isinstance(web, WebFetch):
         rt.web = web
@@ -823,7 +913,7 @@ async def open_runtime(
         skill_tool = registry.get(name)
         if isinstance(skill_tool, SkillOpen | SkillFile):
             skill_tool.bind(rt.skills)
-    schedules = SqliteScheduleStore(schedule_conn)
+    schedules = SqliteScheduleStore(schedule_conn, cancelled=rt.routine_removed)
     rt.schedules = schedules
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
@@ -835,7 +925,7 @@ async def open_runtime(
         conversations=rt.conversations,
         system=rt.system,
         identity=lambda: rt.identity,
-        granted_roots=lambda: rt.granted_roots,
+        shares=rt.reach,
         zone=rt.zone,
         clock=lambda: rt.clock(),
         owner=OWNER,
@@ -876,6 +966,16 @@ async def open_runtime(
         speak_tool = registry.get(name)
         if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):
             speak_tool.bind(rt.attention_store, OWNER)
+    for name in (FOLDERS_BROWSE, FOLDER_SHARE, FOLDER_UNSHARE):
+        folder_tool = registry.get(name)
+        if isinstance(folder_tool, FoldersBrowse | FolderShare | FolderUnshare):
+            folder_tool.bind(
+                rt.shares,
+                # A conversation's open page holds its folder browser.
+                panel=rt.by_conversation.get,
+                look=lambda: rt.folder_look,
+                routines=rt.routine_titles,
+            )
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
@@ -909,7 +1009,7 @@ async def open_runtime(
         enabled=lambda: rt.widgets_fresh,
         tell=rt.send_refreshing,
         spent=rt.record_refresh_usage,
-        granted_roots=lambda: rt.granted_roots,
+        shares=rt.reach,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)

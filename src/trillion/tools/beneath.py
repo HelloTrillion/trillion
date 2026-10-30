@@ -46,10 +46,16 @@ class Escaped(OSError):
 
 
 def locate(
-    path: Path, roots: Sequence[Path], *, folder: bool = False
+    path: Path,
+    roots: Sequence[Path],
+    *,
+    folder: bool = False,
+    read_only: Sequence[Path] = (),
 ) -> tuple[Path, tuple[str, ...]]:
     """The granted folder `path` is under, and the names from it down to the file.
-    `folder` allows the granted folder itself, with no names below it.
+    `folder` allows the granted folder itself, with no names below it. A write passes
+    the shares that are read only: where a link on the way now leads into one, it is
+    refused here, as the deny floor would.
 
     Links the user already has on the way are followed once, here, and the deny floor
     is applied to where they lead: a folder swapped for a link to `.git` after the
@@ -63,12 +69,16 @@ def locate(
         given.resolve(strict=False) if folder else given.parent.resolve(strict=False) / given.name
     )
     for root in roots:
-        top = root.expanduser().resolve(strict=False)
+        forms = deny_floor.root_forms(root)
+        # A granted folder now reached through a link reaches nothing (the deny floor).
+        if not forms:
+            continue
+        top = forms[0]
         if deny_floor.inside(resolved, top):
             names = resolved.parts[len(top.parts) :]
             if (names or folder) and all(name not in ("", ".", "..") for name in names):
                 place = top.joinpath(*names)
-                reason = deny_floor.refused(place, tuple(roots))
+                reason = deny_floor.refused(place, tuple(roots), read_only_roots=tuple(read_only))
                 if reason is not None:
                     raise Escaped(reason)
                 return top, names
@@ -102,12 +112,14 @@ def _walk(top: Path, names: Sequence[str]) -> int:
 
 
 @contextlib.contextmanager
-def parent(path: Path, roots: Sequence[Path]) -> Iterator[tuple[int | None, Path, str]]:
+def parent(
+    path: Path, roots: Sequence[Path], read_only: Sequence[Path] = ()
+) -> Iterator[tuple[int | None, Path, str]]:
     """The folder that holds `path`, opened by walking down from its granted folder.
 
     Yields (descriptor, folder path, final name). The descriptor is None where the
     walk cannot be done (Windows); each step has then been checked for a link."""
-    top, names = locate(path, roots)
+    top, names = locate(path, roots, read_only=read_only)
     if not WALKS:
         yield None, _checked(top, names[:-1]), names[-1]
         return
@@ -127,11 +139,18 @@ def _regular(fd: int, *, single: bool) -> None:
 
 
 def open_file(
-    path: Path, roots: Sequence[Path], flags: int, mode: int = 0o666, *, single: bool = True
+    path: Path,
+    roots: Sequence[Path],
+    flags: int,
+    mode: int = 0o666,
+    *,
+    single: bool = True,
+    read_only: Sequence[Path] = (),
 ) -> int:
     """A descriptor for the file itself, never a link to it. `single` refuses a file
-    with a second hard link; it does not apply to a file this call creates."""
-    with parent(path, roots) as (fd, folder, name):
+    with a second hard link; it does not apply to a file this call creates. An open
+    that writes passes the shares that are `read_only`."""
+    with parent(path, roots, read_only) as (fd, folder, name):
         if fd is None:
             target = folder / name
             if target.is_symlink() or target.is_junction():
@@ -159,11 +178,18 @@ def read_bytes(path: Path, roots: Sequence[Path], limit: int) -> bytes:
         return f.read(limit)
 
 
-def replace(path: Path, roots: Sequence[Path], data: bytes, *, must_exist: bool) -> None:
+def replace(
+    path: Path,
+    roots: Sequence[Path],
+    data: bytes,
+    *,
+    must_exist: bool,
+    read_only: Sequence[Path] = (),
+) -> None:
     """Write beside the file, keep its mode, then swap it in: never a half-written
     file, and never through a link. The swap replaces the name, not the file it named,
     so a second hard link to the old file is left as it was."""
-    with parent(path, roots) as (fd, folder, name):
+    with parent(path, roots, read_only) as (fd, folder, name):
         if fd is None:
             target = folder / name
             if target.is_symlink() or target.is_junction():

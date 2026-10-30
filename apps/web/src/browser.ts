@@ -1,8 +1,8 @@
 /**
  * The Settings sections that need nothing from Trillion's core: Shortcuts and
- * Appearance (kept in this browser), and two that only show what the page already
- * knows: the shared folders and what is running. And the Board's one switch, which
- * the core keeps.
+ * Appearance (kept in this browser), and those that only show what the page already
+ * knows: what is running and what it costs. And the Board's one switch, which the
+ * core keeps. Shared folders are in folders.ts.
  */
 
 import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifierRelease, globalAccelerator, isModifier, keycaps, refused } from './hotkey';
@@ -361,31 +361,6 @@ export function createBoardSettings(host: Host, api: Api, changed: () => void): 
       host.showModal();
     },
     summary: () => (on ? 'Kept fresh' : 'Snapshots'),
-  };
-}
-
-// ── Shared folders ───────────────────────────────────────────────────────
-
-export function createFolders(host: Host, roots: () => readonly string[]): { open(): void } {
-  const { finish } = section(
-    host,
-    'folders',
-    'Shared folders',
-    'The only places her file tools can reach. Every change in them asks you first, on a card, and Trillion’s own files, keys and hidden folders such as .ssh stay out of reach even inside them.',
-  );
-  const list = el('ul', 'settings-list');
-  const how = el('p', 'settings-hint');
-  finish(list, how);
-  return {
-    open() {
-      const found = roots();
-      list.replaceChildren(
-        ...(found.length ? found.map((r) => el('li', 'settings-path', r)) : [el('li', 'settings-empty', 'None. Her file tools are off.')]),
-      );
-      how.textContent =
-        'Folders are shared when Trillion starts. To share one, start it with: trillion run --grant <folder>. Repeat --grant for more.';
-      host.showModal();
-    },
   };
 }
 

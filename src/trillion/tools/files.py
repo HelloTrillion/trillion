@@ -142,7 +142,11 @@ def _target(tool: BaseTool, args: JSON, ctx: ToolContext) -> Path:
     raw = Path(str(args["path"])).expanduser()
     target = raw.parent.resolve(strict=False) / raw.name
     denial = deny_floor.check(
-        tool.definition, {"path": str(target)}, deny_floor.DenyPolicy.default(), ctx.granted_roots
+        tool.definition,
+        {"path": str(target)},
+        deny_floor.DenyPolicy.default(),
+        ctx.granted_roots,
+        read_only_roots=ctx.read_only_roots,
     )
     if denial is not None:
         raise Escaped(denial.reason)
@@ -299,7 +303,12 @@ class FileCreate(_OffLoop):
         try:
             p = _target(self, args, ctx)
             # Exclusive: never overwrites, even in a race.
-            fd = beneath.open_file(p, ctx.granted_roots, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            fd = beneath.open_file(
+                p,
+                ctx.granted_roots,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                read_only=ctx.read_only_roots,
+            )
         except FileExistsError:
             return ToolResult(
                 ok=False, content="a file with that name already exists", effect="none",
@@ -359,7 +368,9 @@ class FileOverwrite(_OffLoop):
         data = _bytes(args)
         try:
             p = _target(self, args, ctx)
-            beneath.replace(p, ctx.granted_roots, data, must_exist=True)
+            beneath.replace(
+                p, ctx.granted_roots, data, must_exist=True, read_only=ctx.read_only_roots
+            )
         except OSError as e:
             return _unsafe(e)
         return _matches(p, data, "replaced", ctx)
@@ -404,7 +415,9 @@ class FileAppend(_OffLoop):
         # the file itself, so a hard link would carry the write out of the folder.
         try:
             raw = _target(self, args, ctx)
-            fd = beneath.open_file(raw, ctx.granted_roots, os.O_RDWR | os.O_APPEND)
+            fd = beneath.open_file(
+                raw, ctx.granted_roots, os.O_RDWR | os.O_APPEND, read_only=ctx.read_only_roots
+            )
         except OSError as e:
             return _unsafe(e)
         with os.fdopen(fd, "ab+") as f:
@@ -492,7 +505,9 @@ class FileEdit(_OffLoop):
             )
         data = text.replace(old, new, 1).encode("utf-8")
         try:
-            beneath.replace(p, ctx.granted_roots, data, must_exist=True)
+            beneath.replace(
+                p, ctx.granted_roots, data, must_exist=True, read_only=ctx.read_only_roots
+            )
         except OSError as e:
             return _unsafe(e)
         return _matches(p, data, "edited", ctx)

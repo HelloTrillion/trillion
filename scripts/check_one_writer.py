@@ -13,6 +13,9 @@ column, and checks it against the table below.
   the router's `_move`, and proposals are saved only by its `_propose`.
 - Every other column a statement changes is listed as not a decision, with why.
   A new one fails until someone says which it is: that is the point.
+- A user's file that decides what she may reach is written by one module only:
+  nothing else names the file or the function that says where it is. This is a
+  check on names, not on what code does: a path built some other way would pass it.
 
     python3 scripts/check_one_writer.py [--selftest]
 """
@@ -111,6 +114,13 @@ NOT_DECISIONS: dict[str, str] = {
     },
 }
 
+# Files that decide what she may reach, the function in paths.py that says where
+# each is, and the one module that may read or write it.
+FILE_OWNERS: dict[str, tuple[str, str]] = {
+    "folders.json": ("folders_config_path", "files/shares.py"),
+}
+_PATHS = "paths.py"
+
 _UPDATE = re.compile(r"\bUPDATE\s+(\w+)\s+SET\s+(.+?)(?=\s+WHERE\b|$)", re.S)
 _UPSERT = re.compile(
     r"\bINSERT\s+INTO\s+(\w+)\b.*?\bDO\s+UPDATE\s+SET\s+(.+?)(?=\s+WHERE\b|$)", re.S
@@ -131,6 +141,14 @@ class Write:
 class Call:
     method: str
     where: str
+    line: int
+
+
+@dataclass(frozen=True)
+class FileUse:
+    file: str
+    how: str  # the name or the function that named it
+    rel: str
     line: int
 
 
@@ -163,6 +181,8 @@ class _Scan(ast.NodeVisitor):
         self.scope: list[str] = []
         self.writes: list[Write] = []
         self.calls: list[Call] = []
+        self.files: list[FileUse] = []
+        self.docstrings: set[int] = set()
 
     def _where(self) -> str:
         return f"{self.rel}:{'.'.join(self.scope) or '<module>'}"
@@ -179,6 +199,26 @@ class _Scan(ast.NodeVisitor):
 
     def visit_Constant(self, node: ast.Constant) -> None:
         self._sql(node)
+        # A docstring may say which file a module is about; code that names it may not.
+        if isinstance(node.value, str) and id(node) not in self.docstrings:
+            for file in FILE_OWNERS:
+                if file in node.value:
+                    self.files.append(FileUse(file, repr(file), self.rel, node.lineno))
+
+    def visit_Name(self, node: ast.Name) -> None:
+        self._named(node.id, node.lineno)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        self._named(node.attr, node.lineno)
+        self.generic_visit(node)
+
+    def visit_alias(self, node: ast.alias) -> None:
+        self._named(node.name, node.lineno)
+
+    def _named(self, name: str, line: int) -> None:
+        for file, (function, _) in FILE_OWNERS.items():
+            if name == function:
+                self.files.append(FileUse(file, f"{function}()", self.rel, line))
 
     def _sql(self, node: ast.AST) -> None:
         text = _text(node)
@@ -192,14 +232,32 @@ class _Scan(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def scan_source(source: str, rel: str) -> tuple[list[Write], list[Call]]:
+def _docstrings(tree: ast.Module) -> set[int]:
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                out.add(id(first.value))
+    return out
+
+
+def scan_source(source: str, rel: str) -> tuple[list[Write], list[Call], list[FileUse]]:
     scan = _Scan(rel)
-    scan.visit(ast.parse(source))
-    return scan.writes, scan.calls
+    tree = ast.parse(source)
+    scan.docstrings = _docstrings(tree)
+    scan.visit(tree)
+    return scan.writes, scan.calls, scan.files
 
 
-def problems(writes: list[Write], calls: list[Call]) -> list[str]:
+def problems(
+    writes: list[Write], calls: list[Call], files: list[FileUse] | None = None
+) -> list[str]:
     out: list[str] = []
+    for f in files or []:
+        _, owner = FILE_OWNERS[f.file]
+        if f.rel not in (owner, _PATHS):
+            out.append(f"  {f.rel}:{f.line}  names {f.file} ({f.how}); only {owner} may")
     changers: dict[str, set[str]] = defaultdict(set)
     for w in writes:
         at = f"{w.where.split(':')[0]}:{w.line}"
@@ -237,11 +295,13 @@ def problems(writes: list[Write], calls: list[Call]) -> list[str]:
 def scan(root: Path) -> list[str]:
     writes: list[Write] = []
     calls: list[Call] = []
+    files: list[FileUse] = []
     for py in sorted(root.rglob("*.py")):
-        w, c = scan_source(py.read_text(encoding="utf-8"), py.relative_to(root).as_posix())
+        w, c, f = scan_source(py.read_text(encoding="utf-8"), py.relative_to(root).as_posix())
         writes += w
         calls += c
-    return problems(writes, calls)
+        files += f
+    return problems(writes, calls, files)
 
 
 # ── Self-test: a good store passes, and each way of breaking the rule fails ──
@@ -301,19 +361,38 @@ class Router:
 async def reroute(conn):
     await conn.execute("UPDATE pending_actions SET tool = ? WHERE id = ?")
 """,
+    "a second writer of folders.json": """
+def save(data):
+    (paths.home() / "folders.json").write_text(data)
+""",
+    "the shares file reached around its owner": """
+from trillion.paths import folders_config_path
+""",
+    "the shares file's path read around its owner": """
+def save(data):
+    paths.folders_config_path().write_text(data)
+""",
 }
+# A docstring that only says which file a module is about is not a second writer.
+_FILE_GOOD = '''
+"""Routes for the shares in folders.json, through trillion.files.shares."""
+def path():
+    return paths.folders_config_path()
+'''
 
 
 def selftest() -> int:
-    good_w, good_c = scan_source(_GOOD, "storage/sqlite/spine_store.py")
-    router_w, router_c = scan_source(_ROUTER, "spine/router.py")
+    good_w, good_c, _ = scan_source(_GOOD, "storage/sqlite/spine_store.py")
+    router_w, router_c, _ = scan_source(_ROUTER, "spine/router.py")
+    _, _, owner_f = scan_source(_FILE_GOOD, "files/shares.py")
+    _, _, doc_f = scan_source(_FILE_GOOD.split("def")[0], "api/folders.py")
     failures = []
-    baseline = problems(good_w + router_w, good_c + router_c)
+    baseline = problems(good_w + router_w, good_c + router_c, owner_f + doc_f)
     if baseline:
         failures.append("  the good fixture was refused:\n" + "\n".join(baseline))
     for name, source in _BAD.items():
-        w, c = scan_source(source, "spine/router.py" if "Router" in source else "elsewhere.py")
-        if not problems(good_w + router_w + w, good_c + router_c + c):
+        w, c, f = scan_source(source, "spine/router.py" if "Router" in source else "elsewhere.py")
+        if not problems(good_w + router_w + w, good_c + router_c + c, f):
             failures.append(f"  not caught: {name}")
     # And the real owner disappearing is noticed, not silently passed.
     if not problems(router_w, router_c):

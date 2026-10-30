@@ -49,6 +49,12 @@ Quit (menu bar or ⌘Q) stops the server: SIGTERM to its process group, then SIG
 
 The app holds the server's input open and never writes to it. If the app goes away, even by a force quit, the input closes and the server stops itself within a few seconds. The app also keeps a note of the server it started (no token), so the next launch can stop one left behind.
 
+## Sharing a folder
+
+In Settings, Add a folder opens the system's folder picker (`pick_folder`): one folder, as a sheet on the window. Its path goes back to the page, which shows the share form; the share is made by the server like any other. Cancel shares nothing. Only the server's page in the main window may open it.
+
+The app calls the picker (`rfd`) directly rather than through Tauri's dialog plugin, because the plugin replaces `window.alert` and `window.confirm` in every page it loads.
+
 ## The session token
 
 The app makes the session token and hands it to the server in `TRILLION_SESSION_TOKEN`. It is kept in memory only and never written down. Before it shows the page, the app checks `/api/desktop/hello`, which only a server holding that token can answer.

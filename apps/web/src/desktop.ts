@@ -27,6 +27,11 @@
  *                      hiding that window (D5).
  *   show_main          (no arguments)                                  -> void
  *                      Sent by the orb window when clicked: show and focus the main one.
+ *   pick_folder        {}                                              -> string | null
+ *                      Opens the system folder picker (Settings → Shared folders, Add a
+ *                      folder) and answers the chosen folder's absolute path, or null
+ *                      when the user cancelled. The page still sends it through
+ *                      POST /api/folders, where the share rules hold as for any path.
  *
  * Events, by `event.listen`:
  *
@@ -103,6 +108,29 @@ export async function openExternal(url: string): Promise<void> {
   } catch {
     // The shell refused it (not http or https); nothing to open.
   }
+}
+
+/** The shell has no folder picker (an older app): the caller falls back to the folder browser. */
+export class PickerMissing extends Error {}
+
+/**
+ * The system folder picker: the chosen folder's absolute path, or null when cancelled.
+ * Null at once outside the app. Rejects with `PickerMissing` when the shell has no such
+ * command or may not run it, and with an Error carrying the shell's words when the
+ * picker itself failed.
+ */
+export async function pickFolder(): Promise<string | null> {
+  if (!inApp()) return null;
+  let chosen: unknown;
+  try {
+    chosen = await call('pick_folder', {});
+  } catch (e) {
+    const said = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+    // Tauri's own refusals name the command; the command's own Err is its message alone.
+    if (/pick_folder/.test(said) && /not found|not allowed|unknown/i.test(said)) throw new PickerMissing(said);
+    throw new Error(said || 'the folder picker did not open');
+  }
+  return typeof chosen === 'string' && chosen ? chosen : null;
 }
 
 /** Ask the shell to make the talk shortcut work from any app. */

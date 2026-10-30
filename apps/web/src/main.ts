@@ -2,7 +2,8 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
-import { createAbout, createAppearance, createBoardSettings, createFolders, createShortcuts, createUsageSettings } from './browser';
+import { createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
+import { type Choice, createFolderPanel, createShares, createSharedFolders, footText, loadRoutines, parseFrame } from './folders';
 import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, matches } from './hotkey';
 import * as desktop from './desktop';
 import { icon } from './icons';
@@ -828,11 +829,8 @@ function render(): void {
   micBtn.setAttribute('aria-pressed', String(view.mic));
   micBtn.classList.toggle('live', view.mic);
   micBtn.classList.toggle('watching', watch);
-  footEl.textContent = !ready
-    ? ''
-    : view.grantedRoots.length
-      ? `Files: ${view.grantedRoots.join(', ')}. Every change asks first.`
-      : 'No folders are shared, so file tools are off. Start with: trillion run --grant <a folder>';
+  // The shares as Settings reads them, read again on each session and each change.
+  footEl.textContent = ready ? footText(shares.last) : '';
   footEl.title = footEl.textContent;
 }
 
@@ -953,7 +951,47 @@ const appearance = createAppearance(
   },
 );
 const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh());
-const folders = createFolders(panel.host('folders'), () => view.grantedRoots);
+// Shares, read and changed through the routes: Settings and the Folders panel share them.
+const shares = createShares(api);
+const routineChoices = (): Promise<Choice[]> => loadRoutines(api);
+// The Folders panel sits in the workspace beside what it shows (the board, or Settings).
+// Opened with nothing else up, it brings the workspace with it, and takes it away again.
+const workspaceEl = $('workspace');
+let foldersBroughtWorkspace = false;
+const folderPanel = createFolderPanel({
+  api,
+  shares,
+  routines: routineChoices,
+  conversation: () => view.conversationId,
+  focusAfter: () => (workspace.isOpen ? workspaceCloseBtn : null),
+  shown: (open) => {
+    workspaceEl.classList.toggle('has-folders', open);
+    if (open && !workspace.isOpen) {
+      foldersBroughtWorkspace = true;
+      showBoard();
+    }
+    if (open) return;
+    const brought = foldersBroughtWorkspace;
+    foldersBroughtWorkspace = false;
+    if (brought && workspace.showing === 'board' && !view.board?.open && !approvals.holds()) workspace.close();
+  },
+});
+workspaceEl.insertBefore(folderPanel.el, $('workspace-body'));
+// Outside the panel, which is hidden until its first frame: that frame is announced too.
+document.body.append(folderPanel.live);
+workspace.onClose((_id, replaced) => {
+  if (!replaced) folderPanel.close();
+});
+const folders = createSharedFolders(panel.host('folders'), {
+  shares,
+  routines: routineChoices,
+  pick: desktop.DESKTOP ? desktop.pickFolder : null,
+  browse: () => folderPanel.openPlaces(),
+  changed: () => {
+    panel.refresh();
+    render();
+  },
+});
 const connected = createConnected(panel.host('connected'), api, () => {
   panel.refresh();
   // A connector set up or removed puts its tile on, or takes it off, the cards that name it.
@@ -989,7 +1027,7 @@ panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', 
 panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
-panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder', summary: () => (view.grantedRoots.length ? `${view.grantedRoots.length} shared` : 'None'), open: () => folders.open() });
+panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
   void namesSettings.peek().then(() => panel.refresh());
@@ -1263,6 +1301,9 @@ function connect(): void {
     }
     // Let in (at start, after a reconnect, with a new token): what is connected now, for the cards' source tiles.
     if (msg.type === 'session') void connected.load();
+    // The shares, read again: on every session (which also retries a failed first read),
+    // and whenever the core says they changed, from Settings in another tab or a card.
+    if (msg.type === 'session' || msg.type === 'shares') void shares.load();
     // A new connection starts unseen in the core, and may be another conversation: wait for its
     // board before saying the board is on a screen, so the old one is never reported seen.
     if (msg.type === 'session') {
@@ -1417,6 +1458,11 @@ function connect(): void {
       onBoard();
       seen.sync();
       day.board(view.board);
+    }
+    // Her folder browser moved (or a click here did): the panel shows where it is now.
+    if (msg.type === 'folders') {
+      const frame = parseFrame(msg);
+      if (frame) folderPanel.take(frame);
     }
     if (msg.type === 'board.refreshing') boardView.refreshing(String(msg['id'] ?? ''), msg['on'] === true);
     // The turn is over and she never made a sound (no words heard, a reply only
@@ -1594,12 +1640,16 @@ addEventListener('keydown', (ev) => {
       speaking: voice.active,
       listening: view.mic,
       listOpen: threads.isOpen,
+      foldersOpen: folderPanel.isOpen,
       workspaceOpen: workspace.isOpen,
     });
     if (action === 'interrupt') interrupt();
     else if (action === 'list') {
       ev.preventDefault();
       threads.close();
+    } else if (action === 'folders') {
+      ev.preventDefault();
+      folderPanel.escape();
     } else if (action === 'workspace') {
       ev.preventDefault();
       workspace.close();
@@ -1738,7 +1788,8 @@ function openBoard(): void {
 function onBoard(): void {
   const board = view.board;
   if (workspace.showing === 'board') {
-    if (board?.open || approvals.holds()) showBoard();
+    // The Folders panel keeps the workspace up, over an empty board if need be.
+    if (board?.open || approvals.holds() || folderPanel.isOpen) showBoard();
     else workspace.close();
     return;
   }

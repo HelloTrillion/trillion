@@ -53,6 +53,8 @@ _FENCE = re.compile(r"`{3,}|~{3,}")
 
 # Shared with the lossless view (lossless.py), which escapes what this module deletes.
 INVISIBLE, CONTROL, ROLE = _INVISIBLE, _CONTROL, _ROLE
+# Shared with checks that refuse rather than strip (tools/folders.py).
+FENCE = _FENCE
 
 
 def _sub(pattern: re.Pattern[str], kind: str, repl: str, text: str, out: list[Finding]) -> str:

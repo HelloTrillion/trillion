@@ -52,7 +52,11 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     granted = tmp_path / "granted"
     granted.mkdir()
     runtime = await open_runtime(
-        granted_roots=(granted,), persona=tmp_path, secrets=MemoryStore(), env={"TZ": "UTC"}
+        share_rules=lambda _p: None,
+        granted_roots=(granted,),
+        persona=tmp_path,
+        secrets=MemoryStore(),
+        env={"TZ": "UTC"},
     )
     runtime.clock = FakeClock(DUE)
     assert runtime.door is not None
@@ -68,9 +72,9 @@ def asker(rt: Runtime, provider: Recording | None) -> Asker:
         router=rt.router,
         registry=rt.registry,
         conversations=rt.conversations,
-        system=lambda: system_blocks(rt.identity, rt.soul, rt.granted_roots),
+        system=lambda scope: system_blocks(rt.identity, rt.soul, rt.shared(scope)),
         identity=lambda: rt.identity,
-        granted_roots=lambda: rt.granted_roots,
+        shares=rt.reach,
         zone=lambda: NY,
         clock=rt.clock,
         owner="local",

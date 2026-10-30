@@ -42,6 +42,10 @@ class ToolDefinition:
     # connected server's own files, or an id that only looks like a path. Any value
     # that reads as a path is still refused if it touches anything protected (SEC-10).
     outside_path_args: tuple[str, ...] = ()
+    # Whether a tool that is not a read changes what its paths name, so a `read` share
+    # refuses it (D11). Only a first-party tool that names a folder without writing in it
+    # (sharing one) may say False; the registry holds every other tool to True.
+    writes_paths: bool = True
     recoverable: bool = True
     trusted_output: bool = False
     # Wrapped as untrusted like any result, but escaped reversibly instead of neutralized
@@ -59,6 +63,9 @@ class ToolContext:
     call_id: str
     via: Via
     granted_roots: tuple[Path, ...] = ()
+    # The shares among them that are `read` only: the deny floor refuses any tool that is
+    # not a read on a path there (the shared folders spec, D11).
+    read_only_roots: tuple[Path, ...] = ()
     # True once this turn has read something from outside (a web page, a file). What
     # she does with it after that is not something the user said (MEM-5, EVL-2).
     read_outside: bool = False

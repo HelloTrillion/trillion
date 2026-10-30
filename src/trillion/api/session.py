@@ -16,6 +16,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -72,6 +73,7 @@ from trillion.spine.loop_guard import LoopGuard
 from trillion.spine.router import Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
+from trillion.tools.folders import View, host_note, open_place
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
 from trillion.tools.routine import mine as routine_here
@@ -462,6 +464,8 @@ class BuiltInput:
     text: str
     brought: frozenset[str]
     via: Literal["voice", "text", "ask"] = "text"
+    # The host note on where the folder browser is that rode with it, if any.
+    folder_note: str | None = None
 
 
 # Where a page can say it runs, in its hello. Anything else is "other".
@@ -617,6 +621,10 @@ class Session:
         self._again: asyncio.TimerHandle | None = None
         # Closing because the conversation opened elsewhere: that page brings notes in.
         self._replacing = False
+        # Where this page's folder browser is (None: the places list), and the note
+        # her next input carries after the user moved it themselves.
+        self.folder_place: Path | None = None
+        self._folder_note: str | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -2056,7 +2064,7 @@ class Session:
         response = await self._rt.router.resolve(
             pending_id,
             decision,
-            self._ctx(f"tap-{uuid.uuid4().hex}", via="tap", turn=self._turn + 1),
+            await self._ctx(f"tap-{uuid.uuid4().hex}", via="tap", turn=self._turn + 1),
         )
         if self._read_outside(None, response):
             # What she says and does on the result is something she read (MEM-5), as
@@ -2809,7 +2817,7 @@ class Session:
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    def _ctx(
+    async def _ctx(
         self,
         call_id: str,
         via: Literal["voice", "text", "tap", "channel"] | None = None,
@@ -2817,13 +2825,18 @@ class Session:
         turn: int | None = None,
     ) -> ToolContext:
         at = self._turn if turn is None else turn
+        # Looked at for each call and each tap, off the event loop. A tap's context is
+        # the one the router checks the approved card against, so a share removed or
+        # set to read only since the card was raised refuses it (SPN-2c).
+        roots, read_only = await self._rt.reach()
         return ToolContext(
             owner_id=OWNER,
             session_id=self.id,
             turn=at,
             call_id=call_id,
             via=via or self._via,
-            granted_roots=self._rt.granted_roots,
+            granted_roots=roots,
+            read_only_roots=read_only,
             read_outside=at in self._outside,
         )
 
@@ -2914,12 +2927,24 @@ class Session:
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:
             notes = (*notes, ContextBlock(text=marker))
+        folder_note = self._folder_note
+        if folder_note is not None:
+            notes = (*notes, ContextBlock(text=folder_note))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
-        return BuiltInput(msg=Msg(role="user", blocks=blocks), text=text, brought=brought, via=via)
+        return BuiltInput(
+            msg=Msg(role="user", blocks=blocks),
+            text=text,
+            brought=brought,
+            via=via,
+            folder_note=folder_note,
+        )
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
         """Save a built input. History is only ever appended to."""
         self._brought.update(built.brought)
+        if built.folder_note is not None and built.folder_note == self._folder_note:
+            # Told once. A click since this was built leaves its own note for the next.
+            self._folder_note = None
         # Whatever she says next answers a saved background note too: it needs no turn
         # of its own.
         self._unanswered = False
@@ -3184,6 +3209,24 @@ class Session:
     async def send(self, kind: str, /, **body: Any) -> None:
         """A message to this page from outside its turns. Never raises."""
         await self._send(kind, **body)
+
+    # ── The folder browser ───────────────────────────────────────────────
+
+    async def show_folders(self, view: View) -> None:
+        """The browser moved: keep where it is and draw the panel (`folders` frame)."""
+        self.folder_place = view.place
+        await self._send("folders", **view.frame)
+
+    async def browsed(self, target: str) -> View:
+        """The user moved the browser in the panel (`POST /api/folders/browse`): their
+        own act, so no turn and no D7 check, inside the same fence. `target` is a path,
+        `places`, a name the panel shows, or `up`. Her next input says where it is now,
+        so "share this one" means what the user sees. Never raises."""
+        view = await open_place(self.folder_place, target, self._rt.shares, self._rt.folder_look)
+        if view.problem is None:
+            await self.show_folders(view)
+            self._folder_note = host_note(view)
+        return view
 
     async def _send(self, kind: str, /, **body: Any) -> None:
         """Never raises: a closed socket must not break a turn that is still recording."""

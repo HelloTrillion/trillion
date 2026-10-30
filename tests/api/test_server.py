@@ -59,6 +59,7 @@ class App:
         self.secrets = MemoryStore(usable=keychain)
         self.rt: Runtime = asyncio.run(
             open_runtime(
+                share_rules=lambda _p: None,
                 granted_roots=(self.granted,),
                 persona=tmp_path,
                 secrets=self.secrets,

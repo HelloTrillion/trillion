@@ -7,7 +7,7 @@ granted folders called Documents apart, and no card showed the content at all.
 from pathlib import Path
 
 from trillion.spine.contract import Risk
-from trillion.spine.router import _safe_summary
+from trillion.spine.router import safe_summary
 from trillion.tools.files import (
     FileAppend,
     FileCreate,
@@ -105,6 +105,6 @@ def test_every_card_survives_the_router_one_line_limit(tmp_path):
     deep = tmp_path / ("x" * 30) / ("y" * 30)
     deep.mkdir(parents=True)
     raw = FileCreate().describe({"path": str(deep / "n.md"), "content": "z" * 5000}).text
-    shown = _safe_summary(raw)
+    shown = safe_summary(raw)
     assert shown.startswith("Create ") and "n.md" in shown
     assert len(shown) <= 200

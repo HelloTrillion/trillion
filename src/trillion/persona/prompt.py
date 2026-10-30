@@ -7,6 +7,8 @@ them (PER-2).
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -131,10 +133,35 @@ def skill_index(skills: Sequence[tuple[str, str]]) -> tuple[list[str], int]:
     return lines, len(skills) - len(lines)
 
 
+@dataclass(frozen=True, kw_only=True)
+class SharedFolder:
+    """One share in scope for a turn, as her prompt lists it (the shared folders spec)."""
+
+    name: str
+    path: Path
+    read_only: bool
+
+
+def _near_home(p: Path) -> str:
+    """A folder under the home folder spelled from `~`, as the user would say it."""
+    home = Path.home()
+    if p == home or not p.is_relative_to(home):
+        return str(p)
+    return f"~{os.sep}{p.relative_to(home)}"
+
+
+def _shared_line(folder: Path | SharedFolder) -> str:
+    if isinstance(folder, Path):
+        return f"- {folder}"
+    access = "read only" if folder.read_only else "read and change"
+    # Quoted, so a name can never read as more of the line than a name.
+    return f"- {json.dumps(folder.name, ensure_ascii=False)}: {_near_home(folder.path)} ({access})"
+
+
 def system_blocks(
     identity: Identity,
     soul: str,
-    granted_roots: Sequence[Path] = (),
+    granted_roots: Sequence[Path | SharedFolder] = (),
     standing: Sequence[tuple[str, str]] = (),
     skills: Sequence[tuple[str, str]] = (),
 ) -> list[SystemBlock]:
@@ -146,7 +173,9 @@ def system_blocks(
 
     `skills` is (label, description) for each skill turned on (CON-6), in a stable
     order, so the block only changes when a skill is switched."""
-    shared = "\n".join(f"- {r}" for r in granted_roots) or "(none: file tools cannot be used)"
+    shared = "\n".join(_shared_line(r) for r in granted_roots) or (
+        "(none: file tools cannot be used)"
+    )
     # Names are filled into the authored text only, never into a folder path.
     parts = [
         _fill(_HTML_COMMENT.sub("", soul).strip(), identity),
