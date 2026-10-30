@@ -30,12 +30,14 @@ _Id = Annotated[str, Field(max_length=64)]
 
 
 class LayoutBody(BaseModel):
-    """The layout as the page has it. Cleaned as any record is: unknown ids are dropped."""
+    """The layout as the page has it. Cleaned as any record is: unknown ids are dropped.
+    Both lists are required, so an empty body never resets Home by accident: a reset
+    is the page sending the default."""
 
     model_config = ConfigDict(extra="forbid")
 
-    order: list[_Id] = Field(default_factory=list, max_length=_MAX_IDS)
-    removed: list[_Id] = Field(default_factory=list, max_length=_MAX_IDS)
+    order: list[_Id] = Field(max_length=_MAX_IDS)
+    removed: list[_Id] = Field(max_length=_MAX_IDS)
 
 
 # Google's built-in services by catalogue id ("calendar" is "google-calendar").

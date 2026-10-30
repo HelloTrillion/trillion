@@ -6,12 +6,15 @@ is set up, without reading a connector or calling out."""
 from __future__ import annotations
 
 import socket
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.api.test_server import App, home, make  # noqa: F401
+from trillion import paths
 from trillion.api.runtime import OWNER
 from trillion.connectors.google import config
 from trillion.connectors.google.config import Account
@@ -270,18 +273,21 @@ def test_put_cleans_what_it_is_given(app: App) -> None:
     out = put(app, {"order": ["weather", "files", "files"], "removed": ["nope"]})
     assert [t["id"] for t in out["tiles"]] == ["files", *[i for i in IDS if i != "files"]]
     assert out["removed"] == []
-    # Either list may be left out.
-    assert [t["id"] for t in put(app, {"removed": ["kpis"]})["removed"]] == ["kpis"]
+    assert [t["id"] for t in put(app, {"order": [], "removed": ["kpis"]})["removed"]] == ["kpis"]
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        {"order": "kpis"},
-        {"order": [1, 2]},
-        {"removed": ["x" * 65]},
-        {"order": ["kpis"] * 51},
-        {"order": [], "extra": True},
+        {"order": "kpis", "removed": []},
+        {"order": [1, 2], "removed": []},
+        {"order": [], "removed": ["x" * 65]},
+        {"order": ["kpis"] * 51, "removed": []},
+        {"order": [], "removed": [], "extra": True},
+        # Both lists are needed: an empty body never resets Home.
+        {},
+        {"order": IDS},
+        {"removed": ["kpis"]},
     ],
 )
 def test_put_refuses_what_is_not_a_layout(app: App, body: Any) -> None:
@@ -303,3 +309,13 @@ def test_put_tells_every_open_page(app: App) -> None:
         put(app, {"order": ["checks"], "removed": []})
         for chat in (one, two):
             assert chat.until("home")[-1] == {"type": "home"}
+
+
+def test_a_stored_layout_that_is_not_json_is_the_default(app: App) -> None:
+    put(app, {"order": ["checks"], "removed": ["kpis"]})
+    with closing(sqlite3.connect(paths.db_path())) as db, db:
+        db.execute("UPDATE preferences SET value_json = '{not json' WHERE key = 'home_layout'")
+    out = get(app)
+    assert [t["id"] for t in out["tiles"]] == IDS and out["removed"] == []
+    # And it can be saved over.
+    assert [t["id"] for t in put(app, {"order": [], "removed": ["kpis"]})["removed"]] == ["kpis"]

@@ -8,6 +8,7 @@ from trillion.persona.day import (
     CONNECT_ASK,
     MAIL_ASK,
     MAX_DAY_WIDGETS,
+    NO_WIDGETS,
     NOTHING_CONNECTED,
     OTHER_ASK,
     SetUp,
@@ -79,8 +80,9 @@ def test_everything() -> None:
     assert 'mode "replace" and the title "Your day"' in text
     assert MAX_DAY_WIDGETS == 9
     assert (
-        "most 9 widgets, in Home's order: next_up, free_time, inbox, tasks, mentions, "
-        "due_soon, kpis, files, checks." in text
+        "most 9 widgets. Put any callout first, then the widgets in Home's order: next_up, "
+        "free_time, inbox, tasks, mentions, due_soon, kpis, files, checks (or errors). With "
+        "more than 9, drop widgets from the end of that order, never a callout." in text
     )
     assert "Leave off" not in text
     assert "Name each one's source" in text and "no empty cards" in text
@@ -182,8 +184,8 @@ def test_the_board_is_asked_for_in_homes_order() -> None:
     layout = arrange(DEFAULT, order=["kpis", "checks"], remove=["files"])
     text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
     assert (
-        "in Home's order: kpis, checks, next_up, free_time, inbox, tasks, mentions, due_soon."
-        in text
+        "in Home's order: kpis, checks (or errors), next_up, free_time, inbox, tasks, "
+        "mentions, due_soon." in text
     )
 
 
@@ -201,11 +203,50 @@ def test_a_source_that_asks_first_is_not_named_when_its_tiles_are_removed() -> N
     text = recipe(setup, DAY, "UTC", SAM, layout=arrange(DEFAULT, remove=["inbox"]))
     assert "- Slack: do not call its tools" in text and "Gmail" not in text
     gone = recipe(setup, DAY, "UTC", SAM, layout=arrange(DEFAULT, remove=["inbox", "mentions"]))
-    assert "tools, because each read asks" not in gone and "callout" not in gone
+    assert "tools, because each read asks" not in gone and 'tone "attention"' not in gone
 
 
-def test_every_widget_removed() -> None:
-    layout = arrange(DEFAULT, remove=[t.id for t in TILES])
-    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
+ALL_OFF = arrange(DEFAULT, remove=[t.id for t in TILES])
+
+
+def test_every_widget_removed_shows_one_callout_saying_so() -> None:
+    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=ALL_OFF)
     assert "Nothing to read: Sam took every widget off Home." in text
-    assert "_search" not in text and "in Home's order" not in text and no_dashes(text)
+    assert (
+        'Call workspace_show once, with mode "replace" and the title "Your day", showing '
+        f'only one callout with tone "neutral": "{NO_WIDGETS}"' in text
+    )
+    assert "_search" not in text and "schedule_list" not in text
+    assert "Home's order" not in text and "Leave off" not in text
+    assert "do not call day_open" in text and no_dashes(text)
+
+
+def test_not_connected_with_every_widget_removed() -> None:
+    text = recipe(SetUp(), DAY, "UTC", SAM, layout=ALL_OFF)
+    assert NOTHING_CONNECTED not in text and NO_WIDGETS in text
+
+
+def test_the_connect_callout_needs_a_calendar_or_inbox_tile_shown() -> None:
+    no_cal = arrange(DEFAULT, remove=["next_up", "free_time", "inbox"])
+    text = recipe(SetUp(), DAY, "UTC", SAM, layout=no_cal)
+    assert NOTHING_CONNECTED not in text and "schedule_list" in text
+    only_inbox = arrange(DEFAULT, remove=["next_up", "free_time"])
+    assert NOTHING_CONNECTED in recipe(SetUp(), DAY, "UTC", SAM, layout=only_inbox)
+
+
+def test_nothing_to_read_does_not_hang_on_the_callouts() -> None:
+    # Only Reminders and Inbox on Home, Reminders off: nothing to read, the callout stays.
+    layout = arrange(DEFAULT, remove=[t.id for t in TILES if t.id != "inbox"])
+    text = recipe(SetUp(), DAY, "UTC", SAM, layout=layout)
+    assert "- Nothing to read for the widgets on Home." in text and NOTHING_CONNECTED in text
+    asks = recipe(SetUp(asks_first=("gmail",)), DAY, "UTC", SAM, layout=layout)
+    assert "- Nothing to read for the widgets on Home." in asks and "- Gmail: do not" in asks
+
+
+def test_an_asks_first_source_that_fills_no_tile_is_never_named() -> None:
+    setup = SetUp(asks_first=("canva",))
+    for layout in (DEFAULT, ALL_OFF):
+        text = recipe(setup, DAY, "UTC", SAM, layout=layout)
+        assert "Canva" not in text and 'tone "attention"' not in text
+    # It does not count as connected: the connect callout still shows.
+    assert NOTHING_CONNECTED in recipe(setup, DAY, "UTC", SAM)

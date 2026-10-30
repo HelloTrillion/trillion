@@ -29,6 +29,10 @@ MAX_DAY_WIDGETS = 9
 # What she calls a connector where its catalogue title says more than she reads there.
 _SHORT = {"atlassian": "Jira"}
 NOTHING_CONNECTED = "Connect your calendar and inbox to see your day here."
+# The one callout of a day with every widget off Home.
+NO_WIDGETS = "Your Home has no widgets. Add some back from Home's Add widgets."
+# The tiles the "connect your calendar and inbox" callout speaks for.
+_CONNECT_TILES = ("next_up", "free_time", "inbox")
 CONNECT_ASK = "How do I connect my calendar?"
 MAIL_ASK = "How do I let you read my mail?"
 # The tools she reads each built-in source with. All of them must run without asking
@@ -128,19 +132,25 @@ def rows(setup: SetUp, user_name: str, layout: Layout = DEFAULT) -> list[str]:
     return out
 
 
-def _on_home(source: str, layout: Layout) -> bool:
-    """Whether a source fills a tile still on Home. One that fills none is kept: it is
-    not Home's to leave off."""
+def _tiles_of(source: str) -> list[str]:
+    """The Home tiles a source fills, by catalogue id."""
     pack_tiles = {pack: tile for pack, tile, _ in _PACK_ROWS}
     tiles = [t.id for t in TILES if source in t.services]
     if source in PACK_OF and PACK_OF[source] in pack_tiles:
         tiles.append(pack_tiles[PACK_OF[source]])
-    return not tiles or any(t not in layout.removed for t in tiles)
+    return tiles
+
+
+def _on_home(source: str, layout: Layout) -> bool:
+    """Whether a source fills a tile still on Home. One that fills none is never read
+    for the day, so it is never named either."""
+    return any(t not in layout.removed for t in _tiles_of(source))
 
 
 def connected(setup: SetUp) -> bool:
-    """Whether anything but her own reminders has a row, or waits on the user's OK."""
-    return len(rows(setup, "")) > 1 or bool(setup.asks_first)
+    """Whether anything but her own reminders has a row, or a source that fills a tile
+    waits on the user's OK."""
+    return len(rows(setup, "")) > 1 or any(_tiles_of(i) for i in setup.asks_first)
 
 
 def _asks_first(asks: tuple[str, ...], identity: Identity) -> str:
@@ -180,37 +190,49 @@ def recipe(
     as the user arranged it (D15)."""
     user = identity.user_name
     why = f"It's time for {user}'s day routine." if routine else f"{user} opened their day."
-    lines = [
-        f"[host] {why} Build today's board: {day:%A} {day.day} "
-        f"{day:%B} {day.year}" + (f", in {zone}." if zone else "."),
-        "",
-        "Read first, each with its own tools:",
-        *(f"- {r}" for r in rows(setup, user, layout)),
-    ]
-    asks = tuple(i for i in setup.asks_first if _on_home(i, layout))
-    if asks:
-        lines.append(_asks_first(asks, identity))
-    if not connected(setup):
-        lines.append(
-            f'- Nothing else is connected yet. Add a callout: "{NOTHING_CONNECTED}", with '
-            f'the ask "{CONNECT_ASK}".'
-        )
-    if len(lines) == 3:
-        lines.append(f"- Nothing to read: {user} took every widget off Home.")
-    shown = layout.shown()
-    order = f", in Home's order: {', '.join(shown)}." if shown else "."
-    lines += [
-        "",
-        f'Then call workspace_show once, with mode "replace" and the title "{TITLE}": at '
-        f"most {MAX_DAY_WIDGETS} widgets{order} Name each one's source. "
-        "Skip a row whose read fails or comes back empty: no empty cards. Follow your "
-        "standing rules for the day board.",
-    ]
-    if layout.removed:
-        lines.append(_leave_off(layout, user))
-    lines += [
+    first = f"[host] {why} Build today's board: {day:%A} {day.day} {day:%B} {day.year}" + (
+        f", in {zone}." if zone else "."
+    )
+    end = [
         "Then say at most two short sentences that lead with what matters most. Never "
         "read the board out.",
         "This is already the day conversation: do not call day_open.",
     ]
-    return "\n".join(lines)
+    shown = layout.shown()
+    if not shown:
+        # Nothing to read and nothing to show but how to get widgets back.
+        return "\n".join(
+            [
+                first,
+                "",
+                f"Nothing to read: {user} took every widget off Home.",
+                "",
+                f'Call workspace_show once, with mode "replace" and the title "{TITLE}", '
+                f'showing only one callout with tone "neutral": "{NO_WIDGETS}"',
+                *end,
+            ]
+        )
+    read = rows(setup, user, layout)
+    lines = [first, "", "Read first, each with its own tools:", *(f"- {r}" for r in read)]
+    if not read:
+        lines.append("- Nothing to read for the widgets on Home.")
+    asks = tuple(i for i in setup.asks_first if _on_home(i, layout))
+    if asks:
+        lines.append(_asks_first(asks, identity))
+    if not connected(setup) and any(t in shown for t in _CONNECT_TILES):
+        lines.append(
+            f'- Nothing else is connected yet. Add a callout: "{NOTHING_CONNECTED}", with '
+            f'the ask "{CONNECT_ASK}".'
+        )
+    order = ", ".join("checks (or errors)" if t == "checks" else t for t in shown)
+    lines += [
+        "",
+        f'Then call workspace_show once, with mode "replace" and the title "{TITLE}": at '
+        f"most {MAX_DAY_WIDGETS} widgets. Put any callout first, then the widgets in Home's "
+        f"order: {order}. With more than {MAX_DAY_WIDGETS}, drop widgets from the end of "
+        "that order, never a callout. Name each one's source. Skip a row whose read fails "
+        "or comes back empty: no empty cards. Follow your standing rules for the day board.",
+    ]
+    if layout.removed:
+        lines.append(_leave_off(layout, user))
+    return "\n".join(lines + end)

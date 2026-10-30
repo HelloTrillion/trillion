@@ -118,6 +118,7 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
+from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
 from trillion.workspace.home import HOME_LAYOUT_PREF, Layout, clean
 from trillion.workspace.live import Reads
 from trillion.workspace.packs import told
@@ -480,8 +481,13 @@ class Runtime:
         return tell
 
     async def home_layout(self) -> Layout:
-        """Home as the user arranged it (the Home spec, D13), cleaned as it is read."""
-        return clean(await self.preferences.get(OWNER, HOME_LAYOUT_PREF))
+        """Home as the user arranged it (the Home spec, D13), cleaned as it is read. A
+        record that is not JSON at all is the default: Home never fails to draw."""
+        try:
+            return clean(await self.preferences.get(OWNER, HOME_LAYOUT_PREF))
+        except ValueError:
+            logger.warning("Home's saved layout could not be read; using the default")
+            return DEFAULT_LAYOUT
 
     async def arrange_home(
         self, change: Callable[[Layout], Layout], *, by: str | None = None
