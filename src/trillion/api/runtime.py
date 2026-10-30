@@ -68,6 +68,10 @@ from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.day import DAY_OPEN, DayOpen, Where
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
+from trillion.tools.folders import BROWSE as FOLDERS_BROWSE
+from trillion.tools.folders import SHARE as FOLDER_SHARE
+from trillion.tools.folders import UNSHARE as FOLDER_UNSHARE
+from trillion.tools.folders import FoldersBrowse, FolderShare, FolderUnshare, Look
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
 from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
@@ -306,6 +310,8 @@ class Runtime:
     # The folders the user shared, read live on every call (the shared folders spec):
     # the one store in the process, so every change goes through its lock.
     shares: Shares
+    # How the folder browser looks at this computer; tests give it a temporary one.
+    folder_look: Look = field(default_factory=Look)
     env: Mapping[str, str] | None = None
     # Issued fresh at every launch, or handed over by the desktop app, and held only in
     # memory (SPN-11a). `open_runtime` sets it from `session_token`.
@@ -351,6 +357,12 @@ class Runtime:
             SharedFolder(name=s.name, path=s.path, read_only=s.access == "read")
             for s in self.shares.known_reached(scope)
         ]
+
+    async def routine_titles(self) -> list[tuple[str, str]]:
+        """Each routine's (id, title), for a share given to one routine by its title."""
+        if self.schedules is None:
+            return []
+        return [(s.id, s.title) for s in await self.schedules.active(OWNER) if s.target]
 
     async def routine_removed(self, routine_id: str) -> None:
         """A removed routine's shares go with it, written in a thread. Never raises: a
@@ -930,6 +942,16 @@ async def open_runtime(
         speak_tool = registry.get(name)
         if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):
             speak_tool.bind(rt.attention_store, OWNER)
+    for name in (FOLDERS_BROWSE, FOLDER_SHARE, FOLDER_UNSHARE):
+        folder_tool = registry.get(name)
+        if isinstance(folder_tool, FoldersBrowse | FolderShare | FolderUnshare):
+            folder_tool.bind(
+                rt.shares,
+                # A conversation's open page holds its folder browser.
+                panel=rt.by_conversation.get,
+                look=lambda: rt.folder_look,
+                routines=rt.routine_titles,
+            )
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):

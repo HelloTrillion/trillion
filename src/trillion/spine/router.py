@@ -75,7 +75,9 @@ ResponseStatus = Literal[
 
 _DETAIL_LIMIT = 2000
 _TOOL_DETAIL_LIMIT = 300
-_SUMMARY_LIMIT = 200
+# The longest card summary: what a card can show. Public, so a tool can refuse a
+# card that would be cut rather than show part of what it does.
+SUMMARY_LIMIT = 200
 _UNHASHABLE = "unhashable"
 _TARGET_CHANGED = "the target changed since you were asked"
 _NO_FINGERPRINT = "\x00fingerprint-failed"  # never equal to a recorded token
@@ -156,7 +158,7 @@ def _safe_summary(text: str) -> str:
     for ws in ("\r\n", "\n", "\r", "\t"):
         clean = clean.replace(ws, " ")
     clean = "".join(c for c in clean if unicodedata.category(c) not in ("Cc", "Cf"))
-    return clean[:_SUMMARY_LIMIT]
+    return clean[:SUMMARY_LIMIT]
 
 
 def _lossless_note(text: str) -> str | None:

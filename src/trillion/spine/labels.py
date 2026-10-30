@@ -21,6 +21,7 @@ LABELS: dict[str, str] = {
     "file_overwrite": "Replace a file",
     "file_append": "Add to a file",
     "file_edit": "Edit a file",
+    "folder_share": "Share a folder",
     "rule_keep": "Keep a standing rule",
     "rule_drop": "Drop a standing rule",
     "ask_schedule": "Schedule a timed ask",

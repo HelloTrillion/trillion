@@ -407,6 +407,12 @@ class Shares:
             raise ShareError(reason)
         return path
 
+    def folder(self, raw_path: Path) -> Path:
+        """The folder a share of `raw_path` would be of, checked as `put` checks it, or
+        `ShareError` saying why not. Nothing is written: her card asks this when it is
+        raised and again when it is approved. Blocking."""
+        return self._folder(raw_path)
+
     @staticmethod
     def _check(access: str, scope: str) -> None:
         if access not in ACCESS:
