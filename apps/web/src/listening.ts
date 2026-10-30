@@ -7,7 +7,7 @@
  * never read back.
  */
 
-import { type Api, errorText } from './settings';
+import { type Api, type Reach, errorText } from './settings';
 import type { Microphones } from './microphone';
 import type { Host } from './panel';
 
@@ -56,6 +56,11 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
   if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+/** In this list, a provider that needs a key is a hosted service; the others run on this computer. */
+export function listeningReach(o: Pick<Option, 'title' | 'needs_key'>): Reach {
+  return { provider: o.title, hosted: o.needs_key };
 }
 
 export interface ListeningSettings {
@@ -206,11 +211,12 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     } catch {
       // fall through to the general message
     }
-    const hint = option()?.install_hint;
+    const o = option();
+    const hint = o?.install_hint;
     if (code === 'not_installed' && hint) {
       return `This part of Trillion is not installed yet. In the Trillion folder, run "${hint}", then start Trillion again.`;
     }
-    return errorText(code);
+    return errorText(code, o ? listeningReach(o) : undefined);
   }
 
   const keyBody = (): Record<string, unknown> => (keyInput.value.trim() ? { api_key: keyInput.value.trim() } : {});

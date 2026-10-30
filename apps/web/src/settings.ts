@@ -106,8 +106,24 @@ const ERRORS: Readonly<Record<string, string>> = {
   set_by_environment: 'The model is set by environment variables, so it cannot be changed here.',
 };
 
-export function errorText(code: string): string {
+/** Who an error is about: a hosted provider is out of reach when this computer is offline,
+ *  not because of an address the user typed. */
+export interface Reach {
+  readonly provider?: string;
+  readonly hosted: boolean;
+}
+
+export function errorText(code: string, about?: Reach): string {
+  if (code === 'unreachable' && about?.hosted) {
+    return `Could not reach ${about.provider || 'the provider'}. Check this computer is online.`;
+  }
   return ERRORS[code] ?? 'That did not work. Try again.';
+}
+
+/** A model provider with no address to give is a hosted one. */
+export function modelReach(o: Pick<Option, 'title' | 'takesAddress'>): Reach {
+  // "Anthropic (Claude)" reads as "Anthropic" in a sentence.
+  return { provider: o.title.replace(/\s*\(.*\)$/, ''), hosted: !o.takesAddress };
 }
 
 /** The model to preselect: the one already saved, then the recommended default, then the first. */
@@ -125,10 +141,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
   return node;
 }
 
-async function problem(response: Response): Promise<string> {
+async function problem(response: Response, about?: Reach): Promise<string> {
   try {
     const body = (await response.json()) as { error?: unknown };
-    return errorText(typeof body.error === 'string' ? body.error : '');
+    return errorText(typeof body.error === 'string' ? body.error : '', about);
   } catch {
     return errorText('');
   }
@@ -291,7 +307,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
     status.textContent = 'Checking…';
     const r = await api('POST', '/api/settings/model/models', body());
     if (!r.ok) {
-      status.textContent = await problem(r);
+      status.textContent = await problem(r, modelReach(option()));
       return false;
     }
     const found = ((await r.json()) as { models: Choice[] }).models;
@@ -327,7 +343,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
       status.textContent = 'Saving…';
       const r = await api('PUT', '/api/settings/model', { ...body(), model: modelSelect.value });
       if (!r.ok) {
-        status.textContent = await problem(r);
+        status.textContent = await problem(r, modelReach(option()));
         return;
       }
       state = (await r.json()) as ModelState;
@@ -339,7 +355,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
     void run(async () => {
       const r = await api('POST', '/api/settings/model/forget-key', { kind });
       if (!r.ok) {
-        status.textContent = await problem(r);
+        status.textContent = await problem(r, modelReach(option()));
         return;
       }
       state = (await r.json()) as ModelState;

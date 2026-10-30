@@ -6,7 +6,7 @@
  * to the core on this machine, kept in the system keychain, never read back.
  */
 
-import { type Api, errorText } from './settings';
+import { type Api, type Reach, errorText } from './settings';
 import type { Host } from './panel';
 
 interface Option {
@@ -51,6 +51,11 @@ export function systemVoices(all: readonly SpeechSynthesisVoice[], language: str
   return [...all]
     .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
     .map((v) => ({ id: v.voiceURI, name: `${v.name} (${v.lang})` }));
+}
+
+/** A voice made by someone else's service, with no address of the user's own, is hosted. */
+export function speechReach(o: Pick<Option, 'title' | 'where' | 'takes_url'>): Reach {
+  return { provider: o.title, hosted: o.where === 'core' && !o.takes_url };
 }
 
 export interface SpeechSettings {
@@ -224,7 +229,8 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   async function problem(r: Response): Promise<string> {
     try {
       const body = (await r.json()) as { error?: unknown };
-      return errorText(typeof body.error === 'string' ? body.error : '');
+      const o = option();
+      return errorText(typeof body.error === 'string' ? body.error : '', o ? speechReach(o) : undefined);
     } catch {
       return errorText('');
     }
