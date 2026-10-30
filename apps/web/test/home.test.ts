@@ -1,14 +1,23 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { keyStep, moved, slotAt } from '../src/arrange';
 import {
+  DEFAULT_ORDER,
   type HomeOptions,
+  type Layout,
+  addedBack,
   brandColor,
   changeLine,
   createHome,
   dayBoardStep,
   endsBuild,
+  defaultLayout,
   frameKeeps,
   greeting,
+  herOpensHome,
+  isDefaultLayout,
+  movedLine,
+  pickedLine,
   ledeLine,
   returnsToHome,
   homeOf,
@@ -16,6 +25,7 @@ import {
   sampleFor,
   shouldOpenHome,
   tileLabel,
+  withLayout,
 } from '../src/home';
 
 beforeAll(() => {
@@ -508,5 +518,374 @@ describe('Home', () => {
     await home.show();
     expect(home.el.querySelector('img:not(.connected-icon)')).toBeNull();
     expect(home.el.querySelector('.home-hello')?.textContent).toContain('<img');
+  });
+});
+
+// ── Arranging Home ──────────────────────────────────────────────────────
+
+describe('arranging, pure', () => {
+  const slots = [0, 1, 2, 3, 4].map((i) => ({ left: (i % 3) * 320, top: Math.floor(i / 3) * 320, width: 300, height: 300 }));
+
+  it('drops on the slot under the pointer, else the nearest', () => {
+    expect(slotAt({ x: 10, y: 10 }, slots)).toBe(0);
+    expect(slotAt({ x: 650, y: 100 }, slots)).toBe(2);
+    expect(slotAt({ x: 400, y: 500 }, slots)).toBe(4);
+    // In the gap between two tiles: the nearer one.
+    expect(slotAt({ x: 305, y: 150 }, slots)).toBe(0);
+    expect(slotAt({ x: 318, y: 150 }, slots)).toBe(1);
+    // Past the last tile, or far outside the grid.
+    expect(slotAt({ x: 900, y: 500 }, slots)).toBe(4);
+    expect(slotAt({ x: -500, y: -500 }, slots)).toBe(0);
+  });
+
+  it('moves one item in a list, clamped at the ends', () => {
+    expect(moved(['a', 'b', 'c', 'd'], 0, 2)).toEqual(['b', 'c', 'a', 'd']);
+    expect(moved(['a', 'b', 'c', 'd'], 3, 0)).toEqual(['d', 'a', 'b', 'c']);
+    expect(moved(['a', 'b', 'c'], 1, 9)).toEqual(['a', 'c', 'b']);
+    expect(moved(['a', 'b'], 5, 0)).toEqual(['a', 'b']);
+  });
+
+  it('steps back on left and up, on with right and down', () => {
+    expect(keyStep('ArrowLeft')).toBe(-1);
+    expect(keyStep('ArrowUp')).toBe(-1);
+    expect(keyStep('ArrowRight')).toBe(1);
+    expect(keyStep('ArrowDown')).toBe(1);
+    expect(keyStep('a')).toBe(0);
+  });
+
+  it('takes a missing removed list as nothing removed', () => {
+    expect(homeOf(payload())!.removed).toEqual([]);
+    const d = homeOf(payload({ removed: [{ id: 'kpis', title: 'Revenue', state: 'connect', services: [] }, { id: 'inbox' }] }))!;
+    // A tile also shown is not removed.
+    expect(d.removed.map((t) => t.id)).toEqual(['kpis']);
+  });
+
+  it('draws a new layout with the meter over shown tiles only', () => {
+    const d = homeOf(payload())!;
+    const l = withLayout(d, ['inbox', 'next_up', 'tasks', 'due_soon'], ['mentions']);
+    expect(l.tiles.map((t) => t.id)).toEqual(['inbox', 'next_up', 'tasks', 'due_soon']);
+    expect(l.removed.map((t) => t.id)).toEqual(['mentions']);
+    expect(l.total).toBe(4);
+    expect(l.ready).toBe(2);
+    // The suggestion was for the tile taken off.
+    expect(l.next).toBeNull();
+    const fewer = withLayout(d, ['inbox', 'mentions', 'due_soon'], ['tasks', 'next_up']);
+    expect(fewer.ready).toBe(0);
+    expect(fewer.removed.map((t) => t.id)).toEqual(['next_up', 'tasks']);
+    // A tile named nowhere stays shown, after the rest.
+    expect(withLayout(d, ['due_soon'], []).tiles.map((t) => t.id)).toEqual(['due_soon', 'next_up', 'inbox', 'tasks', 'mentions']);
+  });
+
+  it('knows the default layout, and adds a tile back at its default place', () => {
+    const d = homeOf(payload())!;
+    expect(isDefaultLayout(d)).toBe(true);
+    expect(isDefaultLayout(withLayout(d, ['inbox', 'next_up', 'tasks', 'mentions', 'due_soon'], []))).toBe(false);
+    expect(isDefaultLayout(withLayout(d, ['next_up', 'inbox', 'tasks', 'due_soon'], ['mentions']))).toBe(false);
+    expect(defaultLayout(withLayout(d, ['due_soon', 'inbox'], ['next_up', 'tasks', 'mentions']))).toEqual({
+      order: ['next_up', 'inbox', 'tasks', 'mentions', 'due_soon'],
+      removed: [],
+    });
+    expect(addedBack(['next_up', 'tasks', 'due_soon'], 'inbox')).toEqual(['next_up', 'inbox', 'tasks', 'due_soon']);
+    expect(addedBack(['due_soon', 'tasks'], 'next_up')).toEqual(['next_up', 'due_soon', 'tasks']);
+    expect(addedBack(['tasks', 'next_up'], 'checks')).toEqual(['tasks', 'next_up', 'checks']);
+    expect(DEFAULT_ORDER).toHaveLength(9);
+  });
+
+  it('says where a held tile is', () => {
+    expect(pickedLine('Inbox', 3, 8)).toBe('Inbox, picked up, position 3 of 8');
+    expect(movedLine(4, 8)).toBe('moved to position 4 of 8');
+  });
+
+  it('opens Home for her change only into a closed workspace with nothing else to show', () => {
+    const f = { by: 'her', open: false, boardWidgets: false, approvals: false, folders: false, onboarding: false };
+    expect(herOpensHome(f)).toBe(true);
+    expect(herOpensHome({ ...f, by: undefined })).toBe(false);
+    expect(herOpensHome({ ...f, open: true })).toBe(false);
+    expect(herOpensHome({ ...f, boardWidgets: true })).toBe(false);
+    expect(herOpensHome({ ...f, approvals: true })).toBe(false);
+    expect(herOpensHome({ ...f, folders: true })).toBe(false);
+    expect(herOpensHome({ ...f, onboarding: true })).toBe(false);
+  });
+});
+
+describe('arranging Home', () => {
+  type Tile = Record<string, unknown>;
+  const ALL = payload()['tiles'] as Tile[];
+  const counted = (ts: Tile[]) => ts.filter((t) => t['state'] === 'ready' || t['state'] === 'built_in').length;
+
+  /** What the core answers for a layout, as the route would. */
+  function served(order: readonly string[], removed: readonly string[], over: Record<string, unknown> = {}): Record<string, unknown> {
+    const tiles = order.filter((id) => !removed.includes(id)).map((id) => ALL.find((t) => t['id'] === id)!);
+    const gone = ALL.filter((t) => removed.includes(t['id'] as string));
+    return payload({ tiles, removed: gone, ready: counted(tiles), total: tiles.length, ...over });
+  }
+
+  const IDS = ['next_up', 'inbox', 'tasks', 'mentions', 'due_soon'];
+
+  // jsdom lays nothing out: each tile stands in a 3-column grid of 300px squares by its place.
+  const realRect = Element.prototype.getBoundingClientRect;
+  beforeAll(() => {
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+      const parent = this.parentElement;
+      if (this.classList.contains('home-grid')) return { left: 0, top: 0, width: 940, height: 940, right: 940, bottom: 940, x: 0, y: 0 } as DOMRect;
+      if (parent?.classList.contains('home-grid') && !this.classList.contains('home-lifted')) {
+        const i = [...parent.children].filter((c) => !c.classList.contains('home-lifted')).indexOf(this);
+        const left = (i % 3) * 320;
+        const top = Math.floor(i / 3) * 320;
+        return { left, top, width: 300, height: 300, right: left + 300, bottom: top + 300, x: left, y: top } as DOMRect;
+      }
+      return realRect.call(this);
+    };
+    return () => {
+      Element.prototype.getBoundingClientRect = realRect;
+    };
+  });
+
+  function arrange(data: unknown = payload(), save?: (l: Layout) => Promise<unknown>, over: Partial<HomeOptions> = {}) {
+    const saveLayout = vi.fn(save ?? (async (l: Layout) => served(l.order, l.removed)));
+    const s = setup({ saveLayout, ...over }, data);
+    return { ...s, saveLayout };
+  }
+
+  const order = (root: HTMLElement): string[] => [...root.querySelectorAll<HTMLElement>('.home-grid > .home-tile')].map((t) => t.dataset['id']!);
+  const grip = (root: HTMLElement, id: string) => tileEl(root, id).querySelector<HTMLButtonElement>('.home-grip')!;
+  const pointer = (type: string, x: number, y: number) =>
+    new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: 7, isPrimary: true });
+  const key = (target: Element, k: string) => {
+    const e = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  it('gives each tile a grip and a ×, named for it, only when it can save', async () => {
+    const { home } = arrange();
+    await home.show();
+    const inbox = tileEl(home.el, 'inbox');
+    expect(inbox.querySelector('.home-grip')?.getAttribute('aria-label')).toBe('Move Inbox');
+    expect(inbox.querySelector('.home-remove')?.getAttribute('aria-label')).toBe('Remove Inbox from Home');
+    const help = document.getElementById(inbox.querySelector('.home-grip')!.getAttribute('aria-describedby')!);
+    expect(help?.textContent).toContain('Escape');
+
+    const plain = setup();
+    await plain.home.show();
+    expect(plain.home.el.querySelector('.home-grip, .home-remove, .home-add')).toBeNull();
+  });
+
+  it('drags a tile with the pointer through a placeholder, and saves where it drops', async () => {
+    const { home, saveLayout } = arrange();
+    await home.show();
+    const g = grip(home.el, 'next_up');
+    g.dispatchEvent(pointer('pointerdown', 150, 20));
+    // A press alone is not a drag.
+    window.dispatchEvent(pointer('pointermove', 152, 21));
+    expect(home.el.querySelector('.home-placeholder')).toBeNull();
+    // Over the third slot.
+    window.dispatchEvent(pointer('pointermove', 790, 150));
+    const lifted = tileEl(home.el, 'next_up');
+    expect(lifted.classList.contains('home-lifted')).toBe(true);
+    expect(lifted.style.transform).toContain('scale');
+    const kids = [...home.el.querySelector('.home-grid')!.children].filter((c) => !c.classList.contains('home-lifted'));
+    expect(kids.map((c) => (c.classList.contains('home-placeholder') ? '·' : (c as HTMLElement).dataset['id']))).toEqual(['inbox', 'tasks', '·', 'mentions', 'due_soon']);
+    expect(saveLayout).not.toHaveBeenCalled();
+    window.dispatchEvent(pointer('pointerup', 790, 150));
+    expect(home.el.querySelector('.home-placeholder')).toBeNull();
+    expect(lifted.classList.contains('home-lifted')).toBe(false);
+    expect(order(home.el)).toEqual(['inbox', 'tasks', 'next_up', 'mentions', 'due_soon']);
+    expect(saveLayout).toHaveBeenCalledWith({ order: ['inbox', 'tasks', 'next_up', 'mentions', 'due_soon'], removed: [] });
+    await vi.waitFor(() => expect(home.el.querySelector<HTMLElement>('.home-reset-foot')!.hidden).toBe(false));
+  });
+
+  it('puts a dragged tile back on Escape, saves nothing, and keeps the workspace open', async () => {
+    const { home, saveLayout } = arrange();
+    await home.show();
+    const behind = vi.fn();
+    window.addEventListener('keydown', behind);
+    try {
+      grip(home.el, 'inbox').dispatchEvent(pointer('pointerdown', 470, 20));
+      window.dispatchEvent(pointer('pointermove', 150, 500));
+      expect(home.el.querySelector('.home-placeholder')).not.toBeNull();
+      key(document.body, 'Escape');
+      expect(behind).not.toHaveBeenCalled();
+      expect(home.el.querySelector('.home-placeholder')).toBeNull();
+      expect(order(home.el)).toEqual(IDS);
+      // The pointer letting go afterwards does nothing more.
+      window.dispatchEvent(pointer('pointerup', 150, 500));
+      expect(saveLayout).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', behind);
+    }
+  });
+
+  it('moves a tile from the keyboard, saying where it is', async () => {
+    const { home, calls, saveLayout } = arrange();
+    await home.show();
+    const g = grip(home.el, 'inbox');
+    g.focus();
+    key(g, 'Enter');
+    expect(calls.said.at(-1)).toBe('Inbox, picked up, position 2 of 5');
+    expect(tileEl(home.el, 'inbox').classList.contains('home-held')).toBe(true);
+    key(g, 'ArrowRight');
+    expect(calls.said.at(-1)).toBe('moved to position 3 of 5');
+    key(g, 'ArrowDown');
+    expect(calls.said.at(-1)).toBe('moved to position 4 of 5');
+    expect(order(home.el)).toEqual(['next_up', 'tasks', 'mentions', 'inbox', 'due_soon']);
+    // Moving it kept focus on its grip.
+    expect(document.activeElement).toBe(g);
+    expect(saveLayout).not.toHaveBeenCalled();
+    key(g, ' ');
+    expect(calls.said.at(-1)).toBe('dropped');
+    expect(saveLayout).toHaveBeenCalledWith({ order: ['next_up', 'tasks', 'mentions', 'inbox', 'due_soon'], removed: [] });
+    expect(tileEl(home.el, 'inbox').classList.contains('home-held')).toBe(false);
+    // Nothing became ready: a move says nothing more once saved.
+    await vi.waitFor(() => expect(home.el.querySelector<HTMLElement>('.home-reset-foot')!.hidden).toBe(false));
+    expect(calls.said.at(-1)).toBe('dropped');
+  });
+
+  it('puts a keyboard-held tile back on Escape, and stops at the ends', async () => {
+    const { home, calls, saveLayout } = arrange();
+    await home.show();
+    const g = grip(home.el, 'next_up');
+    g.focus();
+    key(g, ' ');
+    key(g, 'ArrowLeft');
+    expect(calls.said.at(-1)).toBe('moved to position 1 of 5');
+    key(g, 'ArrowRight');
+    key(g, 'ArrowRight');
+    expect(order(home.el)[2]).toBe('next_up');
+    const esc = key(g, 'Escape');
+    expect(esc.defaultPrevented).toBe(true);
+    expect(order(home.el)).toEqual(IDS);
+    expect(calls.said.at(-1)).toBe('Next up put back at position 1 of 5');
+    expect(saveLayout).not.toHaveBeenCalled();
+  });
+
+  it('removes a tile at once, with Undo for six seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const { home, calls, saveLayout } = arrange();
+      await home.show();
+      tileEl(home.el, 'inbox').querySelector<HTMLButtonElement>('.home-remove')!.click();
+      expect(order(home.el)).toEqual(['next_up', 'tasks', 'mentions', 'due_soon']);
+      expect(saveLayout).toHaveBeenCalledWith({ order: ['next_up', 'tasks', 'mentions', 'due_soon'], removed: ['inbox'] });
+      const toast = home.el.querySelector<HTMLElement>('.home-toast')!;
+      expect(toast.hidden).toBe(false);
+      expect(toast.querySelector('.home-toast-text')?.textContent).toBe('Inbox removed');
+      expect(calls.said.at(-1)).toBe('Inbox removed');
+      expect(home.el.querySelector('.home-add-open')?.textContent).toBe('Add widgets (1)');
+      // Focus moved to the tile that took its place.
+      expect(document.activeElement).toBe(grip(home.el, 'tasks'));
+      expect(home.el.querySelector('.home-meter-count')?.textContent).toBe('2 of 4 ready');
+      await vi.advanceTimersByTimeAsync(5000);
+      toast.querySelector<HTMLButtonElement>('.home-undo')!.click();
+      expect(order(home.el)).toEqual(IDS);
+      expect(saveLayout).toHaveBeenLastCalledWith({ order: IDS, removed: [] });
+      expect(toast.hidden).toBe(true);
+      expect(home.el.querySelector('.home-add')).toBeNull();
+
+      // Left alone, the toast goes after six seconds.
+      tileEl(home.el, 'mentions').querySelector<HTMLButtonElement>('.home-remove')!.click();
+      await vi.advanceTimersByTimeAsync(5900);
+      expect(toast.hidden).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(toast.hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lists removed tiles under Add widgets, with badges, and adds one back', async () => {
+    const { home, calls, saveLayout } = arrange(served(['next_up', 'tasks', 'due_soon'], ['inbox', 'mentions']));
+    await home.show();
+    const open = home.el.querySelector<HTMLButtonElement>('.home-add-open')!;
+    expect(open.textContent).toBe('Add widgets (2)');
+    expect(open.getAttribute('aria-expanded')).toBe('false');
+    // At the end of the grid.
+    expect(home.el.querySelector('.home-grid')!.lastElementChild?.classList.contains('home-add')).toBe(true);
+    open.click();
+    const panel = home.el.querySelector<HTMLElement>('.home-add-panel')!;
+    expect(panel.hidden).toBe(false);
+    const rows = [...panel.querySelectorAll<HTMLElement>('.home-add-row')];
+    expect(rows.map((r) => r.querySelector('.home-add-row-title')?.textContent)).toEqual(['Inbox', 'Mentions']);
+    expect(rows.map((r) => r.querySelector('.home-badge')?.textContent)).toEqual(['Needs your OK', 'Not connected']);
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Add Inbox to Home');
+    rows[0]!.querySelector<HTMLButtonElement>('.home-add-one')!.click();
+    expect(order(home.el)).toEqual(['next_up', 'inbox', 'tasks', 'due_soon']);
+    expect(saveLayout).toHaveBeenCalledWith({ order: ['next_up', 'inbox', 'tasks', 'due_soon'], removed: ['mentions'] });
+    expect(calls.said.at(-1)).toBe('Inbox added');
+    // One left: the panel stays open on it.
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Add Mentions to Home');
+    expect(home.el.querySelector('.home-add-open')?.textContent).toBe('Add widgets (1)');
+    // Escape closes it, back to the dashed tile, and the workspace stays.
+    const esc = key(document.activeElement!, 'Escape');
+    expect(esc.defaultPrevented).toBe(true);
+    expect(home.el.querySelector<HTMLElement>('.home-add-panel')!.hidden).toBe(true);
+    expect(document.activeElement).toBe(home.el.querySelector('.home-add-open'));
+  });
+
+  it('resets Home from the panel, and from the foot line once the order is changed', async () => {
+    const { home, saveLayout } = arrange(served(['due_soon', 'next_up', 'tasks'], ['inbox', 'mentions']));
+    await home.show();
+    // Something removed: Reset is in the panel, not the foot.
+    expect(home.el.querySelector<HTMLElement>('.home-reset-foot')!.hidden).toBe(true);
+    home.el.querySelector<HTMLButtonElement>('.home-add-open')!.click();
+    home.el.querySelector<HTMLButtonElement>('.home-add-panel .home-reset')!.click();
+    expect(order(home.el)).toEqual(IDS);
+    expect(saveLayout).toHaveBeenLastCalledWith({ order: IDS, removed: [] });
+    expect(home.el.querySelector('.home-add')).toBeNull();
+    expect(home.el.querySelector<HTMLElement>('.home-reset-foot')!.hidden).toBe(true);
+
+    const second = arrange(served(['inbox', 'next_up', 'tasks', 'mentions', 'due_soon'], []));
+    await second.home.show();
+    const foot = second.home.el.querySelector<HTMLButtonElement>('.home-reset-foot')!;
+    expect(foot.hidden).toBe(false);
+    expect(foot.textContent).toBe('Reset Home');
+    foot.click();
+    expect(order(second.home.el)).toEqual(IDS);
+    expect(foot.hidden).toBe(true);
+  });
+
+  it('puts the layout back and says so when a save fails', async () => {
+    const { home, calls } = arrange(payload(), async () => {
+      throw new Error('HTTP 500');
+    });
+    await home.show();
+    tileEl(home.el, 'mentions').querySelector<HTMLButtonElement>('.home-remove')!.click();
+    expect(order(home.el)).not.toContain('mentions');
+    await vi.waitFor(() => expect(order(home.el)).toEqual(IDS));
+    expect(home.el.querySelector('.home-toast-text')?.textContent).toBe('Couldn’t save that change');
+    expect(home.el.querySelector<HTMLElement>('.home-undo')!.hidden).toBe(true);
+    expect(calls.said.at(-1)).toBe('Couldn’t save that change');
+    expect(home.el.querySelector('.home-add')).toBeNull();
+    expect(home.el.querySelector('.home-meter-count')?.textContent).toBe('2 of 5 ready');
+  });
+
+  it('redraws on a home frame without animation, and waits for a drag in progress', async () => {
+    let data = payload();
+    const { home } = arrange(undefined, undefined, { fetchHome: async () => data });
+    await home.show();
+    data = served(['due_soon', 'next_up', 'inbox', 'tasks'], ['mentions']);
+    await home.changed();
+    expect(order(home.el)).toEqual(['due_soon', 'next_up', 'inbox', 'tasks']);
+    expect(home.el.querySelector('.home-in')).toBeNull();
+    expect(home.el.querySelector('.home-add-open')?.textContent).toBe('Add widgets (1)');
+
+    // A frame mid-drag: the drag finishes first, then Home reads.
+    grip(home.el, 'tasks').dispatchEvent(pointer('pointerdown', 470, 340));
+    window.dispatchEvent(pointer('pointermove', 470, 330));
+    data = served(IDS, []);
+    await home.changed();
+    expect(tileEl(home.el, 'tasks').classList.contains('home-lifted')).toBe(true);
+    expect(home.el.querySelector('.home-add')).not.toBeNull();
+    window.dispatchEvent(pointer('pointerup', 470, 330));
+    await vi.waitFor(() => expect(home.el.querySelector('.home-add')).toBeNull());
+    expect(order(home.el)).toEqual(IDS);
+  });
+
+  it('does not read for a frame while off screen', async () => {
+    const { home, fetchHome } = arrange();
+    await home.show();
+    home.el.remove();
+    await home.changed();
+    expect(fetchHome).toHaveBeenCalledTimes(1);
   });
 });

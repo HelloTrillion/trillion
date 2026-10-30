@@ -6901,6 +6901,385 @@ button.reminders-open {
   color: var(--color-text-2);
 }
 
+/* ── Arranging Home: the grip, the ×, the lifted tile, Add widgets and the toast ── */
+
+/* The lifted tile is placed inside the grid. */
+.home-grid {
+  position: relative;
+}
+.home-dragging {
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* While one tile is in hand, the others hold still under the pointer. */
+.home-dragging .home-tile:not(.home-lifted, .home-held):hover {
+  transform: none;
+}
+
+/* The grip: a small handle at the top of the tile, quiet until the tile is hovered or focused. */
+.home-grip,
+.home-grip:hover:not(:disabled) {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  translate: -50% 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: grab;
+  /* Touch moves the tile, never the page. */
+  touch-action: none;
+  opacity: 0;
+  transition:
+    opacity var(--motion-fast),
+    color var(--motion-fast),
+    background var(--motion-fast);
+}
+.home-grip .icon {
+  stroke-width: 3;
+}
+.home-tile:hover .home-grip,
+.home-tile:focus-within .home-grip,
+.home-held .home-grip,
+.home-lifted .home-grip {
+  opacity: 1;
+}
+.home-grip:hover:not(:disabled),
+.home-grip:focus-visible {
+  color: var(--color-text-0);
+  background: var(--home-soft);
+}
+.home-grip:focus-visible {
+  outline-offset: 0;
+}
+.home-lifted .home-grip,
+.home-lifted .home-grip:hover:not(:disabled) {
+  cursor: grabbing;
+}
+
+/* The ×: a small round button on the tile's corner, also quiet until hover or focus. */
+.home-remove,
+.home-remove:hover:not(:disabled) {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--home-line);
+  background: var(--color-bg-2);
+  color: var(--color-text-1);
+  box-shadow: 0 4px 12px var(--home-shadow);
+  opacity: 0;
+  scale: 0.8;
+  transition:
+    opacity var(--motion-fast),
+    scale var(--motion-fast),
+    color var(--motion-fast),
+    border-color var(--motion-fast);
+}
+.home-tile:hover .home-remove,
+.home-tile:focus-within .home-remove {
+  opacity: 1;
+  scale: 1;
+}
+.home-remove:hover:not(:disabled),
+.home-remove:focus-visible {
+  color: var(--color-text-0);
+  border-color: color-mix(in srgb, var(--color-text-0) 30%, transparent);
+}
+.home-lifted .home-remove,
+.home-held .home-remove {
+  opacity: 0;
+}
+
+/* On touch there is no hover: the grip is always there, a little larger, and the × shows quietly. */
+@media (hover: none) {
+  .home-tile:has(.home-grip) {
+    padding-top: 26px;
+  }
+  .home-grip,
+  .home-grip:hover:not(:disabled) {
+    top: 0;
+    width: 64px;
+    height: 26px;
+    opacity: 0.8;
+  }
+  .home-remove,
+  .home-remove:hover:not(:disabled) {
+    opacity: 0.85;
+    scale: 1;
+  }
+}
+
+/* In hand: lifted off the grid with a soft shadow, a touch larger, following the pointer. */
+.home-tile.home-lifted {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  margin: 0;
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--home-line));
+  /* Denser glass than a resting tile, so the tiles it passes over don't show through. */
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 92%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    0 28px 56px var(--home-shadow),
+    0 8px 18px var(--home-shadow);
+  transition:
+    border-color var(--motion-base),
+    box-shadow var(--motion-base);
+  cursor: grabbing;
+  will-change: transform;
+}
+/* Picked up from the keyboard: raised where it stands. */
+.home-tile.home-held {
+  z-index: 2;
+  transform: translateY(-4px) scale(1.02);
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--home-line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent),
+    0 24px 48px var(--home-shadow);
+}
+/* Where it will land: a dashed outline in her colour. */
+.home-placeholder {
+  box-sizing: border-box;
+  border-radius: var(--radius-lg);
+  border: 1.5px dashed color-mix(in srgb, var(--color-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+  list-style: none;
+}
+
+/* Add widgets: a dashed tile at the end of the grid while anything is removed. */
+.home-add {
+  display: flex;
+  flex-direction: column;
+  min-height: 150px;
+  min-width: 0;
+}
+.home-add-open,
+.home-add-open:hover:not(:disabled) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 24px 16px;
+  border-radius: var(--radius-lg);
+  border: 1.5px dashed color-mix(in srgb, var(--color-text-0) 18%, transparent);
+  background: transparent;
+  color: var(--color-text-1);
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast),
+    color var(--motion-fast);
+}
+.home-add-open:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  color: var(--color-text-0);
+}
+.home-add-open[hidden],
+.home-add-panel[hidden],
+.home-reset[hidden],
+.home-toast[hidden] {
+  /* Over the hover rules, which also set display. */
+  display: none !important;
+}
+.home-add-plus {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--home-line);
+  background: var(--home-soft);
+  color: var(--color-accent);
+  transition: transform var(--motion-base) cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.home-add-open:hover:not(:disabled) .home-add-plus {
+  transform: rotate(90deg);
+}
+
+/* Its panel: the removed tiles, each with its badge and Add, and Reset Home under them. */
+.home-add-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--home-line);
+  background:
+    linear-gradient(160deg, var(--glass-sheen), transparent 40%),
+    color-mix(in srgb, var(--color-bg-1) 55%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 60%, transparent);
+  animation: home-rise 280ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.home-add-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.home-add-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.home-add-close,
+.home-add-close:hover:not(:disabled) {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-1);
+}
+.home-add-close:hover:not(:disabled) {
+  background: var(--home-soft);
+  color: var(--color-text-0);
+}
+.home-add-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-add-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--home-soft);
+  background: var(--home-soft);
+}
+.home-add-row-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.home-add-row-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.home-add-row-what {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--color-text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.home-add-row .home-badge {
+  margin-top: 0;
+}
+.home-add-one,
+.home-add-one:hover:not(:disabled) {
+  padding: 5px 14px;
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.home-add-one:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.home-reset,
+.home-reset:hover:not(:disabled) {
+  align-self: center;
+  padding: 4px 12px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 12.5px;
+}
+.home-reset:hover:not(:disabled) {
+  border-color: var(--home-line);
+  color: var(--color-text-0);
+}
+/* At the foot of the panel, however few rows are above it. */
+.home-add-panel .home-reset {
+  margin-top: auto;
+}
+
+.home-foot-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* "Inbox removed", with Undo: it rides at the foot of the pane while there is more to scroll. */
+.home-toast {
+  position: sticky;
+  bottom: 16px;
+  z-index: 6;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100% - 32px);
+  padding: 7px 7px 7px 18px;
+  box-sizing: border-box;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--home-line);
+  background: var(--glass-dense);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 14px 36px var(--home-shadow);
+  font-size: 13.5px;
+  color: var(--color-text-0);
+  animation: home-rise 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.home-toast-text {
+  min-width: 0;
+}
+.home-undo,
+.home-undo:hover:not(:disabled) {
+  flex: none;
+  padding: 5px 14px;
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  font-weight: 600;
+}
+.home-undo:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+.home-undo[hidden] {
+  display: none;
+}
+
 /* Still, for those who asked for less motion: no entrances, no lifts, no shimmer. */
 @media (prefers-reduced-motion: reduce) {
   .home,
@@ -6911,7 +7290,9 @@ button.reminders-open {
     transition: none !important;
   }
   .home-tile:hover,
-  .home-build:hover:not(:disabled) {
+  .home-tile.home-held,
+  .home-build:hover:not(:disabled),
+  .home-add-open:hover:not(:disabled) .home-add-plus {
     transform: none;
   }
 }

@@ -64,7 +64,7 @@ import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
-import { createHome, dayBoardStep, endsBuild, frameKeeps, localDate, returnsToHome, shouldOpenHome } from './home';
+import { createHome, dayBoardStep, endsBuild, frameKeeps, herOpensHome, localDate, returnsToHome, shouldOpenHome } from './home';
 import { createApprovals, outcomeWords } from './approvals';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
@@ -1009,6 +1009,7 @@ function fromHome(): void {
 }
 const home = createHome({
   fetchHome: () => okJson(api('GET', '/api/workspace/home')),
+  saveLayout: (layout) => okJson(api('PUT', '/api/workspace/home/layout', layout)),
   onBuild: () => void buildFromHome(),
   onConnect: (id) => {
     fromHome();
@@ -1548,6 +1549,20 @@ function connect(): void {
       homeDay = null;
       home.built();
       void home.refresh();
+    }
+    // Home's layout changed (here, in another tab, or by her): it reads again. Arranged by her, it
+    // also opens to show the change, unless something else has the workspace.
+    if (msg.type === 'home') {
+      void home.changed();
+      const shown = herOpensHome({
+        by: msg['by'],
+        open: workspace.isOpen,
+        boardWidgets: view.board?.open === true && view.board.widgets.length > 0,
+        approvals: approvals.holds(),
+        folders: folderPanel.isOpen,
+        onboarding: obDue || active(ob),
+      });
+      if (shown) showBoard();
     }
     // Her folder browser moved (or a click here did): the panel shows where it is now.
     if (msg.type === 'folders') {
