@@ -582,7 +582,10 @@ def test_places_in_order_with_the_shares(world: dict[str, Path]) -> None:
         )
 
     got = browse.places(
-        [("Website project", website), ("Missing", home / "Gone")], home=home, finder=finder
+        [("Website project", website), ("Missing", home / "Gone")],
+        home=home,
+        finder=finder,
+        fence=fence(world),
     )
     assert [(p.label, p.kind) for p in got] == [
         ("Home", "home"),
@@ -674,7 +677,7 @@ def _here(world: dict[str, Path], shared: Sequence[Path] = (), **kw: Any) -> bro
         "home": world["home"],
         "data_dir": world["data"],
         "mounts": (world["drive"],),
-        "finder": lambda _h: ([], []),
+        "place_folders": lambda _h: [],
         "protected": (),
         "system": (),
         "hidden": lambda _p: False,
@@ -710,7 +713,7 @@ def test_the_places_folders_open_wherever_they_are(world: dict[str, Path]) -> No
     moved = world["out"] / "OneDrive" / "Documents"
     (moved / "Clients").mkdir(parents=True)
     places_now = [browse.Place("Documents", moved, "folder")]
-    f = _here(world, finder=lambda _h: (places_now, []))
+    f = _here(world, place_folders=lambda _h: places_now)
     assert f.folders == (moved,)
     assert browse.listing(moved, fence=f).folders == ("Clients",)
     # Up from a place's root is past the fence: the places list.
@@ -721,8 +724,69 @@ def test_the_places_folders_open_wherever_they_are(world: dict[str, Path]) -> No
 def test_a_place_folder_d6_refuses_is_no_root(world: dict[str, Path]) -> None:
     hidden = world["out"] / ".Documents"
     hidden.mkdir()
-    f = _here(world, finder=lambda _h: ([browse.Place("Documents", hidden, "folder")], []))
+    f = _here(world, place_folders=lambda _h: [browse.Place("Documents", hidden, "folder")])
     assert f.folders == ()
+
+
+@pytest.mark.parametrize("where", ["top", "homes", "link to homes"])
+def test_a_place_folder_too_big_to_share_is_no_root(world: dict[str, Path], where: str) -> None:
+    # A Desktop set to `/`, or a Documents link to the folder of homes, must not open
+    # the whole computer (on Linux `/tmp`, `/srv`, `/run/user/...`).
+    homes = world["home"].parent
+    if where == "link to homes":
+        link(world["home"] / "Docs", homes)
+    path = {"top": Path(world["tmp"].anchor), "homes": homes}.get(where, world["home"] / "Docs")
+    f = _here(world, place_folders=lambda _h: [browse.Place("Desktop", path, "folder")])
+    assert f.folders == ()
+    assert browse.allowed(world["out"], fence=f) == browse.OUTSIDE
+
+
+def test_the_fence_names_drives_without_touching_them(
+    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def touched(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a drive was touched")
+
+    looked: list[Path] = []
+
+    def folders(h: Path) -> list[browse.Place]:
+        looked.append(h)
+        return [browse.Place("Documents", h / "Documents", "folder")]
+
+    monkeypatch.setattr(browse, "_finder", touched)
+    monkeypatch.setattr(rules, "mount_point", touched)
+    monkeypatch.setattr(browse, "_system_folders", folders)
+    monkeypatch.setattr(browse, "_folders_cache", {})
+    for _ in range(3):
+        f = _here(world, mounts=None, place_folders=None)
+    assert f.folders == (world["home"] / "Documents",)
+    # Looked up once, then kept for a few seconds.
+    assert looked == [world["home"]]
+
+
+def test_the_fence_takes_every_drive_letter_without_asking_for_a_disk() -> None:
+    kinds = {"C:\\": 3, "D:\\": 5, "E:\\": 2}
+
+    def never(_root: str) -> bool:
+        raise AssertionError("a drive was asked for its disk")
+
+    drives = browse._windows_drives(
+        lambda: sum(1 << (ord(d) - ord("A")) for d in "CDEF"),
+        lambda root: kinds.get(root, 1),
+        None,
+    )
+    assert [p.label for p in drives] == ["C:", "D:", "E:"]
+    assert [p.label for p in browse._windows_drives(lambda: 0b100, kinds.get, never)] == ["C:"]
+
+
+def test_places_leave_out_a_folder_beside_the_homes(homes: dict[str, Path]) -> None:
+    beside = homes["users"] / "Public" / "Documents"
+
+    def finder(h: Path) -> tuple[list[browse.Place], list[browse.Place]]:
+        return [browse.Place("Documents", beside, "folder")], []
+
+    got = browse.places(home=homes["home"], finder=finder, fence=_homes_fence(homes))
+    assert [p.kind for p in got] == ["home"]
 
 
 def test_up_stops_at_the_fence(world: dict[str, Path]) -> None:
@@ -796,27 +860,53 @@ def test_calls_still_running_are_capped(
         return False
 
     f = fence(world, hidden=stuck)
+    home, music, docs = world["home"], world["home"] / "Music", world["home"] / "Documents"
     try:
-        for _ in range(2):
-            assert browse.listing(world["home"], fence=f, deadline_s=0.05).problem == (
-                "that folder took too long to open"
-            )
+        for hung in (home, music):
+            got = browse.listing(hung, fence=f, deadline_s=0.05)
+            assert got.problem == "that folder took too long to open"
         before = len(asked)
-        # Both slots are held by hung calls: the next answers at once, starting nothing.
+        # Asking again about a folder still being read waits on that call: no new one.
+        assert browse.listing(home, fence=f, deadline_s=1.0).problem == (
+            "that folder took too long to open"
+        )
+        # Both slots are held by hung calls: the next answers at once, starting nothing,
+        # and says what is wrong rather than blaming the folder asked for.
         start = time.monotonic()
-        got = browse.listing(world["home"], fence=fence(world), deadline_s=1.0)
+        assert browse.listing(docs, fence=fence(world), deadline_s=1.0).problem == browse.BUSY
+        assert browse.step(docs, "up", fence=fence(world)).problem == browse.BUSY
+        assert browse.allowed(docs, fence=fence(world)) == browse.BUSY
         assert time.monotonic() - start < 0.5
-        assert got.problem == "that folder took too long to open"
         assert len(asked) == before
+        # Moves that touch no disk still work: the user can always get back.
+        assert browse.step(docs, "places", fence=f) == browse.Step(None)
+        assert browse.step(None, "up", fence=f) == browse.Step(None)
+        shown = [browse.Place("Documents", docs, "folder")]
+        assert browse.step(None, "documents", fence=f, places_now=shown).to == docs
     finally:
         gate.set()
     # Once they finish, their slots come back.
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
-        if browse.listing(world["home"], fence=fence(world)).problem is None:
+        if browse.listing(docs, fence=fence(world)).problem is None:
             break
         time.sleep(0.02)
-    assert browse.listing(world["home"], fence=fence(world)).problem is None
+    assert browse.listing(docs, fence=fence(world)).problem is None
+
+
+def test_places_cut_short_say_so_in_the_log(
+    world: dict[str, Path], caplog: pytest.LogCaptureFixture
+) -> None:
+    gate = threading.Event()
+
+    def finder(h: Path) -> tuple[list[browse.Place], list[browse.Place]]:
+        gate.wait(5)
+        return [], []
+
+    got = browse.places(home=world["home"], finder=finder, deadline_s=0.1)
+    gate.set()
+    assert [p.kind for p in got] == ["home"]
+    assert "places list cut short" in caplog.text
 
 
 def test_a_listing_carries_its_breadcrumb(world: dict[str, Path]) -> None:
