@@ -84,49 +84,65 @@ def test_at_most_200_names_and_a_count_of_the_rest(world: dict[str, Path]) -> No
     assert got.more == 50
 
 
-class _FlaggedOs:
-    """The os module, but `stat` of some names says the system marks them hidden."""
-
-    def __init__(self, names: set[str], **marks: int) -> None:
-        self._names = names
-        self._marks = marks
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(os, name)
-
-    def stat(self, path: Any, *args: Any, **kwargs: Any) -> Any:
-        if Path(path).name in self._names:
-            return SimpleNamespace(**{"st_flags": 0, "st_file_attributes": 0, **self._marks})
-        return os.stat(path, *args, **kwargs)
+def _by_name(*names: str) -> Any:
+    """An entry check that says the system marks these names hidden."""
+    return lambda entry: entry.name in names
 
 
-def _marked(world: dict[str, Path]) -> Any:
-    """The system's own hidden check, asked only inside the test's folder: the real
-    folders above it (`/private` on macOS) are hidden themselves."""
-    return lambda p: p.is_relative_to(world["tmp"]) and rules.marked_hidden(p)
+@pytest.mark.parametrize(
+    ("marks", "hidden"),
+    [
+        ({"st_flags": stat.UF_HIDDEN}, True),  # macOS
+        ({"st_file_attributes": stat.FILE_ATTRIBUTE_HIDDEN}, True),  # Windows
+        ({"st_file_attributes": stat.FILE_ATTRIBUTE_SYSTEM}, True),
+        ({"st_file_attributes": stat.FILE_ATTRIBUTE_DIRECTORY}, False),
+        ({}, False),  # Linux: no marks, only a leading dot
+    ],
+)
+def test_what_the_system_marks_hidden(marks: dict[str, int], hidden: bool) -> None:
+    assert browse.marked(SimpleNamespace(**marks)) is hidden
 
 
-def test_hidden_on_macos_by_the_hidden_flag(
-    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (world["home"] / "Library").mkdir()
+def test_folders_the_system_marks_hidden_are_left_out(world: dict[str, Path]) -> None:
     (world["home"] / "Stuff").mkdir()
-    monkeypatch.setattr(rules, "os", _FlaggedOs({"Stuff", "Library"}, st_flags=stat.UF_HIDDEN))
-    f = fence(world, hidden=_marked(world))
+    f = fence(world, entry_hidden=_by_name("Stuff"))
     got = browse.listing(world["home"], fence=f)
     assert got.problem is None
     assert got.folders == ("Desktop", "Documents", "Music")
 
 
-@pytest.mark.parametrize("attribute", ["FILE_ATTRIBUTE_HIDDEN", "FILE_ATTRIBUTE_SYSTEM"])
-def test_hidden_on_windows_by_attribute(
-    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch, attribute: str
-) -> None:
+@pytest.mark.skipif(sys.platform != "darwin", reason="the hidden flag is macOS's")
+def test_hidden_flag_on_this_mac(world: dict[str, Path]) -> None:
     (world["home"] / "Stuff").mkdir()
-    marks = {"st_file_attributes": getattr(stat, attribute)}
-    monkeypatch.setattr(rules, "os", _FlaggedOs({"Stuff"}, **marks))
-    f = fence(world, hidden=_marked(world))
-    assert browse.listing(world["home"], fence=f).folders == ("Desktop", "Documents", "Music")
+    os.chflags(world["home"] / "Stuff", stat.UF_HIDDEN)
+    assert "Stuff" not in browse.listing(world["home"], fence=fence(world)).folders
+    assert browse.listing(world["home"], fence=fence(world)).folders == (
+        "Desktop",
+        "Documents",
+        "Music",
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the hidden attribute is Windows's")
+def test_hidden_attribute_on_this_windows(world: dict[str, Path]) -> None:
+    import ctypes
+
+    (world["home"] / "Stuff").mkdir()
+    set_attributes = ctypes.windll.kernel32.SetFileAttributesW  # type: ignore[attr-defined]
+    assert set_attributes(str(world["home"] / "Stuff"), stat.FILE_ATTRIBUTE_HIDDEN)
+    assert browse.listing(world["home"], fence=fence(world)).folders == (
+        "Desktop",
+        "Documents",
+        "Music",
+    )
+
+
+def test_a_link_the_system_marks_hidden_is_left_out(world: dict[str, Path]) -> None:
+    # Windows keeps `My Documents` as a hidden, system junction to Documents.
+    link(world["home"] / "My Documents", world["home"] / "Documents")
+    f = fence(world, entry_hidden=_by_name("My Documents"))
+    assert "My Documents" not in browse.listing(world["home"], fence=f).folders
+    assert "My Documents" in browse.listing(world["home"], fence=fence(world)).folders
 
 
 def test_hidden_on_linux_by_a_leading_dot_only(world: dict[str, Path]) -> None:
@@ -250,6 +266,8 @@ def test_fence_on_macos_lets_in(path: str) -> None:
         "/",
         "/Users",
         "/Users/Guest",
+        "/Users/Shared",
+        "/Users/bob/Documents",
         "/Volumes",
         "/System",
         "/Library",
@@ -281,7 +299,17 @@ def _windows() -> browse.Fence:
 
 @pytest.mark.parametrize(
     "path",
-    ["C:/Users/sam", "C:/Users/sam/Documents", "D:/", "D:/Photos", "C:/", "c:/users/sam/music"],
+    [
+        "C:/Users/sam",
+        "C:/Users/sam/Documents",
+        "D:/",
+        "D:/Photos",
+        "C:/",
+        "c:/users/sam/music",
+        # The folder of homes, on the way to the user's own (which is all it shows).
+        "C:/Users",
+        "//?/C:/Users/sam/Documents",
+    ],
 )
 def test_fence_on_windows_lets_in(path: str) -> None:
     assert _windows().reason(PureWindowsPath(path)) is None
@@ -298,6 +326,18 @@ def test_fence_on_windows_lets_in(path: str) -> None:
         "C:/Users/sam/AppData/Roaming",
         "C:/Users/sam/.trillion",
         "E:/",
+        # Someone else's home, and anything in one.
+        "C:/Users/bob",
+        "C:/Users/bob/Documents",
+        "C:/Users/Public",
+        "C:/Users/Public/Documents",
+        "C:/Users/Default",
+        "c:/users/BOB",
+        # The long and network spellings are judged as usually spelled.
+        "//?/C:/Windows",
+        "//?/C:/Users/bob",
+        "//server/share/Projects",
+        "//?/UNC/server/share",
     ],
 )
 def test_fence_on_windows_keeps_out(path: str) -> None:
@@ -323,7 +363,17 @@ def test_fence_on_linux_lets_in(path: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/home", "/home/other", "/home/Sam/Projects", "/proc", "/etc", "/sys/x", "/mnt"]
+    "path",
+    [
+        "/home",
+        "/home/other",
+        "/home/other/x",
+        "/home/Sam/Projects",
+        "/proc",
+        "/etc",
+        "/sys/x",
+        "/mnt",
+    ],
 )
 def test_fence_on_linux_keeps_out(path: str) -> None:
     # Linux names are case-sensitive: /home/Sam is someone else's folder.
@@ -557,6 +607,223 @@ def test_places_keep_what_was_found_when_a_drive_hangs(world: dict[str, Path]) -
     assert [p.kind for p in got] == ["home"]
 
 
+def test_places_keep_the_drives_when_a_share_hangs(world: dict[str, Path]) -> None:
+    gate = threading.Event()
+
+    class Stuck:
+        def is_dir(self) -> bool:
+            gate.wait(5)
+            return True
+
+    def finder(h: Path) -> tuple[list[browse.Place], list[browse.Place]]:
+        return [], [browse.Place("Backup", world["drive"], "drive")]
+
+    got = browse.places([("Hung", Stuck())], home=world["home"], finder=finder, deadline_s=0.2)  # type: ignore[list-item]
+    gate.set()
+    assert [p.kind for p in got] == ["home", "drive"]
+
+
+# --- other homes, shares and places in the fence -----------------------------------
+
+
+@pytest.fixture
+def homes(tmp_path: Path) -> dict[str, Path]:
+    """A drive holding a folder of homes: the user's, someone else's, and Public."""
+    drive = tmp_path.resolve() / "C"
+    users = drive / "Users"
+    for name in ("sam/Documents", "bob/Documents", "Public/Documents"):
+        (users / name).mkdir(parents=True)
+    return {"drive": drive, "users": users, "home": users / "sam"}
+
+
+def _homes_fence(homes: dict[str, Path], **kw: Any) -> browse.Fence:
+    base: dict[str, Any] = {
+        "home": homes["home"],
+        "data": homes["home"] / ".trillion",
+        "drives": (homes["drive"],),
+        "hidden": lambda _p: False,
+    }
+    base.update(kw)
+    return browse.Fence(**base)
+
+
+def test_the_folder_of_homes_shows_only_the_users_own(homes: dict[str, Path]) -> None:
+    f = _homes_fence(homes)
+    assert browse.listing(homes["drive"], fence=f).folders == ("Users",)
+    assert browse.listing(homes["users"], fence=f).folders == ("sam",)
+    assert browse.listing(homes["users"] / "bob", fence=f).problem == browse.OTHER_HOME
+    assert browse.step(homes["users"], "Public", fence=f).problem is not None
+
+
+def test_a_link_into_someone_elses_home_is_left_out(homes: dict[str, Path]) -> None:
+    link(homes["home"] / "Theirs", homes["users"] / "bob" / "Documents")
+    f = _homes_fence(homes)
+    assert "Theirs" not in browse.listing(homes["home"], fence=f).folders
+    assert browse.allowed(homes["home"] / "Theirs", fence=f) == browse.OTHER_HOME
+
+
+def test_a_folder_shared_from_beside_the_homes_opens(homes: dict[str, Path]) -> None:
+    project = homes["users"] / "Public" / "Documents"
+    f = _homes_fence(homes, shared=(project,))
+    assert browse.allowed(project, fence=f) is None
+    assert browse.allowed(homes["users"] / "Public", fence=f) == browse.OTHER_HOME
+
+
+def _here(world: dict[str, Path], shared: Sequence[Path] = (), **kw: Any) -> browse.Fence:
+    base: dict[str, Any] = {
+        "home": world["home"],
+        "data_dir": world["data"],
+        "mounts": (world["drive"],),
+        "finder": lambda _h: ([], []),
+        "protected": (),
+        "system": (),
+        "hidden": lambda _p: False,
+    }
+    base.update(kw)
+    return browse.Fence.here(shared, **base)
+
+
+def test_fence_here_takes_its_world(world: dict[str, Path]) -> None:
+    website = world["home"] / "Documents" / "Clients" / "Website"
+    f = _here(world, [website])
+    assert f.home == world["home"]
+    assert f.data == world["data"]
+    assert f.drives == (world["drive"],)
+    assert f.shared == (website,)
+    assert browse.allowed(world["drive"] / "Photos", fence=f) is None
+
+
+def test_a_share_swapped_for_a_link_does_not_widen_the_fence(world: dict[str, Path]) -> None:
+    shared = world["home"] / "Documents" / "Shared"
+    link(shared, world["out"])
+    f = _here(world, [shared])
+    assert f.shared == ()
+    assert browse.allowed(world["out"], fence=f) == browse.OUTSIDE
+
+
+@pytest.mark.parametrize("which", ["home", "drive", "data"])
+def test_a_share_d4_refuses_is_no_root(world: dict[str, Path], which: str) -> None:
+    assert _here(world, [world[which]]).shared == ()
+
+
+def test_the_places_folders_open_wherever_they_are(world: dict[str, Path]) -> None:
+    moved = world["out"] / "OneDrive" / "Documents"
+    (moved / "Clients").mkdir(parents=True)
+    places_now = [browse.Place("Documents", moved, "folder")]
+    f = _here(world, finder=lambda _h: (places_now, []))
+    assert f.folders == (moved,)
+    assert browse.listing(moved, fence=f).folders == ("Clients",)
+    # Up from a place's root is past the fence: the places list.
+    assert browse.step(moved, "up", fence=f).to is None
+    assert browse.allowed(world["out"], fence=f) == browse.OUTSIDE
+
+
+def test_a_place_folder_d6_refuses_is_no_root(world: dict[str, Path]) -> None:
+    hidden = world["out"] / ".Documents"
+    hidden.mkdir()
+    f = _here(world, finder=lambda _h: ([browse.Place("Documents", hidden, "folder")], []))
+    assert f.folders == ()
+
+
+def test_up_stops_at_the_fence(world: dict[str, Path]) -> None:
+    # A share inside a folder the browser may not open: up is the places list.
+    inside = world["out"] / "Project"
+    inside.mkdir()
+    f = fence(world, shared=(inside,))
+    assert browse.step(inside, "up", fence=f).to is None
+
+
+@pytest.mark.parametrize("name", ["..", ".", "a/b", "a\\b", ""])
+def test_names_that_are_not_one_folder(world: dict[str, Path], name: str) -> None:
+    got = browse.step(world["home"] / "Documents", name, fence=fence(world))
+    assert got.to == world["home"] / "Documents"
+    assert got.problem is not None
+
+
+def test_an_unknown_user_is_a_problem_not_an_error(world: dict[str, Path]) -> None:
+    got = browse.step(world["home"], "~nosuchuser-trillion/x", fence=fence(world))
+    assert got.to == world["home"]
+    assert got.problem == "that folder could not be found"
+
+
+def test_a_fence_that_cannot_be_built_is_a_problem(
+    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_a: Any, **_k: Any) -> browse.Fence:
+        raise OSError("no home")
+
+    monkeypatch.setattr(browse.Fence, "here", broken)
+    assert browse.listing(world["home"]).problem == "that folder could not be read"
+    assert browse.step(world["home"], "Documents").problem == "that folder could not be read"
+    assert browse.allowed(world["home"]) == "that folder could not be checked"
+
+
+def test_allowed_refuses_when_the_check_raises(world: dict[str, Path]) -> None:
+    def broken(_p: PurePath) -> bool:
+        raise ValueError("bad")
+
+    f = fence(world, hidden=broken)
+    assert browse.allowed(world["home"], fence=f) == "that folder could not be checked"
+
+
+def test_the_fence_is_built_within_the_deadline(
+    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = threading.Event()
+
+    def slow(*_a: Any, **_k: Any) -> browse.Fence:
+        gate.wait(5)
+        return fence(world)
+
+    monkeypatch.setattr(browse.Fence, "here", slow)
+    start = time.monotonic()
+    got = browse.listing(world["home"], deadline_s=0.2)
+    gate.set()
+    assert time.monotonic() - start < 1.5
+    assert got.problem == "that folder took too long to open"
+
+
+def test_calls_still_running_are_capped(
+    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(browse, "_SLOTS", threading.BoundedSemaphore(2))
+    gate = threading.Event()
+    asked: list[PurePath] = []
+
+    def stuck(p: PurePath) -> bool:
+        asked.append(p)
+        gate.wait(5)
+        return False
+
+    f = fence(world, hidden=stuck)
+    try:
+        for _ in range(2):
+            assert browse.listing(world["home"], fence=f, deadline_s=0.05).problem == (
+                "that folder took too long to open"
+            )
+        before = len(asked)
+        # Both slots are held by hung calls: the next answers at once, starting nothing.
+        start = time.monotonic()
+        got = browse.listing(world["home"], fence=fence(world), deadline_s=1.0)
+        assert time.monotonic() - start < 0.5
+        assert got.problem == "that folder took too long to open"
+        assert len(asked) == before
+    finally:
+        gate.set()
+    # Once they finish, their slots come back.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if browse.listing(world["home"], fence=fence(world)).problem is None:
+            break
+        time.sleep(0.02)
+    assert browse.listing(world["home"], fence=fence(world)).problem is None
+
+
+def test_a_listing_carries_its_breadcrumb(world: dict[str, Path]) -> None:
+    got = browse.listing(world["home"] / "Documents" / "Clients", fence=fence(world))
+    assert [label for label, _p in got.crumbs] == ["Home", "Documents", "Clients"]
+
+
 # --- the real system ---------------------------------------------------------------
 
 
@@ -565,12 +832,15 @@ def test_places_keep_what_was_found_when_a_drive_hangs(world: dict[str, Path]) -
 
 def test_real_places_and_home_listing_answer_in_time() -> None:
     start = time.monotonic()
+    browse.Fence.here()
+    assert time.monotonic() - start < 2.0
+    start = time.monotonic()
     found = browse.places()
-    assert time.monotonic() - start < 2.5
+    assert time.monotonic() - start < 2.0
     assert found[0].kind == "home"
     start = time.monotonic()
     got = browse.listing(Path.home())
-    assert time.monotonic() - start < 2.5
+    assert time.monotonic() - start < 2.0
     assert got.problem is None or got.folders == ()
     for name in got.folders:
         assert (got.path / name).is_dir(), name
