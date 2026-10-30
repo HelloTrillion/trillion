@@ -94,6 +94,38 @@ describe('onboarding', () => {
     expect(nameProblem('<b>')).not.toBeNull();
   });
 
+  it('reads more of the ways people introduce themselves', () => {
+    expect(nameFrom('you can call me Sam')).toBe('Sam');
+    expect(nameFrom('I go by Sam')).toBe('Sam');
+    expect(nameFrom('Sam please')).toBe('Sam');
+    expect(nameFrom('ok, call me Sam please.')).toBe('Sam');
+    expect(nameFrom('Please')).toBe('Please'); // a name, not a filler
+  });
+
+  it('reads her new name out of the ways people give one', () => {
+    const her = (reply: string): string => run(['Sam', reply]).draft.agentName;
+    expect(her('Call yourself Nova')).toBe('Nova');
+    expect(her('Call yourself Nova please')).toBe('Nova');
+    expect(her('please call yourself Nova')).toBe('Nova');
+    expect(her('hmm, name yourself Nova')).toBe('Nova');
+    expect(her("I'll name you Nova")).toBe('Nova');
+    expect(her('I will name you Nova')).toBe('Nova');
+    expect(her("let's name you Nova")).toBe('Nova');
+    expect(her('you can be called Nova')).toBe('Nova');
+    expect(her('be called Nova')).toBe('Nova');
+    expect(her('you can be Nova')).toBe('Nova');
+    expect(her('just make it Nova')).toBe('Nova');
+    expect(her('your new name is Nova')).toBe('Nova');
+    expect(her('change your name to Nova')).toBe('Nova');
+    expect(her('change to Nova')).toBe('Nova');
+    expect(her('rename yourself to Nova')).toBe('Nova');
+    expect(her('ok call you Nova')).toBe('Nova');
+    // A name that only starts like a lead-in stays whole.
+    expect(her('Make')).toBe('Make');
+    expect(her('Nova')).toBe('Nova');
+    expect(said(run(['Sam', 'keep it']))).toContain('Trillion it stays.');
+  });
+
   it('says what was saved, then asks about a model first', () => {
     const o = named(NOTHING);
     expect(texts(o)).toContain(

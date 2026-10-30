@@ -74,8 +74,24 @@ const KEEP = '\u0000keep';
 const her = (text: string): Line => ({ who: 'her', text });
 const you = (text: string): Line => ({ who: 'you', text });
 
-const INTRO = /^(?:hi[,!. ]+|hey[,!. ]+|hello[,!. ]+)?(?:i'?m|i am|my name is|my name'?s|name'?s|it'?s|this is|(?:you can |just )?call me)\s+/i;
-const RENAME = /^(?:i(?:'ll| will) call you|(?:let'?s )?call you|let'?s go with|how about|you(?:'re| are)|your name is|go with)\s+/i;
+// Words people put in front of an answer ("ok, ...", "hmm, ...") before the part that matters.
+const FILLER = String.raw`(?:(?:hi|hey|hello|ok(?:ay)?|hmm+|um+|uh+|well|so|just|please)[,!. ]+)*`;
+const leadIn = (phrases: string): RegExp => new RegExp(String.raw`^${FILLER}(?:${phrases})\s+`, 'i');
+const INTRO = leadIn(String.raw`i'?m|i am|my name is|my name'?s|name'?s|it'?s|this is|i go by|(?:you can |just )?call me`);
+const RENAME = leadIn(
+  [
+    String.raw`i(?:'ll| will) (?:call|name) you`,
+    String.raw`(?:let'?s )?(?:call|name) you`,
+    String.raw`(?:call|name) yourself`,
+    String.raw`rename yourself(?: to)?`,
+    String.raw`(?:you can )?be called`,
+    String.raw`you can be`,
+    String.raw`make it`,
+    String.raw`your (?:new )?name(?:'s| is)`,
+    String.raw`change (?:your name )?to`,
+    String.raw`let'?s go with|how about|you(?:'re| are)|go with`,
+  ].join('|'),
+);
 const KEEP_IT = /^(?:keep(?: it)?|same|stay|no change|default|(?:that|it|this)(?:'s| is) (?:fine|good)|fine|yes|yep|ok(?:ay)?)[.! ]*$/i;
 
 /** "I'm Sam." and "call me Sam" both mean Sam. */
@@ -83,6 +99,7 @@ export function nameFrom(text: string, lead: RegExp = INTRO): string {
   return text
     .trim()
     .replace(lead, '')
+    .replace(/[\s,]+please[.!\s]*$/i, '')
     .replace(/[.!,;:\s]+$/, '')
     .replace(/\s+/g, ' ');
 }
