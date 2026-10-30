@@ -22,6 +22,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Speaking, free: a local OpenAI-compatible voice (Kokoro) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Talk shortcut | ✓ | ✓ | ✓ | while the tab is in front | from any app (a combination) |
 | Connectors: Google, Slack, Stripe, MCP | ✓ | ✓ | ✓ | ✓ | ✓, sign-ins in the default browser |
+| Workspace Home: tiles, Connect buttons, Build my briefing | ✓ | ✓ | ✓ | ✓ (once a day per browser) | ✓, sign-ins in the default browser |
 | Reminders, timed asks, routines | ✓ | ✓ | ✓ | ✓ (server-side) | ✓ |
 | Background reads | ✓ | ✓ | ✓ | ✓ | ✓ |
 | System notifications | ✓ `osascript` | ✓ PowerShell toast | ✓ with `notify-send` | ✓ (shown by the server) | ✓ |

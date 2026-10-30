@@ -263,6 +263,16 @@ Make a scratch folder such as `~/Documents/Trillion test` with a few subfolders 
 | 2.14.8 | In the desktop app, Settings → Shared folders → Add a folder | The system folder picker opens; choosing a folder shows the form, and Share adds it. In a browser tab, Add a folder opens the Folders panel instead. |
 | 2.14.9 | Start with `trillion run --grant <a folder>` | The folder is listed as "This run only", reachable, and gone after a restart without `--grant`. |
 
+### 2.15 Workspace Home (SUR-1a), by hand
+
+1. On a fresh home (`TRILLION_HOME` empty), finish onboarding, then reload: Home opens by itself, greets you by name, and shows "1 of 9 ready" with only Reminders built in.
+2. Reload again: Home does not open by itself (once a day). Turn off Settings → Board → "Show Home when I open Trillion", clear the stored date, and reload: it stays closed.
+3. Tap Connect Google Calendar on Next up: Settings opens at Google's sign-in. Sign in, close Settings: Home is back, Next up and Free time say Ready, and a screen reader hears "Next up is ready".
+4. In Connected tools, set Gmail to ask each time: Inbox says "Needs your OK", and its button opens Gmail's card.
+5. Tap "+4 more" on Due soon: Connected tools opens on Tasks and projects.
+6. Build my briefing: the button reads "Building your briefing…", the day board appears, and the next time the workspace is empty the button reads "Open today's briefing".
+7. Every preview carries "Sample". At phone width the tiles stack in one column; with reduced motion nothing animates.
+
 ## 3. Brain, persona and memory
 
 ### 3.1 Compaction (BRN-5, BRN-9, SPN-3)
