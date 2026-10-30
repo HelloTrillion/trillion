@@ -5,6 +5,19 @@ description = "The voice-first AI agent with a face."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.13"
+authors = [{ name = "Trillion contributors" }]
+keywords = ["assistant", "voice", "agent", "llm", "local-first"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=1.0",
@@ -20,6 +33,12 @@ dependencies = [
     "uvicorn>=0.30",
     "websockets>=13",
 ]
+
+[project.urls]
+Homepage = "https://hellotrillion.ai"
+Repository = "https://github.com/HelloTrillion/trillion"
+Issues = "https://github.com/HelloTrillion/trillion/issues"
+Changelog = "https://github.com/HelloTrillion/trillion/releases"
 
 # Local speech recognition (VOI-11b). Optional because it is large: the free way to
 # be heard, for anyone who wants nothing to leave the machine.

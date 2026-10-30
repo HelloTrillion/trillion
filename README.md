@@ -12,7 +12,7 @@ Talk to her. Watch her think. Trust that she never acts without your "yes."
 ---
 
 > **Status: pre-alpha.** You can talk or type to her in a browser, with the Galaxy behind, hear her answer aloud (a free system voice, or your ElevenLabs account), and approve a file write on a card. She hears through Whisper on your own machine (free) or your Deepgram account. She remembers what you tell her between conversations, in plain files you can open. On a first run she asks your name and what you want to call her, walks you through choosing a model, a voice and a way to listen, and shows how approval works.
-> This repository is the foundation being extracted from a private build that has run every day for six months. The first milestone is **the Shell** — see [the roadmap](#roadmap) and [`docs/PRD.md`](docs/PRD.md) for exactly what that means. Watch or star the repo if you want to know when it's usable.
+> This repository is the foundation being extracted from a private build that has run every day for six months. The first milestone is **the Shell** — see [the roadmap](#roadmap) and [`docs/PRD.md`](https://github.com/HelloTrillion/trillion/blob/main/docs/PRD.md) for exactly what that means. Watch or star the repo if you want to know when it's usable.
 
 ## What this is
 
@@ -45,7 +45,7 @@ Other agents have deleted inboxes while an instruction to "confirm first" scroll
 | **2 · Public beta** | The repo goes public, Slack + Telegram, docs site | planned |
 | **3 · 1.0** | Signed skill registry, semantic turn detection | planned |
 
-The full specification, including every requirement ID that Phase 0 must satisfy, is in [`docs/PRD.md`](docs/PRD.md). How each one gets proven is in [`docs/TESTING.md`](docs/TESTING.md).
+The full specification, including every requirement ID that Phase 0 must satisfy, is in [`docs/PRD.md`](https://github.com/HelloTrillion/trillion/blob/main/docs/PRD.md). How each one gets proven is in [`docs/TESTING.md`](https://github.com/HelloTrillion/trillion/blob/main/docs/TESTING.md).
 
 ## Architecture
 
@@ -128,16 +128,16 @@ Connections are kept in `mcp.json` in Trillion's data folder (`~/.trillion/mcp.j
 
 ## Contributing
 
-We want help, and the fastest way in is [`CONTRIBUTING.md`](CONTRIBUTING.md). It explains the three-pillar test every feature has to pass, the **never list** (things a pull request may never do), and the sign-off we require on commits.
+We want help, and the fastest way in is [`CONTRIBUTING.md`](https://github.com/HelloTrillion/trillion/blob/main/CONTRIBUTING.md). It explains the three-pillar test every feature has to pass, the **never list** (things a pull request may never do), and the sign-off we require on commits.
 
 Safety-critical areas (`src/trillion/spine/`, `src/trillion/persona/`, voice capture) need a maintainer review. That isn't gatekeeping for its own sake — it's how the guarantee above stays true.
 
 ## Security
 
-Please don't open a public issue for a vulnerability. See [`SECURITY.md`](SECURITY.md).
+Please don't open a public issue for a vulnerability. See [`SECURITY.md`](https://github.com/HelloTrillion/trillion/blob/main/SECURITY.md).
 
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+Apache-2.0. See [`LICENSE`](https://github.com/HelloTrillion/trillion/blob/main/LICENSE) and [`NOTICE`](https://github.com/HelloTrillion/trillion/blob/main/NOTICE).
 
-"Trillion" and "Hello Trillion", along with the orb mark, are trademarks of Lightbulb Moment Labs, Inc. The code is open; the name is not. See [`TRADEMARKS.md`](TRADEMARKS.md).
+"Trillion" and "Hello Trillion", along with the orb mark, are trademarks of Lightbulb Moment Labs, Inc. The code is open; the name is not. See [`TRADEMARKS.md`](https://github.com/HelloTrillion/trillion/blob/main/TRADEMARKS.md).
