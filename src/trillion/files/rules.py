@@ -83,9 +83,11 @@ _APP_ICLOUD = "Documents"
 _CLOUD_STORAGE = ("Library", "CloudStorage")
 
 
-def resolved(path: Path) -> Path:
-    """Where a folder really is: links followed, spelled as it is on disk."""
-    return deny_floor.canonical(path.expanduser().resolve(strict=False))
+def resolved(path: Path, *, open_ok: bool = True) -> Path:
+    """Where a folder really is: links followed, spelled as it is on disk. With
+    `open_ok=False` nothing is opened, so no macOS privacy prompt waits on it, and the
+    spelling stays as given (`deny_floor.canonical`)."""
+    return deny_floor.canonical(path.expanduser().resolve(strict=False), open_ok=open_ok)
 
 
 def _windows_system() -> tuple[PurePath, ...]:

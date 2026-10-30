@@ -106,13 +106,17 @@ def _resolve(raw: str) -> Path:
     return Path(raw).expanduser().resolve(strict=False)
 
 
+# How a folder is opened to ask its on-disk spelling; tests put one that blocks.
+_open = os.open
+
+
 def _on_disk(existing: Path) -> Path:
     # The platform check lets type checkers on Windows skip the macOS-only branch.
     if sys.platform == "win32" or _F_GETPATH is None:
         return existing
     try:
         # O_NONBLOCK: a FIFO must not hang the check.
-        fd = os.open(existing, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        fd = _open(existing, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
         return existing
     try:
@@ -125,8 +129,15 @@ def _on_disk(existing: Path) -> Path:
     return Path(os.fsdecode(raw)) if raw else existing
 
 
-def canonical(p: Path) -> Path:
-    """The on-disk spelling of the longest existing prefix of `p`, plus the rest as given."""
+def canonical(p: Path, *, open_ok: bool = True) -> Path:
+    """The on-disk spelling of the longest existing prefix of `p`, plus the rest as given.
+
+    Asking the spelling opens the folder. On macOS, opening Desktop, Documents,
+    Downloads, iCloud or another drive waits until the user answers a privacy prompt,
+    so code that only names such a folder (the browser's places and its fence) passes
+    `open_ok=False` and keeps the spelling it was given."""
+    if not open_ok:
+        return p
     prefix, tail = p, []
     while not prefix.exists() and prefix != prefix.parent:
         tail.append(prefix.name)

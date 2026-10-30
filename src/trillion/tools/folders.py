@@ -232,6 +232,14 @@ def _folder_view(listing: browse.Listing, everyone: Sequence[Share]) -> View:
     )
 
 
+def _a_name(target: str) -> bool:
+    """A folder's name, as said on the places list: not a path, `places` or `up`."""
+    want = target.strip()
+    if want.lower() in ("places", "up"):
+        return False
+    return not (want.startswith("~") or Path(want).is_absolute())
+
+
 async def open_place(current: Path | None, target: str, shares: Shares, look: Look) -> View:
     """Where `target` takes the browser from `current` (None: the places list), within
     the fence. The same for her tool and the user's click. Never raises."""
@@ -260,8 +268,9 @@ async def open_place(current: Path | None, target: str, shares: Shares, look: Lo
             target,
             shared=paths,
             fence=fence,
-            # Only the places list's own labels need it: a name said there.
-            places_now=places_now() if current is None else (),
+            # Only a name said on the places list needs it, never a path, `places` or
+            # `up`: listing the places can be slow, and it is not wanted here.
+            places_now=places_now() if current is None and _a_name(target) else (),
         )
         if moved.problem is not None:
             return View(place=current, problem=moved.problem)

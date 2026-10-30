@@ -663,3 +663,31 @@ def test_a_name_with_a_joiner_hidden_in_it_is_the_same_name(store, home):
     with pytest.raises(ShareError, match="already named"):
         store.put(folder(home, "Documents", "D"), name="\u0645\u06cc\u062e\u0648\u0627\u0647\u0645")
     assert store.all()[0].name == "Clients"
+
+
+def test_every_change_is_told_and_a_change_on_disk_too(store, home):
+    told: list[int] = []
+    store.on_change = lambda: told.append(1)
+    web = folder(home, "Documents", "Website")
+    share = store.put(web, access="change")
+    store.change(share.id, name="Site")
+    store.narrow(share.id, access="read")
+    grant = store.add_run_only(folder(home, "Documents", "Granted"))
+    store.remove(grant.id)
+    store.remove_routine("a1b2c3d4")  # nothing of that routine's: nothing to tell
+    store.remove(share.id)
+    assert len(told) == 6
+    store.refresh()
+    assert len(told) == 6  # our own writes are no news
+    store.path.write_text(json.dumps({"version": 1, "shares": []}) + "\n  ", encoding="utf-8")
+    store.refresh()
+    assert len(told) == 7
+
+
+def test_a_listener_that_fails_never_undoes_the_change(store, home):
+    def boom() -> None:
+        raise RuntimeError("listener")
+
+    store.on_change = boom
+    store.put(folder(home, "Documents", "Website"))
+    assert len(store.all()) == 1

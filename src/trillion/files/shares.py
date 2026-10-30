@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -276,6 +277,10 @@ class Shares:
         self._view: _View | None = None
         # Counts changes, so a slow look begun before one never replaces its view.
         self._changes = 0
+        # Told after every change, and when a look finds the file changed on disk, so
+        # open pages show the shares as they now are. Called from whatever thread made
+        # the change: it must only hand the news on, never wait.
+        self.on_change: Callable[[], None] | None = None
 
     # ── The file ──────────────────────────────────────────────────────
 
@@ -409,23 +414,35 @@ class Shares:
                 self._view = view
         return view
 
+    def _tell(self) -> None:
+        told = self.on_change
+        if told is None:
+            return
+        try:
+            told()
+        except Exception as e:
+            # The change is made whatever a listener does with the news.
+            logging.getLogger(__name__).warning("shares listener: %s", type(e).__name__)
+
     def _changed(self) -> None:
         """After a change: the view is made again before the change returns."""
         with self._lock:
             self._changes += 1
             self._look()
+        self._tell()
 
     def refresh(self) -> None:
         """Look again if the file changed or the view is a moment old. Blocking: code on
         the event loop runs it in a thread, then reads `known`."""
         view = self._view
-        if (
-            view is not None
-            and view.stamp == self._stamp()
-            and self._monotonic() - view.at < VIEW_FOR_S
-        ):
+        stamp = self._stamp()
+        if view is not None and view.stamp == stamp and self._monotonic() - view.at < VIEW_FOR_S:
             return
         self._look()
+        # Changed on disk by someone else (a hand edit): our own writes made a view
+        # with the new stamp already.
+        if view is not None and view.stamp != stamp:
+            self._tell()
 
     def reached(self, scope: str) -> list[Share]:
         """The shares a turn reaches, looked at now. Her own turns pass `everyone`; a

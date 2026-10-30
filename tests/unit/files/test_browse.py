@@ -934,3 +934,88 @@ def test_real_places_and_home_listing_answer_in_time() -> None:
     assert got.problem is None or got.folders == ()
     for name in got.folders:
         assert (got.path / name).is_dir(), name
+
+
+# --- macOS asks before an app looks in some folders --------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="only macOS asks its spelling by opening")
+def test_the_places_and_the_fence_never_open_a_place_folder(
+    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opening Desktop or Documents waits on macOS's privacy prompt: an open that
+    blocks stands in for it. Neither the places list nor the fence may wait on one."""
+    from trillion.spine import deny_floor
+
+    home = world["home"]
+    asked = {home / "Desktop", home / "Documents", home / "Documents" / "Clients"}
+    opened: list[Path] = []
+    answer = threading.Event()
+    real = deny_floor._open
+
+    def opener(path: Any, flags: int) -> int:
+        if Path(path) in asked:
+            opened.append(Path(path))
+            answer.wait(5)
+        return real(path, flags)
+
+    monkeypatch.setattr(deny_floor, "_open", opener)
+    monkeypatch.setattr(
+        browse,
+        "_cached_folders",
+        lambda h: (
+            browse.Place("Desktop", h / "Desktop", "folder"),
+            browse.Place("Documents", h / "Documents", "folder"),
+        ),
+    )
+    try:
+        began = time.monotonic()
+        clients = home / "Documents" / "Clients"
+        # This computer's fence, with what a temporary folder can't pass left out.
+        here = browse.Fence.here(
+            [clients], home=home, data_dir=world["data"], hidden=lambda _p: False, system=()
+        )
+        found = browse.places(
+            [("Clients", clients)],
+            home=home,
+            finder=lambda h: (list(browse._cached_folders(h)), []),
+            fence=here,
+            deadline_s=1.0,
+        )
+        assert time.monotonic() - began < 1.0
+        assert {p.label for p in found} >= {"Desktop", "Documents", "Clients"}
+        assert opened == []
+    finally:
+        answer.set()
+
+
+def test_a_slow_folder_where_macos_asks_says_so(world: dict[str, Path]) -> None:
+    home = world["home"]
+    asking = browse.slow(home / "Documents" / "Clients", home=home, macos=True)
+    assert "macOS is asking for permission" in asking
+    assert browse.slow(PurePosixPath("/Volumes/Backup/x"), home=home, macos=True) == asking
+    assert browse.slow(home / "Library" / "CloudStorage" / "Box", home=home, macos=True) == asking
+    assert browse.slow(home / "Music", home=home, macos=True) == "that folder took too long to open"
+    assert browse.slow(home / "Documents", home=home, macos=False) == (
+        "that folder took too long to open"
+    )
+
+
+def test_a_listing_that_waits_on_a_prompt_says_to_answer_it(
+    world: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = world["home"]
+    monkeypatch.setattr(browse, "_MACOS", True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    answer = threading.Event()
+
+    def waiting(_p: PurePath) -> bool:
+        answer.wait(5)
+        return False
+
+    try:
+        got = browse.listing(home / "Documents", fence=fence(world, hidden=waiting), deadline_s=0.2)
+        assert got.problem is not None and "macOS is asking for permission" in got.problem
+    finally:
+        answer.set()

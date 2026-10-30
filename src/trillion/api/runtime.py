@@ -331,6 +331,8 @@ class Runtime:
     # Slow reads running in the background, per conversation (the background reads spec).
     jobs: Jobs = field(default_factory=lambda: Jobs(clock=_now_ms))
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
+    # Pages being told the shares changed.
+    _telling: set[asyncio.Task[None]] = field(default_factory=set)
     _asides: int = 0
     # The widget types the workspace tools were last told, so an unchanged list is
     # not built and validated again.
@@ -444,6 +446,27 @@ class Runtime:
                 " answer, with no tools, and only people the user allowed"
             ),
         }
+
+    async def send_shares(self) -> None:
+        """Every open page: the shares changed, so it reads them again (`GET /api/folders`)."""
+        for session in list(self.sessions):
+            await session.send("shares")
+
+    def shares_changed(self, loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+        """What the shares store calls after a change, from whatever thread made it: the
+        pages are told on the event loop, never from the worker thread itself."""
+
+        def start() -> None:
+            task = loop.create_task(self.send_shares())
+            # Held until it ends: a task nothing refers to can be collected mid-way.
+            self._telling.add(task)
+            task.add_done_callback(self._telling.discard)
+
+        def tell() -> None:
+            with contextlib.suppress(RuntimeError):  # the loop has closed: no page is left
+                loop.call_soon_threadsafe(start)
+
+        return tell
 
     async def send_board(self, conversation_id: str, board: Board | None) -> None:
         """Every page open on this conversation draws the board as it now is."""
@@ -847,6 +870,7 @@ async def open_runtime(
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
     )
+    store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(

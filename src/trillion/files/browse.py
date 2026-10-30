@@ -47,6 +47,19 @@ LIMIT = 200
 OUTSIDE = "the folder browser opens only folders in your home folder, on a drive, or shared"
 OTHER_HOME = "that is someone else's home folder, which the folder browser never opens"
 _SLOW = "that folder took too long to open"
+_SLOW_ASKING = (
+    "that folder took too long to open; if macOS is asking for permission to reach it, "
+    "answer that and try again"
+)
+_MACOS = sys.platform == "darwin"
+# Where macOS asks the user before an app may look inside (from the home folder).
+_ASKED_IN = (
+    ("Desktop",),
+    ("Documents",),
+    ("Downloads",),
+    ("Library", "Mobile Documents"),
+    ("Library", "CloudStorage"),
+)
 _GONE = "that folder could not be found"
 _FAILED = "that folder could not be read"
 _UNCHECKED = "that folder could not be checked"
@@ -214,8 +227,9 @@ class Fence:
 
     def _share_root(self, raw: Path) -> PurePath | None:
         """A share's folder as a root of the fence, or None. A share whose folder was
-        swapped for a link reaches nothing, as in the shares store."""
-        r = _resolve(raw)
+        swapped for a link reaches nothing, as in the shares store. Never opened: the
+        fence is built for every move, and on macOS an open can wait on a prompt."""
+        r = _resolve(raw, open_ok=False)
         if r is None or _key(r, self.case_blind) != _key(raw, self.case_blind):
             return None
         return r if self._whole(r) else None
@@ -223,8 +237,9 @@ class Fence:
     def _folder_root(self, raw: Path) -> PurePath | None:
         """A place folder (a Documents folder moved elsewhere, an XDG folder) as a root
         of the fence, or None. Held as a share is, and never beside the homes: a
-        Desktop that leads to `/` or `/home` must not open the whole computer."""
-        r = _resolve(raw)
+        Desktop that leads to `/` or `/home` must not open the whole computer. Never
+        opened, as a share's isn't."""
+        r = _resolve(raw, open_ok=False)
         if r is None or not self._whole(r) or self._other_home(r):
             return None
         return r
@@ -327,18 +342,18 @@ def _bounded[T](
     return "done", box[0]
 
 
-def _resolve(path: PurePath) -> Path | None:
+def _resolve(path: PurePath, *, open_ok: bool = True) -> Path | None:
     if "\x00" in str(path):
         return None
     try:
-        return rules.resolved(Path(path))
+        return rules.resolved(Path(path), open_ok=open_ok)
     except (OSError, RuntimeError, ValueError):
         return None
 
 
-def _allowed(path: Path, fence: Fence) -> tuple[Path | None, str | None]:
+def _allowed(path: Path, fence: Fence, *, open_ok: bool = True) -> tuple[Path | None, str | None]:
     """The folder `path` resolves to, and why the browser may not open it."""
-    p = _resolve(path)
+    p = _resolve(path, open_ok=open_ok)
     if p is None:
         return None, _GONE
     return p, fence.reason(p)
@@ -433,12 +448,24 @@ def listing(
         lambda: _listing(path, _fence(fence, shared), limit), deadline_s, str(path)
     )
     if outcome == "slow":
-        return Listing(path, problem=_SLOW)
+        return Listing(path, problem=slow(path))
     if outcome == "busy":
         return Listing(path, problem=BUSY)
     if answer is None:
         return Listing(path, problem=_FAILED)
     return answer
+
+
+def slow(path: PurePath, *, home: PurePath | None = None, macos: bool | None = None) -> str:
+    """Why a folder took too long, in words: on macOS, where the system asks the user
+    first, the likely reason is a prompt waiting for an answer."""
+    if not (_MACOS if macos is None else macos):
+        return _SLOW
+    h = home if home is not None else Path.home()
+    asked = [h.joinpath(*parts) for parts in _ASKED_IN] + [PurePosixPath("/Volumes")]
+    if any(deny_floor.is_under(path, a) for a in asked):
+        return _SLOW_ASKING
+    return _SLOW
 
 
 def _top(p: PurePath, fence: Fence) -> bool:
@@ -525,7 +552,8 @@ def step(
         lambda: _step(current, want, _fence(fence, shared)), deadline_s, str(current)
     )
     if outcome == "slow":
-        return Step(current, _SLOW)
+        aimed = Path(want).expanduser() if _is_path(want) else current
+        return Step(current, slow(aimed) if aimed is not None else _SLOW)
     if outcome == "busy":
         return Step(current, BUSY)
     if answer is None:
@@ -793,7 +821,10 @@ def places(
         folders, drives = find(h)
         got["drives"] = list(drives)
         f = fence if fence is not None else Fence.here([p for _n, p in shared], home=h)
-        got["folders"] = [p for p in folders if p.path != h and _allowed(p.path, f)[1] is None]
+        # Judged without opening them: on macOS that waits on a privacy prompt.
+        got["folders"] = [
+            p for p in folders if p.path != h and _allowed(p.path, f, open_ok=False)[1] is None
+        ]
         for name, path in shared:
             if path.is_dir():
                 got["shared"] = [*got["shared"], Place(name, path, "shared")]

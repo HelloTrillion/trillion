@@ -702,3 +702,52 @@ async def test_a_name_with_a_non_joiner_between_letters_raises_a_card(
     folder.mkdir()
     r = await call(rt, "folder_share", {"path": str(rules.resolved(folder))})
     assert r.status == "confirmation_required", r
+
+
+# --- the page hears when shares change --------------------------------------------
+
+
+async def until_shares(page: Page) -> None:
+    await page.until("shares")
+
+
+async def test_an_approved_share_tells_every_page(rt: Runtime, home: Path) -> None:
+    taxes = home / "Documents" / "Taxes"
+    session, page, _ = await started(
+        rt, use("folder_share", {"path": str(taxes)}), say("Tap to share."), say("Shared.")
+    )
+    await ask(session, "share my taxes")
+    assert page.all("shares") == []  # a card changes nothing yet
+    (request,) = page.all("confirm.request")
+    await session.handle({"type": "confirm", "pending_id": request["pending_id"]})
+    await idle(session)
+    await until_shares(page)
+    assert page.all("shares")[-1] == {"type": "shares"}
+    await session.close()
+
+
+async def test_unsharing_tells_every_page(rt: Runtime, home: Path) -> None:
+    rt.shares.put(home / "Desktop", name="Desk", access="change")
+    session, page, _ = await started(rt, use("folder_unshare", {"name": "Desk"}), say("Done."))
+    await ask(session, "stop sharing my desk")
+    await until_shares(page)
+    await session.close()
+
+
+async def test_a_path_or_a_move_never_lists_the_places(rt: Runtime, home: Path) -> None:
+    from trillion.tools.folders import open_place
+
+    asked: list[Path] = []
+    look = rt.folder_look
+
+    def finder(h: Path) -> browse.Found:
+        asked.append(h)
+        return [], []
+
+    counting = Look(fence=look.fence, home=look.home, finder=finder)
+    view = await open_place(None, str(home / "Documents"), rt.shares, counting)
+    assert view.problem is None and asked == []
+    await open_place(None, "places", rt.shares, counting)
+    assert len(asked) == 1  # the places list itself
+    await open_place(None, "Documents", rt.shares, counting)
+    assert len(asked) == 2  # a name said there
