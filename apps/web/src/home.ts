@@ -356,7 +356,8 @@ export function frameKeeps(f: { readonly boardOpen: boolean; readonly approvals:
 /**
  * She arranged Home (a `home` frame from her): whether the page opens the workspace to show it.
  * Only into a closed workspace, and never over a board with widgets, an approval, the Folders
- * panel or onboarding. A workspace already showing Home redraws it in place.
+ * panel, the widget kit, the sample board or onboarding. A workspace already showing Home
+ * redraws it in place.
  */
 export function herOpensHome(f: {
   readonly by: unknown;
@@ -365,8 +366,10 @@ export function herOpensHome(f: {
   readonly approvals: boolean;
   readonly folders: boolean;
   readonly onboarding: boolean;
+  readonly kit: boolean;
+  readonly showcase: boolean;
 }): boolean {
-  return f.by === 'her' && !f.open && !f.boardWidgets && !f.approvals && !f.folders && !f.onboarding;
+  return f.by === 'her' && !f.open && !f.boardWidgets && !f.approvals && !f.folders && !f.onboarding && !f.kit && !f.showcase;
 }
 
 /** Something closed in the workspace: whether Home comes back (Settings opened from Home, closed by itself). */
@@ -520,7 +523,13 @@ export function createHome(opts: HomeOptions): Home {
   // Arranging: a pointer drag, a keyboard pick-up, and saves still out.
   let dragging = false;
   let held: { readonly id: string; readonly title: string; readonly from: readonly string[]; at: number } | null = null;
-  let saving = 0;
+  // Puts back a tile the pointer is dragging, as Escape would.
+  let cancelDrag: (() => void) | null = null;
+  // One save at a time: the one out, and the newest layout waiting behind it.
+  let inFlight = false;
+  let pending: Layout | null = null;
+  // What a save's answer would draw, kept until the tile in hand is put down.
+  let afterHold: (() => void) | null = null;
   // A read that came while arranging, done once it is over.
   let stale = false;
   let addOpen = false;
@@ -528,9 +537,18 @@ export function createHome(opts: HomeOptions): Home {
   let toastLeft = 0;
   let toastSince = 0;
   let toastPaused = false;
-  let lastRemoved: { readonly id: string; readonly at: number } | null = null;
+  // The tile just removed, and the one before it then, so Undo puts it back beside that one.
+  let lastRemoved: { readonly id: string; readonly after: string | null; readonly at: number } | null = null;
+  // Home taken off the page (Settings over it) with a tile in hand puts it back unsaved.
+  el.addEventListener('focusout', () => {
+    queueMicrotask(() => {
+      if (!el.isConnected && inHand()) abandon();
+    });
+  });
   const arranging = (): boolean => opts.saveLayout !== undefined;
-  const holding = (): boolean => dragging || held !== null || saving > 0;
+  const saving = (): boolean => inFlight || pending !== null;
+  const inHand = (): boolean => dragging || held !== null;
+  const holding = (): boolean => inHand() || saving();
   // Counts reads, so an older answer arriving after a newer one is dropped.
   let gen = 0;
   // A show whose read was overtaken by a refresh still has its tiles arrive.
@@ -714,25 +732,33 @@ export function createHome(opts: HomeOptions): Home {
     grip.addEventListener('keydown', (e) => gripKey(e, t));
     grip.addEventListener('blur', () => {
       // Tabbing away with a tile held puts it down where it is. A keyboard move blurs it for a
-      // moment and focuses it again, so only a blur that lasts counts.
+      // moment and focuses it again, so only a blur that lasts counts. Home taken off the page
+      // puts it back instead (abandon).
       queueMicrotask(() => {
-        if (held?.id === t.id && document.activeElement !== grip) drop();
+        if (held?.id !== t.id || document.activeElement === grip) return;
+        if (el.isConnected) drop();
+        else abandon();
       });
     });
     attachDrag(grip, li, {
       container: grid,
       items: () => [...grid.querySelectorAll<HTMLElement>(':scope > .home-tile')],
       flip,
-      may: () => data !== null && held === null && !dragging,
-      lifted: () => {
+      // Not while a change is still saving: its answer would redraw the tiles under the pointer.
+      may: () => data !== null && !inHand() && !saving(),
+      lifted: (_from, cancel) => {
         dragging = true;
+        cancelDrag = cancel;
         el.classList.add('home-dragging');
       },
-      ended: (from, to, cancelled) => {
+      ended: (_from, _to, cancelled) => {
         dragging = false;
+        cancelDrag = null;
         el.classList.remove('home-dragging');
-        if (!cancelled && from !== to && data) commit(moved(layoutOf(data).order, from, to), layoutOf(data).removed);
-        else settle();
+        // The order by tile id, as the tiles now stand: never indexes taken when it was lifted.
+        const order = currentOrder();
+        if (!cancelled && data && order.join() !== layoutOf(data).order.join()) commit(order, layoutOf(data).removed);
+        released();
       },
     });
     const remove = h('button', 'home-remove');
@@ -753,7 +779,7 @@ export function createHome(opts: HomeOptions): Home {
       e.preventDefault();
       e.stopPropagation();
       if (held?.id === t.id) drop();
-      else if (!held && !dragging) {
+      else if (!inHand() && !saving()) {
         const at = ids.indexOf(t.id);
         if (at < 0) return;
         held = { id: t.id, title: t.title, from: ids, at };
@@ -772,7 +798,7 @@ export function createHome(opts: HomeOptions): Home {
       putDown();
       placeTiles(was.from, true);
       say(`${was.title} put back at position ${was.from.indexOf(was.id) + 1} of ${was.from.length}`);
-      settle();
+      released();
       return;
     }
     const step = keyStep(e.key);
@@ -806,7 +832,7 @@ export function createHome(opts: HomeOptions): Home {
     putDown();
     say('dropped');
     if (changed) commit(order, layoutOf(data).removed);
-    else settle();
+    else released();
   }
 
   // ── Moving tiles on screen ──
@@ -906,46 +932,81 @@ export function createHome(opts: HomeOptions): Home {
     if (addOpen) addPanel.querySelector<HTMLElement>('.home-add-one')?.focus();
   }
 
+  // The panel's parts are made once and its rows kept by tile id, so a redraw never takes away
+  // the button that has focus.
+  const plus = h('span', 'home-add-plus');
+  plus.append(icon('plus', 20));
+  const addWords = h('span', 'home-add-words');
+  addButton.append(plus, addWords);
+  const addClose = h('button', 'home-add-close');
+  addClose.type = 'button';
+  addClose.setAttribute('aria-label', 'Close Add widgets');
+  addClose.append(icon('close', 14));
+  addClose.addEventListener('click', () => {
+    setAddOpen(false);
+    addButton.focus();
+  });
+  const addTop = h('div', 'home-add-top');
+  addTop.append(h('h4', 'home-add-title', 'Add widgets'), addClose);
+  const addList = h('ul', 'home-add-list');
+  const panelReset = btn('Reset Home', 'home-reset', () => reset());
+  panelReset.dataset['act'] = 'reset';
+  addPanel.append(addTop, addList, panelReset);
+  interface AddRow {
+    readonly row: HTMLElement;
+    readonly add: HTMLButtonElement;
+    words: HTMLElement;
+    badge: HTMLElement;
+    key: string;
+  }
+  const addRows = new Map<string, AddRow>();
+
+  /** A removed tile's row, made once; a tile that changed (its state) has its words redrawn around the same button. */
+  function addRow(t: HomeTile): AddRow {
+    const key = JSON.stringify(t);
+    let r = addRows.get(t.id);
+    if (r && r.key === key) return r;
+    const words = h('div', 'home-add-row-words');
+    words.append(h('span', 'home-add-row-title', t.title), h('span', 'home-add-row-what', t.what));
+    const badge = h('span', 'home-badge', BADGE[t.state]);
+    badge.dataset['tone'] = t.state;
+    if (r) {
+      r.words.replaceWith(words);
+      r.badge.replaceWith(badge);
+      r.words = words;
+      r.badge = badge;
+      r.key = key;
+    } else {
+      const row = h('li', 'home-add-row');
+      row.dataset['id'] = t.id;
+      const add = btn('Add', 'home-add-one', () => addBack(t.id));
+      row.append(words, badge, add);
+      r = { row, add, words, badge, key };
+      addRows.set(t.id, r);
+    }
+    r.add.setAttribute('aria-label', `Add ${t.title} to Home`);
+    return r;
+  }
+
   function drawAdd(): void {
     const gone = data?.removed ?? [];
     if (!gone.length) addOpen = false;
     addTile.classList.toggle('home-add-on', addOpen);
     addButton.hidden = addOpen;
     addButton.setAttribute('aria-expanded', String(addOpen));
-    const plus = h('span', 'home-add-plus');
-    plus.append(icon('plus', 20));
-    addButton.replaceChildren(plus, h('span', 'home-add-words', `Add widgets (${gone.length})`));
+    addWords.textContent = `Add widgets (${gone.length})`;
     addPanel.hidden = !addOpen;
-    if (!addOpen) {
-      addPanel.replaceChildren();
-      return;
+    const keep = new Set(gone.map((t) => t.id));
+    for (const [id, r] of [...addRows]) {
+      if (keep.has(id)) continue;
+      r.row.remove();
+      addRows.delete(id);
     }
-    const close = h('button', 'home-add-close');
-    close.type = 'button';
-    close.setAttribute('aria-label', 'Close Add widgets');
-    close.append(icon('close', 14));
-    close.addEventListener('click', () => {
-      setAddOpen(false);
-      addButton.focus();
+    // In order, moving only a row that is out of place.
+    gone.forEach((t, i) => {
+      const { row } = addRow(t);
+      if (addList.children[i] !== row) addList.insertBefore(row, addList.children[i] ?? null);
     });
-    const top = h('div', 'home-add-top');
-    top.append(h('h4', 'home-add-title', 'Add widgets'), close);
-    const list = h('ul', 'home-add-list');
-    for (const t of gone) {
-      const row = h('li', 'home-add-row');
-      row.dataset['id'] = t.id;
-      const words = h('div', 'home-add-row-words');
-      words.append(h('span', 'home-add-row-title', t.title), h('span', 'home-add-row-what', t.what));
-      const badge = h('span', 'home-badge', BADGE[t.state]);
-      badge.dataset['tone'] = t.state;
-      const add = btn('Add', 'home-add-one', () => addBack(t.id));
-      add.setAttribute('aria-label', `Add ${t.title} to Home`);
-      row.append(words, badge, add);
-      list.append(row);
-    }
-    const resetButton = btn('Reset Home', 'home-reset', () => reset());
-    resetButton.dataset['act'] = 'reset';
-    addPanel.replaceChildren(top, list, resetButton);
   }
 
   /** The Add widgets tile while anything is removed; else Reset Home in the foot line once the order is the user's own. */
@@ -970,7 +1031,7 @@ export function createHome(opts: HomeOptions): Home {
     const order = l.order.filter((x) => x !== id);
     commit(order, [...l.removed, id]);
     showToast(`${t.title} removed`, true);
-    lastRemoved = { id, at };
+    lastRemoved = { id, after: l.order[at - 1] ?? null, at };
     say(`${t.title} removed`);
     // Focus goes to the tile that took its place, else the one before, else Add widgets.
     focusGrip(order[at] ?? order[at - 1]);
@@ -982,7 +1043,10 @@ export function createHome(opts: HomeOptions): Home {
     if (!r || !data || !data.removed.some((t) => t.id === r.id)) return;
     const l = layoutOf(data);
     const order = [...l.order];
-    order.splice(Math.min(r.at, order.length), 0, r.id);
+    // Back after the tile it followed, wherever that is now; its old place only if that one is gone.
+    const before = r.after === null ? -1 : order.indexOf(r.after);
+    const at = r.after === null ? 0 : before >= 0 ? before + 1 : Math.min(r.at, order.length);
+    order.splice(at, 0, r.id);
     commit(order, l.removed.filter((x) => x !== r.id));
     const t = data.tiles.find((x) => x.id === r.id);
     if (t) say(`${t.title} is back`);
@@ -999,7 +1063,7 @@ export function createHome(opts: HomeOptions): Home {
     commit(addedBack(l.order, id), l.removed.filter((x) => x !== id));
     say(`${t.title} added`);
     // More to add: the panel stays, focus on the next row. Nothing left: on the tile now back.
-    const nextAdd = nextRow ? addPanel.querySelector<HTMLElement>(`.home-add-row[data-id="${nextRow}"] .home-add-one`) : null;
+    const nextAdd = nextRow ? addRows.get(nextRow)?.add : null;
     if (nextAdd) nextAdd.focus();
     else focusGrip(id);
   }
@@ -1074,29 +1138,63 @@ export function createHome(opts: HomeOptions): Home {
     placeTiles(layoutOf(data).order, true);
     drawArrangeBits();
     // Newer than any read still out: that answer would put the old layout back.
-    const mine = ++gen;
-    saving++;
-    void save(layoutOf(data))
+    gen++;
+    // A show's read dropped here must not bring the tiles in again later.
+    arriving = false;
+    // An answer waiting for the tile to be put down is older than this change.
+    afterHold = null;
+    pending = layoutOf(data);
+    send(save);
+  }
+
+  /**
+   * Sends the newest layout, one PUT at a time. Each carries the whole layout, so a change made
+   * while one is out waits and goes alone after it, and only the last answer is drawn.
+   */
+  function send(save: (layout: Layout) => Promise<unknown>): void {
+    if (inFlight || !pending) return;
+    const layout = pending;
+    pending = null;
+    inFlight = true;
+    void save(layout)
       .then((raw) => {
         const got = homeOf(raw);
         if (!got) throw new Error('No Home in the answer');
         confirmed = got;
-        if (mine === gen) take(got, false);
+        if (!pending) whenPutDown(() => take(got, false));
       })
       .catch(() => {
-        // Only the latest change decides: it carries the whole layout.
-        if (mine !== gen || !confirmed) return;
-        data = confirmed;
-        drawMeter();
-        placeTiles(layoutOf(data).order, true);
-        drawArrangeBits();
-        showToast('Couldn’t save that change', false);
-        say('Couldn’t save that change');
+        // A newer change goes next and carries the whole layout: it decides.
+        if (pending || !confirmed) return;
+        whenPutDown(() => {
+          if (!confirmed) return;
+          data = confirmed;
+          drawMeter();
+          placeTiles(layoutOf(data).order, true);
+          drawArrangeBits();
+          showToast('Couldn’t save that change', false);
+          say('Couldn’t save that change');
+        });
       })
       .finally(() => {
-        saving--;
+        inFlight = false;
+        send(save);
         settle();
       });
+  }
+
+  /** Draws now, or once the tile in hand is put down, so nothing moves under it. */
+  function whenPutDown(draw: () => void): void {
+    if (inHand()) afterHold = draw;
+    else draw();
+  }
+
+  /** A tile in hand was put down: what waited for that is drawn, then any read that waited. */
+  function released(): void {
+    const draw = afterHold;
+    afterHold = null;
+    if (draw && !inHand()) draw();
+    settle();
   }
 
   /** Arranging is over: a read that waited for it happens now. */
@@ -1104,6 +1202,17 @@ export function createHome(opts: HomeOptions): Home {
     if (holding() || !stale) return;
     stale = false;
     void read(false);
+  }
+
+  /** Home left the page with a tile in hand: it goes back where it was, and nothing is saved. */
+  function abandon(): void {
+    if (held) {
+      const was = held;
+      putDown();
+      placeTiles(was.from, false);
+    }
+    cancelDrag?.();
+    released();
   }
 
   function disposePreviews(): void {
@@ -1123,10 +1232,11 @@ export function createHome(opts: HomeOptions): Home {
     tileEls = new Map(data.tiles.map((t, i) => [t.id, tiles[i]!]));
     drawArrangeBits();
     grid.replaceChildren(...tiles, ...(arranging() && data.removed.length ? [addTile] : []));
-    if (was?.act) {
-      const back = was.act === 'add-open' ? addButton : was.id ? tileEls.get(was.id)?.querySelector<HTMLElement>(`[data-act="${was.act}"]`) : null;
-      back?.focus({ preventScroll: true });
-    }
+    if (!was || document.activeElement === a) return;
+    // Something kept across the redraw (the Add widgets panel's buttons) gets focus back as it is;
+    // a tile drawn anew, on the same control of the same tile.
+    if (a instanceof HTMLElement && a.isConnected) a.focus({ preventScroll: true });
+    else if (was.id && was.act) tileEls.get(was.id)?.querySelector<HTMLElement>(`[data-act="${was.act}"]`)?.focus({ preventScroll: true });
   }
 
   function drawLoading(): void {
@@ -1153,12 +1263,14 @@ export function createHome(opts: HomeOptions): Home {
 
   /** Read the state and draw it. `fresh`: tiles arrive afresh (a show, not a refresh). */
   async function read(fresh: boolean, retry = false): Promise<void> {
-    arriving ||= fresh;
-    // A tile in hand, or a change still saving: read once that is over.
+    // A tile in hand, or a change still saving: read once that is over. The tiles are already on
+    // screen then, so that read does not bring them in again.
     if (holding()) {
       stale = true;
+      arriving = false;
       return;
     }
+    arriving ||= fresh;
     const mine = ++gen;
     if (!data || retry) {
       drawLoading();
@@ -1173,6 +1285,7 @@ export function createHome(opts: HomeOptions): Home {
     if (mine !== gen) return;
     if (holding()) {
       stale = true;
+      arriving = false;
       return;
     }
     if (!got) {
@@ -1214,6 +1327,11 @@ export function createHome(opts: HomeOptions): Home {
   return {
     el,
     show() {
+      // A tile left in hand when Home went away goes back unsaved, so this read is not held up.
+      if (inHand()) {
+        stale = false;
+        abandon();
+      }
       const r = read(true);
       const mine = { at: Date.now(), read: r };
       showing = mine;

@@ -597,7 +597,9 @@ describe('arranging, pure', () => {
   });
 
   it('opens Home for her change only into a closed workspace with nothing else to show', () => {
-    const f = { by: 'her', open: false, boardWidgets: false, approvals: false, folders: false, onboarding: false };
+    const f = { by: 'her', open: false, boardWidgets: false, approvals: false, folders: false, onboarding: false, kit: false, showcase: false };
+    expect(herOpensHome({ ...f, kit: true })).toBe(false);
+    expect(herOpensHome({ ...f, showcase: true })).toBe(false);
     expect(herOpensHome(f)).toBe(true);
     expect(herOpensHome({ ...f, by: undefined })).toBe(false);
     expect(herOpensHome({ ...f, open: true })).toBe(false);
@@ -622,7 +624,9 @@ describe('arranging Home', () => {
 
   const IDS = ['next_up', 'inbox', 'tasks', 'mentions', 'due_soon'];
 
-  // jsdom lays nothing out: each tile stands in a 3-column grid of 300px squares by its place.
+  // jsdom lays nothing out: each tile stands in a grid of 300px squares by its place, three
+  // columns unless a test narrows it.
+  const cols = { n: 3 };
   const realRect = Element.prototype.getBoundingClientRect;
   beforeAll(() => {
     Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
@@ -630,8 +634,8 @@ describe('arranging Home', () => {
       if (this.classList.contains('home-grid')) return { left: 0, top: 0, width: 940, height: 940, right: 940, bottom: 940, x: 0, y: 0 } as DOMRect;
       if (parent?.classList.contains('home-grid') && !this.classList.contains('home-lifted')) {
         const i = [...parent.children].filter((c) => !c.classList.contains('home-lifted')).indexOf(this);
-        const left = (i % 3) * 320;
-        const top = Math.floor(i / 3) * 320;
+        const left = (i % cols.n) * 320;
+        const top = Math.floor(i / cols.n) * 320;
         return { left, top, width: 300, height: 300, right: left + 300, bottom: top + 300, x: left, y: top } as DOMRect;
       }
       return realRect.call(this);
@@ -887,5 +891,202 @@ describe('arranging Home', () => {
     home.el.remove();
     await home.changed();
     expect(fetchHome).toHaveBeenCalledTimes(1);
+  });
+
+  /** A save that answers only when the test says so. */
+  function heldSaves() {
+    const out: { layout: Layout; answer: () => Promise<void>; fail: () => Promise<void> }[] = [];
+    const save = (l: Layout) =>
+      new Promise<unknown>((resolve, reject) => {
+        const settle = async (ok: boolean) => {
+          if (ok) resolve(served(l.order, l.removed));
+          else reject(new Error('HTTP 500'));
+          // Let the answer and what follows it run.
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+        };
+        out.push({ layout: l, answer: () => settle(true), fail: () => settle(false) });
+      });
+    return { out, save };
+  }
+
+  it('keeps focus on the next Add through the save answer and the home frame', async () => {
+    let server: Layout = { order: ['next_up', 'tasks', 'due_soon'], removed: ['inbox', 'mentions'] };
+    let mentionsReady = false;
+    const answer = () => {
+      const p = served(server.order, server.removed);
+      if (!mentionsReady) return p;
+      return { ...p, removed: (p['removed'] as Tile[]).map((t) => (t['id'] === 'mentions' ? { ...t, state: 'ready' } : t)) };
+    };
+    const { home, saveLayout } = arrange(
+      answer(),
+      async (l) => {
+        server = l;
+        return answer();
+      },
+      { fetchHome: async () => answer() },
+    );
+    await home.show();
+    home.el.querySelector<HTMLButtonElement>('.home-add-open')!.click();
+    const addMentions = home.el.querySelector<HTMLButtonElement>('.home-add-row[data-id="mentions"] .home-add-one')!;
+    home.el.querySelector<HTMLButtonElement>('.home-add-row[data-id="inbox"] .home-add-one')!.click();
+    expect(document.activeElement).toBe(addMentions);
+    // The save's answer, then the frame it causes.
+    await saveLayout.mock.results[0]!.value;
+    await vi.waitFor(() => expect(home.el.querySelector('.home-add-open')?.textContent).toBe('Add widgets (1)'));
+    await home.changed();
+    expect(document.activeElement).toBe(addMentions);
+    // A frame that changes the row (Mentions turned ready) and so draws the tiles again.
+    mentionsReady = true;
+    await home.changed();
+    expect(home.el.querySelector('.home-add-row[data-id="mentions"] .home-badge')?.textContent).toBe('Ready');
+    expect(document.activeElement).toBe(addMentions);
+  });
+
+  it('lets nothing be picked up while a change is saving', async () => {
+    const { out, save } = heldSaves();
+    const { home } = arrange(payload(), save);
+    await home.show();
+    tileEl(home.el, 'mentions').querySelector<HTMLButtonElement>('.home-remove')!.click();
+    // A drag and a keyboard pick-up both wait for the save.
+    grip(home.el, 'next_up').dispatchEvent(pointer('pointerdown', 150, 20));
+    window.dispatchEvent(pointer('pointermove', 790, 150));
+    expect(home.el.querySelector('.home-lifted, .home-placeholder')).toBeNull();
+    window.dispatchEvent(pointer('pointerup', 790, 150));
+    const g = grip(home.el, 'inbox');
+    g.focus();
+    key(g, 'Enter');
+    expect(home.el.querySelector('.home-held')).toBeNull();
+    await out[0]!.answer();
+    key(g, 'Enter');
+    expect(tileEl(home.el, 'inbox').classList.contains('home-held')).toBe(true);
+  });
+
+  it('drops a dragged tile by id when a redraw came in while it was in hand', async () => {
+    let server: Layout = { order: IDS, removed: [] };
+    const fetchHome = vi.fn(async () => served(server.order, server.removed));
+    const { home, saveLayout } = arrange(
+      served(IDS, []),
+      async (l) => {
+        server = l;
+        return served(l.order, l.removed);
+      },
+      { fetchHome },
+    );
+    await home.show();
+    grip(home.el, 'next_up').dispatchEvent(pointer('pointerdown', 150, 20));
+    window.dispatchEvent(pointer('pointermove', 790, 150));
+    // Someone else moved things meanwhile: Home waits rather than redraw under the pointer.
+    server = { order: ['due_soon', 'mentions', 'tasks', 'inbox', 'next_up'], removed: [] };
+    await home.changed();
+    expect(tileEl(home.el, 'next_up').classList.contains('home-lifted')).toBe(true);
+    expect(fetchHome).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(pointer('pointerup', 790, 150));
+    // The order saved is the tiles as they stand, by id.
+    expect(saveLayout).toHaveBeenCalledWith({ order: ['inbox', 'tasks', 'next_up', 'mentions', 'due_soon'], removed: [] });
+    // Then the read that waited.
+    await vi.waitFor(() => expect(fetchHome).toHaveBeenCalledTimes(2));
+    expect(order(home.el)).toEqual(['inbox', 'tasks', 'next_up', 'mentions', 'due_soon']);
+  });
+
+  it('puts a held tile back unsaved when Home goes away, and works again on show', async () => {
+    const { home, saveLayout, fetchHome } = arrange();
+    await home.show();
+    const g = grip(home.el, 'inbox');
+    g.focus();
+    key(g, 'Enter');
+    key(g, 'ArrowRight');
+    // Settings takes the workspace.
+    home.el.remove();
+    await Promise.resolve();
+    document.body.append(home.el);
+    await home.show();
+    expect(fetchHome).toHaveBeenCalledTimes(2);
+    expect(home.el.querySelector('.home-held')).toBeNull();
+    expect(order(home.el)).toEqual(IDS);
+    expect(saveLayout).not.toHaveBeenCalled();
+    tileEl(home.el, 'tasks').querySelector<HTMLButtonElement>('.home-remove')!.click();
+    expect(saveLayout).toHaveBeenCalledWith({ order: ['next_up', 'inbox', 'mentions', 'due_soon'], removed: ['tasks'] });
+  });
+
+  it('puts a dragged tile back unsaved when Home goes away', async () => {
+    const { home, saveLayout, fetchHome } = arrange();
+    await home.show();
+    grip(home.el, 'next_up').dispatchEvent(pointer('pointerdown', 150, 20));
+    window.dispatchEvent(pointer('pointermove', 790, 150));
+    home.el.remove();
+    document.body.append(home.el);
+    await home.show();
+    expect(home.el.querySelector('.home-lifted, .home-placeholder')).toBeNull();
+    expect(fetchHome).toHaveBeenCalledTimes(2);
+    window.dispatchEvent(pointer('pointerup', 790, 150));
+    expect(saveLayout).not.toHaveBeenCalled();
+  });
+
+  it('sends one save at a time, then only the newest layout', async () => {
+    const { out, save } = heldSaves();
+    const { home, saveLayout } = arrange(payload(), save);
+    await home.show();
+    for (const id of ['inbox', 'tasks', 'mentions']) tileEl(home.el, id).querySelector<HTMLButtonElement>('.home-remove')!.click();
+    expect(saveLayout).toHaveBeenCalledTimes(1);
+    expect(order(home.el)).toEqual(['next_up', 'due_soon']);
+    await out[0]!.answer();
+    // The answer to the first is not drawn: a newer layout is on screen and goes next.
+    expect(order(home.el)).toEqual(['next_up', 'due_soon']);
+    expect(saveLayout).toHaveBeenCalledTimes(2);
+    expect(out[1]!.layout).toEqual({ order: ['next_up', 'due_soon'], removed: ['inbox', 'tasks', 'mentions'] });
+    await out[1]!.answer();
+    expect(saveLayout).toHaveBeenCalledTimes(2);
+    expect(home.el.querySelector('.home-add-open')?.textContent).toBe('Add widgets (3)');
+  });
+
+  it('undoes a removal beside the tile it followed, even after that one moved', async () => {
+    const { home, saveLayout } = arrange();
+    await home.show();
+    tileEl(home.el, 'tasks').querySelector<HTMLButtonElement>('.home-remove')!.click();
+    // Saved, so a tile can be picked up again.
+    await saveLayout.mock.results[0]!.value;
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    // Inbox, which Reminders followed, moves to the end.
+    const g = grip(home.el, 'inbox');
+    g.focus();
+    key(g, 'Enter');
+    key(g, 'ArrowRight');
+    key(g, 'ArrowRight');
+    key(g, 'Enter');
+    expect(order(home.el)).toEqual(['next_up', 'mentions', 'due_soon', 'inbox']);
+    home.el.querySelector<HTMLButtonElement>('.home-undo')!.click();
+    expect(order(home.el)).toEqual(['next_up', 'mentions', 'due_soon', 'inbox', 'tasks']);
+  });
+
+  it('measures the slots again when the window is resized mid-drag', async () => {
+    const { home, saveLayout } = arrange();
+    await home.show();
+    try {
+      grip(home.el, 'next_up').dispatchEvent(pointer('pointerdown', 150, 20));
+      window.dispatchEvent(pointer('pointermove', 150, 60));
+      // Narrowed to one column: the fourth slot is now far down the page.
+      cols.n = 1;
+      window.dispatchEvent(new Event('resize'));
+      window.dispatchEvent(pointer('pointermove', 150, 3 * 320 + 150));
+      window.dispatchEvent(pointer('pointerup', 150, 3 * 320 + 150));
+      expect(saveLayout).toHaveBeenCalledWith({ order: ['inbox', 'tasks', 'mentions', 'next_up', 'due_soon'], removed: [] });
+    } finally {
+      cols.n = 3;
+    }
+  });
+
+  it('does not bring the tiles in again after a show that waited for a save', async () => {
+    const { out, save } = heldSaves();
+    let data = payload();
+    const { home } = arrange(undefined, save, { fetchHome: async () => data });
+    await home.show();
+    tileEl(home.el, 'mentions').querySelector<HTMLButtonElement>('.home-remove')!.click();
+    await home.show();
+    // Something did change by the time it reads, so the tiles are drawn again.
+    data = served(['next_up', 'inbox', 'tasks', 'due_soon'], ['mentions'], { user_name: 'Alex' });
+    data = { ...data, tiles: (data['tiles'] as Tile[]).map((t) => (t['id'] === 'inbox' ? { ...t, state: 'ready' } : t)) };
+    await out[0]!.answer();
+    await vi.waitFor(() => expect(tileEl(home.el, 'inbox').dataset['state']).toBe('ready'));
+    expect(home.el.querySelector('.home-in')).toBeNull();
   });
 });

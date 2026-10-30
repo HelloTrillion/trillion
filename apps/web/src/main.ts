@@ -1561,6 +1561,8 @@ function connect(): void {
         approvals: approvals.holds(),
         folders: folderPanel.isOpen,
         onboarding: obDue || active(ob),
+        kit: kit !== null,
+        showcase: workspace.showing === 'showcase',
       });
       if (shown) showBoard();
     }

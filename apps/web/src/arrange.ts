@@ -74,8 +74,8 @@ export interface DragHooks {
   readonly flip: (mutate: () => void) => void;
   /** Whether a drag may start now. */
   readonly may?: () => boolean;
-  /** A tile was lifted, from this index. */
-  readonly lifted: (from: number) => void;
+  /** A tile was lifted, from this index; `cancel` puts it back as Escape would. */
+  readonly lifted: (from: number, cancel: () => void) => void;
   /** It was put down: at `to`, or back where it was if cancelled. */
   readonly ended: (from: number, to: number, cancelled: boolean) => void;
   /** Scrolls while the pointer is near the edge of what scrolls; by default the nearest scrolling ancestor. */
@@ -157,7 +157,20 @@ export function attachDrag(handle: HTMLElement, item: HTMLElement, hooks: DragHo
         frame: 0,
       };
       follow();
-      hooks.lifted(from);
+      hooks.lifted(from, () => finish(true));
+    };
+
+    // The window changed size: the grid reflowed, so the slots are where the tiles stand now.
+    const remeasure = (): void => {
+      if (!live) return;
+      const { hold, others } = live;
+      const now = [...hooks.container.children].filter((c): c is HTMLElement => c === hold || others.includes(c as HTMLElement));
+      live.slots = now.map((c) => c.getBoundingClientRect() as Rect);
+      live.box = hooks.container.getBoundingClientRect() as Rect;
+      const own = hold.getBoundingClientRect();
+      item.style.width = `${own.width}px`;
+      item.style.height = `${own.height}px`;
+      follow();
     };
 
     const follow = (): void => {
@@ -215,6 +228,7 @@ export function attachDrag(handle: HTMLElement, item: HTMLElement, hooks: DragHo
       removeEventListener('pointerup', up);
       removeEventListener('pointercancel', cancel);
       removeEventListener('keydown', key, true);
+      removeEventListener('resize', remeasure);
       try {
         handle.releasePointerCapture?.(id);
       } catch {
@@ -257,5 +271,6 @@ export function attachDrag(handle: HTMLElement, item: HTMLElement, hooks: DragHo
     addEventListener('pointerup', up);
     addEventListener('pointercancel', cancel);
     addEventListener('keydown', key, true);
+    addEventListener('resize', remeasure);
   });
 }
