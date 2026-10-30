@@ -27,6 +27,11 @@
  *                      hiding that window (D5).
  *   show_main          (no arguments)                                  -> void
  *                      Sent by the orb window when clicked: show and focus the main one.
+ *   pick_folder        {}                                              -> string | null
+ *                      Opens the system folder picker (Settings → Shared folders, Add a
+ *                      folder) and answers the chosen folder's absolute path, or null
+ *                      when the user cancelled. The page still sends it through
+ *                      POST /api/folders, where the share rules hold as for any path.
  *
  * Events, by `event.listen`:
  *
@@ -103,6 +108,17 @@ export async function openExternal(url: string): Promise<void> {
   } catch {
     // The shell refused it (not http or https); nothing to open.
   }
+}
+
+/**
+ * The system folder picker: the chosen folder's absolute path, or null when cancelled.
+ * Null at once outside the app. Rejects when the shell could not open it (an older app
+ * without the command), so the caller can fall back to the folder browser.
+ */
+export async function pickFolder(): Promise<string | null> {
+  if (!inApp()) return null;
+  const chosen = await call('pick_folder', {});
+  return typeof chosen === 'string' && chosen ? chosen : null;
 }
 
 /** Ask the shell to make the talk shortcut work from any app. */

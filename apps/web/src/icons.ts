@@ -9,6 +9,10 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   shortcuts: ['M3.5 6.5h17v11h-17z', 'M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M7.5 14h9'],
   appearance: ['M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17z', 'M12 3.5v17', 'M12 7h4M12 11h5.5M12 15h4.5'],
   folders: ['M3.5 6.5h6l2 2h9v10h-17z'],
+  // A house: the home folder, in the folder browser's places.
+  home: ['M4 11l8-6.5l8 6.5', 'M6.5 9.5v9.5h11V9.5', 'M10 19v-5h4v5'],
+  // A drive: a mounted disk, in the folder browser's places.
+  drive: ['M3.5 13.5l2.5-7.5h12l2.5 7.5v5h-17z', 'M3.5 13.5h17', 'M16.5 16h.01'],
   // A plug: tools from servers the user connected.
   connected: ['M9 3.5v4M15 3.5v4', 'M6.5 7.5h11v3a5.5 5.5 0 0 1-11 0z', 'M12 16v4.5'],
   // An open book: instructions she reads when a task calls for them.
