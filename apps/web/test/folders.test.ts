@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { pickFolder } from '../src/desktop';
+import { PickerMissing, pickFolder } from '../src/desktop';
+import { escapeAction } from '../src/threads';
 import {
   type FolderFrame,
   type ShareRow,
@@ -15,6 +16,7 @@ import {
   joinPath,
   nameProblem,
   parseFrame,
+  samePath,
   sharesSummary,
   shownText,
   stateText,
@@ -137,13 +139,13 @@ function panel(initial?: SharesState) {
   const shares = createShares(s.api);
   const shown = vi.fn();
   const p = createFolderPanel({ api: s.api, shares, routines: async () => [{ id: 'r1', title: 'Morning brief' }], conversation: () => 'c1', shown });
-  document.body.append(p.el);
+  document.body.append(p.el, p.live);
   return { ...s, shares, p, shown };
 }
 
 const rows = (root: HTMLElement): HTMLButtonElement[] => [...root.querySelectorAll<HTMLButtonElement>('.fo-row')];
 const names = (root: HTMLElement): string[] => rows(root).map((b) => b.querySelector('.fo-row-name')?.textContent ?? '');
-const live = (root: HTMLElement): string => root.querySelector('[role="status"]')?.textContent ?? '';
+const live = (_root: HTMLElement): string => document.body.querySelector('[role="status"]')?.textContent ?? '';
 const key = (target: Element, k: string): void => void target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
 const button = (root: HTMLElement, text: string): HTMLButtonElement =>
   [...root.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === text) as HTMLButtonElement;
@@ -173,13 +175,21 @@ describe('shared folders, in words', () => {
   });
 
   it('tells the footer what her own turns reach, and how to share one when none', () => {
-    expect(footText({ shares: [share(), share({ id: 'f_2', name: 'Gone', state: 'not found' }), share({ id: 'f_3', name: 'Brief', scope: 'routine:r1' })], problem: null }, [])).toBe(
+    expect(footText({ shares: [share(), share({ id: 'f_2', name: 'Gone', state: 'not found' }), share({ id: 'f_3', name: 'Brief', scope: 'routine:r1' })], problem: null })).toBe(
       'Files: Website project. Every change asks first.',
     );
-    expect(footText(null, ['/srv/a'])).toBe('Files: /srv/a. Every change asks first.');
-    const none = footText({ shares: [], problem: null }, ['/srv/a']);
+    // Not read yet: nothing is guessed.
+    expect(footText(null)).toBe('');
+    const none = footText({ shares: [], problem: null });
     expect(none).toContain('Settings → Shared folders, or ask her');
     expect(none).not.toContain('--grant');
+  });
+
+  it('compares paths as the core does: case-blind on macOS and Windows, exact elsewhere', () => {
+    expect(samePath('/Users/sam/Notes', '/Users/sam/notes')).toBe(true);
+    expect(samePath('C:\\Users\\sam\\Notes', 'c:\\users\\sam\\notes')).toBe(true);
+    expect(samePath('/home/sam/Notes', '/home/sam/notes')).toBe(false);
+    expect(samePath('/home/sam/Notes', '/home/sam/Notes')).toBe(true);
   });
 
   it('joins and splits paths with their own separator', () => {
@@ -324,15 +334,83 @@ describe('the Folders panel', () => {
     expect(names(p.el)).toEqual(['Clients', 'Taxes']);
     // Up lands on the folder it came from.
     expect(document.activeElement?.textContent).toBe('Clients');
+    // Escape goes on to the page, which calls escape() in its turn.
     const outside = vi.fn();
     window.addEventListener('keydown', outside);
     key(document.activeElement as HTMLElement, 'Escape');
     window.removeEventListener('keydown', outside);
+    expect(outside).toHaveBeenCalledTimes(1);
+    expect(p.isOpen).toBe(true);
+    p.escape();
     expect(p.isOpen).toBe(false);
     expect(p.el.hidden).toBe(true);
     expect(shown).toHaveBeenLastCalledWith(false);
-    // The page's own Escape (closing the workspace) never hears it.
-    expect(outside).not.toHaveBeenCalled();
+  });
+
+  it('keeps Escape’s order: she stops first, then the thread list, then the folders, then the workspace', () => {
+    const idle = { busy: false, speaking: false, listening: false, listOpen: false, foldersOpen: false, workspaceOpen: false };
+    expect(escapeAction({ ...idle, speaking: true, foldersOpen: true, workspaceOpen: true })).toBe('interrupt');
+    expect(escapeAction({ ...idle, listOpen: true, foldersOpen: true })).toBe('list');
+    expect(escapeAction({ ...idle, foldersOpen: true, workspaceOpen: true })).toBe('folders');
+    expect(escapeAction({ ...idle, workspaceOpen: true })).toBe('workspace');
+  });
+
+  it('hands focus to where the page says before it hides', () => {
+    const s = server();
+    const after = document.createElement('button');
+    let seen: Element | null = null;
+    const p = createFolderPanel({ api: s.api, shares: createShares(s.api), routines: async () => [], conversation: () => null, focusAfter: () => after, shown: (open) => void (open || (seen = document.activeElement)) });
+    document.body.append(p.el, p.live, after);
+    p.take(DOCS, { focus: true });
+    expect(p.el.contains(document.activeElement)).toBe(true);
+    p.close();
+    expect(document.activeElement).toBe(after);
+    expect(seen).toBe(after);
+  });
+
+  it('announces the first frame from a live region outside the hidden panel', () => {
+    const { p } = panel();
+    expect(p.el.contains(p.live)).toBe(false);
+    expect(p.live.getAttribute('aria-live')).toBe('polite');
+    p.take(PLACES);
+    expect(p.live.textContent).toBe('Showing your places: 3 places.');
+  });
+
+  it('draws the later of two clicks when the first answers last', async () => {
+    const s = server();
+    const waits: ((r: Response) => void)[] = [];
+    const api = (method: string, path: string, body?: unknown): Promise<Response> =>
+      path === '/api/folders/browse' ? new Promise<Response>((res) => waits.push(res)) : s.api(method, path, body);
+    const p = createFolderPanel({ api, shares: createShares(api), routines: async () => [], conversation: () => null });
+    document.body.append(p.el, p.live);
+    p.take(DOCS);
+    rows(p.el)[0]?.click(); // Clients
+    rows(p.el)[1]?.click(); // Taxes
+    waits[1]?.(json({ type: 'folders', ...DOCS, path: '/Users/sam/Documents/Taxes', folders: ['2025'] }));
+    await flush();
+    waits[0]?.(json({ type: 'folders', ...CLIENTS }));
+    await flush();
+    expect(names(p.el)).toEqual(['2025']);
+  });
+
+  it('tries again without the conversation when its session is gone', async () => {
+    const s = server();
+    const api = (method: string, path: string, body?: unknown): Promise<Response> =>
+      path === '/api/folders/browse' && (body as Record<string, unknown>)['conversation'] ? Promise.resolve(json({ error: 'not_found' }, 404)) : s.api(method, path, body);
+    const p = createFolderPanel({ api, shares: createShares(api), routines: async () => [], conversation: () => 'c-gone' });
+    document.body.append(p.el, p.live);
+    expect(await p.openPlaces()).toBe('');
+    expect(names(p.el)).toEqual(['Home', 'Documents', 'Backup']);
+  });
+
+  it('opens anyway, saying why, when Add a folder’s places list is refused', async () => {
+    const api = (): Promise<Response> => Promise.resolve(json({ error: 'refused', detail: 'the places list took too long' }, 400));
+    const p = createFolderPanel({ api, shares: createShares(api), routines: async () => [], conversation: () => null });
+    document.body.append(p.el, p.live);
+    expect(await p.openPlaces()).toBe('The places list took too long.');
+    expect(p.isOpen).toBe(true);
+    expect(p.el.querySelector('.fo-problem')?.textContent).toBe('The places list took too long.');
+    expect(button(p.el, 'Share this folder…').hidden).toBe(true);
   });
 
   it('leaves Backspace to a field being typed in', () => {
@@ -392,9 +470,11 @@ describe('the Folders panel', () => {
     const { p } = panel();
     p.take(DOCS);
     button(p.el, 'Share this folder…').click();
-    key(p.el.querySelector('.fo-form input') as HTMLElement, 'Escape');
+    p.escape();
     expect(p.el.querySelector('.fo-form')).toBeNull();
     expect(p.isOpen).toBe(true);
+    p.escape();
+    expect(p.isOpen).toBe(false);
   });
 
   it('opens at the places list for Add a folder', async () => {
@@ -407,13 +487,17 @@ describe('the Folders panel', () => {
 });
 
 describe('Settings → Shared folders', () => {
+  let browseSays = '';
+  afterEach(() => {
+    browseSays = '';
+  });
   function settings(initial: SharesState, pick: (() => Promise<string | null>) | null = null) {
     const s = server(initial);
     const shares = createShares(s.api);
     const root = document.createElement('div');
     document.body.append(root);
     const host = fakeHost(root);
-    const browse = vi.fn();
+    const browse = vi.fn(async () => browseSays);
     const changed = vi.fn();
     const section = createSharedFolders(host, { shares, routines: async () => [{ id: 'r1', title: 'Morning brief' }], pick, browse, changed });
     return { ...s, root, section, browse, changed, shares };
@@ -507,12 +591,46 @@ describe('Settings → Shared folders', () => {
     expect(cancelled.browse).not.toHaveBeenCalled();
     document.body.replaceChildren();
     const old = settings({ shares: [], problem: null }, async () => {
-      throw new Error('unknown command');
+      throw new PickerMissing('Command pick_folder not found');
     });
     await old.section.open();
     button(old.root, 'Add a folder').click();
     await flush();
     expect(old.browse).toHaveBeenCalled();
+  });
+
+  it('says what went wrong when the picker itself failed', async () => {
+    const { root, section, browse } = settings({ shares: [], problem: null }, async () => {
+      throw new Error('the folder picker is already open');
+    });
+    await section.open();
+    button(root, 'Add a folder').click();
+    await flush();
+    expect(browse).not.toHaveBeenCalled();
+    expect(root.querySelector('.folders-add [role="alert"]')?.textContent).toBe('The folder picker is already open.');
+  });
+
+  it('opens the picker once for two quick clicks', async () => {
+    let done: (p: string | null) => void = () => undefined;
+    const pick = vi.fn(() => new Promise<string | null>((res) => (done = res)));
+    const { root, section } = settings({ shares: [], problem: null }, pick);
+    await section.open();
+    button(root, 'Add a folder').click();
+    button(root, 'Add a folder').click();
+    expect(pick).toHaveBeenCalledTimes(1);
+    done(null);
+    await flush();
+    button(root, 'Add a folder').click();
+    expect(pick).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows why the panel could not open the places list', async () => {
+    browseSays = 'Trillion could not be reached.';
+    const { root, section } = settings({ shares: [], problem: null }, null);
+    await section.open();
+    button(root, 'Add a folder').click();
+    await flush();
+    expect(root.querySelector('.folders-add [role="alert"]')?.textContent).toBe('Trillion could not be reached.');
   });
 
   it('opens the Folders panel at the places list in a browser', async () => {
@@ -537,5 +655,19 @@ describe('the desktop picker', () => {
     expect(invoke).toHaveBeenCalledWith('pick_folder', {});
     invoke.mockResolvedValueOnce(null as unknown as string);
     expect(await pickFolder()).toBeNull();
+  });
+
+  it('tells a missing command apart from the picker’s own error', async () => {
+    const invoke = vi.fn(async (): Promise<unknown> => {
+      throw 'Command pick_folder not found';
+    });
+    (window as unknown as { __TAURI__: unknown }).__TAURI__ = { core: { invoke }, event: { listen: async () => () => {} } };
+    await expect(pickFolder()).rejects.toBeInstanceOf(PickerMissing);
+    invoke.mockImplementationOnce(async () => {
+      throw 'the folder picker is already open';
+    });
+    const err = await pickFolder().catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(PickerMissing);
+    expect((err as Error).message).toBe('the folder picker is already open');
   });
 });

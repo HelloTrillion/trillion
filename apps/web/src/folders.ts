@@ -11,6 +11,7 @@
 import { icon } from './icons';
 import type { Host } from './panel';
 import type { Api } from './settings';
+import { PickerMissing } from './desktop';
 import { refusal } from './skills';
 
 // ── What the server sends ────────────────────────────────────────────────
@@ -119,8 +120,10 @@ export function sharesSummary(s: SharesState | null): string {
 }
 
 /** The page's footer: what her file tools reach for her own turns. */
-export function footText(s: SharesState | null, granted: readonly string[]): string {
-  const reach = s ? s.shares.filter((r) => r.scope === 'everyone' && !r.state).map((r) => r.name) : [...granted];
+export function footText(s: SharesState | null): string {
+  // Nothing until the shares are read: a guess could say folders are shared that are not.
+  if (!s) return '';
+  const reach = s.shares.filter((r) => r.scope === 'everyone' && !r.state).map((r) => r.name);
   return reach.length
     ? `Files: ${reach.join(', ')}. Every change asks first.`
     : 'No folders are shared, so file tools are off. Share one in Settings → Shared folders, or ask her to find one.';
@@ -165,7 +168,16 @@ export function nameProblem(name: string): string {
   return '';
 }
 
-const same = (a: string, b: string): boolean => a === b || a.toLowerCase() === b.toLowerCase();
+/**
+ * Whether two paths name one folder, as the core compares them: case-blind for Windows
+ * paths and macOS ones (its home and drives live under /Users and /Volumes), exact
+ * elsewhere, where Linux tells `Notes` from `notes`.
+ */
+export function samePath(a: string, b: string): boolean {
+  if (a === b) return true;
+  const blind = (p: string): boolean => /^[A-Za-z]:[\\/]|^\\\\/.test(p) || /^\/(Users|Volumes)(\/|$)/.test(p);
+  return blind(a) && blind(b) && a.toLowerCase() === b.toLowerCase();
+}
 
 // ── The store both use ───────────────────────────────────────────────────
 
@@ -234,7 +246,7 @@ export function createShares(api: Api): Shares {
     remove: (id) => send('DELETE', `/api/folders/${encodeURIComponent(id)}`, {}),
     find(id, path) {
       const all = last?.shares ?? [];
-      return (id ? all.find((s) => s.id === id) : undefined) ?? (path ? all.find((s) => same(s.path, path)) : undefined) ?? null;
+      return (id ? all.find((s) => s.id === id) : undefined) ?? (path ? all.find((s) => samePath(s.path, path)) : undefined) ?? null;
     },
     onChange: (l) => void listeners.push(l),
   };
@@ -394,15 +406,23 @@ export interface FolderPanelDeps {
   readonly conversation: () => string | null;
   /** Told when it opens or closes, so the page can make room for it. */
   readonly shown?: (open: boolean) => void;
+  /** Where focus goes when the panel closes with focus in it. */
+  readonly focusAfter?: () => HTMLElement | null;
 }
 
 export interface FolderPanel {
   readonly el: HTMLElement;
+  /** The live region (SUR-6), for the page to put outside the panel: inside a hidden
+   * panel, the first thing it says would go unheard. */
+  readonly live: HTMLElement;
   readonly isOpen: boolean;
   /** Show a frame: from the session, or a click's answer. The same frame twice draws once. */
   take(frame: FolderFrame, opts?: { focus?: boolean }): void;
-  /** The user's own Add a folder: open at the places list. */
-  openPlaces(): Promise<void>;
+  /** The user's own Add a folder: open at the places list. Opens with the problem shown
+   * when it was refused, and resolves to that problem ('' when it opened). */
+  openPlaces(): Promise<string>;
+  /** The page's Escape, in its turn (escapeAction): the form closes first, then the panel. */
+  escape(): void;
   close(): void;
 }
 
@@ -440,7 +460,7 @@ export function createFolderPanel(d: FolderPanelDeps): FolderPanel {
   live.setAttribute('aria-live', 'polite');
   const body = el('div', 'fo-body');
   body.append(crumbs, tag, problem, rows, more, formSlot, actions);
-  root.append(head, body, live);
+  root.append(head, body);
 
   let frame: FolderFrame | null = null;
   let key = '';
@@ -459,36 +479,39 @@ export function createFolderPanel(d: FolderPanelDeps): FolderPanel {
 
   function close(): void {
     if (!open) return;
-    const had = root.contains(document.activeElement);
+    // Focus moves first: a hidden element drops it to the page's body.
+    if (root.contains(document.activeElement)) d.focusAfter?.()?.focus();
     formOpen = false;
     formSlot.replaceChildren();
     setOpen(false);
-    if (had) (document.activeElement as HTMLElement | null)?.blur?.();
   }
 
   /** Move the browser: the user's own click, through the same fence as hers. */
-  async function go(where: { path: string } | { place: string }, from = ''): Promise<void> {
+  async function go(where: { path: string } | { place: string }, from = ''): Promise<string> {
     const mine = ++asked;
     const conversation = d.conversation();
-    const body = { ...where, ...(conversation ? { conversation } : {}) };
+    let said: string;
     try {
-      const r = await d.api('POST', '/api/folders/browse', body);
+      let r = await d.api('POST', '/api/folders/browse', { ...where, ...(conversation ? { conversation } : {}) });
+      // Not found: that conversation's session is gone (reconnecting). The same fence answers without it.
+      if (r.status === 404 && conversation) r = await d.api('POST', '/api/folders/browse', where);
       const data = (await r.json().catch(() => ({}))) as Record<string, unknown>;
       // A later click has gone out: this answer is old.
-      if (mine !== asked) return;
+      if (mine !== asked) return '';
       const next = r.ok ? parseFrame(data) : null;
-      if (!next) {
-        problem.textContent = refusal(data['detail']);
-        problem.hidden = false;
-        return;
+      if (next) {
+        leaving = from;
+        take(next, { focus: true });
+        return '';
       }
-      leaving = from;
-      take(next, { focus: true });
+      said = r.status === 404 ? 'The folders could not be opened just now. Try again in a moment.' : refusal(data['detail']);
     } catch {
-      if (mine !== asked) return;
-      problem.textContent = 'Trillion could not be reached.';
-      problem.hidden = false;
+      if (mine !== asked) return '';
+      said = 'Trillion could not be reached.';
     }
+    problem.textContent = said;
+    problem.hidden = false;
+    return said;
   }
 
   function crumb(label: string, onClick: (() => void) | null): HTMLElement {
@@ -615,18 +638,8 @@ export function createFolderPanel(d: FolderPanelDeps): FolderPanel {
 
   root.addEventListener('keydown', (ev) => {
     const t = ev.target instanceof HTMLElement ? ev.target : null;
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      // Handled here: the page's Escape would close the whole workspace.
-      ev.stopPropagation();
-      if (formOpen) {
-        formOpen = false;
-        formSlot.replaceChildren();
-        shareBtn.focus();
-      } else close();
-      return;
-    }
-    if (t?.closest(EDITABLE)) return;
+    // Escape is the page's, in its one order (escapeAction): it calls escape().
+    if (ev.key === 'Escape' || t?.closest(EDITABLE)) return;
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp' || ev.key === 'Home' || ev.key === 'End') {
       const all = [...rows.querySelectorAll<HTMLButtonElement>('.fo-row')];
       if (!all.length) return;
@@ -656,12 +669,36 @@ export function createFolderPanel(d: FolderPanelDeps): FolderPanel {
 
   return {
     el: root,
+    live,
     get isOpen() {
       return open;
     },
     take,
     async openPlaces() {
-      await go({ place: 'places' });
+      const said = await go({ place: 'places' });
+      if (!said) return '';
+      // Refused: the panel opens anyway, saying why, rather than nothing happening.
+      if (!open) {
+        if (!frame) {
+          crumbs.replaceChildren();
+          rows.replaceChildren();
+          tag.hidden = true;
+          more.hidden = true;
+          shareBtn.hidden = true;
+        }
+        setOpen(true);
+        live.textContent = said;
+      }
+      return said;
+    },
+    escape() {
+      if (!formOpen) {
+        close();
+        return;
+      }
+      formOpen = false;
+      formSlot.replaceChildren();
+      shareBtn.focus();
     },
     close,
   };
@@ -672,10 +709,11 @@ export function createFolderPanel(d: FolderPanelDeps): FolderPanel {
 export interface SharedFoldersDeps {
   readonly shares: Shares;
   readonly routines: () => Promise<readonly Choice[]>;
-  /** In the desktop app: the system folder picker. Null when it is not there. */
+  /** In the desktop app: the system folder picker. Null when it is not there. It rejects
+   * with `PickerMissing` when the shell has no picker, or an Error saying what failed. */
   readonly pick: (() => Promise<string | null>) | null;
-  /** In a browser: open the Folders panel at the places list. */
-  readonly browse: () => void;
+  /** In a browser: open the Folders panel at the places list; resolves to why it could not ('' when it did). */
+  readonly browse: () => Promise<string>;
   readonly changed: () => void;
 }
 
@@ -777,25 +815,46 @@ export function createSharedFolders(host: Host, d: SharedFoldersDeps): { open():
     return box;
   }
 
+  let picking = false;
+
+  async function browse(): Promise<void> {
+    const said = await d.browse();
+    if (said) {
+      error = { at: 'add', text: said };
+      draw();
+    }
+  }
+
   async function add(): Promise<void> {
+    // One picker at a time: a second click while it is up does nothing.
+    if (picking) return;
     error = null;
     editing = '';
-    if (!d.pick) {
-      d.browse();
-      return;
-    }
-    let path: string | null;
+    picking = true;
     try {
-      path = await d.pick();
-    } catch {
-      // A shell without the picker: the panel does the same job.
-      d.browse();
-      return;
+      if (!d.pick) {
+        await browse();
+        return;
+      }
+      let path: string | null;
+      try {
+        path = await d.pick();
+      } catch (e) {
+        // A shell without the picker: the panel does the same job. Anything else is said.
+        if (e instanceof PickerMissing) await browse();
+        else {
+          error = { at: 'add', text: refusal(e instanceof Error ? e.message : String(e)) };
+          draw();
+        }
+        return;
+      }
+      if (!path) return;
+      adding = path;
+      draw();
+      (form.querySelector('.folders-add input') as HTMLInputElement | null)?.focus();
+    } finally {
+      picking = false;
     }
-    if (!path) return;
-    adding = path;
-    draw();
-    (form.querySelector('.folders-add input') as HTMLInputElement | null)?.focus();
   }
 
   function addRow(): HTMLElement {

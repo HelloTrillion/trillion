@@ -829,8 +829,8 @@ function render(): void {
   micBtn.setAttribute('aria-pressed', String(view.mic));
   micBtn.classList.toggle('live', view.mic);
   micBtn.classList.toggle('watching', watch);
-  // The shares as Settings reads them, live; the session's list only until they are read.
-  footEl.textContent = ready ? footText(shares.last, view.grantedRoots) : '';
+  // The shares as Settings reads them, read again on each session and each change.
+  footEl.textContent = ready ? footText(shares.last) : '';
   footEl.title = footEl.textContent;
 }
 
@@ -963,6 +963,7 @@ const folderPanel = createFolderPanel({
   shares,
   routines: routineChoices,
   conversation: () => view.conversationId,
+  focusAfter: () => (workspace.isOpen ? workspaceCloseBtn : null),
   shown: (open) => {
     workspaceEl.classList.toggle('has-folders', open);
     if (open && !workspace.isOpen) {
@@ -973,11 +974,11 @@ const folderPanel = createFolderPanel({
     const brought = foldersBroughtWorkspace;
     foldersBroughtWorkspace = false;
     if (brought && workspace.showing === 'board' && !view.board?.open && !approvals.holds()) workspace.close();
-    // Focus was in the panel: it stays in the workspace rather than falling to the page.
-    else if (workspace.isOpen && (document.activeElement === null || document.activeElement === document.body)) workspaceCloseBtn.focus();
   },
 });
 workspaceEl.insertBefore(folderPanel.el, $('workspace-body'));
+// Outside the panel, which is hidden until its first frame: that frame is announced too.
+document.body.append(folderPanel.live);
 workspace.onClose((_id, replaced) => {
   if (!replaced) folderPanel.close();
 });
@@ -985,7 +986,7 @@ const folders = createSharedFolders(panel.host('folders'), {
   shares,
   routines: routineChoices,
   pick: desktop.DESKTOP ? desktop.pickFolder : null,
-  browse: () => void folderPanel.openPlaces(),
+  browse: () => folderPanel.openPlaces(),
   changed: () => {
     panel.refresh();
     render();
@@ -1300,6 +1301,9 @@ function connect(): void {
     }
     // Let in (at start, after a reconnect, with a new token): what is connected now, for the cards' source tiles.
     if (msg.type === 'session') void connected.load();
+    // The shares, read again: on every session (which also retries a failed first read),
+    // and whenever the core says they changed, from Settings in another tab or a card.
+    if (msg.type === 'session' || msg.type === 'shares') void shares.load();
     // A new connection starts unseen in the core, and may be another conversation: wait for its
     // board before saying the board is on a screen, so the old one is never reported seen.
     if (msg.type === 'session') {
@@ -1636,12 +1640,16 @@ addEventListener('keydown', (ev) => {
       speaking: voice.active,
       listening: view.mic,
       listOpen: threads.isOpen,
+      foldersOpen: folderPanel.isOpen,
       workspaceOpen: workspace.isOpen,
     });
     if (action === 'interrupt') interrupt();
     else if (action === 'list') {
       ev.preventDefault();
       threads.close();
+    } else if (action === 'folders') {
+      ev.preventDefault();
+      folderPanel.escape();
     } else if (action === 'workspace') {
       ev.preventDefault();
       workspace.close();
