@@ -183,7 +183,43 @@ def test_a_port_held_by_something_else_is_named_with_the_way_round_it() -> None:
         port = taken.getsockname()[1]
         check = doctor.check_port("127.0.0.1", port)
     assert check.status == "warn" and "in use by something else" in check.detail
-    assert f"trillion run --port {port + 1}" in check.fix
+    # The next free one, which is usually but not always the next port, and none when
+    # the ports after it are all taken or there are none.
+    _, _, after = check.fix.rpartition("--port ")
+    if after.isdigit():
+        assert port < int(after) <= port + 20
+    else:
+        assert not any(ch.isdigit() for ch in check.fix)
+
+
+def test_the_port_it_suggests_instead_is_one_that_is_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    busy = {5000, 5001}
+    monkeypatch.setattr(doctor, "_bindable", lambda host, port: port not in busy)
+    monkeypatch.setattr(doctor, "_is_trillion", lambda host, port: False)
+    check = doctor.check_port("127.0.0.1", 5000)
+    assert check.status == "warn"
+    assert "trillion run --port 5002" in check.fix
+    assert "5001" not in check.fix
+
+
+def test_with_no_free_port_nearby_it_names_no_number(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "_bindable", lambda host, port: False)
+    monkeypatch.setattr(doctor, "_is_trillion", lambda host, port: False)
+    check = doctor.check_port("127.0.0.1", 5000)
+    assert check.status == "warn"
+    assert "--port" in check.fix and not any(ch.isdigit() for ch in check.fix)
+
+
+def test_at_the_last_port_it_does_not_say_the_next_ones_are_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor, "_bindable", lambda host, port: False)
+    monkeypatch.setattr(doctor, "_is_trillion", lambda host, port: False)
+    check = doctor.check_port("127.0.0.1", 65535)
+    assert "busy" not in check.fix
+    assert "trillion run --port" in check.fix and "65536" not in check.fix
 
 
 # ── What the user chose ──────────────────────────────────────────────────

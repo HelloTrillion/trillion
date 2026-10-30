@@ -2252,7 +2252,8 @@ class Session:
                     ok=r.status in ("succeeded", "confirmation_required", "started"),
                     summary=_chip(r),
                 )
-                if r.status == "confirmation_required" and r.pending_id:
+                # A call proposed again while its card waits gets no second card.
+                if r.status == "confirmation_required" and r.pending_id and not r.already_asked:
                     await self._send_card(r.pending_id)
 
         final = "idle"

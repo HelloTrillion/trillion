@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { systemVoices } from '../src/speech';
+import { speechReach, systemVoices } from '../src/speech';
 
 const v = (name: string, lang: string): SpeechSynthesisVoice =>
   ({ name, lang, voiceURI: `uri:${name}`, default: false, localService: true }) as SpeechSynthesisVoice;
@@ -13,5 +13,13 @@ describe('system voices', () => {
 
   it('is empty when the browser has none', () => {
     expect(systemVoices([], 'en')).toEqual([]);
+  });
+});
+
+describe('speech providers out of reach', () => {
+  it('counts a provider run by someone else as hosted, and one at an address as not', () => {
+    expect(speechReach({ title: 'ElevenLabs', where: 'core', takes_url: false })).toEqual({ provider: 'ElevenLabs', hosted: true });
+    expect(speechReach({ title: 'Another compatible service', where: 'core', takes_url: true }).hosted).toBe(false);
+    expect(speechReach({ title: "This computer's voice", where: 'client', takes_url: false }).hosted).toBe(false);
   });
 });

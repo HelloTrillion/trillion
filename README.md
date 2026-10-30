@@ -90,23 +90,25 @@ Then start it:
 uv run trillion run --grant ~/Desktop
 ```
 
-The app opens in your browser and asks who should answer: Anthropic (Claude), OpenAI, a free local model through [Ollama](https://ollama.com) or LM Studio, or any OpenAI-compatible service. Paste your key there. It is checked, then stored in your operating system's keychain: never in a file, the database or a log, and it is sent only to the provider you chose. Change it any time in **Settings** (top right), under Model.
+The app opens in your browser and asks who should answer: Anthropic (Claude), OpenAI, a free local model through [Ollama](https://ollama.com) or LM Studio, or any OpenAI-compatible service. Paste your key there. It is checked, then stored in your operating system's keychain: never in a file, the database or a log, and it is sent only to the provider you chose. Change it any time in **Settings** (the menu button, top left), under Model.
 
 Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
 
 **If something isn't working**, ask it:
 
 ```bash
-uv run trillion doctor
+trillion doctor
 ```
 
-It checks the data folder, the database, the port, the keychain, your model, voice and mic choices, and says how to fix whatever is wrong. It only looks; it changes nothing. `--secrets` also tests every saved key without printing one, and `--offline` skips the checks that need the network. `uv run trillion setup` does the first-run preparation, runs the same checks, and then starts the app; it is safe to run again.
+These commands are shown as an installed release runs them. From a source checkout, put `uv run` in front: `uv run trillion doctor`.
 
-**If she feels slow**, `uv run trillion doctor --trace` shows how long her last ten turns took (`--trace 30` for more), step by step from the moment you stopped talking: your words ready, her first words on screen, her first audio, when it reached your speaker, and tokens and cache use per model call. It also says whether the Trillion running is the one on disk, so a fix you saved is not mistaken for a fix that is running. Only timings are kept, never what was said. To measure a fresh set of spoken turns without making a sound, see `evals/latency/run.py`.
+It checks the data folder, the database, the port, the keychain, your model, voice and mic choices, and says how to fix whatever is wrong. It only looks; it changes nothing. `--secrets` also tests every saved key without printing one, and `--offline` skips the checks that need the network. `trillion setup` does the first-run preparation, runs the same checks, and then starts the app; it is safe to run again.
+
+**If she feels slow**, `trillion doctor --trace` shows how long her last ten turns took (`--trace 30` for more), step by step from the moment you stopped talking: your words ready, her first words on screen, her first audio, when it reached your speaker, and tokens and cache use per model call. It also says whether the Trillion running is the one on disk, so a fix you saved is not mistaken for a fix that is running. Only timings are kept, never what was said. To measure a fresh set of spoken turns without making a sound, see `evals/latency/run.py`.
 
 `--grant` shares one folder with the file tools; without it they are off. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
-**Talking to her.** Open **Settings** (the menu button, top left), then **Microphone**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
+**Talking to her.** Open **Settings** (the menu button, top left), then **Hearing**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv sync --extra whisper`, and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 

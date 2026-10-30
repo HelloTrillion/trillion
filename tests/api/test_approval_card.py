@@ -9,10 +9,11 @@ from pathlib import Path
 import pytest
 
 from tests.api.test_session import Page, idle
-from tests.brain.fakes import ScriptedProvider, say, use
+from tests.brain.fakes import USAGE, ScriptedProvider, say, use
 from tests.spine.fakes import SpendTool
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import Session
+from trillion.brain.types import Done, ToolUse
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import GATED
 from trillion.spine.labels import LABELS
@@ -75,3 +76,25 @@ async def test_every_first_party_tool_that_can_ask_has_a_friendly_name(rt: Runti
         d.name for d in rt.registry.definitions() if d.risk in GATED and d.category not in CONNECTED
     }
     assert asks and asks <= LABELS.keys(), asks - LABELS.keys()
+
+
+async def test_the_same_call_twice_in_one_reply_puts_up_one_card(rt: Runtime) -> None:
+    """A small model can repeat a call. The page gets one card, not one per copy."""
+    args = {"path": str(rt.granted_roots[0] / "a.txt"), "content": "x"}
+    twice = [
+        ToolUse(id="c1", name="file_create", args=args),
+        ToolUse(id="c2", name="file_create", args=args),
+        Done(stop_reason="tool_use", usage=USAGE),
+    ]
+    other = {"path": str(rt.granted_roots[0] / "b.txt"), "content": "x"}
+    rt.provider = ScriptedProvider(twice, use("file_create", other, "c3"), say("Shall I?"))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "go on"})
+    await page.until("confirm.request")
+    await idle(session)
+    await session.close()
+    cards = page.all("confirm.request")
+    # The repeat gets no card of its own; a different file still does.
+    assert len(cards) == 2 and cards[0]["pending_id"] != cards[1]["pending_id"]
+    assert str(cards[0]["summary"]).startswith("Create ")

@@ -170,25 +170,43 @@ def _is_trillion(host: str, port: int) -> bool:
     return False
 
 
-def check_port(host: str, port: int) -> Check:
-    name = "Port"
+# How far past a busy port to look for a free one to suggest.
+_NEARBY = 20
+
+
+def _bindable(host: str, port: int) -> bool:
+    """Whether a server could listen on the port now."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         if os.name == "posix":
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
         except OSError:
-            if _is_trillion(host, port):
-                return Check(
-                    name=name, status="ok", detail=f"{port}: Trillion is already running on it"
-                )
-            return Check(
-                name=name,
-                status="warn",
-                detail=f"{port} is in use by something else",
-                fix=f"Stop what is using it, or start on another: trillion run --port {port + 1}",
-            )
-    return Check(name=name, status="ok", detail=f"{port} is free")
+            return False
+    return True
+
+
+def check_port(host: str, port: int) -> Check:
+    name = "Port"
+    if _bindable(host, port):
+        return Check(name=name, status="ok", detail=f"{port} is free")
+    if _is_trillion(host, port):
+        return Check(name=name, status="ok", detail=f"{port}: Trillion is already running on it")
+    # Suggest a port that is free now, not one that may be just as busy.
+    nearby = range(port + 1, min(port + 1 + _NEARBY, 65536))
+    spare = next((p for p in nearby if _bindable(host, p)), None)
+    if spare is not None:
+        instead = f"start on another: trillion run --port {spare}"
+    elif nearby:
+        instead = "start on another with trillion run --port (the next few are busy too)"
+    else:
+        instead = "start on another with trillion run --port, choosing a lower one"
+    return Check(
+        name=name,
+        status="warn",
+        detail=f"{port} is in use by something else",
+        fix=f"Stop what is using it, or {instead}",
+    )
 
 
 def _newest_source(found: Path) -> float:
