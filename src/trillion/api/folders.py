@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from trillion.api.runtime import Runtime
-from trillion.files.shares import EVERYONE, Share, ShareError
+from trillion.files.shares import EVERYONE, NoSuchShare, Share, ShareError
 from trillion.tools.folders import View, open_place
 
 ID = InPath(min_length=1, max_length=64)
@@ -55,6 +55,11 @@ def _fail(detail: str) -> JSONResponse:
 
 def _not_found() -> JSONResponse:
     return JSONResponse({"error": "not_found"}, status_code=404)
+
+
+def _full(raw: str) -> bool:
+    """A full path, or one from the home folder (`~`)."""
+    return raw.startswith("~") or Path(raw).is_absolute()
 
 
 def create_folders_router(rt: Runtime) -> APIRouter:
@@ -107,6 +112,9 @@ def create_folders_router(rt: Runtime) -> APIRouter:
     async def save(body: ShareBody) -> Any:
         if (body.id is None) == (body.path is None):
             return _fail("give a folder's path to add it, or a share's id to change it")
+        # The routine could be removed between this check and the save. Harmless: its
+        # shares are removed with it, and one saved after reaches nothing (no run has
+        # its scope) until the user removes it here.
         why = await known_scope(body.scope)
         if why is not None:
             return _fail(why)
@@ -129,6 +137,8 @@ def create_folders_router(rt: Runtime) -> APIRouter:
                     access=body.access or "read",
                     scope=body.scope or EVERYONE,
                 )
+        except NoSuchShare:
+            return _not_found()
         except ShareError as e:
             return _fail(str(e))
         except OSError:
@@ -137,11 +147,10 @@ def create_folders_router(rt: Runtime) -> APIRouter:
 
     @router.delete("/{share_id}")
     async def remove(share_id: str = ID) -> Any:
-        found = await asyncio.to_thread(lambda: any(s.id == share_id for s in rt.shares.all()))
-        if not found:
-            return _not_found()
         try:
             await asyncio.to_thread(rt.shares.remove, share_id)
+        except NoSuchShare:
+            return _not_found()
         except ShareError as e:
             return _fail(str(e))
         except OSError:
@@ -150,14 +159,21 @@ def create_folders_router(rt: Runtime) -> APIRouter:
 
     @router.post("/browse")
     async def browse(body: BrowseBody) -> Any:
-        target = body.path or body.place
-        if target is None:
+        if (body.path is None) == (body.place is None):
             return _fail("say where: a folder's path, or a place")
-        session = rt.by_conversation.get(body.conversation) if body.conversation else None
-        if session is not None:
+        if body.path is not None and not _full(body.path):
+            return _fail("a folder must be given as a full path")
+        if body.place is not None and (_full(body.place) or any(c in body.place for c in "/\\")):
+            return _fail("a place is places, up, or the name of a folder the browser shows")
+        target = body.path or body.place or ""
+        if body.conversation is not None:
+            # A page that clicked is open on its conversation; one that closed moves nothing.
+            session = rt.by_conversation.get(body.conversation)
+            if session is None:
+                return _not_found()
             view: View = await session.browsed(target)
         else:
-            # No page open there: the same fence, from the places list.
+            # Settings, with no conversation: the same fence, from the places list.
             view = await open_place(None, target, rt.shares, rt.folder_look)
         if view.problem is not None:
             return _fail(view.problem)

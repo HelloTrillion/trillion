@@ -41,6 +41,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import idna.core
+
 from trillion import paths
 from trillion.files.rules import resolved, why_not
 from trillion.spine.deny_floor import CASE_BLIND, fold
@@ -60,6 +62,10 @@ _REPLACE_TRIES, _REPLACE_WAIT = 5, 0.05
 
 class ShareError(ValueError):
     """A share that cannot be made or changed. The message is safe to show the user."""
+
+
+class NoSuchShare(ShareError):
+    """No share has that id."""
 
 
 class WidensError(ShareError):
@@ -124,10 +130,6 @@ _ZWJ = "\u200d"
 _ZWNJ = "\u200c"
 
 
-def _letter(c: str) -> bool:
-    return len(c) == 1 and unicodedata.category(c)[0] in ("L", "M")
-
-
 def _emoji(c: str) -> bool:
     """A pictograph, or a skin tone that changes the one before it."""
     if len(c) != 1:
@@ -146,9 +148,10 @@ def hidden_marks(text: str) -> bool:
         if c in _PRESENTATION:
             continue
         if c == _ZWNJ:
-            before = text[i - 1] if i > 0 else ""
-            after = text[i + 1] if i + 1 < len(text) else ""
-            if _letter(before) and _letter(after):
+            # Only where it changes how letters join, by the rule domain names use
+            # (RFC 5892 CONTEXTJ): after a virama, or between letters of a script that
+            # joins. Anywhere else ("Cli\u200cents") it changes nothing anyone sees.
+            if idna.core.valid_contextj(text, i):
                 continue
             return True
         if c == _ZWJ:
@@ -185,8 +188,9 @@ def _clean_name(raw: str) -> str:
 
 
 def _name_key(name: str) -> str:
-    """Names that read the same are the same name: full-width, long s, any case."""
-    return fold(name)
+    """Names that read the same are the same name: full-width, long s, any case, and
+    with or without a zero-width joiner or non-joiner."""
+    return fold(name.replace(_ZWNJ, "").replace(_ZWJ, ""))
 
 
 def _row(share: Share) -> dict[str, Any]:
@@ -615,7 +619,7 @@ class Shares:
         if found is None:
             found = next((s for s in self._saved() if s.id == share_id), None)
         if found is None:
-            raise ShareError("that shared folder was not found")
+            raise NoSuchShare("that shared folder was not found")
         return found
 
     def remove(self, share_id: str) -> Share:

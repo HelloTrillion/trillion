@@ -640,9 +640,26 @@ def test_narrowing_a_granted_share_keeps_it_this_runs(store, home):
         ("na\u200c\u200cme", True),
         ("na\u200c me", True),
         ("1\u200c2", True),
+        ("Cli\u200cents", True),  # Latin letters don't join: it changes nothing seen
+        ("\u0627\u200c\u0628", True),  # alef joins only on its right
+        ("\u00e1\u200cb", True),
     ],
 )
 def test_only_marks_nobody_sees_outside_emoji_are_hidden(text: str, hidden: bool) -> None:
     from trillion.files.shares import hidden_marks
 
     assert hidden_marks(text) is hidden
+
+
+def test_a_name_with_a_joiner_hidden_in_it_is_the_same_name(store, home):
+    """A name the eye reads as another's is that name, so it can't stand beside it."""
+    store.put(folder(home, "Documents", "A"), name="Clients")
+    with pytest.raises(ShareError):
+        store.put(folder(home, "Documents", "B"), name="Cli\u200cents")
+    # Where the joiner is allowed, the name with it and without it are still one.
+    store.put(
+        folder(home, "Documents", "C"), name="\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"
+    )
+    with pytest.raises(ShareError, match="already named"):
+        store.put(folder(home, "Documents", "D"), name="\u0645\u06cc\u062e\u0648\u0627\u0647\u0645")
+    assert store.all()[0].name == "Clients"

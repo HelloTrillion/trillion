@@ -10,6 +10,8 @@ dependencies = [
     "anthropic>=1.0",
     "fastapi>=0.115",
     "httpx>=0.27",
+    # The joining rule for a zero-width non-joiner in a folder's name (RFC 5892).
+    "idna>=3.10",
     "jsonschema>=4.26.0",
     "keyring>=25",
     "mcp>=1.20",

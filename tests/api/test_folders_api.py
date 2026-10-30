@@ -235,3 +235,29 @@ def test_a_click_moves_the_pages_browser_and_tells_her(app: App) -> None:
         assert "folder browser now shows" in (session._folder_note or "")
         frames = chat.until("folders")
         assert frames[-1]["type"] == "folders"
+
+
+def test_changing_a_share_no_one_has_is_not_found(app: App) -> None:
+    r = post(app, PATH, {"id": "f_nothing", "access": "read"})
+    assert r.status_code == 404 and r.json() == {"error": "not_found"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"path": "/x", "place": "places"},
+        {"path": "Documents"},
+        {"place": "/Users"},
+        {"place": "~"},
+        {"place": "Documents/Clients"},
+        {"place": "a\\b"},
+    ],
+)
+def test_the_browse_route_takes_a_full_path_or_a_place(app: App, body: dict[str, Any]) -> None:
+    r = post(app, BROWSE, body)
+    assert r.status_code == 400 and r.json()["error"] == "refused"
+
+
+def test_a_click_for_a_conversation_with_no_page_open_is_not_found(app: App) -> None:
+    r = post(app, BROWSE, {"place": "places", "conversation": "c-nowhere"})
+    assert r.status_code == 404 and r.json() == {"error": "not_found"}
