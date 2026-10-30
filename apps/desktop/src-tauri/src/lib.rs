@@ -25,8 +25,8 @@ use tauri::ipc::CapabilityBuilder;
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::webview::{PermissionKind, PermissionResponse};
 use tauri::{
-    AppHandle, Emitter, Manager, RunEvent, State, Url, Webview, WebviewUrl, WebviewWindowBuilder,
-    WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, Url, Webview, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
@@ -456,7 +456,8 @@ fn allow_page(app: &AppHandle, port: u16) {
         .permission("core:event:allow-unlisten")
         .permission("allow-set-talk-shortcut")
         .permission("allow-report-state")
-        .permission("allow-open-external");
+        .permission("allow-open-external")
+        .permission("allow-pick-folder");
     let orb = CapabilityBuilder::new(format!("server-orb-{port}"))
         .remote(origin)
         .window(orb::LABEL)
@@ -669,6 +670,46 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The title of the system folder picker.
+const PICK_TITLE: &str = "Share a folder with Trillion";
+
+/// Add a folder: the system's own folder picker (`NSOpenPanel`, the common item dialog,
+/// GTK), one folder, as a sheet on the main window. The chosen folder's absolute path,
+/// or none when cancelled. The page sends it to `POST /api/folders` like any other.
+#[tauri::command]
+async fn pick_folder(window: WebviewWindow) -> Result<Option<String>, String> {
+    if window.label() != MAIN {
+        return Err("only the main window picks folders".into());
+    }
+    // Made on the main thread, as the system wants; waited on here, so neither the
+    // main thread nor this one blocks.
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    let parent = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let picking = rfd::AsyncFileDialog::new()
+                .set_title(PICK_TITLE)
+                .set_can_create_directories(true)
+                .set_parent(&parent)
+                .pick_folder();
+            let _ = tx.try_send(picking);
+        })
+        .map_err(|e| e.to_string())?;
+    let picking = rx.recv().await.ok_or("the folder picker did not open")?;
+    picking.await.map(|f| folder_path(f.path())).transpose()
+}
+
+/// The picker's answer as text, or an error: a path that is not UTF-8 is never
+/// passed on changed.
+fn folder_path(path: &Path) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err("the folder picker gave a relative path".into());
+    }
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "that folder's path is not valid text, so it can't be shared".into())
+}
+
 /// The Talk item in the menu bar: in toggle mode it is the shortcut pressed and let
 /// go; otherwise it brings the window forward to talk there.
 pub(crate) fn talk_from_menu(app: &AppHandle) {
@@ -776,7 +817,8 @@ pub fn run() {
             set_talk_shortcut,
             report_state,
             show_main,
-            open_external
+            open_external,
+            pick_folder
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -831,5 +873,21 @@ mod tests {
             "https://accounts.google.com/o/oauth2?token=x"
         )));
         assert!(!carries_token(&at("https://example.com/#section")));
+    }
+
+    #[test]
+    fn a_picked_folder_is_its_path_as_text() {
+        let home = std::env::temp_dir();
+        assert_eq!(folder_path(&home), Ok(home.to_str().unwrap().to_owned()));
+        assert!(folder_path(Path::new("Projects")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_text_is_refused_not_mangled() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new(OsStr::from_bytes(b"/tmp/caf\xe9"));
+        assert!(folder_path(odd).is_err());
     }
 }

@@ -27,6 +27,11 @@ hmac = "0.12"
 sha2 = "0.10"
 signal-hook = "0.4.5"
 url = "2"
+# The system folder picker, used directly rather than through tauri-plugin-dialog:
+# the plugin injects a script into every page that replaces window.alert and
+# window.confirm, and the server's page must not get its API. Same crate and
+# features the plugin uses.
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3", "common-controls-v6"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Matches the version tauri and wry use, for webkit.rs.

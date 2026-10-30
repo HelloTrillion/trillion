@@ -10,6 +10,7 @@ fn main() {
             "report_state",
             "show_main",
             "open_external",
+            "pick_folder",
         ]),
     ))
     .expect("tauri build script");
