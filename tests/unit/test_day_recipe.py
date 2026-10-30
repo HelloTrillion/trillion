@@ -113,3 +113,13 @@ def test_a_day_routine_says_it_is_the_routine_not_the_user() -> None:
     # Everything after the first line is the same recipe.
     hand = recipe(SetUp(), DAY, "Europe/London", SAM)
     assert mine.split("\n", 1)[1] == hand.split("\n", 1)[1]
+
+
+def test_drive_has_a_row_only_when_it_is_read() -> None:
+    assert not any("drive_search" in r for r in rows(SetUp(), "Sam"))
+    lines = rows(SetUp(calendar=True, slack=True, drive=True), "Sam")
+    drive = "Google Drive (drive_search): files changed since yesterday. Show them as files."
+    # After Slack, before the packs and her reminders.
+    assert lines[2] == drive and lines[1].startswith("Slack")
+    text = recipe(SetUp(drive=True), DAY, "UTC", SAM)
+    assert drive in text and NOTHING_CONNECTED not in text and no_dashes(text)

@@ -630,6 +630,11 @@ class Runtime:
             ),
             ("gmail", DAY_READS["gmail"], bool(saved and saved.with_service("gmail"))),
             ("slack", DAY_READS["slack"], self.slack is not None and bool(self.slack.token())),
+            (
+                "google-drive",
+                DAY_READS["google-drive"],
+                bool(saved and saved.with_service("drive")),
+            ),
         ):
             if on:
                 readable[source] = all(self._reads_freely(t) for t in tools)
@@ -644,6 +649,7 @@ class Runtime:
             calendar=readable.get("google-calendar", False),
             gmail=readable.get("gmail", False),
             slack=readable.get("slack", False),
+            drive=readable.get("google-drive", False),
             catalog=frozenset(c for c in catalog if readable[c]),
             asks_first=tuple(dict.fromkeys(i for i, ok in readable.items() if not ok)),
         )

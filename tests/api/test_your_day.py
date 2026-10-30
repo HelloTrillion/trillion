@@ -353,6 +353,18 @@ async def test_only_what_she_may_read_without_asking(rt: Runtime) -> None:
     )
 
 
+async def test_drive_is_read_only_when_its_search_runs_without_asking(rt: Runtime) -> None:
+    from trillion.connectors.google.config import Account
+    from trillion.persona.day import SetUp
+
+    assert rt.google is not None
+    rt.google.saved.accounts.append(Account(email="sam@example.com", services=["drive"]))
+    rt.google.refresh_tools()
+    assert rt.day_setup() == SetUp(asks_first=("google-drive",))
+    rt.google.set_free({"drive_search": "read"})
+    assert rt.day_setup() == SetUp(drive=True)
+
+
 async def test_building_the_day_never_raises_a_card(rt: Runtime) -> None:
     from trillion.connectors.google.config import Account
 

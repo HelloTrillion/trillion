@@ -31,6 +31,7 @@ DAY_READS: dict[str, tuple[str, ...]] = {
     "google-calendar": ("calendar_events", "calendar_busy"),
     "gmail": ("gmail_search", "gmail_read"),
     "slack": ("slack_search", "slack_read"),
+    "google-drive": ("drive_search",),
 }
 OTHER_ASK = "How do I let you read them without asking?"
 
@@ -52,11 +53,12 @@ class SetUp:
 
     A source counts only when the tools she reads it with run without asking. One that
     is set up but still asks first is in `asks_first`, by catalogue id ("gmail",
-    "google-calendar", "slack", or a server's), and is never read."""
+    "google-calendar", "google-drive", "slack", or a server's), and is never read."""
 
     calendar: bool = False
     gmail: bool = False
     slack: bool = False
+    drive: bool = False
     # Catalogue ids of the MCP servers configured, turned on and readable without asking.
     catalog: frozenset[str] = frozenset()
     asks_first: tuple[str, ...] = ()
@@ -92,6 +94,10 @@ def rows(setup: SetUp, user_name: str) -> list[str]:
     if setup.slack:
         out.append(
             f"Slack (slack_search): mentions of {user_name} since yesterday. Show them as mentions."
+        )
+    if setup.drive:
+        out.append(
+            "Google Drive (drive_search): files changed since yesterday. Show them as files."
         )
     for pack, what in _PACK_ROWS:
         members = [i for i, p in PACK_OF.items() if p == pack and i in setup.catalog]
