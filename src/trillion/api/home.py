@@ -4,21 +4,39 @@ session token like every /api/ route.
 It only looks: nothing from a connector's data is read, no network call is made, and
 today's day conversation is never made here (opening it is the page's `/day` call).
 The states themselves are decided in `workspace/home.py`.
+
+`PUT /api/workspace/home/layout` saves how the user arranged Home (D13) and tells every
+open page, so another tab redraws.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel, ConfigDict, Field
 
 from trillion.api.runtime import OWNER, Runtime
 from trillion.connectors.google.config import SERVICES
 from trillion.connectors.mcp.catalog import ENTRIES
 from trillion.persona import day
 from trillion.persona.day import SetUp
-from trillion.workspace.home import home
+from trillion.workspace.home import Layout, clean, home
+
+# Generous: a layout names nine tiles, and an old page may send one more or less.
+_MAX_IDS = 50
+_Id = Annotated[str, Field(max_length=64)]
+
+
+class LayoutBody(BaseModel):
+    """The layout as the page has it. Cleaned as any record is: unknown ids are dropped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[_Id] = Field(default_factory=list, max_length=_MAX_IDS)
+    removed: list[_Id] = Field(default_factory=list, max_length=_MAX_IDS)
+
 
 # Google's built-in services by catalogue id ("calendar" is "google-calendar").
 _GOOGLE = {e.service: e.id for e in ENTRIES if e.how == "google"}
@@ -59,8 +77,7 @@ def create_home_router(rt: Runtime) -> APIRouter:
         ready = rt.google is not None and rt.google.client() is not None
         return rt.day_setup(), configured(rt), ready
 
-    @router.get("/api/workspace/home")
-    async def read() -> dict[str, Any]:
+    async def answer(layout: Layout) -> dict[str, Any]:
         # The keychain and the disk can be slow: never on the event loop.
         setup, found, google_ready = await asyncio.to_thread(looked)
         return home(
@@ -69,6 +86,17 @@ def create_home_router(rt: Runtime) -> APIRouter:
             google_ready=google_ready,
             briefing_built=await briefing_built(rt),
             identity=rt.identity,
+            layout=layout,
         )
+
+    @router.get("/api/workspace/home")
+    async def read() -> dict[str, Any]:
+        return await answer(await rt.home_layout())
+
+    @router.put("/api/workspace/home/layout")
+    async def arrange(body: LayoutBody) -> dict[str, Any]:
+        sent = clean(body.model_dump())
+        layout, _ = await rt.arrange_home(lambda _was: sent)
+        return await answer(layout)
 
     return router

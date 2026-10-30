@@ -20,6 +20,7 @@ from trillion.secrets.store import MemoryStore
 from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, ActionSummary, BaseTool, Risk, ToolDefinition
 from trillion.tools.day import HERE, OPENING
+from trillion.workspace.home import clean
 
 NOW = 1_793_000_000_000
 
@@ -399,3 +400,16 @@ async def test_building_the_day_never_raises_a_card(rt: Runtime) -> None:
     assert "do not call its tools" in text and "gmail_search" not in text
     assert "Gmail needs your OK each time" in text and "do not call day_open" in text
     await session.close()
+
+
+async def test_the_recipe_follows_homes_layout(rt: Runtime) -> None:
+    provider = ScriptedProvider(say("A quiet day."))
+    rt.provider = provider
+    await rt.arrange_home(lambda _was: clean({"order": ["kpis"], "removed": ["tasks", "checks"]}))
+    session = await open_day(rt, Page(rt))
+    await session.handle({"type": "day.build"})
+    await idle(session)
+    (text,) = [b.text for b in recipe_msg(provider).blocks if isinstance(b, TextBlock)]
+    assert "Leave off: Reminders (tasks), What's broken (checks)." in text
+    assert "schedule_list" not in text
+    assert "in Home's order: kpis, next_up," in text

@@ -3,17 +3,23 @@
 The core decides every tile's state from `runtime.day_setup()`, so Home only ever
 promises what Your day (`persona/day.py`) will read; the page draws what it is given.
 Pure, no I/O: nothing from a connector's data is read here, only what is set up.
+
+The user arranges Home (D13): the layout is one record, kept by the core under
+`HOME_LAYOUT_PREF`, cleaned here whatever it holds, and Your day follows it (D15).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Literal
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 from trillion.connectors.mcp.catalog import BY_ID, Entry
-from trillion.persona.day import SetUp
 from trillion.persona.prompt import DEFAULT_USER_NAME, Identity
+
+if TYPE_CHECKING:
+    # Only a type here: Your day reads the layout from this module.
+    from trillion.persona.day import SetUp
 
 State = Literal["ready", "asks_first", "connect", "built_in"]
 # The service marks a tile shows before "+N more".
@@ -79,6 +85,80 @@ TILES: tuple[Tile, ...] = (
 )
 
 
+# Every tile's id, in default order.
+IDS: tuple[str, ...] = tuple(t.id for t in TILES)
+BY_TILE: dict[str, Tile] = {t.id: t for t in TILES}
+# The preference the layout is kept under, the same in every browser and the app.
+HOME_LAYOUT_PREF = "home_layout"
+
+
+@dataclass(frozen=True, kw_only=True)
+class Layout:
+    """Home as the user arranged it: every tile in their order, and those removed.
+
+    A removed tile keeps its place in `order`, so the page can put it back there."""
+
+    order: tuple[str, ...] = IDS
+    removed: frozenset[str] = field(default_factory=frozenset)
+
+    def shown(self) -> tuple[str, ...]:
+        return tuple(i for i in self.order if i not in self.removed)
+
+    def gone(self) -> tuple[str, ...]:
+        """The removed tiles, in default order: where "Add widgets" lists them."""
+        return tuple(i for i in IDS if i in self.removed)
+
+    def to_json(self) -> dict[str, list[str]]:
+        return {"order": list(self.order), "removed": list(self.gone())}
+
+
+DEFAULT = Layout()
+
+
+def _known(raw: object) -> list[str]:
+    """The tile ids in `raw`, in its order: unknown ones dropped, a duplicate kept at
+    its first place. Anything but a list is none."""
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(i for i in raw if isinstance(i, str) and i in BY_TILE))
+
+
+def clean(raw: object) -> Layout:
+    """The layout a saved or sent record stands for. Forgiving, so an old or damaged
+    record never empties Home: a tile it leaves out (a default added in a later
+    version) is appended in default order, and no record is the default."""
+    if not isinstance(raw, dict):
+        return DEFAULT
+    order = _known(raw.get("order"))
+    order += [i for i in IDS if i not in order]
+    return Layout(order=tuple(order), removed=frozenset(_known(raw.get("removed"))))
+
+
+def arrange(
+    layout: Layout,
+    *,
+    order: Iterable[str] = (),
+    remove: Iterable[str] = (),
+    add: Iterable[str] = (),
+    reset: bool = False,
+) -> Layout:
+    """`home_arrange`: `reset` first, then a tile added back goes to its default place
+    unless `order` names it, the tiles `order` names come first in that order with the
+    rest after them as they were, and `remove` takes tiles off. Unknown ids are skipped;
+    the tool refuses them before it gets here."""
+    base = DEFAULT if reset else layout
+    named = _known(list(order))
+    current = list(base.order)
+    back = [i for i in _known(list(add)) if i in base.removed]
+    for tile in back:
+        if tile not in named:
+            current.remove(tile)
+            current.insert(IDS.index(tile), tile)
+    current = named + [i for i in current if i not in named]
+    removed = (base.removed - set(back)) | set(_known(list(remove)))
+    return Layout(order=tuple(current), removed=frozenset(removed))
+
+
 def _readable(service: str, setup: SetUp) -> bool:
     """Read by Your day without asking: the built-in sources have their own flags."""
     built_in = {
@@ -138,11 +218,13 @@ def home(
     google_ready: bool,
     briefing_built: bool,
     identity: Identity,
+    layout: Layout = DEFAULT,
 ) -> dict[str, Any]:
     """What `GET /api/workspace/home` answers. `configured` maps each catalogue id set
     up to the Connected panel's key for its card (`google:<service>`, `chat:slack`, or
-    the MCP server's name)."""
-    tiles: list[dict[str, Any]] = []
+    the MCP server's name). `tiles` are those shown, in the user's order; `removed` the
+    rest, in default order. The meter and the suggestion count only the tiles shown."""
+    every: dict[str, dict[str, Any]] = {}
     for t in TILES:
         states = [_state(s, setup) for s in t.services]
         state: State = min(states, key=lambda x: _RANK[x]) if states else "built_in"
@@ -159,17 +241,16 @@ def home(
             }
             for s, st in zip(t.services, states, strict=True)
         ]
-        tiles.append(
-            {
-                "id": t.id,
-                "title": t.title,
-                "type": t.id,
-                "what": t.what,
-                "state": state,
-                "services": services,
-                "more": max(0, len(services) - SHOWN),
-            }
-        )
+        every[t.id] = {
+            "id": t.id,
+            "title": t.title,
+            "type": t.id,
+            "what": t.what,
+            "state": state,
+            "services": services,
+            "more": max(0, len(services) - SHOWN),
+        }
+    tiles = [every[i] for i in layout.shown()]
     return {
         # No name yet: the greeting goes without one rather than say "the user".
         "user_name": "" if identity.user_name == DEFAULT_USER_NAME else identity.user_name,
@@ -179,4 +260,5 @@ def home(
         "total": len(tiles),
         "next": _next(tiles, google_ready),
         "tiles": tiles,
+        "removed": [every[i] for i in layout.gone()],
     }

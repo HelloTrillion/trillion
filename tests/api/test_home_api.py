@@ -91,7 +91,9 @@ def test_the_shape_with_nothing_set_up(app: App) -> None:
         "total",
         "next",
         "tiles",
+        "removed",
     }
+    assert out["removed"] == []
     assert out["briefing"] == "build" and (out["ready"], out["total"]) == (1, 9)
     assert [t["id"] for t in out["tiles"]] == [
         "next_up",
@@ -231,3 +233,73 @@ def test_a_server_still_starting_is_to_connect_with_its_card(app: App) -> None:
     assert tile(out, "checks")["state"] == "connect"
     sentry = service(out, "checks", "sentry")
     assert (sentry["state"], sentry["settings_key"]) == ("connect", "my-sentry")
+
+
+# --- Arranging Home (D13, D14) -----------------------------------------------------
+
+LAYOUT = PATH + "/layout"
+IDS = ["next_up", "free_time", "inbox", "tasks", "mentions", "due_soon", "kpis", "files", "checks"]
+
+
+def put(app: App, body: Any) -> dict[str, Any]:
+    r = app.client.put(LAYOUT, json=body, headers=app.auth)
+    assert r.status_code == 200, r.text
+    return r.json()  # type: ignore[no-any-return]
+
+
+def test_putting_the_layout_needs_the_session_token(app: App) -> None:
+    assert app.client.put(LAYOUT, json={"order": [], "removed": []}).status_code == 401
+
+
+def test_put_saves_the_layout_and_answers_with_home(app: App) -> None:
+    out = put(app, {"order": ["kpis", "inbox"], "removed": ["checks", "inbox"]})
+    rest = [i for i in IDS if i not in ("kpis", "inbox", "checks")]
+    assert [t["id"] for t in out["tiles"]] == ["kpis", *rest]
+    assert [t["id"] for t in out["removed"]] == ["inbox", "checks"]
+    assert out["removed"][0]["services"][0]["id"] == "gmail"
+    assert (out["ready"], out["total"]) == (1, 7)
+    # Kept by the core: the route answers the same from now on.
+    assert get(app) == out
+    portal = app.client.portal
+    assert portal is not None
+    saved = portal.call(app.rt.preferences.get, OWNER, "home_layout")
+    assert saved == {"order": ["kpis", "inbox", *rest, "checks"], "removed": ["inbox", "checks"]}
+
+
+def test_put_cleans_what_it_is_given(app: App) -> None:
+    out = put(app, {"order": ["weather", "files", "files"], "removed": ["nope"]})
+    assert [t["id"] for t in out["tiles"]] == ["files", *[i for i in IDS if i != "files"]]
+    assert out["removed"] == []
+    # Either list may be left out.
+    assert [t["id"] for t in put(app, {"removed": ["kpis"]})["removed"]] == ["kpis"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"order": "kpis"},
+        {"order": [1, 2]},
+        {"removed": ["x" * 65]},
+        {"order": ["kpis"] * 51},
+        {"order": [], "extra": True},
+    ],
+)
+def test_put_refuses_what_is_not_a_layout(app: App, body: Any) -> None:
+    assert app.client.put(LAYOUT, json=body, headers=app.auth).status_code == 422
+    assert get(app)["removed"] == []
+
+
+def test_the_route_after_a_removal_counts_only_the_tiles_shown(app: App) -> None:
+    add_server(app, "my-linear", "linear")
+    assert (get(app)["ready"], get(app)["total"]) == (2, 9)
+    out = put(app, {"order": IDS, "removed": ["tasks", "due_soon", "mentions"]})
+    assert (out["ready"], out["total"]) == (0, 6)
+    # Slack's tile is off Home, so it is never the one to suggest.
+    assert out["next"] is not None and out["next"]["service"] != "slack"
+
+
+def test_put_tells_every_open_page(app: App) -> None:
+    with app.connect() as one, app.connect() as two:
+        put(app, {"order": ["checks"], "removed": []})
+        for chat in (one, two):
+            assert chat.until("home")[-1] == {"type": "home"}

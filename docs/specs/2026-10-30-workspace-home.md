@@ -185,8 +185,11 @@ in order and those removed, by id and title. The description lists the nine ids 
 their titles so she can map "the revenue one" to `kpis`. It is refused on turns
 nobody is watching (a routine, a timed ask, a refresh) and from channels; otherwise it
 runs, including after a read from outside, since the change is visible on Home and
-undone with one tap. After it runs the page is told (`{"type": "home"}`) and, if the
-workspace is not showing something else, Home opens so the user sees the change.
+undone with one tap. After it changes the layout the page is told (`{"type": "home",
+"by": "her"}`, so the page can tell her change from a tab's) and, if the workspace is
+not showing something else, Home opens so the user sees the change. Her result is
+`{"changed": bool, "shown": [{"id", "title"}], "removed": [{"id", "title"}]}`. A tile
+added back without `order` goes to its index in the default order.
 
 **Your day (D15).** `persona/day.py`'s recipe takes the layout: it leaves out a row
 whose every tile is removed, names the removed widgets it must not show ("Leave off:

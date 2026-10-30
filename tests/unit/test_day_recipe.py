@@ -17,6 +17,7 @@ from trillion.persona.day import (
     today,
 )
 from trillion.persona.prompt import Identity
+from trillion.workspace.home import DEFAULT, TILES, arrange
 
 DAY = date(2026, 10, 26)
 SAM = Identity(agent_name="Nova", user_name="Sam")
@@ -77,7 +78,11 @@ def test_everything() -> None:
     assert "Canva" not in text and NOTHING_CONNECTED not in text
     assert 'mode "replace" and the title "Your day"' in text
     assert MAX_DAY_WIDGETS == 9
-    assert "most 9 widgets, the most urgent first" in text
+    assert (
+        "most 9 widgets, in Home's order: next_up, free_time, inbox, tasks, mentions, "
+        "due_soon, kpis, files, checks." in text
+    )
+    assert "Leave off" not in text
     assert "Name each one's source" in text and "no empty cards" in text
     assert "Follow your standing rules for the day board" in text
     assert "at most two short sentences" in text and "Never read the board out" in text
@@ -127,3 +132,80 @@ def test_drive_has_a_row_only_when_it_is_read() -> None:
     assert lines[2] == drive and lines[1].startswith("Slack")
     text = recipe(SetUp(drive=True), DAY, "UTC", SAM)
     assert drive in text and NOTHING_CONNECTED not in text and no_dashes(text)
+
+
+# --- The briefing follows Home (D15) -----------------------------------------------
+
+EVERYTHING = SetUp(
+    calendar=True,
+    gmail=True,
+    slack=True,
+    drive=True,
+    catalog=frozenset({"linear", "stripe", "github"}),
+)
+
+
+def test_a_row_whose_every_tile_is_removed_is_not_read() -> None:
+    layout = arrange(DEFAULT, remove=["inbox", "kpis", "checks", "files"])
+    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
+    assert "gmail_search" not in text and "drive_search" not in text
+    assert "Stripe" not in text and "GitHub" not in text
+    assert "slack_search" in text and "Linear, with their tools" in text
+    assert no_dashes(text)
+
+
+def test_the_calendar_row_names_only_the_tiles_shown() -> None:
+    both = rows(EVERYTHING, "Sam")[0]
+    assert "next_up" in both and "free_time" in both
+    no_free = rows(EVERYTHING, "Sam", arrange(DEFAULT, remove=["free_time"]))[0]
+    assert no_free == (
+        "Google Calendar (calendar_events): today's events. Show the next one as next_up."
+    )
+    no_next = rows(EVERYTHING, "Sam", arrange(DEFAULT, remove=["next_up"]))[0]
+    assert no_next == (
+        "Google Calendar (calendar_events): today's events. Show today's open time as free_time."
+    )
+    neither = rows(EVERYTHING, "Sam", arrange(DEFAULT, remove=["next_up", "free_time"]))
+    assert not any("calendar_events" in r for r in neither)
+
+
+def test_leave_off_names_the_removed_widgets() -> None:
+    layout = arrange(DEFAULT, remove=["checks", "kpis"])
+    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
+    assert "Leave off: Revenue (kpis), What's broken (checks). Sam took them off Home." in text
+    one = recipe(EVERYTHING, DAY, "UTC", SAM, layout=arrange(DEFAULT, remove=["inbox"]))
+    assert "Leave off: Inbox (inbox). Sam took it off Home." in one
+    assert no_dashes(text)
+
+
+def test_the_board_is_asked_for_in_homes_order() -> None:
+    layout = arrange(DEFAULT, order=["kpis", "checks"], remove=["files"])
+    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
+    assert (
+        "in Home's order: kpis, checks, next_up, free_time, inbox, tasks, mentions, due_soon."
+        in text
+    )
+
+
+def test_reminders_removed_means_schedule_list_is_not_read() -> None:
+    layout = arrange(DEFAULT, remove=["tasks"])
+    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
+    assert "schedule_list" not in text
+    # Nothing connected and no reminders: still the callout, and nothing else to read.
+    bare = recipe(SetUp(), DAY, "UTC", SAM, layout=layout)
+    assert "schedule_list" not in bare and NOTHING_CONNECTED in bare
+
+
+def test_a_source_that_asks_first_is_not_named_when_its_tiles_are_removed() -> None:
+    setup = SetUp(calendar=True, asks_first=("gmail", "slack"))
+    text = recipe(setup, DAY, "UTC", SAM, layout=arrange(DEFAULT, remove=["inbox"]))
+    assert "- Slack: do not call its tools" in text and "Gmail" not in text
+    gone = recipe(setup, DAY, "UTC", SAM, layout=arrange(DEFAULT, remove=["inbox", "mentions"]))
+    assert "tools, because each read asks" not in gone and "callout" not in gone
+
+
+def test_every_widget_removed() -> None:
+    layout = arrange(DEFAULT, remove=[t.id for t in TILES])
+    text = recipe(EVERYTHING, DAY, "UTC", SAM, layout=layout)
+    assert "Nothing to read: Sam took every widget off Home." in text
+    assert "_search" not in text and "in Home's order" not in text and no_dashes(text)

@@ -7,7 +7,7 @@ from typing import Any
 from trillion.connectors.mcp.catalog import BY_ID
 from trillion.persona.day import DAY_READS, SetUp
 from trillion.persona.prompt import Identity
-from trillion.workspace.home import TILES, home
+from trillion.workspace.home import DEFAULT, TILES, Layout, arrange, clean, home
 from trillion.workspace.samples import SAMPLES
 
 SAM = Identity(agent_name="Nova", user_name="Sam")
@@ -21,6 +21,7 @@ def build(
     google_ready: bool = True,
     briefing_built: bool = False,
     identity: Identity = SAM,
+    layout: Layout = DEFAULT,
 ) -> dict[str, Any]:
     return home(
         setup,
@@ -28,6 +29,7 @@ def build(
         google_ready=google_ready,
         briefing_built=briefing_built,
         identity=identity,
+        layout=layout,
     )
 
 
@@ -242,3 +244,99 @@ def test_next_never_names_a_service_already_set_up() -> None:
         "service": "github",
         "text": "Connect GitHub next to add What's broken",
     }
+
+
+# --- Arranging Home (D13, D14) ---------------------------------------------------
+
+DEFAULT_IDS = [t.id for t in TILES]
+
+
+def test_no_record_is_the_default_layout() -> None:
+    for raw in (None, "junk", 7, [], {}):
+        layout = clean(raw)
+        assert layout == DEFAULT and list(layout.shown()) == DEFAULT_IDS
+        assert layout.to_json() == {"order": DEFAULT_IDS, "removed": []}
+
+
+def test_cleaning_drops_unknown_and_duplicate_ids_and_appends_missing_ones() -> None:
+    layout = clean(
+        {
+            "order": ["kpis", "weather", "kpis", "inbox", 3, None],
+            "removed": ["checks", "nope", "checks", "inbox"],
+        }
+    )
+    rest = [i for i in DEFAULT_IDS if i not in ("kpis", "inbox")]
+    assert list(layout.order) == ["kpis", "inbox", *rest]
+    assert list(layout.shown()) == ["kpis", *[i for i in rest if i != "checks"]]
+    # Removed tiles are kept in default order, whatever order they came in.
+    assert list(layout.gone()) == ["inbox", "checks"]
+    assert clean(layout.to_json()) == layout
+    # Lists that are not lists are as good as none.
+    assert clean({"order": "kpis", "removed": {"a": 1}}) == DEFAULT
+
+
+def test_order_puts_the_named_first_and_keeps_the_rest_in_place() -> None:
+    layout = arrange(DEFAULT, order=["kpis", "inbox"])
+    rest = [i for i in DEFAULT_IDS if i not in ("kpis", "inbox")]
+    assert list(layout.shown()) == ["kpis", "inbox", *rest]
+    # Again, from there: the rest keep their relative order.
+    again = arrange(layout, order=["checks"])
+    assert list(again.shown()) == ["checks", "kpis", "inbox", *[i for i in rest if i != "checks"]]
+
+
+def test_remove_and_add_back_at_its_default_place() -> None:
+    gone = arrange(DEFAULT, remove=["inbox", "kpis"])
+    assert "inbox" not in gone.shown() and list(gone.gone()) == ["inbox", "kpis"]
+    back = arrange(gone, add=["inbox"])
+    assert list(back.gone()) == ["kpis"]
+    assert list(back.shown()).index("inbox") == DEFAULT_IDS.index("inbox")
+    # Moved to the end by the page, then added back: its default place, not the end.
+    moved = clean({"order": [i for i in DEFAULT_IDS if i != "files"] + ["files"]})
+    again = arrange(arrange(moved, remove=["files"]), add=["files"])
+    assert list(again.shown()) == DEFAULT_IDS
+    # Unless the order names it.
+    first = arrange(gone, add=["kpis"], order=["kpis"])
+    assert first.shown()[0] == "kpis" and list(first.gone()) == ["inbox"]
+    # Adding one that is shown changes nothing.
+    assert arrange(DEFAULT, add=["inbox"]) == DEFAULT
+
+
+def test_reset_is_the_default_layout() -> None:
+    messy = arrange(DEFAULT, order=["checks"], remove=["inbox"])
+    assert arrange(messy, reset=True) == DEFAULT
+    # Then the rest of the call applies to it.
+    assert list(arrange(messy, reset=True, remove=["kpis"]).gone()) == ["kpis"]
+    assert arrange(messy) == messy
+
+
+def test_home_follows_the_layout() -> None:
+    layout = arrange(DEFAULT, order=["kpis"], remove=["inbox", "checks"])
+    out = build(layout=layout)
+    assert [t["id"] for t in out["tiles"]] == [
+        "kpis",
+        *[i for i in DEFAULT_IDS if i not in ("kpis", "inbox", "checks")],
+    ]
+    # Removed tiles in full, in default order.
+    assert [t["id"] for t in out["removed"]] == ["inbox", "checks"]
+    assert set(out["removed"][0]) == set(out["tiles"][0])
+    assert out["removed"][0]["services"][0]["id"] == "gmail"
+    assert out["total"] == 7 and out["ready"] == 1
+    assert build()["removed"] == []
+
+
+def test_the_meter_and_next_count_only_the_tiles_shown() -> None:
+    setup = SetUp(calendar=True, slack=True)
+    every = build(setup)
+    assert (every["ready"], every["total"]) == (4, 9)
+    # Reminders off Home: one fewer ready, one fewer in all.
+    out = build(setup, layout=arrange(DEFAULT, remove=["tasks", "inbox"]))
+    assert (out["ready"], out["total"]) == (3, 7)
+    # Gmail is next while Inbox is shown; off Home, the next locked tile shown is.
+    assert every["next"]["service"] == "gmail"
+    assert out["next"]["tile"] == "due_soon"
+    # The first locked tile is the first in the user's order.
+    later = build(setup, layout=arrange(DEFAULT, order=["files"]))
+    assert later["next"]["service"] == "google-drive"
+    nothing = build(layout=arrange(DEFAULT, remove=DEFAULT_IDS))
+    assert (nothing["ready"], nothing["total"], nothing["next"]) == (0, 0, None)
+    assert nothing["tiles"] == [] and len(nothing["removed"]) == 9
