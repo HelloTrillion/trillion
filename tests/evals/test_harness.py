@@ -165,6 +165,21 @@ def test_a_passing_report_exits_0_and_makes_its_folder(tmp_path: Path) -> None:
     )
 
 
+def test_an_unjudged_report_says_reported_and_exits_0(tmp_path: Path) -> None:
+    # Measured but held to no line: never PASS, never FAIL.
+    out = io.StringIO()
+    report = Report("drift", "fake-1", "judge: x", out=out, now=lambda: AT)
+    report.case("off-01", None, "score=3", score=3)
+    code = report.finish(None, "30 turns", path=tmp_path / "r.json")
+    lines = out.getvalue().splitlines()
+    assert lines[1].startswith(" -    off-01")
+    assert lines[2] == "REPORTED (fake-1): 30 turns"
+    assert code == harness.PASS
+    body = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert body["verdict"] == "unjudged"
+    assert body["cases"] == [{"id": "off-01", "passed": None, "score": 3}]
+
+
 # ── The judge ────────────────────────────────────────────────────────────
 
 JSON4 = '{"score": 4, "reason": "dry enough"}'

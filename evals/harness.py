@@ -179,13 +179,14 @@ class Report:
         self._out.write(line + "\n")
         self._out.flush()
 
-    def case(self, case_id: str, passed: bool, line: str, **data: Any) -> None:
+    def case(self, case_id: str, passed: bool | None, line: str, **data: Any) -> None:
+        """One case's line. `passed` is None for a case measured but held to no line."""
         self.cases.append({"id": case_id, "passed": passed, **data})
-        self._say(f"{'pass' if passed else 'FAIL'}  {case_id:<22} {line}")
+        self._say(f"{_mark(passed, 'pass', 'FAIL', ' -  ')}  {case_id:<22} {line}")
 
     def finish(
         self,
-        passed: bool,
+        passed: bool | None,
         summary: str,
         *,
         notes: Sequence[str] = (),
@@ -194,7 +195,8 @@ class Report:
     ) -> int:
         for note in notes:
             self._say(note)
-        self._say(f"{'PASS' if passed else 'FAIL'} ({self.model}): {summary}")
+        # None is a run reported without a verdict: it exits 0, but never says PASS.
+        self._say(f"{_mark(passed, 'PASS', 'FAIL', 'REPORTED')} ({self.model}): {summary}")
         target = path if path is not None else results_path(self.name, self.model, self.started)
         target.parent.mkdir(parents=True, exist_ok=True)
         body = {
@@ -203,7 +205,7 @@ class Report:
             "judge": self.judge,
             "started": self.started.isoformat(),
             "finished": self._now().isoformat(),
-            "verdict": "pass" if passed else "fail",
+            "verdict": _mark(passed, "pass", "fail", "unjudged"),
             "summary": summary,
             "totals": dict(totals or {}),
             "cases": self.cases,
@@ -212,7 +214,11 @@ class Report:
             json.dump(body, f, indent=2, ensure_ascii=False)
             f.write("\n")
         self._say(f"results: {target}")
-        return PASS if passed else FAIL
+        return FAIL if passed is False else PASS
+
+
+def _mark(passed: bool | None, yes: str, no: str, neither: str) -> str:
+    return neither if passed is None else yes if passed else no
 
 
 JUDGE_SYSTEM = (
