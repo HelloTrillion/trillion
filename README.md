@@ -67,14 +67,39 @@ Everything runs on your machine, in one process, against a local SQLite file. Th
 
 ## Try it
 
-**From a release** (the easy way, and the only way Google sign-in works out of the box). You need [uv](https://docs.astral.sh/uv/). Download the `.whl` file from the latest [release](https://github.com/HelloTrillion/trillion/releases), then:
+**One line** (the easy way). On macOS or Linux, in a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1 | iex
+```
+
+It installs [uv](https://docs.astral.sh/uv/) if you don't have it, installs Trillion with uv (Python 3.13 comes with it), puts `trillion` on your PATH, then runs `trillion setup`, which checks this machine and opens the app in your browser. No administrator rights are needed. Run the same line again to upgrade. To install without starting it, end the line with `sh -s -- --no-setup` instead of `sh` (on Windows, run `$env:TRILLION_NO_SETUP = "1"` first). The scripts are [`install.sh`](https://github.com/HelloTrillion/trillion/blob/main/install.sh) and [`install.ps1`](https://github.com/HelloTrillion/trillion/blob/main/install.ps1) if you'd like to read them first. They install Trillion only: not the desktop app (an unsigned developer build for now), and not a wake word, which isn't built yet.
+
+**Or with uv**, if you have it:
+
+```bash
+uv tool install trillion
+trillion setup
+```
+
+To upgrade later: `uv tool upgrade trillion`.
+
+Both install from [PyPI](https://pypi.org/project/trillion/), starting with release 0.0.2. Until that is out, use a release file:
+
+**From a release file.** You need [uv](https://docs.astral.sh/uv/). Download the `.whl` file from the latest [release](https://github.com/HelloTrillion/trillion/releases), then:
 
 ```bash
 uv tool install ./trillion-0.0.1-py3-none-any.whl
-trillion run
+trillion setup
 ```
 
-To upgrade later, download the newer file and run `uv tool install --force` with it.
+To upgrade later, download the newer file and run `uv tool install --force` with it. Every install route above gets the same wheel, so "Sign in with Google" works out of the box with each of them; a source checkout needs its own Google app.
 
 **From source**, to work on it: you need uv, Node 22.22.2 or later and pnpm.
 

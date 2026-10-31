@@ -6,7 +6,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 
 - The server (`trillion run`) does the work on every system. Most features live there, so they work wherever it runs.
 - The page runs in a browser tab on any system, or inside the desktop app. The desktop app is macOS only today (PRD SUR-2).
-- CI runs every Python test directory on Ubuntu, macOS and Windows, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS only (`.github/workflows/ci.yml`).
+- CI runs every Python test directory on Ubuntu, macOS and Windows, the one-line installers on all three, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS only (`.github/workflows/ci.yml`).
 - ✓ means the code is there and its tests run in CI on that system. The manual checks in [`TESTING.md`](TESTING.md) have been written on a Mac; on Windows and Linux a ✓ is untested by hand unless the row says otherwise.
 
 ## By feature
@@ -14,6 +14,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Area | macOS | Windows | Linux | Browser tab (any OS) | Desktop app (macOS) |
 |---|---|---|---|---|---|
 | Server, web app, `setup`, `doctor` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| One-line installer (installs uv and Trillion, then runs `setup`) | ✓ `install.sh` | ✓ `install.ps1` (Windows PowerShell 5.1 in CI; PowerShell 7 untested) | ✓ `install.sh` | — | not installed by it |
 | Keys in the system keychain | ✓ Keychain | ✓ Credential Manager | ✓ Secret Service (GNOME Keyring, KWallet) | as the OS | ✓ |
 | Hearing, paid: Deepgram | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Hearing, free: local Whisper | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -46,6 +47,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 - **No system folder picker in a browser tab.** A browser never gives the page a folder's real path, so Add a folder opens the folder browser instead. The desktop app's picker (`rfd`) would be the common item dialog on Windows and the GTK dialog on Linux, but the desktop app is not built there yet.
 - **The folder browser's places differ by system** (`src/trillion/files/browse.py`): Home, Desktop, Documents and Downloads everywhere (Windows known folders, so a redirected Documents is found; on Linux `xdg-user-dir`, falling back to the English names); drives are `/Volumes/*` on macOS, drive letters with a disk on Windows, and `/media/<user>/*`, `/run/media/<user>/*` and `/mnt/*` on Linux. Hidden folders are a leading `.` everywhere, plus the hidden flag on macOS and the hidden or system attribute on Windows. Names compare without case on macOS and Windows and with case on Linux.
 - **Folders that can't be shared** are the same rule on every system (`src/trillion/files/rules.py`): a home folder, another user's home, a drive root or mount point, system folders, Trillion's data folder, `~/Library` and `AppData` (iCloud Drive, folders under `~/Library/CloudStorage` and iCloud app folders excepted), hidden and protected folders. Under WSL, `/mnt/c/Users/<user>` is a folder on a mounted drive, not a home.
+- **The one-line installer** (`install.sh`, `install.ps1`) installs the server with uv on each system, and CI runs it on all three (as a file and piped, twice). It does not install the desktop app on any system. `install.sh` is POSIX `sh`, so it runs under dash, bash and macOS's `/bin/sh`. On Linux it needs `curl` or `wget` only when uv is not already installed.
 - **The desktop app on Windows and Linux** is not built. See below.
 - **The mic probe and the Focus probe** have limits on each system. See the next section.
 

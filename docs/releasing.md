@@ -89,3 +89,40 @@ uv run python scripts/build_release.py
 It uses your local `google_client.json` if you have one, and builds without Google
 if you do not. `--require-google` makes a missing Google app an error, as in CI. The
 wheel lands in `dist-release/`.
+
+## The one-line installer
+
+[`install.sh`](../install.sh) (macOS and Linux) and [`install.ps1`](../install.ps1)
+(Windows) are served straight from this repository's main branch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1 | iex
+```
+
+hellotrillion.ai can redirect to these later. A change to either script reaches
+everyone as soon as it is merged, without a release.
+
+Each installs uv if it is missing (with Astral's own installer), then runs
+`uv tool install --upgrade --python 3.13 trillion`, so it installs the latest
+version on PyPI, or upgrades to it. They work from release 0.0.2, the first on
+PyPI. `--version X` (`TRILLION_VERSION`) installs a given version and `--wheel`
+(`TRILLION_WHEEL`) a wheel file or URL instead, which is how to try a build before
+it is released. Then they add uv's tool folder to the PATH (`uv tool update-shell`)
+and run `trillion setup`, unless `--no-setup` (`TRILLION_NO_SETUP=1`).
+
+They do not install the desktop app (an unsigned developer build, not in releases),
+a wake-word model (deferred), or a Homebrew formula (none yet).
+
+CI tests both on every pull request (the `installer` job in
+`.github/workflows/ci.yml`), on Ubuntu, macOS and Windows: it builds the wheel as
+above but without Google, installs it with the installer and `--wheel`, runs the
+installer a second time (piped, with the environment variables) to prove a re-run
+is fine, and checks `trillion --version` from uv's tool folder. On Ubuntu it also
+runs `shellcheck install.sh`. On Windows it runs `install.ps1` in Windows
+PowerShell 5.1, as a file and through `Invoke-Expression`. Installing from PyPI
+itself is not tested there, so after a release, run the one-liner once on a clean
+machine.
