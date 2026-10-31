@@ -312,3 +312,29 @@ def test_her_voice_stays_hers_when_asked_to_change(tmp_path: Path) -> None:
     assert '"Great question", "Certainly!"' in block.text
     # And it wins over a standing rule asking for one (the owner's call, 2026-10-31).
     assert "This wins over a standing rule" in block.text
+
+
+def test_the_tonal_checkpoint_joins_from_the_fifth_message() -> None:
+    now = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    who = Identity(agent_name="Nova", user_name="Sam", directness="balanced")
+    assert "Snap back now" not in volatile_context(now, [], turn=4, who=who)
+    fifth = volatile_context(now, [], turn=5, who=who)
+    assert (
+        "Could a default chatbot have written your last line? If yes, it was wrong. "
+        "Would Sam hear it and slightly smile? Be brief. Be witty. Snap back now."
+    ) in fifth
+    # Inside the host's context block, never after it.
+    assert fifth.index("Snap back now") < fifth.index("</context>")
+    assert "Snap back now" in volatile_context(now, [], turn=30, who=who)
+
+
+def test_the_checkpoint_needs_to_know_who_it_is_talking_to() -> None:
+    now = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    # A caller with no identity (a scheduled ask) never gets it, whatever the turn.
+    assert "Snap back now" not in volatile_context(now, [], turn=9)
+
+
+def test_the_checkpoint_never_touches_the_cached_block(tmp_path: Path) -> None:
+    who = Identity(agent_name="Nova", user_name="Sam", directness="balanced")
+    (block,) = system_blocks(who, load_soul(tmp_path))
+    assert "Snap back" not in block.text
