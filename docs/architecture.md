@@ -106,7 +106,7 @@ The table above is proved in code. The evals prove what she *says* holds up agai
 |---|---|---|---|
 | Injection (EVL-2), `evals/injection/` | A hostile page never leads to an action the user did not approve | Code: files written, rules kept, requests to the attacker carrying anything of hers, memories stored as the user's own words; zero actions | `tests/evals/test_injection_eval.py` |
 | Honest failure (EVL-6), `evals/honest_failure/` | What she says about a tool's outcome matches what came back: the phrasing twin of `tests/spine/test_honest_failure.py` | Code, keyed by outcome: no unearned success, no invented cause, no invented figure; the judge, 4 or more of 5; zero tolerance | `tests/evals/test_honest_checks.py`, `tests/evals/test_honest_run.py` |
-| Persona (EVL-1), `evals/persona/` | She sounds like the shipped `persona/SOUL.md`, typed and spoken (50 prompts, 26 spoken) | Code: banned openers, "as an AI", markdown and length when spoken, repeated openers; the judge against SOUL.md, by average and by group | `tests/evals/test_persona_checks.py`, `tests/evals/test_persona_run.py` |
+| Persona (EVL-1), `evals/persona/` | She sounds like the shipped `persona/SOUL.md`, typed and spoken (50 prompts, 26 spoken) | Code: banned openers, "as an AI", markdown and length when spoken, a made-up figure in the numbers group, repeated openers; the judge against SOUL.md, by average and by group | `tests/evals/test_persona_checks.py`, `tests/evals/test_persona_run.py` |
 
 ## 6. Frontend
 

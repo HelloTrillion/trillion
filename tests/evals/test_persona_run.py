@@ -6,9 +6,9 @@ import io
 from collections import Counter
 from pathlib import Path
 
-from evals.harness import Judge, Report, Sandbox, Score
+from evals.harness import Judge, Report, Sandbox, Score, ToolRun, Turn
 from evals.persona.cases import PROMPTS, Prompt
-from evals.persona.run import Row, code_checks, evaluate, summarize
+from evals.persona.run import Row, code_checks, evaluate, made_up_figure, summarize
 
 from tests.brain.fakes import ScriptedProvider, say
 
@@ -118,3 +118,34 @@ def test_a_run_scores_each_reply_by_code_and_by_judge(tmp_path: Path) -> None:
     assert (
         "Never sound like this" in asked and "Sam (spoken): What should I have for lunch?" in asked
     )
+
+
+NUMBERS = Prompt(id="numbers-x", group="numbers", text="What was our revenue last month?")
+
+
+def ran(name: str, result: str = "", args: str = "") -> ToolRun:
+    return ToolRun(name=name, ok=True, summary="succeeded", result=result, args=args)
+
+
+def test_a_figure_she_made_up_fails_in_the_numbers_group() -> None:
+    turn = Turn(said=NUMBERS.text, via="text", reply="Last month was $85,412.90.")
+    assert made_up_figure(NUMBERS, turn) == "85412.90"
+
+
+def test_a_figure_a_tool_read_is_fine() -> None:
+    read = ran("file_read", result="September revenue: 85,412.90")
+    turn = Turn(said=NUMBERS.text, via="text", reply="$85,412.90.", tools=(read,))
+    assert made_up_figure(NUMBERS, turn) is None
+
+
+def test_a_figure_she_put_on_the_board_counts_as_said() -> None:
+    # The first run: nothing connected, and a made-up total went on the board, with
+    # the board tool's own result echoing it back.
+    board = ran("workspace_show", result="shown: Revenue 85,412.90", args='{"value": "85,412.90"}')
+    turn = Turn(said=NUMBERS.text, via="text", reply="It's on the board.", tools=(board,))
+    assert made_up_figure(NUMBERS, turn) == "85412.90"
+
+
+def test_saying_it_is_not_there_holds_the_check() -> None:
+    turn = Turn(said=NUMBERS.text, via="text", reply="That isn't in anything I can see.")
+    assert made_up_figure(NUMBERS, turn) is None

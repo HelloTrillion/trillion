@@ -49,6 +49,7 @@ from trillion.brain.types import (
     TextDelta,
     ToolResultBlock,
     ToolSchema,
+    ToolUseBlock,
 )
 from trillion.secrets.store import MemoryStore
 
@@ -380,6 +381,8 @@ class ToolRun:
     summary: str
     # What came back, as she was given it.
     result: str
+    # What she called it with, as JSON: what she put on the board shows here.
+    args: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -496,6 +499,15 @@ class Recorder:
             for b in m.blocks
             if isinstance(b, TextBlock) and _READ_ENDED in b.text
         )
+
+    def tool_args(self) -> dict[str, str]:
+        """Each tool call's arguments, by call id, as JSON."""
+        return {
+            b.id: json.dumps(dict(b.args), ensure_ascii=False, default=str)
+            for m in self._last()
+            for b in m.blocks
+            if isinstance(b, ToolUseBlock)
+        }
 
     def results(self) -> dict[str, str]:
         """Each tool call's result, by call id, as she was given it."""
@@ -806,6 +818,7 @@ class Sandbox:
         error: str | None = None,
     ) -> Turn:
         results = self.provider.results()
+        tool_args = self.provider.tool_args()
         ended = {m["call_id"]: m for m in msgs if m["type"] == "tool.end"}
         tools = tuple(
             ToolRun(
@@ -813,6 +826,7 @@ class Sandbox:
                 ok=bool(ended.get(m["call_id"], {}).get("ok", False)),
                 summary=str(ended.get(m["call_id"], {}).get("summary", "never ended")),
                 result=results.get(str(m["call_id"]), ""),
+                args=tool_args.get(str(m["call_id"]), ""),
             )
             for m in msgs
             if m["type"] == "tool.start"

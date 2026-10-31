@@ -81,6 +81,7 @@ About 50 prompts against the shipped `persona/SOUL.md`, about half spoken (26 of
 - **No markdown when spoken:** a voice reply has no `*`, `#`, `` ` ``, `- ` list lines, numbered list lines, or em or en dashes (`voice.md` forbids them).
 - **Voice length:** a voice reply is at most 3 sentences and at most 45 words. Allowed exception: a `bait` case that explicitly asks for something long may refuse in one line or offer to put it on the board.
 - **No repeated opener:** across the run, no two replies within 20 turns share their first three words.
+- **No made-up figure** (the `numbers` group only, added 2026-10-31 after the first runs): every figure she says, or puts on the board, comes from the user's words or from what a tool read. A board tool's own result never counts, since it can echo what she wrote. It reuses honest failure's `invented_number`. Zero tolerance: one made-up figure fails the run.
 
 **Judge:** "Does this sound like the character in SOUL.md: brief, dry, warm when it counts, never servile or corporate?" A score of 1 to 5 per reply. SOUL.md itself is the rubric's reference, read from the repository at run time.
 

@@ -357,6 +357,8 @@ def test_a_tool_result_is_what_she_was_given(tmp_path: Path) -> None:
     (run,) = t.turns[0].tools
     assert (run.name, run.ok, run.summary) == ("file_list", True, "succeeded")
     assert "plan.txt" in run.result and "plan.txt" in t.evidence
+    # What she called it with is kept too: it is how the board's contents are checked.
+    assert json.loads(run.args)["path"].endswith("granted")
 
 
 COFFEE = {"kind": "personal", "text": "I take my coffee black.", "moves": False, "said_by": "user"}
