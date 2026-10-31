@@ -296,9 +296,15 @@ def test_hearing_says_when_its_optional_part_is_missing(
 
     monkeypatch.setattr(whisper.LocalWhisper, "choices", choices)
     chosen(home, listening={"kind": "whisper", "choice": "base.en"})
+    monkeypatch.setattr(paths, "source_checkout", lambda: True)
     check = examine()["Hearing"]
     assert check.status == "fail" and "not installed" in check.detail
     assert "uv sync --extra whisper" in check.fix
+    # An installed release has no checkout to sync: it reinstalls with the extra.
+    monkeypatch.setattr(paths, "source_checkout", lambda: False)
+    fix = examine()["Hearing"].fix
+    assert "uv tool install --upgrade --python 3.13 'trillion[whisper]'" in fix
+    assert "uv sync" not in fix
 
 
 def test_names_and_memory_are_reported(home: Path) -> None:

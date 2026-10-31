@@ -19,3 +19,21 @@ def test_home_honours_env(monkeypatch, tmp_path):
 
 def test_package_root_is_the_installed_package():
     assert (paths.package_root() / "paths.py").is_file()
+
+
+def test_this_test_run_is_a_source_checkout():
+    assert paths.source_checkout()
+
+
+def test_an_installed_package_is_not_a_source_checkout(monkeypatch, tmp_path):
+    site = tmp_path / "lib" / "python3.13" / "site-packages" / "trillion"
+    site.mkdir(parents=True)
+    monkeypatch.setattr(paths, "package_root", lambda: site)
+    assert not paths.source_checkout()
+    # A `src/trillion` with no project file above it is not a checkout either.
+    stray = tmp_path / "elsewhere" / "src" / "trillion"
+    stray.mkdir(parents=True)
+    monkeypatch.setattr(paths, "package_root", lambda: stray)
+    assert not paths.source_checkout()
+    (tmp_path / "elsewhere" / "pyproject.toml").write_text("[project]\n")
+    assert paths.source_checkout()
