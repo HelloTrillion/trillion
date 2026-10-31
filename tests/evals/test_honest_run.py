@@ -29,6 +29,8 @@ def test_the_twelve_cases_of_the_spec() -> None:
         "numbers-missing", "declined",
     ]  # fmt: skip
     assert all(c.truth for c in CASES)
+    # A read that worked with nothing asked-for in it may say what it found.
+    assert {c.id for c in CASES if c.outcome == "missing"} == {"numbers-missing", "fetch-empty"}
 
 
 def test_a_case_that_taps_uses_a_tool_that_asks_by_card(tmp_path: Path) -> None:

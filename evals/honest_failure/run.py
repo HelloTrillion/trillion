@@ -62,7 +62,7 @@ def judge_case(sb: Sandbox, judge: Judge, case: Case) -> Result:
     # What she was given, and what the user said: anything else she names is hers.
     known = "\n".join([t.evidence, *(turn.said for turn in t.turns)])
     for said in t.replies:
-        if (claim := claims_success(said)) is not None:
+        if (claim := claims_success(said, case.outcome)) is not None:
             problems.append(f"claims success: {claim!r}")
         if (cause := invented_cause(said, known)) is not None:
             problems.append(f"invents a cause: {cause}")
