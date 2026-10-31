@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import aiosqlite.core
 import httpx
 import pytest
 from evals.harness import Ask, CannotRun, Judge, Report, Sandbox, Score, parse_score
@@ -52,6 +53,30 @@ def test_pass_fail_and_could_not_run_are_0_1_and_2(capsys: pytest.CaptureFixture
     assert "cannot run: nothing answered" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutError("no frame in 300s"), OSError("disk full"), RuntimeError("session gone")],
+)
+def test_anything_else_that_stops_a_run_is_could_not_run_too(
+    error: Exception, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A stalled model, a report that could not be written, a session that broke: the
+    # eval never reached a verdict, so it is not a fail.
+    def broken(o: object) -> int:
+        raise error
+
+    assert harness.run(broken, []) == harness.CANNOT_RUN
+    assert f"cannot run: {type(error).__name__}: {error}" in capsys.readouterr().err
+
+
+def test_an_interrupt_is_not_swallowed() -> None:
+    def stopped(o: object) -> int:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        harness.run(stopped, [])
+
+
 def test_only_picks_cases_by_any_of_their_names() -> None:
     cases = [("a", "g1"), ("b", "g2"), ("c", "g1")]
     assert harness.pick(cases, [], lambda c: c) == cases
@@ -66,8 +91,11 @@ def test_only_picks_cases_by_any_of_their_names() -> None:
 
 def test_results_are_named_by_eval_model_and_utc_time() -> None:
     assert harness.results_path("persona", "gemma4:e4b", AT) == (
-        harness.RESULTS / "persona-gemma4-e4b-20261031T120000Z.json"
+        harness.RESULTS / "persona-gemma4-e4b-20261031T120000.000000Z.json"
     )
+    # Two runs in the same second never share a file.
+    later = AT.replace(microsecond=1)
+    assert harness.results_path("persona", "m", later) != harness.results_path("persona", "m", AT)
 
 
 def test_the_report_names_the_judge_first_then_cases_then_the_verdict(tmp_path: Path) -> None:
@@ -159,16 +187,20 @@ def test_a_judge_that_answers_badly_is_asked_once_more() -> None:
 
 
 def test_two_bad_answers_are_a_judge_error_and_never_a_pass() -> None:
-    with Judge(ScriptedProvider(say("no"), say("still no")), local=True) as judge:
+    scripted = ScriptedProvider(say("no"), say("still no"), say(JSON4))
+    with Judge(scripted, local=True) as judge:
         s = judge.score("rubric", "transcript")
     assert s.error and s.value is None and s.reason.startswith("judge error")
+    assert len(scripted.calls) == 2  # asked once more, never a third time
 
 
 def test_a_judge_that_fails_outright_is_a_judge_error() -> None:
     # No scripted replies: every call raises ProviderError("script_exhausted").
-    with Judge(ScriptedProvider(), local=False) as judge:
+    scripted = ScriptedProvider()
+    with Judge(scripted, local=False) as judge:
         s = judge.score("rubric", "transcript")
     assert s.error and "script_exhausted" in s.reason
+    assert len(scripted.calls) == 2
 
 
 def test_the_judge_line_says_when_scores_are_less_reliable() -> None:
@@ -218,7 +250,9 @@ def test_the_judge_is_claude_with_a_key_and_the_local_model_without() -> None:
         harness.judge_for("gemma4:e4b", LOCAL, {}, get=refused)
 
 
-def test_an_eval_never_touches_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_eval_never_touches_the_keychain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     def touched(*args: Any, **kw: Any) -> None:
         raise AssertionError("the keychain was touched")
 
@@ -227,6 +261,9 @@ def test_an_eval_never_touches_the_keychain(monkeypatch: pytest.MonkeyPatch) -> 
     harness.model_provider("gemma4:e4b", LOCAL, {}, get=answers)()
     harness.judge_for("gemma4:e4b", LOCAL, {}, get=answers).close()
     harness.judge_for("gemma4:e4b", LOCAL, {ANTHROPIC_KEY: "test"}, get=refused).close()
+    # Nor does her app in the sandbox, through a whole turn.
+    with Sandbox(lambda: ScriptedProvider(say("Soup.")), root=tmp_path / "evals") as sb:
+        assert sb.converse([Ask(text="lunch?")]).replies == ["Soup."]
 
 
 # ── The sandbox ──────────────────────────────────────────────────────────
@@ -302,17 +339,80 @@ def test_a_tool_result_is_what_she_was_given(tmp_path: Path) -> None:
     assert "plan.txt" in run.result and "plan.txt" in t.evidence
 
 
+COFFEE = {"kind": "personal", "text": "I take my coffee black.", "moves": False, "said_by": "user"}
+
+
 def test_fresh_starts_a_new_conversation_in_a_new_home(tmp_path: Path) -> None:
-    scripted = ScriptedProvider(say("One."), say("Two."))
-    with sandbox(tmp_path, scripted) as sb:
-        sb.converse([Ask(text="first")])
+    made: list[ScriptedProvider] = []
+    scripts = [
+        ScriptedProvider(use("memory_write", COFFEE), say("Noted.")),
+        ScriptedProvider(say("Two.")),
+    ]
+
+    def provider() -> ScriptedProvider:
+        made.append(scripts[len(made)])
+        return made[-1]
+
+    with Sandbox(provider, root=tmp_path / "evals") as sb:
+        first_t = sb.converse([Ask(text="I take my coffee black.")])
+        (sb.app.granted / "left.txt").write_text("from case one", encoding="utf-8")
+        assert first_t.turns[0].tools[0].ok and sb.app.rt.memory.count() == 1
         first, first_home = sb.app, os.environ["TRILLION_HOME"]
         sb.fresh()
         assert sb.app is not first and os.environ["TRILLION_HOME"] != first_home
+        # Nothing the first case left reaches the second: no memory, no file.
         assert sb.app.rt.memory.count() == 0
+        assert list(sb.app.granted.iterdir()) == []
         t = sb.converse([Ask(text="second")])
     assert t.replies == ["Two."]
-    assert len(scripted.calls[1][1]) == 1  # the new conversation carries no history
+    # A model of its own per conversation, and the new one carries no history.
+    assert len(made) == 2 and made[0] is not made[1]
+    assert len(made[1].calls) == 1 and len(made[1].calls[0][1]) == 1
+
+
+def test_two_sandboxes_can_share_a_root(tmp_path: Path) -> None:
+    for _ in range(2):
+        with Sandbox(lambda: ScriptedProvider(say("Hi.")), root=tmp_path / "evals") as sb:
+            assert sb.converse([Ask(text="hi")]).replies == ["Hi."]
+
+
+def test_a_sandbox_never_opened_deletes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "theirs"))
+    (tmp_path / "keep.txt").write_text("mine", encoding="utf-8")
+    sb = Sandbox(lambda: ScriptedProvider())
+    sb.__exit__(None, None, None)
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "mine"
+    assert os.environ["TRILLION_HOME"] == str(tmp_path / "theirs")
+
+
+def test_a_sandbox_removes_only_the_home_it_made(tmp_path: Path) -> None:
+    with Sandbox(lambda: ScriptedProvider(say("Hi."))) as sb:
+        made = sb.root
+        assert made.exists() and made.name.startswith("trillion-eval-")
+    assert not made.exists()
+    sb.__exit__(None, None, None)  # a second close is harmless
+
+
+def test_no_system_notification_ever_leaves_the_sandbox(tmp_path: Path) -> None:
+    with Sandbox(lambda: ScriptedProvider(), root=tmp_path / "evals") as sb:
+        door = sb.app.rt.door
+        assert door is not None and door.notify("title", "body", silent=True) is False
+        sb.fresh()
+        door = sb.app.rt.door
+        assert door is not None and door.notify("title", "body") is False
+
+
+def test_a_failed_close_cannot_hang_a_hand_run() -> None:
+    # The same patch as tests/conftest.py, for runs outside pytest: aiosqlite's worker
+    # thread is a daemon, so a connection left open never keeps the process alive.
+    harness.daemon_connection_threads()
+    harness.daemon_connection_threads()  # once is enough; twice changes nothing
+    init = aiosqlite.core.Connection.__init__
+    assert getattr(init, harness.PATCHED, False)
+    assert not getattr(getattr(init, "__wrapped__", None), harness.PATCHED, False)
 
 
 def test_a_spoken_turn_goes_through_the_recognizer_and_is_marked_spoken(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TextIO
 
+import aiosqlite.core
 import httpx
 from tests.api import test_server
 from tests.api.test_server import App, Chat, reply
@@ -59,6 +61,29 @@ class CannotRun(Exception):
     """The eval could not run at all: no model answered, or something is missing."""
 
 
+PATCHED = "_trillion_eval_daemon"
+
+
+def daemon_connection_threads() -> None:
+    """aiosqlite's worker thread is not a daemon, so a run that stops before a connection
+    is closed would keep the process from exiting. The same patch as tests/conftest.py,
+    for runs by hand; once, however often it is asked for."""
+    original = aiosqlite.core.Connection.__init__
+    if getattr(original, PATCHED, False):
+        return
+
+    @functools.wraps(original)
+    def init(self: aiosqlite.core.Connection, *args: object, **kwargs: object) -> None:
+        original(self, *args, **kwargs)  # type: ignore[arg-type]
+        self._thread.daemon = True
+
+    setattr(init, PATCHED, True)
+    aiosqlite.core.Connection.__init__ = init  # type: ignore[method-assign]
+
+
+daemon_connection_threads()
+
+
 def options(about: str, argv: Sequence[str] | None = None) -> argparse.Namespace:
     """The options every eval takes."""
     p = argparse.ArgumentParser(
@@ -83,12 +108,17 @@ def run(
     *,
     about: str = "",
 ) -> int:
-    """Parse the options, run the eval, and turn "could not run" into exit code 2."""
+    """Parse the options, run the eval, and turn "could not run" into exit code 2:
+    anything that stops it before a verdict (a stalled model, a report that could not
+    be written, a broken session) is never counted as a fail. Ctrl-C still stops it."""
     opts = options(about, argv)
     try:
         return main(opts)
     except CannotRun as e:
         sys.stderr.write(f"cannot run: {e}\n")
+        return CANNOT_RUN
+    except Exception as e:
+        sys.stderr.write(f"cannot run: {type(e).__name__}: {e}\n")
         return CANNOT_RUN
 
 
@@ -108,7 +138,7 @@ def pick[C](
 
 def results_path(name: str, model: str, at: datetime) -> Path:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "model"
-    return RESULTS / f"{name}-{safe}-{at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    return RESULTS / f"{name}-{safe}-{at.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
 
 
 class Report:
@@ -428,6 +458,10 @@ class Recorder:
         return "\n".join(seen)
 
 
+def _no_notification(title: str, body: str, *, silent: bool = False) -> bool:
+    return False
+
+
 def _finished(msgs: Sequence[dict[str, Any]]) -> bool:
     return bool(msgs) and msgs[-1]["type"] == "turn.complete"
 
@@ -447,19 +481,27 @@ class Sandbox:
     ) -> None:
         self._make = provider
         self._given_root = root
+        # The folder this sandbox made, and the only one it ever deletes.
+        self._made: Path | None = None
         self._patient = patient
         self._stack = ExitStack()
         self._chat: Chat | None = None
         self._app: App | None = None
         self._count = 0
         self._saved: dict[str, Any] = {}
-        self.root = root if root is not None else Path()
+        self.root: Path | None = None
         self.provider: Recorder
         self.stt: FakeSTT
 
     def __enter__(self) -> Sandbox:
         if self._given_root is None:
-            self.root = Path(tempfile.mkdtemp(prefix="trillion-eval-"))
+            self._made = Path(tempfile.mkdtemp(prefix="trillion-eval-"))
+            self.root = self._made
+        else:
+            # A folder of its own under the given root, which is kept for a look after:
+            # two sandboxes on one root never meet.
+            self._given_root.mkdir(parents=True, exist_ok=True)
+            self.root = Path(tempfile.mkdtemp(prefix="sandbox-", dir=self._given_root))
         self._saved = {
             "home": os.environ.get("TRILLION_HOME"),
             "timeout": test_server.RECEIVE_TIMEOUT_S,
@@ -482,18 +524,22 @@ class Sandbox:
         try:
             self._close()
         finally:
-            home = self._saved.get("home")
-            if home is None:
-                os.environ.pop("TRILLION_HOME", None)
-            else:
-                os.environ["TRILLION_HOME"] = home
-            test_server.RECEIVE_TIMEOUT_S = self._saved.get(
-                "timeout", test_server.RECEIVE_TIMEOUT_S
-            )
-            quiet.SYSTEM_MIC = self._saved.get("mic", quiet.SYSTEM_MIC)
-            quiet.SYSTEM_FOCUS = self._saved.get("focus", quiet.SYSTEM_FOCUS)
-            if self._given_root is None:
-                shutil.rmtree(self.root, ignore_errors=True)
+            # Put back only what an open sandbox changed: closing one never opened, or
+            # closing twice, leaves the environment as it found it.
+            saved, self._saved = self._saved, {}
+            if saved:
+                home = saved["home"]
+                if home is None:
+                    os.environ.pop("TRILLION_HOME", None)
+                else:
+                    os.environ["TRILLION_HOME"] = home
+                test_server.RECEIVE_TIMEOUT_S = saved["timeout"]
+                quiet.SYSTEM_MIC = saved["mic"]
+                quiet.SYSTEM_FOCUS = saved["focus"]
+            self.root = None
+            made, self._made = self._made, None
+            if made is not None:
+                shutil.rmtree(made, ignore_errors=True)
 
     @property
     def app(self) -> App:
@@ -507,6 +553,8 @@ class Sandbox:
         self._open()
 
     def _open(self) -> None:
+        if self.root is None:
+            raise RuntimeError("the sandbox is not open")
         self._count += 1
         place = self.root / f"case-{self._count}"
         place.mkdir(parents=True)
@@ -517,6 +565,10 @@ class Sandbox:
         rt = app.rt
         # No voice: nothing she says is turned into sound.
         rt.tts, rt.speech = None, None
+        # No system notification: a reminder or a background read never reaches this
+        # computer's notification centre.
+        if rt.door is not None:
+            rt.door.notify = _no_notification
         # A scripted recognizer: a spoken turn hears exactly the words the eval gives it.
         self.stt = FakeSTT(streaming=False)
         rt.stt, rt.listening = self.stt, ListenSettings(kind="deepgram", choice="en")
