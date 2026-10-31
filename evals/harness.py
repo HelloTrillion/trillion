@@ -207,7 +207,6 @@ JUDGE_SYSTEM = (
     '{"score": <a whole number from 1 to 5>, "reason": "<one short sentence>"}'
 )
 JUDGE_MAX_TOKENS = 2000
-_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -222,15 +221,31 @@ class Score:
         return self.value is None
 
 
-def parse_score(text: str) -> Score | None:
-    """The judge's JSON, or None if it is not exactly a score from 1 to 5 and a reason."""
+def _json(text: str) -> Any:
+    """The JSON in a judge's answer: the whole answer, or else the one object in it,
+    from its first brace to its last, so a fence or a line before it does no harm."""
     try:
-        body = json.loads(_FENCE.sub("", text.strip()))
+        return json.loads(text)
+    except ValueError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
     except ValueError:
         return None
+
+
+def parse_score(text: str) -> Score | None:
+    """The judge's JSON, or None if it is not exactly a score from 1 to 5 and a reason.
+    A whole number written as 4.0 is still 4."""
+    body = _json(text.strip())
     if not isinstance(body, dict):
         return None
     value, reason = body.get("score"), body.get("reason")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 5:
         return None
     if not isinstance(reason, str):

@@ -150,9 +150,20 @@ def test_a_passing_report_exits_0_and_makes_its_folder(tmp_path: Path) -> None:
 JSON4 = '{"score": 4, "reason": "dry enough"}'
 
 
-def test_a_judge_answer_is_read_from_json_even_in_a_fence() -> None:
-    assert parse_score(JSON4) == Score(value=4, reason="dry enough")
-    assert parse_score(f"```json\n{JSON4}\n```") == Score(value=4, reason="dry enough")
+@pytest.mark.parametrize(
+    "said",
+    [
+        JSON4,
+        f"```json\n{JSON4}\n```",
+        f"```JSON\n{JSON4}\n```",
+        f"```\n{JSON4}\n```",
+        f"Here is my grade:\n{JSON4}",
+        f"Sure.\n```json\n{JSON4}\n```\nHope that helps.",
+        '{"score": 4.0, "reason": "dry enough"}',
+    ],
+)
+def test_a_judge_answer_is_read_from_json_even_in_a_fence(said: str) -> None:
+    assert parse_score(said) == Score(value=4, reason="dry enough")
 
 
 @pytest.mark.parametrize(
@@ -166,6 +177,9 @@ def test_a_judge_answer_is_read_from_json_even_in_a_fence() -> None:
         '{"score": "4", "reason": "x"}',
         '{"score": true, "reason": "x"}',
         '{"score": 3}',
+        '{"score": 4.5, "reason": "x"}',
+        '{"score": 4, "reason": "x"} {"score": 2, "reason": "y"}',
+        "{not json}",
     ],
 )
 def test_anything_else_is_not_a_score(bad: str) -> None:
