@@ -4,12 +4,17 @@ name: Release
 # "Sign in with Google" works without anyone registering a Google app of their own.
 #
 # - Push a tag v<version> (matching pyproject.toml): builds, checks, and attaches the
-#   wheel to a GitHub release (a pre-release while the version is 0.x).
+#   wheel to a GitHub release (a pre-release while the version is 0.x), then
+#   publishes the same wheel to PyPI, so `uv tool install trillion` gets it.
 # - Run it by hand (Actions → Release → Run workflow): builds and checks, and keeps
 #   the wheel as a download on that run, with no release.
 #
 # Our Google app comes from the GOOGLE_CLIENT_JSON repository secret. Never on pull
 # requests: this workflow has no pull_request trigger, so no fork can read it.
+#
+# PyPI takes the wheel by trusted publishing: PyPI trusts this workflow, in the
+# `pypi` environment, to upload. There is no PyPI token anywhere. One-time setup is
+# in docs/releasing.md.
 
 on:
   push:
@@ -62,3 +67,23 @@ jobs:
           pre=""
           case "$TAG" in v0.*) pre="--prerelease" ;; esac
           gh release create "$TAG" dist-release/*.whl $pre --generate-notes --title "Trillion $TAG"
+
+  pypi:
+    name: Publish to PyPI
+    # Only a tagged release, and only once the wheel above is built, checked and
+    # attached. A version on PyPI can never be replaced, so this is the last step.
+    if: github.ref_type == 'tag'
+    needs: wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/trillion/
+    permissions:
+      id-token: write # trusted publishing: proves to PyPI this run is this workflow
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: trillion-wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
