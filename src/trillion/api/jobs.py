@@ -98,6 +98,10 @@ class Jobs:
         # The runtime is stopping: nothing new starts.
         self._stopped = False
 
+    def busy(self) -> bool:
+        """Any job, or the delivery of one that ended, is still at work anywhere."""
+        return bool(self._tasks)
+
     def running(self, conversation_id: str) -> list[Job]:
         return [j for j in self._jobs.values() if j.conversation_id == conversation_id]
 

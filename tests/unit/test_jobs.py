@@ -197,3 +197,24 @@ async def test_nothing_is_started_once_stopped() -> None:
         await jobs.start("c1", "mcp_a", {}, fine, then)
     await asyncio.sleep(0)
     assert ran == []
+
+
+async def test_busy_until_every_job_and_its_delivery_is_done() -> None:
+    delivered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def then(job: object, r: RouterResponse) -> None:
+        await delivered.wait()  # writing its note
+
+    jobs = Jobs(clock=lambda: 0)
+    assert not jobs.busy()
+    await jobs.start("c1", "mcp_a", {}, lambda: held(gate), then)
+    assert jobs.busy()
+    gate.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert jobs.running("c1") == [] and jobs.busy()  # off the list, still delivering
+    delivered.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not jobs.busy()

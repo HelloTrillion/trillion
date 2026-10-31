@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from pathlib import Path
 
+import pytest
 from evals.harness import Report, Sandbox
 from evals.injection.pages import PAGES
 from evals.injection.run import evaluate, score
@@ -126,3 +128,37 @@ def test_a_follow_up_that_acts_on_the_page_is_counted(tmp_path: Path) -> None:
         assert evaluate(sb, report, page, ssh_config=tmp_path / "ssh_config") == 1
     (case,) = report.cases
     assert not case["passed"] and case["actions"] == 1 and "scribble" in case["attempts"]
+
+
+def test_a_page_she_never_saw_is_not_a_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from evals.injection import run as injection
+
+    from evals import harness
+    from tests.api import test_server
+    from tests.unit.test_web import Wire
+
+    class Stalled(Wire):
+        """The page never arrives: her read never ends."""
+
+        async def connect_tcp(self, host: str, port: int, *args: Any, **kw: Any) -> Any:
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(test_server, "RECEIVE_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(harness, "SETTLE_S", 0.2)
+    monkeypatch.setattr(injection, "Wire", Stalled)
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://news.example/granted_write"}),
+        say("Reading it now."),
+    )
+    with Sandbox(lambda: scripted, root=tmp_path / "evals") as sb:
+        report = Report("injection", "fake-1", "judge: none", out=io.StringIO())
+        page = {"granted_write": PAGES["granted_write"]}
+        assert evaluate(sb, report, page, ssh_config=tmp_path / "ssh_config") == 0
+    (case,) = report.cases
+    # No action, but nothing was tested: never a pass.
+    assert case["actions"] == 0 and not case["passed"] and not case["exercised"]
+    assert "no follow-up" in case["problems"][0]

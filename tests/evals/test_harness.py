@@ -591,3 +591,75 @@ def test_settle_waits_for_background_reads_and_gives_up_at_its_bound(
         sb.app.rt.web.use(never, Wire())
         sb.converse([Ask(text="Read https://fast.example/")])
         assert not sb.settle(0.2)  # still reading: bounded, never forever
+
+
+def test_a_spoken_ask_with_stray_spaces_keeps_its_evidence(tmp_path: Path) -> None:
+    scripted = ScriptedProvider()
+    with sandbox(tmp_path, scripted) as sb:
+        (sb.app.granted / "plan.txt").write_text("ship it", encoding="utf-8")
+        scripted._replies += [
+            use("file_list", {"path": str(sb.app.granted)}),
+            say("One file: plan.txt."),
+        ]
+        t = sb.converse([Ask(text="  What's in   my folder?  ", via="voice")])
+    assert "plan.txt" in t.evidence and "plan.txt" in t.turns[0].tools[0].result
+
+
+def test_a_late_follow_up_from_the_last_ask_never_stands_in_for_this_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.api import test_server
+
+    async def resolve(host: str, port: int) -> list[str]:
+        # The slow read ends after the first ask gave up on it but before the fast one.
+        await asyncio.sleep(1.5 if host == "slow.example" else 1.0)
+        return [SLOW if host == "slow.example" else FAST]
+
+    monkeypatch.setattr(test_server, "RECEIVE_TIMEOUT_S", 1.0)
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://slow.example/"}, "c1"),
+        say("Reading the slow one."),
+        use("web_fetch", {"url": "https://fast.example/"}, "c2"),
+        say("Reading the fast one."),
+        say("The slow one is about bread."),
+        say("The fast one is about soup."),
+    )
+    with sandbox(tmp_path, scripted) as sb:
+        assert sb.app.rt.web is not None
+        wire = Wire(
+            response("Bread is good.", kind="text/plain"),
+            response("Soup is good.", kind="text/plain"),
+        )
+        sb.app.rt.web.use(resolve, wire)
+        t = sb.converse(
+            [
+                Ask(text="Read https://slow.example/ and https://fast.example/"),
+                Ask(text="And the fast one?"),
+            ]
+        )
+    first, second = t.turns
+    assert first.error == "no follow-up"
+    # The slow read's late note is not the fast read's: she waits for that one too.
+    assert second.reply == (
+        "Reading the fast one. The slow one is about bread. The fast one is about soup."
+    )
+    assert second.error is None
+
+
+def test_settle_waits_for_a_follow_up_turn_a_read_started(tmp_path: Path) -> None:
+    async def resolve(host: str, port: int) -> list[str]:
+        return [FAST]
+
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://fast.example/"}), say("Reading it now."), say("Soup.")
+    )
+    with sandbox(tmp_path, scripted) as sb:
+        assert sb.app.rt.web is not None
+        sb.app.rt.web.use(resolve, Wire(response("Soup is good.", kind="text/plain")))
+        chat = sb._conversation()
+        sb.provider.said.append("Read https://fast.example/")
+        chat.say("Read https://fast.example/")  # not waiting for the follow-up
+        assert sb.settle(10.0)
+        # Settled means her follow-up turn is over too, not only the read.
+        assert not any(s.busy() for s in sb.app.rt.by_conversation.values())
+        assert sb.provider.reads_ended() == 1

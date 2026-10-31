@@ -425,8 +425,17 @@ class Transcript:
         return "\n".join(lines)
 
 
-# How the host opens a note on a background read that ended (api/session.py).
+# How the host opens a note on a background read that ended (api/session.py), and
+# the job it names.
 _READ_ENDED = "The background read you started ("
+_JOB_ENDED = re.compile(r"The background read you started \([^,()]+, job ([0-9A-Za-z]+)\)")
+
+
+def _same(text: str) -> str:
+    """Text as compared: spaces at the ends and runs of them inside never matter."""
+    return " ".join(text.split())
+
+
 # At most this many follow-up turns are waited for after one ask.
 MAX_FOLLOW_UPS = 8
 # How long `Sandbox.settle` waits for background reads to finish, at most.
@@ -469,10 +478,10 @@ class Recorder:
     def _last(self) -> list[Msg]:
         if not self.said:
             return []
-        first = self.said[0]
+        first = _same(self.said[0])
         for _, messages in reversed(self.calls):
             if any(
-                m.role == "user" and isinstance(b, TextBlock) and b.text == first
+                m.role == "user" and isinstance(b, TextBlock) and _same(b.text) == first
                 for m in messages
                 for b in m.blocks
             ):
@@ -496,6 +505,10 @@ class Recorder:
             for b in m.blocks
             if isinstance(b, ToolResultBlock)
         }
+
+    def jobs_ended(self) -> set[str]:
+        """The background reads, by job id, she has been told ended."""
+        return {j for n in self.notes() for j in _JOB_ENDED.findall(n)}
 
     def notes(self) -> list[str]:
         """Every host note in the conversation so far."""
@@ -677,20 +690,31 @@ class Sandbox:
             app, self._app = self._app, None
             app.close()
 
-    def settle(self, bound_s: float = SETTLE_S) -> bool:
-        """Wait, at most `bound_s`, until no background read is running or delivering:
-        a fetch she started has connected or been refused. False if one still is."""
-        jobs = self.app.rt.jobs
+    def settle(self, bound_s: float | None = None) -> bool:
+        """Wait, at most `bound_s`, until no background read is running or delivering
+        and no turn of hers is running, the follow-up a delivered read started among
+        them: a fetch she started has connected or been refused. False if not."""
+        bound = SETTLE_S if bound_s is None else bound_s
+        rt = self.app.rt
         portal = self.app.client.portal
         if portal is None:
             raise RuntimeError("the sandbox is not open")
 
+        def waiting(session: Any) -> bool:
+            # Her turn is running, or a read that ended waits to be brought in by one.
+            return bool(
+                session.busy()
+                or getattr(session, "_finished", None)
+                or getattr(session, "_unanswered", False)
+            )
+
+        def working() -> bool:
+            return rt.jobs.busy() or any(waiting(s) for s in rt.by_conversation.values())
+
         async def idle() -> bool:
             loop = asyncio.get_running_loop()
-            end = loop.time() + bound_s
-            # Jobs keeps every task it runs for a conversation, delivery included,
-            # until it is done.
-            while jobs._tasks:
+            end = loop.time() + bound
+            while working():
                 if loop.time() >= end:
                     return False
                 await asyncio.sleep(0.02)
@@ -711,7 +735,6 @@ class Sandbox:
     def _take(self, ask: Ask) -> Turn:
         chat = self._conversation()
         self.provider.said.append(ask.text)
-        ended_before = self.provider.reads_ended()
         notes_before = len(self.provider.notes())
         msgs = self._speak(chat, ask.text) if ask.via == "voice" else chat.say(ask.text)
         cards = [m for m in msgs if m["type"] == "confirm.request"]
@@ -729,11 +752,10 @@ class Sandbox:
             # A read that went to the background (web_fetch, a connected app) comes back
             # in a turn of its own once it ends, one read or several to a turn: wait for
             # every one, as the user would hear them, and for any read a follow-up starts.
+            # Each read is known by its job id, so a late note from an earlier ask never
+            # stands in for one of this ask's.
             for _ in range(MAX_FOLLOW_UPS):
-                started = sum(
-                    m["type"] == "tool.end" and m.get("summary") == "background" for m in msgs
-                )
-                if not _finished(msgs) or self.provider.reads_ended() - ended_before >= started:
+                if not _finished(msgs) or self._started(msgs) <= self.provider.jobs_ended():
                     break
                 try:
                     later = chat.until(*ENDS)
@@ -746,6 +768,21 @@ class Sandbox:
                     chat.until("state")
         notes = tuple(self.provider.notes()[notes_before:])
         return self._turn(ask, msgs, tapped, notes=notes, error=missing)
+
+    def _started(self, msgs: Sequence[dict[str, Any]]) -> set[str]:
+        """The job ids of the background reads started in these messages."""
+        results = self.provider.results()
+        started: set[str] = set()
+        for m in msgs:
+            if m["type"] != "tool.end" or m.get("summary") != "background":
+                continue
+            try:
+                job = json.loads(results.get(str(m["call_id"]), "")).get("job")
+            except (ValueError, AttributeError):
+                job = None
+            if isinstance(job, str):
+                started.add(job)
+        return started
 
     def _speak(self, chat: Chat, text: str) -> list[dict[str, Any]]:
         """A spoken turn: the page opens the microphone, sends audio, and the scripted
