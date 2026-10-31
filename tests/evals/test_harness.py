@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from evals.harness import CannotRun, Judge, Report, Score, parse_score
+from evals.harness import Ask, CannotRun, Judge, Report, Sandbox, Score, parse_score
 
 from evals import harness
-from tests.brain.fakes import ScriptedProvider, say
+from tests.brain.fakes import ScriptedProvider, say, use
 from trillion.brain.config import ANTHROPIC_KEY
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.secrets.store import KeychainStore
@@ -225,3 +226,89 @@ def test_an_eval_never_touches_the_keychain(monkeypatch: pytest.MonkeyPatch) -> 
     harness.model_provider("gemma4:e4b", LOCAL, {}, get=answers)()
     harness.judge_for("gemma4:e4b", LOCAL, {}, get=answers).close()
     harness.judge_for("gemma4:e4b", LOCAL, {ANTHROPIC_KEY: "test"}, get=refused).close()
+
+
+# ── The sandbox ──────────────────────────────────────────────────────────
+
+
+def sandbox(tmp_path: Path, scripted: ScriptedProvider) -> Sandbox:
+    return Sandbox(lambda: scripted, root=tmp_path / "evals")
+
+
+def test_a_typed_turn_is_answered_by_nova_for_sam(tmp_path: Path) -> None:
+    before = os.environ.get("TRILLION_HOME")
+    scripted = ScriptedProvider(say("Soup. It's cold out."))
+    with sandbox(tmp_path, scripted) as sb:
+        t = sb.converse([Ask(text="What should I have for lunch?")])
+    (turn,) = t.turns
+    assert (turn.said, turn.via, turn.reply, turn.error) == (
+        "What should I have for lunch?", "text", "Soup. It's cold out.", None,
+    )  # fmt: skip
+    assert turn.tools == () and turn.cards == () and turn.tapped is None
+    system = scripted.calls[0][0][0].text
+    assert "Nova" in system and "Sam" in system  # her real prompt, with the names set
+    assert "Never sound like this" in system  # the shipped SOUL.md
+    assert t.render() == "Sam (typed): What should I have for lunch?\nNova: Soup. It's cold out."
+    assert os.environ.get("TRILLION_HOME") == before  # put back on the way out
+
+
+def test_a_card_is_tapped_and_what_she_says_after_is_kept(tmp_path: Path) -> None:
+    scripted = ScriptedProvider()
+    with sandbox(tmp_path, scripted) as sb:
+        note = sb.app.granted / "note.txt"
+        scripted._replies += [
+            use("file_create", {"path": str(note), "content": "hi"}),
+            say("Shall I?"),
+            say("Done. It's there."),
+        ]
+        t = sb.converse([Ask(text="write a note", tap="confirm")])
+        assert note.read_text(encoding="utf-8") == "hi"
+    (turn,) = t.turns
+    assert turn.tapped == "confirm" and "note.txt" in turn.cards[0]
+    # The proposal; whether the approved run shows as a second call is the session's business.
+    assert (turn.tools[0].name, turn.tools[0].summary) == ("file_create", "confirmation_required")
+    assert turn.reply == "Shall I? Done. It's there."
+    # What the host told her about the tap is part of what a reply is held to.
+    assert '"status": "succeeded"' in t.evidence
+    assert "[Sam tapped Approve]" in t.render()
+
+
+def test_a_declined_card_runs_nothing(tmp_path: Path) -> None:
+    scripted = ScriptedProvider()
+    with sandbox(tmp_path, scripted) as sb:
+        note = sb.app.granted / "note.txt"
+        scripted._replies += [
+            use("file_create", {"path": str(note), "content": "hi"}),
+            say("Shall I?"),
+            say("Left alone."),
+        ]
+        t = sb.converse([Ask(text="write a note", tap="cancel")])
+        assert not note.exists()
+    assert t.turns[0].tapped == "cancel" and t.turns[0].reply == "Shall I? Left alone."
+
+
+def test_a_tool_result_is_what_she_was_given(tmp_path: Path) -> None:
+    scripted = ScriptedProvider()
+    with sandbox(tmp_path, scripted) as sb:
+        (sb.app.granted / "plan.txt").write_text("ship it", encoding="utf-8")
+        scripted._replies += [
+            use("file_list", {"path": str(sb.app.granted)}),
+            say("One file: plan.txt."),
+        ]
+        t = sb.converse([Ask(text="what's in my folder?")])
+    (run,) = t.turns[0].tools
+    assert (run.name, run.ok, run.summary) == ("file_list", True, "succeeded")
+    assert "plan.txt" in run.result and "plan.txt" in t.evidence
+
+
+def test_fresh_starts_a_new_conversation_in_a_new_home(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(say("One."), say("Two."))
+    with sandbox(tmp_path, scripted) as sb:
+        sb.converse([Ask(text="first")])
+        first, first_home = sb.app, os.environ["TRILLION_HOME"]
+        sb.fresh()
+        assert sb.app is not first and os.environ["TRILLION_HOME"] != first_home
+        assert sb.app.rt.memory.count() == 0
+        t = sb.converse([Ask(text="second")])
+    assert t.replies == ["Two."]
+    assert len(scripted.calls[1][1]) == 1  # the new conversation carries no history

@@ -12,26 +12,40 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
+import shutil
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import tempfile
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Literal, TextIO
 
 import httpx
+from tests.api import test_server
+from tests.api.test_server import App, Chat, reply
+from tests.brain.fakes import is_naming
+from tests.voice.fakes import FakeSTT
 
+from trillion.api.runtime import ListenSettings
+from trillion.attention import quiet
 from trillion.brain import config
 from trillion.brain.config import ANTHROPIC_KEY, LOCAL_URL, ConfigError, ModelSettings
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.types import (
+    ModelEvent,
     ModelProvider,
     Msg,
+    Pricing,
     ProviderError,
     SystemBlock,
     TextBlock,
     TextDelta,
+    ToolResultBlock,
+    ToolSchema,
 )
 from trillion.secrets.store import MemoryStore
 
@@ -287,3 +301,288 @@ def judge_for(model: str, url: str, env: Mapping[str, str], *, get: Get = httpx.
         return Judge(AnthropicProvider(api_key=lambda: key, model=DEFAULT_MODEL), local=False)
     reachable(url, get=get)
     return Judge(_local(model, url), local=True)
+
+
+# ── Her, in a sandbox ────────────────────────────────────────────────────
+
+Via = Literal["text", "voice"]
+Tap = Literal["confirm", "cancel"]
+USER, AGENT = "Sam", "Nova"
+# A real model can think for a while between messages; a scripted one never needs it.
+PATIENT_S = 300.0
+ENDS = ("turn.complete", "error", "interrupted")
+
+
+@dataclass(frozen=True, kw_only=True)
+class Ask:
+    """One thing the user says. `tap` answers the card it raises, if it raises one."""
+
+    text: str
+    via: Via = "text"
+    tap: Tap | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ToolRun:
+    name: str
+    ok: bool
+    # How the page showed the call ending: succeeded, failed, confirmation_required.
+    summary: str
+    # What came back, as she was given it.
+    result: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class Turn:
+    said: str
+    via: Via
+    reply: str
+    tools: tuple[ToolRun, ...] = ()
+    cards: tuple[str, ...] = ()
+    tapped: Tap | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class Transcript:
+    turns: tuple[Turn, ...]
+    # Every tool result and host note she was given: what a reply is held to.
+    evidence: str = ""
+    user: str = USER
+    agent: str = AGENT
+
+    @property
+    def replies(self) -> list[str]:
+        return [t.reply for t in self.turns]
+
+    def render(self) -> str:
+        """The exchange as the judge reads it."""
+        lines: list[str] = []
+        for t in self.turns:
+            lines.append(f"{self.user} ({'spoken' if t.via == 'voice' else 'typed'}): {t.said}")
+            for r in t.tools:
+                shown = " ".join(r.result.split())[:400]
+                lines.append(f"  [tool {r.name}, {r.summary}] {shown}")
+            for c in t.cards:
+                lines.append(f"  [approval card: {c}]")
+            if t.tapped is not None:
+                tapped = "Approve" if t.tapped == "confirm" else "Decline"
+                lines.append(f"  [{self.user} tapped {tapped}]")
+            lines.append(f"{self.agent}: {t.reply}")
+        return "\n".join(lines)
+
+
+class Recorder:
+    """The model under test, passed through, keeping what she was sent each turn."""
+
+    def __init__(self, inner: ModelProvider) -> None:
+        self.inner = inner
+        self.name = inner.name
+        self.model = inner.model
+        self.calls: list[tuple[list[SystemBlock], list[Msg]]] = []
+
+    def pricing(self) -> Pricing | None:
+        return self.inner.pricing()
+
+    async def stream(
+        self,
+        *,
+        system: Sequence[SystemBlock],
+        messages: Sequence[Msg],
+        tools: Sequence[ToolSchema],
+        max_tokens: int,
+    ) -> AsyncIterator[ModelEvent]:
+        if not is_naming(system):  # naming a conversation is not a turn
+            self.calls.append((list(system), list(messages)))
+        async for ev in self.inner.stream(
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens
+        ):
+            yield ev
+
+    def _last(self) -> list[Msg]:
+        return self.calls[-1][1] if self.calls else []
+
+    def results(self) -> dict[str, str]:
+        """Each tool call's result, by call id, as she was given it."""
+        return {
+            b.tool_use_id: b.content
+            for m in self._last()
+            for b in m.blocks
+            if isinstance(b, ToolResultBlock)
+        }
+
+    def evidence(self) -> str:
+        """Every tool result and host note in the conversation so far."""
+        seen: list[str] = []
+        for m in self._last():
+            for b in m.blocks:
+                if isinstance(b, ToolResultBlock):
+                    seen.append(b.content)
+                elif isinstance(b, TextBlock) and b.text.startswith("[host]"):
+                    seen.append(b.text)
+        return "\n".join(seen)
+
+
+def _finished(msgs: Sequence[dict[str, Any]]) -> bool:
+    return bool(msgs) and msgs[-1]["type"] == "turn.complete"
+
+
+class Sandbox:
+    """Her, inside this process: a throwaway home, a keychain in memory, her real prompt,
+    brain, session, spine and tools, over the same socket the page uses. Each case gets
+    a fresh app, so nothing one case leaves (a memory, a file, a rule) reaches the next.
+    Nothing reaches the user's data or a running Trillion, and nothing is played aloud."""
+
+    def __init__(
+        self,
+        provider: Callable[[], ModelProvider],
+        *,
+        root: Path | None = None,
+        patient: bool = False,
+    ) -> None:
+        self._make = provider
+        self._given_root = root
+        self._patient = patient
+        self._stack = ExitStack()
+        self._chat: Chat | None = None
+        self._app: App | None = None
+        self._count = 0
+        self._saved: dict[str, Any] = {}
+        self.root = root if root is not None else Path()
+        self.provider: Recorder
+        self.stt: FakeSTT
+
+    def __enter__(self) -> Sandbox:
+        if self._given_root is None:
+            self.root = Path(tempfile.mkdtemp(prefix="trillion-eval-"))
+        self._saved = {
+            "home": os.environ.get("TRILLION_HOME"),
+            "timeout": test_server.RECEIVE_TIMEOUT_S,
+            "mic": quiet.SYSTEM_MIC,
+            "focus": quiet.SYSTEM_FOCUS,
+        }
+        # Never this computer's microphone or Focus, as in the tests (tests/conftest.py).
+        quiet.SYSTEM_MIC = lambda host: None
+        quiet.SYSTEM_FOCUS = lambda: None
+        if self._patient:
+            test_server.RECEIVE_TIMEOUT_S = PATIENT_S
+        try:
+            self._open()
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        try:
+            self._close()
+        finally:
+            home = self._saved.get("home")
+            if home is None:
+                os.environ.pop("TRILLION_HOME", None)
+            else:
+                os.environ["TRILLION_HOME"] = home
+            test_server.RECEIVE_TIMEOUT_S = self._saved.get(
+                "timeout", test_server.RECEIVE_TIMEOUT_S
+            )
+            quiet.SYSTEM_MIC = self._saved.get("mic", quiet.SYSTEM_MIC)
+            quiet.SYSTEM_FOCUS = self._saved.get("focus", quiet.SYSTEM_FOCUS)
+            if self._given_root is None:
+                shutil.rmtree(self.root, ignore_errors=True)
+
+    @property
+    def app(self) -> App:
+        if self._app is None:
+            raise RuntimeError("the sandbox is not open")
+        return self._app
+
+    def fresh(self) -> None:
+        """A new conversation in a new app and home: cases never see each other."""
+        self._close()
+        self._open()
+
+    def _open(self) -> None:
+        self._count += 1
+        place = self.root / f"case-{self._count}"
+        place.mkdir(parents=True)
+        os.environ["TRILLION_HOME"] = str(place / "home")
+        self.provider = Recorder(self._make())
+        app = App(place, self.provider)
+        self._app = app
+        rt = app.rt
+        # No voice: nothing she says is turned into sound.
+        rt.tts, rt.speech = None, None
+        # A scripted recognizer: a spoken turn hears exactly the words the eval gives it.
+        self.stt = FakeSTT(streaming=False)
+        rt.stt, rt.listening = self.stt, ListenSettings(kind="deepgram", choice="en")
+        named = app.client.put(
+            "/api/settings/persona",
+            json={"user_name": USER, "agent_name": AGENT},
+            headers=app.auth,
+        )
+        if named.status_code != 200:
+            raise CannotRun(f"could not tell her who she is: {named.status_code}")
+
+    def _close(self) -> None:
+        self._stack.close()
+        self._stack = ExitStack()
+        self._chat = None
+        if self._app is not None:
+            app, self._app = self._app, None
+            app.close()
+
+    def _conversation(self) -> Chat:
+        if self._chat is None:
+            self._chat = self._stack.enter_context(self.app.connect())
+        return self._chat
+
+    def converse(self, asks: Sequence[Ask]) -> Transcript:
+        """Each ask in turn, in this case's conversation."""
+        turns = tuple(self._take(ask) for ask in asks)
+        return Transcript(turns=turns, evidence=self.provider.evidence())
+
+    def _take(self, ask: Ask) -> Turn:
+        chat = self._conversation()
+        msgs = self._speak(chat, ask.text) if ask.via == "voice" else chat.say(ask.text)
+        answer = reply(msgs)
+        cards = [m for m in msgs if m["type"] == "confirm.request"]
+        tapped: Tap | None = None
+        if _finished(msgs):
+            chat.until("state")  # her turn is over: the session is at rest again
+            if ask.tap is not None and cards:
+                msgs.append(chat.tap(ask.tap, str(cards[-1]["pending_id"])))
+                after = chat.until(*ENDS)
+                msgs += after
+                answer = " ".join(s for s in (answer, reply(after)) if s)
+                tapped = ask.tap
+                if _finished(after):
+                    chat.until("state")
+        return self._turn(ask, msgs, answer, tapped)
+
+    def _speak(self, chat: Chat, text: str) -> list[dict[str, Any]]:
+        raise NotImplementedError("spoken turns arrive in the next task")
+
+    def _turn(self, ask: Ask, msgs: list[dict[str, Any]], answer: str, tapped: Tap | None) -> Turn:
+        results = self.provider.results()
+        ended = {m["call_id"]: m for m in msgs if m["type"] == "tool.end"}
+        tools = tuple(
+            ToolRun(
+                name=str(m["name"]),
+                ok=bool(ended.get(m["call_id"], {}).get("ok", False)),
+                summary=str(ended.get(m["call_id"], {}).get("summary", "never ended")),
+                result=results.get(str(m["call_id"]), ""),
+            )
+            for m in msgs
+            if m["type"] == "tool.start"
+        )
+        heard = [str(m["text"]) for m in msgs if m["type"] == "transcript.final"]
+        errors = [str(m.get("code", "error")) for m in msgs if m["type"] == "error"]
+        return Turn(
+            said=heard[-1] if heard else ask.text,
+            via=ask.via,
+            reply=answer,
+            tools=tools,
+            cards=tuple(str(m["summary"]) for m in msgs if m["type"] == "confirm.request"),
+            tapped=tapped,
+            error=errors[-1] if errors else None,
+        )
