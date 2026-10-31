@@ -193,3 +193,8 @@ def test_a_made_up_figure_inside_a_widget_still_fails() -> None:
         tools=(ran("workspace_show", args=numeric),),
     )
     assert made_up_figure(NUMBERS, turn) == "41"
+
+
+def test_the_summary_counts_unjudged_and_silent_prompts() -> None:
+    s = summarize([row(value=None), row(reply="", value=None), row()])
+    assert (s.unjudged, s.silent) == (1, 1)

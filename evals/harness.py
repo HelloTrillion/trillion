@@ -39,6 +39,7 @@ from trillion.brain import config
 from trillion.brain.config import ANTHROPIC_KEY, LOCAL_URL, ConfigError, ModelSettings
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.types import (
+    Done,
     ModelEvent,
     ModelProvider,
     Msg,
@@ -85,8 +86,13 @@ def daemon_connection_threads() -> None:
 daemon_connection_threads()
 
 
-def options(about: str, argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """The options every eval takes."""
+Extra = Callable[[argparse.ArgumentParser], None]
+
+
+def options(
+    about: str, argv: Sequence[str] | None = None, *, extra: Extra | None = None
+) -> argparse.Namespace:
+    """The options every eval takes, and any of its own that `extra` adds."""
     p = argparse.ArgumentParser(
         description=about, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -100,6 +106,8 @@ def options(about: str, argv: Sequence[str] | None = None) -> argparse.Namespace
         "--only", action="append", default=[], metavar="CASE", help="run only this (repeatable)"
     )
     p.add_argument("--json", type=Path, default=None, metavar="PATH", help="write results here")
+    if extra is not None:
+        extra(p)
     return p.parse_args(argv)
 
 
@@ -108,11 +116,12 @@ def run(
     argv: Sequence[str] | None = None,
     *,
     about: str = "",
+    extra: Extra | None = None,
 ) -> int:
     """Parse the options, run the eval, and turn "could not run" into exit code 2:
     anything that stops it before a verdict (a stalled model, a report that could not
     be written, a broken session) is never counted as a fail. Ctrl-C still stops it."""
-    opts = options(about, argv)
+    opts = options(about, argv, extra=extra)
     try:
         return main(opts)
     except CannotRun as e:
@@ -137,9 +146,13 @@ def pick[C](
     return [c for c in cases if wanted & set(names(c))]
 
 
+def safe_name(model: str) -> str:
+    """A model's name as a file name: "gemma4:e4b" is "gemma4-e4b"."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "model"
+
+
 def results_path(name: str, model: str, at: datetime) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "model"
-    return RESULTS / f"{name}-{safe}-{at.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    return RESULTS / f"{name}-{safe_name(model)}-{at.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
 
 
 class Report:
@@ -452,13 +465,16 @@ class Recorder:
     the latest call is not always this conversation's: what a turn is held to comes
     from the latest call that carries the conversation's first message."""
 
-    def __init__(self, inner: ModelProvider) -> None:
+    def __init__(self, inner: ModelProvider, served: set[str] | None = None) -> None:
         self.inner = inner
         self.name = inner.name
         self.model = inner.model
         self.calls: list[tuple[list[SystemBlock], list[Msg]]] = []
         # What the user said in this conversation, in order.
         self.said: list[str] = []
+        # Every model the provider said answered, across the sandbox's conversations.
+        # The judge's own calls never pass through here, so they are never counted.
+        self.served = served if served is not None else set()
 
     def pricing(self) -> Pricing | None:
         return self.inner.pricing()
@@ -476,6 +492,8 @@ class Recorder:
         async for ev in self.inner.stream(
             system=system, messages=messages, tools=tools, max_tokens=max_tokens
         ):
+            if isinstance(ev, Done) and ev.model:
+                self.served.add(ev.model)
             yield ev
 
     def _last(self) -> list[Msg]:
@@ -604,6 +622,8 @@ class Sandbox:
         self._count = 0
         self._saved: dict[str, Any] = {}
         self.root: Path | None = None
+        # Every model that answered her, across all of this sandbox's apps (EVL-4).
+        self.served: set[str] = set()
         self.provider: Recorder
         self.stt: FakeSTT
 
@@ -673,7 +693,7 @@ class Sandbox:
         place = self.root / f"case-{self._count}"
         place.mkdir(parents=True)
         os.environ["TRILLION_HOME"] = str(place / "home")
-        self.provider = Recorder(self._make())
+        self.provider = Recorder(self._make(), self.served)
         app = App(place, self.provider)
         self._app = app
         rt = app.rt

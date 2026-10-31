@@ -148,6 +148,9 @@ class Summary:
     groups: dict[str, float]
     lowest: list[Row]
     problems: list[str]
+    # Replies the judge could not score, and prompts that got no reply.
+    unjudged: int = 0
+    silent: int = 0
 
     @property
     def passed(self) -> bool:
@@ -211,7 +214,15 @@ def summarize(rows: Sequence[Row]) -> Summary:
     if silent:
         problems.append(f"{silent} prompts got no reply")
     lowest = [r for r, _ in sorted(scored, key=lambda pair: pair[1])[:5]]
-    return Summary(rates=rates, mean=mean, groups=groups, lowest=lowest, problems=problems)
+    return Summary(
+        rates=rates,
+        mean=mean,
+        groups=groups,
+        lowest=lowest,
+        problems=problems,
+        unjudged=unjudged,
+        silent=silent,
+    )
 
 
 def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt]) -> Summary:

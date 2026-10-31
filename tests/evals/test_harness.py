@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import io
 import json
@@ -13,14 +14,33 @@ from typing import Any
 import aiosqlite.core
 import httpx
 import pytest
-from evals.harness import Ask, CannotRun, Judge, Report, Sandbox, Score, parse_score
+from evals.harness import (
+    Ask,
+    CannotRun,
+    Judge,
+    Report,
+    Sandbox,
+    Score,
+    options,
+    parse_score,
+    safe_name,
+)
 
 from evals import harness
 from tests.brain.fakes import ScriptedProvider, say, use
 from tests.unit.test_web import Wire, names, response
 from trillion.brain.config import ANTHROPIC_KEY
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
-from trillion.brain.types import ContextBlock, Msg, SystemBlock, TextBlock
+from trillion.brain.types import (
+    ContextBlock,
+    Done,
+    ModelEvent,
+    Msg,
+    SystemBlock,
+    TextBlock,
+    TextDelta,
+    Usage,
+)
 from trillion.secrets.store import KeychainStore
 
 AT = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
@@ -665,3 +685,29 @@ def test_settle_waits_for_a_follow_up_turn_a_read_started(tmp_path: Path) -> Non
         # Settled means her follow-up turn is over too, not only the read.
         assert not any(s.busy() for s in sb.app.rt.by_conversation.values())
         assert sb.provider.reads_ended() == 1
+
+
+def test_safe_name_keeps_a_model_name_usable_as_a_file_name() -> None:
+    assert safe_name("gemma4:e4b") == "gemma4-e4b"
+    assert safe_name("claude-opus-5-5") == "claude-opus-5-5"
+    assert safe_name("///") == "model"
+
+
+def test_the_sandbox_collects_every_model_that_answered(tmp_path: Path) -> None:
+    def answered(model: str) -> list[ModelEvent]:
+        return [TextDelta(text="Hi."), Done(stop_reason="end", usage=Usage(), model=model)]
+
+    scripted = ScriptedProvider(answered("m-1"), answered("m-2"))
+    with Sandbox(lambda: scripted, root=tmp_path / "e") as sb:
+        sb.converse([Ask(text="one")])
+        sb.fresh()  # a new app keeps counting
+        sb.converse([Ask(text="two")])
+        assert sb.served == {"m-1", "m-2"}
+
+
+def test_an_eval_can_add_its_own_options() -> None:
+    def extra(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--deployed", action="store_true")
+
+    opts = options("about", ["--deployed"], extra=extra)
+    assert opts.deployed and opts.model == "gemma4:e4b"
