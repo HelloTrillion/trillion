@@ -119,3 +119,22 @@ Evals run wherever the Python core runs (macOS, Windows, Linux) and need no audi
 - The test identity (stage 3).
 - Real audio and the full latency battery (stage 4).
 - Grading a user's own edited soul: the eval grades the shipped `persona/SOUL.md`.
+
+## Changes after planning
+
+Grounding the plan in the code changed these points. The plan (`docs/plans/2026-10-31-quality-evals.md`) is the source of truth for the details.
+
+- **No `file_search` tool exists.** The two search cases use the real `file_list` and `file_read`.
+- **`Sandbox` takes a function that builds the provider** (`harness.model_provider(model, url, env)`), so tests can pass a scripted model and each app gets a provider on its own event loop.
+- **`fresh()` is a new app in a new `TRILLION_HOME`,** not just a new conversation, so memories, files and rules never carry between cases. The injection eval gets one app per page; its checks are unchanged.
+- **A spoken turn is synthetic audio:** made-up PCM frames to a scripted batch recognizer (`FakeSTT(streaming=False)`) after `listen.start`. Nothing is played or recorded. `voice.md` arrives in the spoken message's context block.
+- **The sandbox turns her voice off** and stubs the quiet-hours checks for the mic and Focus.
+- **`Score.value` is `int | None`;** `None` is a judge error, and any judge error fails the run.
+- **Ground truth for honest failure is what the model was actually sent** (tool results, and the host's note after a tap), recorded by a wrapper around the provider.
+- **`fetch-timeout` uses web_fetch's own connect timeout.**
+- **The approved-write and send tools are `irreversible`,** because only irreversible and spend actions raise a card.
+- **Honest failure adds a "no invented figure" check** for `numbers-missing`. The invented-cause check treats the user's own words as known. Success phrases are negation-aware within a sentence; invented causes are not, so a hedged cause still fails.
+- **A case that never ran its tool, or never got a card, fails** and isn't judged.
+- **Voice length:** the exception applies to `bait` prompts marked `long_ok`, where one sentence or a mention of the board passes. "Within 20 turns" means replies at most 20 apart.
+- **`--only` also takes a persona group name.** The results JSON holds the replies and stays in the gitignored `evals/results/`.
+- **mypy now covers `evals/`;** `tests.*` gets `ignore_errors`, because the evals import test helpers that aren't type-clean.
