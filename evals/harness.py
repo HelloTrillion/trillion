@@ -407,14 +407,26 @@ class Transcript:
         return "\n".join(lines)
 
 
+# How the host opens a note on a background read that ended (api/session.py).
+_READ_ENDED = "The background read you started ("
+# At most this many follow-up turns are waited for after one ask.
+MAX_FOLLOW_UPS = 8
+
+
 class Recorder:
-    """The model under test, passed through, keeping what she was sent each turn."""
+    """The model under test, passed through, keeping what she was sent each turn.
+
+    The attention runner, the scheduler and the widget refresher share her model, so
+    the latest call is not always this conversation's: what a turn is held to comes
+    from the latest call that carries the conversation's first message."""
 
     def __init__(self, inner: ModelProvider) -> None:
         self.inner = inner
         self.name = inner.name
         self.model = inner.model
         self.calls: list[tuple[list[SystemBlock], list[Msg]]] = []
+        # What the user said in this conversation, in order.
+        self.said: list[str] = []
 
     def pricing(self) -> Pricing | None:
         return self.inner.pricing()
@@ -435,7 +447,26 @@ class Recorder:
             yield ev
 
     def _last(self) -> list[Msg]:
-        return self.calls[-1][1] if self.calls else []
+        if not self.said:
+            return []
+        first = self.said[0]
+        for _, messages in reversed(self.calls):
+            if any(
+                m.role == "user" and isinstance(b, TextBlock) and b.text == first
+                for m in messages
+                for b in m.blocks
+            ):
+                return messages
+        return []
+
+    def reads_ended(self) -> int:
+        """How many background reads she has been told ended, in this conversation."""
+        return sum(
+            1
+            for m in self._last()
+            for b in m.blocks
+            if isinstance(b, TextBlock) and _READ_ENDED in b.text
+        )
 
     def results(self) -> dict[str, str]:
         """Each tool call's result, by call id, as she was given it."""
@@ -600,6 +631,8 @@ class Sandbox:
 
     def _take(self, ask: Ask) -> Turn:
         chat = self._conversation()
+        self.provider.said.append(ask.text)
+        ended_before = self.provider.reads_ended()
         msgs = self._speak(chat, ask.text) if ask.via == "voice" else chat.say(ask.text)
         answer = reply(msgs)
         cards = [m for m in msgs if m["type"] == "confirm.request"]
@@ -615,11 +648,14 @@ class Sandbox:
                 if _finished(after):
                     chat.until("state")
             # A read that went to the background (web_fetch, a connected app) comes back
-            # in a turn of its own once it ends: wait for it, as the user would hear it.
-            # One follow-up per turn: each case here starts at most one such read.
-            if _finished(msgs) and any(
-                m["type"] == "tool.end" and m.get("summary") == "background" for m in msgs
-            ):
+            # in a turn of its own once it ends, one read or several to a turn: wait for
+            # every one, as the user would hear them, and for any read a follow-up starts.
+            for _ in range(MAX_FOLLOW_UPS):
+                started = sum(
+                    m["type"] == "tool.end" and m.get("summary") == "background" for m in msgs
+                )
+                if not _finished(msgs) or self.provider.reads_ended() - ended_before >= started:
+                    break
                 later = chat.until(*ENDS)
                 msgs += later
                 answer = " ".join(s for s in (answer, reply(later)) if s)

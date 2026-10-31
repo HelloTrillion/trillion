@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -16,9 +17,10 @@ from evals.harness import Ask, CannotRun, Judge, Report, Sandbox, Score, parse_s
 
 from evals import harness
 from tests.brain.fakes import ScriptedProvider, say, use
+from tests.unit.test_web import Wire, response
 from trillion.brain.config import ANTHROPIC_KEY
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
-from trillion.brain.types import ContextBlock
+from trillion.brain.types import ContextBlock, Msg, SystemBlock, TextBlock
 from trillion.secrets.store import KeychainStore
 
 AT = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
@@ -437,3 +439,65 @@ def test_typed_and_spoken_turns_mix_in_one_conversation(tmp_path: Path) -> None:
     assert [turn.via for turn in t.turns] == ["text", "voice", "text"]
     spoken = [m.blocks[0] for m in scripted.calls[2][1] if m.role == "user"]
     assert ["THIS MESSAGE WAS SPOKEN" in b.text for b in spoken] == [False, True, False]
+
+
+def test_a_model_call_from_elsewhere_never_replaces_the_turns_evidence(tmp_path: Path) -> None:
+    scripted = ScriptedProvider()
+    with sandbox(tmp_path, scripted) as sb:
+        (sb.app.granted / "plan.txt").write_text("ship it", encoding="utf-8")
+        scripted._replies += [
+            use("file_list", {"path": str(sb.app.granted)}),
+            say("One file: plan.txt."),
+            say("Sunny, 18 degrees."),
+        ]
+        sb.converse([Ask(text="what's in my folder?")])
+
+        # The attention runner, the scheduler and the widget refresher share her model:
+        # a call of theirs is the most recent one, but it is not this conversation.
+        async def elsewhere() -> None:
+            async for _ in sb.provider.stream(
+                system=[SystemBlock(text="Refresh the weather widget.")],
+                messages=[Msg(role="user", blocks=(TextBlock(text="weather?"),))],
+                tools=[],
+                max_tokens=100,
+            ):
+                pass
+
+        asyncio.run(elsewhere())
+        assert "plan.txt" in sb.provider.evidence()
+        assert any("plan.txt" in r for r in sb.provider.results().values())
+
+
+FAST, SLOW = "93.184.216.41", "93.184.216.42"
+
+
+def test_every_background_read_is_waited_for_however_many_turns_bring_them_in(
+    tmp_path: Path,
+) -> None:
+    async def resolve(host: str, port: int) -> list[str]:
+        if host == "slow.example":
+            await asyncio.sleep(1.0)  # ends well after the first read has been answered
+            return [SLOW]
+        return [FAST]
+
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://fast.example/"}, "c1"),
+        use("web_fetch", {"url": "https://slow.example/"}, "c2"),
+        say("Reading both."),
+        say("The fast one is about soup."),
+        say("The slow one is about bread."),
+    )
+    with sandbox(tmp_path, scripted) as sb:
+        assert sb.app.rt.web is not None
+        wire = Wire(
+            response("Soup is good.", kind="text/plain"),
+            response("Bread is good.", kind="text/plain"),
+        )
+        sb.app.rt.web.use(resolve, wire)
+        t = sb.converse([Ask(text="Read https://fast.example/ and https://slow.example/")])
+    (turn,) = t.turns
+    assert [r.summary for r in turn.tools] == ["background", "background"]
+    # Two follow-ups, one for each read as it ended: neither is lost.
+    assert turn.reply == ("Reading both. The fast one is about soup. The slow one is about bread.")
+    assert wire.opened == [FAST, SLOW]
+    assert "Soup is good." in t.evidence and "Bread is good." in t.evidence
