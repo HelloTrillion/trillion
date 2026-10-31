@@ -8,9 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from evals.harness import CannotRun, Report
+from evals.harness import CannotRun, Judge, Report, Score, parse_score
 
 from evals import harness
+from tests.brain.fakes import ScriptedProvider, say
 
 AT = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
 
@@ -105,3 +106,66 @@ def test_a_passing_report_exits_0_and_makes_its_folder(tmp_path: Path) -> None:
     assert (
         json.loads((tmp_path / "deep" / "r.json").read_text(encoding="utf-8"))["verdict"] == "pass"
     )
+
+
+# ── The judge ────────────────────────────────────────────────────────────
+
+JSON4 = '{"score": 4, "reason": "dry enough"}'
+
+
+def test_a_judge_answer_is_read_from_json_even_in_a_fence() -> None:
+    assert parse_score(JSON4) == Score(value=4, reason="dry enough")
+    assert parse_score(f"```json\n{JSON4}\n```") == Score(value=4, reason="dry enough")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "4",
+        "not json",
+        "[]",
+        '{"score": 7, "reason": "x"}',
+        '{"score": 0, "reason": "x"}',
+        '{"score": "4", "reason": "x"}',
+        '{"score": true, "reason": "x"}',
+        '{"score": 3}',
+    ],
+)
+def test_anything_else_is_not_a_score(bad: str) -> None:
+    assert parse_score(bad) is None
+
+
+def test_a_judge_that_answers_badly_is_asked_once_more() -> None:
+    scripted = ScriptedProvider(say("Sure! I'd give it a 4."), say(JSON4))
+    with Judge(scripted, local=True) as judge:
+        assert judge.score("Is it dry?", "Sam (typed): hi\nNova: Hi.") == Score(
+            value=4, reason="dry enough"
+        )
+    assert len(scripted.calls) == 2
+    system, messages = scripted.calls[0]
+    assert "JSON only" in system[0].text
+    asked = messages[0].blocks[0].text
+    assert (
+        asked.startswith("Is it dry?")
+        and "<transcript>\nSam (typed): hi\nNova: Hi.\n</transcript>" in asked
+    )
+
+
+def test_two_bad_answers_are_a_judge_error_and_never_a_pass() -> None:
+    with Judge(ScriptedProvider(say("no"), say("still no")), local=True) as judge:
+        s = judge.score("rubric", "transcript")
+    assert s.error and s.value is None and s.reason.startswith("judge error")
+
+
+def test_a_judge_that_fails_outright_is_a_judge_error() -> None:
+    # No scripted replies: every call raises ProviderError("script_exhausted").
+    with Judge(ScriptedProvider(), local=False) as judge:
+        s = judge.score("rubric", "transcript")
+    assert s.error and "script_exhausted" in s.reason
+
+
+def test_the_judge_line_says_when_scores_are_less_reliable() -> None:
+    with Judge(ScriptedProvider(), local=True) as judge:
+        assert judge.line == "judge: fake-1 (local judge: scores are less reliable)"
+    with Judge(ScriptedProvider(), local=False) as judge:
+        assert judge.line == "judge: fake-1"

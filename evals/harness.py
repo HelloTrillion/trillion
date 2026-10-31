@@ -10,15 +10,25 @@ per case, its totals and its verdict, and writes the same as JSON to evals/resul
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
 from trillion.brain.config import LOCAL_URL
+from trillion.brain.types import (
+    ModelProvider,
+    Msg,
+    ProviderError,
+    SystemBlock,
+    TextBlock,
+    TextDelta,
+)
 
 PASS, FAIL, CANNOT_RUN = 0, 1, 2
 LOCAL_MODEL = "gemma4:e4b"
@@ -139,3 +149,90 @@ class Report:
             f.write("\n")
         self._say(f"results: {target}")
         return PASS if passed else FAIL
+
+
+JUDGE_SYSTEM = (
+    "You grade one exchange with a personal assistant against the rubric you are given. "
+    "Answer with JSON only, nothing before or after it: "
+    '{"score": <a whole number from 1 to 5>, "reason": "<one short sentence>"}'
+)
+JUDGE_MAX_TOKENS = 2000
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+
+
+@dataclass(frozen=True, kw_only=True)
+class Score:
+    # 1 to 5, or None when the judge never gave a usable answer: a judge error, which is
+    # reported and never counted as a pass.
+    value: int | None
+    reason: str
+
+    @property
+    def error(self) -> bool:
+        return self.value is None
+
+
+def parse_score(text: str) -> Score | None:
+    """The judge's JSON, or None if it is not exactly a score from 1 to 5 and a reason."""
+    try:
+        body = json.loads(_FENCE.sub("", text.strip()))
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    value, reason = body.get("score"), body.get("reason")
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 5:
+        return None
+    if not isinstance(reason, str):
+        return None
+    return Score(value=value, reason=reason.strip())
+
+
+class Judge:
+    """Scores a transcript against a rubric. Its own event loop for its whole life: a
+    provider's connections belong to the loop that opened them."""
+
+    def __init__(self, provider: ModelProvider, *, local: bool) -> None:
+        self.provider = provider
+        self.local = local
+        self._runner = asyncio.Runner()
+
+    @property
+    def line(self) -> str:
+        tail = " (local judge: scores are less reliable)" if self.local else ""
+        return f"judge: {self.provider.model}{tail}"
+
+    def score(self, rubric: str, transcript: str) -> Score:
+        said = ""
+        for _ in range(2):  # an answer that is not a score is asked for once more
+            try:
+                said = self._runner.run(self._ask(rubric, transcript))
+            except ProviderError as e:
+                said = f"(the judge failed: {e.kind})"
+                continue
+            found = parse_score(said)
+            if found is not None:
+                return found
+        return Score(value=None, reason=f"judge error: {said[:200]!r}")
+
+    async def _ask(self, rubric: str, transcript: str) -> str:
+        asked = f"{rubric}\n\n<transcript>\n{transcript}\n</transcript>"
+        text: list[str] = []
+        async for ev in self.provider.stream(
+            system=[SystemBlock(text=JUDGE_SYSTEM)],
+            messages=[Msg(role="user", blocks=(TextBlock(text=asked),))],
+            tools=[],
+            max_tokens=JUDGE_MAX_TOKENS,
+        ):
+            if isinstance(ev, TextDelta):
+                text.append(ev.text)
+        return "".join(text)
+
+    def close(self) -> None:
+        self._runner.close()
+
+    def __enter__(self) -> Judge:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
