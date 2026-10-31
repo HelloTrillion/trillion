@@ -43,7 +43,7 @@ uv run python -m evals.gate --model claude-opus-5-5 --save-baseline
 - **It fails when**, compared with that baseline:
   - the judge average drops by more than 0.3;
   - any group's average drops by more than 0.5;
-  - any code check falls below its stage 1 line, or more than 5 points below its baseline rate.
+  - any code check's pass rate falls more than 5 points below its baseline rate.
 - **No baseline for this pair:** the run reports its totals, says there is nothing to compare with, and exits 1 unless `--save-baseline` is given. The first baseline for a pair needs no `--accept-drop`.
 - **The model it ran on:** each reply's provider-reported model is recorded. If any differs from the one asked for (after the provider's own aliasing, for example a dated snapshot of the same name), the run fails loudly and says which model answered. A provider that reports no model is noted in the report, not failed.
 - **`--deployed`** grades the model this machine's Trillion is set to use. It reads the saved model settings and never writes them; the key comes from the environment as for every eval, never from the keychain. If the saved setting needs a key that isn't in the environment, it stops with exit 2 and names the variable to set.
@@ -84,6 +84,33 @@ uv run python -m evals.drift.run --model gemma4:e4b
 - **TESTING.md:** the gate, `--save-baseline`, `--accept-drop` and drift commands, and what the CI baseline check asks of a contributor.
 - **CONTRIBUTING.md:** changing the soul or prompts needs a fresh baseline; Ollama's `gemma4:e4b` is enough.
 - **architecture.md:** the checkpoint next to the volatile context, and the gate and drift next to the stage 1 evals.
+
+## Changes after planning
+
+What building it changed, so this spec matches the code.
+
+**The gate**
+
+- It compares code-check rates only with the baseline. The absolute lines stay the persona eval's job: the gate prints them under "persona lines (not gated)", but they don't fail it. So a model below a line today can still have a baseline.
+- Drops of exactly the limit pass. Differences are rounded first, so float noise can't fail them.
+- **`--deployed`:** the saved setting wins. This shell's environment isn't the app's, and a key set here may be only for a Claude judge. The environment decides only when nothing is saved, as the app would. When the two disagree, a note is printed and kept in the JSON under `totals.gate.deployed_note`. A saved OpenAI model is refused with exit 2, because the evals send it no key; the message points at grading it by hand without `--deployed`, with `--model` and `--url`.
+- It refuses `--only` with exit 2: part of the eval can't match a baseline.
+- `--accept-drop` needs `--save-baseline` and a reason that isn't blank. Both are checked before any model runs. The reason is written to the baseline only when there were drops for it to explain.
+- The fingerprint covers the soul and only the `*.md` files in the prompts folder whose names don't start with a dot, so a stray file (`.DS_Store`, an editor's backup) changes nothing.
+- Providers report the model that answered on `Done.model`. The sandbox collects them in `Sandbox.served`, and counts replies that named no model in `Sandbox.unreported`, which the gate notes but doesn't fail.
+
+**Drift**
+
+- An off-only run (`--only off`) prints `REPORTED`, not `PASS`, exits 0, and its JSON verdict is `unjudged`. The off run is never held to the lines.
+- Every turn is in the JSON: its prompt, reply, failed checks, any error and its score. A turn that fails a check prints its own FAIL line.
+- `LATE_AFTER` (5) is the eval's own constant for where the late floor starts. It matches the shipped `CHECKPOINT_FROM`, and a test pins the two together, but turning the checkpoint off doesn't move it.
+- The gap is over the probes after turn 5 only, where the two runs differ. Each side's `late_mean` in the JSON is the average it comes from.
+- A turn with no reply, or a probe that can't be judged, fails the run.
+- The spoken checks (markdown, length) apply only to the 11 spoken replies, so one failure of a spoken-only check (9.1%) fails the run.
+
+**The checkpoint**
+
+- It rides only on the user's own messages, not on host notes such as a background read's follow-up: "your last line" is asked about the user's words. `volatile_context` takes `who` as well as `turn`, and adds the line only when both are given.
 
 ## Platforms
 
