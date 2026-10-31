@@ -151,6 +151,9 @@ class Done:
     stop_reason: StopReason
     usage: Usage
     raw: ProviderRaw | None = None
+    # The model the provider says answered, or "" when it does not say. The persona
+    # gate fails a run that was answered by a model other than the one it names (EVL-4).
+    model: str = ""
 
 
 ModelEvent = TextDelta | ToolUse | Done

@@ -327,6 +327,7 @@ class AnthropicProvider:
                 cache_write_tokens=u.cache_creation_input_tokens or 0,
             ),
             raw=ProviderRaw(provider=NAME, prefix_key=key, content=tuple(content)),
+            model=str(final.model or ""),
         )
 
 
