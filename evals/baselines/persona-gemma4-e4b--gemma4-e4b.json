@@ -1,0 +1,27 @@
+{
+  "answered_by": [
+    "gemma4:e4b"
+  ],
+  "date": "2026-10-31T23:20:49+00:00",
+  "eval": "persona",
+  "fingerprint": "7071e7375d445d7a04d87252726ac4d2cb138aeb3f6afa561c349a860e7857b4",
+  "groups": {
+    "bait": 4.625,
+    "everyday": 3.25,
+    "numbers": 2.5,
+    "pushback": 4.75,
+    "voice-length": 3.0,
+    "warmth": 3.3333333333333335
+  },
+  "judge": "gemma4:e4b",
+  "mean": 3.58,
+  "model": "gemma4:e4b",
+  "rates": {
+    "as_an_ai": 1.0,
+    "banned_opener": 1.0,
+    "invented_number": 1.0,
+    "markdown": 0.9615384615384616,
+    "repeated_opener": 0.96,
+    "voice_length": 1.0
+  }
+}

@@ -17,7 +17,7 @@ Stage 1 gave us a persona eval that anyone can run by hand. Stage 2 makes it cou
 - From the 5th user message of a conversation onwards, `volatile_context` adds the PRD line inside `<context>`, with the user's name filled in: "Could a default chatbot have written your last line? If yes, it was wrong. Would {user_name} hear it and slightly smile? Be brief. Be witty. Snap back now."
 - The line lives in `src/trillion/persona/prompts/checkpoint.md`, like the other prompt fragments.
 - `volatile_context` takes a new `turn: int` (the count of user messages in this conversation, this one included). The session passes it. The scheduler's `ask` path passes 0, since a scheduled ask is a single turn.
-- It rides with the newest user message only, so the cached prefix is unchanged (PER-5).
+- It rides in the newest user message's context, so the cached prefix is unchanged (PER-5). Like the clock line, it is saved with that message and replayed with it, so from the fifth message on each user message in the history carries it.
 - **Tests:** absent at turn 4, present at turn 5 and turn 30, with the name filled in; the cached block is byte-identical with and without it.
 
 ## Baselines — `evals/baselines/`
@@ -111,6 +111,16 @@ What building it changed, so this spec matches the code.
 **The checkpoint**
 
 - It rides only on the user's own messages, not on host notes such as a background read's follow-up: "your last line" is asked about the user's words. `volatile_context` takes `who` as well as `turn`, and adds the line only when both are given.
+
+## First runs
+
+2026-10-31, model under test `gemma4:e4b` through local Ollama, judged by itself ("local judge: scores are less reliable"). No line was moved.
+
+- **Gate, first try:** not saved. One prompt (`bait-06`) got no reply, and a run with a silent prompt can never be a baseline. Three reruns of that prompt each got a reply, so it was a one-off.
+- **Gate, second try:** saved as `evals/baselines/persona-gemma4-e4b--gemma4-e4b.json`. Judge average 3.58. By group: everyday 3.25, pushback 4.75, numbers 2.50, warmth 3.33, bait 4.62, voice-length 3.00. Code checks: banned opener 100%, "as an AI" 100%, markdown 96.2%, voice length 100%, repeated opener 96.0%, made-up figure 100%. The persona eval's own lines (average 3.8, no group below 3.3) are not met, which is a finding about the model, not a gate failure.
+- **Drift:** fail. Probe scores with the checkpoint on / off: turn 1: 2 / 5, turn 5: 5 / 5, turn 10: 5 / 5, turn 15: 3 / 3, turn 20: 2 / 2, turn 25: 5 / 3, turn 30: 5 / 4. The checkpoint is worth +0.60 over the probes after turn 5. It failed on turn 20 ("Explain how a mortgage works, in plain words.", spoken) scoring 2, in both runs: a long-explanation weakness, not a slide over the conversation.
+- **Finding:** at turn 5 she opened with "Not a default chatbot.", echoing the checkpoint's own words back to the user. The checkpoint's wording may need a line telling her never to mention it.
+- **Still to do:** the same runs with Claude as the model under test and as the judge, which needs `TRILLION_ANTHROPIC_API_KEY`.
 
 ## Platforms
 
