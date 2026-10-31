@@ -96,6 +96,9 @@ _WHEN = re.compile(
     r"\b\d{4}-\d{2}-\d{2}"  # a date
     r"(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"  # and its time
     r"|\b\d{1,2}:\d{2}(?::\d{2})?\b"  # a time of day
+    # A month and its year, "September 2026".
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,? \d{4}\b",
+    re.IGNORECASE,
 )
 
 

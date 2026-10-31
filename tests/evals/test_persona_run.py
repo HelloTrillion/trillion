@@ -166,6 +166,14 @@ def test_dates_times_and_layout_on_the_board_are_not_figures() -> None:
         tools=(ran("workspace_show", args=args),),
     )
     assert made_up_figure(NUMBERS, turn) is None
+    # A month and its year is a date too: the third run said "September 2026".
+    said = Turn(said=NUMBERS.text, via="text", reply="Here is September 2026, and Sept. 2025.")
+    assert made_up_figure(NUMBERS, said) is None
+    # A bare year nobody gave her is still a figure.
+    assert (
+        made_up_figure(NUMBERS, Turn(said=NUMBERS.text, via="text", reply="Up since 2019."))
+        == "2019"
+    )
 
 
 def test_a_made_up_figure_inside_a_widget_still_fails() -> None:
