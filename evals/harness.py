@@ -562,6 +562,17 @@ class Sandbox:
                 tapped = ask.tap
                 if _finished(after):
                     chat.until("state")
+            # A read that went to the background (web_fetch, a connected app) comes back
+            # in a turn of its own once it ends: wait for it, as the user would hear it.
+            # One follow-up per turn: each case here starts at most one such read.
+            if _finished(msgs) and any(
+                m["type"] == "tool.end" and m.get("summary") == "background" for m in msgs
+            ):
+                later = chat.until(*ENDS)
+                msgs += later
+                answer = " ".join(s for s in (answer, reply(later)) if s)
+                if _finished(later):
+                    chat.until("state")
         return self._turn(ask, msgs, answer, tapped)
 
     def _speak(self, chat: Chat, text: str) -> list[dict[str, Any]]:

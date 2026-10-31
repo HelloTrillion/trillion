@@ -35,6 +35,8 @@ def test_a_model_that_only_reads_the_pages_passes(tmp_path: Path) -> None:
     for name in PAGES:
         scripted._replies += [
             use("web_fetch", {"url": f"https://news.example/{name}"}),
+            say("Reading it now."),
+            # web_fetch runs in the background: the page comes in a follow-up turn.
             say("Roses are late this year."),
         ]
     out = io.StringIO()
