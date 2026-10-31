@@ -59,34 +59,52 @@ main() {
     old_uv="If your uv is old, run 'uv self update' and try again."
 
     # 2. Trillion. uv downloads Python 3.13 itself if this machine doesn't have it.
+    # First, what is installed already, and with which extras (such as Whisper):
+    # a plain `uv tool install trillion` would replace them with none. An older uv
+    # can't show extras; then a plain list says whether Trillion is there at all.
+    detailed=1
+    if ! listing="$("$uv" tool list --show-version-specifiers --show-extras 2>&1)"; then
+        detailed=""
+        listing="$("$uv" tool list 2>&1)" ||
+            fail "uv couldn't list what it has installed: $listing
+Update uv ('uv self update', or the way you installed it) and try again."
+    fi
+    installed="$(printf '%s\n' "$listing" | grep '^trillion v' || true)"
+    extras="$(printf '%s\n' "$installed" | sed -n 's/.*\[extras: \([^]]*\)\].*/\1/p' | tr -d ' ')"
+    package="trillion"
+    [ -n "$extras" ] && package="trillion[$extras]"
+    # `uv tool upgrade` keeps the extras and the Python, but also keeps a pinned
+    # version or a wheel file, which this installer exists to move past.
+    pinned=""
+    case "$installed" in *"[required:"*) pinned=1 ;; esac
+
     if [ -n "$wheel" ]; then
-        # --reinstall, so a rebuilt wheel with the same version still replaces the old one.
-        say "installing Trillion from $wheel"
-        "$uv" tool install --reinstall --python 3.13 "$wheel" ||
-            fail "uv could not install $wheel (see above). $old_uv"
-    else
-        # Already installed? Keep its extras (such as Whisper): a plain
-        # `uv tool install trillion` would replace them with none.
-        listing="$("$uv" tool list --show-version-specifiers --show-extras 2>/dev/null)" ||
-            fail "this uv is too old for this installer. Update it ('uv self update', or the way you installed it) and try again."
-        installed="$(printf '%s\n' "$listing" | grep '^trillion v' || true)"
-        extras="$(printf '%s\n' "$installed" | sed -n 's/.*\[extras: \([^]]*\)\].*/\1/p' | tr -d ' ')"
-        package="trillion"
-        [ -n "$extras" ] && package="trillion[$extras]"
-        # `uv tool upgrade` keeps the extras and the Python, but also keeps a pinned
-        # version or a wheel file, which this installer exists to move past.
-        pinned=""
-        case "$installed" in *"[required:"*) pinned=1 ;; esac
-        if [ -n "$installed" ] && [ -z "$version" ] && [ -z "$pinned" ]; then
-            say "upgrading Trillion${extras:+ (keeping $extras)}"
-            "$uv" tool upgrade trillion ||
-                fail "uv could not upgrade Trillion (see above). To reinstall it: uv tool install --reinstall --python 3.13 '$package'. $old_uv"
-        else
-            [ -n "$version" ] && package="$package==$version"
-            say "installing $package (this upgrades it if it is already installed)"
-            "$uv" tool install --upgrade --python 3.13 "$package" ||
-                fail "uv could not install $package (see above). $old_uv"
+        # The extras go on the wheel: path[extras], or name[extras] @ URL.
+        target="$wheel"
+        if [ -n "$extras" ]; then
+            case "$wheel" in
+                *://*) target="trillion[$extras] @ $wheel" ;;
+                *) target="${wheel}[$extras]" ;;
+            esac
         fi
+        # --reinstall, so a rebuilt wheel with the same version still replaces the old one.
+        say "installing Trillion from $wheel${extras:+ (keeping $extras)}"
+        "$uv" tool install --reinstall --python 3.13 "$target" ||
+            fail "uv could not install $target (see above). $old_uv"
+    elif [ -n "$installed" ] && [ -z "$version" ] && [ -z "$pinned" ]; then
+        say "upgrading Trillion${extras:+ (keeping $extras)}"
+        if [ -z "$detailed" ]; then
+            reinstall="uv tool install --reinstall --python 3.13 trillion (as 'trillion[whisper]' if you use Whisper)"
+        else
+            reinstall="uv tool install --reinstall --python 3.13 '$package'"
+        fi
+        "$uv" tool upgrade trillion ||
+            fail "uv could not upgrade Trillion (see above). To reinstall it: $reinstall. $old_uv"
+    else
+        [ -n "$version" ] && package="$package==$version"
+        say "installing $package (this upgrades it if it is already installed)"
+        "$uv" tool install --upgrade --python 3.13 "$package" ||
+            fail "uv could not install $package (see above). $old_uv"
     fi
 
     # 3. PATH, for new terminals. uv fails when the shell files already have it

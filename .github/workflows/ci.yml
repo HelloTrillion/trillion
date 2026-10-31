@@ -249,6 +249,10 @@ jobs:
           cat "$RUNNER_TEMP/upgrade.log"
           grep -F 'upgrading Trillion (keeping whisper)' "$RUNNER_TEMP/upgrade.log"
           uv tool list --show-extras | grep -F 'trillion v0.0.2 [extras: whisper]'
+          # --wheel keeps them too.
+          uv run --no-sync python scripts/fake_trillion_wheels.py "$RUNNER_TEMP/fake-later" 0.0.3
+          sh install.sh --wheel "$RUNNER_TEMP/fake-later/trillion-0.0.3-py3-none-any.whl" --no-setup
+          uv tool list --show-extras | grep -F 'trillion v0.0.3 [extras: whisper]'
       - name: install.sh with no uv installs uv first
         if: runner.os != 'Windows'
         run: |
@@ -333,6 +337,43 @@ jobs:
           $listed = uv tool list --show-extras
           Write-Host ($listed -join "`n")
           if (-not (@($listed) -contains 'trillion v0.0.2 [extras: whisper]')) { exit 1 }
+          # -Wheel keeps them too.
+          $later = Join-Path $env:RUNNER_TEMP 'fake-later'
+          uv run --no-sync python scripts/fake_trillion_wheels.py $later 0.0.3
+          $env:TRILLION_WHEEL = Join-Path $later 'trillion-0.0.3-py3-none-any.whl'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 0) { Write-Host "status $LASTEXITCODE"; exit 1 }
+          $listed = uv tool list --show-extras
+          Write-Host ($listed -join "`n")
+          if (-not (@($listed) -contains 'trillion v0.0.3 [extras: whisper]')) { exit 1 }
+      - name: install.ps1 as a script block takes its parameters; through iex it doesn't take its caller's
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dir = Join-Path $env:RUNNER_TEMP 'sb-wheels'
+          uv run --no-sync python scripts/fake_trillion_wheels.py $dir 0.0.9
+          $wheel = Join-Path $dir 'trillion-0.0.9-py3-none-any.whl'
+          # Nothing to install from but the wheel named here: if the parameters were
+          # ignored, the install fails, and setup never runs.
+          $empty = Join-Path $env:RUNNER_TEMP 'empty-index'
+          New-Item -ItemType Directory -Force -Path $empty | Out-Null
+          $env:UV_NO_INDEX = '1'
+          $env:UV_FIND_LINKS = $empty
+          $env:UV_TOOL_DIR = Join-Path $env:RUNNER_TEMP 'sb-tools'
+          $env:UV_TOOL_BIN_DIR = Join-Path $env:RUNNER_TEMP 'sb-bin'
+          & ([scriptblock]::Create((Get-Content -Raw install.ps1))) -Wheel $wheel -NoSetup
+          if ($LASTEXITCODE -ne 0) { Write-Host "script block: status $LASTEXITCODE"; exit 1 }
+          $got = & (Join-Path $env:UV_TOOL_BIN_DIR 'trillion.exe') --version
+          Write-Host $got
+          if ($got -ne 'trillion 0.0.9') { exit 1 }
+          # Through iex inside a function called with arguments of its own: those
+          # are the function's, not the installer's, so the environment decides.
+          function Invoke-Caller { Get-Content -Raw install.ps1 | Invoke-Expression }
+          $env:TRILLION_NO_SETUP = '1'
+          $env:TRILLION_WHEEL = $wheel
+          Invoke-Caller -Version 1 -Wheel x
+          if ($LASTEXITCODE -ne 0) { Write-Host "iex in a function: status $LASTEXITCODE"; exit 1 }
       - name: install.ps1 with no uv installs uv first
         if: runner.os == 'Windows'
         shell: powershell

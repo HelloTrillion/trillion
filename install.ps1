@@ -7,9 +7,10 @@
 # prepares the data folder, checks this machine and opens the app.
 # Running it again upgrades Trillion. It needs no administrator rights.
 #
-# Options. Piped into iex, use the environment variables. Run as a file, the
-# parameters work too:
+# Options. Piped into iex, use the environment variables. Run as a file, or as a
+# script block, the parameters work too:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -NoSetup
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1))) -NoSetup
 #
 #   -Version X     install Trillion X instead of the latest   $env:TRILLION_VERSION = "X"
 #   -Wheel PATH    install this wheel file or URL instead      $env:TRILLION_WHEEL = "PATH"
@@ -21,10 +22,10 @@
 # Piped into iex, this runs in your session, so everything is inside one script
 # block: nothing it defines is left behind, and it never calls `exit`, which would
 # close your window or stop the script that ran it. Run as a file, it exits with
-# a nonzero status on failure.
+# a nonzero status on failure; otherwise the status is left in $LASTEXITCODE.
 
 & {
-    param([string[]]$Arguments)
+    param([string[]]$Arguments, $Outer)
 
     $ErrorActionPreference = 'Stop'
 
@@ -80,41 +81,56 @@
         Write-Step "using uv at $uv"
 
         # 2. Trillion. uv downloads Python 3.13 itself if this machine doesn't have it.
+        # First, what is installed already, and with which extras (such as Whisper):
+        # a plain `uv tool install trillion` would replace them with none. An older uv
+        # can't show extras; then a plain list says whether Trillion is there at all.
+        $ErrorActionPreference = 'Continue'
+        $detailed = $true
+        $listing = & $uv tool list --show-version-specifiers --show-extras 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $detailed = $false
+            $listing = & $uv tool list 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $why = (@($listing) | ForEach-Object { "$_" }) -join ' '
+                throw "uv couldn't list what it has installed: $why Update uv ('uv self update', or the way you installed it) and try again."
+            }
+        }
+        $ErrorActionPreference = 'Stop'
+        $installed = "$(@($listing) | ForEach-Object { "$_" } | Where-Object { $_ -like 'trillion v*' } | Select-Object -First 1)"
+        $extras = ''
+        if ($installed -match '\[extras: ([^\]]*)\]') { $extras = $Matches[1] -replace '\s', '' }
+        $package = 'trillion'
+        if ($extras) { $package = "trillion[$extras]" }
+        # `uv tool upgrade` keeps the extras and the Python, but also keeps a pinned
+        # version or a wheel file, which this installer exists to move past.
+        $pinned = $installed.Contains('[required:')
+        $keeping = ''
+        if ($extras) { $keeping = " (keeping $extras)" }
+
         if ($Wheel) {
+            # The extras go on the wheel: path[extras], or name[extras] @ URL.
+            $target = $Wheel
+            if ($extras) {
+                if ($Wheel -match '://') { $target = "trillion[$extras] @ $Wheel" } else { $target = "$($Wheel)[$extras]" }
+            }
             # --reinstall, so a rebuilt wheel with the same version still replaces the old one.
-            Write-Step "installing Trillion from $Wheel"
-            Invoke-Native $uv @('tool', 'install', '--reinstall', '--python', '3.13', $Wheel)
-            if ($LASTEXITCODE -ne 0) { throw "uv could not install $Wheel (see above). $oldUv" }
-        } else {
-            # Already installed? Keep its extras (such as Whisper): a plain
-            # `uv tool install trillion` would replace them with none.
-            $ErrorActionPreference = 'Continue'
-            $listing = & $uv tool list --show-version-specifiers --show-extras 2>$null
-            $listed = $LASTEXITCODE
-            $ErrorActionPreference = 'Stop'
-            if ($listed -ne 0) {
-                throw "this uv is too old for this installer. Update it ('uv self update', or the way you installed it) and try again."
-            }
-            $installed = "$(@($listing) | Where-Object { "$_" -like 'trillion v*' } | Select-Object -First 1)"
-            $extras = ''
-            if ($installed -match '\[extras: ([^\]]*)\]') { $extras = $Matches[1] -replace '\s', '' }
-            $package = 'trillion'
-            if ($extras) { $package = "trillion[$extras]" }
-            # `uv tool upgrade` keeps the extras and the Python, but also keeps a pinned
-            # version or a wheel file, which this installer exists to move past.
-            $pinned = $installed.Contains('[required:')
-            if ($installed -and -not $Version -and -not $pinned) {
-                if ($extras) { Write-Step "upgrading Trillion (keeping $extras)" } else { Write-Step 'upgrading Trillion' }
-                Invoke-Native $uv @('tool', 'upgrade', 'trillion')
-                if ($LASTEXITCODE -ne 0) {
-                    throw "uv could not upgrade Trillion (see above). To reinstall it: uv tool install --reinstall --python 3.13 '$package'. $oldUv"
-                }
+            Write-Step "installing Trillion from $Wheel$keeping"
+            Invoke-Native $uv @('tool', 'install', '--reinstall', '--python', '3.13', $target)
+            if ($LASTEXITCODE -ne 0) { throw "uv could not install $target (see above). $oldUv" }
+        } elseif ($installed -and -not $Version -and -not $pinned) {
+            Write-Step "upgrading Trillion$keeping"
+            if ($detailed) {
+                $reinstall = "uv tool install --reinstall --python 3.13 '$package'"
             } else {
-                if ($Version) { $package = "$package==$Version" }
-                Write-Step "installing $package (this upgrades it if it is already installed)"
-                Invoke-Native $uv @('tool', 'install', '--upgrade', '--python', '3.13', $package)
-                if ($LASTEXITCODE -ne 0) { throw "uv could not install $package (see above). $oldUv" }
+                $reinstall = "uv tool install --reinstall --python 3.13 trillion (as 'trillion[whisper]' if you use Whisper)"
             }
+            Invoke-Native $uv @('tool', 'upgrade', 'trillion')
+            if ($LASTEXITCODE -ne 0) { throw "uv could not upgrade Trillion (see above). To reinstall it: $reinstall. $oldUv" }
+        } else {
+            if ($Version) { $package = "$package==$Version" }
+            Write-Step "installing $package (this upgrades it if it is already installed)"
+            Invoke-Native $uv @('tool', 'install', '--upgrade', '--python', '3.13', $package)
+            if ($LASTEXITCODE -ne 0) { throw "uv could not install $package (see above). $oldUv" }
         }
 
         # 3. PATH: for new windows (uv saves it for your user), and for this one.
@@ -157,9 +173,24 @@
     $AsFile = -not ([string]::IsNullOrEmpty($MyInvocation.MyCommand.ScriptBlock.File) -and
         [string]::IsNullOrEmpty(({ }).File))
 
-    # Options: the environment first, then the parameters of a file run. Under
-    # iex, $args belongs to whoever ran it, so it is not ours to read.
-    if (-not $AsFile) {
+    # Are $args ours? Yes when run as a file, or as a script block of its own:
+    #   & ([scriptblock]::Create((irm .../install.ps1))) -NoSetup
+    # Then the top level ($Outer) is this script's own text. Piped into iex, the
+    # top level is whoever ran iex, and so are its $args: not ours to read.
+    $ownArgs = $AsFile
+    if (-not $ownArgs) {
+        try {
+            $root = ({ }).Ast
+            while ($root.Parent) { $root = $root.Parent }
+            $outerBlock = $Outer.MyCommand.ScriptBlock
+            $ownArgs = ($null -ne $outerBlock) -and ($outerBlock.Ast.Extent.Text -eq $root.Extent.Text)
+        } catch {
+            $ownArgs = $false
+        }
+    }
+
+    # Options: the environment first, then the parameters.
+    if (-not $ownArgs) {
         if ($Arguments.Count -gt 0) {
             Write-Step 'piped into iex, so parameters are ignored; set TRILLION_VERSION, TRILLION_WHEEL or TRILLION_NO_SETUP instead'
         }
@@ -185,8 +216,9 @@ Install Trillion on Windows, or upgrade it, then run `trillion setup`.
 
   irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1 | iex
   powershell -ExecutionPolicy Bypass -File .\install.ps1 -NoSetup
+  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1))) -NoSetup
 
-Options, as parameters when run as a file, or the environment variable beside each:
+Options, as parameters (not through iex), or the environment variable beside each:
   -Version X     install Trillion X instead of the latest   $env:TRILLION_VERSION = "X"
   -Wheel PATH    install this wheel file or URL instead      $env:TRILLION_WHEEL = "PATH"
   -NoSetup       install only; don't run `trillion setup`    $env:TRILLION_NO_SETUP = "1"
@@ -220,4 +252,4 @@ Options, as parameters when run as a file, or the environment variable beside ea
     # Never `exit` when piped into iex: leave the status in $LASTEXITCODE.
     $global:LASTEXITCODE = $status
     if ($AsFile -and $status -ne 0) { exit $status }
-} -Arguments $args
+} -Arguments $args -Outer $MyInvocation

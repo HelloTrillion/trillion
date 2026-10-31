@@ -113,7 +113,10 @@ first on PyPI. If Trillion is already installed from PyPI, they run
 `[whisper]`) and the tool's Python; if that fails, they stop and say how to
 reinstall, rather than install again without the extras. Otherwise, including an
 install pinned to a version or made from a wheel file, they run
-`uv tool install --upgrade --python 3.13 trillion`, with the extras it had. `--version X` (`TRILLION_VERSION`) installs a given version and `--wheel`
+`uv tool install --upgrade --python 3.13 trillion`, with the extras it had. `--wheel`
+keeps the extras too (`<wheel>[whisper]`, or `trillion[whisper] @ <URL>`). A uv too
+old to list extras still installs and upgrades: the installer falls back to a plain
+`uv tool list`, and upgrades with `uv tool upgrade trillion` if Trillion is there. `--version X` (`TRILLION_VERSION`) installs a given version and `--wheel`
 (`TRILLION_WHEEL`) a wheel file or URL instead, which is how to try a build before
 it is released. Then they add uv's tool folder to the PATH (`uv tool update-shell`)
 and run `trillion setup`, unless `--no-setup` (`TRILLION_NO_SETUP=1`).
@@ -127,11 +130,14 @@ above but without Google, installs it with the installer and `--wheel`, runs the
 installer a second time (piped, with the environment variables) to prove a re-run
 is fine, and checks `trillion --version` from uv's tool folder. It checks that a
 failure exits nonzero, that the installer installs uv when there is none, and that
-a re-run upgrades and keeps `[whisper]`, with stand-in wheels in a local folder in
+a re-run and `--wheel` keep `[whisper]`, with stand-in wheels in a local folder in
 place of PyPI ([`scripts/fake_trillion_wheels.py`](../scripts/fake_trillion_wheels.py)).
 On Ubuntu it also
 runs `shellcheck install.sh`. On Windows it runs `install.ps1` in Windows
 PowerShell 5.1, as a file and through `Invoke-Expression`, and checks that through
-`Invoke-Expression` it returns to its caller and leaves nothing behind. Installing from PyPI
+`Invoke-Expression` it returns to its caller and leaves nothing behind. It also runs
+it as a script block (`& ([scriptblock]::Create(...)) -Wheel … -NoSetup`), which
+takes parameters, and through `Invoke-Expression` inside a function called with
+arguments of its own, which must not be taken as the installer's. Installing from PyPI
 itself is not tested there, so after a release, run the one-liner once on a clean
 machine.
