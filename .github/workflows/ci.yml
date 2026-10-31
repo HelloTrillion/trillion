@@ -234,6 +234,21 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           if sh install.sh --version 1 --wheel x; then echo "expected a failure"; exit 1; fi
+      - name: Re-running install.sh upgrades Trillion and keeps its extras
+        if: runner.os != 'Windows'
+        run: |
+          # Stand-in wheels in a local folder, in place of PyPI: 0.0.1 with Whisper
+          # added, as a user would have it, then 0.0.2 released.
+          links="$RUNNER_TEMP/fake-index"
+          uv run --no-sync python scripts/fake_trillion_wheels.py "$links" 0.0.1
+          export UV_NO_INDEX=1 UV_FIND_LINKS="$links"
+          export UV_TOOL_DIR="$RUNNER_TEMP/fake-tools" UV_TOOL_BIN_DIR="$RUNNER_TEMP/fake-bin"
+          uv tool install --python 3.13 'trillion[whisper]'
+          uv run --no-sync python scripts/fake_trillion_wheels.py "$links" 0.0.2
+          sh install.sh --no-setup > "$RUNNER_TEMP/upgrade.log" 2>&1 || { cat "$RUNNER_TEMP/upgrade.log"; exit 1; }
+          cat "$RUNNER_TEMP/upgrade.log"
+          grep -F 'upgrading Trillion (keeping whisper)' "$RUNNER_TEMP/upgrade.log"
+          uv tool list --show-extras | grep -F 'trillion v0.0.2 [extras: whisper]'
       - name: install.sh with no uv installs uv first
         if: runner.os != 'Windows'
         run: |
@@ -267,7 +282,7 @@ jobs:
           New-Item -ItemType File -Force -Path (Join-Path $env:RUNNER_TEMP 'iex-returned') | Out-Null
           if ($code -ne 0) { Write-Host "status $code"; exit 1 }
           # And nothing it defined is left in this session.
-          foreach ($name in 'version', 'wheel', 'noSetup', 'status', 'trillion', 'uv', 'bindir') {
+          foreach ($name in 'version', 'wheel', 'noSetup', 'status', 'trillion', 'uv', 'bindir', 'AsFile', 'extras', 'Arguments') {
             if (Test-Path "variable:$name") { Write-Host "left behind: `$$name"; exit 1 }
           }
           foreach ($name in 'Install-Trillion', 'Find-Uv', 'Invoke-Native', 'Write-Step') {
@@ -296,6 +311,28 @@ jobs:
           if ($LASTEXITCODE -ne 1) { Write-Host "iex: expected status 1, got $LASTEXITCODE"; exit 1 }
           Write-Host 'both failed as they should, and iex returned'
           $global:LASTEXITCODE = 0
+      - name: Re-running install.ps1 upgrades Trillion and keeps its extras
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Stand-in wheels in a local folder, in place of PyPI: 0.0.1 with Whisper
+          # added, as a user would have it, then 0.0.2 released.
+          $links = Join-Path $env:RUNNER_TEMP 'fake-index'
+          uv run --no-sync python scripts/fake_trillion_wheels.py $links 0.0.1
+          $env:UV_NO_INDEX = '1'
+          $env:UV_FIND_LINKS = $links
+          $env:UV_TOOL_DIR = Join-Path $env:RUNNER_TEMP 'fake-tools'
+          $env:UV_TOOL_BIN_DIR = Join-Path $env:RUNNER_TEMP 'fake-bin'
+          uv tool install --python 3.13 'trillion[whisper]'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          uv run --no-sync python scripts/fake_trillion_wheels.py $links 0.0.2
+          $env:TRILLION_NO_SETUP = '1'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 0) { Write-Host "status $LASTEXITCODE"; exit 1 }
+          $listed = uv tool list --show-extras
+          Write-Host ($listed -join "`n")
+          if (-not (@($listed) -contains 'trillion v0.0.2 [extras: whisper]')) { exit 1 }
       - name: install.ps1 with no uv installs uv first
         if: runner.os == 'Windows'
         shell: powershell

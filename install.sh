@@ -65,11 +65,28 @@ main() {
         "$uv" tool install --reinstall --python 3.13 "$wheel" ||
             fail "uv could not install $wheel (see above). $old_uv"
     else
+        # Already installed? Keep its extras (such as Whisper): a plain
+        # `uv tool install trillion` would replace them with none.
+        listing="$("$uv" tool list --show-version-specifiers --show-extras 2>/dev/null)" ||
+            fail "this uv is too old for this installer. Update it ('uv self update', or the way you installed it) and try again."
+        installed="$(printf '%s\n' "$listing" | grep '^trillion v' || true)"
+        extras="$(printf '%s\n' "$installed" | sed -n 's/.*\[extras: \([^]]*\)\].*/\1/p' | tr -d ' ')"
         package="trillion"
-        [ -n "$version" ] && package="trillion==$version"
-        say "installing $package (this upgrades it if it is already installed)"
-        "$uv" tool install --upgrade --python 3.13 "$package" ||
-            fail "uv could not install $package (see above). $old_uv"
+        [ -n "$extras" ] && package="trillion[$extras]"
+        # `uv tool upgrade` keeps the extras and the Python, but also keeps a pinned
+        # version or a wheel file, which this installer exists to move past.
+        pinned=""
+        case "$installed" in *"[required:"*) pinned=1 ;; esac
+        if [ -n "$installed" ] && [ -z "$version" ] && [ -z "$pinned" ]; then
+            say "upgrading Trillion${extras:+ (keeping $extras)}"
+            "$uv" tool upgrade trillion ||
+                fail "uv could not upgrade Trillion (see above). To reinstall it: uv tool install --reinstall --python 3.13 '$package'. $old_uv"
+        else
+            [ -n "$version" ] && package="$package==$version"
+            say "installing $package (this upgrades it if it is already installed)"
+            "$uv" tool install --upgrade --python 3.13 "$package" ||
+                fail "uv could not install $package (see above). $old_uv"
+        fi
     fi
 
     # 3. PATH, for new terminals. uv fails when the shell files already have it

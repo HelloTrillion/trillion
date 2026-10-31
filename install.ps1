@@ -24,7 +24,7 @@
 # a nonzero status on failure.
 
 & {
-    param([string[]]$Arguments, [bool]$AsFile)
+    param([string[]]$Arguments)
 
     $ErrorActionPreference = 'Stop'
 
@@ -86,19 +86,47 @@
             Invoke-Native $uv @('tool', 'install', '--reinstall', '--python', '3.13', $Wheel)
             if ($LASTEXITCODE -ne 0) { throw "uv could not install $Wheel (see above). $oldUv" }
         } else {
+            # Already installed? Keep its extras (such as Whisper): a plain
+            # `uv tool install trillion` would replace them with none.
+            $ErrorActionPreference = 'Continue'
+            $listing = & $uv tool list --show-version-specifiers --show-extras 2>$null
+            $listed = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($listed -ne 0) {
+                throw "this uv is too old for this installer. Update it ('uv self update', or the way you installed it) and try again."
+            }
+            $installed = "$(@($listing) | Where-Object { "$_" -like 'trillion v*' } | Select-Object -First 1)"
+            $extras = ''
+            if ($installed -match '\[extras: ([^\]]*)\]') { $extras = $Matches[1] -replace '\s', '' }
             $package = 'trillion'
-            if ($Version) { $package = "trillion==$Version" }
-            Write-Step "installing $package (this upgrades it if it is already installed)"
-            Invoke-Native $uv @('tool', 'install', '--upgrade', '--python', '3.13', $package)
-            if ($LASTEXITCODE -ne 0) { throw "uv could not install $package (see above). $oldUv" }
+            if ($extras) { $package = "trillion[$extras]" }
+            # `uv tool upgrade` keeps the extras and the Python, but also keeps a pinned
+            # version or a wheel file, which this installer exists to move past.
+            $pinned = $installed.Contains('[required:')
+            if ($installed -and -not $Version -and -not $pinned) {
+                if ($extras) { Write-Step "upgrading Trillion (keeping $extras)" } else { Write-Step 'upgrading Trillion' }
+                Invoke-Native $uv @('tool', 'upgrade', 'trillion')
+                if ($LASTEXITCODE -ne 0) {
+                    throw "uv could not upgrade Trillion (see above). To reinstall it: uv tool install --reinstall --python 3.13 '$package'. $oldUv"
+                }
+            } else {
+                if ($Version) { $package = "$package==$Version" }
+                Write-Step "installing $package (this upgrades it if it is already installed)"
+                Invoke-Native $uv @('tool', 'install', '--upgrade', '--python', '3.13', $package)
+                if ($LASTEXITCODE -ne 0) { throw "uv could not install $package (see above). $oldUv" }
+            }
         }
 
         # 3. PATH: for new windows (uv saves it for your user), and for this one.
         $ErrorActionPreference = 'Continue'
-        $bindir = (& $uv tool dir --bin 2>$null | Select-Object -First 1)
+        # Output captured whole, then read: a pipeline here would make
+        # $LASTEXITCODE unreliable in Windows PowerShell 5.1.
+        $dirOutput = & $uv tool dir --bin 2>$null
         $found = $LASTEXITCODE
-        $said = (& $uv tool update-shell 2>&1 | ForEach-Object { "$_" }) -join ' '
+        $bindir = "$(@($dirOutput) | Select-Object -First 1)".Trim()
+        $shellOutput = & $uv tool update-shell 2>&1
         $updated = $LASTEXITCODE
+        $said = (@($shellOutput) | ForEach-Object { "$_" }) -join ' '
         $ErrorActionPreference = 'Stop'
         if ($found -ne 0 -or -not $bindir) {
             throw "uv didn't say where it put Trillion; your uv is probably too old. Run 'uv self update' and try again."
@@ -114,14 +142,29 @@
         if (-not (Test-Path -LiteralPath $trillion -PathType Leaf)) {
             throw "Trillion was installed but $trillion is missing"
         }
-        $installed = (& $trillion --version | Select-Object -First 1)
-        Write-Step "installed $installed in $bindir"
+        # Continue, not Stop: a host that turns a program's stderr into errors
+        # would otherwise throw on its first log line.
+        $ErrorActionPreference = 'Continue'
+        $versionOutput = & $trillion --version 2>$null
+        $ErrorActionPreference = 'Stop'
+        Write-Step "installed $(@($versionOutput) | Select-Object -First 1) in $bindir"
         return $trillion
     }
 
+    # Run from a file, or piped into iex? A script block read from a file knows
+    # its file; one parsed by Invoke-Expression has none. Asked here, inside this
+    # block, it is about this script and not whoever ran it.
+    $AsFile = -not ([string]::IsNullOrEmpty($MyInvocation.MyCommand.ScriptBlock.File) -and
+        [string]::IsNullOrEmpty(({ }).File))
+
     # Options: the environment first, then the parameters of a file run. Under
     # iex, $args belongs to whoever ran it, so it is not ours to read.
-    if (-not $AsFile) { $Arguments = @() }
+    if (-not $AsFile) {
+        if ($Arguments.Count -gt 0) {
+            Write-Step 'piped into iex, so parameters are ignored; set TRILLION_VERSION, TRILLION_WHEEL or TRILLION_NO_SETUP instead'
+        }
+        $Arguments = @()
+    }
     $version = $env:TRILLION_VERSION
     $wheel = $env:TRILLION_WHEEL
     $noSetup = @('1', 'true', 'yes') -contains "$env:TRILLION_NO_SETUP"
@@ -162,7 +205,10 @@ Options, as parameters when run as a file, or the environment variable beside ea
             Write-Step "done. Open a new window and run 'trillion setup' to start."
         } else {
             # Setup: prepares, checks, starts the app and opens the browser.
+            # Continue, not Stop: in a host that turns a program's stderr into errors
+            # (the ISE, VS Code), Stop would throw on setup's first log line.
             Write-Step "running trillion setup (Ctrl+C stops Trillion; to start it again later, open a new window and run 'trillion run')"
+            $ErrorActionPreference = 'Continue'
             & $trillion setup
             $status = $LASTEXITCODE
         }
@@ -174,4 +220,4 @@ Options, as parameters when run as a file, or the environment variable beside ea
     # Never `exit` when piped into iex: leave the status in $LASTEXITCODE.
     $global:LASTEXITCODE = $status
     if ($AsFile -and $status -ne 0) { exit $status }
-} -Arguments $args -AsFile ([IO.Path]::GetFileName("$($MyInvocation.MyCommand.Path)") -eq 'install.ps1')
+} -Arguments $args
