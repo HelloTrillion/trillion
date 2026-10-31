@@ -151,19 +151,25 @@ class Summary:
     # Replies the judge could not score, and prompts that got no reply.
     unjudged: int = 0
     silent: int = 0
+    # The problems that are the eval's absolute pass lines, without those two counts.
+    lines: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
         return not self.problems
 
     def notes(self) -> list[str]:
+        return self.measures() + self.problems
+
+    def measures(self) -> list[str]:
+        """What was measured: the rates, the averages and the lowest scores."""
         lines = [f"{c:<16} {'n/a' if r is None else f'{r:.1%}'}" for c, r in self.rates.items()]
         lines.append(f"judge average    {'n/a' if self.mean is None else f'{self.mean:.2f}'}")
         lines += [f"  {g:<14} {m:.2f}" for g, m in self.groups.items()]
         if self.lowest:
             lines.append("lowest scored:")
         lines += [f"  {r.score.value}  {r.prompt.id}: {r.score.reason}" for r in self.lowest]
-        return lines + self.problems
+        return lines
 
     def totals(self) -> dict[str, Any]:
         return {
@@ -207,6 +213,7 @@ def summarize(rows: Sequence[Row]) -> Summary:
         for g, m in groups.items()
         if m < MIN_GROUP_MEAN
     ]
+    lines = list(problems)
     unjudged = sum(1 for r in rows if r.score.value is None and r.error is None)
     if unjudged:
         problems.append(f"{unjudged} replies could not be judged (a judge error is never a pass)")
@@ -222,6 +229,7 @@ def summarize(rows: Sequence[Row]) -> Summary:
         problems=problems,
         unjudged=unjudged,
         silent=silent,
+        lines=lines,
     )
 
 

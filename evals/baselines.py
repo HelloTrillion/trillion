@@ -29,10 +29,12 @@ _FIELDS = ("model", "judge", "answered_by", "date", "fingerprint", "mean", "grou
 
 
 def fingerprint(soul: Path = SOUL, prompts: Path = PROMPTS) -> str:
-    """SHA-256 over the shipped soul and every prompt file, in name order, with line
-    endings made LF, so a Windows checkout gets the same answer."""
+    """SHA-256 over the shipped soul and every prompt (each *.md file that isn't hidden),
+    in name order, with line endings made LF, so a Windows checkout gets the same answer
+    and a stray file (.DS_Store, an editor's backup) changes nothing."""
     h = hashlib.sha256()
-    for path in [soul, *sorted(p for p in prompts.iterdir() if p.is_file())]:
+    shipped = (p for p in prompts.glob("*.md") if p.is_file() and not p.name.startswith("."))
+    for path in [soul, *sorted(shipped, key=lambda p: p.name)]:
         text = path.read_bytes().replace(b"\r\n", b"\n")
         h.update(path.name.encode() + b"\0" + text + b"\0")
     return h.hexdigest()
@@ -113,25 +115,31 @@ def load_all(folder: Path = BASELINES) -> list[Baseline]:
     return [Baseline.load(p) for p in sorted(folder.glob("*.json"))]
 
 
+def _fell(was: float, now: float, limit: float) -> bool:
+    """Whether it fell by more than the limit. Exactly the limit passes: rounding keeps
+    floating point (3.6 - 3.3 is 0.30000000000000027) from failing it."""
+    return round(was - now, 9) > limit
+
+
 def compare(now: Totals, base: Baseline) -> list[str]:
     """How this run fell past the lines, compared with its baseline. A group or a check
     either side lacks is not compared."""
     was = base.totals
     problems: list[str] = []
-    if now.mean is not None and was.mean is not None and was.mean - now.mean > MAX_MEAN_DROP:
+    if now.mean is not None and was.mean is not None and _fell(was.mean, now.mean, MAX_MEAN_DROP):
         problems.append(
             f"judge average {now.mean:.2f}, down from {was.mean:.2f};"
             f" it may fall {MAX_MEAN_DROP} at most"
         )
     for g, m in now.groups.items():
-        if g in was.groups and was.groups[g] - m > MAX_GROUP_DROP:
+        if g in was.groups and _fell(was.groups[g], m, MAX_GROUP_DROP):
             problems.append(
                 f"{g} averaged {m:.2f}, down from {was.groups[g]:.2f};"
                 f" a group may fall {MAX_GROUP_DROP} at most"
             )
     for c, r in now.rates.items():
         before = was.rates.get(c)
-        if r is not None and before is not None and before - r > MAX_RATE_DROP:
+        if r is not None and before is not None and _fell(before, r, MAX_RATE_DROP):
             problems.append(
                 f"{c} held on {r:.1%}, down from {before:.1%};"
                 f" a check may fall {MAX_RATE_DROP:.0%} at most"

@@ -25,6 +25,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from evals import harness
 from evals.baselines import (
@@ -51,12 +52,19 @@ from trillion.brain.config import (
     ModelSettings,
 )
 from trillion.brain.providers.anthropic import DEFAULT_MODEL
+from trillion.storage.inspect import _read_only
 
 
-def deployed(db: Path, env: Mapping[str, str]) -> tuple[str, str]:
-    """The model this machine's Trillion uses, and its address ("" for Claude), chosen
-    as the app chooses: the environment first, then the saved setting. The database is
-    opened read-only, and the keychain is never read."""
+class Deployed(NamedTuple):
+    model: str
+    # Its OpenAI-compatible address, or "" for Claude.
+    url: str
+    # Said when this shell's environment would have the app use another model.
+    note: str | None = None
+
+
+def _from_env(env: Mapping[str, str]) -> tuple[str, str] | None:
+    """The model the environment would choose, as the app does, or None."""
     base_url = env.get(OPENAI_BASE_URL, "").strip()
     if base_url:
         model = env.get(MODEL, "").strip()
@@ -65,20 +73,40 @@ def deployed(db: Path, env: Mapping[str, str]) -> tuple[str, str]:
         return model, base_url
     if env.get(ANTHROPIC_KEY, "").strip():
         return env.get(MODEL, "").strip() or DEFAULT_MODEL, ""
+    return None
+
+
+def _saved(db: Path) -> ModelSettings | None:
+    """The saved model setting, read without changing anything, or None if none is."""
     if not db.is_file():
-        raise CannotRun(f"no Trillion set up at {db.parent}: nothing is deployed")
-    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
-        row = conn.execute(
-            "SELECT value_json FROM preferences WHERE owner_id = ? AND key = ?",
-            (OWNER, MODEL_PREF),
-        ).fetchone()
-    settings = ModelSettings.from_json(json.loads(row[0])) if row else None
+        return None
+    try:
+        with closing(_read_only(db)) as conn:
+            row = conn.execute(
+                "SELECT value_json FROM preferences WHERE owner_id = ? AND key = ?",
+                (OWNER, MODEL_PREF),
+            ).fetchone()
+    except sqlite3.Error as e:
+        raise CannotRun(f"the saved model setting can't be read: {e}") from e
+    if row is None or row[0] is None:
+        return None
+    try:
+        raw = json.loads(row[0])
+    except ValueError as e:
+        raise CannotRun("the saved model setting can't be read: it isn't JSON") from e
+    if raw is None:
+        return None
+    settings = ModelSettings.from_json(raw)
     if settings is None:
-        raise CannotRun("this Trillion has no model chosen")
+        raise CannotRun("the saved model setting can't be read: it names no model")
+    return settings
+
+
+def _address(settings: ModelSettings, env: Mapping[str, str]) -> str:
     if settings.kind == "anthropic":
         if not env.get(ANTHROPIC_KEY, "").strip():
             raise CannotRun(f"{settings.model} needs {ANTHROPIC_KEY} set in the environment")
-        return settings.model, ""
+        return ""
     if settings.kind == "openai":
         raise CannotRun(
             "grading an OpenAI model is not supported yet: the evals send it no key. "
@@ -88,7 +116,44 @@ def deployed(db: Path, env: Mapping[str, str]) -> tuple[str, str]:
         url = config.endpoint(settings.kind, settings.base_url)
     except ConfigError as e:
         raise CannotRun(f"the saved model's address: {e.code}") from e
-    return settings.model, url or ""
+    return url or ""
+
+
+def deployed(db: Path, env: Mapping[str, str]) -> Deployed:
+    """The model this machine's Trillion is set to use, and its address. The saved
+    setting wins: this shell's environment isn't the app's, and a key set here may be
+    only for a Claude judge, so the key is just a credential. With nothing saved, the
+    environment decides as the app would. The database is opened read-only, and the
+    keychain is never read."""
+    settings = _saved(db)
+    if settings is None:
+        found = _from_env(env)
+        if found is not None:
+            return Deployed(*found)
+        if not db.is_file():
+            raise CannotRun(f"no Trillion set up at {db.parent}: nothing is deployed")
+        raise CannotRun("this Trillion has no model chosen")
+    url = _address(settings, env)
+    try:
+        would = _from_env(env)
+    except CannotRun:
+        would = None
+    note = None
+    if would is not None and would[0] != settings.model:
+        note = (
+            f"the app would use {would[0]} if started with this environment;"
+            f" grading the saved {settings.model}"
+        )
+    return Deployed(settings.model, url, note)
+
+
+def _baseline(path: Path) -> Baseline | None:
+    if not path.is_file():
+        return None
+    try:
+        return Baseline.load(path)
+    except (OSError, ValueError, TypeError, AttributeError) as e:
+        raise CannotRun(f"the baseline {path} can't be read: {e}") from e
 
 
 def check(
@@ -103,6 +168,11 @@ def check(
     accept_drop: str | None = None,
     json_path: Path | None = None,
 ) -> int:
+    judge_name = judge.provider.model
+    path = folder / baseline_path(model, judge_name).name
+    # Everything that can stop the run is read before any model is asked.
+    base = _baseline(path)
+    stamp = fingerprint()
     s = evaluate(sb, judge, report, prompts)
     # The app's event loop adds to sb.served; everything below reads this one copy.
     served = set(sb.served)
@@ -112,17 +182,18 @@ def check(
         hard.append(f"{s.unjudged} replies could not be judged")
     if s.silent:
         hard.append(f"{s.silent} prompts got no reply")
-    judge_name = judge.provider.model
-    path = folder / baseline_path(model, judge_name).name
-    base = Baseline.load(path) if path.is_file() else None
     drops = compare(totals, base) if base is not None else []
-    # The persona eval's own lines (s.problems) are printed through s.notes(), but they
-    # don't fail the gate: it fails on change against the baseline, and on hard problems.
-    problems = hard + drops
+    # The persona eval's own lines (s.lines) are printed, but they don't fail the gate:
+    # it fails on change against the baseline, and on hard problems.
+    failing = hard + drops
+    accepted: list[str] = []
+    saved, refused = False, None
     if base is None:
-        notes.append(f"no baseline for {model} judged by {judge_name}: nothing to compare with")
-        if not save:
-            problems.append("no baseline yet; run again with --save-baseline to make one")
+        missing = f"no baseline for {model} judged by {judge_name} yet"
+        if save:
+            notes.append(f"{missing}: this run is the first")
+        else:
+            failing.append(f"{missing}; run again with --save-baseline to make one")
     if save:
         refused = may_save(hard=hard, drops=drops, accept_drop=accept_drop)
         if refused is None:
@@ -131,20 +202,39 @@ def check(
                 judge=judge_name,
                 answered_by=tuple(sorted(served)),
                 date=datetime.now(UTC).isoformat(timespec="seconds"),
-                fingerprint=fingerprint(),
+                fingerprint=stamp,
                 totals=totals,
-                accepted_drop=accept_drop,
+                # A reason is kept only when there was a drop for it to explain.
+                accepted_drop=accept_drop if drops else None,
             ).save(path)
+            saved = True
             notes.append(f"saved baseline: {path}")
-            problems = []
+            # The drops stay in sight; only what would fail the run is cleared.
+            accepted = [f"accepted: {d}" for d in drops]
+            failing = []
         else:
-            problems.append(refused)
+            failing.append(refused)
+    lines = s.measures()
+    if s.lines:
+        lines += ["persona lines (not gated):", *(f"  {line}" for line in s.lines)]
+    persona = {k: v for k, v in s.totals().items() if k != "problems"}
     mean = "n/a" if s.mean is None else f"{s.mean:.2f}"
     return report.finish(
-        not problems,
+        not failing,
         f"{len(prompts)} prompts, judge average {mean}",
-        notes=[*s.notes(), *notes, *problems],
-        totals={**s.totals(), "baseline": None if base is None else base.to_json()},
+        notes=[*lines, *notes, *accepted, *failing],
+        totals={
+            **persona,
+            "persona_lines": s.lines,
+            "baseline": None if base is None else base.to_json(),
+            "gate": {
+                "hard": hard,
+                "drops": drops,
+                "notes": notes,
+                "saved": saved,
+                "refused": refused,
+            },
+        },
         path=json_path,
     )
 
@@ -155,13 +245,28 @@ def _extra(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--accept-drop", default=None, metavar="WHY", help="keep a worse run, saying why"
     )
+    # None marks "not given", so --deployed can refuse a model named alongside it.
+    p.set_defaults(model=None, url=None)
 
 
 def _main(opts: argparse.Namespace) -> int:
-    if opts.only and opts.save_baseline:
-        raise CannotRun("a baseline is the whole eval: --only and --save-baseline don't mix")
-    prompts = harness.pick(PROMPTS, opts.only, lambda p: (p.id, p.group))
-    model, url = deployed(paths.db_path(), os.environ) if opts.deployed else (opts.model, opts.url)
+    # Every option is checked before any model is set up or asked.
+    if opts.only:
+        raise CannotRun("the gate takes no --only: part of the eval can't match a baseline")
+    if opts.accept_drop is not None:
+        if not opts.save_baseline:
+            raise CannotRun("--accept-drop only goes with --save-baseline")
+        if not opts.accept_drop.strip():
+            raise CannotRun("--accept-drop needs a reason")
+    if opts.deployed:
+        if opts.model is not None or opts.url is not None:
+            raise CannotRun("--deployed grades the saved model: leave out --model and --url")
+        model, url, note = deployed(paths.db_path(), os.environ)
+        if note is not None:
+            sys.stdout.write(note + "\n")
+    else:
+        model = opts.model or harness.LOCAL_MODEL
+        url = opts.url or config.LOCAL_URL
     make = harness.model_provider(model, url, os.environ)
     with harness.judge_for(opts.judge_model, opts.judge_url, os.environ) as judge:
         report = Report("gate", model, judge.line)
@@ -170,7 +275,7 @@ def _main(opts: argparse.Namespace) -> int:
                 sb,
                 judge,
                 report,
-                prompts,
+                PROMPTS,
                 model=model,
                 save=opts.save_baseline,
                 accept_drop=opts.accept_drop,
