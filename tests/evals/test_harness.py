@@ -17,6 +17,7 @@ from evals import harness
 from tests.brain.fakes import ScriptedProvider, say, use
 from trillion.brain.config import ANTHROPIC_KEY
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
+from trillion.brain.types import ContextBlock
 from trillion.secrets.store import KeychainStore
 
 AT = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
@@ -312,3 +313,27 @@ def test_fresh_starts_a_new_conversation_in_a_new_home(tmp_path: Path) -> None:
         t = sb.converse([Ask(text="second")])
     assert t.replies == ["Two."]
     assert len(scripted.calls[1][1]) == 1  # the new conversation carries no history
+
+
+def test_a_spoken_turn_goes_through_the_recognizer_and_is_marked_spoken(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(say("Ten past four."))
+    with sandbox(tmp_path, scripted) as sb:
+        t = sb.converse([Ask(text="what time is it", via="voice")])
+    (turn,) = t.turns
+    assert (turn.said, turn.via, turn.reply, turn.error) == (
+        "what time is it", "voice", "Ten past four.", None,
+    )  # fmt: skip
+    context = scripted.calls[0][1][-1].blocks[0]
+    # voice.md rides on the spoken message: one or two sentences, no markdown, no dashes.
+    assert isinstance(context, ContextBlock) and "THIS MESSAGE WAS SPOKEN" in context.text
+    assert t.render().startswith("Sam (spoken): what time is it")
+
+
+def test_typed_and_spoken_turns_mix_in_one_conversation(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(say("Hi."), say("Now."), say("Typed again."))
+    with sandbox(tmp_path, scripted) as sb:
+        t = sb.converse([Ask(text="hi"), Ask(text="and now", via="voice"), Ask(text="and typing")])
+    assert t.replies == ["Hi.", "Now.", "Typed again."]
+    assert [turn.via for turn in t.turns] == ["text", "voice", "text"]
+    spoken = [m.blocks[0] for m in scripted.calls[2][1] if m.role == "user"]
+    assert ["THIS MESSAGE WAS SPOKEN" in b.text for b in spoken] == [False, True, False]

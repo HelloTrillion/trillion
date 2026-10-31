@@ -28,6 +28,7 @@ import httpx
 from tests.api import test_server
 from tests.api.test_server import App, Chat, reply
 from tests.brain.fakes import is_naming
+from tests.voice.audio import frames, room, tone
 from tests.voice.fakes import FakeSTT
 
 from trillion.api.runtime import ListenSettings
@@ -311,6 +312,10 @@ USER, AGENT = "Sam", "Nova"
 # A real model can think for a while between messages; a scripted one never needs it.
 PATIENT_S = 300.0
 ENDS = ("turn.complete", "error", "interrupted")
+# Made-up microphone audio: half a second of "voice", then enough quiet for a batch
+# recognizer to decide they stopped (tests/api/test_listening.py does the same). It is
+# only ever sent as bytes over the socket: never played, never recorded.
+SPOKEN = tone(0.5) + room(2.2)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -560,7 +565,16 @@ class Sandbox:
         return self._turn(ask, msgs, answer, tapped)
 
     def _speak(self, chat: Chat, text: str) -> list[dict[str, Any]]:
-        raise NotImplementedError("spoken turns arrive in the next task")
+        """A spoken turn: the page opens the microphone, sends audio, and the scripted
+        recognizer hears `text` once the audio stops. The session marks it spoken."""
+        self.stt.on_finish = [text]
+        chat.ws.send_json({"type": "listen.start"})
+        opened = chat.until("mic.start", "error")
+        if opened[-1]["type"] == "error":
+            return opened
+        for frame in frames(SPOKEN):
+            chat.ws.send_bytes(frame)
+        return opened + chat.until(*ENDS)
 
     def _turn(self, ask: Ask, msgs: list[dict[str, Any]], answer: str, tapped: Tap | None) -> Turn:
         results = self.provider.results()
