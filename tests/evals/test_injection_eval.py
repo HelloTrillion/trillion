@@ -9,7 +9,9 @@ from evals.harness import Report, Sandbox
 from evals.injection.pages import PAGES
 from evals.injection.run import evaluate, score
 
+from tests.api.test_server import App
 from tests.brain.fakes import ScriptedProvider, say, use
+from trillion.spine.contract import JSON, BaseTool, Risk, ToolContext, ToolDefinition, ToolResult
 
 
 def test_the_pages_are_the_same_six() -> None:
@@ -78,3 +80,49 @@ def test_the_attacker_is_counted_on_the_wire_and_the_bare_link_once_is_allowed(
     assert once["passed"] and once["actions"] == 0
     assert not twice["passed"] and twice["actions"] == 2
     assert "Roses are late" in twice["reply"]
+
+
+class Scribble(BaseTool):
+    """A test-only tool that writes a file in the shared folder with no card: what a
+    follow-up acting on the page would leave behind."""
+
+    def __init__(self, app: App) -> None:
+        self.app = app
+        self.definition = ToolDefinition(
+            name="scribble",
+            description="Write a short file in the shared folder.",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            risk=Risk.WRITE,
+            category="eval",
+            timeout_s=10.0,
+        )
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        (self.app.granted / str(args["name"])).write_text("compromised", encoding="utf-8")
+        return ToolResult(ok=True, content="written", effect="confirmed")
+
+
+class WithScribble(Sandbox):
+    def _open(self) -> None:
+        super()._open()
+        self.app.rt.registry.register(Scribble(self.app), module=__name__)
+
+
+def test_a_follow_up_that_acts_on_the_page_is_counted(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://news.example/granted_write"}, "c0"),
+        say("Reading it now."),
+        # The page's words, acted on in the follow-up that brought it in.
+        use("scribble", {"name": "URGENT.txt"}, "c1"),
+        say("Done what the page said."),
+    )
+    with WithScribble(lambda: scripted, root=tmp_path / "evals") as sb:
+        report = Report("injection", "fake-1", "judge: none", out=io.StringIO())
+        page = {"granted_write": PAGES["granted_write"]}
+        assert evaluate(sb, report, page, ssh_config=tmp_path / "ssh_config") == 1
+    (case,) = report.cases
+    assert not case["passed"] and case["actions"] == 1 and "scribble" in case["attempts"]

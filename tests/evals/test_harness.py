@@ -17,7 +17,7 @@ from evals.harness import Ask, CannotRun, Judge, Report, Sandbox, Score, parse_s
 
 from evals import harness
 from tests.brain.fakes import ScriptedProvider, say, use
-from tests.unit.test_web import Wire, response
+from tests.unit.test_web import Wire, names, response
 from trillion.brain.config import ANTHROPIC_KEY
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.types import ContextBlock, Msg, SystemBlock, TextBlock
@@ -325,6 +325,10 @@ def test_a_card_is_tapped_and_what_she_says_after_is_kept(tmp_path: Path) -> Non
     # What the host told her about the tap is part of what a reply is held to.
     assert '"status": "succeeded"' in t.evidence
     assert "[Sam tapped Approve]" in t.render()
+    # The judge sees what the host told her after the tap, not only the proposal.
+    (note,) = t.turns[0].notes
+    assert note.startswith("[host] The user tapped Approve") and '"status": "succeeded"' in note
+    assert "  [host] The user tapped Approve" in t.render()
 
 
 def test_a_declined_card_runs_nothing(tmp_path: Path) -> None:
@@ -515,3 +519,75 @@ def test_every_background_read_is_waited_for_however_many_turns_bring_them_in(
     assert turn.reply == ("Reading both. The fast one is about soup. The slow one is about bread.")
     assert wire.opened == [FAST, SLOW]
     assert "Soup is good." in t.evidence and "Bread is good." in t.evidence
+
+
+def test_what_she_says_across_a_tool_call_is_kept_as_separate_sentences(tmp_path: Path) -> None:
+    scripted = ScriptedProvider()
+    with sandbox(tmp_path, scripted) as sb:
+        scripted._replies += [
+            use("file_list", {"path": str(sb.app.granted)}, text="Looking now"),
+            say("Sent."),
+        ]
+        t = sb.converse([Ask(text="what's in my folder?")])
+    # Never "Looking nowSent." or "Looking now Sent.": two sentences, as she said them.
+    assert t.turns[0].reply == "Looking now. Sent."
+
+
+def test_the_judge_sees_how_a_background_read_ended(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://fast.example/"}), say("Reading it now."), say("A 404.")
+    )
+    with sandbox(tmp_path, scripted) as sb:
+        assert sb.app.rt.web is not None
+        sb.app.rt.web.use(names({"fast.example": [FAST]}), Wire(response("gone", status=404)))
+        t = sb.converse([Ask(text="Read https://fast.example/")])
+    (note,) = t.turns[0].notes
+    assert note.startswith("[host]") and "404" in note
+    shown = t.render()
+    assert "[tool web_fetch, background]" in shown and "  [host]" in shown
+    assert shown.index("  [host]") < shown.index("Nova: Reading it now. A 404.")
+
+
+def test_a_follow_up_that_never_comes_fails_the_turn_not_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.api import test_server
+
+    async def never(host: str, port: int) -> list[str]:
+        await asyncio.sleep(3600)
+        return [FAST]
+
+    monkeypatch.setattr(test_server, "RECEIVE_TIMEOUT_S", 1.0)
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://fast.example/"}), say("Reading it now."), say("Next.")
+    )
+    with sandbox(tmp_path, scripted) as sb:
+        assert sb.app.rt.web is not None
+        sb.app.rt.web.use(never, Wire())
+        t = sb.converse([Ask(text="Read https://fast.example/")])
+        (turn,) = t.turns
+        assert turn.error == "no follow-up" and turn.reply == "Reading it now."
+        # The run carries on with the next case.
+        sb.fresh()
+        assert sb.converse([Ask(text="and now?")]).replies == ["Next."]
+
+
+def test_settle_waits_for_background_reads_and_gives_up_at_its_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.api import test_server
+
+    async def never(host: str, port: int) -> list[str]:
+        await asyncio.sleep(3600)
+        return [FAST]
+
+    monkeypatch.setattr(test_server, "RECEIVE_TIMEOUT_S", 1.0)
+    scripted = ScriptedProvider(
+        use("web_fetch", {"url": "https://fast.example/"}), say("Reading it now.")
+    )
+    with sandbox(tmp_path, scripted) as sb:
+        assert sb.settle(0.1)  # nothing running
+        assert sb.app.rt.web is not None
+        sb.app.rt.web.use(never, Wire())
+        sb.converse([Ask(text="Read https://fast.example/")])
+        assert not sb.settle(0.2)  # still reading: bounded, never forever

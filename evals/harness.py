@@ -28,7 +28,7 @@ from typing import Any, Literal, TextIO
 import aiosqlite.core
 import httpx
 from tests.api import test_server
-from tests.api.test_server import App, Chat, reply
+from tests.api.test_server import App, Chat
 from tests.brain.fakes import is_naming
 from tests.voice.audio import frames, room, tone
 from tests.voice.fakes import FakeSTT
@@ -391,6 +391,8 @@ class Turn:
     cards: tuple[str, ...] = ()
     tapped: Tap | None = None
     error: str | None = None
+    # What the host told her this turn: how a background read ended, what a tap did.
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -418,6 +420,7 @@ class Transcript:
             if t.tapped is not None:
                 tapped = "Approve" if t.tapped == "confirm" else "Decline"
                 lines.append(f"  [{self.user} tapped {tapped}]")
+            lines += [f"  {' '.join(n.split())[:400]}" for n in t.notes]
             lines.append(f"{self.agent}: {t.reply}")
         return "\n".join(lines)
 
@@ -426,6 +429,8 @@ class Transcript:
 _READ_ENDED = "The background read you started ("
 # At most this many follow-up turns are waited for after one ask.
 MAX_FOLLOW_UPS = 8
+# How long `Sandbox.settle` waits for background reads to finish, at most.
+SETTLE_S = 30.0
 
 
 class Recorder:
@@ -492,6 +497,15 @@ class Recorder:
             if isinstance(b, ToolResultBlock)
         }
 
+    def notes(self) -> list[str]:
+        """Every host note in the conversation so far."""
+        return [
+            b.text
+            for m in self._last()
+            for b in m.blocks
+            if isinstance(b, TextBlock) and b.text.startswith("[host]")
+        ]
+
     def evidence(self) -> str:
         """Every tool result and host note in the conversation so far."""
         seen: list[str] = []
@@ -506,6 +520,35 @@ class Recorder:
 
 def _no_notification(title: str, body: str, *, silent: bool = False) -> bool:
     return False
+
+
+# Between these, what she says is a new stretch of speech: a tool ran, or a turn ended.
+_BREAKS = frozenset(
+    {"tool.start", "tool.end", "confirm.request", "confirm.resolved", "turn.complete"}
+)
+_STOPS = (".", "!", "?", "\u2026", ":", ";", '"', "'", ")", "\u201d", "\u2019")
+
+
+def _spoken(msgs: Sequence[dict[str, Any]]) -> str:
+    """Her words in a turn, each stretch between tool calls and turns kept a sentence of
+    its own: "Reading it now" then "Sent." is "Reading it now. Sent.", never one."""
+    stretches: list[str] = []
+    current: list[str] = []
+    for m in msgs:
+        if m["type"] == "reply.delta":
+            current.append(str(m["text"]))
+        elif m["type"] in _BREAKS and current:
+            stretches.append("".join(current))
+            current = []
+    stretches.append("".join(current))
+    said = ""
+    for part in (p.strip() for p in stretches):
+        if not part:
+            continue
+        if said and not said.endswith(_STOPS):
+            said += "."
+        said = f"{said} {part}" if said else part
+    return said
 
 
 def _finished(msgs: Sequence[dict[str, Any]]) -> bool:
@@ -634,6 +677,27 @@ class Sandbox:
             app, self._app = self._app, None
             app.close()
 
+    def settle(self, bound_s: float = SETTLE_S) -> bool:
+        """Wait, at most `bound_s`, until no background read is running or delivering:
+        a fetch she started has connected or been refused. False if one still is."""
+        jobs = self.app.rt.jobs
+        portal = self.app.client.portal
+        if portal is None:
+            raise RuntimeError("the sandbox is not open")
+
+        async def idle() -> bool:
+            loop = asyncio.get_running_loop()
+            end = loop.time() + bound_s
+            # Jobs keeps every task it runs for a conversation, delivery included,
+            # until it is done.
+            while jobs._tasks:
+                if loop.time() >= end:
+                    return False
+                await asyncio.sleep(0.02)
+            return True
+
+        return portal.call(idle)
+
     def _conversation(self) -> Chat:
         if self._chat is None:
             self._chat = self._stack.enter_context(self.app.connect())
@@ -648,17 +712,17 @@ class Sandbox:
         chat = self._conversation()
         self.provider.said.append(ask.text)
         ended_before = self.provider.reads_ended()
+        notes_before = len(self.provider.notes())
         msgs = self._speak(chat, ask.text) if ask.via == "voice" else chat.say(ask.text)
-        answer = reply(msgs)
         cards = [m for m in msgs if m["type"] == "confirm.request"]
         tapped: Tap | None = None
+        missing: str | None = None
         if _finished(msgs):
             chat.until("state")  # her turn is over: the session is at rest again
             if ask.tap is not None and cards:
                 msgs.append(chat.tap(ask.tap, str(cards[-1]["pending_id"])))
                 after = chat.until(*ENDS)
                 msgs += after
-                answer = " ".join(s for s in (answer, reply(after)) if s)
                 tapped = ask.tap
                 if _finished(after):
                     chat.until("state")
@@ -671,12 +735,17 @@ class Sandbox:
                 )
                 if not _finished(msgs) or self.provider.reads_ended() - ended_before >= started:
                     break
-                later = chat.until(*ENDS)
+                try:
+                    later = chat.until(*ENDS)
+                except TimeoutError:
+                    # It never came: this turn fails, and the run carries on.
+                    missing = "no follow-up"
+                    break
                 msgs += later
-                answer = " ".join(s for s in (answer, reply(later)) if s)
                 if _finished(later):
                     chat.until("state")
-        return self._turn(ask, msgs, answer, tapped)
+        notes = tuple(self.provider.notes()[notes_before:])
+        return self._turn(ask, msgs, tapped, notes=notes, error=missing)
 
     def _speak(self, chat: Chat, text: str) -> list[dict[str, Any]]:
         """A spoken turn: the page opens the microphone, sends audio, and the scripted
@@ -690,7 +759,15 @@ class Sandbox:
             chat.ws.send_bytes(frame)
         return opened + chat.until(*ENDS)
 
-    def _turn(self, ask: Ask, msgs: list[dict[str, Any]], answer: str, tapped: Tap | None) -> Turn:
+    def _turn(
+        self,
+        ask: Ask,
+        msgs: list[dict[str, Any]],
+        tapped: Tap | None,
+        *,
+        notes: tuple[str, ...] = (),
+        error: str | None = None,
+    ) -> Turn:
         results = self.provider.results()
         ended = {m["call_id"]: m for m in msgs if m["type"] == "tool.end"}
         tools = tuple(
@@ -705,12 +782,15 @@ class Sandbox:
         )
         heard = [str(m["text"]) for m in msgs if m["type"] == "transcript.final"]
         errors = [str(m.get("code", "error")) for m in msgs if m["type"] == "error"]
+        if error is not None:
+            errors.append(error)
         return Turn(
             said=heard[-1] if heard else ask.text,
             via=ask.via,
-            reply=answer,
+            reply=_spoken(msgs),
             tools=tools,
             cards=tuple(str(m["summary"]) for m in msgs if m["type"] == "confirm.request"),
             tapped=tapped,
             error=errors[-1] if errors else None,
+            notes=notes,
         )
