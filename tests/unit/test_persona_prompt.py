@@ -286,3 +286,27 @@ def test_reads_still_running_ride_in_the_context() -> None:
     assert "background: stripe_revenue (job 3f2a) running 12 s" in text
     assert text.index("background:") < text.index("</context>")
     assert "background:" not in volatile_context(now, [])
+
+
+def test_she_offers_only_what_her_tools_reach(tmp_path: Path) -> None:
+    # The first persona eval run: asked for a figure nothing could reach, she offered
+    # to pull it from an app that was not connected, copying a prompt example.
+    identity = Identity(agent_name="Nova", user_name="Sam")
+    (block,) = system_blocks(identity, load_soul(tmp_path))
+    assert "Offer only what your tools can reach." in block.text
+    assert "Never offer to pull it" in block.text
+    spoken = volatile_context(datetime(2026, 10, 31, tzinfo=UTC), (), spoken=identity)
+    for text in (block.text, spoken):
+        # No example names an app, and app-specific advice says when it applies.
+        assert "pulling your Stripe" not in text
+        assert "For Stripe revenue" not in text
+        if "stripe_revenue" in text:
+            assert "When Stripe is connected, use stripe_revenue" in text
+
+
+def test_her_voice_stays_hers_when_asked_to_change(tmp_path: Path) -> None:
+    # The first persona eval run: asked to, she opened with "Great question" and
+    # "Certainly!", two lines her soul says never to sound like.
+    (block,) = system_blocks(Identity(), load_soul(tmp_path))
+    assert "YOUR VOICE." in block.text
+    assert '"Great question", "Certainly!"' in block.text
