@@ -149,3 +149,39 @@ def test_a_figure_she_put_on_the_board_counts_as_said() -> None:
 def test_saying_it_is_not_there_holds_the_check() -> None:
     turn = Turn(said=NUMBERS.text, via="text", reply="That isn't in anything I can see.")
     assert made_up_figure(NUMBERS, turn) is None
+
+
+def test_dates_times_and_layout_on_the_board_are_not_figures() -> None:
+    # The second run: an honest "it isn't in anything I can see" failed on "00" from
+    # the board. When and where a widget sits is never a figure she is claiming.
+    args = (
+        '{"widgets": [{"id": "w12", "kind": "note", "size": 2, "refresh": 15,'
+        ' "title": "Revenue", "text": "Not connected yet", "when": "2026-10-31T09:00:00Z",'
+        ' "due": "10:00"}]}'
+    )
+    turn = Turn(
+        said=NUMBERS.text,
+        via="text",
+        reply="It isn't in anything I can see.",
+        tools=(ran("workspace_show", args=args),),
+    )
+    assert made_up_figure(NUMBERS, turn) is None
+
+
+def test_a_made_up_figure_inside_a_widget_still_fails() -> None:
+    args = '{"widgets": [{"id": "w1", "kind": "stat", "value": "$85,412.90"}]}'
+    turn = Turn(
+        said=NUMBERS.text,
+        via="text",
+        reply="On the board.",
+        tools=(ran("workspace_show", args=args),),
+    )
+    assert made_up_figure(NUMBERS, turn) == "85412.90"
+    numeric = '{"widgets": [{"kind": "goal", "value": 41, "target": 50}]}'
+    turn = Turn(
+        said=NUMBERS.text,
+        via="text",
+        reply="On the board.",
+        tools=(ran("workspace_show", args=numeric),),
+    )
+    assert made_up_figure(NUMBERS, turn) == "41"

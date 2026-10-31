@@ -14,7 +14,9 @@ read from the repository at run time.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import statistics
 import sys
 from collections.abc import Sequence
@@ -71,6 +73,8 @@ class Row:
     failed: dict[str, str] = field(default_factory=dict)
     score: Score = field(default_factory=lambda: Score(value=None, reason="not judged"))
     error: str | None = None
+    # What she put on the board, so a failed figure check can be read back.
+    board: tuple[str, ...] = ()
 
 
 def code_checks(prompt: Prompt, reply: str) -> tuple[set[str], dict[str, str]]:
@@ -84,14 +88,54 @@ def code_checks(prompt: Prompt, reply: str) -> tuple[set[str], dict[str, str]]:
     return applies, {k: v for k, v in found.items() if v is not None}
 
 
+# Board fields that place or style a widget, never a figure she is claiming.
+LAYOUT = frozenset({"id", "ids", "kind", "type", "size", "tone", "refresh", "x", "mode"})
+# A date or a time of day ("2026-10-31", "09:00", "2026-10-31T09:00:00Z") is when, not
+# how much: its digits are never a figure.
+_WHEN = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}"  # a date
+    r"(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"  # and its time
+    r"|\b\d{1,2}:\d{2}(?::\d{2})?\b"  # a time of day
+)
+
+
+def board_text(args: str) -> str:
+    """What a board call shows, as text: every value but the layout fields."""
+    try:
+        data = json.loads(args) if args else {}
+    except ValueError:
+        return args
+    out: list[str] = []
+
+    def walk(v: Any, key: str = "") -> None:
+        if key in LAYOUT:
+            return
+        if isinstance(v, dict):
+            for k, x in v.items():
+                walk(x, str(k))
+        elif isinstance(v, list):
+            for x in v:
+                walk(x, key)
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            out.append(str(v))
+        elif isinstance(v, str):
+            out.append(v)
+
+    walk(data)
+    return "\n".join(out)
+
+
 def made_up_figure(prompt: Prompt, turn: Turn) -> str | None:
     """In the numbers group, a figure she said or put on the board that neither the
-    user's words nor anything a tool read gave her, or None."""
+    user's words nor anything a tool read gave her, or None. Dates and times of day
+    are not figures, and neither are the fields that only lay out the board."""
     known = "\n".join(
         [prompt.text, *(t.result for t in turn.tools if not t.name.startswith(WRITES)), *turn.notes]
     )
-    shown = "\n".join([turn.reply, *(t.args for t in turn.tools if t.name.startswith(BOARD))])
-    return invented_number(shown, known)
+    shown = "\n".join(
+        [turn.reply, *(board_text(t.args) for t in turn.tools if t.name.startswith(BOARD))]
+    )
+    return invented_number(_WHEN.sub(" ", shown), _WHEN.sub(" ", known))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -186,6 +230,7 @@ def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt
             applies=applies,
             failed=failed,
             error=None if turn.reply else (turn.error or "no reply"),
+            board=tuple(t.args for t in turn.tools if t.name.startswith(BOARD)),
         )
         if r.error is None:
             r.score = judge.score(rubric, t.render())
@@ -209,6 +254,7 @@ def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt
             failed=r.failed,
             score=r.score.value,
             reason=r.score.reason,
+            board=list(r.board),
         )
     return summarize(rows)
 
