@@ -465,7 +465,12 @@ class Recorder:
     the latest call is not always this conversation's: what a turn is held to comes
     from the latest call that carries the conversation's first message."""
 
-    def __init__(self, inner: ModelProvider, served: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        inner: ModelProvider,
+        served: set[str] | None = None,
+        unreported: Callable[[], None] | None = None,
+    ) -> None:
         self.inner = inner
         self.name = inner.name
         self.model = inner.model
@@ -475,6 +480,8 @@ class Recorder:
         # Every model the provider said answered, across the sandbox's conversations.
         # The judge's own calls never pass through here, so they are never counted.
         self.served = served if served is not None else set()
+        # Called once for each reply to a turn whose provider named no model.
+        self._unreported = unreported if unreported is not None else (lambda: None)
 
     def pricing(self) -> Pricing | None:
         return self.inner.pricing()
@@ -487,13 +494,17 @@ class Recorder:
         tools: Sequence[ToolSchema],
         max_tokens: int,
     ) -> AsyncIterator[ModelEvent]:
-        if not is_naming(system):  # naming a conversation is not a turn
+        turn = not is_naming(system)  # naming a conversation is not a turn
+        if turn:
             self.calls.append((list(system), list(messages)))
         async for ev in self.inner.stream(
             system=system, messages=messages, tools=tools, max_tokens=max_tokens
         ):
-            if isinstance(ev, Done) and ev.model:
-                self.served.add(ev.model)
+            if isinstance(ev, Done):
+                if ev.model:
+                    self.served.add(ev.model)
+                elif turn:
+                    self._unreported()
             yield ev
 
     def _last(self) -> list[Msg]:
@@ -624,6 +635,8 @@ class Sandbox:
         self.root: Path | None = None
         # Every model that answered her, across all of this sandbox's apps (EVL-4).
         self.served: set[str] = set()
+        # Replies whose provider never said which model answered, across those apps.
+        self.unreported = 0
         self.provider: Recorder
         self.stt: FakeSTT
 
@@ -681,6 +694,9 @@ class Sandbox:
             raise RuntimeError("the sandbox is not open")
         return self._app
 
+    def _unreported(self) -> None:
+        self.unreported += 1
+
     def fresh(self) -> None:
         """A new conversation in a new app and home: cases never see each other."""
         self._close()
@@ -693,7 +709,7 @@ class Sandbox:
         place = self.root / f"case-{self._count}"
         place.mkdir(parents=True)
         os.environ["TRILLION_HOME"] = str(place / "home")
-        self.provider = Recorder(self._make(), self.served)
+        self.provider = Recorder(self._make(), self.served, self._unreported)
         app = App(place, self.provider)
         self._app = app
         rt = app.rt

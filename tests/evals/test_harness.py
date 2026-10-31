@@ -703,6 +703,31 @@ def test_the_sandbox_collects_every_model_that_answered(tmp_path: Path) -> None:
         sb.fresh()  # a new app keeps counting
         sb.converse([Ask(text="two")])
         assert sb.served == {"m-1", "m-2"}
+        assert sb.unreported == 0
+
+
+def test_the_sandbox_counts_replies_that_named_no_model(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(say("Hi."), say("Hello."))
+    with Sandbox(lambda: scripted, root=tmp_path / "e") as sb:
+        sb.converse([Ask(text="one")])
+        sb.fresh()  # a new app keeps counting
+        sb.converse([Ask(text="two")])
+        assert sb.served == set() and sb.unreported == 2
+
+
+def test_the_judge_is_never_counted_as_a_model_that_answered(tmp_path: Path) -> None:
+    def answered(model: str, text: str) -> list[ModelEvent]:
+        return [TextDelta(text=text), Done(stop_reason="end", usage=Usage(), model=model)]
+
+    scripted = ScriptedProvider(answered("m-1", "Soup."))
+    judging = ScriptedProvider(answered("judge-9", '{"score": 4, "reason": "fine"}'))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "e") as sb,
+        Judge(judging, local=True) as judge,
+    ):
+        sb.converse([Ask(text="lunch?")])
+        assert judge.score("rubric", "transcript").value == 4
+        assert sb.served == {"m-1"} and sb.unreported == 0
 
 
 def test_an_eval_can_add_its_own_options() -> None:
