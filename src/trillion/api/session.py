@@ -2930,7 +2930,8 @@ class Session:
             routine=self._routine,
             jobs=jobs,
             turn=self._turn if turn is None else turn,
-            who=self._rt.identity,
+            # "Your last line" is asked about the user's own words, never a host note.
+            who=self._rt.identity if kind == "user" else None,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:

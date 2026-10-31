@@ -19,7 +19,7 @@ from tests.voice.fakes import FakeSTT
 from trillion import paths
 from trillion.api.runtime import ListenSettings, Runtime, open_runtime
 from trillion.api.session import Session
-from trillion.brain.types import ProviderError, SystemBlock
+from trillion.brain.types import ContextBlock, ProviderError, SystemBlock
 from trillion.secrets.store import MemoryStore
 
 
@@ -389,4 +389,42 @@ async def test_a_board_change_from_the_page_drops_the_draft(rt: Runtime) -> None
     context = str(sent[-1].blocks[0].text)  # type: ignore[union-attr]
     assert 'Board (open): "October": w1 stat "Total".' in context
     assert "w2 note" not in context and "Milk" not in context
+    await session.close()
+
+
+async def test_a_fifth_message_sent_as_a_used_draft_carries_the_checkpoint(rt: Runtime) -> None:
+    """The draft is built before the message is counted, so it asks for the next turn."""
+    stt, provider = judging(rt, *(say(f"R{i}.") for i in range(5)))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    for i in range(4):
+        await session.handle({"type": "turn.text", "text": f"m{i}"})
+        await idle(session)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: len(provider.calls) == 5)
+    await finish(session, stt, "call the dentist")
+    assert len(provider.calls) == 5 and drafts()[-1] == "used"
+    assert session._turn == 5
+    sent = provider.calls[4][1][-1].blocks[0]
+    assert isinstance(sent, ContextBlock) and "Snap back now" in sent.text
+    fourth = provider.calls[3][1][-1].blocks[0]
+    assert isinstance(fourth, ContextBlock) and "Snap back now" not in fourth.text
+    await session.close()
+
+
+async def test_a_host_note_never_carries_the_checkpoint(rt: Runtime) -> None:
+    """The checkpoint asks about "your last line": it rides on the user's own words only."""
+    _stt, _provider = judging(rt, *(say(f"R{i}.") for i in range(5)))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    for i in range(5):
+        await session.handle({"type": "turn.text", "text": f"m{i}"})
+        await idle(session)
+    assert session._turn == 5
+    note = (await session._build_input("tap", "[host] a tap's note")).msg.blocks[0]
+    assert isinstance(note, ContextBlock) and "Snap back now" not in note.text
+    own = (await session._build_input("user", "and another thing")).msg.blocks[0]
+    assert isinstance(own, ContextBlock) and "Snap back now" in own.text
     await session.close()

@@ -506,6 +506,26 @@ def test_a_reload_resumes_the_conversation_and_its_open_card(make: Any) -> None:
     assert (app.granted / "note.txt").exists()
 
 
+def test_the_message_count_survives_a_reload(make: Any) -> None:
+    """Four messages, a reload, then the fifth: it still carries the checkpoint."""
+    app = make(*(say(f"R{i}.") for i in range(5)))
+    with app.connect() as chat:
+        for i in range(4):
+            chat.say(f"m{i}")
+            chat.until("state")
+        conversation = chat.session["id"]
+    with app.client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_json({"type": "hello", "token": app.rt.token, "resume": conversation})
+        chat = Chat(ws)
+        assert chat.until("state")[0]["id"] == conversation
+        chat.say("m4")
+        chat.until("state")
+    _, messages = app.provider.calls[-1]
+    assert len(app.provider.calls) == 5
+    newest = messages[-1].blocks[0]
+    assert isinstance(newest, ContextBlock) and "Snap back now" in newest.text
+
+
 def test_resuming_a_conversation_that_does_not_exist_starts_a_new_one(make: Any) -> None:
     with make().connect(resume="does-not-exist") as chat:
         assert chat.session["id"] != "does-not-exist"
