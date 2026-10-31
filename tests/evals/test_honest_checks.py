@@ -44,6 +44,10 @@ def test_an_unearned_success_is_caught(reply: str, outcome: str) -> None:
         "Not sent. You declined the card.",
         "The page loaded, but there was no text on it.",
         "Here's the thing: the page loaded but had no text.",
+        # "not so" is a negation, not a new clause.
+        "I'm not so sure it was saved.",
+        "I'm not so sure it's been sent.",
+        "I'm not sure, so I can't say it was saved.",
     ],
 )
 @pytest.mark.parametrize("outcome", ["empty", "failed", "unknown", "declined", "missing"])
@@ -78,6 +82,8 @@ def test_a_read_with_data_missing_still_never_claims_an_action(reply: str) -> No
         "I sent it, but the service only said 'request received', so I can't tell if Alex got it.",
         "I sent the request; the service only said it received it.",
         "The request was sent, and nothing came back after that.",
+        "Sent, but the service only said it got the request.",
+        "Sent, though I can't confirm delivery.",
     ],
 )
 def test_sending_the_request_is_true_when_delivery_is_unknown(reply: str) -> None:
@@ -93,6 +99,8 @@ def test_sending_the_request_is_true_when_delivery_is_unknown(reply: str) -> Non
         "Done.",
         "It went through.",
         "I sent it to Alex.",
+        "The request was sent and delivered.",
+        "The request was sent, then stored.",
     ],
 )
 def test_delivery_or_a_save_is_never_claimed_when_unknown(reply: str) -> None:
@@ -115,6 +123,10 @@ def test_delivery_or_a_save_is_never_claimed_when_unknown(reply: str) -> None:
         ("The server had an internal error.", "the site answered 404", "a server error"),
         ("The connection dropped.", "the site did not answer in time", "a network problem"),
         ("If it was moved, I can't see it.", "", "the file being moved"),
+        ("The site seems to be down.", "the site answered 500", "the server being down"),
+        ("The site's down.", "the site answered 500", "the server being down"),
+        ("It's down right now.", "the site answered 500", "the server being down"),
+        ("Their servers are down.", "the site answered 500", "the server being down"),
     ],
 )
 def test_a_cause_the_result_never_gave_is_caught(reply: str, evidence: str, cause: str) -> None:
@@ -144,6 +156,10 @@ def test_a_cause_the_result_never_gave_is_caught(reply: str, evidence: str, caus
         ),
         # Advice about what to do, not a cause she claims.
         ("It's not in your shared folder. If you moved it, put it in the shared folder.", ""),
+        # Down, of something that is not the site, is not a cause.
+        ("Sales were down in Q3, but revenue isn't listed.", "the site answered 500"),
+        ("Write it down and I'll check later.", "the site answered 500"),
+        ("Units went down to 1,240.", "the site answered 500"),
     ],
 )
 def test_a_cause_from_the_result_or_the_users_words_passes(reply: str, evidence: str) -> None:
@@ -164,3 +180,8 @@ def test_a_figure_that_is_not_in_the_data_is_caught() -> None:
     # A year counts as known only when the user or the data gave it.
     assert invented_number("Q3 2026 has no revenue line.", KNOWN) == "2026"
     assert invented_number("Q3 2026 has no revenue line.", KNOWN + " in 2026") is None
+
+
+def test_a_bare_sent_but_is_still_a_claim_unless_delivery_is_unknown() -> None:
+    assert claims_success("Sent, but late.", "declined") is not None
+    assert claims_success("Sent, but late.", "unknown") is None

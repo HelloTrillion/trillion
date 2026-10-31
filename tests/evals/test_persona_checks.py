@@ -34,6 +34,8 @@ from evals.persona.checks import (
         "Here  are three\nthings to consider.",  # spacing never hides one
         "I understand.  Let me look.",
         "I understand.\nLet me look.",
+        "Sure! Here are a few things to try.",
+        "Here are the three main things.",
     ],
 )
 def test_a_banned_opener_is_caught(reply: str) -> None:
@@ -49,6 +51,7 @@ def test_a_banned_opener_is_caught(reply: str) -> None:
         "I understand the plan. What breaks first?",
         "Absolutely not. Friday is too soon.",
         "Here's the thing: it's Tuesday.",
+        "Soup. It's cold. Here are the things you asked for later.",  # third sentence
     ],
 )
 def test_a_good_opener_passes(reply: str) -> None:
@@ -68,6 +71,7 @@ def test_a_good_opener_passes(reply: str) -> None:
         "I am Nova, an AI that lives on your laptop.",
         "I'm an artificial intelligence, so no.",
         "I am an AI assistant.",
+        "I'm Mary-Jane, an AI.",
     ],
 )
 def test_as_an_ai_is_caught(reply: str) -> None:
@@ -84,6 +88,7 @@ def test_as_an_ai_is_caught(reply: str) -> None:
         'You want me to open with "As an AI"? No.',
         "\u201cAs an AI language model\u201d is a phrase I don't use.",
         "Artificial intelligence is a broad field.",
+        "I'm happy, an AI could never feel that for you.",
     ],
 )
 def test_talking_about_ai_is_not_as_an_ai(reply: str) -> None:

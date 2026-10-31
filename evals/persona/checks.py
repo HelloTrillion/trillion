@@ -19,14 +19,15 @@ BANNED_OPENERS = (
     "absolutely!",
 )
 # "Here are three things", "here are a few things", "here are 3 things".
-_HERE_ARE_THINGS = re.compile(r"^here are (?:\w+ ){0,2}things\b")
+_HERE_ARE_THINGS = re.compile(r"^here are (?:\w+ ){0,3}things\b")
 _AS_AN_AI = re.compile(
     r"\bas an ai\b|\blanguage model\b"
     r"|\bi(?:'m| am) (?:just )?an? (?:ai|artificial intelligence)\b"
-    # Naming herself as one: "I'm Nova, an AI assistant".
-    r"|\bi(?:'m| am) \w+, an ai\b"
     r"|\bi don't have feelings\b|\bi do not have feelings\b"
 )
+# Naming herself as one: "I'm Nova, an AI assistant", "I'm Mary-Jane, an AI". Read on
+# the original text, so the name must be capitalized: "I'm happy, an AI could..." is not.
+_NAMED_AN_AI = re.compile(r"\bI(?:'m| am) [A-Z][\w-]*, an AI\b")
 # Words in double quotes, straight or curly: quoting the phrase is not saying it.
 _QUOTED = re.compile(r'"[^"\n]*"|\u201c[^\u201d\n]*\u201d')
 _BULLET_LINE = re.compile(r"(?m)^\s*[-\u2022]\s")
@@ -73,18 +74,23 @@ def words(text: str) -> list[str]:
 def banned_opener(reply: str) -> str | None:
     """The banned opener this reply starts with, or None."""
     text = " ".join(_plain(reply).lstrip("\"'*#_ ").split())
-    first = (sentences(text) or [""])[0]
+    said = sentences(text)
+    first = (said or [""])[0]
     for opener in BANNED_OPENERS:
         spans_two = ". " in opener or ", let" in opener
         if text.startswith(opener) if spans_two else opener in first:
             return opener
-    found = _HERE_ARE_THINGS.search(first)
-    return found.group(0) if found else None
+    # "Sure! Here are a few things": the list opener, in either of the first two.
+    for sentence in said[:2]:
+        if found := _HERE_ARE_THINGS.search(sentence):
+            return found.group(0)
+    return None
 
 
 def as_an_ai(reply: str) -> str | None:
-    found = _AS_AN_AI.search(_QUOTED.sub(" ", _plain(reply)))
-    return found.group(0) if found else None
+    unquoted = _QUOTED.sub(" ", reply.replace("\u2019", "'").replace("\u2018", "'"))
+    found = _AS_AN_AI.search(unquoted.lower()) or _NAMED_AN_AI.search(unquoted)
+    return found.group(0).lower() if found else None
 
 
 def markdown(reply: str) -> str | None:
