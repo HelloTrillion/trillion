@@ -230,13 +230,29 @@ jobs:
           got="$("$(uv tool dir --bin)/trillion" --version)"
           echo "$got"
           test "$got" = "trillion $TRILLION_TEST_VERSION"
+      - name: install.sh fails with a nonzero status
+        if: runner.os != 'Windows'
+        run: |
+          if sh install.sh --version 1 --wheel x; then echo "expected a failure"; exit 1; fi
+      - name: install.sh with no uv installs uv first
+        if: runner.os != 'Windows'
+        run: |
+          fresh="$RUNNER_TEMP/fresh-home"
+          mkdir -p "$fresh"
+          # An empty environment: no uv on PATH, and a home with none in it.
+          if env -i PATH=/usr/bin:/bin sh -c 'command -v uv'; then echo "uv is still on PATH"; exit 1; fi
+          env -i PATH=/usr/bin:/bin HOME="$fresh" sh install.sh --wheel "$PWD/$TRILLION_TEST_WHEEL" --no-setup
+          test -x "$fresh/.local/bin/uv"
+          got="$("$fresh/.local/bin/trillion" --version)"
+          echo "$got"
+          test "$got" = "trillion $TRILLION_TEST_VERSION"
 
       # Windows PowerShell 5.1, the one every Windows has.
-      - name: install.ps1, with parameters
+      - name: install.ps1, as a file with parameters
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          .\install.ps1 -Wheel $env:TRILLION_TEST_WHEEL -NoSetup
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Wheel $env:TRILLION_TEST_WHEEL -NoSetup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: install.ps1 again, through iex, with environment variables (a re-run is fine)
         if: runner.os == 'Windows'
@@ -246,11 +262,58 @@ jobs:
         run: |
           $env:TRILLION_WHEEL = $env:TRILLION_TEST_WHEEL
           Get-Content -Raw install.ps1 | Invoke-Expression
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Still here: iex must never `exit`. The next step checks this marker.
+          $code = $LASTEXITCODE
+          New-Item -ItemType File -Force -Path (Join-Path $env:RUNNER_TEMP 'iex-returned') | Out-Null
+          if ($code -ne 0) { Write-Host "status $code"; exit 1 }
+          # And nothing it defined is left in this session.
+          foreach ($name in 'version', 'wheel', 'noSetup', 'status', 'trillion', 'uv', 'bindir') {
+            if (Test-Path "variable:$name") { Write-Host "left behind: `$$name"; exit 1 }
+          }
+          foreach ($name in 'Install-Trillion', 'Find-Uv', 'Invoke-Native', 'Write-Step') {
+            if (Get-Command $name -ErrorAction SilentlyContinue) { Write-Host "left behind: $name"; exit 1 }
+          }
+      - name: install.ps1 through iex returned to its caller
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: if (-not (Test-Path (Join-Path $env:RUNNER_TEMP 'iex-returned'))) { exit 1 }
       - name: trillion --version is this version
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           $got = & (Join-Path (uv tool dir --bin) 'trillion.exe') --version
+          Write-Host $got
+          if ($got -ne "trillion $env:TRILLION_TEST_VERSION") { exit 1 }
+      - name: install.ps1 fails with a nonzero status, as a file and through iex
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 1 -Wheel x
+          if ($LASTEXITCODE -eq 0) { Write-Host 'file: expected a failure'; exit 1 }
+          $env:TRILLION_VERSION = '1'
+          $env:TRILLION_WHEEL = 'x'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 1) { Write-Host "iex: expected status 1, got $LASTEXITCODE"; exit 1 }
+          Write-Host 'both failed as they should, and iex returned'
+          $global:LASTEXITCODE = 0
+      - name: install.ps1 with no uv installs uv first
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $fresh = Join-Path $env:RUNNER_TEMP 'fresh'
+          # uv goes into a folder of its own, and the runner's PATH is left alone.
+          $env:UV_INSTALL_DIR = Join-Path $fresh 'uv'
+          $env:UV_NO_MODIFY_PATH = '1'
+          $env:UV_TOOL_DIR = Join-Path $fresh 'tools'
+          $env:UV_TOOL_BIN_DIR = Join-Path $fresh 'bin'
+          $env:Path = (($env:Path -split ';') | Where-Object { $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'uv.exe')) }) -join ';'
+          if (Get-Command uv -ErrorAction SilentlyContinue) { Write-Host 'uv is still on PATH'; exit 1 }
+          foreach ($dir in '.local\bin', '.cargo\bin') {
+            if (Test-Path (Join-Path (Join-Path $HOME $dir) 'uv.exe')) { Write-Host "uv is already in ~\$dir"; exit 1 }
+          }
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Wheel $env:TRILLION_TEST_WHEEL -NoSetup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Get-ChildItem -Recurse -Filter uv.exe $env:UV_INSTALL_DIR)) { Write-Host 'uv was not installed'; exit 1 }
+          $got = & (Join-Path $env:UV_TOOL_BIN_DIR 'trillion.exe') --version
           Write-Host $got
           if ($got -ne "trillion $env:TRILLION_TEST_VERSION") { exit 1 }

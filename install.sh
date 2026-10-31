@@ -56,24 +56,26 @@ main() {
         [ -n "$uv" ] || fail "uv was installed but can't be found. Open a new terminal and run this again."
     fi
     say "using uv at $uv"
+    old_uv="If your uv is old, run 'uv self update' and try again."
 
     # 2. Trillion. uv downloads Python 3.13 itself if this machine doesn't have it.
     if [ -n "$wheel" ]; then
         # --reinstall, so a rebuilt wheel with the same version still replaces the old one.
         say "installing Trillion from $wheel"
         "$uv" tool install --reinstall --python 3.13 "$wheel" ||
-            fail "uv could not install $wheel (see above)"
+            fail "uv could not install $wheel (see above). $old_uv"
     else
         package="trillion"
         [ -n "$version" ] && package="trillion==$version"
         say "installing $package (this upgrades it if it is already installed)"
         "$uv" tool install --upgrade --python 3.13 "$package" ||
-            fail "uv could not install $package (see above)"
+            fail "uv could not install $package (see above). $old_uv"
     fi
 
     # 3. PATH, for new terminals. uv fails when the shell files already have it
     # but this terminal doesn't yet (a second run before opening a new one): fine.
-    bindir="$("$uv" tool dir --bin)"
+    bindir="$("$uv" tool dir --bin)" ||
+        fail "uv didn't say where it put Trillion; your uv is probably too old. Run 'uv self update' and try again."
     if shell_said="$("$uv" tool update-shell 2>&1)"; then
         say "$bindir is on your PATH in new terminals"
     else
@@ -88,13 +90,13 @@ main() {
     say "installed $("$trillion" --version) in $bindir"
 
     if [ -n "$no_setup" ]; then
-        say "done. Run 'trillion setup' in a new terminal to start."
+        say "done. Open a new terminal and run 'trillion setup' to start."
         return 0
     fi
 
     # 4. Setup: prepares, checks, starts the app and opens the browser. Under
     # `curl | sh` our input is the script itself, so give setup the terminal.
-    say "running trillion setup (Ctrl+C stops Trillion; start it again with 'trillion run')"
+    say "running trillion setup (Ctrl+C stops Trillion; to start it again later, open a new terminal and run 'trillion run')"
     if (exec </dev/tty) 2>/dev/null; then
         exec "$trillion" setup </dev/tty
     else
@@ -136,9 +138,10 @@ find_uv() {
         command -v uv
         return 0
     fi
-    for candidate in "${UV_INSTALL_DIR:-}/uv" "${XDG_BIN_HOME:-}/uv" \
+    for candidate in "${UV_INSTALL_DIR:-}/uv" "${UV_INSTALL_DIR:-}/bin/uv" "${XDG_BIN_HOME:-}/uv" \
         "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
-        if [ "$candidate" != "/uv" ] && [ -x "$candidate" ]; then
+        case "$candidate" in /uv | /bin/uv) continue ;; esac
+        if [ -x "$candidate" ]; then
             printf '%s\n' "$candidate"
             return 0
         fi
