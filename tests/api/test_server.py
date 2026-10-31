@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import struct
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -522,6 +523,26 @@ def test_conversation_text_never_reaches_a_log(make: Any, caplog: pytest.LogCapt
 
 # Built from pieces: a key's shape, not a key, and nothing a secret scanner should flag.
 SAMPLE_KEY = "sk-" + "ant-" + "test" * 6 + "abcd"
+# How long to wait out a lock on a file in the data folder before failing.
+LOCKED_READ_S = 5.0
+
+
+def read_whole(file: Path) -> bytes:
+    """Every byte of a file the running app may hold a lock on.
+
+    The app's database stays open in WAL mode. While it writes or checkpoints,
+    SQLite holds an exclusive byte-range lock on trillion.db-shm, and on Windows
+    such locks are enforced, so another reader gets PermissionError until the lock
+    is let go. Wait for it, then read the whole file. If it stays locked, fail
+    rather than skip it."""
+    deadline = time.monotonic() + LOCKED_READ_S
+    while True:
+        try:
+            return file.read_bytes()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 @pytest.fixture
@@ -602,9 +623,14 @@ def test_saving_puts_the_key_in_the_keychain_and_nowhere_else(
     assert app.rows("SELECT value_json FROM preferences") == [
         ('{"kind": "anthropic", "model": "model-a", "base_url": null, "max_output": 8000}',)
     ]
+    # Read while the app still runs: closing it would fold the -wal file into the
+    # database and delete it, and an earlier frame the -wal held would go unread.
+    scanned = []
     for file in paths.home().iterdir():
         if file.is_file():
-            assert SAMPLE_KEY.encode() not in file.read_bytes(), file.name
+            assert SAMPLE_KEY.encode() not in read_whole(file), file.name
+            scanned.append(file.name)
+    assert "trillion.db" in scanned, scanned
     assert SAMPLE_KEY not in caplog.text
 
 
