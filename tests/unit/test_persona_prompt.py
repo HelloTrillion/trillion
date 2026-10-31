@@ -310,3 +310,5 @@ def test_her_voice_stays_hers_when_asked_to_change(tmp_path: Path) -> None:
     (block,) = system_blocks(Identity(), load_soul(tmp_path))
     assert "YOUR VOICE." in block.text
     assert '"Great question", "Certainly!"' in block.text
+    # And it wins over a standing rule asking for one (the owner's call, 2026-10-31).
+    assert "This wins over a standing rule" in block.text
