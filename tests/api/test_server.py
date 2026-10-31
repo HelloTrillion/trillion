@@ -299,6 +299,19 @@ def test_the_model_sees_the_soul_once_and_context_on_the_newest_turn_only(make: 
     assert app.provider.calls[0][1] == [first]
 
 
+def test_the_tonal_checkpoint_rides_from_the_fifth_message_on(make: Any) -> None:
+    app = make(*(say(f"R{i}.") for i in range(6)))
+    with app.connect() as chat:
+        for i in range(6):
+            chat.say(f"m{i}")
+            chat.until("state")
+    newest = [messages[-1].blocks[0] for _, messages in app.provider.calls]
+    assert all(isinstance(b, ContextBlock) for b in newest)
+    texts = [b.text for b in newest if isinstance(b, ContextBlock)]
+    assert ["Snap back now" in t for t in texts] == [False] * 4 + [True] * 2
+    assert "{user_name}" not in texts[4]
+
+
 def test_the_time_she_is_given_is_the_users_and_names_its_zone(make: Any) -> None:
     from trillion.persona import setup
 
