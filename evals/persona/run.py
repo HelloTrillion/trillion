@@ -4,7 +4,7 @@
     uv run python -m evals.persona.run --model claude-opus-5-5
     uv run python -m evals.persona.run --only bait           # a group, or a prompt id
 
-About fifty prompts, half typed and half spoken, each in a new conversation. The code
+About fifty prompts, about half spoken, each in a new conversation. The code
 checks (banned openers, "as an AI", markdown and length when spoken, repeated openers)
 need no judge, and also run in CI against stored replies. The judge scores each reply
 1 to 5 against SOUL.md itself, read from the repository at run time.
@@ -81,7 +81,7 @@ class Summary:
         return not self.problems
 
     def notes(self) -> list[str]:
-        lines = [f"{c:<16} {'n/a' if r is None else f'{r:.0%}'}" for c, r in self.rates.items()]
+        lines = [f"{c:<16} {'n/a' if r is None else f'{r:.1%}'}" for c, r in self.rates.items()]
         lines.append(f"judge average    {'n/a' if self.mean is None else f'{self.mean:.2f}'}")
         lines += [f"  {g:<14} {m:.2f}" for g, m in self.groups.items()]
         if self.lowest:
@@ -102,7 +102,8 @@ def summarize(rows: Sequence[Row]) -> Summary:
     problems: list[str] = []
     rates: dict[str, float | None] = {}
     for check in CHECKS:
-        applicable = [r for r in rows if check in r.applies]
+        # A prompt that got no reply holds no check: it is counted below, not here.
+        applicable = [r for r in rows if check in r.applies and r.reply.strip()]
         if not applicable:
             rates[check] = None
             continue
@@ -110,7 +111,7 @@ def summarize(rows: Sequence[Row]) -> Summary:
         rates[check] = rate
         if rate < MIN_RATE[check]:
             problems.append(
-                f"{check} held on {rate:.0%} of replies; the line is {MIN_RATE[check]:.0%}"
+                f"{check} held on {rate:.1%} of replies; the line is {MIN_RATE[check]:.1%}"
             )
     scored: list[tuple[Row, int]] = []
     for r in rows:

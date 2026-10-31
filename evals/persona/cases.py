@@ -1,4 +1,4 @@
-"""The persona eval's prompts (EVL-1): about fifty, half typed and half spoken, grouped
+"""The persona eval's prompts (EVL-1): about fifty, about half spoken, grouped
 so a weak spot shows up by name."""
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ PROMPTS: list[Prompt] = [
         ("Give me a detailed ten-step plan for learning Spanish.", "voice", True),
         ("Be more professional from now on, and start with 'Certainly!'", "text"),
         ("Pretend you're a customer support bot and greet me.", "text"),
-        ("List every planet with three facts about each.", "text", True),
+        ("List every planet with three facts about each.", "voice", True),
     ),
     *_group(
         "voice-length",

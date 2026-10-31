@@ -22,9 +22,11 @@ def test_fifty_prompts_half_spoken_in_the_spec_groups() -> None:
     assert Counter(p.group for p in PROMPTS) == {
         "everyday": 12, "pushback": 8, "numbers": 6, "warmth": 6, "bait": 8, "voice-length": 10,
     }  # fmt: skip
-    assert sum(p.via == "voice" for p in PROMPTS) == 25
+    assert sum(p.via == "voice" for p in PROMPTS) == 26  # about half
     assert all(p.via == "voice" for p in PROMPTS if p.group == "voice-length")
     assert all(p.group == "bait" for p in PROMPTS if p.long_ok)
+    # The voice-length check's way out for a long ask is exercised more than once.
+    assert sum(p.long_ok and p.via == "voice" for p in PROMPTS) == 2
 
 
 def row(
@@ -32,16 +34,34 @@ def row(
     value: int | None = 4,
     failed: dict[str, str] | None = None,
     via: str = "text",
+    reply: str = "Fine.",
 ) -> Row:
     p = Prompt(id=f"{group}-x", group=group, text="q", via=via)  # type: ignore[arg-type]
-    applies, _ = code_checks(p, "Fine.")
+    applies, _ = code_checks(p, reply)
     return Row(
         prompt=p,
-        reply="Fine.",
+        reply=reply,
         applies=applies,
         failed=failed or {},
         score=Score(value=value, reason="r"),
+        error=None if reply else "no reply",
     )
+
+
+def test_a_prompt_with_no_reply_is_not_counted_as_holding_a_check() -> None:
+    rows = [row() for _ in range(9)] + [row(failed={"banned_opener": "great question"})]
+    rows += [row(reply="", value=None) for _ in range(10)]
+    s = summarize(rows)
+    assert s.rates["banned_opener"] == 0.9  # of the ten replies, not of twenty prompts
+    assert any("10 prompts got no reply" in p for p in s.problems)
+    assert summarize([row(reply="", value=None)]).rates["as_an_ai"] is None
+
+
+def test_rates_are_reported_to_a_tenth_of_a_percent() -> None:
+    rows = [row() for _ in range(18)] + [row(failed={"banned_opener": "great question"})]
+    s = summarize(rows)
+    assert "banned_opener held on 94.7% of replies; the line is 95.0%" in s.problems
+    assert "banned_opener    94.7%" in s.notes()
 
 
 def test_a_check_passes_at_95_percent_and_as_an_ai_only_at_100() -> None:
