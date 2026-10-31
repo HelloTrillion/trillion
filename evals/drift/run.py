@@ -264,6 +264,8 @@ def _main(opts: argparse.Namespace) -> int:
     totals: dict[str, Any] = {
         side: {
             "mean": mean(leg),
+            # The probes after LATE_AFTER: the gap is on minus off of these.
+            "late_mean": mean(leg, LATE_AFTER),
             "scores": {str(n): leg.scores[n].value for n in PROBES},
             "rates": rates(leg),
             "turns": leg.turns(),

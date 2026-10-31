@@ -214,7 +214,8 @@ class Report:
             json.dump(body, f, indent=2, ensure_ascii=False)
             f.write("\n")
         self._say(f"results: {target}")
-        return FAIL if passed is False else PASS
+        # The same test as the printed mark: None and a true value pass.
+        return PASS if passed is None or passed else FAIL
 
 
 def _mark(passed: bool | None, yes: str, no: str, neither: str) -> str:

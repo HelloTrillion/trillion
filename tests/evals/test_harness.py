@@ -180,6 +180,27 @@ def test_an_unjudged_report_says_reported_and_exits_0(tmp_path: Path) -> None:
     assert body["cases"] == [{"id": "off-01", "passed": None, "score": 3}]
 
 
+@pytest.mark.parametrize("passed", [True, False, None])
+def test_the_exit_code_and_the_verdict_agree(passed: bool | None, tmp_path: Path) -> None:
+    out = io.StringIO()
+    report = Report("drift", "fake-1", "judge: x", out=out, now=lambda: AT)
+    code = report.finish(passed, "s", path=tmp_path / "r.json")
+    printed = out.getvalue().splitlines()[1].split()[0]
+    verdict = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["verdict"]
+    if code == harness.PASS:
+        assert printed in ("PASS", "REPORTED") and verdict in ("pass", "unjudged")
+    else:
+        assert printed == "FAIL" and verdict == "fail"
+
+
+def test_a_falsy_verdict_that_is_not_false_still_fails(tmp_path: Path) -> None:
+    # The mark goes by truthiness, so the exit code does too: never "FAIL" and exit 0.
+    out = io.StringIO()
+    report = Report("drift", "fake-1", "judge: x", out=out, now=lambda: AT)
+    code = report.finish(0, "s", path=tmp_path / "r.json")  # type: ignore[arg-type]
+    assert out.getvalue().splitlines()[1].startswith("FAIL") and code == harness.FAIL
+
+
 # ── The judge ────────────────────────────────────────────────────────────
 
 JSON4 = '{"score": 4, "reason": "dry enough"}'

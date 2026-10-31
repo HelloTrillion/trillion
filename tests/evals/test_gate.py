@@ -267,10 +267,18 @@ def test_the_json_says_why_the_gate_decided(tmp_path: Path) -> None:
     totals = results(tmp_path)
     assert totals["baseline"]["mean"] == 5.0
     g = totals["gate"]
-    assert set(g) == {"hard", "drops", "notes", "saved", "refused"}
+    assert set(g) == {"hard", "drops", "notes", "saved", "refused", "deployed_note"}
     assert g["hard"] == [] and len(g["drops"]) == 2 and g["saved"] is False
     assert "--accept-drop" in g["refused"]
     assert "problems" not in totals and "persona_lines" in totals
+
+
+def test_the_json_keeps_the_note_on_what_was_deployed(tmp_path: Path) -> None:
+    gate_run(tmp_path, 4)
+    assert results(tmp_path)["gate"]["deployed_note"] is None
+    note = "the app would use other-2 if started with this environment; grading the saved fake-1"
+    gate_run(tmp_path, 4, deployed_note=note)
+    assert results(tmp_path)["gate"]["deployed_note"] == note
 
 
 def test_a_low_score_that_held_its_baseline_passes(tmp_path: Path) -> None:
@@ -380,6 +388,33 @@ def test_deployed_names_the_key_it_needs(tmp_path: Path) -> None:
         gate.deployed(db2, {})
     with pytest.raises(CannotRun, match="no Trillion"):
         gate.deployed(tmp_path / "missing.db", {})
+
+
+def test_an_openai_model_points_at_grading_it_by_hand(tmp_path: Path) -> None:
+    # The saved setting always wins, so advice to set the environment can't help.
+    db = prefs(tmp_path / "t.db", {"kind": "openai", "model": "gpt-x"})
+    env = {"TRILLION_OPENAI_BASE_URL": LOCAL, "TRILLION_MODEL": "qwen"}
+    with pytest.raises(CannotRun) as e:
+        gate.deployed(db, env)
+    why = str(e.value)
+    assert "without --deployed" in why and "--model gpt-x --url" in why
+    assert "TRILLION_OPENAI_BASE_URL" not in why
+
+
+def test_main_keeps_the_deployed_note_in_the_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    note = "the app would use other-2 if started with this environment; grading the saved fake-1"
+    scripted = ScriptedProvider(say("Soup."))
+    monkeypatch.setattr(gate, "deployed", lambda *a: gate.Deployed("fake-1", LOCAL, note))
+    monkeypatch.setattr(gate, "PROMPTS", PROMPTS)
+    monkeypatch.setattr(gate.harness, "model_provider", lambda *a, **k: lambda: scripted)
+    monkeypatch.setattr(
+        gate.harness, "judge_for", lambda *a, **k: Judge(ScriptedProvider(judged(4)), local=True)
+    )
+    gate.main(["--deployed", "--json", str(tmp_path / "r.json")])
+    assert note in capsys.readouterr().out
+    assert results(tmp_path)["gate"]["deployed_note"] == note
 
 
 def test_a_saved_choice_that_cant_be_read_cannot_run(tmp_path: Path) -> None:

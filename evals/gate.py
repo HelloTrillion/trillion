@@ -108,9 +108,11 @@ def _address(settings: ModelSettings, env: Mapping[str, str]) -> str:
             raise CannotRun(f"{settings.model} needs {ANTHROPIC_KEY} set in the environment")
         return ""
     if settings.kind == "openai":
+        # The saved setting always wins, so setting the environment can't help here.
         raise CannotRun(
             "grading an OpenAI model is not supported yet: the evals send it no key. "
-            f"Set {OPENAI_BASE_URL} and {MODEL} for an OpenAI-compatible address instead"
+            "Grade it by hand without --deployed: run the gate with"
+            f" --model {settings.model} --url <an OpenAI-compatible address> instead"
         )
     try:
         url = config.endpoint(settings.kind, settings.base_url)
@@ -167,6 +169,7 @@ def check(
     save: bool = False,
     accept_drop: str | None = None,
     json_path: Path | None = None,
+    deployed_note: str | None = None,
 ) -> int:
     judge_name = judge.provider.model
     path = folder / baseline_path(model, judge_name).name
@@ -233,6 +236,8 @@ def check(
                 "notes": notes,
                 "saved": saved,
                 "refused": refused,
+                # Said when this shell's environment would have the app use another model.
+                "deployed_note": deployed_note,
             },
         },
         path=json_path,
@@ -265,6 +270,7 @@ def _main(opts: argparse.Namespace) -> int:
         if note is not None:
             sys.stdout.write(note + "\n")
     else:
+        note = None
         model = opts.model or harness.LOCAL_MODEL
         url = opts.url or config.LOCAL_URL
     make = harness.model_provider(model, url, os.environ)
@@ -280,6 +286,7 @@ def _main(opts: argparse.Namespace) -> int:
                 save=opts.save_baseline,
                 accept_drop=opts.accept_drop,
                 json_path=opts.json,
+                deployed_note=note,
             )
 
 

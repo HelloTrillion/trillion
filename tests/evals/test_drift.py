@@ -241,6 +241,16 @@ def test_main_end_to_end_passes_and_keeps_every_turn(
     assert totals["off"]["turns"][0]["reply"] == "R6."
 
 
+def test_each_side_says_where_the_gap_comes_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, body = run_main(monkeypatch, tmp_path, 4)
+    totals = body["totals"]
+    # The gap is over the probes after LATE_AFTER: here only turn 6.
+    assert totals["on"]["late_mean"] == 4.0 and totals["off"]["late_mean"] == 4.0
+    assert totals["gap"] == totals["on"]["late_mean"] - totals["off"]["late_mean"]
+
+
 def test_main_end_to_end_fails_on_a_late_low_probe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
