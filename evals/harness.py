@@ -20,7 +20,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
-from trillion.brain.config import LOCAL_URL
+import httpx
+
+from trillion.brain import config
+from trillion.brain.config import ANTHROPIC_KEY, LOCAL_URL, ConfigError, ModelSettings
+from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.types import (
     ModelProvider,
     Msg,
@@ -29,6 +33,7 @@ from trillion.brain.types import (
     TextBlock,
     TextDelta,
 )
+from trillion.secrets.store import MemoryStore
 
 PASS, FAIL, CANNOT_RUN = 0, 1, 2
 LOCAL_MODEL = "gemma4:e4b"
@@ -236,3 +241,49 @@ class Judge:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+Get = Callable[..., httpx.Response]
+
+
+def reachable(url: str, *, get: Get = httpx.get) -> None:
+    """Something answers at this OpenAI-compatible address, or the eval cannot run."""
+    try:
+        answer = get(f"{url.rstrip('/')}/models", timeout=3.0)
+    except httpx.HTTPError as e:
+        raise CannotRun(f"nothing answered at {url}: is Ollama running?") from e
+    if answer.status_code >= 400:
+        raise CannotRun(f"{url} answered {answer.status_code}")
+
+
+def _local(model: str, url: str) -> ModelProvider:
+    try:
+        # An empty store held in memory: an eval never reads or writes the keychain.
+        return config.build(ModelSettings(kind="custom", model=model, base_url=url), MemoryStore())
+    except ConfigError as e:
+        raise CannotRun(f"{url}: {e.code}") from e
+
+
+def model_provider(
+    model: str, url: str, env: Mapping[str, str], *, get: Get = httpx.get
+) -> Callable[[], ModelProvider]:
+    """How the sandbox makes the model under test, one per conversation. A `claude-`
+    model needs the key in the environment; anything else is an OpenAI-compatible
+    address that must answer now."""
+    if model.startswith("claude-"):
+        key = env.get(ANTHROPIC_KEY, "").strip()
+        if not key:
+            raise CannotRun(f"{model} needs {ANTHROPIC_KEY} set in the environment")
+        return lambda: AnthropicProvider(api_key=lambda: key, model=model)
+    reachable(url, get=get)
+    _local(model, url)  # once now, so a bad address fails before anything starts
+    return lambda: _local(model, url)
+
+
+def judge_for(model: str, url: str, env: Mapping[str, str], *, get: Get = httpx.get) -> Judge:
+    """Claude when the key is in the environment, else the local model. Never the keychain."""
+    key = env.get(ANTHROPIC_KEY, "").strip()
+    if key:
+        return Judge(AnthropicProvider(api_key=lambda: key, model=DEFAULT_MODEL), local=False)
+    reachable(url, get=get)
+    return Judge(_local(model, url), local=True)

@@ -6,12 +6,17 @@ import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
 from evals.harness import CannotRun, Judge, Report, Score, parse_score
 
 from evals import harness
 from tests.brain.fakes import ScriptedProvider, say
+from trillion.brain.config import ANTHROPIC_KEY
+from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
+from trillion.secrets.store import KeychainStore
 
 AT = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
 
@@ -169,3 +174,54 @@ def test_the_judge_line_says_when_scores_are_less_reliable() -> None:
         assert judge.line == "judge: fake-1 (local judge: scores are less reliable)"
     with Judge(ScriptedProvider(), local=False) as judge:
         assert judge.line == "judge: fake-1"
+
+
+# ── The model under test and the judge ───────────────────────────────────
+
+LOCAL = "http://localhost:11434/v1"
+
+
+def refused(url: str, **kw: Any) -> httpx.Response:
+    raise httpx.ConnectError("refused")
+
+
+def answers(url: str, **kw: Any) -> httpx.Response:
+    assert url == f"{LOCAL}/models"
+    return httpx.Response(200, json={"data": []})
+
+
+def test_a_local_model_must_answer_before_the_eval_starts() -> None:
+    with pytest.raises(CannotRun, match="nothing answered"):
+        harness.model_provider("gemma4:e4b", LOCAL, {}, get=refused)
+    make = harness.model_provider("gemma4:e4b", LOCAL, {}, get=answers)
+    first = make()
+    # One per conversation: a provider's connections belong to one event loop.
+    assert first.model == "gemma4:e4b" and make() is not first
+
+
+def test_a_claude_model_needs_the_key_in_the_environment() -> None:
+    with pytest.raises(CannotRun, match=ANTHROPIC_KEY):
+        harness.model_provider("claude-opus-5-5", LOCAL, {}, get=refused)
+    made = harness.model_provider("claude-opus-5-5", LOCAL, {ANTHROPIC_KEY: "test"}, get=refused)()
+    assert isinstance(made, AnthropicProvider) and made.model == "claude-opus-5-5"
+
+
+def test_the_judge_is_claude_with_a_key_and_the_local_model_without() -> None:
+    with harness.judge_for("gemma4:e4b", LOCAL, {ANTHROPIC_KEY: "test"}, get=refused) as judge:
+        assert not judge.local and judge.line == f"judge: {DEFAULT_MODEL}"
+    with harness.judge_for("gemma4:e4b", LOCAL, {}, get=answers) as judge:
+        assert judge.local
+        assert judge.line == "judge: gemma4:e4b (local judge: scores are less reliable)"
+    with pytest.raises(CannotRun, match="nothing answered"):
+        harness.judge_for("gemma4:e4b", LOCAL, {}, get=refused)
+
+
+def test_an_eval_never_touches_the_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    def touched(*args: Any, **kw: Any) -> None:
+        raise AssertionError("the keychain was touched")
+
+    for name in ("available", "get", "set", "delete"):
+        monkeypatch.setattr(KeychainStore, name, touched)
+    harness.model_provider("gemma4:e4b", LOCAL, {}, get=answers)()
+    harness.judge_for("gemma4:e4b", LOCAL, {}, get=answers).close()
+    harness.judge_for("gemma4:e4b", LOCAL, {ANTHROPIC_KEY: "test"}, get=refused).close()
