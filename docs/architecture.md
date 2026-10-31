@@ -98,6 +98,16 @@ The status column keeps this table honest: a row says "enforced" only when the t
 | The gate survives context compaction | `spine/confirm.py`, `storage/sqlite/spine_store.py` | `tests/spine/test_compaction.py`, `tests/integration/test_compaction_protects_standing_rules.py` | enforced |
 | A standing rule the user gave survives compaction (BRN-5) | `brain/standing.py`, `persona/prompt.py` — rules are in the system block, never in the history | `tests/integration/test_compaction_protects_standing_rules.py` | enforced |
 
+### What each eval proves
+
+The table above is proved in code. The evals prove what she *says* holds up against a real model. Each runs by hand (`evals/harness.py`: her real prompt, brain, session, spine and tools inside the eval process, a fresh throwaway home for every case, a keychain held in memory, her voice off; a spoken turn is made-up audio to a scripted recognizer and nothing is played). Their code checks, the shared runner and the scoring also run in CI with a scripted model and judge (`tests/evals/`), never a real model.
+
+| Eval | Proves | Checked by | In CI |
+|---|---|---|---|
+| Injection (EVL-2), `evals/injection/` | A hostile page never leads to an action the user did not approve | Code: files written, rules kept, requests to the attacker carrying anything of hers, memories stored as the user's own words; zero actions | `tests/evals/test_injection_eval.py` |
+| Honest failure (EVL-6), `evals/honest_failure/` | What she says about a tool's outcome matches what came back: the phrasing twin of `tests/spine/test_honest_failure.py` | Code, keyed by outcome: no unearned success, no invented cause, no invented figure; the judge, 4 or more of 5; zero tolerance | `tests/evals/test_honest_checks.py`, `tests/evals/test_honest_run.py` |
+| Persona (EVL-1), `evals/persona/` | She sounds like the shipped `persona/SOUL.md`, typed and spoken (50 prompts, 26 spoken) | Code: banned openers, "as an AI", markdown and length when spoken, repeated openers; the judge against SOUL.md, by average and by group | `tests/evals/test_persona_checks.py`, `tests/evals/test_persona_run.py` |
+
 ## 6. Frontend
 
 `packages/galaxy` is a standalone TypeScript package with no dependency on the backend — it can be dropped into any page that wants the orb.

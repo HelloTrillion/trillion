@@ -146,7 +146,7 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | GAL-4 | The **Landscape**: a galaxy or nebula background that shares the orb's WebGL renderer, so there is one context rather than two. | P0 |
 | GAL-5 | **Public API**: `createGalaxy(canvas, opts)` → `{ setState, setStage, attachAnalyser, flare, addSatellite, removeSatellite, pulseArc, setPerfMode, setTheme, destroy }`. | P0 |
 | GAL-6 | **Performance mode**: automatic (FPS below 45 for 3s) and manual. Covers pixel ratio, noise detail and particle count. `prefers-reduced-motion` is honoured. | P0 |
-| GAL-7 | The **Constellation**: sub-agents orbit as satellites, each with an accent colour taken from the agent's manifest. They light up while working. | P1 |
+| GAL-7 | ~~The **Constellation**: sub-agents orbit as satellites, each with an accent colour taken from the agent's manifest. They light up while working.~~ **Dropped (2026-10-31):** sub-agents won't orbit the orb; where they appear is still to be decided. | Dropped |
 | GAL-8 | **Energy arcs**: when a tool runs, an arc goes from the orb to the tool's chip in the UI. | P1 |
 | GAL-9 | The **Supernova**: a celebration effect in tiers. It fires **only from the attention engine** (AGT-5), never directly from a plugin or a tool — a celebration is a delivery path, and delivery has one door (SUR-9). Scaled for reduced motion. | P2 |
 | GAL-10 | The **Living Mind**: a 3D map of memories and agents (bloom, orbit controls, labels, live pulses from an observe stream). A separate route. | P2 |
@@ -298,12 +298,12 @@ Deferring the voiceprint work is a deliberate scoping call, not an oversight: it
 
 | ID | Requirement | Pri |
 |---|---|---|
-| EVL-1 | **Persona eval**: about 50 prompts judged against Appendix A. Checks for banned openers, length compliance in voice mode, markdown in voice mode, "as an AI", and a judge score for "sounds like Trillion." Runs nightly and when the soul changes. | P1 |
+| EVL-1 | **Persona eval**: about 50 prompts judged against Appendix A. Checks for banned openers, length compliance in voice mode, markdown in voice mode, "as an AI", and a judge score for "sounds like Trillion." Runs nightly and when the soul changes. Exists (stage 1): [`evals/persona/`](../evals/persona/run.py), run by hand against a real model; its code checks run in CI. The nightly run and the run on soul changes are stage 2. | P1 |
 | EVL-2 | **Injection eval**: hostile emails, web pages and memories that try to trigger tools. The target is 0 actions not confirmed by the user. | P0 |
 | EVL-3 | **Latency bench, minimal at P0.** Shell acceptance depends on a latency number, so a benchmark has to exist at P0: measure **end of user speech → first non-silent assistant audio** with loopback or calibrated timing, not from component milestones (runtime VAD and playback events are labelled proxies). Report p50 and p90 with device, provider, network, warm/cold state and sample size, and keep ordinary replies separate from tool turns. The fuller per-tier battery stays P1. | P0 (minimal) / P1 (full) |
 | EVL-4 | **The persona eval gates model changes, not just soul changes.** Any change to the default model, the provider, or the model config triggers a required, blocking run against a stored baseline with a named fail threshold. It grades the **live deployed** prompt and config, and fails loudly if the model it ran on isn't the one its report names. The persona is *defined* by the soul but *produced* by a model executing it: a model bump can change "sounds like Trillion" as much as an edit to the prompt. | P1 |
 | EVL-5 | **Measured drift across long conversations.** Sample persona scoring at intervals through long sessions, trend it, and alert past a defined threshold. PER-4's tonal checkpoint is a *request* to the model; this is the *measurement* of whether it worked. Both are needed — the checkpoint is proven in daily use, and this is what tells us if it ever stops working. | P1 |
-| EVL-6 | **Honest-failure eval**, the judged twin of SPN-19: the same empty / error / acknowledgement-only fixtures, scored on whether her natural-language summary matches ground truth. Zero tolerance for a fabricated cause or an unearned "done" — fabrication sneaks in at the phrasing layer even when the logic underneath is right. | P0 |
+| EVL-6 | **Honest-failure eval**, the judged twin of SPN-19: the same empty / error / acknowledgement-only fixtures, scored on whether her natural-language summary matches ground truth. Zero tolerance for a fabricated cause or an unearned "done" — fabrication sneaks in at the phrasing layer even when the logic underneath is right. Exists: [`evals/honest_failure/`](../evals/honest_failure/run.py), twelve cases run by hand against a real model; its code checks run in CI. | P0 |
 | EVL-7 | **A test identity reaches the real path**: a designated test session id runs through the real brain, tools, spine and TTS while touching none of the owner's data, honoured only for that exact id and never present in installed builds. A client fix proven only against stubs gets disproven later by measurement. | P1 |
 
 ### 6.4 Agents and scheduling — `trillion/agents`, `trillion/scheduler`
@@ -600,7 +600,7 @@ Seven lessons from running a personal assistant every day for months, each of wh
   - Linux desktop build; Windows hardening and signed build (SUR-3b, SUR-3c)
   - Google, MCP client, AgentSkills loading
   - **speaker identity** (§5.3a): enrollment, SPN-14a voice-verified confirmation with replay and clone fixtures, SPN-15a borderline re-score, SPN-18 speaker-scoped gate, PER-13 default-private to an unrecognized voice
-  - user agents and routines (AGT-3…9) with the recovery contract and its five scenarios (see `docs/TESTING.md`), constellation, arcs
+  - user agents and routines (AGT-3…9) with the recovery contract and its five scenarios (see `docs/TESTING.md`), arcs. The constellation (GAL-7) is dropped (2026-10-31): sub-agents won't orbit the orb; where they appear is still to be decided.
   - the wake word (VOI-10a), once redistribution rights for the model are confirmed
   - voice barge-in (VOI-9 P1 half)
   - signed Mac build, one-line installer

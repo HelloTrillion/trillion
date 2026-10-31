@@ -54,3 +54,6 @@ src/trillion/connectors/google/google_client.json
 # What scripts/build_release.py stages and builds. Never committed.
 src/trillion/api/static/
 /dist-release/
+
+# What a hand run of an eval writes (evals/harness.py): local, never committed
+/evals/results/
