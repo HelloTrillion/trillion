@@ -139,8 +139,18 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "T20", "LOG", "G", "RUF"]
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "src"
-packages = ["trillion"]
+packages = ["trillion", "evals"]
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["evals", "evals.*"]
+strict = true
+
+# The evals drive her through the API tests' helpers. The tests themselves are not
+# type-checked, so what mypy finds in them while following those imports is not reported.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*", "trillion.workspace.*", "trillion.attention.*", "trillion.files.*"]
