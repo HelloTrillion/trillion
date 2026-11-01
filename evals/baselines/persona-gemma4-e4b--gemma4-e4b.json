@@ -1,28 +1,29 @@
 {
-  "accepted_drop": "Only checkpoint.md changed, and it starts at a conversation's fifth message; every gate prompt is a one-message conversation, so the gate never sees it. Any drop here is run-to-run noise from the small local model judging itself.",
+  "accepted_drop": "Re-saved from three pooled runs in place of one; a single run of gemma judging itself is noise, so movement against the one-run file is not a change in her.",
   "answered_by": [
     "gemma4:e4b"
   ],
-  "date": "2026-11-01T20:27:55+00:00",
+  "date": "2026-11-01T23:29:56+00:00",
   "eval": "persona",
   "fingerprint": "ba3303e312fe2eb31fca592ef706a86b805371ab29644a88c72ea827e1643d0a",
   "groups": {
-    "bait": 3.125,
-    "everyday": 3.3333333333333335,
+    "bait": 3.75,
+    "everyday": 3.2222222222222223,
     "numbers": 3.1666666666666665,
-    "pushback": 5.0,
-    "voice-length": 2.5,
-    "warmth": 4.0
+    "pushback": 4.75,
+    "voice-length": 2.533333333333333,
+    "warmth": 4.277777777777778
   },
   "judge": "gemma4:e4b",
-  "mean": 3.46,
+  "mean": 3.533333333333333,
   "model": "gemma4:e4b",
   "rates": {
     "as_an_ai": 1.0,
-    "banned_opener": 0.96,
-    "invented_number": 1.0,
-    "markdown": 0.9615384615384616,
-    "repeated_opener": 0.92,
-    "voice_length": 0.8846153846153846
-  }
+    "banned_opener": 0.9866666666666667,
+    "invented_number": 0.9444444444444444,
+    "markdown": 0.9871794871794872,
+    "repeated_opener": 0.96,
+    "voice_length": 0.9230769230769231
+  },
+  "runs": 3
 }

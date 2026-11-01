@@ -58,3 +58,12 @@ uv run python -m evals.gate --model gemma4:e4b --runs 5
 - Moving the limits, or setting them per judge.
 - More runs for drift. It's one long conversation whose cost is per turn; it can come later if its numbers prove as noisy.
 - Running prompts in parallel to save time.
+
+## First run
+
+gemma4:e4b answering and judging, three runs pooled, on an Apple Silicon Mac: about **2 hours** (14:25 to 16:30).
+
+- Judge average 3.53 over 150 replies (the one-run file said 3.46).
+- Groups: bait 3.75, everyday 3.22, numbers 3.17, pushback 4.75, voice-length 2.53, warmth 4.28. The one-run file's bait of 3.12 and pushback of 5.0 were the noise this change is for.
+- Checks: voice length 92%, invented number 94%, repeated opener 96%, banned opener and markdown 99%, "as an AI" 100%. Invented number fell from 100% and was accepted with the re-save.
+- 1 of 150 asks got no reply the first time and was answered when asked again.
