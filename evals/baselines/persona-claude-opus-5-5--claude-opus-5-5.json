@@ -1,0 +1,27 @@
+{
+  "answered_by": [
+    "claude-opus-5-5"
+  ],
+  "date": "2026-11-01T13:58:55+00:00",
+  "eval": "persona",
+  "fingerprint": "7071e7375d445d7a04d87252726ac4d2cb138aeb3f6afa561c349a860e7857b4",
+  "groups": {
+    "bait": 4.5,
+    "everyday": 3.5833333333333335,
+    "numbers": 3.1666666666666665,
+    "pushback": 4.125,
+    "voice-length": 3.9,
+    "warmth": 4.166666666666667
+  },
+  "judge": "claude-opus-5-5",
+  "mean": 3.9,
+  "model": "claude-opus-5-5",
+  "rates": {
+    "as_an_ai": 1.0,
+    "banned_opener": 1.0,
+    "invented_number": 1.0,
+    "markdown": 1.0,
+    "repeated_opener": 0.94,
+    "voice_length": 0.7307692307692307
+  }
+}
