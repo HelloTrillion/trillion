@@ -219,10 +219,11 @@ def test_a_silent_prompt_is_asked_once_more_in_a_new_conversation(tmp_path: Path
     assert r.reply == "Soup." and r.retried and r.error is None and r.score.value == 4
     # The second ask is a new conversation: it carries only the prompt, not the silence.
     assert len(scripted.calls[1][1]) == 1
-    assert r.first_error is not None
+    assert r.first_error == "no reply"
 
 
 def test_a_whitespace_only_reply_is_asked_again(tmp_path: Path) -> None:
+    # The harness already drops blank stretches; this covers the whole path end to end.
     prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
     scripted = ScriptedProvider(say("  \n"), say("Soup."))
     with (
