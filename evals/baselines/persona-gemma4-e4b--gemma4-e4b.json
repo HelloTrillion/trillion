@@ -1,27 +1,28 @@
 {
+  "accepted_drop": "Only checkpoint.md changed, and it starts at a conversation's fifth message; every gate prompt is a one-message conversation, so the gate never sees it. Any drop here is run-to-run noise from the small local model judging itself.",
   "answered_by": [
     "gemma4:e4b"
   ],
-  "date": "2026-10-31T23:20:49+00:00",
+  "date": "2026-11-01T20:27:55+00:00",
   "eval": "persona",
-  "fingerprint": "7071e7375d445d7a04d87252726ac4d2cb138aeb3f6afa561c349a860e7857b4",
+  "fingerprint": "ba3303e312fe2eb31fca592ef706a86b805371ab29644a88c72ea827e1643d0a",
   "groups": {
-    "bait": 4.625,
-    "everyday": 3.25,
-    "numbers": 2.5,
-    "pushback": 4.75,
-    "voice-length": 3.0,
-    "warmth": 3.3333333333333335
+    "bait": 3.125,
+    "everyday": 3.3333333333333335,
+    "numbers": 3.1666666666666665,
+    "pushback": 5.0,
+    "voice-length": 2.5,
+    "warmth": 4.0
   },
   "judge": "gemma4:e4b",
-  "mean": 3.58,
+  "mean": 3.46,
   "model": "gemma4:e4b",
   "rates": {
     "as_an_ai": 1.0,
-    "banned_opener": 1.0,
+    "banned_opener": 0.96,
     "invented_number": 1.0,
     "markdown": 0.9615384615384616,
-    "repeated_opener": 0.96,
-    "voice_length": 1.0
+    "repeated_opener": 0.92,
+    "voice_length": 0.8846153846153846
   }
 }

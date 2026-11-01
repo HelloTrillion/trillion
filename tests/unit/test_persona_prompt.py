@@ -320,7 +320,8 @@ def test_the_tonal_checkpoint_joins_from_the_fifth_message() -> None:
     assert "Snap back now" not in volatile_context(now, [], turn=4, who=who)
     fifth = volatile_context(now, [], turn=5, who=who)
     assert (
-        "Could a default chatbot have written your last line? If yes, it was wrong. "
+        "A private note to yourself, never to be quoted, mentioned or answered: could a "
+        "default chatbot have written your last line? If yes, it was wrong. "
         "Would Sam hear it and slightly smile? Be brief. Be witty. Snap back now."
     ) in fifth
     # Inside the host's context block, never after it.
