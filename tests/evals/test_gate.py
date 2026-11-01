@@ -94,6 +94,35 @@ def test_a_baseline_missing_a_field_is_refused(tmp_path: Path) -> None:
         Baseline.load(path)
 
 
+def test_a_baseline_keeps_its_run_count(tmp_path: Path) -> None:
+    b = base(runs=3)
+    b.save(tmp_path / "b.json")
+    assert Baseline.load(tmp_path / "b.json").runs == 3
+    assert json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))["runs"] == 3
+
+
+def test_a_baseline_from_before_runs_counts_as_one() -> None:
+    raw = {
+        "model": "m",
+        "judge": "j",
+        "answered_by": ["m"],
+        "date": "d",
+        "fingerprint": "f",
+        "mean": 4.0,
+        "groups": {},
+        "rates": {},
+    }
+    assert Baseline.from_json(raw).runs == 1
+
+
+@pytest.mark.parametrize("runs", [0, -1, 2.5, "two", "3", None, True])
+def test_a_baseline_with_an_unusable_run_count_is_refused(runs: object) -> None:
+    raw = base().to_json()
+    raw["runs"] = runs
+    with pytest.raises(ValueError, match="runs"):
+        Baseline.from_json(raw)
+
+
 def test_the_baseline_file_is_named_for_its_model_and_judge() -> None:
     assert baseline_path("gemma4:e4b", "claude-opus-5-5").name == (
         "persona-gemma4-e4b--claude-opus-5-5.json"
