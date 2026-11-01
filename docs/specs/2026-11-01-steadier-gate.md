@@ -30,8 +30,8 @@ uv run python -m evals.gate --model gemma4:e4b --runs 5
 
 - In the persona eval's asking step, which the gate shares: when a prompt's reply is empty, the sandbox starts a new conversation and asks it once more. The second reply is the one used.
 - A prompt asked twice says so on its line ("asked twice"), and its JSON case has `retried: true`.
-- The summary counts them. The gate notes "2 prompts got no reply the first time and were asked again"; it isn't a problem, since the reply that counts is the second.
-- If the second ask is silent too, the prompt is silent, exactly as today.
+- The summary counts them. The gate counts in asks, out of every ask in every run, since one flaky prompt can be silent in more than one run: it notes "2 of 150 asks got no reply the first time and were asked again"; it isn't a problem, since the reply that counts is the second.
+- If the second ask is silent too, the prompt is silent, exactly as today; the gate fails with "1 of 150 asks got no reply".
 
 ## Baselines
 

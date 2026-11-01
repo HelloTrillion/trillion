@@ -344,12 +344,16 @@ def test_an_unjudged_reply_fails_the_gate(tmp_path: Path) -> None:
 def test_a_silent_prompt_fails_the_gate(tmp_path: Path) -> None:
     gate_run(tmp_path, 4, save=True)
     code, said = gate_run(tmp_path, 4, reply=say(""))
-    assert code == 1 and "1 prompts got no reply" in said
-    assert results(tmp_path)["gate"]["hard"] == ["1 prompts got no reply"]
+    assert code == 1 and "1 of 1 asks got no reply" in said
+    assert results(tmp_path)["gate"]["hard"] == ["1 of 1 asks got no reply"]
+    # Over several runs the count is of asks, out of every ask.
+    code, said = gate_run(tmp_path, 4, reply=say(""), runs=3)
+    assert code == 1 and "3 of 3 asks got no reply" in said
 
 
 def test_runs_are_pooled_into_one_summary(tmp_path: Path) -> None:
-    judging = ScriptedProvider(judged(5), judged(3), judged(4))
+    # No single run averages 4: only the pool of all three does.
+    judging = ScriptedProvider(judged(5), judged(5), judged(2))
     code, said = gate_run(tmp_path, 0, judging=judging, runs=3, save=True)
     assert code == 0
     assert "3 runs \u00d7 1 prompts, judge average 4.00" in said
@@ -357,8 +361,8 @@ def test_runs_are_pooled_into_one_summary(tmp_path: Path) -> None:
     body = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
     assert [(c["id"], c["score"]) for c in body["cases"]] == [
         ("everyday-01", 5),
-        ("everyday-01 #2", 3),
-        ("everyday-01 #3", 4),
+        ("everyday-01 #2", 5),
+        ("everyday-01 #3", 2),
     ]
     assert "everyday-01 #2" in said and "everyday-01 #3" in said
     saved = Baseline.load(saved_file(tmp_path))
@@ -410,7 +414,7 @@ def test_a_prompt_asked_twice_is_noted(tmp_path: Path) -> None:
         )
     said = out.getvalue()
     assert code == 0
-    assert "1 prompts got no reply the first time and were asked again" in said
+    assert "1 of 1 asks got no reply the first time and were asked again" in said
     assert results(tmp_path)["gate"]["hard"] == []
 
 

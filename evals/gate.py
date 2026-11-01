@@ -208,10 +208,13 @@ def check(
     hard, notes = model_problems(model, served, sb.unreported)
     if s.unjudged:
         hard.append(f"{s.unjudged} replies could not be judged")
+    # Counted in asks out of every ask in every run: one flaky prompt can be silent in
+    # more than one run.
+    asks = runs * len(prompts)
     if s.silent:
-        hard.append(f"{s.silent} prompts got no reply")
+        hard.append(f"{s.silent} of {asks} asks got no reply")
     if s.retried:
-        notes.append(f"{s.retried} prompts got no reply the first time and were asked again")
+        notes.append(f"{s.retried} of {asks} asks got no reply the first time and were asked again")
     if base is not None and base.runs != runs:
         mismatch = f"the baseline is from {_plural(base.runs, 'run')}, this from {runs}"
         if base.runs < runs:
@@ -300,12 +303,13 @@ def _runs(text: str | None) -> int | None:
     """The --runs count, or None when it wasn't given."""
     if text is None:
         return None
+    why = f"--runs takes a whole number, 1 or more, not {text!r}"
     try:
         n = int(text)
     except ValueError:
-        n = 0
+        raise CannotRun(why) from None
     if n < 1:
-        raise CannotRun(f"--runs takes a whole number, 1 or more, not {text!r}")
+        raise CannotRun(why)
     return n
 
 
@@ -331,7 +335,7 @@ def _main(opts: argparse.Namespace) -> int:
         url = opts.url or config.LOCAL_URL
     make = harness.model_provider(model, url, os.environ)
     with harness.judge_for(opts.judge_model, opts.judge_url, os.environ) as judge:
-        runs = asked_runs or default_runs(local=judge.local)
+        runs = default_runs(local=judge.local) if asked_runs is None else asked_runs
         report = Report("gate", model, judge.line)
         with Sandbox(make, patient=True) as sb:
             return check(
