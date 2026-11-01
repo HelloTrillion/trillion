@@ -98,6 +98,16 @@ On Windows, run the loop in Git Bash, or run the six `uv run python scripts/…`
 
 This is not distrust. These are the parts where a subtle change quietly removes a promise we make to users.
 
+## Changing her voice
+
+Her voice comes from the soul (`persona/SOUL.md`) and the prompts in `src/trillion/persona/prompts/`. When you change either, CI fails until a persona baseline matches them. CI runs no model: you make the baseline on your own machine and commit it.
+
+```bash
+uv run python -m evals.gate --model gemma4:e4b --save-baseline
+```
+
+A free local model is enough: with `TRILLION_ANTHROPIC_API_KEY` unset, Ollama's `gemma4:e4b` both answers and judges, with no paid key. Commit the file it writes in `evals/baselines/`. If the run is worse than the last baseline for the same model and judge, add `--accept-drop "<why>"`. The reason is saved in the file, so reviewers see it in the diff. Changing the default model needs a baseline for the new model, run by whoever proposes it. If you change `checkpoint.md`, the reminder she gets from her fifth message, the gate can't see it: every persona prompt is a one-message conversation. Also run `uv run python -m evals.drift.run --model gemma4:e4b` and put the gap it reports in the pull request. The gate needs a server that reports the model's real name, as Ollama does; a server that answers under another name can't make a baseline. The full rules, and the drift eval, are in [`docs/TESTING.md`](docs/TESTING.md#32-persona-evl-1-evl-4-evl-5).
+
 ## Sign-off (DCO)
 
 Every commit must carry a `Signed-off-by` line certifying that you wrote the contribution or have the right to submit it. The full text is in [`DCO`](DCO).

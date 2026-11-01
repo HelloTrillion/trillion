@@ -2616,7 +2616,8 @@ class Session:
         ):
             return
         # A listener is only open on a spoken turn: the message is marked as spoken.
-        built = await self._build_input("user", words, via="voice")
+        # Built before the message is counted: it will be the next one.
+        built = await self._build_input("user", words, via="voice", turn=self._turn + 1)
         # The same as `_one_turn` sends: its rules and skills, its history, its tools.
         system = await asyncio.to_thread(rt.system)
         # Read after the awaits, so a trim meanwhile is in what is sent.
@@ -2897,11 +2898,13 @@ class Session:
         *,
         via: Literal["voice", "text", "ask"] | None = None,
         marker: str | None = None,
+        turn: int | None = None,
     ) -> BuiltInput:
         """The message a user input is saved as, built but not saved. A draft (VOI-12)
         uses this, so a used draft saves exactly what it was given. `via` is how it was
         said, when that is not yet the session's. `marker` is a host note saved ahead
-        of the text, saying what the text is."""
+        of the text, saying what the text is. `turn` is the user message this input
+        belongs to, when it is not yet counted (an early draft)."""
         via = via or self._via
         pending = [
             PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
@@ -2926,6 +2929,9 @@ class Session:
             board=board_summary(await self._board()),
             routine=self._routine,
             jobs=jobs,
+            turn=self._turn if turn is None else turn,
+            # "Your last line" is asked about the user's own words, never a host note.
+            who=self._rt.identity if kind == "user" else None,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:

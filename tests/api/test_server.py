@@ -299,6 +299,19 @@ def test_the_model_sees_the_soul_once_and_context_on_the_newest_turn_only(make: 
     assert app.provider.calls[0][1] == [first]
 
 
+def test_the_tonal_checkpoint_rides_from_the_fifth_message_on(make: Any) -> None:
+    app = make(*(say(f"R{i}.") for i in range(6)))
+    with app.connect() as chat:
+        for i in range(6):
+            chat.say(f"m{i}")
+            chat.until("state")
+    newest = [messages[-1].blocks[0] for _, messages in app.provider.calls]
+    assert all(isinstance(b, ContextBlock) for b in newest)
+    texts = [b.text for b in newest if isinstance(b, ContextBlock)]
+    assert ["Snap back now" in t for t in texts] == [False] * 4 + [True] * 2
+    assert "{user_name}" not in texts[4]
+
+
 def test_the_time_she_is_given_is_the_users_and_names_its_zone(make: Any) -> None:
     from trillion.persona import setup
 
@@ -491,6 +504,26 @@ def test_a_reload_resumes_the_conversation_and_its_open_card(make: Any) -> None:
         assert chat.tap("confirm", card["pending_id"])["status"] == "succeeded"
         chat.until("turn.complete")
     assert (app.granted / "note.txt").exists()
+
+
+def test_the_message_count_survives_a_reload(make: Any) -> None:
+    """Four messages, a reload, then the fifth: it still carries the checkpoint."""
+    app = make(*(say(f"R{i}.") for i in range(5)))
+    with app.connect() as chat:
+        for i in range(4):
+            chat.say(f"m{i}")
+            chat.until("state")
+        conversation = chat.session["id"]
+    with app.client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_json({"type": "hello", "token": app.rt.token, "resume": conversation})
+        chat = Chat(ws)
+        assert chat.until("state")[0]["id"] == conversation
+        chat.say("m4")
+        chat.until("state")
+    _, messages = app.provider.calls[-1]
+    assert len(app.provider.calls) == 5
+    newest = messages[-1].blocks[0]
+    assert isinstance(newest, ContextBlock) and "Snap back now" in newest.text
 
 
 def test_resuming_a_conversation_that_does_not_exist_starts_a_new_one(make: Any) -> None:

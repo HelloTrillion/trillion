@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import io
 import json
@@ -13,14 +14,33 @@ from typing import Any
 import aiosqlite.core
 import httpx
 import pytest
-from evals.harness import Ask, CannotRun, Judge, Report, Sandbox, Score, parse_score
+from evals.harness import (
+    Ask,
+    CannotRun,
+    Judge,
+    Report,
+    Sandbox,
+    Score,
+    options,
+    parse_score,
+    safe_name,
+)
 
 from evals import harness
 from tests.brain.fakes import ScriptedProvider, say, use
 from tests.unit.test_web import Wire, names, response
 from trillion.brain.config import ANTHROPIC_KEY
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
-from trillion.brain.types import ContextBlock, Msg, SystemBlock, TextBlock
+from trillion.brain.types import (
+    ContextBlock,
+    Done,
+    ModelEvent,
+    Msg,
+    SystemBlock,
+    TextBlock,
+    TextDelta,
+    Usage,
+)
 from trillion.secrets.store import KeychainStore
 
 AT = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
@@ -143,6 +163,42 @@ def test_a_passing_report_exits_0_and_makes_its_folder(tmp_path: Path) -> None:
     assert (
         json.loads((tmp_path / "deep" / "r.json").read_text(encoding="utf-8"))["verdict"] == "pass"
     )
+
+
+def test_an_unjudged_report_says_reported_and_exits_0(tmp_path: Path) -> None:
+    # Measured but held to no line: never PASS, never FAIL.
+    out = io.StringIO()
+    report = Report("drift", "fake-1", "judge: x", out=out, now=lambda: AT)
+    report.case("off-01", None, "score=3", score=3)
+    code = report.finish(None, "30 turns", path=tmp_path / "r.json")
+    lines = out.getvalue().splitlines()
+    assert lines[1].startswith(" -    off-01")
+    assert lines[2] == "REPORTED (fake-1): 30 turns"
+    assert code == harness.PASS
+    body = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert body["verdict"] == "unjudged"
+    assert body["cases"] == [{"id": "off-01", "passed": None, "score": 3}]
+
+
+@pytest.mark.parametrize("passed", [True, False, None])
+def test_the_exit_code_and_the_verdict_agree(passed: bool | None, tmp_path: Path) -> None:
+    out = io.StringIO()
+    report = Report("drift", "fake-1", "judge: x", out=out, now=lambda: AT)
+    code = report.finish(passed, "s", path=tmp_path / "r.json")
+    printed = out.getvalue().splitlines()[1].split()[0]
+    verdict = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["verdict"]
+    if code == harness.PASS:
+        assert printed in ("PASS", "REPORTED") and verdict in ("pass", "unjudged")
+    else:
+        assert printed == "FAIL" and verdict == "fail"
+
+
+def test_a_falsy_verdict_that_is_not_false_still_fails(tmp_path: Path) -> None:
+    # The mark goes by truthiness, so the exit code does too: never "FAIL" and exit 0.
+    out = io.StringIO()
+    report = Report("drift", "fake-1", "judge: x", out=out, now=lambda: AT)
+    code = report.finish(0, "s", path=tmp_path / "r.json")  # type: ignore[arg-type]
+    assert out.getvalue().splitlines()[1].startswith("FAIL") and code == harness.FAIL
 
 
 # ── The judge ────────────────────────────────────────────────────────────
@@ -665,3 +721,54 @@ def test_settle_waits_for_a_follow_up_turn_a_read_started(tmp_path: Path) -> Non
         # Settled means her follow-up turn is over too, not only the read.
         assert not any(s.busy() for s in sb.app.rt.by_conversation.values())
         assert sb.provider.reads_ended() == 1
+
+
+def test_safe_name_keeps_a_model_name_usable_as_a_file_name() -> None:
+    assert safe_name("gemma4:e4b") == "gemma4-e4b"
+    assert safe_name("claude-opus-5-5") == "claude-opus-5-5"
+    assert safe_name("///") == "model"
+
+
+def test_the_sandbox_collects_every_model_that_answered(tmp_path: Path) -> None:
+    def answered(model: str) -> list[ModelEvent]:
+        return [TextDelta(text="Hi."), Done(stop_reason="end", usage=Usage(), model=model)]
+
+    scripted = ScriptedProvider(answered("m-1"), answered("m-2"))
+    with Sandbox(lambda: scripted, root=tmp_path / "e") as sb:
+        sb.converse([Ask(text="one")])
+        sb.fresh()  # a new app keeps counting
+        sb.converse([Ask(text="two")])
+        assert sb.served == {"m-1", "m-2"}
+        assert sb.unreported == 0
+
+
+def test_the_sandbox_counts_replies_that_named_no_model(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(say("Hi."), say("Hello."))
+    with Sandbox(lambda: scripted, root=tmp_path / "e") as sb:
+        sb.converse([Ask(text="one")])
+        sb.fresh()  # a new app keeps counting
+        sb.converse([Ask(text="two")])
+        assert sb.served == set() and sb.unreported == 2
+
+
+def test_the_judge_is_never_counted_as_a_model_that_answered(tmp_path: Path) -> None:
+    def answered(model: str, text: str) -> list[ModelEvent]:
+        return [TextDelta(text=text), Done(stop_reason="end", usage=Usage(), model=model)]
+
+    scripted = ScriptedProvider(answered("m-1", "Soup."))
+    judging = ScriptedProvider(answered("judge-9", '{"score": 4, "reason": "fine"}'))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "e") as sb,
+        Judge(judging, local=True) as judge,
+    ):
+        sb.converse([Ask(text="lunch?")])
+        assert judge.score("rubric", "transcript").value == 4
+        assert sb.served == {"m-1"} and sb.unreported == 0
+
+
+def test_an_eval_can_add_its_own_options() -> None:
+    def extra(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--deployed", action="store_true")
+
+    opts = options("about", ["--deployed"], extra=extra)
+    assert opts.deployed and opts.model == "gemma4:e4b"

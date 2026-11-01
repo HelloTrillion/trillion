@@ -229,6 +229,12 @@ def greeting(identity: Identity) -> str:
     return _fill(_prompt("greeting.md"), identity)
 
 
+# From this user message of a conversation on, she is asked to snap back to her own
+# voice (PER-4). A module value, read on every call, so the drift eval can turn it off
+# inside its own process to measure what it does.
+CHECKPOINT_FROM = 5
+
+
 def volatile_context(
     now: datetime,
     pending: Sequence[PendingNote],
@@ -238,6 +244,8 @@ def volatile_context(
     board: str = "",
     routine: str = "",
     jobs: Sequence[JobNote] = (),
+    turn: int = 0,
+    who: Identity | None = None,
 ) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
@@ -257,7 +265,11 @@ def volatile_context(
 
     `board` is the one-line summary of her board (SUR-1). It is wrapped as untrusted
     here: its titles may quote a page she read. It rides with the message, never in the
-    cached block, and with no board nothing is added."""
+    cached block, and with no board nothing is added.
+
+    `turn` counts the user's messages in this conversation, this one included. From
+    `CHECKPOINT_FROM` on, and when `who` says whom she is talking to, the tonal
+    checkpoint (PER-4) rides here too, never in the cached block."""
     when = now.strftime("%A %Y-%m-%d %H:%M %Z").strip()
     # "UTC (UTC)" says nothing twice: a zone already named by its abbreviation is left.
     named = zone and zone != now.strftime("%Z")
@@ -271,6 +283,10 @@ def volatile_context(
         # How this one message arrived (PER-3, #40). It rides here, with the message,
         # so the cached block stays the same whether the user types or talks.
         lines.append(_fill(_prompt("voice.md"), spoken))
+    if who is not None and turn >= CHECKPOINT_FROM:
+        # The tonal checkpoint (PER-4): a request, every turn from the fifth. EVL-5
+        # measures whether it works.
+        lines.append(_fill(_prompt("checkpoint.md"), who))
     context = "<context>\n" + "\n".join(lines) + "\n</context>"
     extra = [wrap("workspace", board)] if board else []
     if recalled:

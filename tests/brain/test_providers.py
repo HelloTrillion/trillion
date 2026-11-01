@@ -601,3 +601,33 @@ def test_openai_compatible_a_conversation_a_notice_opened_starts_with_the_user()
     assert body["messages"][2]["content"] == "Time to stretch.\n\nTime to stretch."
     no_system = request_body(model="m", system=[], messages=[NOTICE, USER], tools=[])
     assert [m["role"] for m in no_system["messages"]] == ["user", "assistant", "user"]
+
+
+async def test_anthropic_says_which_model_answered() -> None:
+    events = await collect(anthropic_provider(lambda r: stream_of(ANTHROPIC_STREAM)))
+    done = events[-1]
+    assert isinstance(done, Done) and done.model == "m1"
+
+
+async def test_openai_compatible_says_which_model_answered() -> None:
+    body = sse(
+        ("", {"model": "gemma4:e4b", "choices": [{"delta": {"content": "Hi."}}]}),
+        ("", {"model": "gemma4:e4b", "choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ("", "[DONE]"),
+    )
+    p = OpenAICompatProvider(
+        base_url="http://localhost:11434/v1",
+        model="gemma4:e4b",
+        client=client(lambda r: httpx.Response(200, content=body)),
+    )
+    done = (await collect(p))[-1]
+    assert isinstance(done, Done) and done.model == "gemma4:e4b"
+
+
+async def test_a_server_that_names_no_model_leaves_it_empty() -> None:
+    p = OpenAICompatProvider(
+        base_url="http://x/v1",
+        model="m",
+        client=client(lambda r: httpx.Response(200, content=sse(("", "[DONE]")))),
+    )
+    assert await collect(p) == [Done(stop_reason="other", usage=Usage())]

@@ -39,6 +39,7 @@ from trillion.brain import config
 from trillion.brain.config import ANTHROPIC_KEY, LOCAL_URL, ConfigError, ModelSettings
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.types import (
+    Done,
     ModelEvent,
     ModelProvider,
     Msg,
@@ -85,8 +86,13 @@ def daemon_connection_threads() -> None:
 daemon_connection_threads()
 
 
-def options(about: str, argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """The options every eval takes."""
+Extra = Callable[[argparse.ArgumentParser], None]
+
+
+def options(
+    about: str, argv: Sequence[str] | None = None, *, extra: Extra | None = None
+) -> argparse.Namespace:
+    """The options every eval takes, and any of its own that `extra` adds."""
     p = argparse.ArgumentParser(
         description=about, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -100,6 +106,8 @@ def options(about: str, argv: Sequence[str] | None = None) -> argparse.Namespace
         "--only", action="append", default=[], metavar="CASE", help="run only this (repeatable)"
     )
     p.add_argument("--json", type=Path, default=None, metavar="PATH", help="write results here")
+    if extra is not None:
+        extra(p)
     return p.parse_args(argv)
 
 
@@ -108,11 +116,12 @@ def run(
     argv: Sequence[str] | None = None,
     *,
     about: str = "",
+    extra: Extra | None = None,
 ) -> int:
     """Parse the options, run the eval, and turn "could not run" into exit code 2:
     anything that stops it before a verdict (a stalled model, a report that could not
     be written, a broken session) is never counted as a fail. Ctrl-C still stops it."""
-    opts = options(about, argv)
+    opts = options(about, argv, extra=extra)
     try:
         return main(opts)
     except CannotRun as e:
@@ -137,9 +146,13 @@ def pick[C](
     return [c for c in cases if wanted & set(names(c))]
 
 
+def safe_name(model: str) -> str:
+    """A model's name as a file name: "gemma4:e4b" is "gemma4-e4b"."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "model"
+
+
 def results_path(name: str, model: str, at: datetime) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", model).strip("-") or "model"
-    return RESULTS / f"{name}-{safe}-{at.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+    return RESULTS / f"{name}-{safe_name(model)}-{at.strftime('%Y%m%dT%H%M%S.%fZ')}.json"
 
 
 class Report:
@@ -166,13 +179,14 @@ class Report:
         self._out.write(line + "\n")
         self._out.flush()
 
-    def case(self, case_id: str, passed: bool, line: str, **data: Any) -> None:
+    def case(self, case_id: str, passed: bool | None, line: str, **data: Any) -> None:
+        """One case's line. `passed` is None for a case measured but held to no line."""
         self.cases.append({"id": case_id, "passed": passed, **data})
-        self._say(f"{'pass' if passed else 'FAIL'}  {case_id:<22} {line}")
+        self._say(f"{_mark(passed, 'pass', 'FAIL', ' -  ')}  {case_id:<22} {line}")
 
     def finish(
         self,
-        passed: bool,
+        passed: bool | None,
         summary: str,
         *,
         notes: Sequence[str] = (),
@@ -181,7 +195,8 @@ class Report:
     ) -> int:
         for note in notes:
             self._say(note)
-        self._say(f"{'PASS' if passed else 'FAIL'} ({self.model}): {summary}")
+        # None is a run reported without a verdict: it exits 0, but never says PASS.
+        self._say(f"{_mark(passed, 'PASS', 'FAIL', 'REPORTED')} ({self.model}): {summary}")
         target = path if path is not None else results_path(self.name, self.model, self.started)
         target.parent.mkdir(parents=True, exist_ok=True)
         body = {
@@ -190,7 +205,7 @@ class Report:
             "judge": self.judge,
             "started": self.started.isoformat(),
             "finished": self._now().isoformat(),
-            "verdict": "pass" if passed else "fail",
+            "verdict": _mark(passed, "pass", "fail", "unjudged"),
             "summary": summary,
             "totals": dict(totals or {}),
             "cases": self.cases,
@@ -199,7 +214,12 @@ class Report:
             json.dump(body, f, indent=2, ensure_ascii=False)
             f.write("\n")
         self._say(f"results: {target}")
-        return PASS if passed else FAIL
+        # The same test as the printed mark: None and a true value pass.
+        return PASS if passed is None or passed else FAIL
+
+
+def _mark(passed: bool | None, yes: str, no: str, neither: str) -> str:
+    return neither if passed is None else yes if passed else no
 
 
 JUDGE_SYSTEM = (
@@ -452,13 +472,23 @@ class Recorder:
     the latest call is not always this conversation's: what a turn is held to comes
     from the latest call that carries the conversation's first message."""
 
-    def __init__(self, inner: ModelProvider) -> None:
+    def __init__(
+        self,
+        inner: ModelProvider,
+        served: set[str] | None = None,
+        unreported: Callable[[], None] | None = None,
+    ) -> None:
         self.inner = inner
         self.name = inner.name
         self.model = inner.model
         self.calls: list[tuple[list[SystemBlock], list[Msg]]] = []
         # What the user said in this conversation, in order.
         self.said: list[str] = []
+        # Every model the provider said answered, across the sandbox's conversations.
+        # The judge's own calls never pass through here, so they are never counted.
+        self.served = served if served is not None else set()
+        # Called once for each reply to a turn whose provider named no model.
+        self._unreported = unreported if unreported is not None else (lambda: None)
 
     def pricing(self) -> Pricing | None:
         return self.inner.pricing()
@@ -471,11 +501,17 @@ class Recorder:
         tools: Sequence[ToolSchema],
         max_tokens: int,
     ) -> AsyncIterator[ModelEvent]:
-        if not is_naming(system):  # naming a conversation is not a turn
+        turn = not is_naming(system)  # naming a conversation is not a turn
+        if turn:
             self.calls.append((list(system), list(messages)))
         async for ev in self.inner.stream(
             system=system, messages=messages, tools=tools, max_tokens=max_tokens
         ):
+            if isinstance(ev, Done):
+                if ev.model:
+                    self.served.add(ev.model)
+                elif turn:
+                    self._unreported()
             yield ev
 
     def _last(self) -> list[Msg]:
@@ -604,6 +640,10 @@ class Sandbox:
         self._count = 0
         self._saved: dict[str, Any] = {}
         self.root: Path | None = None
+        # Every model that answered her, across all of this sandbox's apps (EVL-4).
+        self.served: set[str] = set()
+        # Replies whose provider never said which model answered, across those apps.
+        self.unreported = 0
         self.provider: Recorder
         self.stt: FakeSTT
 
@@ -661,6 +701,9 @@ class Sandbox:
             raise RuntimeError("the sandbox is not open")
         return self._app
 
+    def _unreported(self) -> None:
+        self.unreported += 1
+
     def fresh(self) -> None:
         """A new conversation in a new app and home: cases never see each other."""
         self._close()
@@ -673,7 +716,7 @@ class Sandbox:
         place = self.root / f"case-{self._count}"
         place.mkdir(parents=True)
         os.environ["TRILLION_HOME"] = str(place / "home")
-        self.provider = Recorder(self._make())
+        self.provider = Recorder(self._make(), self.served, self._unreported)
         app = App(place, self.provider)
         self._app = app
         rt = app.rt

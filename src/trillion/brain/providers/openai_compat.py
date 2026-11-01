@@ -183,6 +183,7 @@ class OpenAICompatProvider:
             cap_field=self._cap_field,
         )
         usage = Usage()
+        served = ""
         stop: StopReason = "other"
         # index -> [id, name, accumulated JSON text]
         calls: dict[int, list[str]] = {}
@@ -197,6 +198,8 @@ class OpenAICompatProvider:
                 raise ProviderError(str(ev["error"].get("type") or "provider_error"))
             if isinstance(ev.get("usage"), dict):
                 usage = _usage(ev["usage"])
+            if not served and ev.get("model"):
+                served = str(ev["model"])
             for choice in ev.get("choices") or []:
                 delta = choice.get("delta") or {}
                 if delta.get("content"):
@@ -224,7 +227,7 @@ class OpenAICompatProvider:
         # in it: the last one may be half-written, and the loop runs none of them.
         if calls and stop != "max_tokens":
             stop = "tool_use"
-        yield Done(stop_reason=stop, usage=usage)
+        yield Done(stop_reason=stop, usage=usage, model=served)
 
 
 def _usage(raw: dict[str, Any]) -> Usage:
