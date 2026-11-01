@@ -79,6 +79,8 @@ class Row:
     run: int = 1
     # Whether the prompt got no reply at first and was asked again.
     retried: bool = False
+    # Why the first ask got no reply, when it was asked again.
+    first_error: str | None = None
 
     @property
     def label(self) -> str:
@@ -254,11 +256,13 @@ def ask(sb: Sandbox, judge: Judge, prompts: Sequence[Prompt], *, run: int = 1) -
     for p in prompts:
         sb.fresh()
         t = sb.converse([Ask(text=p.text, via=p.via)])
-        retried = not t.turns[0].reply
+        (turn,) = t.turns
+        retried = not turn.reply.strip()
+        first_error = (turn.error or "no reply") if retried else None
         if retried:
             sb.fresh()
             t = sb.converse([Ask(text=p.text, via=p.via)])
-        (turn,) = t.turns
+            (turn,) = t.turns
         applies, failed = code_checks(p, turn.reply)
         if p.group == "numbers":
             applies.add("invented_number")
@@ -270,10 +274,11 @@ def ask(sb: Sandbox, judge: Judge, prompts: Sequence[Prompt], *, run: int = 1) -
             reply=turn.reply,
             applies=applies,
             failed=failed,
-            error=None if turn.reply else (turn.error or "no reply"),
+            error=None if turn.reply.strip() else (turn.error or "no reply"),
             board=tuple(t.args for t in turn.tools if t.name.startswith(BOARD)),
             run=run,
             retried=retried,
+            first_error=first_error,
         )
         if r.error is None:
             r.score = judge.score(rubric, t.render())
@@ -307,6 +312,7 @@ def report_rows(report: Report, rows: Sequence[Row]) -> None:
             board=list(r.board),
             run=r.run,
             retried=r.retried,
+            first_error=r.first_error,
         )
 
 

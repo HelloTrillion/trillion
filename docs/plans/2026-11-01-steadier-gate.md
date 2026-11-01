@@ -190,7 +190,7 @@ def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt
     return summarize(rows)
 ```
 
-If the silent-twice test's fake judge is asked anything, it raises; `ask` must not judge a silent row (it doesn't: `r.error` is set).
+The silent-twice test checks the judge's provider was never called (`jp.calls == []`); `ask` must not judge a silent row (it doesn't: `r.error` is set).
 
 - [ ] **Step 4: Run the persona and gate tests**
 

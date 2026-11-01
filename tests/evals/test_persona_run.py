@@ -219,16 +219,32 @@ def test_a_silent_prompt_is_asked_once_more_in_a_new_conversation(tmp_path: Path
     assert r.reply == "Soup." and r.retried and r.error is None and r.score.value == 4
     # The second ask is a new conversation: it carries only the prompt, not the silence.
     assert len(scripted.calls[1][1]) == 1
+    assert r.first_error is not None
+
+
+def test_a_whitespace_only_reply_is_asked_again(tmp_path: Path) -> None:
+    prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
+    scripted = ScriptedProvider(say("  \n"), say("Soup."))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(ScriptedProvider(judged(4)), local=True) as judge,
+    ):
+        (r,) = ask(sb, judge, prompts)
+    assert r.retried and r.reply == "Soup." and r.error is None
 
 
 def test_silent_twice_is_silent(tmp_path: Path) -> None:
     prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
+    scripted = ScriptedProvider(say(""), say(""))
+    jp = ScriptedProvider()
     with (
-        Sandbox(lambda: ScriptedProvider(say(""), say("")), root=tmp_path / "evals") as sb,
-        Judge(ScriptedProvider(), local=True) as judge,
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(jp, local=True) as judge,
     ):
         (r,) = ask(sb, judge, prompts)
+    assert len(scripted.calls) == 2 and jp.calls == []
     assert r.retried and r.error is not None and r.score.value is None
+    assert r.score.reason == "not judged"
     assert summarize([r]).silent == 1
 
 
