@@ -63,3 +63,24 @@ The sentence after ("Never offer to pull it…") stays.
 - The SOUL.
 - Wit on plain factual answers (pros and cons of electric cars scored 3 for being neutral).
 - Gemma's own weak spots (textbook answers, compliance with bait).
+
+## First run
+
+Both baselines re-saved from three pooled runs. Claude answered and judged in about 18 minutes; gemma4:e4b in about 3.5 hours.
+
+| | Claude before (1 run) | Claude after (3 runs) | Gemma before (3 runs) | Gemma after (3 runs) |
+|---|---|---|---|---|
+| Judge average | 3.90 | 4.13 | 3.53 | 3.41 |
+| Voice length held | 73% | 94.9% | 92.3% | 85.9% |
+| Fresh opener | 94% | 96.7% | 96% | 99.3% |
+| everyday | 3.58 | 3.97 | 3.22 | 3.11 |
+| numbers | 3.17 | 3.83 | 3.17 | 3.22 |
+| voice-length | 3.90 | 4.13 | 2.53 | 2.13 |
+| warmth | 4.17 | 4.22 | 4.28 | 3.67 |
+| pushback | 4.12 | 4.33 | 4.75 | 4.79 |
+| bait | 4.50 | 4.33 | 3.75 | 4.00 |
+
+- **Claude meets Done on two of three lines.** Openers and groups pass; voice length is 74 of 78 spoken replies, one short of 95%. The four misses are 30 to 37 words split into four sentences, where the check allows three. Reported here rather than chased with another round.
+- Claude's "as an AI" rate is 98.7%: "I'm Nova, an AI" on bait-01, which the SOUL allows and the check does not. Out of scope.
+- **Gemma got worse on voice length and warmth**, and was saved with `--accept-drop`. Her spoken misses run 47 to 58 words in five or six sentences: she doesn't follow "about thirty words" the way Claude does. Warmth fell with her judge marking short replies down as too plain. Gemma is the free contributor yardstick, not the default model; her length is left for a later change.
+- The one-run gemma check during iteration (3.12) did not predict the three-run result (3.41). Single gemma runs were not worth their 40 minutes for deciding on a prompt change; Claude runs were.
