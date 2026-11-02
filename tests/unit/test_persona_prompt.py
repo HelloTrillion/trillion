@@ -311,6 +311,29 @@ def test_spoken_replies_are_short_and_unlabelled() -> None:
     assert "One or two short sentences, about thirty words in all" in spoken
     assert 'No label such as "Short version:" before it' in spoken
     assert "under ten seconds" not in spoken
+    assert "Say the one thing; if they want more, they will ask." in spoken
+
+
+def test_spoken_replies_leave_room() -> None:
+    # VOI-7: the Claude baseline answered a sign-off, turned musing into a menu of
+    # options, and stacked questions; the stay-quiet spec says what she does instead.
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    spoken = volatile_context(datetime(2026, 11, 2, tzinfo=UTC), [], spoken=ident)
+    assert "stay_quiet" in spoken
+    assert "with done" in spoken and "with listening" in spoken
+    assert "A clear, finished question always gets an answer" in spoken
+    assert "is not a decision" in spoken
+    assert "At most one question" in spoken
+    assert "if there is more, offer it" not in spoken
+    assert "\u2014" not in spoken and "\u2013" not in spoken
+
+
+def test_a_typed_sign_off_is_quiet_too() -> None:
+    typed = system_blocks(Identity(agent_name="Nova", user_name="Sam"), "soul")[0].text
+    assert "stay_quiet with done" in typed
+    assert "with listening" not in typed
+    # A reader can skip the offer, so typed replies keep it.
+    assert "offer it in a few words" in typed
 
 
 def test_typed_replies_offer_the_rest_instead_of_a_list() -> None:
