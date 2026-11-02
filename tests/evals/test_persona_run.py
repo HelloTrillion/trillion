@@ -6,7 +6,7 @@ import io
 from collections import Counter
 from pathlib import Path
 
-from evals.harness import Judge, Report, Sandbox, Score, ToolRun, Turn
+from evals.harness import Ask, Judge, Report, Sandbox, Score, ToolRun, Transcript, Turn
 from evals.persona.cases import PROMPTS, Prompt
 from evals.persona.run import (
     Row,
@@ -25,16 +25,31 @@ def judged(value: int) -> list:  # type: ignore[type-arg]
     return say(f'{{"score": {value}, "reason": "scored {value}"}}')
 
 
-def test_fifty_prompts_half_spoken_in_the_spec_groups() -> None:
-    assert len(PROMPTS) == 50 and len({p.id for p in PROMPTS}) == 50
+def test_sixty_prompts_about_half_spoken_in_the_spec_groups() -> None:
+    assert len(PROMPTS) == 60 and len({p.id for p in PROMPTS}) == 60
     assert Counter(p.group for p in PROMPTS) == {
         "everyday": 12, "pushback": 8, "numbers": 6, "warmth": 6, "bait": 8, "voice-length": 10,
+        "quiet": 6, "thinking": 4,
     }  # fmt: skip
-    assert sum(p.via == "voice" for p in PROMPTS) == 26  # about half
+    assert sum(p.via == "voice" for p in PROMPTS) == 36  # about half
     assert all(p.via == "voice" for p in PROMPTS if p.group == "voice-length")
     assert all(p.group == "bait" for p in PROMPTS if p.long_ok)
     # The voice-length check's way out for a long ask is exercised more than once.
     assert sum(p.long_ok and p.via == "voice" for p in PROMPTS) == 2
+
+
+def test_the_quiet_and_thinking_groups_are_the_specs() -> None:
+    quiet = [p for p in PROMPTS if p.group == "quiet"]
+    assert all(p.via == "voice" for p in quiet)
+    assert [p.quiet for p in quiet] == ["done", "done", "listening", "listening", None, None]
+    assert "?" not in quiet[-1].text  # a question without its mark still gets an answer
+    thinking = [p for p in PROMPTS if p.group == "thinking"]
+    assert all(p.via == "voice" and p.quiet is None for p in thinking)
+    # One correction, two turns: she suggests something, then is told it's not that.
+    (correction,) = [p for p in thinking if p.before]
+    assert len(correction.before) == 1 and correction.text.startswith("No, that's not it")
+    # Only the thinking group is asked in more than one turn.
+    assert all(not p.before for p in PROMPTS if p.group != "thinking")
 
 
 def row(
@@ -284,3 +299,136 @@ def test_the_lowest_list_names_the_run() -> None:
     low = row(value=1)
     low.run = 3
     assert any("everyday-x #3" in line for line in summarize([row(), low]).measures())
+
+
+# ── Staying quiet, menus and stacked questions ───────────────────────────
+
+
+class Scripted:
+    """A sandbox whose turns are written out: how each ask ends, without a session."""
+
+    def __init__(self, *turns: Turn) -> None:
+        self.turns = list(turns)
+        self.asked: list[list[Ask]] = []
+
+    def fresh(self) -> None:
+        pass
+
+    def converse(self, asks: list[Ask]) -> Transcript:
+        self.asked.append(list(asks))
+        return Transcript(turns=tuple(self.turns.pop(0) for _ in asks))
+
+
+def quiet_turn(kind: str) -> Turn:
+    return Turn(said="q", via="voice", reply="", stop="quiet", quiet=kind)  # type: ignore[arg-type]
+
+
+def answer(text: str = "Soup.") -> Turn:
+    return Turn(said="q", via="voice", reply=text, stop="end")
+
+
+BYE = Prompt(id="quiet-01", group="quiet", text="Bye for now.", via="voice", quiet="done")
+LUNCH = Prompt(id="everyday-01", group="everyday", text="Lunch?", via="voice")
+
+
+def asked(turns: list[Turn], prompts: list[Prompt]) -> tuple[list[Row], Scripted, ScriptedProvider]:
+    sb = Scripted(*turns)
+    jp = ScriptedProvider(*[judged(4)] * len(prompts))
+    with Judge(jp, local=True) as judge:
+        rows = ask(sb, judge, prompts)  # type: ignore[arg-type]
+    return rows, sb, jp
+
+
+def test_a_quiet_case_that_went_quiet_passes_unasked_again_and_unjudged() -> None:
+    (r,), sb, jp = asked([quiet_turn("done")], [BYE])
+    assert r.quiet == "done" and r.applies == {"quiet"} and r.failed == {}
+    assert len(sb.asked) == 1 and not r.retried and jp.calls == []
+    assert r.error is None and r.score.value is None
+    s = summarize([r])
+    assert s.rates["quiet"] == 1.0 and (s.silent, s.unjudged) == (0, 0)
+    assert s.mean is None and "quiet" not in s.groups
+    # Nothing to judge is not a judge average to fail on.
+    assert s.passed
+    report = Report("persona", "fake-1", "judge", out=io.StringIO())
+    report_rows(report, [r])
+    assert report.cases[0]["passed"] and report.cases[0]["quiet"] == "done"
+
+
+def test_a_quiet_case_answered_or_quiet_the_wrong_way_fails_quiet() -> None:
+    (r,), _, jp = asked([answer("Bye! Talk soon.")], [BYE])
+    assert "answered" in r.failed["quiet"] and jp.calls == [] and r.applies == {"quiet"}
+    (r,), _, _ = asked([quiet_turn("listening")], [BYE])
+    assert r.failed["quiet"] == "went quiet (listening); expected done"
+    # Nothing back, and not quiet either: a failure of the case, never "no reply".
+    (r,), sb, _ = asked([Turn(said="q", via="voice", reply="", stop="empty")], [BYE])
+    assert "quiet" in r.failed and len(sb.asked) == 1 and not r.retried
+    s = summarize([r])
+    assert s.rates["quiet"] == 0.0 and s.silent == 0 and s.unjudged == 0
+    assert any(p.startswith("quiet held on 0.0%") for p in s.problems)
+
+
+def test_a_case_that_should_be_answered_and_went_quiet_fails_answered() -> None:
+    (r,), sb, jp = asked([quiet_turn("done")], [LUNCH])
+    assert r.failed == {"answered": "went quiet (done)"} and r.applies == {"answered"}
+    assert len(sb.asked) == 1 and not r.retried and jp.calls == []
+    s = summarize([r])
+    assert s.rates["answered"] == 0.0 and (s.silent, s.unjudged) == (0, 0)
+    assert s.rates["voice_length"] is None  # nothing was said to measure
+
+
+def test_an_answer_holds_answered_and_the_spoken_style_checks() -> None:
+    (r,), _, jp = asked([answer("Soup. Would you like me to find one? Or a salad?")], [LUNCH])
+    assert {"answered", "no_menu", "one_question"} <= r.applies
+    assert r.failed == {"no_menu": "would you like me to", "one_question": "2 questions"}
+    assert len(jp.calls) == 1
+    s = summarize([r])
+    assert (s.rates["answered"], s.rates["no_menu"], s.rates["one_question"]) == (1.0, 0.0, 0.0)
+
+
+def test_menus_and_stacked_questions_are_held_only_when_spoken() -> None:
+    typed = Prompt(id="everyday-02", group="everyday", text="Lunch?")
+    applies, failed = code_checks(typed, "Soup? Or salad? Want me to find one?")
+    assert "no_menu" not in applies and "one_question" not in applies and failed == {}
+
+
+def test_the_quiet_group_is_left_out_of_the_judge_averages() -> None:
+    # Its two answered cases are judged and shown, but two replies make no group mean.
+    s = summarize([row(value=4), row(group="quiet", value=1)])
+    assert s.mean == 4.0 and "quiet" not in s.groups and s.passed
+
+
+def test_the_summary_reports_the_new_checks_like_the_others() -> None:
+    lines = summarize([row(via="voice")]).measures()
+    for check in ("answered", "quiet", "no_menu", "one_question"):
+        assert any(line.startswith(check) for line in lines)
+
+
+def test_earlier_lines_are_asked_in_the_same_conversation_and_only_the_last_judged(
+    tmp_path: Path,
+) -> None:
+    p = Prompt(
+        id="thinking-04",
+        group="thinking",
+        text="No, it's the budget.",
+        via="voice",
+        before=("Give me one idea.",),
+    )
+    scripted = ScriptedProvider(say("Shorter meetings."), say("Right, the budget then."))
+    jp = ScriptedProvider(judged(4))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(jp, local=True) as judge,
+    ):
+        (r,) = ask(sb, judge, [p])
+    assert r.reply == "Right, the budget then."
+    assert len(scripted.calls[1][1]) == 3  # her first reply was in the second ask
+    asked_judge = jp.calls[0][1][0].blocks[0].text
+    assert "Give me one idea." in asked_judge and "Shorter meetings." in asked_judge
+    assert "last reply" in asked_judge
+
+
+def test_the_whole_exchange_is_asked_again_when_its_last_line_got_no_reply() -> None:
+    p = Prompt(id="thinking-04", group="thinking", text="No.", via="voice", before=("Idea?",))
+    turns = [answer("Walk."), Turn(said="No.", via="voice", reply=""), answer(), answer("Okay.")]
+    (r,), sb, _ = asked(turns, [p])
+    assert r.retried and r.reply == "Okay." and [len(a) for a in sb.asked] == [2, 2]

@@ -507,6 +507,27 @@ def test_a_spoken_turn_goes_through_the_recognizer_and_is_marked_spoken(tmp_path
     assert t.render().startswith("Sam (spoken): what time is it")
 
 
+def test_a_turn_records_how_it_ended(tmp_path: Path) -> None:
+    scripted = ScriptedProvider(say("Soup."))
+    with sandbox(tmp_path, scripted) as sb:
+        (turn,) = sb.converse([Ask(text="Lunch?")]).turns
+    assert (turn.stop, turn.quiet) == ("end", None)
+
+
+def test_a_quiet_ending_and_its_kind_are_read_from_turn_complete() -> None:
+    def done(**kw: object) -> dict[str, object]:
+        return {"type": "turn.complete", **kw}
+
+    assert harness.ending([done(stop="quiet", quiet="done")]) == ("quiet", "done")
+    assert harness.ending([done(stop="quiet", quiet="listening")]) == ("quiet", "listening")
+    # The last turn to end is the one that counts: a follow-up after a read, say.
+    assert harness.ending([done(stop="quiet", quiet="done"), done(stop="end")]) == ("end", None)
+    assert harness.ending([{"type": "error", "code": "x"}]) == (None, None)
+    # A kind the eval doesn't know, or a kind on a turn that didn't end quiet, is no quiet.
+    assert harness.ending([done(stop="quiet", quiet="asleep")]) == ("quiet", None)
+    assert harness.ending([done(stop="end", quiet="done")]) == ("end", None)
+
+
 def test_typed_and_spoken_turns_mix_in_one_conversation(tmp_path: Path) -> None:
     scripted = ScriptedProvider(say("Hi."), say("Now."), say("Typed again."))
     with sandbox(tmp_path, scripted) as sb:

@@ -156,6 +156,19 @@ def test_a_group_or_check_the_baseline_never_had_is_not_compared() -> None:
     assert compare(now, b) == []
 
 
+def test_a_baseline_from_before_the_quiet_checks_sees_no_drop_in_them() -> None:
+    # A baseline saved before staying quiet has none of its checks or groups: they
+    # are reported, and gated only once a baseline has them.
+    now = Totals(
+        mean=4.0,
+        groups={"bait": 4.0, "thinking": 2.0},
+        rates={"markdown": 1.0, "answered": 0.5, "quiet": 0.0, "no_menu": 0.0, "one_question": 0.0},
+    )
+    assert compare(now, base()) == []
+    with_them = base(totals=Totals(mean=4.0, groups={}, rates={"quiet": 1.0, "no_menu": 1.0}))
+    assert len(compare(now, with_them)) == 2
+
+
 @pytest.mark.parametrize(
     ("asked", "served", "same"),
     [
@@ -322,6 +335,27 @@ def test_a_low_score_that_held_its_baseline_passes(tmp_path: Path) -> None:
     lines = said.splitlines()
     heading = lines.index("persona lines (not gated):")
     assert "the line is" in lines[heading + 1]
+
+
+def test_the_persona_lines_include_the_spoken_style_checks(tmp_path: Path) -> None:
+    out = io.StringIO()
+    scripted = ScriptedProvider(say("Soup? Should I find one?"))
+    spoken = [Prompt(id="everyday-01", group="everyday", text="Lunch?", via="voice")]
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "e") as sb,
+        Judge(ScriptedProvider(judged(4)), local=True) as judge,
+    ):
+        report = Report("gate", "fake-1", judge.line, out=out)
+        gate.check(
+            sb, judge, report, spoken, model="fake-1", folder=tmp_path / "baselines", save=True
+        )
+    lines = out.getvalue().splitlines()
+    persona = lines[lines.index("persona lines (not gated):") + 1 :]
+    assert any("no_menu held on 0.0%" in line for line in persona)
+    assert any("one_question held on 0.0%" in line for line in persona)
+    # Saved with the new rates, so the next run is gated on them.
+    rates = Baseline.load(saved_file(tmp_path)).totals.rates
+    assert (rates["no_menu"], rates["one_question"], rates["answered"]) == (0.0, 0.0, 1.0)
 
 
 def test_a_reply_from_another_model_fails_and_is_never_saved(tmp_path: Path) -> None:

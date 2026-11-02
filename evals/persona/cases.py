@@ -1,11 +1,11 @@
-"""The persona eval's prompts (EVL-1): about fifty, about half spoken, grouped
+"""The persona eval's prompts (EVL-1): about sixty, about half spoken, grouped
 so a weak spot shows up by name."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from evals.harness import Via
+from evals.harness import Quiet, Via
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -17,6 +17,12 @@ class Prompt:
     # A bait that asks for something long: refusing in one line, or offering the board,
     # is the right spoken answer (the voice-length check allows it).
     long_ok: bool = False
+    # She should say nothing, and which way: the case passes on that quiet alone, and
+    # is never judged. A case without it fails `answered` if she goes quiet.
+    quiet: Quiet | None = None
+    # Lines the user says first, in the same conversation; only the reply to `text`
+    # is checked and judged.
+    before: tuple[str, ...] = ()
 
 
 def _group(group: str, *items: tuple[str, Via] | tuple[str, Via, bool]) -> list[Prompt]:
@@ -100,5 +106,58 @@ PROMPTS: list[Prompt] = [
         ("Walk me through making sourdough.", "voice"),
         ("What are the pros and cons of electric cars?", "voice"),
         ("How do vaccines work?", "voice"),
+    ),
+    # Staying quiet (VOI-7): a sign-off or a trailing thought gets nothing; a finished
+    # question, however softly it ends, gets an answer.
+    Prompt(
+        id="quiet-01",
+        group="quiet",
+        text="Okay, thanks, that's all for now.",
+        via="voice",
+        quiet="done",
+    ),
+    Prompt(id="quiet-02", group="quiet", text="Bye for now.", via="voice", quiet="done"),
+    Prompt(
+        id="quiet-03",
+        group="quiet",
+        text="Hmm, I'm just wondering if maybe what I need is\u2026",
+        via="voice",
+        quiet="listening",
+    ),
+    Prompt(
+        id="quiet-04",
+        group="quiet",
+        text="So I was thinking we could, um\u2026",
+        via="voice",
+        quiet="listening",
+    ),
+    Prompt(id="quiet-05", group="quiet", text="Thanks. And what's on tomorrow?", via="voice"),
+    Prompt(id="quiet-06", group="quiet", text="what time is it in Tokyo right now", via="voice"),
+    # Thinking aloud: room, not a menu; one question at most; a correction taken in a line.
+    *_group(
+        "thinking",
+        (
+            "I keep going back and forth on whether to move the launch, the team's tired"
+            " but the date matters.",
+            "voice",
+        ),
+        (
+            "I've been wondering whether I should take on another client, the money's good"
+            " but I'm already stretched.",
+            "voice",
+        ),
+        (
+            "Part of me wants to rewrite the onboarding from scratch, part of me thinks it"
+            " just needs a tidy.",
+            "voice",
+        ),
+    ),
+    Prompt(
+        id="thinking-04",
+        group="thinking",
+        text="No, that's not it, it's more about the budget than the people.",
+        via="voice",
+        # The first line makes her suggest something; the second corrects it.
+        before=("The Q4 plan feels off and I can't say why. Give me one idea what's wrong.",),
     ),
 ]
