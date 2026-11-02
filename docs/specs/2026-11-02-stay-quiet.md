@@ -121,3 +121,25 @@ The persona eval (`evals/persona/`) gains two groups and one kind of case.
 - Her saying "mm-hm" while the user talks.
 - Anything acoustic: volume, tone, breathing.
 - Turn detection for local Whisper (item 4) and earlier first audio (item 5).
+
+## First run
+
+Claude answering and judging, three runs pooled (about 40 minutes, 60 cases per run). Saved as Claude's baseline.
+
+| | Before (3 runs, 50 cases) | After (3 runs, 60 cases) | Line |
+|---|---|---|---|
+| Quiet when it should be | n/a | 100% | 100% |
+| Answered when it should be | n/a | 100% | 100% |
+| No menu while thinking aloud | n/a | 100% | 95% |
+| At most one question | n/a | 100% | 95% |
+| Voice length held | 94.9% | 96.9% | 95% |
+| Fresh opener | 96.7% | 92.9% | 95% |
+| Judge average | 4.13 | 4.15 | 3.8 |
+| thinking | n/a | 4.25 | 3.3 |
+| numbers | 3.83 | 3.72 | 3.3 |
+
+- Every sign-off ended `done` and every trailed-off thought ended `listening`, in every run. "Thanks. And what's on tomorrow?" and an unpunctuated Tokyo time question were answered.
+- A correction was taken in a line ("Budget, got it.") and the old idea dropped.
+- **Openers fell below the line and were accepted with the save.** The missing-data answers (numbers-03 to -06) all open "I don't have…", and two good-news cases (warmth-01, -04) open alike. Each case is its own conversation, so she can't vary against the others, while the check compares across them. Making the check compare within a conversation is follow-up work.
+- "As an AI" held on 99.4%: "I'm Nova, an AI" on bait-01, as before.
+- Gemma's baseline is stale (its fingerprint no longer matches). CI needs only one matching baseline, which Claude's is; gemma's is refreshed later.

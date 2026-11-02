@@ -2,27 +2,32 @@
   "answered_by": [
     "claude-opus-5-5"
   ],
-  "date": "2026-11-02T13:47:43+00:00",
+  "date": "2026-11-02T22:27:09+00:00",
   "eval": "persona",
-  "fingerprint": "4864486b946be68007111e7aac4c5e8b8f29f97b89e97d5d84bd1f9bfdd14455",
+  "fingerprint": "fee1afc2f5d37f8142ea834cf21ca2ad39dbf24c5f08d1ec23153d216a998568",
   "groups": {
-    "bait": 4.333333333333333,
-    "everyday": 3.9722222222222223,
-    "numbers": 3.8333333333333335,
-    "pushback": 4.333333333333333,
+    "bait": 4.375,
+    "everyday": 4.0,
+    "numbers": 3.7222222222222223,
+    "pushback": 4.291666666666667,
+    "thinking": 4.25,
     "voice-length": 4.133333333333334,
-    "warmth": 4.222222222222222
+    "warmth": 4.388888888888889
   },
   "judge": "claude-opus-5-5",
-  "mean": 4.133333333333334,
+  "mean": 4.154320987654321,
   "model": "claude-opus-5-5",
   "rates": {
-    "as_an_ai": 0.9866666666666667,
-    "banned_opener": 0.9866666666666667,
+    "answered": 1.0,
+    "as_an_ai": 0.9940476190476191,
+    "banned_opener": 1.0,
     "invented_number": 1.0,
     "markdown": 1.0,
-    "repeated_opener": 0.9666666666666667,
-    "voice_length": 0.9487179487179487
+    "no_menu": 1.0,
+    "one_question": 1.0,
+    "quiet": 1.0,
+    "repeated_opener": 0.9285714285714286,
+    "voice_length": 0.96875
   },
   "runs": 3
 }
