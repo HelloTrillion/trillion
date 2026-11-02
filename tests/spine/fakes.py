@@ -100,6 +100,7 @@ class ScriptedTool(BaseTool):
         self.fingerprint_error: Exception | None = None
         self.reconcile_result: ToolResult | None = None
         self.reconcile_error: Exception | None = None
+        self.reconcile_hang = False
         self.seen: list[ToolContext] = []
 
     def describe(self, args: JSON) -> ActionSummary:
@@ -128,6 +129,8 @@ class ScriptedTool(BaseTool):
 
     async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
         self.seen.append(ctx)
+        if self.reconcile_hang:
+            await asyncio.sleep(10)
         if self.reconcile_error is not None:
             raise self.reconcile_error
         return self.reconcile_result

@@ -14,8 +14,8 @@ Most of this exists. An approved action is claimed as `executing` before its too
 ## Decisions
 
 1. **Tag every send so it can be found.** The router hands each tool the approved action's id. A tool puts it where the provider keeps it, and its check looks it up.
-2. **Three answers from a check.** It landed (`confirmed`), it never went (`none`), or it couldn't tell right now (`unknown`, or the check raised). A tool with no check at all (`reconcile` returns `None`, the default, as for MCP tools) is `unknown` at once, as today.
-3. **Couldn't tell is not the end.** The action stays `executing` and is checked again every 10 minutes, for 24 hours after it was proposed (an approval comes within 10 minutes of that). Then it is `unknown`.
+2. **Three answers from a check.** It landed (`confirmed`), it never went (`none`), or it couldn't reach the provider right now: the check returns `effect="unknown"` with `error_kind="unreachable"` (`UNREACHABLE` in `spine/contract.py`), raises, or runs past the tool's timeout. Only that last answer is tried again. A plain `unknown` (no `unreachable`) means the tool can never tell, as when a file differs from what was approved: the action is `unknown` at once. So is a tool with no check at all (`reconcile` returns `None`, the default, as for MCP tools), as today.
+3. **Couldn't reach is not the end.** The action stays `executing` and is checked again every 10 minutes, for 24 hours after it was proposed (an approval comes within 10 minutes of that). Then it is `unknown`.
 4. **Never sent is askable again, never re-run.** It is recorded as `invalidated` with "interrupted before it went out", which `represent` already accepts. A new card appears only when the user says yes, and needs its tap like any send.
 5. **Tell the user only when in doubt.** Landed: recorded, nothing said. Never went, or unknown: one line, once, through the one door, in her words. Never went: she offers to send it. Unknown: she says she couldn't confirm it and where to look, and does not offer to send it again.
 6. **No new status.** An action awaiting a later check is `executing` with `effect_status` `unchecked`. No migration.
@@ -32,16 +32,16 @@ Most of this exists. An approved action is claimed as `executing` before its too
 | `calendar_delete` | None needed. | Get the event. Status `cancelled`, 404 or 410: `confirmed`. Still there: `none`. |
 | `slack_post` | None: Slack has no client-supplied id. | Read the conversation (or the thread) since the approval. A message from the user with exactly the approved text: `confirmed`. Otherwise `none`. |
 
-In every check, no answer from the provider (a network error, a timeout, `answered=False`) is `unknown`, so the check runs again later. An answer of no (403, a revoked sign-in) is also `unknown`: it says nothing about whether the send happened.
+In every check, no answer from the provider (a network error, a timeout, `answered=False`) is `unknown` with `error_kind="unreachable"`, so the check runs again later. An answer of no (403, a revoked sign-in) is also `unknown` and `unreachable`: it says nothing about whether the send happened, and may be fixed by the next check.
 
 ## The router
 
 - **`recover()` at startup.** Unchanged for `approved`: invalidated, never run. For each `executing` action it runs the check, then:
   - `confirmed`: `succeeded`, decision `recovered:succeeded`.
-  - `none`: `invalidated`, detail "interrupted before it went out", decision `recovered:not_sent`.
-  - Couldn't tell, proposed under 24 hours ago: stays `executing`, `effect_status` `unchecked`.
-  - Couldn't tell, older, or the tool has no check or is gone: `unknown`, decision `recovered:unknown`.
-- **A lost answer mid-run.** When a gated action's tool returns `effect="unknown"`, the router runs the check once at once. `confirmed` or `none` settle it as above. Couldn't tell: it stays `executing` and `unchecked`, and she is told it went out unconfirmed and is being checked.
+  - `none`: `invalidated`, detail "interrupted before it went out", decision `recovered:not_sent`. On an action already `unchecked`, `none` counts only once the action has been quiet for 5 minutes since it was marked (`SETTLE_NONE_AFTER_MS`); before that it stays `unchecked`.
+  - Couldn't reach, proposed under 24 hours ago: stays `executing`, `effect_status` `unchecked`. The first time, one `unchecked` decision is written (through the one writer, so the record shows a check is pending); later rechecks write nothing.
+  - Couldn't reach and older, a plain `unknown`, or the tool has no check or is gone: `unknown`, decision `recovered:unknown`.
+- **A lost answer mid-run.** When a gated action's tool returns `effect="unknown"`, the router runs the check once at once. The request that timed out may still be landing at the provider (a timeout only stops the waiting), so only `confirmed` settles it now. `none` or couldn't reach: it stays `executing` and `unchecked`, and she is told it went out unconfirmed and is being checked; the 5-minute quiet rule then keeps a later `none` from counting too soon. No check, or a plain `unknown`: recorded as `unknown`, as today.
 - **`check_unchecked()`**: settles each `executing` + `unchecked` action as `recover()` does. The runtime calls it every 10 minutes.
 - **`represent` after a restart.** An action whose last decision is `recovered:not_sent` may be represented from any session of its owner, since the session that raised it ended with the crash. The new card belongs to the session that asks, and the usual rules apply to it.
 - `recover()` and `check_unchecked()` return what they settled (id and outcome), not just ids, so the runtime can tell the user.

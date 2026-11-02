@@ -64,6 +64,7 @@ def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
             str(r["precondition_token"]) if r["precondition_token"] is not None else None
         ),
         args_cleared=cleared,
+        updated_at=int(r["updated_at"]),
     )
 
 

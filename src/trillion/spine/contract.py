@@ -101,6 +101,10 @@ class ToolResult:
     error_kind: str | None = None
 
 
+# The error_kind a check gives when it could not reach the provider: tried again later (OPS-1).
+UNREACHABLE = "unreachable"
+
+
 @dataclass(frozen=True, kw_only=True)
 class ActionSummary:
     """What the user approves, composed by the host from frozen arguments (SPN-2a)."""

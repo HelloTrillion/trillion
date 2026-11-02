@@ -41,6 +41,7 @@ from trillion.spine.confirm import (
 from trillion.spine.contract import (
     GATED,
     JSON,
+    UNREACHABLE,
     ActionSummary,
     Precondition,
     Risk,
@@ -95,6 +96,9 @@ REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
 # OPS-1: a check that can't reach the provider is tried again for this long after the
 # action was proposed, then the action is `unknown`.
 CHECK_FOR_MS = 24 * 60 * 60 * 1000
+# A "never went" answer about an action already awaiting a check counts only once it
+# has been quiet this long: a request whose answer was lost may still be landing.
+SETTLE_NONE_AFTER_MS = 5 * 60 * 1000
 UNCHECKED = "unchecked"
 NOT_SENT = "interrupted before it went out"
 _STILL_CHECKING = (
@@ -660,17 +664,19 @@ class Router:
         ctx = dataclasses.replace(ctx, action_id=a.id)
         result = await self._run(tool, a.args, ctx)
         if result.effect == "unknown":
-            # No answer from the provider: it may have gone. Ask before recording a guess.
-            checked = await self._check(a, ctx.granted_roots)
-            if checked[1]:
-                await self._settle(a, ctx.granted_roots, checked)
-                fresh = await self._reload(a)
-                if fresh.status is not Status.EXECUTING:
-                    return self._from_record(fresh)
+            # No answer from the provider: it may have gone, or may still be landing.
+            # Only proof that it landed settles it now; anything else waits for a recheck.
+            found, retry = await self._check(a, ctx.granted_roots)
+            if found is not None and found.effect == "confirmed":
+                await self._settled(a, Status.SUCCEEDED, "succeeded", found)
+                return self._from_record(await self._reload(a))
+            if retry or (found is not None and found.effect == "none"):
+                await self._mark_unchecked(a)
                 response = self._result_response(
                     tool, Status.UNKNOWN, result.content, result.error_kind
                 )
                 return dataclasses.replace(response, pending_id=a.id, detail=_STILL_CHECKING)
+            # No check, or one that can never tell: recorded as before.
         status = final_status(result)
         won = await self._move(
             a.id,
@@ -794,7 +800,8 @@ class Router:
     async def _check(
         self, a: PendingAction, granted: tuple[Path, ...]
     ) -> tuple[ToolResult | None, bool]:
-        """Ask the tool what happened to `a`. The flag is False when it has no check."""
+        """Ask the tool what happened to `a`. The flag says to try again later: the check
+        could not reach the provider (it said so, raised, or timed out)."""
         ctx = ToolContext(
             owner_id=a.owner_id,
             session_id=a.session_id,
@@ -814,34 +821,32 @@ class Router:
         except Exception as e:  # a check is best-effort by contract; a timeout is "can't tell"
             logger.warning("reconcile of %s raised %s", a.id, type(e).__name__)
             return None, True
-        return result, result is not None
+        unreachable = result is not None and result.error_kind == UNREACHABLE
+        return result, unreachable
 
-    async def _settle(
-        self,
-        a: PendingAction,
-        granted: tuple[Path, ...],
-        checked: tuple[ToolResult | None, bool] | None = None,
-    ) -> Settled | None:
+    async def _settle(self, a: PendingAction, granted: tuple[Path, ...]) -> Settled | None:
         """Record what a check found. None: still can't tell, or another caller won."""
-        result, can_check = checked or await self._check(a, granted)
+        result, retry = await self._check(a, granted)
+        now = self._clock()
         if result is not None and result.effect == "confirmed":
             return await self._settled(a, Status.SUCCEEDED, "succeeded", result)
         if result is not None and result.effect == "none":
-            return await self._settled(a, Status.INVALIDATED, "not_sent", result, NOT_SENT)
-        now = self._clock()
-        if can_check and now < a.created_at + CHECK_FOR_MS:
-            if a.effect_status != UNCHECKED:
-                # Through the one writer, so the record says a check is pending.
-                await self._move(
-                    a.id,
-                    Status.EXECUTING,
-                    Status.EXECUTING,
-                    _system(UNCHECKED),
-                    now=now,
-                    effect=UNCHECKED,
-                )
+            quiet = now - (a.updated_at or 0) >= SETTLE_NONE_AFTER_MS
+            if a.effect_status != UNCHECKED or quiet:
+                return await self._settled(a, Status.INVALIDATED, "not_sent", result, NOT_SENT)
+            retry = True  # a lost request may still land: ask again later
+        if retry and now < a.created_at + CHECK_FOR_MS:
+            await self._mark_unchecked(a)
             return None
         return await self._settled(a, Status.UNKNOWN, "unknown", result)
+
+    async def _mark_unchecked(self, a: PendingAction) -> None:
+        """Leave `a` executing, to be checked again. Through the one writer, once."""
+        if a.effect_status == UNCHECKED:
+            return
+        await self._move(
+            a.id, Status.EXECUTING, Status.EXECUTING, _system(UNCHECKED), effect=UNCHECKED
+        )
 
     async def _settled(
         self,
