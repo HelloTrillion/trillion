@@ -38,7 +38,11 @@ The dash rule stays. **REACHING FOR A TOOL** gets the same two sentences as `voi
 
 > When {user_name} asks for a figure and none of your tools holds it, say so in one line: that it is not in anything you can see, and the one thing that would get it, such as connecting the app in Settings or sending the file.
 
-The third sentence ("Never offer to pull it…") stays.
+Then, added after the first Claude run, when five of six such answers opened "I can't":
+
+> Lead with the missing thing itself, not with "I can't", and word it differently each time it comes up.
+
+The sentence after ("Never offer to pull it…") stays.
 
 **PRD.** The voice and text overlay lines (§ the persona, around line 739) say the same.
 

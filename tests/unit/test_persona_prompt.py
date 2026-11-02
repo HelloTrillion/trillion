@@ -341,6 +341,9 @@ def test_missing_data_is_one_line() -> None:
     (block,) = system_blocks(Identity(agent_name="Nova", user_name="Sam"), "soul")
     assert "say so in one line: that it is not in anything you can see" in block.text
     assert "the one thing that would get it" in block.text
+    # The second Claude run: five of six such answers opened "I can't", a new stock line.
+    assert 'Lead with the missing thing itself, not with "I can\'t"' in block.text
+    assert "word it differently each time it comes up" in block.text
 
 
 def test_her_voice_stays_hers_when_asked_to_change(tmp_path: Path) -> None:
