@@ -41,8 +41,9 @@ This is the first of the voice-flow changes. The second, an open line (a microph
 - **The loop.** When a round has no text and only `stay_quiet`, and the call was not refused, the call and its result are saved as a pair like any tool call, so later turns see that she chose silence. The turn ends with `TurnDone(stop="quiet")` and the kind. It is not "empty", and no notice is sent.
 - **The session, `listening`.** Nothing is spoken. The orb goes to `listening` and the microphone stays open for `QUIET_LISTEN_S = 8.0`.
   - If the user speaks, that is a new turn as usual. She sees both parts in order.
-  - If not, one nudge turn runs: a host note says they went quiet after trailing off, and to say one short line inviting them on, or `stay_quiet` `done` if they seem finished. The nudge is spoken, then the usual 3-second follow-up, then rest.
-  - Nudges never chain. A nudge's turn can't be followed by another nudge, and a host note's turn can't use `listening`.
+  - If not, one nudge turn runs: a host note says they went quiet after trailing off, and to say one short line inviting them on. The note is a host note like any other, so she can't stay quiet on it: the nudge always gets her line. It is spoken, then the usual 3-second follow-up, then rest.
+  - Nudges never chain. A nudge's turn is a host note's turn, which can't use `stay_quiet` at all, so no second window opens.
+  - Pressing to talk in the window takes the floor at once. Leaving the conversation, or Stop, ends the window and its nudge.
 - **The session, `done`.** Nothing is spoken. The microphone closes (VOI-15d: a sign-off ends active capture), and the orb rests.
 - **The page.**
   - A typed `done` shows "seen" under the user's message. It is saved with the conversation and shown again after a reload.

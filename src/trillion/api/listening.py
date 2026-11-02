@@ -37,6 +37,9 @@ BATCH_WRAP_UP_S = 60.0
 _MAX_BACKLOG = 16_000 * 2 * 10
 # The window that reopens after she speaks waits this long for a first word (VOI-8).
 FOLLOW_UP_S = 3.0
+# After she stays quiet because they trailed off mid-thought, the microphone stays open
+# this long for them to go on before she nudges them once (VOI-7).
+QUIET_LISTEN_S = 8.0
 # A word reported without a time is taken as said this long before its report, the
 # usual lag of a recognizer, and lasting this long either side of then (#102).
 UNTIMED_LAG_S = 0.4

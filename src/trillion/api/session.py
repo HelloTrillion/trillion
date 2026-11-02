@@ -24,7 +24,7 @@ from trillion import __version__
 from trillion.api import listening
 from trillion.api.draft import Draft, same_words
 from trillion.api.jobs import STARTED, Full, Job, goes_to_background
-from trillion.api.listening import FOLLOW_UP_S, Judge, Listener
+from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S, Judge, Listener
 from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.api.trace import Trace, Via, ahead_ms
@@ -42,13 +42,18 @@ from trillion.brain.loop import (
     run_turn,
     tool_schemas,
 )
+from trillion.brain.loop import (
+    QUIET as QUIET_TOOL,
+)
 from trillion.brain.types import (
     ContextBlock,
     ModelProvider,
     Msg,
     ProviderError,
     TextBlock,
+    ToolResultBlock,
     ToolUse,
+    ToolUseBlock,
     Usage,
 )
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
@@ -323,6 +328,26 @@ def background_note(title: str, job: Job, r: RouterResponse) -> str:
     return f"{head} Result: {r.to_model()}\n{_IN if ok else _NOT_IN}"
 
 
+# The host note for the one nudge after a quiet `listening` window passes in silence
+# (VOI-7). Saved as a tap's note, so its turn is the host's: she may not stay quiet on
+# it, which is also what keeps a nudge from following a nudge.
+NUDGE = (
+    "[host] They went quiet after trailing off mid-thought. Say one short line inviting "
+    "them to go on, in your own words."
+)
+
+
+def quiet_done(use: ToolUseBlock, result: ToolResultBlock) -> bool:
+    """A saved `stay_quiet` `done` that was accepted: the user's message before it was
+    seen, and needs no reply (VOI-7)."""
+    return (
+        use.name == QUIET_TOOL
+        and use.args.get("kind") == "done"
+        and result.tool_use_id == use.id
+        and not result.is_error
+    )
+
+
 def background_msg(note: str) -> Msg:
     """A note saved with no session to build its context: the app's mark and the note."""
     return Msg(role="user", blocks=(ContextBlock(text=BACKGROUND), TextBlock(text=note)))
@@ -506,6 +531,17 @@ class Session:
         # reopens as after a spoken turn. Only the microphone: the build stays the app's
         # input and can approve nothing.
         self._listen_after = False
+        # How her last turn chose to say nothing, if it did, until its turn is over and
+        # the session acts on it (VOI-7), and the turn number its silence was heard as:
+        # a page's "played" for that silence never reopens the microphone.
+        self._quiet: str | None = None
+        self._quiet_turn: int | None = None
+        # The microphone left open after a quiet `listening`: if it passes in silence,
+        # she nudges once. Let go with the listener, by anything that stops it.
+        self._window: Listener | None = None
+        # The page said she was heard to the end while her turn was still finishing:
+        # the follow-up is decided once the turn is over.
+        self._ended_early = False
         # The messages the model is sent, after the latest summary, each with its kind
         # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
@@ -707,8 +743,21 @@ class Session:
         unanswered = False
         # A heads-up whose line is the next message.
         awaiting: dict[str, Any] | None = None
+        # The user's last message as shown, and her call to stay quiet after it, if she
+        # made one: answered and accepted, it marks that message seen (VOI-7).
+        said: dict[str, Any] | None = None
+        hushed: ToolUseBlock | None = None
         for kind, msg in await rt.conversations.history(self.id, OWNER):
             turn += kind in USER_INPUTS
+            if kind == "tool_results":
+                for b in msg.blocks:
+                    if isinstance(b, ToolResultBlock) and hushed is not None and said:
+                        if quiet_done(hushed, b):
+                            said["seen"] = True
+                hushed = None
+                continue
+            uses = [b for b in msg.blocks if isinstance(b, ToolUseBlock)]
+            hushed = uses[0] if kind == "assistant" and len(uses) == 1 else None
             text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
             routine = routine_run(msg) if kind == "tap" else None
             ready = ready_line(msg) if kind == "tap" else None
@@ -738,6 +787,8 @@ class Session:
                 shown.append({"role": "host", "text": routine})
             elif kind in ("user", "assistant") and text:
                 shown.append({"role": msg.role, "text": text})
+            if kind == "user":
+                said = shown[-1] if text and shown and shown[-1].get("role") == "user" else None
         summary, rows = await rt.conversations.context(self.id, OWNER)
         return _Loaded(shown=shown, turn=turn, summary=summary, rows=rows, unanswered=unanswered)
 
@@ -998,6 +1049,11 @@ class Session:
                 self._let_go_heard(ov)
                 await self._leave_watch(ov)
                 await self._overlap_interrupts(ov)
+            elif self._window is not None and self._listener is self._window:
+                # They take the floor in the window left open for them: it is theirs,
+                # and no nudge follows it.
+                self._window = None
+                await self._send("mic.start", follow_up=False)
             else:
                 await self._on_listen(NOTHING_AFTER_S, held=held)
             if held and self._listener is not None:
@@ -1065,10 +1121,18 @@ class Session:
             elif ov is not None:
                 # They are talking over her end: what they meant decides what follows.
                 ov.ended = True
+            elif turn_id is not None and turn_id == self._quiet_turn:
+                # A silence she chose has nothing to be heard: what follows it is the
+                # session's, never a follow-up window (VOI-7).
+                pass
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
-            elif self._answered_aloud() and self._task is None and self._listener is None:
-                await self._on_listen(FOLLOW_UP_S, follow_up=True)
+            elif self._answered_aloud() and self._listener is None:
+                if self._task is None:
+                    await self._on_listen(FOLLOW_UP_S, follow_up=True)
+                else:
+                    # Her turn is still finishing: it opens once the turn is over.
+                    self._ended_early = True
             await self._offer()
         elif kind in ("board.open", "board.close", "board.remove"):
             await self._on_board(kind, msg.get("id"))
@@ -1802,12 +1866,19 @@ class Session:
         await self._send("overlap.over", **({"end": True} if ov.watch else {}))
 
     async def _on_listen(
-        self, patience_s: float, *, follow_up: bool = False, held: bool = False
+        self,
+        patience_s: float,
+        *,
+        follow_up: bool = False,
+        held: bool = False,
+        quiet: bool = False,
     ) -> None:
         async with self._taking_input():
-            await self._listen(patience_s, follow_up=follow_up, held=held)
+            await self._listen(patience_s, follow_up=follow_up, held=held, quiet=quiet)
 
-    async def _listen(self, patience_s: float, *, follow_up: bool, held: bool = False) -> None:
+    async def _listen(
+        self, patience_s: float, *, follow_up: bool, held: bool = False, quiet: bool = False
+    ) -> None:
         rt = self._rt
         if self._listener is not None or self._overlap is not None:
             return
@@ -1837,13 +1908,15 @@ class Session:
                 # as it opens, so her echo still in the air is hers.
                 listener.judge_by(self._judge_on(listener, self._timeline.ending_at(0.0)))
             self._listener = listener
+            # A window left open after a quiet `listening` (VOI-7): silence nudges once.
+            self._window = listener if quiet else None
             self._drafted = False
             self._last_audio = asyncio.get_running_loop().time()
             self._warm()
             await self._state("arming")
             # The page opens the microphone now; what it sends while the recognizer is
             # still connecting is held, so the first word is not lost.
-            await self._send("mic.start", follow_up=follow_up)
+            await self._send("mic.start", follow_up=follow_up, **({"quiet": True} if quiet else {}))
             try:
                 await listener.start()
             except VoiceError as e:
@@ -1891,6 +1964,7 @@ class Session:
     async def _stop_listening(self) -> Listener | None:
         await self._end_overlap(tell=True)
         listener, self._listener = self._listener, None
+        self._window = None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -1936,6 +2010,10 @@ class Session:
 
     async def _concluded(self, verdict: Verdict) -> None:
         listener, self._listener = self._listener, None
+        # Whether this was the window left open after a quiet `listening`: let go now,
+        # whatever ended it, so it can nudge once at most.
+        window = listener is not None and listener is self._window
+        self._window = None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -1961,6 +2039,12 @@ class Session:
         elif verdict == "nothing":
             await listener.abandon()
             await self._drop_draft()
+            if window and not self._closed and self._task is None and self._rt.provider:
+                # They trailed off and stayed quiet: one short line from her, in her
+                # own words, invites them on (VOI-7). Spoken, as their turn was.
+                self._queued.append(NUDGE)
+                self._begin()
+                return
             await self._state(self._rest)
         else:
             await self._state("processing")
@@ -2105,6 +2189,7 @@ class Session:
         this one: a message that arrives meanwhile is refused as busy, and a tap's note
         is picked up by the loop. `follow_up`: it brings in background reads that ended."""
         stopped = False
+        mine = False
         try:
             if follow_up:
                 try:
@@ -2141,6 +2226,7 @@ class Session:
             # Only its own: never a task that started after this one was let go.
             if self._task is asyncio.current_task():
                 self._task = None
+                mine = True
                 if self._building_day:
                     # Before anything awaits, so no input of the user's has begun: their
                     # next answer to a card is theirs again, never taken for an ask.
@@ -2155,7 +2241,32 @@ class Session:
                 await self._unuse()
         # A watch over her reply ends now unless something of hers is still to be heard.
         await self._watch_settles()
-        await self._state(self._rest)
+        if not (mine and await self._after_turn()):
+            await self._state(self._rest)
+
+    async def _after_turn(self) -> bool:
+        """What the microphone does now her turn is over, decided only now, so a page's
+        "played" that came while the turn was finishing is never lost. True when it
+        opened, so the orb is left to say so."""
+        quiet, self._quiet = self._quiet, None
+        early, self._ended_early = self._ended_early, False
+        if (
+            self._closed
+            or self._stopped
+            or self._task is not None
+            or self._listener is not None
+            or self._overlap is not None
+            or not self._answered_aloud()
+        ):
+            return False
+        if quiet == "listening":
+            # They trailed off: the floor stays theirs a while (VOI-7).
+            await self._on_listen(QUIET_LISTEN_S, follow_up=True, quiet=True)
+        elif quiet is None and early:
+            await self._on_listen(FOLLOW_UP_S, follow_up=True)
+        else:
+            return False
+        return self._listener is not None
 
     async def _one_turn(self) -> None:
         rt = self._rt
@@ -2169,6 +2280,9 @@ class Session:
         speaker: Speaker | None = None
         timeline: Timeline | None = None
         heard_as = turn
+        # A "played" from here on is this turn's, or a later one's.
+        self._ended_early = False
+        self._quiet = self._quiet_turn = None
         if rt.tts is not None and rt.speech is not None and not self._muted:
             # A turn's number is heard once: a tap's answer in the same turn gets its own,
             # or the page's "played" for the first would pass for it (VOI-17).
@@ -2328,8 +2442,10 @@ class Session:
             if down is not None:
                 final = "error"
                 await self._error("provider", kind=done.error_kind, sentence=down)
-            elif done.stop not in ("end", "quiet"):
+            elif done.stop == "quiet":
                 # A chosen silence is no failure: it has no notice (VOI-7).
+                await self._quiet_ends(done.quiet, heard_as)
+            elif done.stop != "end":
                 await self._send("notice", code="stopped", reason=done.stop)
             # Kept before the page hears the turn is over, so the next one never waits on it.
             await self._keep_trace(trace, done.stop, voiced=speaker is not None)
@@ -2380,6 +2496,20 @@ class Session:
             # However the turn ended: what counts is that a reply of hers was saved.
             self._maybe_name()
         self._rest = final
+
+    async def _quiet_ends(self, kind: str | None, heard_as: int) -> None:
+        """She chose to say nothing (VOI-7). A sign-off is marked seen, and a spoken one
+        closes the microphone; a trailed-off thought keeps it open once the turn is over."""
+        self._quiet, self._quiet_turn = kind, heard_as
+        if kind == "listening":
+            return
+        # Seen, so a sign-off never looks unanswered. Saved as the call and its answer:
+        # a reload marks it again from them.
+        await self._send("seen")
+        if self._answered_aloud():
+            # A sign-off ends active capture (VOI-15d): nothing reopens after it.
+            self._listen_after = False
+            await self._send("mic.stop", reason="done")
 
     def _remember_read(self, turn: int, name: str, args: Mapping[str, Any]) -> None:
         """A read that succeeded this turn, kept while the turn runs so a widget she
