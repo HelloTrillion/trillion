@@ -304,6 +304,44 @@ def test_she_offers_only_what_her_tools_reach(tmp_path: Path) -> None:
             assert "When Stripe is connected, use stripe_revenue" in text
 
 
+def test_spoken_replies_are_short_and_unlabelled() -> None:
+    # The Claude baseline: spoken answers ran 45 to 58 words, often after "Short version:".
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    spoken = volatile_context(datetime(2026, 11, 1, tzinfo=UTC), [], spoken=ident)
+    assert "One or two short sentences, about thirty words in all" in spoken
+    assert 'No label such as "Short version:" before it' in spoken
+    assert "under ten seconds" not in spoken
+
+
+def test_typed_replies_offer_the_rest_instead_of_a_list() -> None:
+    # The Claude baseline: typed how-to answers came as bolded lists with a
+    # "What makes it work" section, which her soul calls essay mode.
+    typed = system_blocks(Identity(agent_name="Nova", user_name="Sam"), "soul")[0].text
+    assert "give the one thing that matters in a sentence or two, then offer the rest" in typed
+    assert "Write a list only when asked for steps, options or a plan" in typed
+    assert "no bold labels" in typed
+    assert "A draft that was asked for, such as an email, comes whole." in typed
+    assert "Light markdown is fine" not in typed
+
+
+def test_quick_reads_get_no_line_first() -> None:
+    # The Claude baseline: every numbers answer opened "Checking what I can actually
+    # see." before reading the shared folder, a read that takes no time.
+    ident = Identity(agent_name="Nova", user_name="Sam")
+    typed = system_blocks(ident, "soul")[0].text
+    spoken = volatile_context(datetime(2026, 11, 1, tzinfo=UTC), [], spoken=ident)
+    for text in (typed, spoken):
+        assert "a read that takes a moment, such as a connected app or the web" in text
+        quick = "Your shared folders and your memory are quick: read them without a line first."
+        assert quick in text
+
+
+def test_missing_data_is_one_line() -> None:
+    (block,) = system_blocks(Identity(agent_name="Nova", user_name="Sam"), "soul")
+    assert "say so in one line: that it is not in anything you can see" in block.text
+    assert "the one thing that would get it" in block.text
+
+
 def test_her_voice_stays_hers_when_asked_to_change(tmp_path: Path) -> None:
     # The first persona eval run: asked to, she opened with "Great question" and
     # "Certainly!", two lines her soul says never to sound like.
