@@ -98,6 +98,7 @@ NOT_DECISIONS: dict[str, str] = {
         for c in ("status", "delivered_ms", "delivered_to", "notified_ms")
     },
     "notices.text": "her words for a held notice, filled in once she has them: approves nothing",
+    "notices.due_ms": "when a held notice may be handed over: it approves nothing",
     **{
         f"attention_finds.{c}": "whether a watcher's find was told, once (D5): approves nothing"
         for c in ("status", "notice_id", "dismissed_ms")

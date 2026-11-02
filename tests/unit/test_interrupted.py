@@ -211,13 +211,98 @@ async def test_her_line_fills_only_a_notice_not_yet_delivered(
     store: SqliteScheduleStore,
 ) -> None:
     n = await store.attention_notice(OWNER, "action:x", title=TITLE, text=None, now_ms=1)
-    assert await store.fill_notice_text(n.id, "First.")
-    assert not await store.fill_notice_text(n.id, "Second.")  # it has words already
+    assert await store.release_notice(n.id, "First.", 1)
+    assert await store.release_notice(n.id, "Second.", 1)
+    kept = await store.notice(n.id)
+    assert kept is not None and kept.text == "First."  # words once given are kept
     m = await store.attention_notice(OWNER, "action:y", title=TITLE, text=None, now_ms=1)
     assert await store.mark_delivered(m.id, "page", 2)
-    assert not await store.fill_notice_text(m.id, "Too late.")
+    assert not await store.release_notice(m.id, "Too late.", 3)
     kept = await store.notice(m.id)
     assert kept is not None and kept.text is None
+
+
+class Gated:
+    """A model that answers once it is let go."""
+
+    name = "gated"
+    model = "gated-1"
+
+    def __init__(self, said: str) -> None:
+        self.go = asyncio.Event()
+        self.asked = asyncio.Event()
+        self._said = said
+
+    def pricing(self) -> Pricing | None:
+        return None
+
+    async def stream(
+        self,
+        *,
+        system: Sequence[SystemBlock],
+        messages: Sequence[Msg],
+        tools: Sequence[ToolSchema],
+        max_tokens: int,
+    ) -> AsyncIterator[ModelEvent]:
+        self.asked.set()
+        await self.go.wait()
+        for ev in say(self._said):
+            yield ev
+
+
+async def test_a_page_gets_nothing_until_her_line_is_in(store: SqliteScheduleStore) -> None:
+    p = Gated("It didn't go out before I stopped. Send it?")
+    task = asyncio.create_task(
+        tell(store, p, OWNER, [Settled(id="pa1", outcome="not_sent")], get_pending, now_ms=1)
+    )
+    await p.asked.wait()
+    # A page that opens while she writes takes nothing: not a notice without words.
+    assert await store.held(OWNER, 2) == []
+    p.go.set()
+    (made,), _ = await task
+    (n,) = await store.held(OWNER, 2)
+    assert n.id == made.id and n.text == "It didn't go out before I stopped. Send it?"
+
+
+async def test_a_model_that_times_out_lets_it_go_by_title(store: SqliteScheduleStore) -> None:
+    (made,), _ = await tell(
+        store,
+        Hangs(),
+        OWNER,
+        [Settled(id="pa1", outcome="not_sent")],
+        get_pending,
+        now_ms=1,
+        timeout_s=0.05,
+    )
+    (n,) = await store.held(OWNER, 2)
+    assert n.id == made.id and n.text is None and n.title == TITLE
+
+
+async def test_one_written_before_a_quit_goes_after_its_time(
+    store: SqliteScheduleStore,
+) -> None:
+    # Written, then the process stopped before her line: held until its time has
+    # passed, then handed over by its title.
+    task = asyncio.create_task(
+        tell(store, Hangs(), OWNER, [Settled(id="pa1", outcome="unknown")], get_pending, now_ms=1)
+    )
+    for _ in range(200):
+        if await store.has_notice(OWNER, "action:pa1"):
+            break
+        await asyncio.sleep(0.005)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await store.held(OWNER, 2) == []
+    (n,) = await store.held(OWNER, 1 + 60_000)
+    assert n.text is None
+
+
+async def test_other_notices_are_never_held_back(store: SqliteScheduleStore) -> None:
+    n = await store.attention_notice(
+        OWNER, "meeting:e1", title="Soon", text=None, now_ms=1, due_ms=99
+    )
+    assert [h.id for h in await store.held(OWNER, 2)] == [n.id]
 
 
 def test_the_record_says_plainly_it_never_went_and_names_its_id() -> None:

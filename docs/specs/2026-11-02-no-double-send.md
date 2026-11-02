@@ -53,13 +53,13 @@ A Google or Slack server error (a 5xx, or Slack's `internal_error`, `fatal_error
 - For each action settled as `not_sent` or `unknown`, the runtime adds one notice through the one door, keyed `action:{id}` so it is made once.
 - Her line is written by one small model call, in the manner of a watcher's line (`attention/words.py`): no tools, the action's summary wrapped as untrusted, a short timeout. If the call fails or there is no model, the notice is shown by its title and not spoken (PER-11).
 - The title is the host's and says nothing private, since a lock screen is public: "A send was interrupted".
-- The notice is written first, by its title, with the action's summary as its page-only detail (never spoken, never on the system notification); her line is added once the model answers, if the notice is still held. A quit in between loses nothing. At startup, every action whose latest decision in the last 7 days is `recovered:not_sent` or `recovered:unknown`, and that has no notice and no copy asked for again, is told too.
+- The notice is written first, by its title, with the action's summary as its page-only detail (never spoken, never on the system notification); it is not due until her line is in or her call has had its time, so a page that opens meanwhile does not take it without words; then it is due at once, with her line if she wrote one. A quit in between loses nothing: it is handed over by its title once its time has passed. At startup, every action whose latest decision in the last 7 days is `recovered:not_sent` or `recovered:unknown`, and that has no notice and no copy asked for again, is told too.
 - What she says, roughly:
   - Not sent: "The email to Sam didn't go out before I stopped. Want me to send it?"
   - Unknown: "I can't tell whether the email to Sam went. Worth a look in your Sent folder."
 - When the user says yes, she finds the action through `decision_record` and calls `represent_pending_action`. The card says what it said before.
 - `represent_pending_action` is new in this change: a meta tool beside `confirm_pending_action` and `cancel_pending_action`, routed to the router's `represent`. It only shows a new card, which needs its own yes; a run nobody watches is refused it. Its description says when to use it (only when the user asks for the action again, its id found in `decision_record`). The persona's prompts are unchanged, so the eval baselines still match.
-- One card, one send: an action is never asked for again while a copy asked from it is open or has run, in any session (a resumed conversation keeps its session id). A copy that expired unanswered no longer counts. `decision_record` names each copy and how it ended.
+- One card, one send: an action is never asked for again while any other action in its family (the one it was asked from, up to the first, and every copy of any of them) is open or has run, in any session (a resumed conversation keeps its session id). A copy that expired unanswered no longer counts. `decision_record` names each copy and how it ended.
 
 ## Tests
 

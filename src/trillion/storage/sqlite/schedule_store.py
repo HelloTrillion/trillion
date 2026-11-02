@@ -497,7 +497,9 @@ class SqliteScheduleStore:
         fresh_until_ms: int | None = None,
         detail: str | None = None,
         notice_id: str | None = None,
+        due_ms: int | None = None,
     ) -> Notice:
+        due = now_ms if due_ms is None else due_ms
         n = Notice(
             id=notice_id or uuid.uuid4().hex,
             owner_id=owner_id,
@@ -505,7 +507,7 @@ class SqliteScheduleStore:
             kind="heads_up",
             title=title,
             text=text,
-            due_ms=now_ms,
+            due_ms=due,
             late=False,
             created_ms=now_ms,
             status="held",
@@ -522,7 +524,7 @@ class SqliteScheduleStore:
                 "INSERT INTO notices (id, owner_id, source, source_id, kind, title, text,"
                 " due_ms, late, created_ms, status, link, fresh_until_ms, detail) VALUES (?,"
                 " ?, 'attention', ?, 'heads_up', ?, ?, ?, 0, ?, 'held', ?, ?, ?)",
-                (n.id, owner_id, key, title, text, now_ms, now_ms, n.link, fresh_until_ms, detail),
+                (n.id, owner_id, key, title, text, due, now_ms, n.link, fresh_until_ms, detail),
             )
         return n
 
@@ -544,11 +546,12 @@ class SqliteScheduleStore:
         await conn.execute("UPDATE schedules SET paused_ms = ? WHERE id = ?", (now_ms, schedule_id))
         return True
 
-    async def fill_notice_text(self, notice_id: str, text: str) -> bool:
+    async def release_notice(self, notice_id: str, text: str | None, now_ms: int) -> bool:
         async with self._tx() as conn:
             cur = await conn.execute(
-                "UPDATE notices SET text = ? WHERE id = ? AND status = 'held' AND text IS NULL",
-                (text, notice_id),
+                "UPDATE notices SET text = COALESCE(text, ?), due_ms = MIN(due_ms, ?)"
+                " WHERE id = ? AND status = 'held'",
+                (text, now_ms, notice_id),
             )
             return cur.rowcount == 1
 
@@ -565,11 +568,18 @@ class SqliteScheduleStore:
             row = await cur.fetchone()
         return _notice(row) if row is not None else None
 
-    async def held(self, owner_id: str) -> list[Notice]:
+    async def held(self, owner_id: str, now_ms: int | None = None) -> list[Notice]:
+        # Only a told-about action waits for its time: her line is still being written.
+        wait = (
+            ""
+            if now_ms is None
+            else " AND NOT (source = 'attention' AND source_id LIKE 'action:%' AND due_ms > ?)"
+        )
+        args: tuple[object, ...] = (owner_id,) if now_ms is None else (owner_id, now_ms)
         async with self._conn.execute(
-            "SELECT * FROM notices WHERE owner_id = ? AND status = 'held'"
-            " ORDER BY created_ms, rowid",
-            (owner_id,),
+            "SELECT * FROM notices WHERE owner_id = ? AND status = 'held'"  # noqa: S608
+            f"{wait} ORDER BY created_ms, rowid",
+            args,
         ) as cur:
             return [_notice(r) for r in await cur.fetchall()]
 

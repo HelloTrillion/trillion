@@ -796,13 +796,26 @@ class Router:
         return bool(decisions) and decisions[-1].event == "recovered:not_sent"
 
     async def _taken_copy(self, a: PendingAction, now: int) -> PendingAction | None:
-        """A copy asked for again from `a` that is still open or has run, if any. A card
+        """Another action in `a`'s family (the one it was asked from, up to the first,
+        and every copy asked from any of them) that is open or has run, if any. A card
         that expired unanswered no longer counts, whatever its row still says."""
-        for c in await self._store.list_represented_from(a.id):
-            if c.status is Status.PROPOSED and c.expires_at <= now:
-                continue
-            if c.status in _TAKEN:
-                return c
+        root, seen = a, {a.id}
+        while root.represented_from is not None and root.represented_from not in seen:
+            up = await self._store.get_pending(root.represented_from)
+            if up is None:
+                break
+            root = up
+            seen.add(root.id)
+        queue, family = [root], {root.id}
+        while queue:
+            m = queue.pop()
+            if m.id != a.id and m.status in _TAKEN:
+                if not (m.status is Status.PROPOSED and m.expires_at <= now):
+                    return m
+            for c in await self._store.list_represented_from(m.id):
+                if c.id not in family:
+                    family.add(c.id)
+                    queue.append(c)
         return None
 
     async def recover(self, granted_roots: tuple[Path, ...]) -> list[Settled]:

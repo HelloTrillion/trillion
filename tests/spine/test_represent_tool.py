@@ -153,3 +153,34 @@ async def test_the_record_names_the_copy_and_how_it_ended(spine: Spine) -> None:
     original = said[said.index(f"{pid}: ") :]
     assert f"asked for again as {a.pending_id}" in original
     assert "can be asked for again" not in original
+
+
+async def test_a_chain_of_copies_still_leaves_one_card(spine: Spine) -> None:
+    # O never went; its copy A expired; A asked again gives A2. Asking O again must
+    # not make a second open card beside A2: the whole family counts.
+    pid = await never_sent(spine)
+    a = await spine.call(REPRESENT, {"pending_id": pid}, turn=5)
+    assert a.pending_id is not None
+    spine.clock.advance(EXPIRY_MS + 1)
+    a2 = await spine.call(REPRESENT, {"pending_id": a.pending_id}, turn=6)
+    assert a2.status == "confirmation_required" and a2.pending_id is not None
+    b = await spine.call(REPRESENT, {"pending_id": pid}, turn=7)
+    assert b.status == "refused" and b.reason == "not_representable"
+    assert a2.pending_id in b.detail
+    # Nor from another session, nor from the expired copy again.
+    c = await spine.call(REPRESENT, {"pending_id": pid}, session_id="s2", turn=1)
+    assert c.status == "refused"
+    d = await spine.call(REPRESENT, {"pending_id": a.pending_id}, turn=8)
+    assert d.status == "refused" and d.reason == "not_representable"
+
+
+async def test_once_a_copy_down_the_chain_ran_no_one_asks_again(spine: Spine) -> None:
+    pid = await never_sent(spine)
+    a = await spine.call(REPRESENT, {"pending_id": pid}, turn=5)
+    spine.clock.advance(EXPIRY_MS + 1)
+    a2 = await spine.call(REPRESENT, {"pending_id": a.pending_id}, turn=6)
+    assert await approve(spine, a2.pending_id or "", turn=7) == "succeeded"
+    for asked in (pid, a.pending_id):
+        r = await spine.call(REPRESENT, {"pending_id": asked}, turn=8)
+        assert r.status == "refused" and r.reason == "not_representable"
+    assert spine.scripted.executions == 1

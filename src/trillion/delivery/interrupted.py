@@ -59,21 +59,26 @@ class Notices(Protocol):
         text: str | None,
         now_ms: int,
         detail: str | None = None,
+        due_ms: int | None = None,
     ) -> Notice: ...
 
     async def has_notice(self, owner_id: str, key: str) -> bool: ...
 
-    async def fill_notice_text(self, notice_id: str, text: str) -> bool: ...
+    async def release_notice(self, notice_id: str, text: str | None, now_ms: int) -> bool: ...
 
 
 def key(action_id: str) -> str:
     return f"action:{action_id}"
 
 
-async def line(provider: ModelProvider, outcome: str, a: PendingAction) -> tuple[str | None, Usage]:
+async def line(
+    provider: ModelProvider, outcome: str, a: PendingAction, timeout_s: float = words.TIMEOUT_S
+) -> tuple[str | None, Usage]:
     """Her one line about `a`, or None, and what the call used (BRN-4)."""
     shown = f"The tool it used: {a.tool}\n\n" + wrap("interrupted_action", a.summary)
-    return await words.ask(provider, _INSTRUCTIONS[outcome], shown, f"interrupted {a.id}")
+    return await words.ask(
+        provider, _INSTRUCTIONS[outcome], shown, f"interrupted {a.id}", timeout_s
+    )
 
 
 async def tell(
@@ -84,17 +89,20 @@ async def tell(
     get_pending: Callable[[str], Awaitable[PendingAction | None]],
     *,
     now_ms: int,
+    timeout_s: float = words.TIMEOUT_S,
 ) -> tuple[list[Notice], Usage]:
     """One notice for each action settled as never sent or unknown, once each. What
     was made, for the door, and what the calls used, to be recorded.
 
     Every notice is written first, by its title, so a quit while the model writes her
-    line loses nothing: the door hands it over as it is. Her line is added after, while
-    it is still held."""
+    line loses nothing: the door hands it over as it is. Until her line is in, or her
+    calls have had their time, it is not due, so a page that opens meanwhile does not
+    take it without words. Then it is due at once, with her line if she wrote one."""
+    doubt = [s for s in settled if s.outcome in _INSTRUCTIONS]
+    # Her calls run one after another: each has its time, and a second to spare.
+    wait_ms = int((timeout_s + 1) * 1000) * len(doubt) if provider is not None else 0
     written: list[tuple[Notice, Settled, PendingAction]] = []
-    for s in settled:
-        if s.outcome not in _INSTRUCTIONS:
-            continue  # it went, or never started: nothing to say
+    for s in doubt:  # one that went, or never started: nothing to say
         if await store.has_notice(owner_id, key(s.id)):
             continue
         a = await get_pending(s.id)
@@ -108,17 +116,19 @@ async def tell(
             text=None,
             now_ms=now_ms,
             detail=_detail(a.summary),
+            due_ms=now_ms + wait_ms,
         )
         written.append((n, s, a))
         logger.info("interrupted %s: told (%s)", s.id, s.outcome)
     made: list[Notice] = []
     used = Usage()
     for n, s, a in written:
+        text = None
         if provider is not None:
-            text, usage = await line(provider, s.outcome, a)
+            text, usage = await line(provider, s.outcome, a, timeout_s)
             used = used + usage
-            if text is not None and await store.fill_notice_text(n.id, text):
-                n = dataclasses.replace(n, text=text)
+        if wait_ms and await store.release_notice(n.id, text, now_ms):
+            n = dataclasses.replace(n, text=text, due_ms=now_ms)
         made.append(n)
     return made, used
 
