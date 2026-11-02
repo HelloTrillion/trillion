@@ -13,6 +13,7 @@ import pytest
 
 from tests.api.test_listening import speak
 from tests.api.test_session import Gated, Page, idle
+from tests.api.test_session_notices import voiced
 from tests.brain.fakes import say, use
 from tests.voice.audio import room, tone
 from tests.voice.fakes import FakeSTT
@@ -448,16 +449,20 @@ async def test_a_draft_may_end_in_silence_like_any_reply(rt: Runtime) -> None:
     await session.close()
 
 
-async def test_a_spoken_turn_asks_for_its_first_word_sooner_and_a_typed_one_does_not(
+async def test_with_her_voice_on_every_turn_asks_for_its_first_word_sooner(
     rt: Runtime,
 ) -> None:
-    """Every call of a spoken turn, its draft first, is `quick`; a typed turn's never is."""
+    """`quick` is the session's while her replies are spoken: the draft and every call
+    of a spoken turn, a typed turn too, so the cached conversation is never reset by
+    a switch between typing and talking. Only turning her voice off changes it."""
     stt, provider = judging(
         rt,
         use("file_read", {"path": str(rt.granted_roots[0] / "a.txt")}),
         say("It's empty."),
         say("Typed answer."),
+        say("Read answer."),
     )
+    voiced(rt)
     session, page = await start(rt)
     stt.stream.say("what is in the file", final=False, turn="maybe")
     await until(lambda: len(provider.calls) == 1)
@@ -469,5 +474,23 @@ async def test_a_spoken_turn_asks_for_its_first_word_sooner_and_a_typed_one_does
     await session.handle({"type": "turn.text", "text": "and now, typed"})
     await page.until("turn.complete", 2)
     await idle(session)
-    assert provider.quick == [True, True, False]
+    assert provider.quick == [True, True, True]
+    await session.handle({"type": "speech.mute", "muted": True})
+    await session.handle({"type": "turn.text", "text": "and now, read"})
+    await page.until("turn.complete", 3)
+    await idle(session)
+    assert provider.quick == [True, True, True, False]
+    await session.close()
+
+
+async def test_with_her_voice_off_a_spoken_turn_runs_at_the_model_default(
+    rt: Runtime,
+) -> None:
+    stt, provider = judging(rt, say("Sure."))
+    session, page = await start(rt)
+    stt.stream.say("call the dentist", final=False, turn="maybe")
+    await until(lambda: len(provider.calls) == 1)
+    await finish(session, stt, "call the dentist")
+    await page.until("turn.complete")
+    assert drafts() == ["used"] and provider.quick == [False]
     await session.close()

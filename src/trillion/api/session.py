@@ -14,7 +14,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -489,6 +489,9 @@ class _Written:
     summary: compact.Summary
     ids: tuple[int, ...]
     previous: str | None
+    # Already recorded in the store, when a turn started before it could be put in
+    # place in what the model is sent.
+    stored: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -568,6 +571,9 @@ class Session:
         # while a turn ran: it is put in place at the next pause between turns (BRN-5).
         self._compacting: asyncio.Task[None] | None = None
         self._written: _Written | None = None
+        # How long the history was when a summary last failed: not tried again in the
+        # background until it has grown well past that.
+        self._compact_failed_at: int | None = None
         # The turns in which she read something from outside: a page, a file, or a
         # timed ask's answer, which may quote an email (MEM-5).
         self._outside: set[int] = set()
@@ -987,8 +993,9 @@ class Session:
         if retry is not None and retry is not asyncio.current_task():
             retry.cancel()
         self._tail = None
-        # A summary being written is let go: what it cost is counted when it ends, and
-        # the conversation is summarized again when it is next open and long.
+        # A summary being written is let go. A provider reports usage only at the end of
+        # a call, so one stopped here counts as nothing. The conversation is summarized
+        # again when it is next open and long.
         compacting, self._compacting = self._compacting, None
         self._written = None
         if compacting is not None:
@@ -2336,10 +2343,7 @@ class Session:
         # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
         # read, and so was one with her voice off (D8).
         listened = speaker is not None and (self._via == "voice" or self._aloud)
-        # A turn answering something said out loud, a nudge after one included, is
-        # waiting for her first word: it asks the model for it sooner. A typed turn
-        # runs at the model's own default.
-        quick = self._via == "voice" or self._aloud
+        quick = self._quick()
         # What the turn saved of the round it was cut off in, when that was cut to what
         # was heard. Set only by the loop, so the page is told exactly what was kept.
         kept: str | None = None
@@ -2808,8 +2812,8 @@ class Session:
             built=built,
             history_len=len(self._history),
             summary=self._summary,
-            # Only ever for words said out loud, as the turn that replays it is.
-            quick=True,
+            # As the turn that replays it will send it.
+            quick=self._quick(),
         )
         self._drafted = True
 
@@ -3033,6 +3037,13 @@ class Session:
 
     # ── Compaction (BRN-5) ───────────────────────────────────────────────
 
+    def _quick(self) -> bool:
+        """Her replies are spoken in this session: every turn, typed ones too, asks the
+        model for its first word sooner. Fixed for the session unless her voice is
+        turned on or off, so the cached conversation is not reset turn by turn."""
+        rt = self._rt
+        return rt.tts is not None and rt.speech is not None and not self._muted
+
     def _between_turns(self) -> bool:
         """Nothing is reading the history: no turn, no input being taken, no draft."""
         return (
@@ -3044,16 +3055,16 @@ class Session:
         one if the history is still past the summary point. Never fails the turn."""
         written, self._written = self._written, None
         if written is not None:
-            if self._between_turns():
-                await self._put_in_place(written)
-            else:
-                # The user is already on to the next turn: it waits for that one's end.
-                self._written = written
+            try:
+                await self._put_in_place(written, idle=True)
+            except Exception as e:
+                logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
         self._compact_later()
 
     def _compact_later(self) -> None:
         """Summarize the oldest turns in the background, once the history is past the
-        summary point. One summary at a time, and none while one waits to be put in place."""
+        summary point. One summary at a time, and none while one waits to be put in
+        place, nor soon after one failed (`_backing_off`)."""
         rt = self._rt
         running = self._compacting
         if (
@@ -3062,21 +3073,25 @@ class Session:
             or self._written is not None
             or (running is not None and not running.done())
             or compact.estimate(self._history) <= rt.compact_at
+            or self._backing_off()
         ):
             return
         self._compacting = asyncio.create_task(self._compact_in_background())
+
+    def _backing_off(self) -> bool:
+        """A summary failed, and the history has grown by less than half the summary
+        point since: a model that cannot write one is not asked every turn."""
+        failed = self._compact_failed_at
+        grown = compact.estimate(self._history) - (failed or 0)
+        return failed is not None and grown < self._rt.compact_at // 2
 
     async def _compact_in_background(self) -> None:
         """Write the summary while the user carries on. A turn that starts meanwhile is
         sent the whole history; the summary is put in place at the next pause."""
         try:
-            written = await self._summarize()
-            if written is None:
-                return
-            if self._between_turns():
-                await self._put_in_place(written)
-            else:
-                self._written = written
+            written = await self._summarize(compact.TIMEOUT_S)
+            if written is not None:
+                await self._put_in_place(written, idle=True)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -3088,25 +3103,28 @@ class Session:
 
     async def _compact_if_too_long(self) -> None:
         """Before a turn: only a history past the ceiling, too long to send as it is,
-        waits for its summary. If the summary cannot be written, the turn goes ahead on
-        the full history: a long prompt is better than a lost one."""
+        waits for a summary, and not for long (`compact.WAIT_S`): one being written is
+        given that long, or else one is written in that long. Failing that, the turn
+        goes ahead on the full history: a long prompt is better than a lost one."""
         rt = self._rt
         if compact.estimate(self._history) <= compact.ceiling(rt.compact_at):
             return
         running = self._compacting
         if running is not None and not running.done():
-            # Already being written: wait for that one rather than write a second. A
-            # cancelled turn leaves it running.
-            await asyncio.wait({running})
+            # Already being written: wait a while for that one rather than write a
+            # second. A cancelled turn, or one that waits no longer, leaves it running.
+            await asyncio.wait({running}, timeout=compact.WAIT_S)
+            written, self._written = self._written, None
+            if written is not None:
+                await self._put_in_place(written)
+            return
         written, self._written = self._written, None
-        if written is not None and await self._put_in_place(written):
-            if compact.estimate(self._history) <= compact.ceiling(rt.compact_at):
-                return
-        written = await self._summarize()
+        if written is None and not self._backing_off():
+            written = await self._summarize(compact.WAIT_S)
         if written is not None:
             await self._put_in_place(written)
 
-    async def _summarize(self) -> _Written | None:
+    async def _summarize(self, timeout: float) -> _Written | None:
         """Notes on the oldest turns of the history as it is now, or None if it needs
         none or they could not be written. Changes nothing but what was paid for."""
         rt = self._rt
@@ -3119,12 +3137,13 @@ class Session:
         ids, previous, older = tuple(self._ids[:cut]), self._summary, self._history[:cut]
         try:
             summary = await asyncio.wait_for(
-                compact.summarize(provider, compaction(rt.identity), previous, older),
-                compact.TIMEOUT_S,
+                compact.summarize(provider, compaction(rt.identity), previous, older), timeout
             )
         except (ProviderError, compact.CompactionFailed, TimeoutError) as e:
             logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
+            self._compact_failed_at = compact.estimate(self._history)
             return None
+        self._compact_failed_at = None
         # Paid for whether or not it is put in place.
         await self._record_usage(provider, summary.usage)
         return _Written(summary=summary, ids=ids, previous=previous)
@@ -3140,18 +3159,31 @@ class Session:
             and self._summary == written.previous
         )
 
-    async def _put_in_place(self, written: _Written) -> bool:
+    async def _put_in_place(self, written: _Written, *, idle: bool = False) -> bool:
         """Replace the oldest turns with their summary, in the store and in what the
-        model is sent. Only while nothing reads the history. False if it no longer fits."""
+        model is sent. Only while nothing reads the history: with `idle`, a summary that
+        finds a turn running (or one starting while the store is written) is kept in
+        `_written` for that turn's end. False if it was not put in place."""
+        if idle and not self._between_turns():
+            self._written = written
+            return False
         if not self._still_fits(written):
             return False
-        # A change to what is saved, as `_save` is: a reload reading meanwhile is dropped.
-        self._saves += 1
         rt = self._rt
-        await rt.conversations.compact(
-            self.id, OWNER, written.ids[-1], written.summary.text, rt.clock()
-        )
-        if not self._still_fits(written):  # pragma: no cover - a reload read it meanwhile
+        if not written.stored:
+            # A change to what is saved, as `_save` is: a reload reading meanwhile is
+            # dropped.
+            self._saves += 1
+            await rt.conversations.compact(
+                self.id, OWNER, written.ids[-1], written.summary.text, rt.clock()
+            )
+            written = replace(written, stored=True)
+        if not self._still_fits(written):
+            # A reload read the store meanwhile, and has it or will.
+            return False
+        if idle and not self._between_turns():
+            # A turn started while the store was written: it is sent what it was given.
+            self._written = written
             return False
         n = len(written.ids)
         self._summary = written.summary.text

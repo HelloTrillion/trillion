@@ -52,9 +52,10 @@ SUMMARY_TOKENS = 1_500
 # place. Past this many times `COMPACT_AT` a turn waits for it: a summary that keeps
 # failing, or a burst of long tool results, must not grow the history without end.
 CEILING_TIMES = 2
-# A local model can be slow to write a page of notes; a stuck one must not hold a
-# turn that had to wait for it.
+# A local model can be slow to write a page of notes in the background. A turn that
+# has to wait for one waits no longer than `WAIT_S`, then goes ahead without it.
 TIMEOUT_S = 90.0
+WAIT_S = 20.0
 _CHARS_PER_TOKEN = 4
 _CLIP = 600
 TURN_STARTS = ("user", "tap")
