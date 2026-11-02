@@ -3,25 +3,35 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 import pytest
 
 from tests.brain.fakes import USAGE, ScriptedProvider, say
 from trillion.api.runtime import Runtime, open_runtime
-from trillion.brain.types import ProviderError, TextBlock, Usage
+from trillion.brain.types import (
+    ModelEvent,
+    Msg,
+    Pricing,
+    ProviderError,
+    SystemBlock,
+    TextBlock,
+    ToolSchema,
+    Usage,
+)
 from trillion.delivery.interrupted import NOT_SENT, TITLE, UNKNOWN, tell
 from trillion.scheduler.store import Notice
 from trillion.secrets.store import MemoryStore
 from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.contract import Risk
 from trillion.spine.router import NOT_SENT as NOT_SENT_DETAIL
-from trillion.spine.router import Settled
+from trillion.spine.router import Router, Settled
 from trillion.spine.store import DecisionRow
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
+from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.record import describe
 
 OWNER = "local"
@@ -157,6 +167,59 @@ async def test_the_summary_reaches_the_model_as_untrusted(store: SqliteScheduleS
     assert p.tool_calls == [[]]
 
 
+class Hangs:
+    """A model that never answers: the tell is stopped mid-call."""
+
+    name = "hangs"
+    model = "hangs-1"
+
+    def pricing(self) -> Pricing | None:
+        return None
+
+    async def stream(
+        self,
+        *,
+        system: Sequence[SystemBlock],
+        messages: Sequence[Msg],
+        tools: Sequence[ToolSchema],
+        max_tokens: int,
+    ) -> AsyncIterator[ModelEvent]:
+        await asyncio.sleep(3600)
+        yield say("late")[0]
+
+
+async def test_the_notice_is_written_before_her_line_is_asked_for(
+    store: SqliteScheduleStore,
+) -> None:
+    # A quit while the model is still writing her line: the notice is already kept,
+    # shown by its title, with what it was on the page only.
+    task = asyncio.create_task(
+        tell(store, Hangs(), OWNER, [Settled(id="pa1", outcome="not_sent")], get_pending, now_ms=1)
+    )
+    for _ in range(200):
+        if await store.has_notice(OWNER, "action:pa1"):
+            break
+        await asyncio.sleep(0.005)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (n,) = await store.held(OWNER)
+    assert n.title == TITLE and n.text is None and n.detail == SUMMARY
+
+
+async def test_her_line_fills_only_a_notice_not_yet_delivered(
+    store: SqliteScheduleStore,
+) -> None:
+    n = await store.attention_notice(OWNER, "action:x", title=TITLE, text=None, now_ms=1)
+    assert await store.fill_notice_text(n.id, "First.")
+    assert not await store.fill_notice_text(n.id, "Second.")  # it has words already
+    m = await store.attention_notice(OWNER, "action:y", title=TITLE, text=None, now_ms=1)
+    assert await store.mark_delivered(m.id, "page", 2)
+    assert not await store.fill_notice_text(m.id, "Too late.")
+    kept = await store.notice(m.id)
+    assert kept is not None and kept.text is None
+
+
 def test_the_record_says_plainly_it_never_went_and_names_its_id() -> None:
     # She finds it here when the user says yes: its id, and that nothing went out.
     decisions = [
@@ -245,3 +308,42 @@ async def test_what_startup_settled_is_told_in_the_background(
     await asyncio.gather(*rt._interrupted)
     (n,) = await rt.schedules.held(OWNER)
     assert n.title == TITLE and n.text is None
+
+
+async def test_startup_tells_what_is_still_in_doubt_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A notice lost to a quit before it was written: the next start finds the action
+    # still in doubt and tells it, and the start after that does not tell it again.
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    asked: list[int] = []
+
+    async def in_doubt(self: Router, since_ms: int) -> list[Settled]:
+        asked.append(since_ms)
+        return [Settled(id="pa1", outcome="unknown")]
+
+    async def pending(self: SqliteSpineStore, pid: str) -> PendingAction | None:
+        return ACTIONS.get(pid)
+
+    monkeypatch.setattr(Router, "in_doubt", in_doubt)
+    monkeypatch.setattr(SqliteSpineStore, "get_pending", pending)
+    for _ in range(2):
+        runtime = await open_runtime(
+            share_rules=lambda _p: None,
+            granted_roots=(granted,),
+            persona=tmp_path,
+            secrets=MemoryStore(),
+            env={"TZ": "UTC"},
+        )
+        try:
+            assert runtime.door is not None and runtime.schedules is not None
+            runtime.door.notify = lambda title, body, *, silent=False: True
+            runtime.provider = None
+            await asyncio.gather(*runtime._interrupted)
+            (n,) = await runtime.schedules.held(OWNER)
+            assert n.source_id == "action:pa1"
+        finally:
+            await runtime.close()
+    assert len(asked) == 2

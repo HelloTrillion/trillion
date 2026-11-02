@@ -303,6 +303,11 @@ class ScheduleStore(Protocol):
         not https."""
         ...
 
+    async def fill_notice_text(self, notice_id: str, text: str) -> bool:
+        """Her words for a notice written without them, while it is still held. A notice
+        already delivered, or with words, is left as it is."""
+        ...
+
     async def has_notice(self, owner_id: str, key: str) -> bool:
         """Whether a heads-up with this `key` was ever written, delivered or not."""
         ...

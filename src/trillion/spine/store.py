@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -63,6 +64,11 @@ class SpineStore(Protocol):
 
     async def list_represented_from(self, pending_id: str) -> list[PendingAction]:
         """The actions re-presented from this one (SPN-2b)."""
+        ...
+
+    async def last_decisions_since(self, events: Sequence[str], since_ms: int) -> list[DecisionRow]:
+        """Each action whose latest decision is one of `events`, made at or after
+        `since_ms`: that decision."""
         ...
 
     async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:

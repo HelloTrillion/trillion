@@ -123,6 +123,10 @@ _TAKEN = frozenset(
 Outcome = Literal["succeeded", "not_sent", "unknown", "interrupted"]
 
 
+# The decisions a check records when it left a send in doubt, and how each is told.
+_IN_DOUBT: dict[str, Outcome] = {"recovered:not_sent": "not_sent", "recovered:unknown": "unknown"}
+
+
 @dataclass(frozen=True)
 class Settled:
     """An interrupted action that a check settled, for telling the user (OPS-1).
@@ -734,6 +738,13 @@ class Router:
         a = await self._expire_if_due(a, now, ctx)
         if a.status not in REPRESENTABLE:
             return _refused(Refusal.NOT_REPRESENTABLE, a.status.value)
+        # One card, one send, in every session: a resumed conversation keeps its id.
+        taken = await self._taken_copy(a, now)
+        if taken is not None:
+            return _refused(
+                Refusal.NOT_REPRESENTABLE,
+                f"already asked for again as {taken.id}, which is {taken.status.value}",
+            )
         if a.args_cleared:
             return _refused(
                 Refusal.NOT_REPRESENTABLE,
@@ -782,11 +793,17 @@ class Router:
         if a.status is not Status.INVALIDATED:
             return False
         decisions = await self._store.list_decisions(a.id)
-        if not decisions or decisions[-1].event != "recovered:not_sent":
-            return False
-        # Only while no copy asked from it is open or has run: one card, one send.
-        copies = await self._store.list_represented_from(a.id)
-        return not any(c.status in _TAKEN for c in copies)
+        return bool(decisions) and decisions[-1].event == "recovered:not_sent"
+
+    async def _taken_copy(self, a: PendingAction, now: int) -> PendingAction | None:
+        """A copy asked for again from `a` that is still open or has run, if any. A card
+        that expired unanswered no longer counts, whatever its row still says."""
+        for c in await self._store.list_represented_from(a.id):
+            if c.status is Status.PROPOSED and c.expires_at <= now:
+                continue
+            if c.status in _TAKEN:
+                return c
+        return None
 
     async def recover(self, granted_roots: tuple[Path, ...]) -> list[Settled]:
         """At startup: settle interrupted actions. Never re-runs one (SPN-17a, OPS-1)."""
@@ -806,6 +823,17 @@ class Router:
             if done is not None:
                 settled.append(done)
         return settled
+
+    async def in_doubt(self, since_ms: int) -> list[Settled]:
+        """Each send settled since `since_ms` as never sent or unknown, and still so: not
+        asked for again since. For telling the user when a notice may have been lost."""
+        found: list[Settled] = []
+        rows = await self._store.last_decisions_since(list(_IN_DOUBT), since_ms)
+        for d in rows:
+            if await self._store.list_represented_from(d.pending_id):
+                continue  # asked for again: the user knows
+            found.append(Settled(id=d.pending_id, outcome=_IN_DOUBT[d.event]))
+        return found
 
     async def check_unchecked(self) -> list[Settled]:
         """Check again each action whose last check could not reach the provider."""

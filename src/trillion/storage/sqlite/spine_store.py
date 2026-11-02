@@ -290,6 +290,26 @@ class SqliteSpineStore:
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
 
+    async def last_decisions_since(self, events: Sequence[str], since_ms: int) -> list[DecisionRow]:
+        wanted = set(events)
+        async with self._conn.execute(
+            "SELECT d.pending_id, d.event, d.decided_by, d.via, d.at FROM decisions d"
+            " WHERE d.at >= ? AND d.id ="
+            " (SELECT MAX(id) FROM decisions WHERE pending_id = d.pending_id) ORDER BY d.id",
+            (since_ms,),
+        ) as cur:
+            rows = [r for r in await cur.fetchall() if str(r["event"]) in wanted]
+            return [
+                DecisionRow(
+                    pending_id=str(r["pending_id"]),
+                    event=str(r["event"]),
+                    decided_by=str(r["decided_by"]),
+                    via=str(r["via"]),
+                    at=int(r["at"]),
+                )
+                for r in rows
+            ]
+
     async def list_decisions(self, pending_id: str) -> list[DecisionRow]:
         async with self._conn.execute(
             "SELECT pending_id, event, decided_by, via, at FROM decisions"

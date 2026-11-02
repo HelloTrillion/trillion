@@ -9,6 +9,7 @@ the notice is then shown by its title, never spoken with stock words (PER-11).
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
@@ -44,12 +45,25 @@ UNKNOWN = (
 _INSTRUCTIONS = {"not_sent": NOT_SENT, "unknown": UNKNOWN}
 
 
+# What it was, on the page only: never spoken, never on the system notification.
+DETAIL_MAX = 300
+
+
 class Notices(Protocol):
     async def attention_notice(
-        self, owner_id: str, key: str, *, title: str, text: str | None, now_ms: int
+        self,
+        owner_id: str,
+        key: str,
+        *,
+        title: str,
+        text: str | None,
+        now_ms: int,
+        detail: str | None = None,
     ) -> Notice: ...
 
     async def has_notice(self, owner_id: str, key: str) -> bool: ...
+
+    async def fill_notice_text(self, notice_id: str, text: str) -> bool: ...
 
 
 def key(action_id: str) -> str:
@@ -72,9 +86,12 @@ async def tell(
     now_ms: int,
 ) -> tuple[list[Notice], Usage]:
     """One notice for each action settled as never sent or unknown, once each. What
-    was made, for the door, and what the calls used, to be recorded."""
-    made: list[Notice] = []
-    used = Usage()
+    was made, for the door, and what the calls used, to be recorded.
+
+    Every notice is written first, by its title, so a quit while the model writes her
+    line loses nothing: the door hands it over as it is. Her line is added after, while
+    it is still held."""
+    written: list[tuple[Notice, Settled, PendingAction]] = []
     for s in settled:
         if s.outcome not in _INSTRUCTIONS:
             continue  # it went, or never started: nothing to say
@@ -84,12 +101,30 @@ async def tell(
         if a is None or a.owner_id != owner_id:
             logger.warning("interrupted %s: no such action to tell", s.id)
             continue
-        text = None
+        n = await store.attention_notice(
+            owner_id,
+            key(s.id),
+            title=TITLE,
+            text=None,
+            now_ms=now_ms,
+            detail=_detail(a.summary),
+        )
+        written.append((n, s, a))
+        logger.info("interrupted %s: told (%s)", s.id, s.outcome)
+    made: list[Notice] = []
+    used = Usage()
+    for n, s, a in written:
         if provider is not None:
             text, usage = await line(provider, s.outcome, a)
             used = used + usage
-        made.append(
-            await store.attention_notice(owner_id, key(s.id), title=TITLE, text=text, now_ms=now_ms)
-        )
-        logger.info("interrupted %s: told (%s)", s.id, s.outcome)
+            if text is not None and await store.fill_notice_text(n.id, text):
+                n = dataclasses.replace(n, text=text)
+        made.append(n)
     return made, used
+
+
+def _detail(summary: str) -> str | None:
+    out = " ".join(summary.split())
+    if not out:
+        return None
+    return out if len(out) <= DETAIL_MAX else out[: DETAIL_MAX - 3] + "..."

@@ -131,6 +131,9 @@ logger = logging.getLogger(__name__)
 STOP_NOTIFY_S = 6.0
 # How often a send whose check could not reach the provider is checked again (OPS-1).
 CHECK_EVERY_S = 600.0
+# How far back startup looks for a send left in doubt whose notice was lost.
+IN_DOUBT_DAYS = 7
+DAY_MS = 86_400_000
 
 OWNER = "local"
 # Speech outside a turn (a notice, a tap's answer, a sentence about a leg that is down)
@@ -1137,6 +1140,10 @@ async def open_runtime(
         tool = registry.get(name)
         if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):
             tool.bind(book)
-    # A send a crash left in doubt: the user hears of it, once (OPS-1).
-    rt.tell_soon(settled)
+    # A send a crash left in doubt: the user hears of it, once (OPS-1). Those settled
+    # lately are looked for too, so a notice lost to a quit before it was written is
+    # still given; one already written is not given again.
+    doubt = await router.in_doubt(rt.clock() - IN_DOUBT_DAYS * DAY_MS)
+    told = {s.id for s in settled}
+    rt.tell_soon(settled + [s for s in doubt if s.id not in told])
     return rt

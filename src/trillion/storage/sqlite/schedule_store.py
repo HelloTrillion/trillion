@@ -544,6 +544,14 @@ class SqliteScheduleStore:
         await conn.execute("UPDATE schedules SET paused_ms = ? WHERE id = ?", (now_ms, schedule_id))
         return True
 
+    async def fill_notice_text(self, notice_id: str, text: str) -> bool:
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE notices SET text = ? WHERE id = ? AND status = 'held' AND text IS NULL",
+                (text, notice_id),
+            )
+            return cur.rowcount == 1
+
     async def has_notice(self, owner_id: str, key: str) -> bool:
         async with self._conn.execute(
             "SELECT 1 FROM notices WHERE owner_id = ? AND source = 'attention'"
