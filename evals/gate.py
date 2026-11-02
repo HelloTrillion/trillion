@@ -5,6 +5,7 @@ her sound less like herself? Run by hand, with any model, a free local one inclu
     uv run python -m evals.gate --deployed                 # the model this Trillion uses
     uv run python -m evals.gate --model gemma4:e4b --save-baseline
     uv run python -m evals.gate --model gemma4:e4b --save-baseline --accept-drop "why"
+    uv run python -m evals.gate --model gemma4:e4b --runs 5
 
 It runs the whole persona eval, then compares it with the committed baseline for the
 same model and judge (evals/baselines/). It fails when the judge average falls more
@@ -12,6 +13,10 @@ than 0.3, a group's more than 0.5, or a code check's pass rate more than 5 point
 and loudly when a model other than the one named answered. --save-baseline keeps a
 passing run as the new baseline; a worse one needs --accept-drop with a reason, which
 is saved in the file for reviewers to see.
+
+With a local judge it pools three runs of the eval (one with Claude, which is
+steadier); --runs sets another number. A prompt with no reply is asked once more
+before it counts as silent.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from evals.baselines import (
 )
 from evals.harness import CannotRun, Judge, Report, Sandbox
 from evals.persona.cases import PROMPTS, Prompt
-from evals.persona.run import evaluate
+from evals.persona.run import Row, ask, report_rows, summarize
 from trillion import paths
 from trillion.api.runtime import MODEL_PREF, OWNER
 from trillion.brain import config
@@ -53,6 +58,18 @@ from trillion.brain.config import (
 )
 from trillion.brain.providers.anthropic import DEFAULT_MODEL
 from trillion.storage.inspect import _read_only
+
+# Runs pooled when nobody passes --runs. A local judge (and usually a local model) is
+# noisy run to run and costs only time; a Claude judge is steadier, and costs money.
+LOCAL_RUNS = 3
+
+
+def default_runs(*, local: bool) -> int:
+    return LOCAL_RUNS if local else 1
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
 class Deployed(NamedTuple):
@@ -170,21 +187,39 @@ def check(
     accept_drop: str | None = None,
     json_path: Path | None = None,
     deployed_note: str | None = None,
+    runs: int = 1,
 ) -> int:
     judge_name = judge.provider.model
     path = folder / baseline_path(model, judge_name).name
     # Everything that can stop the run is read before any model is asked.
     base = _baseline(path)
     stamp = fingerprint()
-    s = evaluate(sb, judge, report, prompts)
+    rows: list[Row] = []
+    for n in range(1, runs + 1):
+        batch = ask(sb, judge, prompts, run=n)
+        # Printed as each run ends, so a long local run shows it is moving.
+        report_rows(report, batch)
+        rows += batch
+    # Pooled: every reply from every run counts once in one summary.
+    s = summarize(rows)
     # The app's event loop adds to sb.served; everything below reads this one copy.
     served = set(sb.served)
     totals = Totals(mean=s.mean, groups=s.groups, rates=s.rates)
     hard, notes = model_problems(model, served, sb.unreported)
     if s.unjudged:
         hard.append(f"{s.unjudged} replies could not be judged")
+    # Counted in asks out of every ask in every run: one flaky prompt can be silent in
+    # more than one run.
+    asks = runs * len(prompts)
     if s.silent:
-        hard.append(f"{s.silent} prompts got no reply")
+        hard.append(f"{s.silent} of {asks} asks got no reply")
+    if s.retried:
+        notes.append(f"{s.retried} of {asks} asks got no reply the first time and were asked again")
+    if base is not None and base.runs != runs:
+        mismatch = f"the baseline is from {_plural(base.runs, 'run')}, this from {runs}"
+        if base.runs < runs:
+            mismatch += f"; re-save it with --runs {runs} for a steadier yardstick"
+        notes.append(mismatch)
     drops = compare(totals, base) if base is not None else []
     # The persona eval's own lines (s.lines) are printed, but they don't fail the gate:
     # it fails on change against the baseline, and on hard problems.
@@ -207,6 +242,7 @@ def check(
                 date=datetime.now(UTC).isoformat(timespec="seconds"),
                 fingerprint=stamp,
                 totals=totals,
+                runs=runs,
                 # A reason is kept only when there was a drop for it to explain.
                 accepted_drop=accept_drop if drops else None,
             ).save(path)
@@ -222,12 +258,14 @@ def check(
         lines += ["persona lines (not gated):", *(f"  {line}" for line in s.lines)]
     persona = {k: v for k, v in s.totals().items() if k != "problems"}
     mean = "n/a" if s.mean is None else f"{s.mean:.2f}"
+    size = f"{len(prompts)} prompts" if runs == 1 else f"{runs} runs \u00d7 {len(prompts)} prompts"
     return report.finish(
         not failing,
-        f"{len(prompts)} prompts, judge average {mean}",
+        f"{size}, judge average {mean}",
         notes=[*lines, *notes, *accepted, *failing],
         totals={
             **persona,
+            "runs": runs,
             "persona_lines": s.lines,
             "baseline": None if base is None else base.to_json(),
             "gate": {
@@ -250,12 +288,34 @@ def _extra(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--accept-drop", default=None, metavar="WHY", help="keep a worse run, saying why"
     )
+    # Read as text and checked in _main, so a bad count stops with exit 2 like the rest.
+    p.add_argument(
+        "--runs",
+        default=None,
+        metavar="N",
+        help=f"runs to pool (default {LOCAL_RUNS} with a local judge, 1 with Claude)",
+    )
     # None marks "not given", so --deployed can refuse a model named alongside it.
     p.set_defaults(model=None, url=None)
 
 
+def _runs(text: str | None) -> int | None:
+    """The --runs count, or None when it wasn't given."""
+    if text is None:
+        return None
+    why = f"--runs takes a whole number, 1 or more, not {text!r}"
+    try:
+        n = int(text)
+    except ValueError:
+        raise CannotRun(why) from None
+    if n < 1:
+        raise CannotRun(why)
+    return n
+
+
 def _main(opts: argparse.Namespace) -> int:
     # Every option is checked before any model is set up or asked.
+    asked_runs = _runs(opts.runs)
     if opts.only:
         raise CannotRun("the gate takes no --only: part of the eval can't match a baseline")
     if opts.accept_drop is not None:
@@ -275,6 +335,7 @@ def _main(opts: argparse.Namespace) -> int:
         url = opts.url or config.LOCAL_URL
     make = harness.model_provider(model, url, os.environ)
     with harness.judge_for(opts.judge_model, opts.judge_url, os.environ) as judge:
+        runs = default_runs(local=judge.local) if asked_runs is None else asked_runs
         report = Report("gate", model, judge.line)
         with Sandbox(make, patient=True) as sb:
             return check(
@@ -287,6 +348,7 @@ def _main(opts: argparse.Namespace) -> int:
                 accept_drop=opts.accept_drop,
                 json_path=opts.json,
                 deployed_note=note,
+                runs=runs,
             )
 
 

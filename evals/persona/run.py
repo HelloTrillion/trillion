@@ -75,6 +75,17 @@ class Row:
     error: str | None = None
     # What she put on the board, so a failed figure check can be read back.
     board: tuple[str, ...] = ()
+    # Which run of the eval this reply came from, counting from 1.
+    run: int = 1
+    # Whether the prompt got no reply at first and was asked again.
+    retried: bool = False
+    # Why the first ask got no reply, when it was asked again.
+    first_error: str | None = None
+
+    @property
+    def label(self) -> str:
+        """The prompt's id, with its run from the second on: "bait-06 #2"."""
+        return self.prompt.id if self.run == 1 else f"{self.prompt.id} #{self.run}"
 
 
 def code_checks(prompt: Prompt, reply: str) -> tuple[set[str], dict[str, str]]:
@@ -151,6 +162,7 @@ class Summary:
     # Replies the judge could not score, and prompts that got no reply.
     unjudged: int = 0
     silent: int = 0
+    retried: int = 0
     # The problems that are the eval's absolute pass lines, without those two counts.
     lines: list[str] = field(default_factory=list)
 
@@ -168,7 +180,7 @@ class Summary:
         lines += [f"  {g:<14} {m:.2f}" for g, m in self.groups.items()]
         if self.lowest:
             lines.append("lowest scored:")
-        lines += [f"  {r.score.value}  {r.prompt.id}: {r.score.reason}" for r in self.lowest]
+        lines += [f"  {r.score.value}  {r.label}: {r.score.reason}" for r in self.lowest]
         return lines
 
     def totals(self) -> dict[str, Any]:
@@ -177,6 +189,7 @@ class Summary:
             "mean": self.mean,
             "groups": self.groups,
             "problems": self.problems,
+            "retried": self.retried,
         }
 
 
@@ -229,17 +242,27 @@ def summarize(rows: Sequence[Row]) -> Summary:
         problems=problems,
         unjudged=unjudged,
         silent=silent,
+        retried=sum(1 for r in rows if r.retried),
         lines=lines,
     )
 
 
-def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt]) -> Summary:
+def ask(sb: Sandbox, judge: Judge, prompts: Sequence[Prompt], *, run: int = 1) -> list[Row]:
+    """One run: each prompt in a new conversation, scored by code and by the judge. A
+    prompt with no reply is asked once more, in a new conversation, so one hiccup from
+    a local model isn't counted as silence."""
     rubric = f"{RUBRIC}\n\n<soul>\n{SOUL.read_text(encoding='utf-8')}\n</soul>"
     rows: list[Row] = []
     for p in prompts:
         sb.fresh()
         t = sb.converse([Ask(text=p.text, via=p.via)])
         (turn,) = t.turns
+        retried = not turn.reply.strip()
+        first_error = (turn.error or "no reply") if retried else None
+        if retried:
+            sb.fresh()
+            t = sb.converse([Ask(text=p.text, via=p.via)])
+            (turn,) = t.turns
         applies, failed = code_checks(p, turn.reply)
         if p.group == "numbers":
             applies.add("invented_number")
@@ -251,22 +274,32 @@ def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt
             reply=turn.reply,
             applies=applies,
             failed=failed,
-            error=None if turn.reply else (turn.error or "no reply"),
+            error=None if turn.reply.strip() else (turn.error or "no reply"),
             board=tuple(t.args for t in turn.tools if t.name.startswith(BOARD)),
+            run=run,
+            retried=retried,
+            first_error=first_error,
         )
         if r.error is None:
             r.score = judge.score(rubric, t.render())
         rows.append(r)
+    # Within this run only: a reply is compared with the ones just before it.
     for i in repeated_openers([r.reply for r in rows]):
         rows[i].failed["repeated_opener"] = "opens like a reply shortly before it"
+    return rows
+
+
+def report_rows(report: Report, rows: Sequence[Row]) -> None:
     for r in rows:
         what = (
             "; ".join(f"{k}: {v}" for k, v in r.failed.items())
             or r.error
             or " ".join(r.reply.split())[:70]
         )
+        if r.retried:
+            what = f"(asked twice) {what}"
         report.case(
-            r.prompt.id,
+            r.label,
             not r.failed and r.error is None and r.score.value is not None,
             f"score={r.score.value if r.score.value is not None else '-'}  {what}",
             group=r.prompt.group,
@@ -277,7 +310,15 @@ def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt
             score=r.score.value,
             reason=r.score.reason,
             board=list(r.board),
+            run=r.run,
+            retried=r.retried,
+            first_error=r.first_error,
         )
+
+
+def evaluate(sb: Sandbox, judge: Judge, report: Report, prompts: Sequence[Prompt]) -> Summary:
+    rows = ask(sb, judge, prompts)
+    report_rows(report, rows)
     return summarize(rows)
 
 

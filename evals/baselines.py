@@ -56,6 +56,8 @@ class Baseline:
     fingerprint: str
     totals: Totals
     accepted_drop: str | None = field(default=None)
+    # How many runs of the persona eval it pooled. A file from before this field: 1.
+    runs: int = 1
 
     def to_json(self) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -68,6 +70,7 @@ class Baseline:
             "mean": self.totals.mean,
             "groups": self.totals.groups,
             "rates": self.totals.rates,
+            "runs": self.runs,
         }
         if self.accepted_drop is not None:
             body["accepted_drop"] = self.accepted_drop
@@ -82,6 +85,9 @@ class Baseline:
                 raise ValueError(f"a baseline needs {key!r}")
         mean = raw["mean"]
         accepted = raw.get("accepted_drop")
+        runs = raw.get("runs", 1)
+        if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
+            raise ValueError("a baseline's runs must be a whole number, 1 or more")
         return cls(
             model=str(raw["model"]),
             judge=str(raw["judge"]),
@@ -94,6 +100,7 @@ class Baseline:
                 rates={str(k): None if v is None else float(v) for k, v in raw["rates"].items()},
             ),
             accepted_drop=None if accepted is None else str(accepted),
+            runs=runs,
         )
 
     @classmethod

@@ -8,7 +8,15 @@ from pathlib import Path
 
 from evals.harness import Judge, Report, Sandbox, Score, ToolRun, Turn
 from evals.persona.cases import PROMPTS, Prompt
-from evals.persona.run import Row, code_checks, evaluate, made_up_figure, summarize
+from evals.persona.run import (
+    Row,
+    ask,
+    code_checks,
+    evaluate,
+    made_up_figure,
+    report_rows,
+    summarize,
+)
 
 from tests.brain.fakes import ScriptedProvider, say
 
@@ -198,3 +206,81 @@ def test_a_made_up_figure_inside_a_widget_still_fails() -> None:
 def test_the_summary_counts_unjudged_and_silent_prompts() -> None:
     s = summarize([row(value=None), row(reply="", value=None), row()])
     assert (s.unjudged, s.silent) == (1, 1)
+
+
+def test_a_silent_prompt_is_asked_once_more_in_a_new_conversation(tmp_path: Path) -> None:
+    prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
+    scripted = ScriptedProvider(say(""), say("Soup."))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(ScriptedProvider(judged(4)), local=True) as judge,
+    ):
+        (r,) = ask(sb, judge, prompts)
+    assert r.reply == "Soup." and r.retried and r.error is None and r.score.value == 4
+    # The second ask is a new conversation: it carries only the prompt, not the silence.
+    assert len(scripted.calls[1][1]) == 1
+    assert r.first_error == "no reply"
+
+
+def test_a_whitespace_only_reply_is_asked_again(tmp_path: Path) -> None:
+    # The harness already drops blank stretches; this covers the whole path end to end.
+    prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
+    scripted = ScriptedProvider(say("  \n"), say("Soup."))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(ScriptedProvider(judged(4)), local=True) as judge,
+    ):
+        (r,) = ask(sb, judge, prompts)
+    assert r.retried and r.reply == "Soup." and r.error is None
+
+
+def test_silent_twice_is_silent(tmp_path: Path) -> None:
+    prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
+    scripted = ScriptedProvider(say(""), say(""))
+    jp = ScriptedProvider()
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(jp, local=True) as judge,
+    ):
+        (r,) = ask(sb, judge, prompts)
+    assert len(scripted.calls) == 2 and jp.calls == []
+    assert r.retried and r.error is not None and r.score.value is None
+    assert r.score.reason == "not judged"
+    assert summarize([r]).silent == 1
+
+
+def test_a_reply_first_time_is_asked_once(tmp_path: Path) -> None:
+    prompts = [Prompt(id="everyday-01", group="everyday", text="Lunch?")]
+    scripted = ScriptedProvider(say("Soup."))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "evals") as sb,
+        Judge(ScriptedProvider(judged(4)), local=True) as judge,
+    ):
+        (r,) = ask(sb, judge, prompts, run=2)
+    assert not r.retried and len(scripted.calls) == 1
+    assert r.run == 2 and r.label == "everyday-01 #2"
+
+
+def test_lines_say_the_run_from_the_second_on_and_who_was_asked_twice() -> None:
+    first, second = row(), row()
+    second.run, second.retried = 2, True
+    out = io.StringIO()
+    report = Report("persona", "fake-1", "judge", out=out)
+    report_rows(report, [first, second])
+    assert [c["id"] for c in report.cases] == ["everyday-x", "everyday-x #2"]
+    assert report.cases[1]["retried"] is True and report.cases[1]["run"] == 2
+    assert "asked twice" in out.getvalue().splitlines()[-1]
+
+
+def test_the_summary_counts_prompts_asked_twice() -> None:
+    again = row()
+    again.retried = True
+    s = summarize([row(), again])
+    assert s.retried == 1 and s.totals()["retried"] == 1
+    assert not any("asked" in p for p in s.problems)  # a note, never a problem
+
+
+def test_the_lowest_list_names_the_run() -> None:
+    low = row(value=1)
+    low.run = 3
+    assert any("everyday-x #3" in line for line in summarize([row(), low]).measures())

@@ -94,6 +94,35 @@ def test_a_baseline_missing_a_field_is_refused(tmp_path: Path) -> None:
         Baseline.load(path)
 
 
+def test_a_baseline_keeps_its_run_count(tmp_path: Path) -> None:
+    b = base(runs=3)
+    b.save(tmp_path / "b.json")
+    assert Baseline.load(tmp_path / "b.json").runs == 3
+    assert json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))["runs"] == 3
+
+
+def test_a_baseline_from_before_runs_counts_as_one() -> None:
+    raw = {
+        "model": "m",
+        "judge": "j",
+        "answered_by": ["m"],
+        "date": "d",
+        "fingerprint": "f",
+        "mean": 4.0,
+        "groups": {},
+        "rates": {},
+    }
+    assert Baseline.from_json(raw).runs == 1
+
+
+@pytest.mark.parametrize("runs", [0, -1, 2.5, "two", "3", None, True])
+def test_a_baseline_with_an_unusable_run_count_is_refused(runs: object) -> None:
+    raw = base().to_json()
+    raw["runs"] = runs
+    with pytest.raises(ValueError, match="runs"):
+        Baseline.from_json(raw)
+
+
 def test_the_baseline_file_is_named_for_its_model_and_judge() -> None:
     assert baseline_path("gemma4:e4b", "claude-opus-5-5").name == (
         "persona-gemma4-e4b--claude-opus-5-5.json"
@@ -189,13 +218,15 @@ def gate_run(
     value: int,
     reply: list[ModelEvent] | None = None,
     judging: ScriptedProvider | None = None,
+    runs: int = 1,
     **kw: object,
 ) -> tuple[int, str]:
     out = io.StringIO()
-    scripted = ScriptedProvider(reply if reply is not None else say("Soup."))
+    # One reply and one verdict per run.
+    scripted = ScriptedProvider(*[reply if reply is not None else say("Soup.")] * runs)
     with (
         Sandbox(lambda: scripted, root=tmp_path / "e") as sb,
-        Judge(judging or ScriptedProvider(judged(value)), local=True) as judge,
+        Judge(judging or ScriptedProvider(*[judged(value)] * runs), local=True) as judge,
     ):
         report = Report("gate", "fake-1", judge.line, out=out)
         code = gate.check(
@@ -206,6 +237,7 @@ def gate_run(
             model="fake-1",
             folder=tmp_path / "baselines",
             json_path=tmp_path / "r.json",
+            runs=runs,
             **kw,  # type: ignore[arg-type]
         )
     return code, out.getvalue()
@@ -312,8 +344,83 @@ def test_an_unjudged_reply_fails_the_gate(tmp_path: Path) -> None:
 def test_a_silent_prompt_fails_the_gate(tmp_path: Path) -> None:
     gate_run(tmp_path, 4, save=True)
     code, said = gate_run(tmp_path, 4, reply=say(""))
-    assert code == 1 and "1 prompts got no reply" in said
-    assert results(tmp_path)["gate"]["hard"] == ["1 prompts got no reply"]
+    assert code == 1 and "1 of 1 asks got no reply" in said
+    assert results(tmp_path)["gate"]["hard"] == ["1 of 1 asks got no reply"]
+    # Over several runs the count is of asks, out of every ask.
+    code, said = gate_run(tmp_path, 4, reply=say(""), runs=3)
+    assert code == 1 and "3 of 3 asks got no reply" in said
+
+
+def test_runs_are_pooled_into_one_summary(tmp_path: Path) -> None:
+    # No single run averages 4: only the pool of all three does.
+    judging = ScriptedProvider(judged(5), judged(5), judged(2))
+    code, said = gate_run(tmp_path, 0, judging=judging, runs=3, save=True)
+    assert code == 0
+    assert "3 runs \u00d7 1 prompts, judge average 4.00" in said
+    # Each run's line is printed, labelled with its run from the second on.
+    body = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert [(c["id"], c["score"]) for c in body["cases"]] == [
+        ("everyday-01", 5),
+        ("everyday-01 #2", 5),
+        ("everyday-01 #3", 2),
+    ]
+    assert "everyday-01 #2" in said and "everyday-01 #3" in said
+    saved = Baseline.load(saved_file(tmp_path))
+    assert saved.runs == 3 and saved.totals.mean == 4.0
+    assert results(tmp_path)["runs"] == 3
+
+
+def test_one_run_reads_as_before(tmp_path: Path) -> None:
+    code, said = gate_run(tmp_path, 4, save=True)
+    assert code == 0 and "1 prompts, judge average 4.00" in said and "runs \u00d7" not in said
+    assert Baseline.load(saved_file(tmp_path)).runs == 1
+    assert results(tmp_path)["runs"] == 1
+
+
+def test_a_baseline_from_a_different_run_count_is_noted_not_failed(tmp_path: Path) -> None:
+    gate_run(tmp_path, 4, save=True)
+    code, said = gate_run(tmp_path, 4, runs=3)
+    assert code == 0
+    assert (
+        "the baseline is from 1 run, this from 3; re-save it with --runs 3"
+        " for a steadier yardstick" in said
+    )
+    gate_run(tmp_path, 4, runs=3, save=True)
+    code, said = gate_run(tmp_path, 4)
+    assert code == 0 and "the baseline is from 3 runs, this from 1" in said
+    assert "re-save" not in said
+    # The same count says nothing.
+    code, said = gate_run(tmp_path, 4, runs=3)
+    assert code == 0 and "the baseline is from" not in said
+
+
+def test_a_prompt_asked_twice_is_noted(tmp_path: Path) -> None:
+    out = io.StringIO()
+    scripted = ScriptedProvider(say(""), say("Soup."))
+    with (
+        Sandbox(lambda: scripted, root=tmp_path / "e") as sb,
+        Judge(ScriptedProvider(judged(4)), local=True) as judge,
+    ):
+        report = Report("gate", "fake-1", judge.line, out=out)
+        code = gate.check(
+            sb,
+            judge,
+            report,
+            PROMPTS,
+            model="fake-1",
+            folder=tmp_path / "baselines",
+            json_path=tmp_path / "r.json",
+            save=True,
+        )
+    said = out.getvalue()
+    assert code == 0
+    assert "1 of 1 asks got no reply the first time and were asked again" in said
+    assert results(tmp_path)["gate"]["hard"] == []
+
+
+def test_the_default_run_count_follows_the_judge() -> None:
+    assert gate.default_runs(local=True) == gate.LOCAL_RUNS == 3
+    assert gate.default_runs(local=False) == 1
 
 
 def test_a_corrupt_baseline_stops_the_run_before_any_model_is_asked(tmp_path: Path) -> None:
@@ -417,6 +524,28 @@ def test_main_keeps_the_deployed_note_in_the_json(
     assert results(tmp_path)["gate"]["deployed_note"] == note
 
 
+@pytest.mark.parametrize(
+    ("local", "argv", "runs"),
+    [(True, [], 3), (False, [], 1), (True, ["--runs", "2"], 2), (False, ["--runs", "4"], 4)],
+)
+def test_main_pools_runs_by_the_judge_unless_told(
+    local: bool, argv: list[str], runs: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def check(*args: object, **kw: object) -> int:
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr(gate.harness, "model_provider", lambda *a, **k: ScriptedProvider)
+    monkeypatch.setattr(
+        gate.harness, "judge_for", lambda *a, **k: Judge(ScriptedProvider(), local=local)
+    )
+    monkeypatch.setattr(gate, "check", check)
+    assert gate.main(argv) == 0
+    assert seen["runs"] == runs
+
+
 def test_a_saved_choice_that_cant_be_read_cannot_run(tmp_path: Path) -> None:
     with pytest.raises(CannotRun, match="saved model"):
         gate.deployed(prefs(tmp_path / "a.db", None, raw="{not json"), {})
@@ -434,7 +563,7 @@ def test_the_command_line_offers_the_gates_options(capsys: pytest.CaptureFixture
     with pytest.raises(SystemExit):
         gate.main(["--help"])
     usage = capsys.readouterr().out
-    assert all(o in usage for o in ("--deployed", "--save-baseline", "--accept-drop"))
+    assert all(o in usage for o in ("--deployed", "--save-baseline", "--accept-drop", "--runs"))
 
 
 @pytest.mark.parametrize(
@@ -445,6 +574,10 @@ def test_the_command_line_offers_the_gates_options(capsys: pytest.CaptureFixture
         (["--only", "everyday-01"], "--only"),
         (["--deployed", "--model", "gemma4:e4b"], "--deployed"),
         (["--deployed", "--url", LOCAL], "--deployed"),
+        (["--runs", "0"], "--runs"),
+        (["--runs", "-1"], "--runs"),
+        (["--runs", "two"], "--runs"),
+        (["--runs", "2.5"], "--runs"),
     ],
 )
 def test_contradictory_options_stop_before_any_model_runs(
