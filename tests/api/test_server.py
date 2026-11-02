@@ -948,7 +948,9 @@ def test_listening_settings_need_the_token_and_list_the_catalog(make: Any) -> No
     assert [o["kind"] for o in body["options"]] == ["whisper", "deepgram"]
     assert body["saved"] is None and body["active"] is False
     free = body["options"][0]
-    assert free["free"] and not free["needs_key"] and free["install_hint"]
+    assert free["free"] and not free["needs_key"]
+    assert free["install_hint"] == "uv sync --extra whisper"  # the tests run from a checkout
+    assert body["options"][1]["install_hint"] is None
     assert listening(app, kind="nope", choice="x").json() == {"error": "unknown_provider"}
 
 

@@ -214,7 +214,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     const o = option();
     const hint = o?.install_hint;
     if (code === 'not_installed' && hint) {
-      return `This part of Trillion is not installed yet. In the Trillion folder, run "${hint}", then start Trillion again.`;
+      return `This part of Trillion is not installed yet. Run "${hint}", then start Trillion again.`;
     }
     return errorText(code, o ? listeningReach(o) : undefined);
   }

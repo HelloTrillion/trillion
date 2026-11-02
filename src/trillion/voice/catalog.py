@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from trillion import paths
 from trillion.secrets.store import SecretStore
 from trillion.voice.providers.deepgram import Deepgram
 from trillion.voice.providers.elevenlabs import ElevenLabs
@@ -106,8 +107,8 @@ class ListenOption:
     needs_key: bool
     free: bool
     key_link: str | None
-    # What to tell someone whose install lacks this provider's optional part.
-    install_hint: str | None
+    # The optional part of Trillion this provider needs (a pyproject extra), if any.
+    extra: str | None
     # Whether this recognizer judges when a turn is over (VOI-12).
     turns: bool = False
     build: Callable[[SecretStore], STTProvider]
@@ -115,6 +116,19 @@ class ListenOption:
     @property
     def secret(self) -> str:
         return f"{self.kind}/api_key"
+
+    @property
+    def install_hint(self) -> str | None:
+        """The command that adds the optional part, for the way Trillion was installed."""
+        return install_command(self.extra) if self.extra else None
+
+
+def install_command(extra: str) -> str:
+    """How to add an optional part. A release (`uv tool install`, or the one-line
+    installer) reinstalls with the extra; later `uv tool upgrade`s keep it."""
+    if paths.source_checkout():
+        return f"uv sync --extra {extra}"
+    return f"uv tool install --upgrade --python 3.13 'trillion[{extra}]'"
 
 
 def _deepgram(secrets: SecretStore) -> STTProvider:
@@ -132,7 +146,7 @@ LISTENING: tuple[ListenOption, ...] = (
         needs_key=False,
         free=True,
         key_link=None,
-        install_hint="uv sync --extra whisper",
+        extra="whisper",
         build=lambda _secrets: LocalWhisper(),
     ),
     ListenOption(
@@ -145,7 +159,7 @@ LISTENING: tuple[ListenOption, ...] = (
         needs_key=True,
         free=False,
         key_link="https://console.deepgram.com/",
-        install_hint=None,
+        extra=None,
         turns=True,
         build=_deepgram,
     ),

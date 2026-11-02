@@ -48,6 +48,15 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def source_checkout() -> bool:
+    """Whether this is a clone run with `uv sync`, not an installed release.
+
+    An installed package sits in site-packages; a checkout's is `src/trillion`, under
+    the repository's pyproject.toml."""
+    root = package_root()
+    return root.parent.name == "src" and (root.parents[1] / "pyproject.toml").is_file()
+
+
 def mcp_config_path() -> Path:
     """The MCP servers the user connected (CON-5). Inside Trillion's own folder, so no
     tool can edit it: what runs without asking is the user's say alone."""
