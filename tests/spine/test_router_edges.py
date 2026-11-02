@@ -320,7 +320,7 @@ async def test_recover_without_the_tool_is_unknown(spine: Spine) -> None:
     for old, new in ((Status.PROPOSED, Status.APPROVED), (Status.APPROVED, Status.EXECUTING)):
         await spine.store.transition(pid, old, new, now_ms=spine.clock(), decision=by(new.value))
     bare = Router(ToolRegistry(), spine.store, policy=DenyPolicy.default(), clock=spine.clock)
-    assert await bare.recover((spine.granted,)) == [pid]
+    assert [s.id for s in await bare.recover((spine.granted,))] == [pid]
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.UNKNOWN
     assert a.outcome_detail == "interrupted mid-run"

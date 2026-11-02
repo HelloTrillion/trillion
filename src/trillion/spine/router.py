@@ -92,6 +92,28 @@ _REFRESH_READS_ONLY = "a refresh only reads"
 # needs nothing from the tools (tests check the names still match).
 REFRESH_NEVER = frozenset({"web_fetch", "describe_self"})
 REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
+# OPS-1: a check that can't reach the provider is tried again for this long after the
+# action was proposed, then the action is `unknown`.
+CHECK_FOR_MS = 24 * 60 * 60 * 1000
+UNCHECKED = "unchecked"
+NOT_SENT = "interrupted before it went out"
+_STILL_CHECKING = (
+    "No answer came back, so it may or may not have gone. Checking with the provider"
+    " and will say when it's clear."
+)
+
+Outcome = Literal["succeeded", "not_sent", "unknown", "interrupted"]
+
+
+@dataclass(frozen=True)
+class Settled:
+    """An interrupted action that a check settled, for telling the user (OPS-1).
+    `interrupted` is an approved action that never started: nothing left the computer."""
+
+    id: str
+    outcome: Outcome
+
+
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
     Status.UNKNOWN: "unknown",
@@ -281,6 +303,8 @@ class Router:
         # so nobody approves what they never saw (#4). The running app sets it.
         self._require_delivery = require_delivery
         self._owners: set[str] = set()
+        # The roots `recover` was given, for the later checks that have none of their own.
+        self._granted: tuple[Path, ...] = ()
 
     # ── The normal path ──────────────────────────────────────────────────
 
@@ -635,6 +659,18 @@ class Router:
     ) -> RouterResponse:
         ctx = dataclasses.replace(ctx, action_id=a.id)
         result = await self._run(tool, a.args, ctx)
+        if result.effect == "unknown":
+            # No answer from the provider: it may have gone. Ask before recording a guess.
+            checked = await self._check(a, ctx.granted_roots)
+            if checked[1]:
+                await self._settle(a, ctx.granted_roots, checked)
+                fresh = await self._reload(a)
+                if fresh.status is not Status.EXECUTING:
+                    return self._from_record(fresh)
+                response = self._result_response(
+                    tool, Status.UNKNOWN, result.content, result.error_kind
+                )
+                return dataclasses.replace(response, pending_id=a.id, detail=_STILL_CHECKING)
         status = final_status(result)
         won = await self._move(
             a.id,
@@ -670,7 +706,7 @@ class Router:
         return await self._audit_resolution(a, ctx, start, response, decision="represent")
 
     async def _represent(self, a: PendingAction, ctx: ToolContext, now: int) -> RouterResponse:
-        if a.session_id != ctx.session_id:
+        if a.session_id != ctx.session_id and not await self._proved_not_sent(a):
             return _refused(Refusal.WRONG_SESSION)
         a = await self._expire_if_due(a, now, ctx)
         if a.status not in REPRESENTABLE:
@@ -717,9 +753,18 @@ class Router:
             return False
         return await self._store.mark_delivered(pending_id, owner_id, surface, self._clock())
 
-    async def recover(self, granted_roots: tuple[Path, ...]) -> list[str]:
-        """At startup: reconcile interrupted actions. Never re-runs one (SPN-17a)."""
-        touched: list[str] = []
+    async def _proved_not_sent(self, a: PendingAction) -> bool:
+        """A check proved it never went out (OPS-1). The session that raised it ended with
+        the crash, so any of the owner's sessions may ask for a new card."""
+        if a.status is not Status.INVALIDATED:
+            return False
+        decisions = await self._store.list_decisions(a.id)
+        return bool(decisions) and decisions[-1].event == "recovered:not_sent"
+
+    async def recover(self, granted_roots: tuple[Path, ...]) -> list[Settled]:
+        """At startup: settle interrupted actions. Never re-runs one (SPN-17a, OPS-1)."""
+        self._granted = granted_roots
+        settled: list[Settled] = []
         for a in await self._store.list_by_status(Status.APPROVED):
             await self._move(
                 a.id,
@@ -728,35 +773,93 @@ class Router:
                 _system("interrupted"),
                 detail="interrupted before it ran; ask again",
             )
-            touched.append(a.id)
+            settled.append(Settled(id=a.id, outcome="interrupted"))
         for a in await self._store.list_by_status(Status.EXECUTING):
-            ctx = ToolContext(
-                owner_id=a.owner_id,
-                session_id=a.session_id,
-                turn=a.created_turn,
-                call_id=f"recover-{a.id}",
-                via="text",
-                granted_roots=granted_roots,
-                action_id=a.id,
-            )
-            tool = self._get(a.tool)
-            result: ToolResult | None = None
-            if tool is not None:
-                try:
-                    result = await tool.reconcile(a.args, ctx)
-                except Exception as e:  # reconcile is best-effort by contract
-                    logger.warning("reconcile of %s raised %s", a.id, type(e).__name__)
-            status = final_status(result) if result is not None else Status.UNKNOWN
-            await self._move(
-                a.id,
-                Status.EXECUTING,
-                status,
-                _system(f"recovered:{status.value}"),
-                effect=result.effect if result else "unknown",
-                detail=result.content[:_DETAIL_LIMIT] if result else "interrupted mid-run",
-            )
-            touched.append(a.id)
-        return touched
+            done = await self._settle(a, granted_roots)
+            if done is not None:
+                settled.append(done)
+        return settled
+
+    async def check_unchecked(self) -> list[Settled]:
+        """Check again each action whose last check could not reach the provider."""
+        settled: list[Settled] = []
+        for a in await self._store.list_by_status(Status.EXECUTING):
+            if a.effect_status != UNCHECKED:
+                continue  # running now
+            done = await self._settle(a, self._granted)
+            if done is not None:
+                settled.append(done)
+        return settled
+
+    async def _check(
+        self, a: PendingAction, granted: tuple[Path, ...]
+    ) -> tuple[ToolResult | None, bool]:
+        """Ask the tool what happened to `a`. The flag is False when it has no check."""
+        ctx = ToolContext(
+            owner_id=a.owner_id,
+            session_id=a.session_id,
+            turn=a.created_turn,
+            call_id=f"recover-{a.id}",
+            via="text",
+            granted_roots=granted,
+            action_id=a.id,
+        )
+        tool = self._get(a.tool)
+        if tool is None:
+            return None, False
+        try:
+            # Bounded like a run: a confirm waits on this check when the answer was lost.
+            limit = tool.definition.timeout_s
+            result = await asyncio.wait_for(tool.reconcile(a.args, ctx), limit)
+        except Exception as e:  # a check is best-effort by contract; a timeout is "can't tell"
+            logger.warning("reconcile of %s raised %s", a.id, type(e).__name__)
+            return None, True
+        return result, result is not None
+
+    async def _settle(
+        self,
+        a: PendingAction,
+        granted: tuple[Path, ...],
+        checked: tuple[ToolResult | None, bool] | None = None,
+    ) -> Settled | None:
+        """Record what a check found. None: still can't tell, or another caller won."""
+        result, can_check = checked or await self._check(a, granted)
+        if result is not None and result.effect == "confirmed":
+            return await self._settled(a, Status.SUCCEEDED, "succeeded", result)
+        if result is not None and result.effect == "none":
+            return await self._settled(a, Status.INVALIDATED, "not_sent", result, NOT_SENT)
+        now = self._clock()
+        if can_check and now < a.created_at + CHECK_FOR_MS:
+            if a.effect_status != UNCHECKED:
+                # Through the one writer, so the record says a check is pending.
+                await self._move(
+                    a.id,
+                    Status.EXECUTING,
+                    Status.EXECUTING,
+                    _system(UNCHECKED),
+                    now=now,
+                    effect=UNCHECKED,
+                )
+            return None
+        return await self._settled(a, Status.UNKNOWN, "unknown", result)
+
+    async def _settled(
+        self,
+        a: PendingAction,
+        status: Status,
+        outcome: Outcome,
+        result: ToolResult | None,
+        detail: str | None = None,
+    ) -> Settled | None:
+        won = await self._move(
+            a.id,
+            Status.EXECUTING,
+            status,
+            _system(f"recovered:{outcome}"),
+            effect=result.effect if result else "unknown",
+            detail=detail or (result.content[:_DETAIL_LIMIT] if result else "interrupted mid-run"),
+        )
+        return Settled(id=a.id, outcome=outcome) if won else None
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
