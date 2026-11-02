@@ -317,9 +317,9 @@ def test_typed_replies_offer_the_rest_instead_of_a_list() -> None:
     # The Claude baseline: typed how-to answers came as bolded lists with a
     # "What makes it work" section, which her soul calls essay mode.
     typed = system_blocks(Identity(agent_name="Nova", user_name="Sam"), "soul")[0].text
-    assert "give the one thing that matters in a sentence or two, then offer the rest" in typed
-    assert "Write a list only when asked for steps, options or a plan" in typed
-    assert "no bold labels" in typed
+    assert "the one thing that matters in a sentence or two, and if there is more worth" in typed
+    assert "Write a list in your reply only when asked for steps, options or a plan" in typed
+    assert "no bold labels and nothing after it on why it works; a longer one goes on" in typed
     assert "A draft that was asked for, such as an email, comes whole." in typed
     assert "Light markdown is fine" not in typed
 
@@ -332,8 +332,9 @@ def test_quick_reads_get_no_line_first() -> None:
     spoken = volatile_context(datetime(2026, 11, 1, tzinfo=UTC), [], spoken=ident)
     for text in (typed, spoken):
         assert "a read that takes a moment, such as a connected app or the web" in text
-        quick = "Your shared folders and your memory are quick: read them without a line first."
+        quick = "A file in your shared folders, or your memory, is quick to read: no line first."
         assert quick in text
+        assert "A search through a big folder is not." in text
 
 
 def test_missing_data_is_one_line() -> None:
