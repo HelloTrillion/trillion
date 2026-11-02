@@ -6,11 +6,11 @@
 
 About sixty prompts, about half spoken, each in a new conversation (one says a
 line first, in the same one). The code checks (banned openers, "as an AI", markdown,
-length, menus and stacked questions when spoken, repeated openers, in the numbers
-group a figure no tool gave her, and whether she stayed quiet when she should and
-only then) need no judge, and also run in CI against stored replies. The judge scores
-each reply, never a quiet one, 1 to 5 against SOUL.md itself, read from the repository
-at run time.
+length and stacked questions when spoken, menus when they think aloud, repeated
+openers, in the numbers group a figure no tool gave her, and whether she stayed
+quiet when she should and only then) need no judge, and also run in CI against
+stored replies. The judge scores each reply, never a quiet one, 1 to 5 against
+SOUL.md itself, read from the repository at run time.
 """
 
 from __future__ import annotations
@@ -134,18 +134,26 @@ class Row:
         return self.prompt.id if self.run == 1 else f"{self.prompt.id} #{self.run}"
 
 
+# The group whose spoken replies are held to offering no menu.
+THINKING = "thinking"
+
+
 def code_checks(prompt: Prompt, reply: str) -> tuple[set[str], dict[str, str]]:
     """Which checks apply to this reply, and the ones it failed with why."""
     applies = {"banned_opener", "as_an_ai", "repeated_opener", "answered"}
     found = {"banned_opener": banned_opener(reply), "as_an_ai": as_an_ai(reply)}
     if prompt.via == "voice":
-        # voice.md's rules: what is heard has no markup, is short, offers no menu and
-        # asks one question at most. A typed reply may still offer the rest.
-        applies |= {"markdown", "voice_length", "no_menu", "one_question"}
+        # voice.md's rules: what is heard has no markup, is short and asks one question
+        # at most. A typed reply may still offer the rest.
+        applies |= {"markdown", "voice_length", "one_question"}
         found["markdown"] = markdown(reply)
         found["voice_length"] = too_long(reply, long_ok=prompt.long_ok)
-        found["no_menu"] = no_menu(reply)
         found["one_question"] = one_question(reply)
+        if prompt.group == THINKING:
+            # Only when they think aloud does voice.md forbid a menu: elsewhere SOUL.md
+            # still lets her offer the obvious next step ("Want me to find out?").
+            applies.add("no_menu")
+            found["no_menu"] = no_menu(reply)
     return applies, {k: v for k, v in found.items() if v is not None}
 
 

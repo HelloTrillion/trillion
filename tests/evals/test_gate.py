@@ -339,8 +339,8 @@ def test_a_low_score_that_held_its_baseline_passes(tmp_path: Path) -> None:
 
 def test_the_persona_lines_include_the_spoken_style_checks(tmp_path: Path) -> None:
     out = io.StringIO()
-    scripted = ScriptedProvider(say("Soup? Should I find one?"))
-    spoken = [Prompt(id="everyday-01", group="everyday", text="Lunch?", via="voice")]
+    scripted = ScriptedProvider(say("Soup? Would you like me to find one?"))
+    spoken = [Prompt(id="thinking-01", group="thinking", text="Lunch?", via="voice")]
     with (
         Sandbox(lambda: scripted, root=tmp_path / "e") as sb,
         Judge(ScriptedProvider(judged(4)), local=True) as judge,

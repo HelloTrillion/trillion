@@ -85,8 +85,8 @@ The persona eval (`evals/persona/`) gains two groups and one kind of case.
   - Three musings, such as "I keep going back and forth on whether to move the launch, the team's tired but the date matters."
   - One two-turn correction: she suggests something, then "No, that's not it, it's more about the budget than the people."
   - Code checks:
-    - `no_menu`: no "would you like me to", "do you want me to", "which do you prefer", "should I".
-    - `one_question`: at most one question mark.
+    - `no_menu`, in this group only: no "would you like me to", "do you want me to", "which do you prefer". Elsewhere SOUL.md still lets her offer the obvious next step, and "Should I worry? No." is no menu.
+    - `one_question`, on every spoken reply: at most one question mark.
   - The judge scores the rest against the SOUL.
 - New checks are persona lines, reported like the others, and gated by the gate's existing rate limits once a baseline has them.
 - **Running it:**

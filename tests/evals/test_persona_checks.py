@@ -199,7 +199,6 @@ def test_no_two_replies_within_20_turns_open_with_the_same_three_words() -> None
         ("Would you like me to draft it?", "would you like me to"),
         ("Do you want me to look?", "do you want me to"),
         ("Which do you prefer, the date or the team?", "which do you prefer"),
-        ("Should I hold the date?", "should i"),
         ("WOULD YOU LIKE ME TO try?", "would you like me to"),
     ],
 )
@@ -213,6 +212,7 @@ def test_a_menu_is_flagged_however_it_is_cased(reply: str, found: str) -> None:
         "Sounds like the date matters more than the mood.",
         "You should move it. The team needs the week.",
         "I'd keep the date.",
+        "Should I worry? No.",
     ],
 )
 def test_a_reply_that_offers_no_menu_passes(reply: str) -> None:

@@ -376,8 +376,14 @@ def test_a_case_that_should_be_answered_and_went_quiet_fails_answered() -> None:
     assert s.rates["voice_length"] is None  # nothing was said to measure
 
 
+MUSING = Prompt(
+    id="thinking-01", group="thinking", text="I keep going back and forth.", via="voice"
+)
+
+
 def test_an_answer_holds_answered_and_the_spoken_style_checks() -> None:
-    (r,), _, jp = asked([answer("Soup. Would you like me to find one? Or a salad?")], [LUNCH])
+    reply = "Soup. Would you like me to find one? Or a salad?"
+    (r,), _, jp = asked([answer(reply)], [MUSING])
     assert {"answered", "no_menu", "one_question"} <= r.applies
     assert r.failed == {"no_menu": "would you like me to", "one_question": "2 questions"}
     assert len(jp.calls) == 1
@@ -385,9 +391,17 @@ def test_an_answer_holds_answered_and_the_spoken_style_checks() -> None:
     assert (s.rates["answered"], s.rates["no_menu"], s.rates["one_question"]) == (1.0, 0.0, 0.0)
 
 
+def test_a_menu_is_held_only_when_they_think_aloud() -> None:
+    """Elsewhere SOUL.md still lets her offer the next step ("Want me to find out?")."""
+    applies, failed = code_checks(LUNCH, "Soup. Would you like me to find one?")
+    assert "no_menu" not in applies and "one_question" in applies and failed == {}
+    applies, failed = code_checks(MUSING, "Would you like me to list the options?")
+    assert "no_menu" in applies and failed == {"no_menu": "would you like me to"}
+
+
 def test_menus_and_stacked_questions_are_held_only_when_spoken() -> None:
-    typed = Prompt(id="everyday-02", group="everyday", text="Lunch?")
-    applies, failed = code_checks(typed, "Soup? Or salad? Want me to find one?")
+    typed = Prompt(id="thinking-09", group="thinking", text="Lunch?")
+    applies, failed = code_checks(typed, "Soup? Or salad? Would you like me to find one?")
     assert "no_menu" not in applies and "one_question" not in applies and failed == {}
 
 
@@ -398,7 +412,7 @@ def test_the_quiet_group_is_left_out_of_the_judge_averages() -> None:
 
 
 def test_the_summary_reports_the_new_checks_like_the_others() -> None:
-    lines = summarize([row(via="voice")]).measures()
+    lines = summarize([row(via="voice"), row(group="thinking", via="voice")]).measures()
     for check in ("answered", "quiet", "no_menu", "one_question"):
         assert any(line.startswith(check) for line in lines)
 
