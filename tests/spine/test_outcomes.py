@@ -148,6 +148,8 @@ async def test_the_tool_is_given_the_action_id_when_it_runs(spine: Spine) -> Non
     r = await spine.call("scripted", {})
     await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
     assert spine.scripted.seen[-1].action_id == r.pending_id
+    made = await spine.store.get_pending(r.pending_id or "")
+    assert made is not None and spine.scripted.seen[-1].proposed_ms == made.created_at
 
 
 async def test_the_check_is_given_the_action_id(spine: Spine) -> None:
@@ -157,11 +159,14 @@ async def test_the_check_is_given_the_action_id(spine: Spine) -> None:
     await _to_executing(spine, pid)
     await spine.router.recover((spine.granted,))
     assert spine.scripted.seen[-1].action_id == pid
+    made = await spine.store.get_pending(pid)
+    # The check knows when the action was proposed, so it looks no earlier.
+    assert made is not None and spine.scripted.seen[-1].proposed_ms == made.created_at
 
 
 async def test_a_direct_call_has_no_action_id(spine: Spine) -> None:
     ctx = spine.ctx()
-    assert ctx.action_id is None
+    assert ctx.action_id is None and ctx.proposed_ms is None
 
 
 OFFLINE = ToolResult(ok=False, content="offline", effect="unknown", error_kind=UNREACHABLE)

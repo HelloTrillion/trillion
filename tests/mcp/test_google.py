@@ -51,6 +51,8 @@ class FakeGoogle:
         self.rewrite = False
         self.down = False
         self.refuse: int | None = None
+        # An error status Gmail answers a send with; a 5xx after storing the email.
+        self.send_fails: int | None = None
         # Event ids Google answers 410 Gone for.
         self.gone: set[str] = set()
         self.events: dict[str, dict[str, Any]] = {
@@ -107,7 +109,8 @@ class FakeGoogle:
         if path == "/gmail/v1/users/me/messages":
             q = str(url.params.get("q", ""))
             if "in:sent" in q:
-                return httpx.Response(200, json={"messages": self.search_sent(q)})
+                trash = url.params.get("includeSpamTrash") == "true"
+                return httpx.Response(200, json={"messages": self.search_sent(q, trash)})
             return httpx.Response(200, json={"messages": [{"id": "m1"}]})
         if path == "/gmail/v1/users/me/messages/m1":
             text = base64.urlsafe_b64encode(
@@ -132,14 +135,20 @@ class FakeGoogle:
             )
         if path == "/gmail/v1/users/me/messages/send":
             msg = message_from_bytes(base64.urlsafe_b64decode((body or {})["raw"]))
+            if self.send_fails and self.send_fails < 500:
+                return httpx.Response(self.send_fails, json={"error": {"code": self.send_fails}})
             self.sent.append(
                 {
                     "id": f"s{len(self.sent)}",
                     "message_id": "<other@mail.example.com>" if self.rewrite else msg["Message-ID"],
                     "to": msg["To"],
                     "subject": msg["Subject"],
+                    "time": int(time.time()),
+                    "trashed": False,
                 }
             )
+            if self.send_fails:
+                return httpx.Response(self.send_fails, json={"error": {"code": self.send_fails}})
             return httpx.Response(200, json={"id": self.sent[-1]["id"]})
         if path == "/gmail/v1/users/me/drafts":
             return httpx.Response(200, json={"id": "d1"})
@@ -199,19 +208,23 @@ class FakeGoogle:
             return httpx.Response(200, text="The plan, as text.")
         return httpx.Response(404, json={})
 
-    def search_sent(self, q: str) -> list[dict[str, str]]:
+    def search_sent(self, q: str, trash: bool) -> list[dict[str, str]]:
+        """Sent mail matching `q`, as Gmail would: trashed mail only with `trash`."""
+        sent = [m for m in self.sent if trash or not m.get("trashed")]
         tag = re.search(r"rfc822msgid:(\S+)", q)
         if tag:
-            want = tag.group(1).strip("<>")
-            return [{"id": m["id"]} for m in self.sent if str(m["message_id"]).strip("<>") == want]
-        to = re.findall(r"to:(\S+)", q)
+            want = tag.group(1)
+            return [{"id": m["id"]} for m in sent if str(m["message_id"]).strip("<>") == want]
+        to = re.findall(r'to:"([^"]+)"', q)
         subject = re.search(r'subject:"([^"]*)"', q)
-        assert to and "newer_than:" in q, q
+        after = re.search(r"after:(\d+)", q)
+        assert to and (after or "newer_than:" in q), q
         return [
             {"id": m["id"]}
-            for m in self.sent
+            for m in sent
             if all(a in str(m["to"]) for a in to)
             and (subject is None or m["subject"] == subject.group(1))
+            and (after is None or int(m.get("time", time.time())) > int(after.group(1)))
         ]
 
 
@@ -406,7 +419,7 @@ async def test_the_check_finds_a_sent_email(
     result = await tool.reconcile(MAIL, spine.ctx(action_id=r.pending_id))
     assert result is not None and result.effect == "confirmed"
     q = next(c for c in fake.calls if "rfc822msgid" in str(c[2].get("q", "")))[2]["q"]
-    assert q == f"in:sent rfc822msgid:<trillion-{r.pending_id}@example.com>"
+    assert q == f"in:sent rfc822msgid:trillion-{r.pending_id}@example.com"
 
 
 async def test_the_check_finds_nothing_when_it_never_went(
@@ -418,9 +431,7 @@ async def test_the_check_finds_nothing_when_it_never_went(
     result = await tool.reconcile(MAIL, spine.ctx(action_id="a" * 32))
     assert result is not None and result.effect == "none"
     # An email that did go, to someone else, is not this one.
-    fake.sent.append(
-        {"id": "s9", "message_id": "<x@example.com>", "to": "kim@example.com", "subject": "Lunch"}
-    )
+    fake.sent.append(_sent(to="kim@example.com"))
     result = await tool.reconcile(MAIL, spine.ctx(action_id="a" * 32))
     assert result is not None and result.effect == "none"
     # No action id: this tool has nothing to look for.
@@ -438,6 +449,88 @@ async def test_the_check_falls_back_to_recipients_and_subject(
     assert tool is not None
     result = await tool.reconcile(MAIL, spine.ctx(action_id=r.pending_id))
     assert result is not None and result.effect == "confirmed"
+
+
+def _sent(**kw: Any) -> dict[str, Any]:
+    """An email already in the fake's Sent."""
+    return {
+        "id": f"s{kw.get('n', 9)}",
+        "message_id": "<x@example.com>",
+        "to": "sam@example.com",
+        "subject": "Lunch",
+        "time": int(time.time()),
+        "trashed": False,
+        **kw,
+    }
+
+
+async def test_the_fallback_looks_no_earlier_than_the_proposal(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    now_ms = int(time.time() * 1000)
+    # The same email sent an hour before this one was proposed is not this one.
+    fake.sent.append(_sent(time=now_ms // 1000 - 3600))
+    ctx = spine.ctx(action_id="a" * 32, proposed_ms=now_ms)
+    result = await tool.reconcile(MAIL, ctx)
+    assert result is not None and result.effect == "none"
+    q = [c[2]["q"] for c in fake.calls if "to:" in str(c[2].get("q", ""))][-1]
+    assert f"after:{now_ms // 1000 - 60}" in q and "newer_than" not in q
+    assert 'to:"sam@example.com"' in q
+    fake.sent.append(_sent(n=10))
+    result = await tool.reconcile(MAIL, ctx)
+    assert result is not None and result.effect == "confirmed"
+
+
+async def test_a_sent_email_since_deleted_still_went(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    pid = "b" * 32
+    fake.sent.append(_sent(message_id=f"<trillion-{pid}@example.com>", trashed=True))
+    result = await tool.reconcile(MAIL, spine.ctx(action_id=pid))
+    assert result is not None and result.effect == "confirmed"
+
+
+async def test_a_subject_with_no_words_is_left_out_of_the_fallback(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    fake.sent.append(_sent(subject="something else"))
+    args = {**MAIL, "subject": "?!"}
+    result = await tool.reconcile(args, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "confirmed"  # errs toward "it went"
+    q = [c[2]["q"] for c in fake.calls if "to:" in str(c[2].get("q", ""))][-1]
+    assert "subject:" not in q
+
+
+async def test_google_failing_on_its_side_during_a_send_is_checked(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    fake.send_fails = 503  # the email went, then Google's answer failed
+    r = await spine.call("gmail_send", MAIL)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert len(fake.sent) == 1
+    assert any("rfc822msgid" in str(c[2].get("q", "")) for c in fake.calls)  # it checked
+    assert done.status == "succeeded"
+
+
+async def test_google_refusing_a_send_is_a_plain_failure(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    fake.send_fails = 400
+    r = await spine.call("gmail_send", MAIL)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "failed" and not fake.sent
+    assert not any("in:sent" in str(c[2].get("q", "")) for c in fake.calls)  # no check
 
 
 @pytest.mark.parametrize("trouble", ["down", 403, 500])

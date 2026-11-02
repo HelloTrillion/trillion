@@ -673,7 +673,7 @@ class Router:
     async def _execute_claimed(
         self, tool: _Registered, a: PendingAction, ctx: ToolContext
     ) -> RouterResponse:
-        ctx = dataclasses.replace(ctx, action_id=a.id)
+        ctx = dataclasses.replace(ctx, action_id=a.id, proposed_ms=a.created_at)
         result = await self._run(tool, a.args, ctx)
         if result.effect == "unknown":
             # No answer from the provider: it may have gone, or may still be landing.
@@ -826,6 +826,7 @@ class Router:
             via="text",
             granted_roots=granted,
             action_id=a.id,
+            proposed_ms=a.created_at,
         )
         tool = self._get(a.tool)
         if tool is None:

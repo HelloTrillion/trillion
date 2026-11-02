@@ -76,6 +76,9 @@ class ToolContext:
     # and in every check of it. A tool puts it where the provider keeps it, so a check
     # after a crash can find what was sent (OPS-1). None on the direct path.
     action_id: str | None = None
+    # When that action was proposed, in epoch milliseconds: a check looks no earlier
+    # than this. None on the direct path.
+    proposed_ms: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

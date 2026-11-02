@@ -299,6 +299,9 @@ def _failure(r: httpx.Response) -> GoogleCallError:
         )
     if r.status_code == 429 or reason in ("rateLimitExceeded", "userRateLimitExceeded"):
         return GoogleCallError("busy", "Google says too many requests; try again in a minute")
+    if r.status_code >= 500:
+        # Google's own trouble: a write may still have gone through.
+        return GoogleCallError("server", f"Google had a problem on its side ({r.status_code})")
     if r.status_code == 400:
         return GoogleCallError("refused", "Google refused that request as it was asked")
     return GoogleCallError("failed", f"Google answered with an error ({r.status_code})")

@@ -28,6 +28,7 @@ from trillion.connectors.google.config import Client, Service
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,
+    UNREACHABLE,
     ActionSummary,
     BaseTool,
     Precondition,
@@ -42,8 +43,6 @@ MAX_TEXT = 20_000
 MAX_RESULTS = 25
 _EMAIL = re.compile(r"^[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+$")
 _LINE = re.compile(r"[\r\n]")
-# A check's "couldn't tell, try again later" (spine.contract.UNREACHABLE).
-UNREACHABLE = "unreachable"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -181,11 +180,13 @@ class GoogleTool(BaseTool):
         except _Problem as e:
             return ToolResult(ok=False, content=str(e), effect="none", error_kind="refused")
         except GoogleCallError as e:
-            # Google answered no: nothing happened. Silence is not an answer.
+            # Google answered no: nothing happened. Silence is not an answer, and nor is
+            # Google's own failure on a change: it may have gone, so the router checks.
+            maybe = not e.answered or (e.kind == "server" and self.native is not Risk.READ)
             return ToolResult(
                 ok=False,
                 content=str(e),
-                effect="none" if e.answered else "unknown",
+                effect="unknown" if maybe else "none",
                 error_kind=e.kind,
             )
         return ToolResult(ok=True, content=_cut(text) or "(nothing)", effect="confirmed")
@@ -375,8 +376,9 @@ class _Compose(GoogleTool):
             msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
         if action_id:
-            # OPS-1: how a check after a crash finds this email in Sent. Set once:
-            # EmailMessage adds no Message-ID of its own, and Gmail keeps a valid one.
+            # OPS-1: how a check after a crash finds this email in Sent. Set once, as
+            # EmailMessage adds none of its own. Gmail usually keeps it; when it doesn't,
+            # the check's fallback search covers it.
             del msg["Message-ID"]
             msg["Message-ID"] = _message_id(account, action_id)
         body: dict[str, Any] = {}
@@ -467,16 +469,22 @@ class GmailSend(_Compose):
             return None
         try:
             account = self.account(args)
-            tag = _message_id(account, ctx.action_id)
+            tag = _message_id(account, ctx.action_id).strip("<>")
             if await self._found(account, f"in:sent rfc822msgid:{tag}"):
                 return ToolResult(ok=True, content="Found it in Sent.", effect="confirmed")
             # Gmail may replace the header. This looser match could also catch another
             # email like it, which errs toward "it went": that never sends twice.
-            words = ["in:sent", *(f"to:{a}" for a in _addresses(args.get("to"), "To"))]
+            words = ["in:sent", *(f'to:"{a}"' for a in _addresses(args.get("to"), "To"))]
             subject = " ".join(str(args.get("subject", "")).replace('"', " ").split())
-            if subject:
+            if any(c.isalnum() for c in subject):
                 words.append(f'subject:"{subject}"')
-            if await self._found(account, " ".join([*words, "newer_than:2d"])):
+            # Since a minute before the proposal: nothing older can be this email.
+            since = (
+                f"after:{ctx.proposed_ms // 1000 - 60}"
+                if ctx.proposed_ms is not None
+                else "newer_than:2d"
+            )
+            if await self._found(account, " ".join([*words, since])):
                 return ToolResult(ok=True, content="Found it in Sent.", effect="confirmed")
         except (_Problem, GoogleCallError) as e:
             # No answer, or an answer of no: neither says whether it went.
@@ -485,7 +493,11 @@ class GmailSend(_Compose):
 
     async def _found(self, account: str, q: str) -> bool:
         found = await self.call(
-            account, "GET", "/gmail/v1/users/me/messages", params={"q": q, "maxResults": 1}
+            account,
+            "GET",
+            "/gmail/v1/users/me/messages",
+            # A sent email the user has since deleted still went.
+            params={"q": q, "maxResults": 1, "includeSpamTrash": True},
         )
         return bool(found.get("messages"))
 
