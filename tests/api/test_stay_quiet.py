@@ -167,6 +167,8 @@ async def test_a_trailed_off_thought_keeps_the_microphone_open_then_nudges_once(
     await speak(session, room(3.2))
     await idle(session)
     assert nudges(rt) == 1 and len(rt.provider.calls) == 3  # type: ignore[union-attr]
+    # Every call, the nudge's too, was a spoken turn's: her first word asked for sooner.
+    assert rt.provider.quick == [True, True, True]  # type: ignore[union-attr]
     await session.close()
 
 

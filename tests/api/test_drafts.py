@@ -446,3 +446,28 @@ async def test_a_draft_may_end_in_silence_like_any_reply(rt: Runtime) -> None:
     kinds = [k for k, _ in await rt.conversations.history(session.id, "local")]
     assert kinds == ["user", "assistant", "tool_results"]
     await session.close()
+
+
+async def test_a_spoken_turn_asks_for_its_first_word_sooner_and_a_typed_one_does_not(
+    rt: Runtime,
+) -> None:
+    """Every call of a spoken turn, its draft first, is `quick`; a typed turn's never is."""
+    stt, provider = judging(
+        rt,
+        use("file_read", {"path": str(rt.granted_roots[0] / "a.txt")}),
+        say("It's empty."),
+        say("Typed answer."),
+    )
+    session, page = await start(rt)
+    stt.stream.say("what is in the file", final=False, turn="maybe")
+    await until(lambda: len(provider.calls) == 1)
+    await finish(session, stt, "what is in the file")
+    await page.until("turn.complete")
+    assert drafts() == ["used"]
+    assert provider.quick == [True, True]  # the draft, then the call after the tool
+    await session._stop_listening()
+    await session.handle({"type": "turn.text", "text": "and now, typed"})
+    await page.until("turn.complete", 2)
+    await idle(session)
+    assert provider.quick == [True, True, False]
+    await session.close()

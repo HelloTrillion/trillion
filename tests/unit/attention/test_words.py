@@ -76,6 +76,7 @@ class Slow:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         await asyncio.sleep(3600)
         yield say("late")[0]

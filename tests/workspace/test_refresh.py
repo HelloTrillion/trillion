@@ -70,6 +70,7 @@ class Filler:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         assert system[0].text == INSTRUCTIONS
         self.calls.append((system, list(messages), len(tools)))

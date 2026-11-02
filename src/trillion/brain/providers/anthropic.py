@@ -8,9 +8,14 @@ Three rules of the current API shape this adapter:
   content is kept as `ProviderRaw` and replayed; `prefix_key` says what it was
   produced under, and a turn produced under anything else is replayed as plain
   text and tool calls instead.
-- **Nothing is forced or tuned.** No `thinking`, effort or sampling parameters
-  are sent, so the request is valid on every current model and each model runs
-  at its own default.
+- **Nothing is forced or tuned, but for a spoken turn.** No sampling parameters
+  are sent, and a typed turn sends no `thinking` or effort either, so each model
+  runs at its own default. A spoken turn (`quick`) is waiting for her first word,
+  so it asks for the least reasoning the model allows (`_QUICK`): thinking off
+  where the model accepts that, else the lowest effort. A model not listed there
+  gets its defaults, since a guess could be refused. Earlier turns' signed
+  reasoning is still replayed unchanged: the API reads or drops it as the
+  current setting needs, and the setting never changes within a turn.
 - **A refusal is a normal response.** It is reported as a stop reason, never
   read as an empty success.
 
@@ -66,6 +71,29 @@ _STOP: dict[str, StopReason] = {
     "max_tokens": "max_tokens",
     "refusal": "refusal",
 }
+# What a spoken turn adds to the request, by model, so her first word comes sooner:
+# thinking off where the model accepts it ("disabled", or Claude Sonnet 5.5's
+# "between_tools", both only at effort high or below, which is their default), and
+# the lowest effort where thinking cannot be turned off. Models that do not think
+# unless asked are not listed: they already answer without it.
+_OFF: dict[str, Any] = {"thinking": {"type": "disabled"}}
+_LOW: dict[str, Any] = {"output_config": {"effort": "low"}}
+_QUICK: dict[str, dict[str, Any]] = {
+    "claude-sonnet-5": _OFF,
+    "claude-sonnet-5-5": {"thinking": {"type": "between_tools"}},
+    "claude-opus-5": _OFF,
+    "claude-haiku-5-5": _OFF,
+    "claude-opus-5-5": _LOW,
+    "claude-fable-5": _LOW,
+    "claude-fable-5-1": _LOW,
+}
+
+
+def quick_params(model: str) -> dict[str, Any]:
+    """What a spoken turn sends on top of the request for this model, if anything."""
+    return _QUICK.get(re.sub(r"-\d{8}$", "", model), {})
+
+
 # US dollars per million tokens, from Anthropic's published first-party rates as of
 # 2026-10-22. A model missing here has no known price, and its cost is reported as
 # unknown rather than guessed. Cache writes bill at 1.25x input.
@@ -277,6 +305,7 @@ class AnthropicProvider:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         key = prefix_key(self.model, system, tools)
         request: dict[str, Any] = {
@@ -289,6 +318,8 @@ class AnthropicProvider:
             "messages": wire_messages(messages, key),
         }
         cache_history(request["messages"])
+        if quick:
+            request.update(quick_params(self.model))
         if tools:
             request["tools"] = [
                 {"name": t.name, "description": t.description, "input_schema": dict(t.input_schema)}

@@ -128,6 +128,7 @@ async def run_turn(
     first: AsyncIterator[ModelEvent] | None = None,
     heard: Callable[[str], str | None] | None = None,
     background: Background | None = None,
+    quick: bool = False,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
@@ -146,7 +147,11 @@ async def run_turn(
     None when the user read it all instead (her voice failed or was muted).
 
     `background`, when given, may take a slow read off the turn: the call is answered
-    at once and its result arrives later, outside this turn."""
+    at once and its result arrives later, outside this turn.
+
+    `quick`, for a spoken turn, asks every model call of the turn for its first word
+    sooner (`ModelProvider.stream`). The same for every call: it never changes
+    within a turn."""
     guard = LoopGuard(limits)
     # Whether she has said anything this turn: after that, a silence is not one.
     spoke = False
@@ -249,7 +254,7 @@ async def run_turn(
             first
             if first is not None
             else provider.stream(
-                system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS
+                system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS, quick=quick
             )
         )
         first = None

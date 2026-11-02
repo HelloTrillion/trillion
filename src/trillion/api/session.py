@@ -2336,6 +2336,10 @@ class Session:
         # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
         # read, and so was one with her voice off (D8).
         listened = speaker is not None and (self._via == "voice" or self._aloud)
+        # A turn answering something said out loud, a nudge after one included, is
+        # waiting for her first word: it asks the model for it sooner. A typed turn
+        # runs at the model's own default.
+        quick = self._via == "voice" or self._aloud
         # What the turn saved of the round it was cut off in, when that was cut to what
         # was heard. Set only by the loop, so the page is told exactly what was kept.
         kept: str | None = None
@@ -2431,6 +2435,7 @@ class Session:
                 save=save,
                 first=using.replay() if using is not None else None,
                 heard=heard if listened else None,
+                quick=quick,
             )
             written = True
             # The model failed: her one sentence for it, spoken if her voice still works
@@ -2803,6 +2808,8 @@ class Session:
             built=built,
             history_len=len(self._history),
             summary=self._summary,
+            # Only ever for words said out loud, as the turn that replays it is.
+            quick=True,
         )
         self._drafted = True
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable
 from typing import Any
@@ -140,7 +141,7 @@ async def test_anthropic_request_and_stream() -> None:
     assert seen["headers"]["x-api-key"] == KEY
     body = seen["body"]
     assert body["model"] == "m1" and body["stream"] is True and body["max_tokens"] == 64000
-    # Nothing is forced or tuned, so the request is valid on every current model.
+    # A typed turn: nothing is forced or tuned, so each model runs at its defaults.
     assert not {"thinking", "temperature", "tool_choice", "output_config"} & set(body)
     # The stable block is marked cacheable (PER-5).
     assert body["system"] == [
@@ -167,6 +168,68 @@ async def test_anthropic_replays_its_own_turn_unchanged() -> None:
     await collect(p, [HISTORY[0], turn, Msg(role="user", blocks=(TextBlock(text="go on"),))])
     assert bodies[1]["messages"][1]["content"] == [dict(b) for b in done.raw.content]
     assert bodies[1]["messages"][0] == bodies[0]["messages"][0]  # earlier turns untouched
+
+
+@pytest.mark.parametrize(
+    ("model", "added"),
+    [
+        # Thinking off where the model accepts it, at its default effort.
+        ("claude-sonnet-5", {"thinking": {"type": "disabled"}}),
+        ("claude-sonnet-5-5", {"thinking": {"type": "between_tools"}}),
+        ("claude-haiku-5-5", {"thinking": {"type": "disabled"}}),
+        # Thinking cannot be turned off: the least effort instead.
+        ("claude-opus-5-5", {"output_config": {"effort": "low"}}),
+        ("claude-fable-5-1", {"output_config": {"effort": "low"}}),
+        # Already answers without thinking, or unknown: its defaults, never a guess.
+        ("claude-opus-4-8", {}),
+        ("m1", {}),
+    ],
+)
+async def test_a_spoken_turn_asks_for_its_first_word_sooner(
+    model: str, added: dict[str, Any]
+) -> None:
+    bodies: list[Any] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return stream_of(ANTHROPIC_STREAM)
+
+    http = anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler))
+    p = AnthropicProvider(api_key=lambda: KEY, model=model, http_client=http)
+    done = (await collect(p, HISTORY[:1]))[-1]
+    assert isinstance(done, Done) and done.raw is not None
+    tuned = {"thinking", "output_config", "temperature"}
+    assert not tuned & set(bodies[0])  # a typed turn: the model's own defaults
+    # Spoken, after a turn that thought: its signed reasoning goes back unchanged, and
+    # the API reads or drops it as the setting needs.
+    turn = Msg(role="assistant", blocks=(TextBlock(text="On it."),), raw=done.raw)
+    stream = p.stream(
+        system=SYSTEM,
+        messages=[HISTORY[0], turn, Msg(role="user", blocks=(TextBlock(text="go on"),))],
+        tools=TOOLS,
+        max_tokens=64,
+        quick=True,
+    )
+    [ev async for ev in stream]
+    assert {k: bodies[1][k] for k in tuned & set(bodies[1])} == added
+    assert bodies[1]["messages"][1]["content"] == [dict(b) for b in done.raw.content]
+    assert bodies[1]["messages"][1]["content"][0]["signature"] == "sig-abc"
+
+
+async def test_an_openai_compatible_server_is_sent_the_same_for_a_spoken_turn() -> None:
+    """These servers share no reasoning setting: `quick` changes nothing."""
+    seen: list[Any] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, content=b"data: [DONE]\n\n")
+
+    p = OpenAICompatProvider(base_url="http://x/v1", model="m", client=client(handler))
+    for quick in (False, True):
+        stream = p.stream(system=SYSTEM, messages=HISTORY, tools=TOOLS, max_tokens=64, quick=quick)
+        with contextlib.suppress(ProviderError):
+            [ev async for ev in stream]
+    assert len(seen) == 2 and seen[0] == seen[1]
 
 
 def test_reasoning_is_replayed_only_while_what_it_was_bound_to_is_unchanged() -> None:

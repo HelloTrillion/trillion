@@ -53,6 +53,8 @@ class ScriptedProvider:
         self._names = names
         self.naming_calls = 0
         self.max_tokens: list[int] = []
+        # Whether each call was a spoken turn's, asking for its first word sooner.
+        self.quick: list[bool] = []
         self.tool_calls: list[Sequence[ToolSchema]] = []
         self._replies = list(replies)
         self._pricing = pricing
@@ -68,6 +70,7 @@ class ScriptedProvider:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         if is_naming(system):
             self.naming_calls += 1
@@ -76,6 +79,7 @@ class ScriptedProvider:
                 yield Done(stop_reason="end", usage=Usage())
                 return
         self.max_tokens.append(max_tokens)
+        self.quick.append(quick)
         self.calls.append((system, list(messages)))
         self.tool_calls.append(list(tools))
         if not self._replies:

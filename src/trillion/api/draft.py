@@ -87,10 +87,11 @@ class Draft:
         built: Any,
         history_len: int,
         summary: Any,
+        quick: bool = False,
     ) -> Draft:
         d = cls(words=words, built=built, history_len=history_len, summary=summary, system=system)
         d.provider = provider
-        d._task = asyncio.create_task(d._run(provider, system, messages, tools))
+        d._task = asyncio.create_task(d._run(provider, system, messages, tools, quick))
         # On the task, not in _run: a task cancelled before it starts never runs _run.
         d._task.add_done_callback(lambda _: d._over())
         return d
@@ -105,10 +106,12 @@ class Draft:
         system: Sequence[SystemBlock],
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
+        quick: bool,
     ) -> None:
         try:
+            # Sent as the confirmed turn would send it, so `quick` too.
             async for ev in provider.stream(
-                system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS
+                system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS, quick=quick
             ):
                 self._events.append(ev)
                 self._more.set()

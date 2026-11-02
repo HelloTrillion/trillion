@@ -107,6 +107,7 @@ async def test_a_failing_or_slow_model_is_none() -> None:
             messages: Sequence[Msg],
             tools: Sequence[ToolSchema],
             max_tokens: int,
+            quick: bool = False,
         ) -> AsyncIterator[ModelEvent]:
             await asyncio.sleep(1)
             yield say("{}")[0]

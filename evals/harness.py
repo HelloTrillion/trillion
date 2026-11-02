@@ -507,12 +507,14 @@ class Recorder:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         turn = not is_naming(system)  # naming a conversation is not a turn
         if turn:
             self.calls.append((list(system), list(messages)))
+        # Passed on, so a spoken case is measured as she would answer it.
         async for ev in self.inner.stream(
-            system=system, messages=messages, tools=tools, max_tokens=max_tokens
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, quick=quick
         ):
             if isinstance(ev, Done):
                 if ev.model:
