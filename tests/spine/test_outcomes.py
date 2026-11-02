@@ -183,6 +183,7 @@ async def test_a_check_that_proves_it_never_went_can_be_asked_again(spine: Spine
     r = await spine.call("scripted", {})
     pid = r.pending_id or ""
     await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
     assert await spine.router.recover((spine.granted,)) == [Settled(id=pid, outcome="not_sent")]
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.INVALIDATED
@@ -312,6 +313,7 @@ async def test_a_file_never_created_can_be_asked_again(spine: Spine) -> None:
     r = await spine.call("file_create", {"path": str(path), "content": "x"})
     pid = r.pending_id or ""
     await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
     assert await spine.router.recover((spine.granted,)) == [Settled(id=pid, outcome="not_sent")]
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.INVALIDATED
@@ -345,3 +347,43 @@ async def test_rechecks_write_one_unchecked_decision(spine: Spine) -> None:
     await spine.router.recover((spine.granted,))
     events = [d.event for d in await spine.store.list_decisions(pid)]
     assert events.count("unchecked") == 1
+
+
+async def test_never_sent_right_after_a_crash_waits(spine: Spine) -> None:
+    """A provider may not show a send at once: a restart seconds later must not take
+    "never went" as the answer."""
+    spine.scripted.reconcile_result = NEVER_WENT
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    assert await spine.router.recover((spine.granted,)) == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    assert await spine.router.check_unchecked() == [Settled(id=pid, outcome="not_sent")]
+
+
+async def test_an_unreachable_check_is_retried_whatever_it_says(spine: Spine) -> None:
+    spine.scripted.reconcile_result = ToolResult(
+        ok=False, content="no answer", effect="none", error_kind=UNREACHABLE
+    )
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    assert await spine.router.recover((spine.granted,)) == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+
+
+async def test_a_never_sent_action_gives_one_card_across_sessions(spine: Spine) -> None:
+    spine.scripted.reconcile_result = NEVER_WENT
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    await spine.router.recover((spine.granted,))
+    first = await spine.router.represent(pid, spine.ctx(session_id="s2", turn=1))
+    assert first.status == "confirmation_required"
+    again = await spine.router.represent(pid, spine.ctx(session_id="s3", turn=1))
+    assert again.status == "refused"

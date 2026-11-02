@@ -61,6 +61,10 @@ class SpineStore(Protocol):
 
     async def list_by_status(self, status: Status) -> list[PendingAction]: ...
 
+    async def list_represented_from(self, pending_id: str) -> list[PendingAction]:
+        """The actions re-presented from this one (SPN-2b)."""
+        ...
+
     async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:
         """Clear the full arguments of actions that settled before the cutoff (#20)."""
         ...

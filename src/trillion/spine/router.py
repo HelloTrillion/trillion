@@ -106,6 +106,18 @@ _STILL_CHECKING = (
     " and will say when it's clear."
 )
 
+# A re-presented copy in one of these is open or has run (`_proved_not_sent`).
+_TAKEN = frozenset(
+    {
+        Status.PROPOSED,
+        Status.APPROVED,
+        Status.EXECUTING,
+        Status.SUCCEEDED,
+        Status.FAILED,
+        Status.UNKNOWN,
+    }
+)
+
 Outcome = Literal["succeeded", "not_sent", "unknown", "interrupted"]
 
 
@@ -667,7 +679,7 @@ class Router:
             # No answer from the provider: it may have gone, or may still be landing.
             # Only proof that it landed settles it now; anything else waits for a recheck.
             found, retry = await self._check(a, ctx.granted_roots)
-            if found is not None and found.effect == "confirmed":
+            if not retry and found is not None and found.effect == "confirmed":
                 await self._settled(a, Status.SUCCEEDED, "succeeded", found)
                 return self._from_record(await self._reload(a))
             if retry or (found is not None and found.effect == "none"):
@@ -765,7 +777,11 @@ class Router:
         if a.status is not Status.INVALIDATED:
             return False
         decisions = await self._store.list_decisions(a.id)
-        return bool(decisions) and decisions[-1].event == "recovered:not_sent"
+        if not decisions or decisions[-1].event != "recovered:not_sent":
+            return False
+        # Only while no copy asked from it is open or has run: one card, one send.
+        copies = await self._store.list_represented_from(a.id)
+        return not any(c.status in _TAKEN for c in copies)
 
     async def recover(self, granted_roots: tuple[Path, ...]) -> list[Settled]:
         """At startup: settle interrupted actions. Never re-runs one (SPN-17a, OPS-1)."""
@@ -828,13 +844,16 @@ class Router:
         """Record what a check found. None: still can't tell, or another caller won."""
         result, retry = await self._check(a, granted)
         now = self._clock()
-        if result is not None and result.effect == "confirmed":
+        if retry:
+            pass  # could not reach the provider: whatever the result says, can't tell
+        elif result is not None and result.effect == "confirmed":
             return await self._settled(a, Status.SUCCEEDED, "succeeded", result)
-        if result is not None and result.effect == "none":
-            quiet = now - (a.updated_at or 0) >= SETTLE_NONE_AFTER_MS
-            if a.effect_status != UNCHECKED or quiet:
+        elif result is not None and result.effect == "none":
+            # The provider may not show a send at once (a search index catching up), so
+            # "never went" counts only once the action has been quiet for a while.
+            if now - (a.updated_at or 0) >= SETTLE_NONE_AFTER_MS:
                 return await self._settled(a, Status.INVALIDATED, "not_sent", result, NOT_SENT)
-            retry = True  # a lost request may still land: ask again later
+            retry = True
         if retry and now < a.created_at + CHECK_FOR_MS:
             await self._mark_unchecked(a)
             return None

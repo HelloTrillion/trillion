@@ -246,6 +246,13 @@ class SqliteSpineStore:
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
 
+    async def list_represented_from(self, pending_id: str) -> list[PendingAction]:
+        async with self._conn.execute(
+            f"{_SELECT_PENDING} WHERE p.represented_from = ?",
+            (pending_id,),
+        ) as cur:
+            return [_row_to_pending(r) for r in await cur.fetchall()]
+
     async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:
         """Clear the full arguments of every action that settled before the cutoff.
 
