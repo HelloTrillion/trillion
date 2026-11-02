@@ -30,11 +30,11 @@ Most of this exists. An approved action is claimed as `executing` before its too
 | `calendar_create` | The event's own `id`: the action id hashed into base32hex (Google allows `a` to `v` and `0` to `9`, 5 to 1024 characters). Google refuses a second event with the same id. | Get the event by that id. Found, even cancelled: `confirmed` (only this action makes that id, so it was added and its guests were told). 404 or 410: `none`. |
 | `calendar_update` | None needed: the change is the evidence. | Get the event. Every field the card named already has the new value: `confirmed`. Otherwise `none`. |
 | `calendar_delete` | None needed. | Get the event. Status `cancelled`, 404 or 410: `confirmed`. Still there: `none`. |
-| `slack_post` | None: Slack has no client-supplied id. | Read the conversation (or the thread) since the approval. A message from the user with exactly the approved text: `confirmed`. Otherwise `none`. |
+| `slack_post` | None: Slack has no client-supplied id. | Read the conversation (or the thread, through `conversations.replies`) since a minute before the proposal, every page of it. A message from the user (their id from `auth.test`) with exactly the approved text, once Slack's `&amp;`, `&lt;` and `&gt;` are turned back: `confirmed`. Otherwise `none`. If there is too much to read (25 pages), `unknown` at once. |
 
 In every check, no answer from the provider (a network error, a timeout, `answered=False`) is `unknown` with `error_kind="unreachable"`, so the check runs again later. An answer of no (403, a revoked sign-in) is also `unknown` and `unreachable`: it says nothing about whether the send happened, and may be fixed by the next check.
 
-A Google server error (5xx) on a send or a calendar change is `unknown`, not `none`: Google may have done it before failing, so the router's lost-answer check runs. A 4xx answer to a write is `none`: Google refused it.
+A Google or Slack server error (a 5xx, or Slack's `internal_error`, `fatal_error`, `service_unavailable` or `request_timeout`) on a send, a post or a calendar change is `unknown`, not `none`: it may have been done before the failure, so the router's lost-answer check runs. A 4xx answer, or Slack's other `ok: false` answers, to a write is `none`: it was refused.
 
 ## The router
 
@@ -57,6 +57,7 @@ A Google server error (5xx) on a send or a calendar change is `unknown`, not `no
   - Not sent: "The email to Sam didn't go out before I stopped. Want me to send it?"
   - Unknown: "I can't tell whether the email to Sam went. Worth a look in your Sent folder."
 - When the user says yes, she finds the action through `decision_record` and calls `represent_pending_action`. The card says what it said before.
+- `represent_pending_action` is new in this change: a meta tool beside `confirm_pending_action` and `cancel_pending_action`, routed to the router's `represent`. It only shows a new card, which needs its own yes; a run nobody watches is refused it. Its description says when to use it (only when the user asks for the action again, its id found in `decision_record`). The persona's prompts are unchanged, so the eval baselines still match.
 
 ## Tests
 
