@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 from tests.spine.conftest import Spine
+from tests.spine.fakes import ScriptedTool
 from trillion.spine.confirm import Status
-from trillion.spine.contract import ToolResult
+from trillion.spine.contract import UNREACHABLE, ToolResult
+from trillion.spine.deny_floor import DenyPolicy
+from trillion.spine.registry import ToolRegistry
+from trillion.spine.router import CHECK_FOR_MS, SETTLE_NONE_AFTER_MS, Router, Settled
 from trillion.spine.store import DecisionIn
 
 
@@ -29,7 +34,7 @@ async def test_1_2_1_crash_mid_execution_is_unknown_and_never_retried(spine: Spi
         decision=DecisionIn(event="executing", decided_by="s1", via="tap"),
     )
     touched = await spine.router.recover((spine.granted,))
-    assert touched == [pid]
+    assert [t.id for t in touched] == [pid]
     after = await spine.store.get_pending(pid)
     assert after is not None and after.status is Status.UNKNOWN
     assert spine.slow.executions == 0
@@ -76,7 +81,7 @@ async def test_recover_invalidates_approved_but_unstarted(spine: Spine) -> None:
         now_ms=spine.clock(),
         decision=DecisionIn(event="approved", decided_by="s1", via="tap"),
     )
-    assert await spine.router.recover((spine.granted,)) == [pid]
+    assert await spine.router.recover((spine.granted,)) == [Settled(id=pid, outcome="interrupted")]
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.INVALIDATED
     assert spine.slow.executions == 0
@@ -84,11 +89,7 @@ async def test_recover_invalidates_approved_but_unstarted(spine: Spine) -> None:
     assert again.status == "confirmation_required"
 
 
-async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
-    """reconcile() can prove an interrupted action landed; its answer is recorded, not rerun."""
-    spine.scripted.reconcile_result = ToolResult(ok=True, content="it landed", effect="confirmed")
-    r = await spine.call("scripted", {})
-    pid = r.pending_id or ""
+async def _to_executing(spine: Spine, pid: str) -> None:
     for old, new in ((Status.PROPOSED, Status.APPROVED), (Status.APPROVED, Status.EXECUTING)):
         await spine.store.transition(
             pid,
@@ -97,6 +98,14 @@ async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
             now_ms=spine.clock(),
             decision=DecisionIn(event=new.value, decided_by="s1", via="tap"),
         )
+
+
+async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
+    """reconcile() can prove an interrupted action landed; its answer is recorded, not rerun."""
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="it landed", effect="confirmed")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
     await spine.router.recover((spine.granted,))
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.SUCCEEDED and a.outcome_detail == "it landed"
@@ -105,19 +114,16 @@ async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
     assert events[-1] == "recovered:succeeded"
 
 
-async def test_recover_when_reconcile_raises_is_unknown(spine: Spine) -> None:
+async def test_recover_when_reconcile_raises_waits_then_is_unknown(spine: Spine) -> None:
     spine.scripted.reconcile_error = RuntimeError("boom")
     r = await spine.call("scripted", {})
     pid = r.pending_id or ""
-    for old, new in ((Status.PROPOSED, Status.APPROVED), (Status.APPROVED, Status.EXECUTING)):
-        await spine.store.transition(
-            pid,
-            old,
-            new,
-            now_ms=spine.clock(),
-            decision=DecisionIn(event=new.value, decided_by="s1", via="tap"),
-        )
+    await _to_executing(spine, pid)
     await spine.router.recover((spine.granted,))
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+    spine.clock.advance(CHECK_FOR_MS)
+    await spine.router.check_unchecked()
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.UNKNOWN and a.effect_status == "unknown"
     assert spine.scripted.executions == 0
@@ -135,3 +141,254 @@ async def test_1_2_4_delivered_at_is_written_once(spine: Spine) -> None:
     assert await spine.store.get_delivery(pid) == first
     assert not await spine.router.mark_delivered(pid, "someone-else", "web")
     assert not await spine.router.mark_delivered("no-such-id", "local", "web")
+
+
+async def test_the_tool_is_given_the_action_id_when_it_runs(spine: Spine) -> None:
+    spine.scripted.result = ToolResult(ok=True, content="done", effect="confirmed")
+    r = await spine.call("scripted", {})
+    await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    assert spine.scripted.seen[-1].action_id == r.pending_id
+    made = await spine.store.get_pending(r.pending_id or "")
+    assert made is not None and spine.scripted.seen[-1].proposed_ms == made.created_at
+
+
+async def test_the_check_is_given_the_action_id(spine: Spine) -> None:
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="landed", effect="confirmed")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    await spine.router.recover((spine.granted,))
+    assert spine.scripted.seen[-1].action_id == pid
+    made = await spine.store.get_pending(pid)
+    # The check knows when the action was proposed, so it looks no earlier.
+    assert made is not None and spine.scripted.seen[-1].proposed_ms == made.created_at
+
+
+async def test_a_direct_call_has_no_action_id(spine: Spine) -> None:
+    ctx = spine.ctx()
+    assert ctx.action_id is None and ctx.proposed_ms is None
+
+
+OFFLINE = ToolResult(ok=False, content="offline", effect="unknown", error_kind=UNREACHABLE)
+NEVER_WENT = ToolResult(ok=True, content="not in Sent", effect="none")
+
+
+async def test_a_check_that_finds_it_settles_as_sent(spine: Spine) -> None:
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="in Sent", effect="confirmed")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    settled = await spine.router.recover((spine.granted,))
+    assert settled == [Settled(id=pid, outcome="succeeded")]
+    assert spine.scripted.executions == 0
+
+
+async def test_a_check_that_proves_it_never_went_can_be_asked_again(spine: Spine) -> None:
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="not in Sent", effect="none")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    assert await spine.router.recover((spine.granted,)) == [Settled(id=pid, outcome="not_sent")]
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.INVALIDATED
+    assert a.outcome_detail == "interrupted before it went out"
+    assert [d.event for d in await spine.store.list_decisions(pid)][-1] == "recovered:not_sent"
+    assert spine.scripted.executions == 0
+    # The session that raised it ended with the crash; any of the owner's may ask again.
+    again = await spine.router.represent(pid, spine.ctx(session_id="s2", turn=1))
+    assert again.status == "confirmation_required"
+
+
+async def test_only_a_proved_not_sent_action_crosses_sessions(spine: Spine) -> None:
+    r = await spine.call("slow_irreversible", {})
+    pid = r.pending_id or ""
+    await spine.store.transition(
+        pid,
+        Status.PROPOSED,
+        Status.APPROVED,
+        now_ms=spine.clock(),
+        decision=DecisionIn(event="approved", decided_by="s1", via="tap"),
+    )
+    await spine.router.recover((spine.granted,))  # approved, never started: invalidated
+    again = await spine.router.represent(pid, spine.ctx(session_id="s2", turn=1))
+    assert again.status == "refused"
+
+
+async def test_a_check_that_cannot_tell_waits_and_tries_again(spine: Spine) -> None:
+    spine.scripted.reconcile_result = OFFLINE
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    assert await spine.router.recover((spine.granted,)) == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+    # Back online ten minutes later.
+    spine.clock.advance(10 * 60 * 1000)
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="in Sent", effect="confirmed")
+    assert await spine.router.check_unchecked() == [Settled(id=pid, outcome="succeeded")]
+
+
+async def test_a_check_that_cannot_tell_for_a_day_is_unknown(spine: Spine) -> None:
+    spine.scripted.reconcile_error = RuntimeError("offline")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    await spine.router.recover((spine.granted,))
+    spine.clock.advance(CHECK_FOR_MS)
+    assert await spine.router.check_unchecked() == [Settled(id=pid, outcome="unknown")]
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.UNKNOWN
+    assert spine.scripted.executions == 0
+
+
+async def test_check_unchecked_leaves_a_running_action_alone(spine: Spine) -> None:
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)  # executing, effect_status still None: running now
+    assert await spine.router.check_unchecked() == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING
+    assert spine.scripted.seen == []
+
+
+async def test_a_lost_answer_is_checked_at_once(spine: Spine) -> None:
+    spine.scripted.result = ToolResult(ok=False, content="timed out", effect="unknown")
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="in Sent", effect="confirmed")
+    r = await spine.call("scripted", {})
+    res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    assert res.status == "succeeded"
+    a = await spine.store.get_pending(r.pending_id or "")
+    assert a is not None and a.status is Status.SUCCEEDED
+    assert spine.scripted.executions == 1
+
+
+async def test_a_lost_answer_that_cannot_be_checked_yet_waits(spine: Spine) -> None:
+    spine.scripted.result = ToolResult(ok=False, content="timed out", effect="unknown")
+    spine.scripted.reconcile_result = OFFLINE
+    r = await spine.call("scripted", {})
+    res = await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    assert res.status == "unknown"
+    assert "checking" in res.detail.lower()
+    a = await spine.store.get_pending(r.pending_id or "")
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+
+
+async def test_a_check_that_can_never_tell_is_unknown_at_once(spine: Spine) -> None:
+    """Only an unreachable provider is tried again; a plain unknown is the answer."""
+    spine.scripted.reconcile_result = ToolResult(ok=False, content="differs", effect="unknown")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    assert await spine.router.recover((spine.granted,)) == [Settled(id=pid, outcome="unknown")]
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.UNKNOWN
+
+
+async def test_a_lost_answer_is_not_settled_as_never_sent_at_once(spine: Spine) -> None:
+    """The lost request may still be landing: "never went" waits for a later check."""
+    spine.scripted.result = ToolResult(ok=False, content="timed out", effect="unknown")
+    spine.scripted.reconcile_result = NEVER_WENT
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    res = await spine.call("confirm_pending_action", {"pending_id": pid}, turn=2)
+    assert res.status == "unknown"
+    assert "checking" in res.detail.lower()
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+
+
+async def test_never_sent_counts_only_once_the_action_is_quiet(spine: Spine) -> None:
+    spine.scripted.result = ToolResult(ok=False, content="timed out", effect="unknown")
+    spine.scripted.reconcile_result = NEVER_WENT
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await spine.call("confirm_pending_action", {"pending_id": pid}, turn=2)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS - 1)
+    assert await spine.router.check_unchecked() == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+    spine.clock.advance(1)
+    assert await spine.router.check_unchecked() == [Settled(id=pid, outcome="not_sent")]
+    assert spine.scripted.executions == 1
+
+
+async def test_a_file_never_created_can_be_asked_again(spine: Spine) -> None:
+    path = spine.granted / "never.txt"
+    r = await spine.call("file_create", {"path": str(path), "content": "x"})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    assert await spine.router.recover((spine.granted,)) == [Settled(id=pid, outcome="not_sent")]
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.INVALIDATED
+    assert not path.exists()
+
+
+async def test_a_check_that_hangs_waits_then_is_unknown(spine: Spine) -> None:
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    hung = ScriptedTool()
+    hung.definition = dataclasses.replace(hung.definition, timeout_s=0.2)
+    hung.reconcile_hang = True
+    registry = ToolRegistry()
+    registry.register(hung)
+    router = Router(registry, spine.store, policy=DenyPolicy.default(), clock=spine.clock)
+    assert await router.recover((spine.granted,)) == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+    spine.clock.advance(CHECK_FOR_MS)
+    assert await router.check_unchecked() == [Settled(id=pid, outcome="unknown")]
+    assert hung.executions == 0
+
+
+async def test_rechecks_write_one_unchecked_decision(spine: Spine) -> None:
+    spine.scripted.reconcile_result = OFFLINE
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    await spine.router.recover((spine.granted,))
+    await spine.router.recover((spine.granted,))
+    events = [d.event for d in await spine.store.list_decisions(pid)]
+    assert events.count("unchecked") == 1
+
+
+async def test_never_sent_right_after_a_crash_waits(spine: Spine) -> None:
+    """A provider may not show a send at once: a restart seconds later must not take
+    "never went" as the answer."""
+    spine.scripted.reconcile_result = NEVER_WENT
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    assert await spine.router.recover((spine.granted,)) == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    assert await spine.router.check_unchecked() == [Settled(id=pid, outcome="not_sent")]
+
+
+async def test_an_unreachable_check_is_retried_whatever_it_says(spine: Spine) -> None:
+    spine.scripted.reconcile_result = ToolResult(
+        ok=False, content="no answer", effect="none", error_kind=UNREACHABLE
+    )
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    assert await spine.router.recover((spine.granted,)) == []
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.EXECUTING and a.effect_status == "unchecked"
+
+
+async def test_a_never_sent_action_gives_one_card_across_sessions(spine: Spine) -> None:
+    spine.scripted.reconcile_result = NEVER_WENT
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    spine.clock.advance(SETTLE_NONE_AFTER_MS)
+    await spine.router.recover((spine.granted,))
+    first = await spine.router.represent(pid, spine.ctx(session_id="s2", turn=1))
+    assert first.status == "confirmation_required"
+    again = await spine.router.represent(pid, spine.ctx(session_id="s3", turn=1))
+    assert again.status == "refused"

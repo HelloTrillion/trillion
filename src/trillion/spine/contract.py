@@ -72,6 +72,13 @@ class ToolContext:
     # A routine's run: the one conversation it may show a board on. Set by the host
     # that starts the run, never from anything the model says.
     routine_target: str | None = None
+    # The approved action this run carries out, set by the router on the confirmed path
+    # and in every check of it. A tool puts it where the provider keeps it, so a check
+    # after a crash can find what was sent (OPS-1). None on the direct path.
+    action_id: str | None = None
+    # When that action was proposed, in epoch milliseconds: a check looks no earlier
+    # than this. None on the direct path.
+    proposed_ms: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -95,6 +102,10 @@ class ToolResult:
     content: str
     effect: Effect
     error_kind: str | None = None
+
+
+# The error_kind a check gives when it could not reach the provider: tried again later (OPS-1).
+UNREACHABLE = "unreachable"
 
 
 @dataclass(frozen=True, kw_only=True)

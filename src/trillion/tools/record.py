@@ -37,6 +37,8 @@ _SKIP = frozenset(
     "the and for was did that this with from file files have has any ever get got "
     "asked ask about into onto your you".split()
 )
+# The decision a check after a crash records when it proved nothing went out.
+NOT_SENT = "recovered:not_sent"
 _WORD = re.compile(r"[^\W_]+(?:[._-][^\W_]+)*")
 
 
@@ -76,6 +78,8 @@ class Record(Protocol):
 
     async def get_delivery(self, pending_id: str) -> DeliveryRow | None: ...
 
+    async def list_represented_from(self, pending_id: str) -> list[PendingAction]: ...
+
 
 class RuleRecord(Protocol):
     async def rule_events(
@@ -87,8 +91,18 @@ def _when(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000).astimezone().strftime("%a %d %b %Y %H:%M")
 
 
+def _state(a: PendingAction, now_ms: int) -> str:
+    if a.status is Status.PROPOSED:
+        return "expired without an answer" if a.expires_at <= now_ms else "waiting for an answer"
+    return _OUTCOME.get(a.status, a.status.value)
+
+
 def describe(
-    a: PendingAction, delivery: DeliveryRow | None, decisions: list[DecisionRow], now_ms: int
+    a: PendingAction,
+    delivery: DeliveryRow | None,
+    decisions: list[DecisionRow],
+    now_ms: int,
+    copies: Sequence[PendingAction] = (),
 ) -> str:
     """One action as a short paragraph of facts, each one read from the record."""
     lines = [f"{a.id}: {a.summary}", f"  asked: {_when(a.created_at)}"]
@@ -113,11 +127,20 @@ def describe(
         outcome = "not answered, and the user has not seen it: its card was never shown"
     elif a.status is Status.PROPOSED:
         outcome = "waiting for an answer"
+    elif a.status is Status.INVALIDATED and decisions and decisions[-1].event == NOT_SENT:
+        # A check after a crash proved it never went (OPS-1): askable again by its id,
+        # unless a copy was already asked for.
+        outcome = (
+            "not sent: nothing went out; it was asked for again, see below"
+            if copies
+            else "not sent: nothing went out, so it can be asked for again with this id"
+        )
     else:
         outcome = _OUTCOME.get(a.status, a.status.value)
     if a.outcome_detail and a.status in (Status.FAILED, Status.UNKNOWN, Status.INVALIDATED):
         outcome += f" ({a.outcome_detail})"
     lines.append(f"  outcome: {outcome}")
+    lines += [f"  asked for again as {c.id}: {_state(c, now_ms)}" for c in copies]
     return "\n".join(lines)
 
 
@@ -210,7 +233,13 @@ class DecisionRecord(BaseTool):
                 effect="none",
             )
         parts = [
-            describe(a, await record.get_delivery(a.id), await record.list_decisions(a.id), now)
+            describe(
+                a,
+                await record.get_delivery(a.id),
+                await record.list_decisions(a.id),
+                now,
+                await record.list_represented_from(a.id),
+            )
             for a in found
         ] + [describe_rule(e) for e in rules]
         return ToolResult(ok=True, content="\n\n".join(parts), effect="none")

@@ -107,6 +107,7 @@ async def test_the_migration_keeps_every_row_and_reference(tmp_path: Path) -> No
         "013_day_conversations",
         "014_routines",
         "015_attention",
+        "016_decision_events",
     ]
     async with conn.execute("PRAGMA foreign_key_check") as cur:
         assert await cur.fetchall() == []

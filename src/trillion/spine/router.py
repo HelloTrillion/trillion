@@ -31,6 +31,8 @@ from trillion.spine.confirm import (
     CANCEL_TOOL,
     CONFIRM_TOOL,
     EXPIRY_MS,
+    META_TOOLS,
+    REPRESENT_TOOL,
     REPRESENTABLE,
     PendingAction,
     Refusal,
@@ -41,6 +43,7 @@ from trillion.spine.confirm import (
 from trillion.spine.contract import (
     GATED,
     JSON,
+    UNREACHABLE,
     ActionSummary,
     Precondition,
     Risk,
@@ -92,6 +95,47 @@ _REFRESH_READS_ONLY = "a refresh only reads"
 # needs nothing from the tools (tests check the names still match).
 REFRESH_NEVER = frozenset({"web_fetch", "describe_self"})
 REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
+# OPS-1: a check that can't reach the provider is tried again for this long after the
+# action was proposed, then the action is `unknown`.
+CHECK_FOR_MS = 24 * 60 * 60 * 1000
+# A "never went" answer about an action already awaiting a check counts only once it
+# has been quiet this long: a request whose answer was lost may still be landing.
+SETTLE_NONE_AFTER_MS = 5 * 60 * 1000
+UNCHECKED = "unchecked"
+NOT_SENT = "interrupted before it went out"
+_STILL_CHECKING = (
+    "No answer came back, so it may or may not have gone. Checking with the provider"
+    " and will say when it's clear."
+)
+
+# A re-presented copy in one of these is open or has run (`_proved_not_sent`).
+_TAKEN = frozenset(
+    {
+        Status.PROPOSED,
+        Status.APPROVED,
+        Status.EXECUTING,
+        Status.SUCCEEDED,
+        Status.FAILED,
+        Status.UNKNOWN,
+    }
+)
+
+Outcome = Literal["succeeded", "not_sent", "unknown", "interrupted"]
+
+
+# The decisions a check records when it left a send in doubt, and how each is told.
+_IN_DOUBT: dict[str, Outcome] = {"recovered:not_sent": "not_sent", "recovered:unknown": "unknown"}
+
+
+@dataclass(frozen=True)
+class Settled:
+    """An interrupted action that a check settled, for telling the user (OPS-1).
+    `interrupted` is an approved action that never started: nothing left the computer."""
+
+    id: str
+    outcome: Outcome
+
+
 _OUTCOME: dict[Status, ResponseStatus] = {
     Status.SUCCEEDED: "succeeded",
     Status.UNKNOWN: "unknown",
@@ -281,6 +325,8 @@ class Router:
         # so nobody approves what they never saw (#4). The running app sets it.
         self._require_delivery = require_delivery
         self._owners: set[str] = set()
+        # The roots `recover` was given, for the later checks that have none of their own.
+        self._granted: tuple[Path, ...] = ()
 
     # ── The normal path ──────────────────────────────────────────────────
 
@@ -306,7 +352,7 @@ class Router:
         ) -> RouterResponse:
             return await self._audit(ctx, start, call.name, h or _UNHASHABLE, risk, decision, r)
 
-        if call.name in (CONFIRM_TOOL.name, CANCEL_TOOL.name):
+        if call.name in META_TOOLS:
             pid = call.args.get("pending_id")
             extra = set(call.args) - {"pending_id"}
             if not isinstance(pid, str) or not pid or extra:
@@ -314,13 +360,16 @@ class Router:
             if ctx.via in _UNWATCHED:
                 # Nobody said yes or no: an unattended run settles no card (D5).
                 return await audited("meta", _refused(Refusal.UNATTENDED, _UNATTENDED))
-            decision: Literal["confirm", "cancel"] = (
-                "confirm" if call.name == CONFIRM_TOOL.name else "cancel"
-            )
             # A tap belongs to one action, not to the turn it happened in: the model can
             # never pass one on. Only the UI's direct `resolve` call carries `via="tap"`.
             if ctx.via == "tap":
                 ctx = dataclasses.replace(ctx, via="text")
+            if call.name == REPRESENT_TOOL.name:
+                # Only ever a new card, waiting for its own yes. It audits itself.
+                return await self.represent(pid, ctx)
+            decision: Literal["confirm", "cancel"] = (
+                "confirm" if call.name == CONFIRM_TOOL.name else "cancel"
+            )
             resolved = await self.resolve(pid, decision, ctx)
             # An approved action that then fails is a failure of its tool, counted like
             # any other (SPN-7): otherwise a proposal that fails every time could be
@@ -633,7 +682,22 @@ class Router:
     async def _execute_claimed(
         self, tool: _Registered, a: PendingAction, ctx: ToolContext
     ) -> RouterResponse:
+        ctx = dataclasses.replace(ctx, action_id=a.id, proposed_ms=a.created_at)
         result = await self._run(tool, a.args, ctx)
+        if result.effect == "unknown":
+            # No answer from the provider: it may have gone, or may still be landing.
+            # Only proof that it landed settles it now; anything else waits for a recheck.
+            found, retry = await self._check(a, ctx.granted_roots)
+            if not retry and found is not None and found.effect == "confirmed":
+                await self._settled(a, Status.SUCCEEDED, "succeeded", found)
+                return self._from_record(await self._reload(a))
+            if retry or (found is not None and found.effect == "none"):
+                await self._mark_unchecked(a)
+                response = self._result_response(
+                    tool, Status.UNKNOWN, result.content, result.error_kind
+                )
+                return dataclasses.replace(response, pending_id=a.id, detail=_STILL_CHECKING)
+            # No check, or one that can never tell: recorded as before.
         status = final_status(result)
         won = await self._move(
             a.id,
@@ -669,11 +733,18 @@ class Router:
         return await self._audit_resolution(a, ctx, start, response, decision="represent")
 
     async def _represent(self, a: PendingAction, ctx: ToolContext, now: int) -> RouterResponse:
-        if a.session_id != ctx.session_id:
+        if a.session_id != ctx.session_id and not await self._proved_not_sent(a):
             return _refused(Refusal.WRONG_SESSION)
         a = await self._expire_if_due(a, now, ctx)
         if a.status not in REPRESENTABLE:
             return _refused(Refusal.NOT_REPRESENTABLE, a.status.value)
+        # One card, one send, in every session: a resumed conversation keeps its id.
+        taken = await self._taken_copy(a, now)
+        if taken is not None:
+            return _refused(
+                Refusal.NOT_REPRESENTABLE,
+                f"already asked for again as {taken.id}, which is {taken.status.value}",
+            )
         if a.args_cleared:
             return _refused(
                 Refusal.NOT_REPRESENTABLE,
@@ -716,9 +787,41 @@ class Router:
             return False
         return await self._store.mark_delivered(pending_id, owner_id, surface, self._clock())
 
-    async def recover(self, granted_roots: tuple[Path, ...]) -> list[str]:
-        """At startup: reconcile interrupted actions. Never re-runs one (SPN-17a)."""
-        touched: list[str] = []
+    async def _proved_not_sent(self, a: PendingAction) -> bool:
+        """A check proved it never went out (OPS-1). The session that raised it ended with
+        the crash, so any of the owner's sessions may ask for a new card."""
+        if a.status is not Status.INVALIDATED:
+            return False
+        decisions = await self._store.list_decisions(a.id)
+        return bool(decisions) and decisions[-1].event == "recovered:not_sent"
+
+    async def _taken_copy(self, a: PendingAction, now: int) -> PendingAction | None:
+        """Another action in `a`'s family (the one it was asked from, up to the first,
+        and every copy asked from any of them) that is open or has run, if any. A card
+        that expired unanswered no longer counts, whatever its row still says."""
+        root, seen = a, {a.id}
+        while root.represented_from is not None and root.represented_from not in seen:
+            up = await self._store.get_pending(root.represented_from)
+            if up is None:
+                break
+            root = up
+            seen.add(root.id)
+        queue, family = [root], {root.id}
+        while queue:
+            m = queue.pop()
+            if m.id != a.id and m.status in _TAKEN:
+                if not (m.status is Status.PROPOSED and m.expires_at <= now):
+                    return m
+            for c in await self._store.list_represented_from(m.id):
+                if c.id not in family:
+                    family.add(c.id)
+                    queue.append(c)
+        return None
+
+    async def recover(self, granted_roots: tuple[Path, ...]) -> list[Settled]:
+        """At startup: settle interrupted actions. Never re-runs one (SPN-17a, OPS-1)."""
+        self._granted = granted_roots
+        settled: list[Settled] = []
         for a in await self._store.list_by_status(Status.APPROVED):
             await self._move(
                 a.id,
@@ -727,34 +830,107 @@ class Router:
                 _system("interrupted"),
                 detail="interrupted before it ran; ask again",
             )
-            touched.append(a.id)
+            settled.append(Settled(id=a.id, outcome="interrupted"))
         for a in await self._store.list_by_status(Status.EXECUTING):
-            ctx = ToolContext(
-                owner_id=a.owner_id,
-                session_id=a.session_id,
-                turn=a.created_turn,
-                call_id=f"recover-{a.id}",
-                via="text",
-                granted_roots=granted_roots,
-            )
-            tool = self._get(a.tool)
-            result: ToolResult | None = None
-            if tool is not None:
-                try:
-                    result = await tool.reconcile(a.args, ctx)
-                except Exception as e:  # reconcile is best-effort by contract
-                    logger.warning("reconcile of %s raised %s", a.id, type(e).__name__)
-            status = final_status(result) if result is not None else Status.UNKNOWN
-            await self._move(
-                a.id,
-                Status.EXECUTING,
-                status,
-                _system(f"recovered:{status.value}"),
-                effect=result.effect if result else "unknown",
-                detail=result.content[:_DETAIL_LIMIT] if result else "interrupted mid-run",
-            )
-            touched.append(a.id)
-        return touched
+            done = await self._settle(a, granted_roots)
+            if done is not None:
+                settled.append(done)
+        return settled
+
+    async def in_doubt(self, since_ms: int) -> list[Settled]:
+        """Each send settled since `since_ms` as never sent or unknown, and still so: not
+        asked for again since. For telling the user when a notice may have been lost."""
+        found: list[Settled] = []
+        rows = await self._store.last_decisions_since(list(_IN_DOUBT), since_ms)
+        for d in rows:
+            if await self._store.list_represented_from(d.pending_id):
+                continue  # asked for again: the user knows
+            found.append(Settled(id=d.pending_id, outcome=_IN_DOUBT[d.event]))
+        return found
+
+    async def check_unchecked(self) -> list[Settled]:
+        """Check again each action whose last check could not reach the provider."""
+        settled: list[Settled] = []
+        for a in await self._store.list_by_status(Status.EXECUTING):
+            if a.effect_status != UNCHECKED:
+                continue  # running now
+            done = await self._settle(a, self._granted)
+            if done is not None:
+                settled.append(done)
+        return settled
+
+    async def _check(
+        self, a: PendingAction, granted: tuple[Path, ...]
+    ) -> tuple[ToolResult | None, bool]:
+        """Ask the tool what happened to `a`. The flag says to try again later: the check
+        could not reach the provider (it said so, raised, or timed out)."""
+        ctx = ToolContext(
+            owner_id=a.owner_id,
+            session_id=a.session_id,
+            turn=a.created_turn,
+            call_id=f"recover-{a.id}",
+            via="text",
+            granted_roots=granted,
+            action_id=a.id,
+            proposed_ms=a.created_at,
+        )
+        tool = self._get(a.tool)
+        if tool is None:
+            return None, False
+        try:
+            # Bounded like a run: a confirm waits on this check when the answer was lost.
+            limit = tool.definition.timeout_s
+            result = await asyncio.wait_for(tool.reconcile(a.args, ctx), limit)
+        except Exception as e:  # a check is best-effort by contract; a timeout is "can't tell"
+            logger.warning("reconcile of %s raised %s", a.id, type(e).__name__)
+            return None, True
+        unreachable = result is not None and result.error_kind == UNREACHABLE
+        return result, unreachable
+
+    async def _settle(self, a: PendingAction, granted: tuple[Path, ...]) -> Settled | None:
+        """Record what a check found. None: still can't tell, or another caller won."""
+        result, retry = await self._check(a, granted)
+        now = self._clock()
+        if retry:
+            pass  # could not reach the provider: whatever the result says, can't tell
+        elif result is not None and result.effect == "confirmed":
+            return await self._settled(a, Status.SUCCEEDED, "succeeded", result)
+        elif result is not None and result.effect == "none":
+            # The provider may not show a send at once (a search index catching up), so
+            # "never went" counts only once the action has been quiet for a while.
+            if now - (a.updated_at or 0) >= SETTLE_NONE_AFTER_MS:
+                return await self._settled(a, Status.INVALIDATED, "not_sent", result, NOT_SENT)
+            retry = True
+        if retry and now < a.created_at + CHECK_FOR_MS:
+            await self._mark_unchecked(a)
+            return None
+        return await self._settled(a, Status.UNKNOWN, "unknown", result)
+
+    async def _mark_unchecked(self, a: PendingAction) -> None:
+        """Leave `a` executing, to be checked again. Through the one writer, once."""
+        if a.effect_status == UNCHECKED:
+            return
+        await self._move(
+            a.id, Status.EXECUTING, Status.EXECUTING, _system(UNCHECKED), effect=UNCHECKED
+        )
+
+    async def _settled(
+        self,
+        a: PendingAction,
+        status: Status,
+        outcome: Outcome,
+        result: ToolResult | None,
+        detail: str | None = None,
+    ) -> Settled | None:
+        won = await self._move(
+            a.id,
+            Status.EXECUTING,
+            status,
+            _system(f"recovered:{outcome}"),
+            effect=result.effect if result else "unknown",
+            detail=detail or (result.content[:_DETAIL_LIMIT] if result else "interrupted mid-run"),
+        )
+        return Settled(id=a.id, outcome=outcome) if won else None
 
     # ── Helpers ──────────────────────────────────────────────────────────
 

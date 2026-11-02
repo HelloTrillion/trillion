@@ -64,6 +64,7 @@ def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
             str(r["precondition_token"]) if r["precondition_token"] is not None else None
         ),
         args_cleared=cleared,
+        updated_at=int(r["updated_at"]),
     )
 
 
@@ -245,6 +246,13 @@ class SqliteSpineStore:
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
 
+    async def list_represented_from(self, pending_id: str) -> list[PendingAction]:
+        async with self._conn.execute(
+            f"{_SELECT_PENDING} WHERE p.represented_from = ?",
+            (pending_id,),
+        ) as cur:
+            return [_row_to_pending(r) for r in await cur.fetchall()]
+
     async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:
         """Clear the full arguments of every action that settled before the cutoff.
 
@@ -281,6 +289,27 @@ class SqliteSpineStore:
             (owner_id, since_ms, *patterns, limit),
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
+
+    async def last_decisions_since(self, events: Sequence[str], since_ms: int) -> list[DecisionRow]:
+        # One placeholder per event: the statement's text never holds a value.
+        marks = ", ".join("?" for _ in events)
+        async with self._conn.execute(
+            "SELECT d.pending_id, d.event, d.decided_by, d.via, d.at FROM decisions d"  # noqa: S608
+            f" WHERE d.event IN ({marks}) AND d.at >= ? AND d.id ="
+            " (SELECT MAX(id) FROM decisions WHERE pending_id = d.pending_id) ORDER BY d.id",
+            (*events, since_ms),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [
+                DecisionRow(
+                    pending_id=str(r["pending_id"]),
+                    event=str(r["event"]),
+                    decided_by=str(r["decided_by"]),
+                    via=str(r["via"]),
+                    at=int(r["at"]),
+                )
+                for r in rows
+            ]
 
     async def list_decisions(self, pending_id: str) -> list[DecisionRow]:
         async with self._conn.execute(

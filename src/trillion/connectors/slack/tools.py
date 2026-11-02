@@ -7,14 +7,18 @@ the exact text. What Slack returns was written by other people and is untrusted.
 
 from __future__ import annotations
 
+import html
+import re
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from trillion.connectors.slack.client import Slack, SlackError
+from trillion.connectors.slack.client import SERVER_SIDE, Slack, SlackError
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,
+    UNREACHABLE,
     ActionSummary,
     BaseTool,
     Precondition,
@@ -26,6 +30,8 @@ from trillion.spine.contract import (
 
 CATEGORY = "slack"
 MAX_TEXT = 20_000
+# Pages of a conversation a check reads before it gives up (200 messages each).
+MAX_PAGES = 25
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -36,6 +42,39 @@ class Wiring:
 
 class _Problem(Exception):
     pass
+
+
+_MARK = re.compile(r"<([^<>]*)>")
+_SPECIAL = {"!here": "@here", "!channel": "@channel", "!everyone": "@everyone"}
+
+
+def _shown(mark: re.Match[str]) -> str:
+    target, _, label = mark.group(1).partition("|")
+    if target in _SPECIAL:
+        return _SPECIAL[target]
+    if target.startswith(("@", "!subteam")):
+        return label or "@" + target.lstrip("@!")
+    if target.startswith("#"):
+        return "#" + label if label else target
+    return label or target.removeprefix("mailto:")
+
+
+def visible(text: str) -> str:
+    """Slack's stored text as the person wrote it: its link, mention and @here marks
+    read as their visible words, entities turned back, spaces collapsed. Run on both
+    sides of a comparison, so what she approved and what Slack kept meet."""
+    return " ".join(html.unescape(_MARK.sub(_shown, text)).split())
+
+
+def _gist(text: str) -> str:
+    """Only the words: no links, mentions or punctuation, lower case."""
+    text = re.sub(r"https?://\S+|[@#]\S+", " ", visible(text))
+    return re.sub(r"[^0-9a-z]+", "", text.lower())
+
+
+def _alike(a: str, b: str) -> bool:
+    x, y = _gist(a), _gist(b)
+    return x == y or (bool(x) and bool(y) and (x in y or y in x))
 
 
 def _one_line(text: Any, limit: int = 200) -> str:
@@ -100,14 +139,24 @@ class SlackTool(BaseTool):
         except _Problem as e:
             return ToolResult(ok=False, content=str(e), effect="none", error_kind="refused")
         except SlackError as e:
+            # Slack answered no: nothing happened. Silence is not an answer, and nor is
+            # Slack's own failure on a post: it may have gone, so the router checks.
+            maybe = not e.answered or (e.kind in SERVER_SIDE and self.native is not Risk.READ)
             return ToolResult(
                 ok=False,
                 content=str(e),
-                effect="none" if e.answered else "unknown",
+                effect="unknown" if maybe else "none",
                 error_kind=e.kind,
             )
         out = text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + "\n[cut]"
         return ToolResult(ok=True, content=out or "(nothing)", effect="confirmed")
+
+    async def me(self, token: str) -> str:
+        """The user's own Slack id: the person the token acts as."""
+        user = str((await self.w.slack.call(token, "auth.test")).get("user_id") or "")
+        if not user:
+            raise _Problem("Slack did not say who you are")
+        return user
 
     async def find(self, token: str, wanted: str) -> tuple[str, str]:
         """A conversation's id and the name Slack shows for it, from "#name" or an id."""
@@ -299,6 +348,69 @@ class SlackPost(SlackTool):
             body["thread_ts"] = str(args["thread_ts"])
         sent = await self.w.slack.call(token, "chat.postMessage", body, post=True)
         return f"Posted in {shown} (ts {sent.get('ts', '')})."
+
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        """Did this approved post go out? Slack has no id a client can give a message,
+        so the evidence is the exact approved text from the user in that conversation
+        since the action was proposed (OPS-1)."""
+        if not ctx.action_id:
+            return None
+        # A minute before the proposal, for clocks; the last day if it isn't known.
+        since = (
+            ctx.proposed_ms // 1000 - 60
+            if ctx.proposed_ms is not None
+            else int(time.time()) - 86_400
+        )
+        text = str(args["text"])
+        # What she approved may hold Slack marks of its own, or plain < and > that Slack
+        # keeps as entities: either reading counts.
+        wanted = {visible(text), " ".join(text.split())}
+        alike = False
+        try:
+            token = self.token()
+            cid, _ = await self.find(token, str(args["channel"]))
+            me = await self.me(token)
+            method, params = (
+                ("conversations.replies", {"ts": str(args["thread_ts"])})
+                if args.get("thread_ts")
+                else ("conversations.history", {})
+            )
+            cursor = ""
+            for _ in range(MAX_PAGES):
+                page = await self.w.slack.call(
+                    token,
+                    method,
+                    {
+                        "channel": cid,
+                        "oldest": str(since),
+                        "limit": 200,
+                        **params,
+                        **({"cursor": cursor} if cursor else {}),
+                    },
+                )
+                for m in page.get("messages", []):
+                    if m.get("user") != me:
+                        continue
+                    said = str(m.get("text", ""))
+                    if visible(said) in wanted:
+                        return ToolResult(ok=True, content="Found it in Slack.", effect="confirmed")
+                    # Like it, or since edited: it may be this post, so lean toward "it went".
+                    alike = alike or _alike(said, text) or bool(m.get("edited"))
+                cursor = (page.get("response_metadata") or {}).get("next_cursor", "")
+                if not cursor:
+                    break
+            else:
+                # Too much said since to read it all: asking again won't help.
+                return ToolResult(ok=False, content="Too many messages to check.", effect="unknown")
+        except (_Problem, SlackError) as e:
+            # No answer, or an answer of no: neither says whether it went.
+            return ToolResult(ok=False, content=str(e), effect="unknown", error_kind=UNREACHABLE)
+        if alike:
+            # Settled at once as unknown: she says she can't tell and never offers it again.
+            return ToolResult(
+                ok=False, content="A post like it is there; it may be this one.", effect="unknown"
+            )
+        return ToolResult(ok=True, content="Not in Slack: it never went.", effect="none")
 
 
 TOOLS: tuple[type[SlackTool], ...] = (SlackSearch, SlackConversations, SlackRead, SlackPost)

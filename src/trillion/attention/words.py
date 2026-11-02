@@ -87,15 +87,25 @@ async def line(
 ) -> tuple[str | None, Usage]:
     """One spoken line for `finds`, or None, and what the call used: every paid call is
     recorded (BRN-4), even one whose answer is not kept."""
+    return await ask(
+        provider, INSTRUCTIONS, body(watcher, finds, notes), f"attention {watcher}", timeout_s
+    )
+
+
+async def ask(
+    provider: ModelProvider, instructions: str, shown: str, what: str, timeout_s: float = TIMEOUT_S
+) -> tuple[str | None, Usage]:
+    """One small call, no tools: its answer as one line (`clean`), or None on a failure,
+    a timeout or an answer cut off at the token limit. `what` names it in the log."""
     text: list[str] = []
     usage = Usage()
     cut = False
 
-    async def ask() -> None:
+    async def run() -> None:
         nonlocal usage, cut
         async for ev in provider.stream(
-            system=[SystemBlock(text=INSTRUCTIONS, cache=False)],
-            messages=[Msg(role="user", blocks=(TextBlock(text=body(watcher, finds, notes)),))],
+            system=[SystemBlock(text=instructions, cache=False)],
+            messages=[Msg(role="user", blocks=(TextBlock(text=shown),))],
             tools=[],
             max_tokens=LINE_TOKENS,
         ):
@@ -106,11 +116,11 @@ async def line(
                 cut = cut or ev.stop_reason == "max_tokens"
 
     try:
-        await asyncio.wait_for(ask(), timeout_s)
+        await asyncio.wait_for(run(), timeout_s)
     except Exception as e:
-        logger.info("attention %s: no line: %s", watcher, type(e).__name__)
+        logger.info("%s: no line: %s", what, type(e).__name__)
         return None, usage
     if cut:
-        logger.info("attention %s: no line: cut off at the token limit", watcher)
+        logger.info("%s: no line: cut off at the token limit", what)
         return None, usage
     return clean("".join(text)), usage

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from email import message_from_bytes
@@ -43,7 +44,18 @@ class FakeGoogle:
         self.expires_in = 3600
         self.revoked: list[str] = []
         self.access_n = 0
-        self.events = {
+        # What Gmail sent, for a search of Sent; `rewrite` stands for Gmail replacing
+        # the Message-ID header. `down`: Google can't be reached. `refuse`: it answers
+        # every Gmail and Calendar call with this error status.
+        self.sent: list[dict[str, Any]] = []
+        self.rewrite = False
+        self.down = False
+        self.refuse: int | None = None
+        # An error status Gmail answers a send with; a 5xx after storing the email.
+        self.send_fails: int | None = None
+        # Event ids Google answers 410 Gone for.
+        self.gone: set[str] = set()
+        self.events: dict[str, dict[str, Any]] = {
             "ev1": {
                 "id": "ev1",
                 "summary": "Lunch with Sam",
@@ -89,7 +101,16 @@ class FakeGoogle:
             self.revoked.append(form["token"][0])
             return httpx.Response(200)
         assert request.headers["authorization"].startswith("Bearer at")
+        if path.startswith(("/gmail", "/calendar")):
+            if self.down:
+                raise httpx.ConnectError("down")
+            if self.refuse:
+                return httpx.Response(self.refuse, json={"error": {"code": self.refuse}})
         if path == "/gmail/v1/users/me/messages":
+            q = str(url.params.get("q", ""))
+            if "in:sent" in q:
+                trash = url.params.get("includeSpamTrash") == "true"
+                return httpx.Response(200, json={"messages": self.search_sent(q, trash)})
             return httpx.Response(200, json={"messages": [{"id": "m1"}]})
         if path == "/gmail/v1/users/me/messages/m1":
             text = base64.urlsafe_b64encode(
@@ -113,7 +134,22 @@ class FakeGoogle:
                 },
             )
         if path == "/gmail/v1/users/me/messages/send":
-            return httpx.Response(200, json={"id": "sent1"})
+            msg = message_from_bytes(base64.urlsafe_b64decode((body or {})["raw"]))
+            if self.send_fails and self.send_fails < 500:
+                return httpx.Response(self.send_fails, json={"error": {"code": self.send_fails}})
+            self.sent.append(
+                {
+                    "id": f"s{len(self.sent)}",
+                    "message_id": "<other@mail.example.com>" if self.rewrite else msg["Message-ID"],
+                    "to": msg["To"],
+                    "subject": msg["Subject"],
+                    "time": int(time.time()),
+                    "trashed": False,
+                }
+            )
+            if self.send_fails:
+                return httpx.Response(self.send_fails, json={"error": {"code": self.send_fails}})
+            return httpx.Response(200, json={"id": self.sent[-1]["id"]})
         if path == "/gmail/v1/users/me/drafts":
             return httpx.Response(200, json={"id": "d1"})
         if path == "/calendar/v3/calendars/primary/events" and request.method == "GET":
@@ -121,14 +157,31 @@ class FakeGoogle:
                 200, json={"timeZone": "America/Los_Angeles", "items": list(self.events.values())}
             )
         if path == "/calendar/v3/calendars/primary/events" and request.method == "POST":
-            return httpx.Response(200, json={"id": "new", **(body or {})})
+            made = dict(body or {})
+            eid = str(made.get("id") or f"new{len(self.events)}")
+            if eid in self.events:
+                return httpx.Response(
+                    409,
+                    json={
+                        "error": {
+                            "code": 409,
+                            "message": "The requested identifier already exists.",
+                        }
+                    },
+                )
+            self.events[eid] = {**made, "id": eid, "status": "confirmed"}
+            return httpx.Response(200, json=self.events[eid])
         if path.startswith("/calendar/v3/calendars/primary/events/"):
             eid = path.rsplit("/", 1)[1]
+            if eid in self.gone:
+                return httpx.Response(410, json={"error": {"errors": [{"reason": "deleted"}]}})
             if eid not in self.events:
                 return httpx.Response(404, json={"error": {"errors": [{"reason": "notFound"}]}})
             if request.method == "DELETE":
-                self.events.pop(eid)
+                self.events[eid]["status"] = "cancelled"
                 return httpx.Response(204)
+            if request.method == "PATCH":
+                self.events[eid].update(body or {})
             return httpx.Response(200, json=self.events[eid])
         if path == "/calendar/v3/freeBusy":
             return httpx.Response(
@@ -154,6 +207,25 @@ class FakeGoogle:
         if path == "/drive/v3/files/f1/export":
             return httpx.Response(200, text="The plan, as text.")
         return httpx.Response(404, json={})
+
+    def search_sent(self, q: str, trash: bool) -> list[dict[str, str]]:
+        """Sent mail matching `q`, as Gmail would: trashed mail only with `trash`."""
+        sent = [m for m in self.sent if trash or not m.get("trashed")]
+        tag = re.search(r"rfc822msgid:(\S+)", q)
+        if tag:
+            want = tag.group(1)
+            return [{"id": m["id"]} for m in sent if str(m["message_id"]).strip("<>") == want]
+        to = re.findall(r'to:"([^"]+)"', q)
+        subject = re.search(r'subject:"([^"]*)"', q)
+        after = re.search(r"after:(\d+)", q)
+        assert to and (after or "newer_than:" in q), q
+        return [
+            {"id": m["id"]}
+            for m in sent
+            if all(a in str(m["to"]) for a in to)
+            and (subject is None or m["subject"] == subject.group(1))
+            and (after is None or int(m.get("time", time.time())) > int(after.group(1)))
+        ]
 
 
 @pytest.fixture
@@ -319,6 +391,164 @@ async def test_a_bad_address_or_a_two_line_subject_is_refused_before_asking(
         assert r.status in ("refused", "failed"), args
 
 
+# ── Sent once, checked after a crash (OPS-1) ─────────────────────────────
+
+MAIL = {"to": ["sam@example.com"], "subject": "Lunch", "body": "Tomorrow at noon?"}
+
+
+async def test_a_sent_email_carries_the_action_id(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    r = await spine.call("gmail_send", MAIL)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "succeeded"
+    sent = next(c for c in fake.calls if c[1].endswith("/messages/send"))[2]
+    msg = message_from_bytes(base64.urlsafe_b64decode(sent["raw"]))
+    assert msg.get_all("Message-ID") == [f"<trillion-{r.pending_id}@example.com>"]
+
+
+async def test_the_check_finds_a_sent_email(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    r = await spine.call("gmail_send", MAIL)
+    await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    result = await tool.reconcile(MAIL, spine.ctx(action_id=r.pending_id))
+    assert result is not None and result.effect == "confirmed"
+    q = next(c for c in fake.calls if "rfc822msgid" in str(c[2].get("q", "")))[2]["q"]
+    assert q == f"in:sent rfc822msgid:trillion-{r.pending_id}@example.com"
+
+
+async def test_the_check_finds_nothing_when_it_never_went(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    result = await tool.reconcile(MAIL, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "none"
+    # An email that did go, to someone else, is not this one.
+    fake.sent.append(_sent(to="kim@example.com"))
+    result = await tool.reconcile(MAIL, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "none"
+    # No action id: this tool has nothing to look for.
+    assert await tool.reconcile(MAIL, spine.ctx()) is None
+
+
+async def test_the_check_falls_back_to_recipients_and_subject(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    fake.rewrite = True  # Gmail replaced the Message-ID
+    r = await spine.call("gmail_send", MAIL)
+    await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    result = await tool.reconcile(MAIL, spine.ctx(action_id=r.pending_id))
+    assert result is not None and result.effect == "confirmed"
+
+
+def _sent(**kw: Any) -> dict[str, Any]:
+    """An email already in the fake's Sent."""
+    return {
+        "id": f"s{kw.get('n', 9)}",
+        "message_id": "<x@example.com>",
+        "to": "sam@example.com",
+        "subject": "Lunch",
+        "time": int(time.time()),
+        "trashed": False,
+        **kw,
+    }
+
+
+async def test_the_fallback_looks_no_earlier_than_the_proposal(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    now_ms = int(time.time() * 1000)
+    # The same email sent an hour before this one was proposed is not this one.
+    fake.sent.append(_sent(time=now_ms // 1000 - 3600))
+    ctx = spine.ctx(action_id="a" * 32, proposed_ms=now_ms)
+    result = await tool.reconcile(MAIL, ctx)
+    assert result is not None and result.effect == "none"
+    q = [c[2]["q"] for c in fake.calls if "to:" in str(c[2].get("q", ""))][-1]
+    assert f"after:{now_ms // 1000 - 60}" in q and "newer_than" not in q
+    assert 'to:"sam@example.com"' in q
+    fake.sent.append(_sent(n=10))
+    result = await tool.reconcile(MAIL, ctx)
+    assert result is not None and result.effect == "confirmed"
+
+
+async def test_a_sent_email_since_deleted_still_went(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    pid = "b" * 32
+    fake.sent.append(_sent(message_id=f"<trillion-{pid}@example.com>", trashed=True))
+    result = await tool.reconcile(MAIL, spine.ctx(action_id=pid))
+    assert result is not None and result.effect == "confirmed"
+
+
+async def test_a_subject_with_no_words_is_left_out_of_the_fallback(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    fake.sent.append(_sent(subject="something else"))
+    args = {**MAIL, "subject": "?!"}
+    result = await tool.reconcile(args, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "confirmed"  # errs toward "it went"
+    q = [c[2]["q"] for c in fake.calls if "to:" in str(c[2].get("q", ""))][-1]
+    assert "subject:" not in q
+
+
+async def test_google_failing_on_its_side_during_a_send_is_checked(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    fake.send_fails = 503  # the email went, then Google's answer failed
+    r = await spine.call("gmail_send", MAIL)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert len(fake.sent) == 1
+    assert any("rfc822msgid" in str(c[2].get("q", "")) for c in fake.calls)  # it checked
+    assert done.status == "succeeded"
+
+
+async def test_google_refusing_a_send_is_a_plain_failure(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "gmail")
+    fake.send_fails = 400
+    r = await spine.call("gmail_send", MAIL)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "failed" and not fake.sent
+    assert not any("in:sent" in str(c[2].get("q", "")) for c in fake.calls)  # no check
+
+
+@pytest.mark.parametrize("trouble", ["down", 403, 500])
+async def test_the_check_cannot_tell_when_google_does_not_say(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle, trouble: object
+) -> None:
+    await connect(google, "gmail")
+    tool = spine.registry.get("gmail_send")
+    assert tool is not None
+    if trouble == "down":
+        fake.down = True
+    else:
+        fake.refuse = int(trouble)  # type: ignore[call-overload]
+    result = await tool.reconcile(MAIL, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "unknown"
+    assert result.error_kind == "unreachable"  # so the router asks again later
+
+
 # ── Calendar ─────────────────────────────────────────────────────────────
 
 
@@ -333,7 +563,7 @@ async def test_an_event_is_changed_only_under_its_real_title(
     done = await spine.router.resolve(
         right.pending_id or "", "confirm", spine.ctx(turn=2, via="tap")
     )
-    assert done.status == "succeeded" and "ev1" not in fake.events
+    assert done.status == "succeeded" and fake.events["ev1"]["status"] == "cancelled"
 
 
 async def test_a_new_event_needs_a_time_zone_and_says_who_is_invited(
@@ -360,6 +590,149 @@ async def test_a_new_event_needs_a_time_zone_and_says_who_is_invited(
     assert done.status == "succeeded"
     made = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/events"))[2]
     assert made["attendees"] == [{"email": "sam@example.com"}]
+
+
+# ── Calendar changes, checked after a crash (OPS-1) ──────────────────────
+
+EVENT = {"title": "Call", "start": "2026-10-24T09:00:00-07:00", "end": "2026-10-24T09:30:00-07:00"}
+
+
+def test_event_ids_from_an_action_are_valid_and_stable() -> None:
+    from trillion.connectors.google.tools import event_id
+
+    a = event_id("pa_01HXYZ")
+    assert a == event_id("pa_01HXYZ") and a != event_id("pa_01HXZZ")
+    assert 5 <= len(a) <= 1024 and set(a) <= set("abcdefghijklmnopqrstuv0123456789")
+    assert set(event_id("a" * 32)) <= set("abcdefghijklmnopqrstuv0123456789")
+
+
+async def test_a_new_event_carries_the_action_id(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    from trillion.connectors.google.tools import event_id
+
+    await connect(google, "calendar")
+    r = await spine.call("calendar_create", EVENT)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "succeeded"
+    made = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/events"))[2]
+    assert made["id"] == event_id(r.pending_id or "")
+
+
+async def test_an_approved_event_cannot_be_added_twice(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_create")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    assert (await tool.execute(EVENT, ctx)).ok
+    before = dict(fake.events)
+    again = await tool.execute(EVENT, ctx)
+    assert not again.ok and fake.events == before  # Google refused the same id
+
+
+async def test_the_create_check(spine: Spine, google: GoogleConnection, fake: FakeGoogle) -> None:
+    from trillion.connectors.google.tools import event_id
+
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_create")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    assert await tool.reconcile(EVENT, spine.ctx()) is None
+    absent = await tool.reconcile(EVENT, ctx)
+    assert absent is not None and absent.effect == "none"
+    await tool.execute(EVENT, ctx)
+    present = await tool.reconcile(EVENT, ctx)
+    assert present is not None and present.effect == "confirmed"
+    # Made, then cancelled by the user: it still went (the guests were told).
+    fake.events[event_id("a" * 32)]["status"] = "cancelled"
+    cancelled = await tool.reconcile(EVENT, ctx)
+    assert cancelled is not None and cancelled.effect == "confirmed"
+
+
+@pytest.mark.parametrize("trouble", ["down", 403, 500])
+@pytest.mark.parametrize("name", ["calendar_create", "calendar_update", "calendar_delete"])
+async def test_a_calendar_check_cannot_tell_when_google_does_not_say(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle, trouble: object, name: str
+) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get(name)
+    assert tool is not None
+    if trouble == "down":
+        fake.down = True
+    else:
+        fake.refuse = int(trouble)  # type: ignore[call-overload]
+    args = EVENT if name == "calendar_create" else {"event_id": "ev1", "title": "Lunch with Sam"}
+    result = await tool.reconcile(args, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "unknown"
+    assert result.error_kind == "unreachable"
+
+
+async def test_the_update_check(spine: Spine, google: GoogleConnection, fake: FakeGoogle) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_update")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    args = {
+        "event_id": "ev1",
+        "title": "Lunch with Sam",
+        "new_title": "Lunch with Kim",
+        # The same moment Google gives back in UTC.
+        "start": "2026-10-23T12:30:00-07:00",
+        "guests": ["kim@example.com"],
+        "location": "Cafe",
+    }
+    old = await tool.reconcile(args, ctx)
+    assert old is not None and old.effect == "none"
+    fake.events["ev1"].update(
+        {
+            "summary": "Lunch with Kim",
+            "start": {"dateTime": "2026-10-23T19:30:00Z"},
+            "attendees": [
+                {"email": "Kim@example.com"},
+                {"email": EMAIL, "self": True, "organizer": True},
+            ],
+            "location": "Cafe",
+        }
+    )
+    landed = await tool.reconcile(args, ctx)
+    assert landed is not None and landed.effect == "confirmed"
+    fake.gone.add("ev1")
+    gone = await tool.reconcile(args, ctx)
+    assert gone is not None and gone.effect == "none"
+
+
+async def test_an_update_through_the_card_checks_as_landed(
+    spine: Spine, google: GoogleConnection
+) -> None:
+    await connect(google, "calendar")
+    args = {"event_id": "ev1", "title": "Lunch with Sam", "end": "2026-10-23T13:30:00-07:00"}
+    r = await spine.call("calendar_update", args)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "succeeded"
+    tool = spine.registry.get("calendar_update")
+    assert tool is not None
+    result = await tool.reconcile(args, spine.ctx(action_id=r.pending_id))
+    assert result is not None and result.effect == "confirmed"
+
+
+async def test_the_delete_check(spine: Spine, google: GoogleConnection, fake: FakeGoogle) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_delete")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    args = {"event_id": "ev1", "title": "Lunch with Sam"}
+    there = await tool.reconcile(args, ctx)
+    assert there is not None and there.effect == "none"
+    fake.events["ev1"]["status"] = "cancelled"
+    cancelled = await tool.reconcile(args, ctx)
+    assert cancelled is not None and cancelled.effect == "confirmed"
+    fake.gone.add("ev1")
+    gone = await tool.reconcile(args, ctx)
+    assert gone is not None and gone.effect == "confirmed"
+    missing = await tool.reconcile({"event_id": "nope", "title": "x"}, ctx)
+    assert missing is not None and missing.effect == "confirmed"
 
 
 # ── Drive, tokens, removing ──────────────────────────────────────────────

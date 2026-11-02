@@ -295,18 +295,30 @@ class ScheduleStore(Protocol):
         fresh_until_ms: int | None = None,
         detail: str | None = None,
         notice_id: str | None = None,
+        due_ms: int | None = None,
     ) -> Notice:
         """A watcher's heads-up, held for the door: due now, from `attention`, its find's
         `key` as its source. `text` is None when no model wrote her line: it is shown by
         its title and its `detail`, and never spoken. `notice_id`, when given, is its id:
-        the runner records it on the finds first. Raises `ValueError` for a link that is
-        not https."""
+        the runner records it on the finds first. `due_ms`, when given, is when it
+        may first be handed over, for one keyed `action:` (see `held`). Raises
+        `ValueError` for a link that is not https."""
+        ...
+
+    async def release_notice(self, notice_id: str, text: str | None, now_ms: int) -> bool:
+        """A held notice is due now, with her words if it had none. One already
+        delivered is left as it is. Whether it was still held."""
+        ...
+
+    async def has_notice(self, owner_id: str, key: str) -> bool:
+        """Whether a heads-up with this `key` was ever written, delivered or not."""
         ...
 
     async def notice(self, notice_id: str) -> Notice | None: ...
 
-    async def held(self, owner_id: str) -> list[Notice]:
-        """Notices not delivered yet, oldest first."""
+    async def held(self, owner_id: str, now_ms: int | None = None) -> list[Notice]:
+        """Notices not delivered yet, oldest first. With `now_ms`, a told-about action
+        (keyed `action:`) not yet due is left out: her line is still being written."""
         ...
 
     async def mark_delivered(self, notice_id: str, to: str, now_ms: int) -> bool:

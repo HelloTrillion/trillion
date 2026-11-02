@@ -245,7 +245,7 @@ class Door:
             # A watcher's notices: shown and not spoken, the computer shows them too.
             watched: set[str] = set()
             try:
-                for n in await self._store.held(self._owner):
+                for n in await self._store.held(self._owner, now):
                     if not await self._store.mark_delivered(n.id, session.id, now):
                         continue
                     marked.append(n.id)
@@ -363,7 +363,7 @@ class Door:
         if live is not None:
             await self.offer(live)
             return
-        for n in await self._store.held(self._owner):
+        for n in await self._store.held(self._owner, self._clock()):
             if n.notified_ms is None and n.id not in self._tried:
                 await self._notify(n.id)
 

@@ -34,6 +34,7 @@ from trillion.connectors.google.connection import GoogleConnection
 from trillion.connectors.mcp.config import load as mcp_load
 from trillion.connectors.mcp.servers import McpServers
 from trillion.connectors.slack.connection import SlackConnection
+from trillion.delivery import interrupted
 from trillion.delivery.door import Door
 from trillion.files.rules import why_not
 from trillion.files.shares import EVERYONE, ShareError, Shares
@@ -56,7 +57,7 @@ from trillion.spine.audit import audit_key
 from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.registry import ToolRegistry, runs_unattended
-from trillion.spine.router import Router
+from trillion.spine.router import Router, Settled
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.attention_store import SqliteAttentionStore
@@ -128,6 +129,11 @@ from trillion.workspace.service import Boards
 logger = logging.getLogger(__name__)
 # On stop, quiet notices' notifications still on their way get this long.
 STOP_NOTIFY_S = 6.0
+# How often a send whose check could not reach the provider is checked again (OPS-1).
+CHECK_EVERY_S = 600.0
+# How far back startup looks for a send left in doubt whose notice was lost.
+IN_DOUBT_DAYS = 7
+DAY_MS = 86_400_000
 
 OWNER = "local"
 # Speech outside a turn (a notice, a tap's answer, a sentence about a leg that is down)
@@ -337,6 +343,10 @@ class Runtime:
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     # Pages being told the shares changed.
     _telling: set[asyncio.Task[None]] = field(default_factory=set)
+    # Telling the user about interrupted sends (OPS-1), and the loop that checks again.
+    check_every_s: float = CHECK_EVERY_S
+    _interrupted: set[asyncio.Task[None]] = field(default_factory=set)
+    _checking: asyncio.Task[None] | None = None
     _asides: int = 0
     # The widget types the workspace tools were last told, so an unchanged list is
     # not built and validated again.
@@ -556,8 +566,15 @@ class Runtime:
             self.attention.start()
         if self.refresher is not None:
             self.refresher.start()
+        if self._checking is None:
+            self._checking = asyncio.create_task(self._check_again())
 
     async def stop_background(self) -> None:
+        checking, self._checking = self._checking, None
+        for task in [*([checking] if checking is not None else []), *self._interrupted]:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         if self.refresher is not None:
             await self.refresher.stop()
         if self.attention is not None:
@@ -620,6 +637,49 @@ class Runtime:
             cost_usd=pricing.cost(usage) if pricing is not None else None,
             now_ms=self.clock(),
         )
+
+    def tell_soon(self, settled: list[Settled]) -> None:
+        """Tell the user about `settled` in the background: a model call never holds
+        startup. Held until it ends, and stopped with the rest."""
+        if not any(s.outcome in ("not_sent", "unknown") for s in settled):
+            return
+        task = asyncio.create_task(self.tell_interrupted(settled))
+        self._interrupted.add(task)
+        task.add_done_callback(self._interrupted.discard)
+
+    async def tell_interrupted(self, settled: list[Settled]) -> None:
+        """One notice for each send settled as never sent or unknown, offered to the
+        door, its model call recorded (BRN-4). Never raises."""
+        if self.schedules is None or self.door is None:
+            return
+        provider = self.provider
+        try:
+            made, usage = await interrupted.tell(
+                self.schedules,
+                provider,
+                OWNER,
+                settled,
+                self.spine_store.get_pending,
+                now_ms=self.clock(),
+            )
+            if provider is not None and usage != Usage():
+                await self.record_attention_usage(provider, usage)
+            for n in made:
+                await self.door.added(n)
+        except Exception as e:
+            # Written notices are held: the door's next flush hands them over.
+            logger.warning("telling about an interrupted send failed: %s", type(e).__name__)
+
+    async def _check_again(self) -> None:
+        """Every so often, check each send that could not be checked, and tell."""
+        while True:
+            await asyncio.sleep(self.check_every_s)
+            try:
+                settled = await self.router.check_unchecked()
+            except Exception as e:
+                logger.warning("checking interrupted sends failed: %s", type(e).__name__)
+                continue
+            await self.tell_interrupted(settled)
 
     async def record_attention_usage(self, provider: ModelProvider, usage: Usage) -> None:
         """A watcher's wording or judging call: background work, in no conversation,
@@ -868,7 +928,7 @@ async def open_runtime(
         require_delivery=True,
     )
     # Finish what a crash interrupted before anything new can be proposed (SPN-17a).
-    await router.recover(store_of_shares.known(EVERYONE)[0])
+    settled = await router.recover(store_of_shares.known(EVERYONE)[0])
     await router.forget_settled_arguments()
     preferences = SqlitePreferences(chat_conn)
     keychain = secrets if secrets is not None else KeychainStore()
@@ -1080,4 +1140,10 @@ async def open_runtime(
         tool = registry.get(name)
         if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):
             tool.bind(book)
+    # A send a crash left in doubt: the user hears of it, once (OPS-1). Those settled
+    # lately are looked for too, so a notice lost to a quit before it was written is
+    # still given; one already written is not given again.
+    doubt = await router.in_doubt(rt.clock() - IN_DOUBT_DAYS * DAY_MS)
+    told = {s.id for s in settled}
+    rt.tell_soon(settled + [s for s in doubt if s.id not in told])
     return rt

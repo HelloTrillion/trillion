@@ -36,6 +36,12 @@ _WORDS = {
 }
 
 
+# Slack's own trouble, not a refusal: a post may still have gone through.
+SERVER_SIDE = frozenset(
+    {"server", "internal_error", "fatal_error", "service_unavailable", "request_timeout"}
+)
+
+
 @dataclass
 class Slack:
     base: str = API
@@ -78,6 +84,8 @@ class Slack:
             raise SlackError("unreachable", "Slack could not be reached", answered=False) from None
         if r.status_code == 429:
             raise SlackError("busy", _WORDS["ratelimited"])
+        if r.status_code >= 500:
+            raise SlackError("server", f"Slack had a problem on its side ({r.status_code})")
         try:
             data = r.json()
         except ValueError:

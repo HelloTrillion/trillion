@@ -14,6 +14,7 @@ read a web page.
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from trillion.connectors.google.config import Client, Service
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,
+    UNREACHABLE,
     ActionSummary,
     BaseTool,
     Precondition,
@@ -143,7 +145,7 @@ class GoogleTool(BaseTool):
     def required(self) -> Sequence[str]:
         return ()
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         raise NotImplementedError
 
     # Shared.
@@ -174,15 +176,17 @@ class GoogleTool(BaseTool):
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         try:
-            text = await self.run(self.account(args), args)
+            text = await self.run(self.account(args), args, ctx)
         except _Problem as e:
             return ToolResult(ok=False, content=str(e), effect="none", error_kind="refused")
         except GoogleCallError as e:
-            # Google answered no: nothing happened. Silence is not an answer.
+            # Google answered no: nothing happened. Silence is not an answer, and nor is
+            # Google's own failure on a change: it may have gone, so the router checks.
+            maybe = not e.answered or (e.kind == "server" and self.native is not Risk.READ)
             return ToolResult(
                 ok=False,
                 content=str(e),
-                effect="none" if e.answered else "unknown",
+                effect="unknown" if maybe else "none",
                 error_kind=e.kind,
             )
         return ToolResult(ok=True, content=_cut(text) or "(nothing)", effect="confirmed")
@@ -232,6 +236,12 @@ def _addresses(raw: Any, what: str) -> list[str]:
     return out
 
 
+def _message_id(account: str, action_id: str) -> str:
+    """The Message-ID an approved email carries: its action's id at the sender's domain."""
+    domain = account.rsplit("@", 1)[-1] or "trillion.local"
+    return f"<trillion-{action_id}@{domain}>"
+
+
 _TO = {"type": "array", "items": {"type": "string", "maxLength": 254}, "maxItems": 30}
 
 
@@ -256,7 +266,7 @@ class GmailSearch(GoogleTool):
             "max": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         found = await self.call(
             account,
             "GET",
@@ -300,7 +310,7 @@ class GmailRead(GoogleTool):
     def required(self) -> Sequence[str]:
         return ("message_id",)
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         msg = await self.call(
             account,
             "GET",
@@ -350,7 +360,9 @@ class _Compose(GoogleTool):
     def verb(self) -> str:
         raise NotImplementedError
 
-    async def build(self, account: str, args: JSON) -> dict[str, Any]:
+    async def build(
+        self, account: str, args: JSON, *, action_id: str | None = None
+    ) -> dict[str, Any]:
         to = _addresses(args.get("to"), "To")
         cc = _addresses(args.get("cc"), "Cc")
         if not to:
@@ -363,6 +375,12 @@ class _Compose(GoogleTool):
         if cc:
             msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
+        if action_id:
+            # OPS-1: how a check after a crash finds this email in Sent. Set once, as
+            # EmailMessage adds none of its own. Gmail usually keeps it; when it doesn't,
+            # the check's fallback search covers it.
+            del msg["Message-ID"]
+            msg["Message-ID"] = _message_id(account, action_id)
         body: dict[str, Any] = {}
         if args.get("reply_to_id"):
             original = await self.call(
@@ -408,7 +426,7 @@ class GmailDraft(_Compose):
     def verb(self) -> str:
         return "Save a Gmail draft"
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         made = await self.call(
             account,
             "POST",
@@ -436,17 +454,95 @@ class GmailSend(_Compose):
     def verb(self) -> str:
         return "Send an email"
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         sent = await self.call(
             account,
             "POST",
             "/gmail/v1/users/me/messages/send",
-            body=await self.build(account, args),
+            body=await self.build(account, args, action_id=ctx.action_id),
         )
         return f"Sent from {account} (message id {sent.get('id', '')})."
 
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        """Did this approved email go out? Looked up in Sent after a crash (OPS-1)."""
+        if not ctx.action_id:
+            return None
+        try:
+            account = self.account(args)
+            tag = _message_id(account, ctx.action_id).strip("<>")
+            if await self._found(account, f"in:sent rfc822msgid:{tag}"):
+                return ToolResult(ok=True, content="Found it in Sent.", effect="confirmed")
+            # Gmail may replace the header. This looser match could also catch another
+            # email like it, which errs toward "it went": that never sends twice.
+            words = ["in:sent", *(f'to:"{a}"' for a in _addresses(args.get("to"), "To"))]
+            subject = " ".join(str(args.get("subject", "")).replace('"', " ").split())
+            if any(c.isalnum() for c in subject):
+                words.append(f'subject:"{subject}"')
+            # Since a minute before the proposal: nothing older can be this email.
+            since = (
+                f"after:{ctx.proposed_ms // 1000 - 60}"
+                if ctx.proposed_ms is not None
+                else "newer_than:2d"
+            )
+            if await self._found(account, " ".join([*words, since])):
+                return ToolResult(ok=True, content="Found it in Sent.", effect="confirmed")
+        except (_Problem, GoogleCallError) as e:
+            # No answer, or an answer of no: neither says whether it went.
+            return ToolResult(ok=False, content=str(e), effect="unknown", error_kind=UNREACHABLE)
+        return ToolResult(ok=True, content="Not in Sent: it never went.", effect="none")
+
+    async def _found(self, account: str, q: str) -> bool:
+        found = await self.call(
+            account,
+            "GET",
+            "/gmail/v1/users/me/messages",
+            # A sent email the user has since deleted still went.
+            params={"q": q, "maxResults": 1, "includeSpamTrash": True},
+        )
+        return bool(found.get("messages"))
+
 
 # ── Calendar ─────────────────────────────────────────────────────────────
+
+_BASE32HEX = "0123456789abcdefghijklmnopqrstuv"
+
+
+def event_id(action_id: str) -> str:
+    """A Calendar event id made from the action's: Google refuses a second event with
+    the same id, so an approved event can't be added twice (OPS-1). Base32hex, as
+    Google requires, 52 characters."""
+    digest = int.from_bytes(hashlib.sha256(action_id.encode()).digest(), "big")
+    out = []
+    for _ in range(52):
+        digest, i = divmod(digest, 32)
+        out.append(_BASE32HEX[i])
+    return "".join(out)
+
+
+def _same_when(want: dict[str, str], have: Any) -> bool:
+    """Whether Google's start or end is the time asked for: the same moment in any
+    offset, or the same date."""
+    have = have if isinstance(have, dict) else {}
+    if "date" in want:
+        return str(have.get("date", "")) == want["date"]
+    try:
+        moment = datetime.fromisoformat(str(have.get("dateTime", "")))
+    except ValueError:
+        return False
+    return moment.tzinfo is not None and moment == datetime.fromisoformat(want["dateTime"])
+
+
+def _same_guests(want: list[JSON], have: Any) -> bool:
+    """Whether the event's guests are the ones asked for. Google may list the user's
+    own entry too, so that one is left out unless it was asked for."""
+    wanted = {str(a["email"]).lower() for a in want}
+    listed = {
+        str(a.get("email", "")).lower()
+        for a in (have if isinstance(have, list) else [])
+        if isinstance(a, dict)
+        and not (a.get("self") and str(a.get("email", "")).lower() not in wanted)
+    }
+    return listed == wanted
 
 
 def _when(value: Any, what: str) -> dict[str, str]:
@@ -518,7 +614,7 @@ class CalendarEvents(GoogleTool):
             "max": {"type": "integer", "minimum": 1, "maximum": 50},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         a, b = _range(args)
         params: dict[str, Any] = {
             "timeMin": a,
@@ -560,7 +656,7 @@ class CalendarFree(GoogleTool):
             "end": {"type": "string", "maxLength": 40},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         a, b = _range(args)
         found = await self.call(
             account,
@@ -635,6 +731,36 @@ class _EventChange(GoogleTool):
             )
         return dict(event)
 
+    async def _event(self, account: str, eid: str) -> JSON | None:
+        """The event, or None if Google answered that there is no such event (404 or
+        410). Any other failure is raised: it says nothing about the event."""
+        try:
+            return dict(
+                await self.call(account, "GET", f"/calendar/v3/calendars/primary/events/{eid}")
+            )
+        except GoogleCallError as e:
+            if e.answered and e.kind in ("not_found", "gone"):
+                return None
+            raise
+
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        """Did this approved change land? Asked of Google after a crash (OPS-1)."""
+        if not ctx.action_id:
+            return None
+        try:
+            landed = await self.landed(self.account(args), args, ctx.action_id)
+        except (_Problem, GoogleCallError) as e:
+            # No answer, or an answer of no: neither says whether it landed.
+            return ToolResult(ok=False, content=str(e), effect="unknown", error_kind=UNREACHABLE)
+        if landed:
+            return ToolResult(
+                ok=True, content="Google Calendar has the change.", effect="confirmed"
+            )
+        return ToolResult(ok=True, content="Google Calendar does not have it.", effect="none")
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        raise NotImplementedError
+
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         try:
             self.event_body(args)
@@ -675,9 +801,11 @@ class CalendarCreate(_EventChange):
             )
         )
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         body = self.event_body(args)
         body["summary"] = str(args["title"])
+        if ctx.action_id:
+            body["id"] = event_id(ctx.action_id)
         made = await self.call(
             account,
             "POST",
@@ -686,6 +814,11 @@ class CalendarCreate(_EventChange):
             body=body,
         )
         return f"Added: {_event_line(made)}"
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        # Cancelled still counts: only this action makes that id, so it was added, and
+        # its guests were told.
+        return await self._event(account, event_id(action_id)) is not None
 
 
 class CalendarUpdate(_EventChange):
@@ -720,7 +853,7 @@ class CalendarUpdate(_EventChange):
             )
         )
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         await self.check_title(account, args)
         changed = await self.call(
             account,
@@ -730,6 +863,22 @@ class CalendarUpdate(_EventChange):
             body=self.event_body(args),
         )
         return f"Changed: {_event_line(changed)}"
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        # The change is the evidence: every field the card named has its new value.
+        event = await self._event(account, str(args["event_id"]))
+        if event is None or event.get("status") == "cancelled":
+            return False
+        for k, v in self.event_body(args).items():
+            if k in ("start", "end"):
+                same = _same_when(v, event.get(k))
+            elif k == "attendees":
+                same = _same_guests(v, event.get(k))
+            else:
+                same = str(event.get(k, "")) == v
+            if not same:
+                return False
+        return True
 
 
 class CalendarDelete(_EventChange):
@@ -761,7 +910,7 @@ class CalendarDelete(_EventChange):
             " Guests are told it is cancelled."
         )
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         await self.check_title(account, args)
         await self.call(
             account,
@@ -770,6 +919,10 @@ class CalendarDelete(_EventChange):
             params={"sendUpdates": "all"},
         )
         return f"Deleted {args['title']!r}."
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        event = await self._event(account, str(args["event_id"]))
+        return event is None or event.get("status") == "cancelled"
 
 
 # ── Drive ────────────────────────────────────────────────────────────────
@@ -835,7 +988,7 @@ class DriveSearch(GoogleTool):
             "max": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         found = await self.call(
             account,
             "GET",
@@ -879,7 +1032,7 @@ class DriveRead(GoogleTool):
     def required(self) -> Sequence[str]:
         return ("file_id",)
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         fid = str(args["file_id"])
         meta = await self.call(
             account, "GET", f"/drive/v3/files/{fid}", params={"fields": "name,mimeType,size"}
