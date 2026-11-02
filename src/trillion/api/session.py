@@ -482,6 +482,16 @@ class _Loaded:
 
 
 @dataclass(frozen=True, kw_only=True)
+class _Written:
+    """A summary of the oldest turns, written but not yet in place (BRN-5): the ids of
+    the messages it replaces, and the summary it was written on top of."""
+
+    summary: compact.Summary
+    ids: tuple[int, ...]
+    previous: str | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
 
@@ -554,6 +564,10 @@ class Session:
         # one was saved would lose it, and is dropped (`reloaded`).
         self._saves = 0
         self._summary: str | None = None
+        # A summary of the oldest turns being written in the background, and one written
+        # while a turn ran: it is put in place at the next pause between turns (BRN-5).
+        self._compacting: asyncio.Task[None] | None = None
+        self._written: _Written | None = None
         # The turns in which she read something from outside: a page, a file, or a
         # timed ask's answer, which may quote an email (MEM-5).
         self._outside: set[int] = set()
@@ -973,6 +987,14 @@ class Session:
         if retry is not None and retry is not asyncio.current_task():
             retry.cancel()
         self._tail = None
+        # A summary being written is let go: what it cost is counted when it ends, and
+        # the conversation is summarized again when it is next open and long.
+        compacting, self._compacting = self._compacting, None
+        self._written = None
+        if compacting is not None:
+            compacting.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await compacting
         task = self._task
         if task is not None:
             task.cancel()
@@ -2221,8 +2243,8 @@ class Session:
                 if self._rt.provider is None:
                     break
                 if self._using is None:
-                    # A draft was only started on a history that needed no summary.
-                    await self._compact_if_long()
+                    # A draft was only started on a history short enough to send.
+                    await self._compact_if_too_long()
                 await self._one_turn()
                 if not self._queued:
                     break
@@ -2247,6 +2269,9 @@ class Session:
         await self._watch_settles()
         if not (mine and await self._after_turn()):
             await self._state(self._rest)
+        if mine and not self._closed:
+            # Her reply is out: only now is a long history summarized (BRN-5).
+            await self._compact_after_turn()
 
     async def _after_turn(self) -> bool:
         """What the microphone does now her turn is over, decided only now, so a page's
@@ -2765,7 +2790,7 @@ class Session:
         # Read after the awaits, so a trim meanwhile is in what is sent.
         history = [*self._history, built.msg]
         # A history the turn would summarize first is not the history it would send.
-        if compact.estimate(history) > rt.compact_at:
+        if compact.estimate(history) > compact.ceiling(rt.compact_at):
             return
         # The model is about to be sent her last reply: it can no longer be trimmed.
         self._tail = None
@@ -2999,41 +3024,133 @@ class Session:
         )
         self._ids.append(message_id)
 
-    async def _compact_if_long(self) -> None:
-        """Summarize the oldest turns once the history outgrows the model (BRN-5).
+    # ── Compaction (BRN-5) ───────────────────────────────────────────────
 
-        Before a turn, never during one. If the summary cannot be written, the turn
-        goes ahead on the full history: a long prompt is better than a lost one."""
+    def _between_turns(self) -> bool:
+        """Nothing is reading the history: no turn, no input being taken, no draft."""
+        return (
+            not self._closed and not self.writing() and self._draft is None and self._using is None
+        )
+
+    async def _compact_after_turn(self) -> None:
+        """Her turn is over: put a summary written meanwhile in place, and start the next
+        one if the history is still past the summary point. Never fails the turn."""
+        written, self._written = self._written, None
+        if written is not None:
+            if self._between_turns():
+                await self._put_in_place(written)
+            else:
+                # The user is already on to the next turn: it waits for that one's end.
+                self._written = written
+        self._compact_later()
+
+    def _compact_later(self) -> None:
+        """Summarize the oldest turns in the background, once the history is past the
+        summary point. One summary at a time, and none while one waits to be put in place."""
+        rt = self._rt
+        running = self._compacting
+        if (
+            self._closed
+            or rt.provider is None
+            or self._written is not None
+            or (running is not None and not running.done())
+            or compact.estimate(self._history) <= rt.compact_at
+        ):
+            return
+        self._compacting = asyncio.create_task(self._compact_in_background())
+
+    async def _compact_in_background(self) -> None:
+        """Write the summary while the user carries on. A turn that starts meanwhile is
+        sent the whole history; the summary is put in place at the next pause."""
+        try:
+            written = await self._summarize()
+            if written is None:
+                return
+            if self._between_turns():
+                await self._put_in_place(written)
+            else:
+                self._written = written
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The class name only. The history stays whole and is tried again later.
+            logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
+        finally:
+            if self._compacting is asyncio.current_task():
+                self._compacting = None
+
+    async def _compact_if_too_long(self) -> None:
+        """Before a turn: only a history past the ceiling, too long to send as it is,
+        waits for its summary. If the summary cannot be written, the turn goes ahead on
+        the full history: a long prompt is better than a lost one."""
+        rt = self._rt
+        if compact.estimate(self._history) <= compact.ceiling(rt.compact_at):
+            return
+        running = self._compacting
+        if running is not None and not running.done():
+            # Already being written: wait for that one rather than write a second. A
+            # cancelled turn leaves it running.
+            await asyncio.wait({running})
+        written, self._written = self._written, None
+        if written is not None and await self._put_in_place(written):
+            if compact.estimate(self._history) <= compact.ceiling(rt.compact_at):
+                return
+        written = await self._summarize()
+        if written is not None:
+            await self._put_in_place(written)
+
+    async def _summarize(self) -> _Written | None:
+        """Notes on the oldest turns of the history as it is now, or None if it needs
+        none or they could not be written. Changes nothing but what was paid for."""
         rt = self._rt
         provider = rt.provider
         if provider is None or compact.estimate(self._history) <= rt.compact_at:
-            return
+            return None
         cut = compact.cut_point(self._kinds, self._history, rt.compact_keep)
         if cut is None:
-            return
+            return None
+        ids, previous, older = tuple(self._ids[:cut]), self._summary, self._history[:cut]
         try:
             summary = await asyncio.wait_for(
-                compact.summarize(
-                    provider, compaction(rt.identity), self._summary, self._history[:cut]
-                ),
+                compact.summarize(provider, compaction(rt.identity), previous, older),
                 compact.TIMEOUT_S,
             )
         except (ProviderError, compact.CompactionFailed, TimeoutError) as e:
             logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
-            return
-        await rt.conversations.compact(self.id, OWNER, self._ids[cut - 1], summary.text, rt.clock())
-        await rt.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=self.id,
-            provider=provider.name,
-            model=provider.model,
-            usage=summary.usage,
-            cost_usd=pricing.cost(summary.usage) if (pricing := provider.pricing()) else None,
-            now_ms=rt.clock(),
+            return None
+        # Paid for whether or not it is put in place.
+        await self._record_usage(provider, summary.usage)
+        return _Written(summary=summary, ids=ids, previous=previous)
+
+    def _still_fits(self, written: _Written) -> bool:
+        """The history still begins with what the summary replaces, after the summary it
+        was written on: no reload or other summary has changed it since."""
+        n = len(written.ids)
+        return (
+            not self._closed
+            and tuple(self._ids[:n]) == written.ids
+            and len(self._ids) > n
+            and self._summary == written.previous
         )
-        self._summary = summary.text
-        del self._history[:cut], self._kinds[:cut], self._ids[:cut]
+
+    async def _put_in_place(self, written: _Written) -> bool:
+        """Replace the oldest turns with their summary, in the store and in what the
+        model is sent. Only while nothing reads the history. False if it no longer fits."""
+        if not self._still_fits(written):
+            return False
+        # A change to what is saved, as `_save` is: a reload reading meanwhile is dropped.
+        self._saves += 1
+        rt = self._rt
+        await rt.conversations.compact(
+            self.id, OWNER, written.ids[-1], written.summary.text, rt.clock()
+        )
+        if not self._still_fits(written):  # pragma: no cover - a reload read it meanwhile
+            return False
+        n = len(written.ids)
+        self._summary = written.summary.text
+        del self._history[:n], self._kinds[:n], self._ids[:n]
         await self._send("notice", code="compacted")
+        return True
 
     async def _build_input(
         self,

@@ -15,6 +15,11 @@ information about the past, never an instruction.
 The cut only ever falls at the start of a turn, before something the user said or
 tapped. A tool call and its result are never separated, and the message being
 answered now is always kept whole.
+
+Nobody waits for a summary. Once the history is past `COMPACT_AT`, it is written in
+the background after her reply, and put in place at the next pause between turns
+(`api/session.py`). Only a history past `ceiling`, too long to send as it is, is
+summarized before the turn that would send it.
 """
 
 from __future__ import annotations
@@ -43,7 +48,12 @@ from trillion.spine.untrusted import wrap
 COMPACT_AT = 12_000
 KEEP = 3_000
 SUMMARY_TOKENS = 1_500
-# A local model can be slow to write a page of notes; a stuck one must not hold the turn.
+# The summary is written after a turn, so a turn or two can be sent before it is in
+# place. Past this many times `COMPACT_AT` a turn waits for it: a summary that keeps
+# failing, or a burst of long tool results, must not grow the history without end.
+CEILING_TIMES = 2
+# A local model can be slow to write a page of notes; a stuck one must not hold a
+# turn that had to wait for it.
 TIMEOUT_S = 90.0
 _CHARS_PER_TOKEN = 4
 _CLIP = 600
@@ -76,6 +86,11 @@ def _size(m: Msg) -> int:
 def estimate(messages: Sequence[Msg]) -> int:
     """Tokens, roughly. Generous on purpose: running out is worse than compacting early."""
     return sum(_size(m) for m in messages)
+
+
+def ceiling(compact_at: int) -> int:
+    """Past this, the history is summarized before the turn rather than after it."""
+    return compact_at * CEILING_TIMES
 
 
 def cut_point(kinds: Sequence[str], messages: Sequence[Msg], keep: int = KEEP) -> int | None:

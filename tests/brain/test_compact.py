@@ -108,3 +108,21 @@ def test_the_summary_rides_with_the_first_kept_message_as_untrusted_text() -> No
     assert note.text.startswith('<untrusted_tool_result tool="conversation_summary">')
     assert sent[0].blocks[1:] == kept[0].blocks
     assert compact.with_summary(None, kept) == kept
+
+
+def test_the_estimate_counts_the_context_of_every_message_because_every_one_is_sent() -> None:
+    """Each user message is sent again with the context it was first sent with: history
+    is only appended to, so the cached prefix and her signed reasoning, which is bound
+    to every message before it, stay valid. That context is part of what the model
+    reads, so the estimate counts it, the old as well as the newest."""
+    from trillion.brain.providers.anthropic import wire_messages
+
+    old = Msg(
+        role="user",
+        blocks=(ContextBlock(text="<context>voice rules</context>" * 50), TextBlock(text="hi")),
+    )
+    history = [old, assistant("Hello."), user("and now?")]
+    wire = wire_messages(history, "key")
+    assert wire[0]["content"][0]["text"] == old.blocks[0].text  # sent again, unchanged
+    without = Msg(role="user", blocks=(TextBlock(text="hi"),))
+    assert compact.estimate(history) - compact.estimate([without, *history[1:]]) >= 350
