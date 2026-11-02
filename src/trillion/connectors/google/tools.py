@@ -14,6 +14,7 @@ read a web page.
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -491,6 +492,46 @@ class GmailSend(_Compose):
 
 # ── Calendar ─────────────────────────────────────────────────────────────
 
+_BASE32HEX = "0123456789abcdefghijklmnopqrstuv"
+
+
+def event_id(action_id: str) -> str:
+    """A Calendar event id made from the action's: Google refuses a second event with
+    the same id, so an approved event can't be added twice (OPS-1). Base32hex, as
+    Google requires, 52 characters."""
+    digest = int.from_bytes(hashlib.sha256(action_id.encode()).digest(), "big")
+    out = []
+    for _ in range(52):
+        digest, i = divmod(digest, 32)
+        out.append(_BASE32HEX[i])
+    return "".join(out)
+
+
+def _same_when(want: dict[str, str], have: Any) -> bool:
+    """Whether Google's start or end is the time asked for: the same moment in any
+    offset, or the same date."""
+    have = have if isinstance(have, dict) else {}
+    if "date" in want:
+        return str(have.get("date", "")) == want["date"]
+    try:
+        moment = datetime.fromisoformat(str(have.get("dateTime", "")))
+    except ValueError:
+        return False
+    return moment.tzinfo is not None and moment == datetime.fromisoformat(want["dateTime"])
+
+
+def _same_guests(want: list[JSON], have: Any) -> bool:
+    """Whether the event's guests are the ones asked for. Google may list the user's
+    own entry too, so that one is left out unless it was asked for."""
+    wanted = {str(a["email"]).lower() for a in want}
+    listed = {
+        str(a.get("email", "")).lower()
+        for a in (have if isinstance(have, list) else [])
+        if isinstance(a, dict)
+        and not (a.get("self") and str(a.get("email", "")).lower() not in wanted)
+    }
+    return listed == wanted
+
 
 def _when(value: Any, what: str) -> dict[str, str]:
     """A Google Calendar time from what she wrote: a date (all day), or a date and
@@ -678,6 +719,36 @@ class _EventChange(GoogleTool):
             )
         return dict(event)
 
+    async def _event(self, account: str, eid: str) -> JSON | None:
+        """The event, or None if Google answered that there is no such event (404 or
+        410). Any other failure is raised: it says nothing about the event."""
+        try:
+            return dict(
+                await self.call(account, "GET", f"/calendar/v3/calendars/primary/events/{eid}")
+            )
+        except GoogleCallError as e:
+            if e.answered and e.kind in ("not_found", "gone"):
+                return None
+            raise
+
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        """Did this approved change land? Asked of Google after a crash (OPS-1)."""
+        if not ctx.action_id:
+            return None
+        try:
+            landed = await self.landed(self.account(args), args, ctx.action_id)
+        except (_Problem, GoogleCallError) as e:
+            # No answer, or an answer of no: neither says whether it landed.
+            return ToolResult(ok=False, content=str(e), effect="unknown", error_kind=UNREACHABLE)
+        if landed:
+            return ToolResult(
+                ok=True, content="Google Calendar has the change.", effect="confirmed"
+            )
+        return ToolResult(ok=True, content="Google Calendar does not have it.", effect="none")
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        raise NotImplementedError
+
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         try:
             self.event_body(args)
@@ -721,6 +792,8 @@ class CalendarCreate(_EventChange):
     async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         body = self.event_body(args)
         body["summary"] = str(args["title"])
+        if ctx.action_id:
+            body["id"] = event_id(ctx.action_id)
         made = await self.call(
             account,
             "POST",
@@ -729,6 +802,11 @@ class CalendarCreate(_EventChange):
             body=body,
         )
         return f"Added: {_event_line(made)}"
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        # Cancelled still counts: only this action makes that id, so it was added, and
+        # its guests were told.
+        return await self._event(account, event_id(action_id)) is not None
 
 
 class CalendarUpdate(_EventChange):
@@ -774,6 +852,22 @@ class CalendarUpdate(_EventChange):
         )
         return f"Changed: {_event_line(changed)}"
 
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        # The change is the evidence: every field the card named has its new value.
+        event = await self._event(account, str(args["event_id"]))
+        if event is None or event.get("status") == "cancelled":
+            return False
+        for k, v in self.event_body(args).items():
+            if k in ("start", "end"):
+                same = _same_when(v, event.get(k))
+            elif k == "attendees":
+                same = _same_guests(v, event.get(k))
+            else:
+                same = str(event.get(k, "")) == v
+            if not same:
+                return False
+        return True
+
 
 class CalendarDelete(_EventChange):
     remote = "delete an event"
@@ -813,6 +907,10 @@ class CalendarDelete(_EventChange):
             params={"sendUpdates": "all"},
         )
         return f"Deleted {args['title']!r}."
+
+    async def landed(self, account: str, args: JSON, action_id: str) -> bool:
+        event = await self._event(account, str(args["event_id"]))
+        return event is None or event.get("status") == "cancelled"
 
 
 # ── Drive ────────────────────────────────────────────────────────────────

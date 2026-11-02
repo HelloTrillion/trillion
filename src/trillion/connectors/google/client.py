@@ -284,6 +284,8 @@ def _failure(r: httpx.Response) -> GoogleCallError:
         pass
     if r.status_code == 404:
         return GoogleCallError("not_found", "Google found nothing with that id")
+    if r.status_code == 410:
+        return GoogleCallError("gone", "Google says that was deleted")
     if r.status_code == 403 and reason in (
         "insufficientPermissions",
         "ACCESS_TOKEN_SCOPE_INSUFFICIENT",

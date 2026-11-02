@@ -51,6 +51,8 @@ class FakeGoogle:
         self.rewrite = False
         self.down = False
         self.refuse: int | None = None
+        # Event ids Google answers 410 Gone for.
+        self.gone: set[str] = set()
         self.events: dict[str, dict[str, Any]] = {
             "ev1": {
                 "id": "ev1",
@@ -146,14 +148,31 @@ class FakeGoogle:
                 200, json={"timeZone": "America/Los_Angeles", "items": list(self.events.values())}
             )
         if path == "/calendar/v3/calendars/primary/events" and request.method == "POST":
-            return httpx.Response(200, json={"id": "new", **(body or {})})
+            made = dict(body or {})
+            eid = str(made.get("id") or f"new{len(self.events)}")
+            if eid in self.events:
+                return httpx.Response(
+                    409,
+                    json={
+                        "error": {
+                            "code": 409,
+                            "message": "The requested identifier already exists.",
+                        }
+                    },
+                )
+            self.events[eid] = {**made, "id": eid, "status": "confirmed"}
+            return httpx.Response(200, json=self.events[eid])
         if path.startswith("/calendar/v3/calendars/primary/events/"):
             eid = path.rsplit("/", 1)[1]
+            if eid in self.gone:
+                return httpx.Response(410, json={"error": {"errors": [{"reason": "deleted"}]}})
             if eid not in self.events:
                 return httpx.Response(404, json={"error": {"errors": [{"reason": "notFound"}]}})
             if request.method == "DELETE":
-                self.events.pop(eid)
+                self.events[eid]["status"] = "cancelled"
                 return httpx.Response(204)
+            if request.method == "PATCH":
+                self.events[eid].update(body or {})
             return httpx.Response(200, json=self.events[eid])
         if path == "/calendar/v3/freeBusy":
             return httpx.Response(
@@ -451,7 +470,7 @@ async def test_an_event_is_changed_only_under_its_real_title(
     done = await spine.router.resolve(
         right.pending_id or "", "confirm", spine.ctx(turn=2, via="tap")
     )
-    assert done.status == "succeeded" and "ev1" not in fake.events
+    assert done.status == "succeeded" and fake.events["ev1"]["status"] == "cancelled"
 
 
 async def test_a_new_event_needs_a_time_zone_and_says_who_is_invited(
@@ -478,6 +497,149 @@ async def test_a_new_event_needs_a_time_zone_and_says_who_is_invited(
     assert done.status == "succeeded"
     made = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/events"))[2]
     assert made["attendees"] == [{"email": "sam@example.com"}]
+
+
+# ── Calendar changes, checked after a crash (OPS-1) ──────────────────────
+
+EVENT = {"title": "Call", "start": "2026-10-24T09:00:00-07:00", "end": "2026-10-24T09:30:00-07:00"}
+
+
+def test_event_ids_from_an_action_are_valid_and_stable() -> None:
+    from trillion.connectors.google.tools import event_id
+
+    a = event_id("pa_01HXYZ")
+    assert a == event_id("pa_01HXYZ") and a != event_id("pa_01HXZZ")
+    assert 5 <= len(a) <= 1024 and set(a) <= set("abcdefghijklmnopqrstuv0123456789")
+    assert set(event_id("a" * 32)) <= set("abcdefghijklmnopqrstuv0123456789")
+
+
+async def test_a_new_event_carries_the_action_id(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    from trillion.connectors.google.tools import event_id
+
+    await connect(google, "calendar")
+    r = await spine.call("calendar_create", EVENT)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "succeeded"
+    made = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/events"))[2]
+    assert made["id"] == event_id(r.pending_id or "")
+
+
+async def test_an_approved_event_cannot_be_added_twice(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle
+) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_create")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    assert (await tool.execute(EVENT, ctx)).ok
+    before = dict(fake.events)
+    again = await tool.execute(EVENT, ctx)
+    assert not again.ok and fake.events == before  # Google refused the same id
+
+
+async def test_the_create_check(spine: Spine, google: GoogleConnection, fake: FakeGoogle) -> None:
+    from trillion.connectors.google.tools import event_id
+
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_create")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    assert await tool.reconcile(EVENT, spine.ctx()) is None
+    absent = await tool.reconcile(EVENT, ctx)
+    assert absent is not None and absent.effect == "none"
+    await tool.execute(EVENT, ctx)
+    present = await tool.reconcile(EVENT, ctx)
+    assert present is not None and present.effect == "confirmed"
+    # Made, then cancelled by the user: it still went (the guests were told).
+    fake.events[event_id("a" * 32)]["status"] = "cancelled"
+    cancelled = await tool.reconcile(EVENT, ctx)
+    assert cancelled is not None and cancelled.effect == "confirmed"
+
+
+@pytest.mark.parametrize("trouble", ["down", 403, 500])
+@pytest.mark.parametrize("name", ["calendar_create", "calendar_update", "calendar_delete"])
+async def test_a_calendar_check_cannot_tell_when_google_does_not_say(
+    spine: Spine, google: GoogleConnection, fake: FakeGoogle, trouble: object, name: str
+) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get(name)
+    assert tool is not None
+    if trouble == "down":
+        fake.down = True
+    else:
+        fake.refuse = int(trouble)  # type: ignore[call-overload]
+    args = EVENT if name == "calendar_create" else {"event_id": "ev1", "title": "Lunch with Sam"}
+    result = await tool.reconcile(args, spine.ctx(action_id="a" * 32))
+    assert result is not None and result.effect == "unknown"
+    assert result.error_kind == "unreachable"
+
+
+async def test_the_update_check(spine: Spine, google: GoogleConnection, fake: FakeGoogle) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_update")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    args = {
+        "event_id": "ev1",
+        "title": "Lunch with Sam",
+        "new_title": "Lunch with Kim",
+        # The same moment Google gives back in UTC.
+        "start": "2026-10-23T12:30:00-07:00",
+        "guests": ["kim@example.com"],
+        "location": "Cafe",
+    }
+    old = await tool.reconcile(args, ctx)
+    assert old is not None and old.effect == "none"
+    fake.events["ev1"].update(
+        {
+            "summary": "Lunch with Kim",
+            "start": {"dateTime": "2026-10-23T19:30:00Z"},
+            "attendees": [
+                {"email": "Kim@example.com"},
+                {"email": EMAIL, "self": True, "organizer": True},
+            ],
+            "location": "Cafe",
+        }
+    )
+    landed = await tool.reconcile(args, ctx)
+    assert landed is not None and landed.effect == "confirmed"
+    fake.gone.add("ev1")
+    gone = await tool.reconcile(args, ctx)
+    assert gone is not None and gone.effect == "none"
+
+
+async def test_an_update_through_the_card_checks_as_landed(
+    spine: Spine, google: GoogleConnection
+) -> None:
+    await connect(google, "calendar")
+    args = {"event_id": "ev1", "title": "Lunch with Sam", "end": "2026-10-23T13:30:00-07:00"}
+    r = await spine.call("calendar_update", args)
+    done = await spine.router.resolve(r.pending_id or "", "confirm", spine.ctx(turn=2, via="tap"))
+    assert done.status == "succeeded"
+    tool = spine.registry.get("calendar_update")
+    assert tool is not None
+    result = await tool.reconcile(args, spine.ctx(action_id=r.pending_id))
+    assert result is not None and result.effect == "confirmed"
+
+
+async def test_the_delete_check(spine: Spine, google: GoogleConnection, fake: FakeGoogle) -> None:
+    await connect(google, "calendar")
+    tool = spine.registry.get("calendar_delete")
+    assert tool is not None
+    ctx = spine.ctx(action_id="a" * 32)
+    args = {"event_id": "ev1", "title": "Lunch with Sam"}
+    there = await tool.reconcile(args, ctx)
+    assert there is not None and there.effect == "none"
+    fake.events["ev1"]["status"] = "cancelled"
+    cancelled = await tool.reconcile(args, ctx)
+    assert cancelled is not None and cancelled.effect == "confirmed"
+    fake.gone.add("ev1")
+    gone = await tool.reconcile(args, ctx)
+    assert gone is not None and gone.effect == "confirmed"
+    missing = await tool.reconcile({"event_id": "nope", "title": "x"}, ctx)
+    assert missing is not None and missing.effect == "confirmed"
 
 
 # ── Drive, tokens, removing ──────────────────────────────────────────────
