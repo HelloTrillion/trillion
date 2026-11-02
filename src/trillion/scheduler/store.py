@@ -303,6 +303,10 @@ class ScheduleStore(Protocol):
         not https."""
         ...
 
+    async def has_notice(self, owner_id: str, key: str) -> bool:
+        """Whether a heads-up with this `key` was ever written, delivered or not."""
+        ...
+
     async def notice(self, notice_id: str) -> Notice | None: ...
 
     async def held(self, owner_id: str) -> list[Notice]:

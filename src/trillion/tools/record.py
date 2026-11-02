@@ -37,6 +37,8 @@ _SKIP = frozenset(
     "the and for was did that this with from file files have has any ever get got "
     "asked ask about into onto your you".split()
 )
+# The decision a check after a crash records when it proved nothing went out.
+NOT_SENT = "recovered:not_sent"
 _WORD = re.compile(r"[^\W_]+(?:[._-][^\W_]+)*")
 
 
@@ -113,6 +115,9 @@ def describe(
         outcome = "not answered, and the user has not seen it: its card was never shown"
     elif a.status is Status.PROPOSED:
         outcome = "waiting for an answer"
+    elif a.status is Status.INVALIDATED and decisions and decisions[-1].event == NOT_SENT:
+        # A check after a crash proved it never went (OPS-1): askable again by its id.
+        outcome = "not sent: nothing went out, so it can be asked for again with this id"
     else:
         outcome = _OUTCOME.get(a.status, a.status.value)
     if a.outcome_detail and a.status in (Status.FAILED, Status.UNKNOWN, Status.INVALIDATED):
