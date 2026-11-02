@@ -633,8 +633,16 @@ function minutesLeft(expiresAt: number): string {
 
 function renderEntry(e: Entry): HTMLElement {
   switch (e.kind) {
-    case 'user':
-      return el('p', 'msg user', e.text);
+    case 'user': {
+      if (!e.seen) return el('p', 'msg user', e.text);
+      // She chose to say nothing to it (VOI-7): a quiet "Seen" under it, never a bubble.
+      // Hidden from the log's live region, which would read it out as news.
+      const turn = el('div', 'user-turn');
+      const mark = el('p', 'seen', 'Seen');
+      mark.setAttribute('aria-hidden', 'true');
+      turn.append(el('p', 'msg user', e.text), mark);
+      return turn;
+    }
     case 'assistant': {
       const box = el('div', 'msg assistant');
       box.append(...formatted(e.text));
