@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
@@ -305,22 +306,33 @@ async def test_other_notices_are_never_held_back(store: SqliteScheduleStore) -> 
     assert [h.id for h in await store.held(OWNER, 2)] == [n.id]
 
 
+# A real moment: Windows can't show a time in the first hours of 1970.
+NOV_2026_MS = 1_793_600_000_000
+
+
 def test_the_record_says_plainly_it_never_went_and_names_its_id() -> None:
     # She finds it here when the user says yes: its id, and that nothing went out.
+    at = NOV_2026_MS
     decisions = [
-        DecisionRow(pending_id="pa1", event="approved", decided_by="s1", via="tap", at=1),
+        DecisionRow(pending_id="pa1", event="approved", decided_by="s1", via="tap", at=at),
         DecisionRow(
-            pending_id="pa1", event="recovered:not_sent", decided_by="system", via="text", at=2
+            pending_id="pa1",
+            event="recovered:not_sent",
+            decided_by="system",
+            via="text",
+            at=at + 1,
         ),
     ]
-    said = describe(action(), None, decisions, now_ms=3)
+    a = dataclasses.replace(action(), created_at=at)
+    said = describe(a, None, decisions, now_ms=at + 2)
     assert said.startswith("pa1: ")
     assert "had changed" not in said
     assert "not sent" in said and "interrupted before it went out" in said
 
 
 def test_any_other_invalidated_action_reads_as_before() -> None:
-    said = describe(action(), None, [], now_ms=3)
+    a = dataclasses.replace(action(), created_at=NOV_2026_MS)
+    said = describe(a, None, [], now_ms=NOV_2026_MS + 1)
     assert "cancelled because what it would change had changed" in said
 
 
