@@ -633,6 +633,7 @@ class Router:
     async def _execute_claimed(
         self, tool: _Registered, a: PendingAction, ctx: ToolContext
     ) -> RouterResponse:
+        ctx = dataclasses.replace(ctx, action_id=a.id)
         result = await self._run(tool, a.args, ctx)
         status = final_status(result)
         won = await self._move(
@@ -736,6 +737,7 @@ class Router:
                 call_id=f"recover-{a.id}",
                 via="text",
                 granted_roots=granted_roots,
+                action_id=a.id,
             )
             tool = self._get(a.tool)
             result: ToolResult | None = None

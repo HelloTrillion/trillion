@@ -100,6 +100,7 @@ class ScriptedTool(BaseTool):
         self.fingerprint_error: Exception | None = None
         self.reconcile_result: ToolResult | None = None
         self.reconcile_error: Exception | None = None
+        self.seen: list[ToolContext] = []
 
     def describe(self, args: JSON) -> ActionSummary:
         if self.describe_error is not None:
@@ -117,6 +118,7 @@ class ScriptedTool(BaseTool):
         return self.precheck_result
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        self.seen.append(ctx)
         self.executions += 1
         if self.hang:
             await asyncio.sleep(10)
@@ -125,6 +127,7 @@ class ScriptedTool(BaseTool):
         return self.result
 
     async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        self.seen.append(ctx)
         if self.reconcile_error is not None:
             raise self.reconcile_error
         return self.reconcile_result

@@ -84,11 +84,7 @@ async def test_recover_invalidates_approved_but_unstarted(spine: Spine) -> None:
     assert again.status == "confirmation_required"
 
 
-async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
-    """reconcile() can prove an interrupted action landed; its answer is recorded, not rerun."""
-    spine.scripted.reconcile_result = ToolResult(ok=True, content="it landed", effect="confirmed")
-    r = await spine.call("scripted", {})
-    pid = r.pending_id or ""
+async def _to_executing(spine: Spine, pid: str) -> None:
     for old, new in ((Status.PROPOSED, Status.APPROVED), (Status.APPROVED, Status.EXECUTING)):
         await spine.store.transition(
             pid,
@@ -97,6 +93,14 @@ async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
             now_ms=spine.clock(),
             decision=DecisionIn(event=new.value, decided_by="s1", via="tap"),
         )
+
+
+async def test_recover_uses_the_tools_own_evidence(spine: Spine) -> None:
+    """reconcile() can prove an interrupted action landed; its answer is recorded, not rerun."""
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="it landed", effect="confirmed")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
     await spine.router.recover((spine.granted,))
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.SUCCEEDED and a.outcome_detail == "it landed"
@@ -109,14 +113,7 @@ async def test_recover_when_reconcile_raises_is_unknown(spine: Spine) -> None:
     spine.scripted.reconcile_error = RuntimeError("boom")
     r = await spine.call("scripted", {})
     pid = r.pending_id or ""
-    for old, new in ((Status.PROPOSED, Status.APPROVED), (Status.APPROVED, Status.EXECUTING)):
-        await spine.store.transition(
-            pid,
-            old,
-            new,
-            now_ms=spine.clock(),
-            decision=DecisionIn(event=new.value, decided_by="s1", via="tap"),
-        )
+    await _to_executing(spine, pid)
     await spine.router.recover((spine.granted,))
     a = await spine.store.get_pending(pid)
     assert a is not None and a.status is Status.UNKNOWN and a.effect_status == "unknown"
@@ -135,3 +132,24 @@ async def test_1_2_4_delivered_at_is_written_once(spine: Spine) -> None:
     assert await spine.store.get_delivery(pid) == first
     assert not await spine.router.mark_delivered(pid, "someone-else", "web")
     assert not await spine.router.mark_delivered("no-such-id", "local", "web")
+
+
+async def test_the_tool_is_given_the_action_id_when_it_runs(spine: Spine) -> None:
+    spine.scripted.result = ToolResult(ok=True, content="done", effect="confirmed")
+    r = await spine.call("scripted", {})
+    await spine.call("confirm_pending_action", {"pending_id": r.pending_id}, turn=2)
+    assert spine.scripted.seen[-1].action_id == r.pending_id
+
+
+async def test_the_check_is_given_the_action_id(spine: Spine) -> None:
+    spine.scripted.reconcile_result = ToolResult(ok=True, content="landed", effect="confirmed")
+    r = await spine.call("scripted", {})
+    pid = r.pending_id or ""
+    await _to_executing(spine, pid)
+    await spine.router.recover((spine.granted,))
+    assert spine.scripted.seen[-1].action_id == pid
+
+
+async def test_a_direct_call_has_no_action_id(spine: Spine) -> None:
+    ctx = spine.ctx()
+    assert ctx.action_id is None
