@@ -30,7 +30,7 @@ Most of this exists. An approved action is claimed as `executing` before its too
 | `calendar_create` | The event's own `id`: the action id hashed into base32hex (Google allows `a` to `v` and `0` to `9`, 5 to 1024 characters). Google refuses a second event with the same id. | Get the event by that id. Found, even cancelled: `confirmed` (only this action makes that id, so it was added and its guests were told). 404 or 410: `none`. |
 | `calendar_update` | None needed: the change is the evidence. | Get the event. Every field the card named already has the new value: `confirmed`. Otherwise `none`. |
 | `calendar_delete` | None needed. | Get the event. Status `cancelled`, 404 or 410: `confirmed`. Still there: `none`. |
-| `slack_post` | None: Slack has no client-supplied id. | Read the conversation (or the thread, through `conversations.replies`) since a minute before the proposal, every page of it. A message from the user (their id from `auth.test`) with exactly the approved text, once Slack's `&amp;`, `&lt;` and `&gt;` are turned back: `confirmed`. Otherwise `none`. If there is too much to read (25 pages), `unknown` at once. |
+| `slack_post` | None: Slack has no client-supplied id. | Read the conversation (or the thread, through `conversations.replies`) since a minute before the proposal, every page of it. A message from the user (their id from `auth.test`) with exactly the approved text, both read as written (Slack's link, email, mention and `<!here>` marks as their visible words, entities turned back, spaces collapsed): `confirmed`. A message from the user since then that is like it (the same words once links, mentions and punctuation are left out, or one inside the other) or was edited: `unknown` at once, leaning toward "it went", so it is never offered again. Nothing like it: `none`. If there is too much to read (25 pages), `unknown` at once. |
 
 In every check, no answer from the provider (a network error, a timeout, `answered=False`) is `unknown` with `error_kind="unreachable"`, so the check runs again later. An answer of no (403, a revoked sign-in) is also `unknown` and `unreachable`: it says nothing about whether the send happened, and may be fixed by the next check.
 
@@ -53,11 +53,13 @@ A Google or Slack server error (a 5xx, or Slack's `internal_error`, `fatal_error
 - For each action settled as `not_sent` or `unknown`, the runtime adds one notice through the one door, keyed `action:{id}` so it is made once.
 - Her line is written by one small model call, in the manner of a watcher's line (`attention/words.py`): no tools, the action's summary wrapped as untrusted, a short timeout. If the call fails or there is no model, the notice is shown by its title and not spoken (PER-11).
 - The title is the host's and says nothing private, since a lock screen is public: "A send was interrupted".
+- The notice is written first, by its title, with the action's summary as its page-only detail (never spoken, never on the system notification); her line is added once the model answers, if the notice is still held. A quit in between loses nothing. At startup, every action whose latest decision in the last 7 days is `recovered:not_sent` or `recovered:unknown`, and that has no notice and no copy asked for again, is told too.
 - What she says, roughly:
   - Not sent: "The email to Sam didn't go out before I stopped. Want me to send it?"
   - Unknown: "I can't tell whether the email to Sam went. Worth a look in your Sent folder."
 - When the user says yes, she finds the action through `decision_record` and calls `represent_pending_action`. The card says what it said before.
 - `represent_pending_action` is new in this change: a meta tool beside `confirm_pending_action` and `cancel_pending_action`, routed to the router's `represent`. It only shows a new card, which needs its own yes; a run nobody watches is refused it. Its description says when to use it (only when the user asks for the action again, its id found in `decision_record`). The persona's prompts are unchanged, so the eval baselines still match.
+- One card, one send: an action is never asked for again while a copy asked from it is open or has run, in any session (a resumed conversation keeps its session id). A copy that expired unanswered no longer counts. `decision_record` names each copy and how it ended.
 
 ## Tests
 

@@ -8,6 +8,7 @@ the exact text. What Slack returns was written by other people and is untrusted.
 from __future__ import annotations
 
 import html
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -41,6 +42,39 @@ class Wiring:
 
 class _Problem(Exception):
     pass
+
+
+_MARK = re.compile(r"<([^<>]*)>")
+_SPECIAL = {"!here": "@here", "!channel": "@channel", "!everyone": "@everyone"}
+
+
+def _shown(mark: re.Match[str]) -> str:
+    target, _, label = mark.group(1).partition("|")
+    if target in _SPECIAL:
+        return _SPECIAL[target]
+    if target.startswith(("@", "!subteam")):
+        return label or "@" + target.lstrip("@!")
+    if target.startswith("#"):
+        return "#" + label if label else target
+    return label or target.removeprefix("mailto:")
+
+
+def visible(text: str) -> str:
+    """Slack's stored text as the person wrote it: its link, mention and @here marks
+    read as their visible words, entities turned back, spaces collapsed. Run on both
+    sides of a comparison, so what she approved and what Slack kept meet."""
+    return " ".join(html.unescape(_MARK.sub(_shown, text)).split())
+
+
+def _gist(text: str) -> str:
+    """Only the words: no links, mentions or punctuation, lower case."""
+    text = re.sub(r"https?://\S+|[@#]\S+", " ", visible(text))
+    return re.sub(r"[^0-9a-z]+", "", text.lower())
+
+
+def _alike(a: str, b: str) -> bool:
+    x, y = _gist(a), _gist(b)
+    return x == y or (bool(x) and bool(y) and (x in y or y in x))
 
 
 def _one_line(text: Any, limit: int = 200) -> str:
@@ -327,7 +361,11 @@ class SlackPost(SlackTool):
             if ctx.proposed_ms is not None
             else int(time.time()) - 86_400
         )
-        text = str(args["text"]).strip()
+        text = str(args["text"])
+        # What she approved may hold Slack marks of its own, or plain < and > that Slack
+        # keeps as entities: either reading counts.
+        wanted = {visible(text), " ".join(text.split())}
+        alike = False
         try:
             token = self.token()
             cid, _ = await self.find(token, str(args["channel"]))
@@ -351,22 +389,28 @@ class SlackPost(SlackTool):
                     },
                 )
                 for m in page.get("messages", []):
-                    # Slack keeps &, < and > as entities.
-                    if (
-                        m.get("user") == me
-                        and html.unescape(str(m.get("text", ""))).strip() == text
-                    ):
+                    if m.get("user") != me:
+                        continue
+                    said = str(m.get("text", ""))
+                    if visible(said) in wanted:
                         return ToolResult(ok=True, content="Found it in Slack.", effect="confirmed")
+                    # Like it, or since edited: it may be this post, so lean toward "it went".
+                    alike = alike or _alike(said, text) or bool(m.get("edited"))
                 cursor = (page.get("response_metadata") or {}).get("next_cursor", "")
                 if not cursor:
-                    return ToolResult(
-                        ok=True, content="Not in Slack: it never went.", effect="none"
-                    )
+                    break
+            else:
+                # Too much said since to read it all: asking again won't help.
+                return ToolResult(ok=False, content="Too many messages to check.", effect="unknown")
         except (_Problem, SlackError) as e:
             # No answer, or an answer of no: neither says whether it went.
             return ToolResult(ok=False, content=str(e), effect="unknown", error_kind=UNREACHABLE)
-        # Too much said since to read it all: it can't be told, and asking again won't help.
-        return ToolResult(ok=False, content="Too many messages to check.", effect="unknown")
+        if alike:
+            # Settled at once as unknown: she says she can't tell and never offers it again.
+            return ToolResult(
+                ok=False, content="A post like it is there; it may be this one.", effect="unknown"
+            )
+        return ToolResult(ok=True, content="Not in Slack: it never went.", effect="none")
 
 
 TOOLS: tuple[type[SlackTool], ...] = (SlackSearch, SlackConversations, SlackRead, SlackPost)

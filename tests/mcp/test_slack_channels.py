@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import re
 import time
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -32,6 +33,17 @@ from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 ALLOWED = "U_OWNER"
 
 
+def slack_markup(text: str) -> str:
+    """Text as Slack keeps a post: &, < and > escaped, links and email addresses
+    wrapped, and @here, @channel and @everyone turned into its own marks."""
+    out = html.escape(text, quote=False)
+    out = re.sub(r"https?://[^\s<>]+", lambda m: f"<{m.group(0)}>", out)
+    out = re.sub(
+        r"(?<![\w<:/.])([\w.+-]+@[\w-]+\.[\w.]+\w)", lambda m: f"<mailto:{m[1]}|{m[1]}>", out
+    )
+    return re.sub(r"@(here|channel|everyone)\b", r"<!\1>", out)
+
+
 class FakeSlack:
     def __init__(self) -> None:
         self.posts: list[dict[str, Any]] = []
@@ -47,11 +59,11 @@ class FakeSlack:
         self.post_status: int | None = None
         self.page = 100
 
-    def post(self, user: str, text: str, thread_ts: str | None = None) -> str:
+    def post(self, user: str, text: str, thread_ts: str | None = None, *, raw: bool = False) -> str:
         ts = f"{time.time():.6f}"
         while self.messages and float(ts) <= float(self.messages[-1]["ts"]):
             ts = f"{float(ts) + 0.000001:.6f}"
-        m = {"user": user, "ts": ts, "text": html.escape(text, quote=False)}
+        m = {"user": user, "ts": ts, "text": text if raw else slack_markup(text)}
         if thread_ts:
             m["thread_ts"] = thread_ts
         self.messages.append(m)
@@ -308,6 +320,61 @@ async def test_the_check_reads_every_page(
     for n in range(5):  # others talk after it, so it is not on the first page
         fake_slack.post("U2", f"reply {n}")
     assert (await tool.reconcile(POST, ctx)).effect == "confirmed"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The plan is at https://example.com/plan?a=1&b=2 for Friday.",
+        "Write to sam@example.com about it.",
+        "@here lunch is in the kitchen.",
+    ],
+)
+async def test_the_check_finds_a_post_slack_rewrote(
+    spine: Spine, tmp_path: Path, slack_api: Slack, fake_slack: FakeSlack, text: str
+) -> None:
+    tool = await _post_tool(spine, tmp_path, slack_api)
+    args = {"channel": "#general", "text": text}
+    ctx = spine.ctx(action_id="a" * 32, proposed_ms=_proposed())
+    assert (await tool.execute(args, ctx)).ok
+    assert fake_slack.messages[-1]["text"] != text  # Slack kept it its own way
+    assert (await tool.reconcile(args, ctx)).effect == "confirmed"
+
+
+def test_slack_markup_reads_as_what_was_written() -> None:
+    from trillion.connectors.slack.tools import visible
+
+    assert visible("See <http://example.com|example.com> &amp; <https://example.com/a>") == (
+        "See example.com & https://example.com/a"
+    )
+    assert visible("<!here>  ask <@U1> in <#C1|general>, <mailto:a@example.com|a@example.com>") == (
+        "@here ask @U1 in #general, a@example.com"
+    )
+
+
+async def test_a_post_like_it_but_not_the_same_cannot_be_told(
+    spine: Spine, tmp_path: Path, slack_api: Slack, fake_slack: FakeSlack
+) -> None:
+    tool = await _post_tool(spine, tmp_path, slack_api)
+    ctx = spine.ctx(action_id="a" * 32, proposed_ms=_proposed())
+    args = {"channel": "#general", "text": "@sam ship it Friday."}
+    # Slack turned the name into a mention: it may be this post, so it is never offered again.
+    fake_slack.post("U_BOT", "<@U7> ship it Friday.", raw=True)
+    result = await tool.reconcile(args, ctx)
+    assert result.effect == "unknown" and result.error_kind is None
+    # An edited post from the user since then may be this one too.
+    fake_slack.messages[-1].update(text="Ship it next week.", edited={"user": "U_BOT"})
+    result = await tool.reconcile(args, ctx)
+    assert result.effect == "unknown" and result.error_kind is None
+
+
+async def test_an_unrelated_post_from_the_user_is_not_it(
+    spine: Spine, tmp_path: Path, slack_api: Slack, fake_slack: FakeSlack
+) -> None:
+    tool = await _post_tool(spine, tmp_path, slack_api)
+    ctx = spine.ctx(action_id="a" * 32, proposed_ms=_proposed())
+    fake_slack.post("U_BOT", "Coffee anyone?")
+    assert (await tool.reconcile(POST, ctx)).effect == "none"
 
 
 @pytest.mark.parametrize("trouble", ["down", "internal_error", "invalid_auth"])
