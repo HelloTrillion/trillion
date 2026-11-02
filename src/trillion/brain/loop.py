@@ -148,6 +148,8 @@ async def run_turn(
     `background`, when given, may take a slow read off the turn: the call is answered
     at once and its result arrives later, outside this turn."""
     guard = LoopGuard(limits)
+    # Whether she has said anything this turn: after that, a silence is not one.
+    spoke = False
     tools = tool_schemas(registry)
     pricing = provider.pricing()
     messages = list(history)
@@ -234,6 +236,8 @@ async def run_turn(
             return done("rounds")
 
         text: list[str] = []
+        # Whether any of this round's text has been shown yet.
+        shown = False
         uses: list[ToolUse] = []
         stop = "other"
         spent = Usage()
@@ -256,7 +260,13 @@ async def run_turn(
                     first_token = clock()
                 if isinstance(ev, TextDelta):
                     text.append(ev.text)
-                    await emit(ReplyDelta(text=ev.text))
+                    if shown:
+                        await emit(ReplyDelta(text=ev.text))
+                    elif "".join(text).strip():
+                        # Whitespace alone is shown only with the words it leads to:
+                        # before a lone stay_quiet there are none (VOI-7).
+                        shown = True
+                        await emit(ReplyDelta(text="".join(text)))
                 elif isinstance(ev, ToolUse):
                     uses.append(ev)
                 elif isinstance(ev, Done):
@@ -315,8 +325,11 @@ async def run_turn(
         not_alone = bool("".join(text).strip()) or len(uses) > 1
         answered: list[Block] = []
 
+        # A lone silence keeps no whitespace written before it.
+        written = "" if not not_alone and quiet(uses[0]) else "".join(text)
+
         async def round_trip() -> None:
-            await add(_assistant("".join(text), uses, raw))  # noqa: B023
+            await add(_assistant(written, uses, raw))  # noqa: B023
             results = await run_all(uses, refuse, not_alone)  # noqa: B023
             answered.extend(results)  # noqa: B023
             await add(Msg(role="user", blocks=tuple(results)))
@@ -328,10 +341,16 @@ async def run_turn(
         if not not_alone and quiet(uses[0]):
             (result,) = answered
             if isinstance(result, ToolResultBlock) and not result.is_error:
+                if spoke:
+                    # She already said something this turn (a line before a read): the
+                    # turn ends as one she spoke in, never as a silence. Nothing more
+                    # is asked of the model; the call and its answer stay saved.
+                    return done("end")
                 # She chose to say nothing, and the call and its answer are saved as a
                 # pair like any other: later turns see the silence was hers. The session
                 # decides what the room does next.
                 return done("quiet", quiet=str(uses[0].args.get("kind")))
+        spoke = spoke or bool("".join(text).strip())
 
 
 def kept_of(written: str, heard: str | None) -> str:

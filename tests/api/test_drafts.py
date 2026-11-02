@@ -428,3 +428,21 @@ async def test_a_host_note_never_carries_the_checkpoint(rt: Runtime) -> None:
     own = (await session._build_input("user", "and another thing")).msg.blocks[0]
     assert isinstance(own, ContextBlock) and "Snap back now" in own.text
     await session.close()
+
+
+async def test_a_draft_may_end_in_silence_like_any_reply(rt: Runtime) -> None:
+    """VOI-12 and VOI-7: a used draft that stays quiet ends the turn quiet."""
+    stt, provider = judging(rt, use("stay_quiet", {"kind": "done"}, "q1"))
+    session, page = await start(rt)
+    stt.stream.say("okay thanks that's all", final=False, turn="maybe")
+    await until(lambda: len(provider.calls) == 1)
+    await asyncio.sleep(0.01)
+    assert not page.all("tool.start")  # held, not run
+    await finish(session, stt, "Okay, thanks, that's all.")
+    assert len(provider.calls) == 1  # the draft was the turn's only call
+    complete = page.all("turn.complete")[-1]
+    assert complete["stop"] == "quiet" and complete["quiet"] == "done"
+    assert page.all("seen") == [{"type": "seen"}] and drafts() == ["used"]
+    kinds = [k for k, _ in await rt.conversations.history(session.id, "local")]
+    assert kinds == ["user", "assistant", "tool_results"]
+    await session.close()

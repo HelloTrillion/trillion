@@ -542,6 +542,9 @@ class Session:
         # The page said she was heard to the end while her turn was still finishing:
         # the follow-up is decided once the turn is over.
         self._ended_early = False
+        # The number the running turn's speech is heard as: only its own "played" is
+        # remembered while it finishes, never an earlier turn's arriving late.
+        self._playing: int | None = None
         # The messages the model is sent, after the latest summary, each with its kind
         # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
@@ -1130,8 +1133,9 @@ class Session:
             elif self._answered_aloud() and self._listener is None:
                 if self._task is None:
                     await self._on_listen(FOLLOW_UP_S, follow_up=True)
-                else:
-                    # Her turn is still finishing: it opens once the turn is over.
+                elif turn_id is not None and turn_id == self._playing:
+                    # Her turn is still finishing: it opens once the turn is over. An
+                    # earlier turn's end, heard while a later one runs, opens nothing.
                     self._ended_early = True
             await self._offer()
         elif kind in ("board.open", "board.close", "board.remove"):
@@ -2283,6 +2287,7 @@ class Session:
         # A "played" from here on is this turn's, or a later one's.
         self._ended_early = False
         self._quiet = self._quiet_turn = None
+        self._playing = None
         if rt.tts is not None and rt.speech is not None and not self._muted:
             # A turn's number is heard once: a tap's answer in the same turn gets its own,
             # or the page's "played" for the first would pass for it (VOI-17).
@@ -2300,6 +2305,8 @@ class Session:
                 rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes, on_audio
             )
         self._speaker = speaker
+        # With no voice there is nothing to be heard, so no "played" is this turn's.
+        self._playing = heard_as if speaker is not None else None
         self._tail = None
         # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
         # read, and so was one with her voice off (D8).

@@ -790,3 +790,24 @@ async def test_keeping_for_later_stops_when_the_conversation_is_deleted(rt: Runt
     assert len(notes(await rt.conversations.history(cid, OWNER))) == 1
     assert rt.schedules is not None and await rt.schedules.held(OWNER) == []
     assert cid not in rt.routine_holds
+
+
+async def test_the_turn_bringing_a_read_in_may_not_stay_quiet(rt: Runtime) -> None:
+    """A background note's turn is the host's (VOI-7): she answers it, never silence."""
+    tool = slow(rt)
+    session, page, provider = await started(
+        rt, use("stay_quiet", {"kind": "done"}, "q1"), say("Your Stripe numbers are in.")
+    )
+    tool.gate.set()
+    await until(lambda: len(provider.calls) == 4, "her answer after the refusal")
+    await idle(session)
+    (result,) = [
+        b
+        for m in provider.calls[-1][1]
+        for b in m.blocks
+        if isinstance(b, ToolResultBlock) and b.tool_use_id == "q1"
+    ]
+    assert result.is_error and "note from the app" in result.content
+    assert page.all("turn.complete")[-1]["stop"] == "end"
+    assert page.all("seen") == []
+    await session.close()

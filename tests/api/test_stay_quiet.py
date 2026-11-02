@@ -13,8 +13,9 @@ from typing import Any
 import pytest
 
 from tests.api.test_server import home, make, only, propose  # noqa: F401
-from tests.api.test_session import Page, idle
-from tests.brain.fakes import USAGE, ScriptedProvider, say, use
+from tests.api.test_session import Page, create, idle
+from tests.api.test_session_notices import voiced
+from tests.brain.fakes import USAGE, ScriptedProvider, is_naming, say, use
 from tests.voice.audio import frames, room, tone
 from tests.voice.fakes import FakeSTT
 from trillion.api.listening import QUIET_LISTEN_S
@@ -287,6 +288,7 @@ async def test_played_before_the_turn_is_over_still_reopens_the_microphone(
 ) -> None:
     """The hot-mic race: `playback.ended` while the turn's task is still set."""
     stt = hearing(rt)
+    voiced(rt)
     provider = _Held(say("Morning."))
     rt.provider = provider
     page = Page(rt)
@@ -343,3 +345,98 @@ def test_leaving_after_a_quiet_listening_leaves_nothing_running(make: Any) -> No
     assert session._task is None and session._watchdog is None
     assert all(s.closed for s in stt.streams)
     assert len(app.provider.calls) == 1
+
+
+class _HeldAfter(ScriptedProvider):
+    """Answers its first `free` calls at once, then holds each later one until let go."""
+
+    def __init__(self, *replies: Any, free: int) -> None:
+        super().__init__(*replies)
+        self.free = free
+        self.go = asyncio.Event()
+        self.asked = asyncio.Event()
+
+    async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:  # type: ignore[override]
+        if len(self.calls) >= self.free and not is_naming(kw["system"]):
+            self.asked.set()
+            await self.go.wait()
+        async for ev in super().stream(**kw):
+            yield ev
+
+
+async def test_an_earlier_turns_played_never_opens_the_microphone_after_a_later_one(
+    rt: Runtime,
+) -> None:
+    """Her spoken turn still plays; a tap starts the turn that answers it; the first
+    turn's "played" arrives while that one runs. The microphone must not open when it
+    ends: its own words are still being heard."""
+    stt = hearing(rt)
+    voiced(rt)
+    provider = _HeldAfter(
+        create(rt, "a.txt", "c1"), say("Shall I?"), say("Done, it's written."), free=2
+    )
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await spoken_turn(session, stt, "write a note called a")
+    (card,) = page.all("confirm.request")
+    first = page.all("audio.end")[-1]["turn"]
+    await session.handle({"type": "confirm", "pending_id": card["pending_id"]})
+    await provider.asked.wait()
+    assert session._task is not None
+    await session.handle({"type": "playback.ended", "turn_id": first, "played_ms": 900})
+    provider.go.set()
+    await idle(session)
+    await page.until("turn.complete", 2)
+    # Past where the window would have opened.
+    await asyncio.sleep(0.05)
+    assert orbs(page)[-1] == "idle"
+    assert page.all("audio.end")[-1]["turn"] != first
+    assert len(page.all("mic.start")) == 1
+    await session.close()
+
+
+async def test_a_refused_sign_off_is_never_marked_seen(rt: Runtime) -> None:
+    """Refused on the turn that answers a tap, so she answered: no mark, now or after
+    a reload."""
+    hearing(
+        rt,
+        create(rt, "a.txt", "c1"),
+        say("Shall I?"),
+        use(QUIET, {"kind": "done"}, call_id="q1"),
+        say("Done, it's written."),
+    )
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "write a note called a"})
+    await idle(session)
+    (card,) = page.all("confirm.request")
+    await session.handle({"type": "confirm", "pending_id": card["pending_id"]})
+    await page.until("turn.complete", 2)
+    await idle(session)
+    assert page.all("seen") == []
+    await session.close()
+    again = Page(rt)
+    reopened = await Session.start(rt, again.send, session.id)
+    (history,) = again.all("history")
+    assert not any(m.get("seen") for m in history["messages"])
+    await reopened.close()
+
+
+async def test_a_typed_trailing_off_is_answered(rt: Runtime) -> None:
+    """Typing has no pauses to wait through: `listening` is refused and she answers."""
+    hearing(rt, use(QUIET, {"kind": "listening"}, call_id="q1"), say("Go on, what's the idea?"))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "I was wondering if"})
+    await idle(session)
+    await asyncio.sleep(0.02)
+    complete = page.all("turn.complete")[-1]
+    assert complete["stop"] == "end" and "quiet" not in complete
+    assert "".join(m["text"] for m in page.all("reply.delta")) == "Go on, what's the idea?"
+    assert page.all("mic.start") == [] and page.all("seen") == []
+    assert session._window is None and session._listener is None
+    last = rt.provider.calls[-1][1]  # type: ignore[union-attr]
+    (result,) = [b for b in last[-1].blocks if isinstance(b, ToolResultBlock)]
+    assert result.is_error and "typed" in result.content.lower()
+    await session.close()
