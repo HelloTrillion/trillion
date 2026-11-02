@@ -41,6 +41,8 @@ MAX_TEXT = 20_000
 MAX_RESULTS = 25
 _EMAIL = re.compile(r"^[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+$")
 _LINE = re.compile(r"[\r\n]")
+# A check's "couldn't tell, try again later" (spine.contract.UNREACHABLE).
+UNREACHABLE = "unreachable"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -143,7 +145,7 @@ class GoogleTool(BaseTool):
     def required(self) -> Sequence[str]:
         return ()
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         raise NotImplementedError
 
     # Shared.
@@ -174,7 +176,7 @@ class GoogleTool(BaseTool):
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         try:
-            text = await self.run(self.account(args), args)
+            text = await self.run(self.account(args), args, ctx)
         except _Problem as e:
             return ToolResult(ok=False, content=str(e), effect="none", error_kind="refused")
         except GoogleCallError as e:
@@ -232,6 +234,12 @@ def _addresses(raw: Any, what: str) -> list[str]:
     return out
 
 
+def _message_id(account: str, action_id: str) -> str:
+    """The Message-ID an approved email carries: its action's id at the sender's domain."""
+    domain = account.rsplit("@", 1)[-1] or "trillion.local"
+    return f"<trillion-{action_id}@{domain}>"
+
+
 _TO = {"type": "array", "items": {"type": "string", "maxLength": 254}, "maxItems": 30}
 
 
@@ -256,7 +264,7 @@ class GmailSearch(GoogleTool):
             "max": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         found = await self.call(
             account,
             "GET",
@@ -300,7 +308,7 @@ class GmailRead(GoogleTool):
     def required(self) -> Sequence[str]:
         return ("message_id",)
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         msg = await self.call(
             account,
             "GET",
@@ -350,7 +358,9 @@ class _Compose(GoogleTool):
     def verb(self) -> str:
         raise NotImplementedError
 
-    async def build(self, account: str, args: JSON) -> dict[str, Any]:
+    async def build(
+        self, account: str, args: JSON, *, action_id: str | None = None
+    ) -> dict[str, Any]:
         to = _addresses(args.get("to"), "To")
         cc = _addresses(args.get("cc"), "Cc")
         if not to:
@@ -363,6 +373,11 @@ class _Compose(GoogleTool):
         if cc:
             msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
+        if action_id:
+            # OPS-1: how a check after a crash finds this email in Sent. Set once:
+            # EmailMessage adds no Message-ID of its own, and Gmail keeps a valid one.
+            del msg["Message-ID"]
+            msg["Message-ID"] = _message_id(account, action_id)
         body: dict[str, Any] = {}
         if args.get("reply_to_id"):
             original = await self.call(
@@ -408,7 +423,7 @@ class GmailDraft(_Compose):
     def verb(self) -> str:
         return "Save a Gmail draft"
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         made = await self.call(
             account,
             "POST",
@@ -436,14 +451,42 @@ class GmailSend(_Compose):
     def verb(self) -> str:
         return "Send an email"
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         sent = await self.call(
             account,
             "POST",
             "/gmail/v1/users/me/messages/send",
-            body=await self.build(account, args),
+            body=await self.build(account, args, action_id=ctx.action_id),
         )
         return f"Sent from {account} (message id {sent.get('id', '')})."
+
+    async def reconcile(self, args: JSON, ctx: ToolContext) -> ToolResult | None:
+        """Did this approved email go out? Looked up in Sent after a crash (OPS-1)."""
+        if not ctx.action_id:
+            return None
+        try:
+            account = self.account(args)
+            tag = _message_id(account, ctx.action_id)
+            if await self._found(account, f"in:sent rfc822msgid:{tag}"):
+                return ToolResult(ok=True, content="Found it in Sent.", effect="confirmed")
+            # Gmail may replace the header. This looser match could also catch another
+            # email like it, which errs toward "it went": that never sends twice.
+            words = ["in:sent", *(f"to:{a}" for a in _addresses(args.get("to"), "To"))]
+            subject = " ".join(str(args.get("subject", "")).replace('"', " ").split())
+            if subject:
+                words.append(f'subject:"{subject}"')
+            if await self._found(account, " ".join([*words, "newer_than:2d"])):
+                return ToolResult(ok=True, content="Found it in Sent.", effect="confirmed")
+        except (_Problem, GoogleCallError) as e:
+            # No answer, or an answer of no: neither says whether it went.
+            return ToolResult(ok=False, content=str(e), effect="unknown", error_kind=UNREACHABLE)
+        return ToolResult(ok=True, content="Not in Sent: it never went.", effect="none")
+
+    async def _found(self, account: str, q: str) -> bool:
+        found = await self.call(
+            account, "GET", "/gmail/v1/users/me/messages", params={"q": q, "maxResults": 1}
+        )
+        return bool(found.get("messages"))
 
 
 # ── Calendar ─────────────────────────────────────────────────────────────
@@ -518,7 +561,7 @@ class CalendarEvents(GoogleTool):
             "max": {"type": "integer", "minimum": 1, "maximum": 50},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         a, b = _range(args)
         params: dict[str, Any] = {
             "timeMin": a,
@@ -560,7 +603,7 @@ class CalendarFree(GoogleTool):
             "end": {"type": "string", "maxLength": 40},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         a, b = _range(args)
         found = await self.call(
             account,
@@ -675,7 +718,7 @@ class CalendarCreate(_EventChange):
             )
         )
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         body = self.event_body(args)
         body["summary"] = str(args["title"])
         made = await self.call(
@@ -720,7 +763,7 @@ class CalendarUpdate(_EventChange):
             )
         )
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         await self.check_title(account, args)
         changed = await self.call(
             account,
@@ -761,7 +804,7 @@ class CalendarDelete(_EventChange):
             " Guests are told it is cancelled."
         )
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         await self.check_title(account, args)
         await self.call(
             account,
@@ -835,7 +878,7 @@ class DriveSearch(GoogleTool):
             "max": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS},
         }
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         found = await self.call(
             account,
             "GET",
@@ -879,7 +922,7 @@ class DriveRead(GoogleTool):
     def required(self) -> Sequence[str]:
         return ("file_id",)
 
-    async def run(self, account: str, args: JSON) -> str:
+    async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         fid = str(args["file_id"])
         meta = await self.call(
             account, "GET", f"/drive/v3/files/{fid}", params={"fields": "name,mimeType,size"}
