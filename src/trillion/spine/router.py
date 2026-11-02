@@ -31,6 +31,8 @@ from trillion.spine.confirm import (
     CANCEL_TOOL,
     CONFIRM_TOOL,
     EXPIRY_MS,
+    META_TOOLS,
+    REPRESENT_TOOL,
     REPRESENTABLE,
     PendingAction,
     Refusal,
@@ -346,7 +348,7 @@ class Router:
         ) -> RouterResponse:
             return await self._audit(ctx, start, call.name, h or _UNHASHABLE, risk, decision, r)
 
-        if call.name in (CONFIRM_TOOL.name, CANCEL_TOOL.name):
+        if call.name in META_TOOLS:
             pid = call.args.get("pending_id")
             extra = set(call.args) - {"pending_id"}
             if not isinstance(pid, str) or not pid or extra:
@@ -354,13 +356,16 @@ class Router:
             if ctx.via in _UNWATCHED:
                 # Nobody said yes or no: an unattended run settles no card (D5).
                 return await audited("meta", _refused(Refusal.UNATTENDED, _UNATTENDED))
-            decision: Literal["confirm", "cancel"] = (
-                "confirm" if call.name == CONFIRM_TOOL.name else "cancel"
-            )
             # A tap belongs to one action, not to the turn it happened in: the model can
             # never pass one on. Only the UI's direct `resolve` call carries `via="tap"`.
             if ctx.via == "tap":
                 ctx = dataclasses.replace(ctx, via="text")
+            if call.name == REPRESENT_TOOL.name:
+                # Only ever a new card, waiting for its own yes. It audits itself.
+                return await self.represent(pid, ctx)
+            decision: Literal["confirm", "cancel"] = (
+                "confirm" if call.name == CONFIRM_TOOL.name else "cancel"
+            )
             resolved = await self.resolve(pid, decision, ctx)
             # An approved action that then fails is a failure of its tool, counted like
             # any other (SPN-7): otherwise a proposal that fails every time could be

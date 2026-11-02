@@ -159,7 +159,23 @@ CANCEL_TOOL = ToolDefinition(
     trusted_output=True,
 )
 
+REPRESENT_TOOL = ToolDefinition(
+    name="represent_pending_action",
+    description=(
+        "Ask again for an action that expired, was invalidated, or that a check after a "
+        "crash proved never went out. It shows a new card, which the user must approve like "
+        "any other; it never runs anything. Call it only when the user asks for that action "
+        "again, and find its pending_id with decision_record first."
+    ),
+    input_schema=_ID_ONLY,
+    risk=Risk.WRITE,
+    category="meta",
+    timeout_s=30.0,
+    trusted_output=True,
+)
+
 META_TOOLS: dict[str, ToolDefinition] = {
     CONFIRM_TOOL.name: CONFIRM_TOOL,
     CANCEL_TOOL.name: CANCEL_TOOL,
+    REPRESENT_TOOL.name: REPRESENT_TOOL,
 }
