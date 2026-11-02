@@ -24,7 +24,8 @@ _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
 # A standing rule is the user's own word: a run nobody is watching never changes one.
 # A routine's own tools change a routine, or end its run: never a plain timed ask's.
 # What she speaks up about is the user's to change, never a run's.
-UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules", "routine", "attention"})
+# Staying quiet ends a turn someone is listening to: a run nobody watches has none.
+UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules", "routine", "attention", "quiet"})
 # What a routine's run gets besides (the routines spec, D5): the board tools, on its own
 # conversation only (the router checks which), and the way to say it has nothing.
 # Named here so the spine needs nothing from the tools (tests check the names still match).

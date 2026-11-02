@@ -79,6 +79,10 @@ class ToolContext:
     # When that action was proposed, in epoch milliseconds: a check looks no earlier
     # than this. None on the direct path.
     proposed_ms: int | None = None
+    # The turn answers a host note (a card's tap, a background read, the day's build),
+    # not words of the user's. Set by the session from what the turn answers, never from
+    # anything the model says. She may not stay quiet on such a turn (VOI-7).
+    host_turn: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -2269,13 +2269,16 @@ class Session:
                 trace.draft = "dropped"
                 await self._let_go(using)
                 using = None
+            # A turn that answers the app's own note (a card's tap, a background read, the
+            # day's build) and not the user's words: she may not stay quiet on it (VOI-7).
+            host_turn = self._kinds[-1:] == ["tap"]
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
                 registry=rt.registry.offered(self._offers),
                 system=system,
                 history=compact.with_summary(self._summary, self._history),
-                ctx=lambda call_id: self._ctx(call_id, turn=turn),
+                ctx=lambda call_id: self._ctx(call_id, turn=turn, host_turn=host_turn),
                 # The day board is built from its reads in one turn: none goes aside.
                 background=None if self._building_day else self._background,
                 emit=emit,
@@ -2325,7 +2328,8 @@ class Session:
             if down is not None:
                 final = "error"
                 await self._error("provider", kind=done.error_kind, sentence=down)
-            elif done.stop != "end":
+            elif done.stop not in ("end", "quiet"):
+                # A chosen silence is no failure: it has no notice (VOI-7).
                 await self._send("notice", code="stopped", reason=done.stop)
             # Kept before the page hears the turn is over, so the next one never waits on it.
             await self._keep_trace(trace, done.stop, voiced=speaker is not None)
@@ -2333,6 +2337,7 @@ class Session:
             await self._send(
                 "turn.complete",
                 stop=done.stop,
+                **({"quiet": done.quiet} if done.quiet is not None else {}),
                 cost_usd=done.cost_usd,
                 usage={
                     "input_tokens": u.input_tokens,
@@ -2827,6 +2832,7 @@ class Session:
         via: Literal["voice", "text", "tap", "channel"] | None = None,
         *,
         turn: int | None = None,
+        host_turn: bool = False,
     ) -> ToolContext:
         at = self._turn if turn is None else turn
         # Looked at for each call and each tap, off the event loop. A tap's context is
@@ -2842,6 +2848,7 @@ class Session:
             granted_roots=roots,
             read_only_roots=read_only,
             read_outside=at in self._outside,
+            host_turn=host_turn,
         )
 
     async def _save(self, kind: Kind, msg: Msg) -> None:

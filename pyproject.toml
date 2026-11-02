@@ -86,6 +86,7 @@ routine_narrow = "trillion.tools.routine:RoutineNarrow"
 routine_widen = "trillion.tools.routine:RoutineWiden"
 speak_up_narrow = "trillion.tools.speak_up:SpeakUpNarrow"
 speak_up_widen = "trillion.tools.speak_up:SpeakUpWiden"
+stay_quiet = "trillion.tools.quiet:StayQuiet"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]
