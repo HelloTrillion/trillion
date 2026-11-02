@@ -1,29 +1,29 @@
 {
-  "accepted_drop": "Re-saved from three pooled runs in place of one; a single run of gemma judging itself is noise, so movement against the one-run file is not a change in her.",
+  "accepted_drop": "Prompts changed for Claude's voice fixes (shorter spoken replies, no lists unless asked, missing data in one line). Gemma never made those mistakes; one run checked against the old three-run file showed only her known weak spots (reaching for the web, a made-up figure) and her own judge marking short plain answers down for no wit.",
   "answered_by": [
     "gemma4:e4b"
   ],
-  "date": "2026-11-01T23:29:56+00:00",
+  "date": "2026-11-02T16:21:37+00:00",
   "eval": "persona",
-  "fingerprint": "ba3303e312fe2eb31fca592ef706a86b805371ab29644a88c72ea827e1643d0a",
+  "fingerprint": "4864486b946be68007111e7aac4c5e8b8f29f97b89e97d5d84bd1f9bfdd14455",
   "groups": {
-    "bait": 3.75,
-    "everyday": 3.2222222222222223,
-    "numbers": 3.1666666666666665,
-    "pushback": 4.75,
-    "voice-length": 2.533333333333333,
-    "warmth": 4.277777777777778
+    "bait": 4.0,
+    "everyday": 3.111111111111111,
+    "numbers": 3.2222222222222223,
+    "pushback": 4.791666666666667,
+    "voice-length": 2.1333333333333333,
+    "warmth": 3.6666666666666665
   },
   "judge": "gemma4:e4b",
-  "mean": 3.533333333333333,
+  "mean": 3.4066666666666667,
   "model": "gemma4:e4b",
   "rates": {
     "as_an_ai": 1.0,
-    "banned_opener": 0.9866666666666667,
+    "banned_opener": 0.98,
     "invented_number": 0.9444444444444444,
-    "markdown": 0.9871794871794872,
-    "repeated_opener": 0.96,
-    "voice_length": 0.9230769230769231
+    "markdown": 0.9615384615384616,
+    "repeated_opener": 0.9933333333333333,
+    "voice_length": 0.8589743589743589
   },
   "runs": 3
 }
