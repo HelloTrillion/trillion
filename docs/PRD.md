@@ -109,7 +109,7 @@ Voice costs money at the provider, and the honest version of "ten minutes" says 
 
 **Development-time dependencies are a separate matter.** GitHub, PyPI, npm and CI exist for people building Trillion, not for people running it. A dependency is only acceptable at runtime if it passes the test below.
 
-**The airplane test:** with the network off, Trillion must still start, render the Galaxy, open settings, read and write memory, and explain why voice is unavailable. Only the calls to the user's chosen providers may fail, and they must fail with a clear message rather than a crash or a hang. This is a required test (`tests/integration/test_offline_start.py`).
+**The airplane test:** with the network off, Trillion must still start, render the Galaxy, open settings, read and write memory, and explain why voice is unavailable. Only the calls to the user's chosen providers may fail, and they must fail with a clear message rather than a crash or a hang. This is a required test (`tests/integration/test_airplane.py`).
 
 ### Success metrics (Phase 1 alpha)
 
@@ -155,7 +155,7 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 
 ### 5.2 Pillar 2: The Voice (real-time conversation and personality)
 
-#### Voice pipeline — `trillion/voice` + `apps/web/src/voice`
+#### Voice pipeline — `trillion/voice` + `apps/web/src/voice.ts`
 
 | ID | Requirement | Pri |
 |---|---|---|
@@ -171,7 +171,7 @@ The Galaxy is a **standalone TypeScript package** with no dependency on the back
 | VOI-10 | **Push-to-talk and the hot mic are the Shell's way in.** A click or a global hotkey starts capture; after she replies the mic reopens for 3.0s (VOI-8). No wake word is required to use Trillion. | P0 |
 | VOI-10a | **Wake word**, "Hello Trillion" for every install whatever the agent is called, via openWakeWord and the bundled model. Muted while she speaks, and switchable off. The wake phrase is a **separate setting from `agent_name`** (`wake.model` + `wake.phrase`); nothing in the core may assume they match. | P1 |
 | VOI-10b | **Custom wake words**: openWakeWord models trained on synthetic speech for "Hey {agent_name}", generated during onboarding. Opt-in transcript-based name spotting as a fallback. | P2 |
-| VOI-11 | **Provider interfaces** for STT, TTS and VAD (§8.2) from the first commit, **and never shaped by one vendor.** Each provider is one adapter file plus one catalog entry; the settings panel is generated from the catalog; the core never names a vendor. Two things keep that true: at least two very different providers ship behind each interface from the first slice (one free and local, one paid and hosted), and every adapter passes one shared contract suite (`tests/voice/contract/`). Adding a provider means writing the adapter and running the suite, with no change to the core. | P0 |
+| VOI-11 | **Provider interfaces** for STT, TTS and VAD (§8.2) from the first commit, **and never shaped by one vendor.** Each provider is one adapter file plus one catalog entry; the settings panel is generated from the catalog; the core never names a vendor. Two things keep that true: at least two very different providers ship behind each interface from the first slice (one free and local, one paid and hosted), and every adapter passes one shared contract suite (`tests/voice/test_*_contract.py`). Adding a provider means writing the adapter and running the suite, with no change to the core. | P0 |
 | VOI-11a | **Choosing a voice provider in the app**, the same way a model is chosen: pick a provider, paste a key if it needs one (secure field, checked before it is saved, stored in the keychain), list the voices it offers, pick one with a spoken preview. Changeable any time in Settings → Voice. Each row says what it costs and what the free alternative is (ONB-9). | P0 |
 | VOI-11b | **A free voice path at every rung.** Speaking: the computer's own system voice (no setup, works at once, sounds synthetic) and a local neural voice (Kokoro or Piper; a one-time download, runs on the machine, nothing leaves it). Listening: local Whisper (faster-whisper; a one-time download). Model files follow ONB-7: fetched once from a pinned URL, checksum-verified, never at runtime. The browser's built-in speech *recognition* is deliberately not offered: in some browsers it sends audio to a third party the user never chose. | P0 |
 | VOI-11c | **Paid hosted adapters at Phase 0:** ElevenLabs (TTS), Deepgram Flux (STT), and OpenAI speech and transcription, which reuse a key many users have already entered. **Later:** Cartesia, Deepgram Aura and others, each a one-file contribution. | P0 / P2 |
