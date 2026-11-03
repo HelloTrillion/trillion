@@ -54,9 +54,43 @@ class DenyPolicy:
             protected_roots=(
                 paths.home().expanduser().resolve(),
                 paths.package_root(),
-                (Path.home() / "Library" / "Keychains").resolve(),
+                *credential_stores(),
             )
         )
+
+
+def credential_stores() -> tuple[Path, ...]:
+    """Where each operating system keeps its keychain, held on every OS (SEC-10).
+
+    A home folder copied from another machine, or a disk mounted from one, carries
+    its stores along. Moved data folders are followed, and the usual spots are kept
+    too, since a variable can change after this is read.
+    """
+    home = Path.home()
+    share = [home / ".local" / "share"]
+    roaming = [home / "AppData" / "Roaming"]
+    local = [home / "AppData" / "Local"]
+    for var, into in (("XDG_DATA_HOME", share), ("APPDATA", roaming), ("LOCALAPPDATA", local)):
+        if moved := os.environ.get(var):
+            into.append(Path(moved))
+    found = [
+        home / "Library" / "Keychains",  # macOS
+        home / ".kde" / "share" / "apps" / "kwallet",  # KWallet 4
+        home / ".kde4" / "share" / "apps" / "kwallet",
+        *(d / name for d in share for name in ("keyrings", "kwalletd")),  # Secret Service, KWallet
+        # Credential Manager, DPAPI master keys, and the Vault.
+        *(d / "Microsoft" / n for d in roaming for n in ("Credentials", "Protect", "Vault")),
+        *(d / "Microsoft" / n for d in local for n in ("Credentials", "Vault")),
+    ]
+    out: list[Path] = []
+    for p in found:
+        try:
+            r = p.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if r not in out:
+            out.append(r)
+    return tuple(out)
 
 
 def fold(s: str) -> str:

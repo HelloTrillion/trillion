@@ -306,16 +306,15 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def _secrets_in_use(rt: Any) -> list[str]:
-    """Every credential this process can currently send, for the log scrubber."""
-    from trillion.brain.config import ANTHROPIC_KEY, KINDS, OPENAI_KEY, secret_name
-    from trillion.voice.catalog import LISTENING, SPEECH
+    """Every credential this process can currently send, for the log scrubber.
 
-    names = [secret_name(k) for k in KINDS]
-    names += [o.secret for o in SPEECH if o.needs_key]
-    names += [o.secret for o in LISTENING if o.needs_key]
-    stored = [rt.secrets.get(n) for n in names]
-    from_env = [os.environ.get(ANTHROPIC_KEY), os.environ.get(OPENAI_KEY)]
-    return [v for v in (*stored, *from_env, rt.token) if v]
+    The store notes each value it reads or writes, for every connector, so a value
+    fetched lazily is known from the moment it is in memory.
+    """
+    from trillion.secrets.redact import env_secrets
+    from trillion.secrets.store import handed_out
+
+    return [v for v in (*handed_out(), *env_secrets(os.environ), rt.token) if v]
 
 
 def _port_is_free(host: str, port: int) -> bool:

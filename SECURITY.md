@@ -186,9 +186,22 @@ is a known limit of this phase.
   she can save a memory without asking. Forgetting a memory and keeping or
   dropping a standing rule are `irreversible`, so they ask.)
 - **The deny floor** refuses Trillion's own data folder (its database,
-  secrets file and identity files), its source code, the macOS keychains,
-  and `.git`, `.ssh`, `.aws`, `.gnupg` and `.env` files — on the normal path
-  and again on the approved path.
+  secrets file and identity files), its source code, the operating system's
+  credential stores, and `.git`, `.ssh`, `.aws`, `.gnupg` and `.env` files,
+  on the normal path and again on the approved path. The credential stores
+  are the macOS keychains, the Linux keyrings (Secret Service and KWallet),
+  and Windows Credential Manager, the DPAPI master keys and the Vault. All of
+  them are refused on every OS, including where `%APPDATA%`,
+  `%LOCALAPPDATA%` or `$XDG_DATA_HOME` has been moved. Proven by
+  `tests/spine/test_credential_stores.py`.
+- **Logs never carry a credential** (SEC-5). Every log record is scrubbed
+  before it is written: by the shapes providers issue (Anthropic, OpenAI,
+  Slack, Google, Stripe, Telegram, GitHub, ElevenLabs, bearer headers), and
+  by value. The keychain store notes every value it reads or writes, for
+  every connector, including the secret fields inside a stored sign-in, so
+  a key fetched late or with no known shape is scrubbed too, as are
+  environment variables named like credentials and the session token.
+  Proven by `tests/unit/test_secrets.py`.
 - **A file tool never opens a path by name.** It applies the floor once more,
   then walks down from the granted folder one name at a time, each step opened
   relative to the last and refused if it is a link, so a folder swapped for a
@@ -229,8 +242,6 @@ rely on them:
   tunnel.
 - **An encrypted-file fallback for keys** (SEC-2), for machines with no
   keychain.
-- **The deny floor on Linux and Windows credential stores** (SPN-4). It names
-  the macOS keychains only.
 - **Database hardening on Windows** (SUR-3c). Windows relies on the home
   folder's own permissions for now.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.

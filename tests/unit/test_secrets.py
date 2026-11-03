@@ -154,3 +154,149 @@ def test_a_failing_lookup_of_known_values_does_not_break_or_recurse() -> None:
         log.warning("still logs: %s", SAMPLE)  # shape-scrubbed, no recursion error
     finally:
         undo()
+
+
+# Every fake below is assembled from pieces, so no secret scanner mistakes it for a
+# real key, but each one has the shape the provider issues.
+_A36 = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A"
+SHAPED = {
+    "slack bot": "xox" + "b-1234567890-1234567890123-" + _A36[:24],
+    "slack user": "xox" + "p-1234567890-1234567890-1234567890123-" + "ab12" * 8,
+    "slack app": "xa" + "pp-1-A0123456789-1234567890123-" + "ab12" * 16,
+    "slack rotating": "xox" + "e.xoxp-1-" + _A36 + _A36,
+    "google access": "ya" + "29." + "a0AfB_" + _A36 + _A36,
+    "google refresh": "1/" + "/0g" + _A36 + "-" + _A36,
+    "google api key": "AI" + "za" + "Sy" + _A36[:33],
+    "stripe live": "sk" + "_live_" + "51H" + _A36 + _A36[:20],
+    "stripe test": "sk" + "_test_" + "51H" + _A36 + _A36[:20],
+    "stripe restricted": "rk" + "_live_" + "51H" + _A36 + _A36[:20],
+    "stripe webhook": "wh" + "sec_" + _A36[:32],
+    "telegram": "1234567890" + ":" + "AAH" + _A36[:32],
+    "github classic": "gh" + "p_" + _A36,
+    "github fine grained": "github" + "_pat_" + "11ABCDEFG0" + _A36[:12] + "_" + _A36 * 2,
+    "elevenlabs": "sk" + "_" + "0123456789abcdef" * 3,
+}
+
+
+@pytest.mark.parametrize("kind", sorted(SHAPED))
+def test_every_known_key_shape_is_scrubbed(kind: str) -> None:
+    key = SHAPED[kind]
+    cleaned = redact.scrub(f"sending {key} to the provider, then '{key}'.")
+    assert key not in cleaned, kind
+    assert cleaned == f"sending {redact.REDACTED} to the provider, then '{redact.REDACTED}'."
+
+
+def test_the_telegram_shape_needs_exactly_its_own_form() -> None:
+    assert redact.scrub("ran 12:30:00 then 2024:01") == "ran 12:30:00 then 2024:01"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "the task is done",
+        "commit 3487279c8b60be1b8c560ee78121ab8acdd0f1e2 merged",  # a git sha
+        "an id 0123456789abcdef0123456789abcdef01234567 checked",  # 40 hex, no prefix
+        "see https://example.com/v1//path and 1//2 of the pie",
+        "xoxo and hugs, the sk_ prefix, task_live_feed, ghp is short",
+        "meeting at 10:30, ticket 123456:abc",
+        "AIza is a word here",
+        "uuid 123e4567-e89b-12d3-a456-426614174000 is fine",
+        "github_pat_ alone",
+        "my_ya29.notes and whsec_ alone",
+    ],
+)
+def test_ordinary_lines_are_not_mistaken_for_keys(line: str) -> None:
+    assert redact.scrub(line) == line
+
+
+def test_the_store_remembers_every_value_it_hands_out(keychain: FakeKeychain) -> None:
+    from trillion.secrets import store as store_mod
+
+    keychain.items[("trillion", "stripe/api_key")] = "lazily-read-value-0001"
+    kc = KeychainStore()
+    assert "lazily-read-value-0001" not in store_mod.handed_out()  # not read yet
+    assert kc.get("stripe/api_key") == "lazily-read-value-0001"
+    kc.set("telegram/bot", "set-from-the-page-0002")
+    mem = MemoryStore()
+    mem.set("slack/bot", "memory-store-value-0003")
+    seen = store_mod.handed_out()
+    for v in ("lazily-read-value-0001", "set-from-the-page-0002", "memory-store-value-0003"):
+        assert v in seen
+
+
+def test_json_entries_expose_their_secret_fields_not_their_labels() -> None:
+    import json
+
+    from trillion.secrets import store as store_mod
+
+    mem = MemoryStore()
+    mem.set(
+        "google/account/a@example.com",
+        json.dumps(
+            {
+                "refresh_token": "nested-refresh-value-0004",
+                "access_token": "nested-access-value-0005",
+                "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+                "email": "someone@example.com",
+                "token_type": "Bearer",
+            }
+        ),
+    )
+    mem.set(
+        "mcp/notion/sign-in",
+        json.dumps(
+            {
+                "tokens": {"access_token": "deep-access-value-0006"},
+                "client_info": {"client_id": "public-client-id-0012", "client_secret": "cs-0013-x"},
+            }
+        ),
+    )
+    seen = store_mod.handed_out()
+    for v in (
+        "nested-refresh-value-0004",
+        "nested-access-value-0005",
+        "deep-access-value-0006",
+        "cs-0013-x",
+    ):
+        assert v in seen
+    assert "someone@example.com" not in seen
+    assert "https://www.googleapis.com/auth/gmail.readonly" not in seen
+    assert "public-client-id-0012" not in seen
+
+
+def test_secret_looking_environment_variables_are_known() -> None:
+    env = {
+        "ANTHROPIC_API_KEY": "env-anthropic-value-0007",
+        "TRILLION_GOOGLE_CLIENT_SECRET": "env-google-secret-0008",
+        "SOME_ACCESS_TOKEN": "env-token-value-0009",
+        "HOME": "/Users/someone/a-long-home-path",
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+    }
+    assert set(redact.env_secrets(env)) == {
+        "env-anthropic-value-0007",
+        "env-google-secret-0008",
+        "env-token-value-0009",
+    }
+
+
+def test_a_value_read_after_logging_started_is_still_scrubbed(
+    keychain: FakeKeychain, caplog: pytest.LogCaptureFixture
+) -> None:
+    from types import SimpleNamespace
+
+    from trillion.cli.main import _secrets_in_use
+
+    rt = SimpleNamespace(secrets=KeychainStore(), token="session-" + "token-value-0010")
+    log = logging.getLogger("trillion.test.redact.lazy")
+    log.addFilter(redact.RedactingFilter(lambda: _secrets_in_use(rt)))
+    keychain.items[("trillion", "slack/user")] = "lazy-slack-value-0011"
+    token = rt.secrets.get("slack/user")  # fetched after the scrub was in place
+    with caplog.at_level(logging.INFO, logger=log.name):
+        log.info("got %s with %s", token, rt.token)
+    assert "lazy-slack-value-0011" not in caplog.text
+    assert "session-token-value-0010" not in caplog.text
+
+
+def test_a_known_value_holding_another_is_removed_whole() -> None:
+    inner, outer = "inner-value-0014", "prefix-inner-value-0014-suffix"
+    assert redact.scrub(f"x {outer} y", [inner, outer]) == f"x {redact.REDACTED} y"

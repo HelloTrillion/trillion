@@ -15,18 +15,45 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 REDACTED = "[redacted]"
-# Provider key shapes: Anthropic and OpenAI style `sk-…`, and bearer tokens in headers.
-_SHAPES = re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}|(?i:bearer)\s+[A-Za-z0-9_\-\.=]{16,}")
+# Key shapes providers issue. Formats with no prefix (Deepgram's 40 hex, older
+# ElevenLabs 32 hex) look like ordinary ids and hashes, so only known values catch them.
+_SHAPES = re.compile(
+    "|".join(
+        (
+            r"\bsk-[A-Za-z0-9_\-]{16,}",  # Anthropic, OpenAI
+            r"(?i:bearer)\s+[A-Za-z0-9_\-\.=]{16,}",  # an Authorization header
+            r"\bxox(?:e\.xox)?[abeoprs]-[A-Za-z0-9\-]{10,}",  # Slack bot, user, rotating
+            r"\bxapp-[A-Za-z0-9\-]{10,}",  # Slack app-level
+            r"\bya29\.[A-Za-z0-9_\-\.]{20,}",  # Google access
+            r"\b1//[A-Za-z0-9_\-]{20,}",  # Google refresh
+            r"\bAIza[A-Za-z0-9_\-]{35}",  # Google API key
+            r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe secret, restricted
+            r"\bwhsec_[A-Za-z0-9]{24,}",  # Stripe webhook signing
+            r"\bsk_[A-Za-z0-9]{32,}",  # ElevenLabs
+            r"\b\d{6,12}:[A-Za-z0-9_\-]{35}\b",  # Telegram bot
+            r"\bgh[pousr]_[A-Za-z0-9]{36,}",  # GitHub classic and app
+            r"\bgithub_pat_[A-Za-z0-9_]{22,}",  # GitHub fine-grained
+        )
+    )
+)
+# Environment variables whose names say they hold a credential.
+_ENV_NAME = re.compile(r"(?:KEY|TOKEN|SECRET|PASSWORD)$")
 _MIN_KNOWN = 8  # a shorter "secret" would redact ordinary words
 _busy = threading.local()
 
 
+def env_secrets(env: Mapping[str, str]) -> list[str]:
+    """Values of environment variables named like credentials."""
+    return [v for k, v in env.items() if v and _ENV_NAME.search(k.upper())]
+
+
 def scrub(text: str, known: Iterable[str] = ()) -> str:
-    for value in known:
+    # Longest first, so a value holding a shorter one is removed whole.
+    for value in sorted(set(known), key=len, reverse=True):
         if len(value) >= _MIN_KNOWN and value in text:
             text = text.replace(value, REDACTED)
     return _SHAPES.sub(REDACTED, text)
