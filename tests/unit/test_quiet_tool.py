@@ -92,3 +92,8 @@ def test_listening_is_only_for_an_unfinished_sentence() -> None:
     text = StayQuiet.definition.description
     assert "unfinished sentence" in text
     assert "I just don't know" in text
+
+
+def test_asking_for_a_moment_is_done_so_no_nudge_follows() -> None:
+    text = StayQuiet.definition.description
+    assert "asked for a moment" in text and "let me come back to you" in text

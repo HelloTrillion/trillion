@@ -38,9 +38,9 @@ class StayQuiet(BaseTool):
             "Say nothing this turn. listening: they stopped in an unfinished sentence,"
             " still thinking aloud (spoken only). A finished sentence, even a vague one"
             ' like "I just don\'t know", gets an answer. done: they signed off, such as'
-            ' "okay, thanks" or "bye". Never after a question: a tag question like "you'
-            ' know what I mean?" or "right?" gets a short reply. Call it alone, with no'
-            " text."
+            ' "okay, thanks" or "bye", or asked for a moment, such as "let me come back'
+            ' to you". Never after a question: a tag question like "you know what I'
+            ' mean?" or "right?" gets a short reply. Call it alone, with no text.'
         ),
         input_schema={
             "type": "object",
