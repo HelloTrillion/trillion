@@ -79,6 +79,9 @@ export interface Voice {
   /** How loud she is right now, 0 to 1; null when the computer's own voice speaks,
    * which the page cannot measure. Used to tell her echo from the user (VOI-9). */
   level(): number | null;
+  /** The AudioContext her voice plays in when it is made in the core, else null.
+   * Her listening cues play in it too, so echo cancellation hears them. */
+  context(): AudioContext | null;
 }
 
 export function createVoice(hooks: VoiceHooks): Voice {
@@ -126,7 +129,7 @@ export function createVoice(hooks: VoiceHooks): Voice {
     return true;
   };
 
-  const context = (): AudioContext => {
+  const ensure = (): AudioContext => {
     if (!ctx) {
       ctx = new AudioContext();
       gain = ctx.createGain();
@@ -152,12 +155,15 @@ export function createVoice(hooks: VoiceHooks): Voice {
       for (let i = 0; i < samples.length; i++) sum += (samples[i] ?? 0) ** 2;
       return Math.sqrt(sum / samples.length);
     },
+    context() {
+      return config?.where === 'core' ? ensure() : null;
+    },
     configure(next) {
       if (next?.kind !== config?.kind || next?.voice !== config?.voice) this.stop();
       config = next;
     },
     unlock() {
-      if (config?.where === 'core') void context().resume();
+      if (config?.where === 'core') void ensure().resume();
     },
     sentence(t, seq, text) {
       if (config?.where !== 'client' || !('speechSynthesis' in window) || !begin(t)) return;
@@ -190,7 +196,7 @@ export function createVoice(hooks: VoiceHooks): Voice {
     audio(data) {
       const frame = parseFrame(data);
       if (!frame || config?.where !== 'core' || !config.sample_rate || !begin(frame.turn)) return;
-      const audio = context();
+      const audio = ensure();
       if (!gain || frame.pcm.length === 0) return;
       const buffer = audio.createBuffer(1, frame.pcm.length, config.sample_rate);
       buffer.copyToChannel(toFloat(frame.pcm), 0);

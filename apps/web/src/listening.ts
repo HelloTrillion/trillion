@@ -30,6 +30,10 @@ interface State {
   /** The choice made before listening was switched off, offered again when it comes back on. */
   readonly last?: { readonly kind: string; readonly choice: string } | null;
   readonly think_early: boolean;
+  /** She says "mm-hm" while the user talks. */
+  readonly cues?: boolean;
+  /** Cues can play with this setup: hearing that judges turns, and her voice made in the core. */
+  readonly cues_possible?: boolean;
   readonly keychain: boolean;
 }
 
@@ -127,6 +131,18 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   );
   earlyRow.append(early, earlyWords);
 
+  // Only offered when cues can play: hearing that judges turns and her voice made in the core.
+  const cuesRow = el('label', 'settings-check');
+  const cues = el('input');
+  cues.type = 'checkbox';
+  cues.id = 'listening-cues';
+  const cuesWords = el('span');
+  cuesWords.append(
+    el('strong', '', "Say 'mm-hm' while I talk"),
+    el('small', '', 'Short listening sounds in her voice while you think aloud.'),
+  );
+  cuesRow.append(cues, cuesWords);
+
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -136,7 +152,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   const close = el('button', 'settings-close', 'Close');
   close.type = 'button';
   actions.append(save, close);
-  form.append(title, intro, choices, keyRow, pickRow, earlyRow, status, ...(microphones ? [microphones.element] : []), actions);
+  form.append(title, intro, choices, keyRow, pickRow, earlyRow, cuesRow, status, ...(microphones ? [microphones.element] : []), actions);
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
@@ -170,6 +186,9 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     earlyRow.hidden = !o?.turns;
     early.checked = state?.think_early ?? true;
     early.disabled = busy;
+    cuesRow.hidden = !o?.turns || !state?.cues_possible;
+    cues.checked = state?.cues ?? true;
+    cues.disabled = busy;
     keyInput.disabled = busy || !state?.keychain;
     keyInput.placeholder = o?.key ? 'Leave empty to keep the saved key' : 'Paste your key';
     keyHint.textContent = !state?.keychain
@@ -265,6 +284,14 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     const on = early.checked;
     void run(async () => {
       const r = await api('PUT', '/api/settings/listening/think-early', { on });
+      if (r.ok) state = (await r.json()) as State;
+      else status.textContent = await problem(r);
+    });
+  });
+  cues.addEventListener('change', () => {
+    const on = cues.checked;
+    void run(async () => {
+      const r = await api('PUT', '/api/settings/listening/cues', { on });
       if (r.ok) state = (await r.json()) as State;
       else status.textContent = await problem(r);
     });

@@ -145,6 +145,12 @@ describe('her voice from the core', () => {
     expect(gain?.gain.heard).toBe(1);
   });
 
+  it('shares its AudioContext for cues only when her voice is made in the core', () => {
+    expect(voice.context()).toBeInstanceOf(FakeContext);
+    voice.configure({ kind: 'k', where: 'client', voice: null, sample_rate: null });
+    expect(voice.context()).toBeNull();
+  });
+
   it('is at full volume after a stop, even mid-ramp', () => {
     voice.audio(frame(3, 0, loud));
     voice.duck(true);

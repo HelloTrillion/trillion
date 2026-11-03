@@ -60,6 +60,7 @@ import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
 import { type Usage, fetchUsage, pill, sentence } from './usage';
 import { createVoice } from './voice';
+import { createCues, routeFrame } from './cues';
 import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
@@ -478,6 +479,13 @@ const voice = createVoice({
   // What the user has heard: an interrupted reply is kept up to here (VOI-9, D8).
   onSentence: (turn, seq) => send({ type: 'playback.sentence', turn_id: turn, seq }),
   attach: (node) => galaxy.attachAnalyser(node, 'playback'),
+});
+// Her "mm-hm" while the user talks: apart from her reply, and a nod of the orb.
+const cues = createCues({
+  context: () => voice.context(),
+  replying: () => voice.active,
+  flare: (strength) => galaxy.flare(strength),
+  started: (id, inMs) => send({ type: 'cue.started', id, in_ms: inMs }),
 });
 let socket: WebSocket | null = null;
 // Her ears. Frames go to the core as they are captured, as binary (VOI-1).
@@ -1370,7 +1378,7 @@ function connect(): void {
     // A socket this page has moved on from (a switch, a reconnect) has nothing more to say.
     if (socket !== ws) return;
     if (ev.data instanceof ArrayBuffer) {
-      voice.audio(ev.data);
+      routeFrame(ev.data, voice, cues);
       return;
     }
     let msg: ServerMsg;
@@ -1425,6 +1433,8 @@ function connect(): void {
       if (reveal.raise) sidebar.raise(reveal.raise);
     }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
+    // A listening cue: its audio is the next binary frame.
+    if (msg.type === 'cue.play') cues.announce(Number(msg['id']), Number(msg['sample_rate']));
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
     }
