@@ -12,18 +12,22 @@ from typing import Any
 
 import pytest
 
+from tests.api.test_drafts import judging
+from tests.api.test_overlap_watch import steady
 from tests.api.test_server import home, make, only, propose  # noqa: F401
 from tests.api.test_session import Page, create, idle
 from tests.api.test_session_notices import voiced
 from tests.brain.fakes import USAGE, ScriptedProvider, is_naming, say, use
 from tests.voice.audio import frames, room, tone
 from tests.voice.fakes import FakeSTT
-from trillion.api.listening import QUIET_LISTEN_S
+from trillion.api import session as session_module
+from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S
 from trillion.api.runtime import ListenSettings, Runtime, open_runtime
 from trillion.api.session import NUDGE, Session
 from trillion.brain.types import Done, ModelEvent, ToolResultBlock
 from trillion.secrets.store import MemoryStore
 from trillion.tools.quiet import QUIET
+from trillion.voice.types import Word
 
 
 def test_a_typed_sign_off_ends_quiet_with_no_notice(make: Any) -> None:
@@ -439,4 +443,127 @@ async def test_a_typed_trailing_off_is_answered(rt: Runtime) -> None:
     last = rt.provider.calls[-1][1]  # type: ignore[union-attr]
     (result,) = [b for b in last[-1].blocks if isinstance(b, ToolResultBlock)]
     assert result.is_error and "typed" in result.content.lower()
+    await session.close()
+
+
+# ── Over a watch: Flux hearing, her voice made in the core, barge-in on ──────
+#
+# The owner's setup. The page streams the microphone to the core while she answers
+# (`overlap.watch`), so when her turn ends quiet the watch, not `_after_turn`, is what
+# goes on listening. It must still be the quiet window, and only words hold it open.
+
+
+class _Played(Page):
+    """A page that reports her silence heard to the end as soon as it is told it is
+    over, so the "played" arrives while her turn is still finishing."""
+
+    def __init__(self, rt: Runtime) -> None:
+        super().__init__(rt)
+        self.session: Session | None = None
+
+    async def send(self, body: dict[str, Any]) -> None:
+        await super().send(body)
+        if body.get("type") == "audio.end" and self.session is not None:
+            turn = body["turn"]
+            await self.session.handle({"type": "playback.ended", "turn_id": turn, "played_ms": 0})
+
+
+async def quiet_over_a_watch(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch, *, early: bool = False
+) -> tuple[FakeSTT, Page, Session]:
+    """A spoken turn answered by a quiet `listening` while the page watches over her,
+    and her silence then reported heard: the window is open."""
+    monkeypatch.setattr(session_module, "NO_AUDIO_S", 30.0)
+    stt, provider = judging(
+        rt,
+        use(QUIET, {"kind": "listening"}),
+        # The nudge's own turn may not stay quiet: it is the host's.
+        use(QUIET, {"kind": "listening"}, call_id="q2"),
+        say("Go on, I'm with you."),
+    )
+    steady(rt)
+    held = provider.hold(0)
+    page = _Played(rt) if early else Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("so I was thinking about the launch", final=True, turn="done")
+    await speak(session, room(0.1))
+    for _ in range(400):
+        if provider.running == 1:
+            break
+        await asyncio.sleep(0.005)
+    # The page goes on streaming over her answer, as it does with barge-in on.
+    await session.handle({"type": "overlap.watch"})
+    assert session._overlap is not None and session._overlap.watching
+    if isinstance(page, _Played):
+        page.session = session
+    held.set()
+    await page.until("turn.complete")
+    await idle(session)
+    assert page.all("turn.complete")[-1]["quiet"] == "listening"
+    if not early:
+        turn = page.all("audio.end")[-1]["turn"]
+        await session.handle({"type": "playback.ended", "turn_id": turn, "played_ms": 0})
+    # The watch sees her silence is over on its next frame.
+    await speak(session, room(0.2))
+    await page.until("mic.start", 2)
+    return stt, page, session
+
+
+@pytest.mark.parametrize("early", [False, True])
+async def test_over_a_watch_the_quiet_window_opens_and_nudges_once(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch, early: bool
+) -> None:
+    _, page, session = await quiet_over_a_watch(rt, monkeypatch, early=early)
+    assert page.all("mic.start")[-1] == {"type": "mic.start", "follow_up": True, "quiet": True}
+    assert session._listener is not None and session._window is session._listener
+    assert session._overlap is None
+    # Past the usual three-second follow-up: still open.
+    await speak(session, room(FOLLOW_UP_S + 1.0))
+    assert session._listener is not None and nudges(rt) == 0
+    await speak(session, room(QUIET_LISTEN_S - FOLLOW_UP_S))
+    await page.until("mic.stop", 2)
+    assert page.all("mic.stop")[-1]["reason"] == "nothing"
+    await page.until("turn.complete", 2)
+    await idle(session)
+    assert nudges(rt) == 1
+    assert "".join(m["text"] for m in page.all("reply.delta")) == "Go on, I'm with you."
+    await session.close()
+
+
+async def test_over_a_watch_a_cough_does_not_hold_the_window_open(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, page, session = await quiet_over_a_watch(rt, monkeypatch)
+    # Loud enough for the meter, but the recognizer heard no words in it.
+    await speak(session, room(1.0) + tone(0.5, 0.4) + room(1.0) + tone(0.3, 0.4))
+    await speak(session, room(QUIET_LISTEN_S))
+    await page.until("mic.stop", 2)
+    assert page.all("mic.stop")[-1]["reason"] == "nothing"
+    await page.until("turn.complete", 2)
+    await idle(session)
+    assert nudges(rt) == 1
+    await session.close()
+
+
+async def test_over_a_watch_words_in_the_window_are_a_turn(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stt, page, session = await quiet_over_a_watch(rt, monkeypatch)
+    listener = session._listener
+    assert listener is not None
+    at = listener.sent_s
+    await speak(session, tone(0.8, 0.4))
+    words = (
+        Word(text="more", start_s=at + 0.1, end_s=at + 0.3),
+        Word(text="money", start_s=at + 0.3, end_s=at + 0.6),
+    )
+    stt.stream.say("more money", final=True, turn="done", words=words)
+    await speak(session, room(0.3))
+    await page.until("turn.complete", 2)
+    await idle(session)
+    assert nudges(rt) == 0
+    last = rt.provider.calls[-1][1]  # type: ignore[union-attr]
+    assert "more money" in str(getattr(last[-1].blocks[-1], "text", ""))
     await session.close()

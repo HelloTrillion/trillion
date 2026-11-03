@@ -34,9 +34,11 @@ class StayQuiet(BaseTool):
     definition = ToolDefinition(
         name=QUIET,
         description=(
-            "Say nothing this turn. listening: they are still thinking aloud or trailed off"
-            ' mid-thought (spoken only). done: they signed off, such as "okay, thanks" or'
-            ' "bye". Never after a clear question. Call it alone, with no text.'
+            "Say nothing this turn. listening: they stopped in an unfinished sentence,"
+            " still thinking aloud (spoken only). A finished sentence, even a vague one"
+            ' like "I just don\'t know", gets an answer. done: they signed off, such as'
+            ' "okay, thanks" or "bye". Never after a clear question. Call it alone, with'
+            " no text."
         ),
         input_schema={
             "type": "object",

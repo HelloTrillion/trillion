@@ -1672,14 +1672,18 @@ class Session:
         await self._send("overlap.duck")
         ov.wake.set()
 
-    async def _leave_watch(self, ov: Overlap, *, patience_s: float = NOTHING_AFTER_S) -> None:
+    async def _leave_watch(
+        self, ov: Overlap, *, patience_s: float = NOTHING_AFTER_S, words_only: bool = False
+    ) -> None:
         """Stop only watching: what follows is heard as the user. Only their words count:
         her echo, before, between or after them, is left out."""
         if not ov.watching:
             return
         ov.watching = False
         ov.listener.hear(
-            patience_s=patience_s, judge=self._judge_on(ov.listener, ov.timeline, ov.past_s)
+            patience_s=patience_s,
+            judge=self._judge_on(ov.listener, ov.timeline, ov.past_s),
+            words_only=words_only,
         )
 
     def _her_heard(self) -> None:
@@ -1788,10 +1792,15 @@ class Session:
             if self._overlap is not ov or ov.promoting:
                 return
             ov.promoting = True
+            # After a quiet `listening`, this is the window left open for them (VOI-7).
+            quiet = self._quiet == "listening"
+            self._quiet = None
             logger.info("talked over in session %s: follow_up", self.id)
-            await self._leave_watch(ov, patience_s=FOLLOW_UP_S)
+            await self._leave_watch(
+                ov, patience_s=QUIET_LISTEN_S if quiet else FOLLOW_UP_S, words_only=quiet
+            )
             self._spoken = None
-            await self._become_turn(ov, follow_up=True)
+            await self._become_turn(ov, follow_up=True, quiet=quiet)
 
     async def _overlap_carries_on(self, ov: Overlap) -> None:
         """An acknowledgement, or nothing at all: she carries on. Nothing is saved, and
@@ -1856,18 +1865,20 @@ class Session:
                 return
             await self._become_turn(ov, follow_up=False)
 
-    async def _become_turn(self, ov: Overlap, *, follow_up: bool) -> None:
-        """The listener that heard them over her goes on as the user's turn."""
+    async def _become_turn(self, ov: Overlap, *, follow_up: bool, quiet: bool = False) -> None:
+        """The listener that heard them over her goes on as the user's turn. With
+        `quiet`, it is the window left open after a quiet `listening` (VOI-7)."""
         self._overlap = None
         ov.watcher = None
         listener = ov.listener
         listener.promote(on_partial=self._partial, on_turn=self._turn_signal)
         self._listener = listener
+        self._window = listener if quiet else None
         self._drafted = False
         self._last_audio = self._now()
         self._warm()
         # The page's microphone is already open; this tells it the words are a turn.
-        await self._send("mic.start", follow_up=follow_up)
+        await self._send("mic.start", follow_up=follow_up, **({"quiet": True} if quiet else {}))
         # Each send can let a Stop or a close in: only a listener still open goes on.
         if self._listener is not listener:
             return
@@ -1933,6 +1944,8 @@ class Session:
                 on_partial=self._partial,
                 patience_s=patience_s,
                 on_turn=self._turn_signal,
+                # The quiet window: only words hold it open (VOI-7).
+                words_only=quiet,
             )
             # Set before it starts: what was held while it connected is judged the same way.
             listener.key_held = held
@@ -2291,9 +2304,15 @@ class Session:
             or self._stopped
             or self._task is not None
             or self._listener is not None
-            or self._overlap is not None
             or not self._answered_aloud()
         ):
+            return False
+        ov = self._overlap
+        if ov is not None:
+            if quiet == "listening" and ov.watching and not ov.promoting:
+                # The page is watching over her: that watch goes on as the window once
+                # her silence is heard (`_follow_up_from`), so it is still the quiet one.
+                self._quiet = quiet
             return False
         if quiet == "listening":
             # They trailed off: the floor stays theirs a while (VOI-7).

@@ -66,3 +66,11 @@ def test_the_loop_knows_it_by_the_same_name_and_category() -> None:
 def test_it_is_installed_with_the_built_in_tools() -> None:
     registry = ToolRegistry.discover()
     assert isinstance(registry.get(QUIET), StayQuiet)
+
+
+def test_listening_is_only_for_an_unfinished_sentence() -> None:
+    """A finished sentence, even a vague one, gets an answer: the live test stayed quiet
+    on "I just don't know" and the window never ended."""
+    text = StayQuiet.definition.description
+    assert "unfinished sentence" in text
+    assert "I just don't know" in text

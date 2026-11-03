@@ -303,3 +303,27 @@ def test_new_words_after_a_held_done_leave_the_end_to_the_recognizer() -> None:
     rules.hold()
     rules.heard(final=False, has_text=True)
     assert rules.audio(room(4.0)) is None
+
+
+def test_a_window_held_open_by_words_only_ends_on_no_words() -> None:
+    """The quiet window after a trailed-off thought (VOI-7): a cough, a breath or her
+    echo's tail is loud but says nothing, and must not hold it open forever."""
+    for judged in (True, False):
+        rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=judged, words_only=True)
+        assert run(rules, tone(0.5) + room(3.0) + tone(0.4)) is None
+        assert not rules.spoke
+        assert run(rules, room(4.5)) == "nothing"
+    # Words, though, are a turn like any other.
+    rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=True, words_only=True)
+    assert run(rules, tone(0.5)) is None
+    rules.heard(final=False, has_text=True)
+    assert rules.spoke
+    assert run(rules, room(9.0)) is None  # the recognizer that judges turns decides
+    rules.turn_over()
+    assert run(rules, room(0.1)) == "end"
+
+
+def test_the_meter_alone_still_holds_an_ordinary_turn() -> None:
+    rules = EndOfSpeech(streaming=True, patience_s=3.0, judged=True)
+    assert run(rules, tone(0.5)) is None and rules.spoke
+    assert run(rules, room(4.0)) is None

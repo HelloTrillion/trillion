@@ -91,10 +91,19 @@ def level(pcm: bytes) -> float:
 
 class EndOfSpeech:
     def __init__(
-        self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S, judged: bool = False
+        self,
+        *,
+        streaming: bool,
+        patience_s: float = NOTHING_AFTER_S,
+        judged: bool = False,
+        words_only: bool = False,
     ) -> None:
         self._streaming = streaming
         self._judged = judged
+        # Only words count as speaking: the window left open after a trailed-off thought
+        # (VOI-7) ends after `patience_s` with no words, whatever the meter heard. A
+        # cough, a breath or her echo's tail must not hold it open for good.
+        self._words_only = words_only
         self._over = False
         self._patience = patience_s
         self._rest = b""
@@ -186,7 +195,8 @@ class EndOfSpeech:
         if loud > max(_MIN_SPEECH, self._noise * _OVER_NOISE):
             self._run += _WINDOW / SAMPLE_RATE
             if self._run >= _ONSET_S:
-                self._spoke = True
+                if not self._words_only:
+                    self._spoke = True
                 self._last_voice = now
         else:
             self._run = 0.0
