@@ -14,7 +14,6 @@ later would not have it.)
 
 from __future__ import annotations
 
-import functools
 import logging
 import re
 import threading
@@ -51,6 +50,11 @@ _SHAPES = re.compile(
 _ENV_NAME = re.compile(r"(?:KEY|TOKEN|SECRET|PASSWORD)$")
 _MIN_KNOWN = 8  # a shorter "secret" would redact ordinary words
 _busy = threading.local()
+# What every record has; anything else came in through `extra=`.
+_STANDARD = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {
+    "message",
+    "asctime",
+}
 
 
 def env_secrets(env: Mapping[str, str]) -> list[str]:
@@ -58,34 +62,40 @@ def env_secrets(env: Mapping[str, str]) -> list[str]:
     return [v for k, v in env.items() if v and _ENV_NAME.search(k.upper())]
 
 
-@functools.lru_cache(maxsize=16)
-def _longest_first(values: tuple[str, ...]) -> tuple[str, ...]:
-    # Longest first, so a value holding a shorter one is removed whole. Cached: the
-    # same values come with record after record.
-    kept = {v for v in values if len(v) >= _MIN_KNOWN}
-    return tuple(sorted(kept, key=len, reverse=True))
-
-
 def scrub(text: str, known: Iterable[str] = ()) -> str:
-    for value in _longest_first(tuple(known)):
+    # Longest first, so a value holding a shorter one is removed whole. Not cached:
+    # a cache would keep values the store has already dropped.
+    kept = {v for v in known if len(v) >= _MIN_KNOWN}
+    for value in sorted(kept, key=len, reverse=True):
         if value in text:
             text = text.replace(value, REDACTED)
     return _SHAPES.sub(REDACTED, text)
 
 
-def _clean(record: logging.LogRecord, known: Callable[[], Iterable[str]]) -> None:
+def _values(known: Callable[[], Iterable[str]]) -> list[str]:
     # Looking up the known values can itself log (a keychain that fails). That record
     # is scrubbed by shape only, instead of recursing.
     if getattr(_busy, "on", False):
-        values: Iterable[str] = ()
-    else:
-        _busy.on = True
-        try:
-            values = list(known())
-        except Exception:
-            values = ()
-        finally:
-            _busy.on = False
+        return []
+    _busy.on = True
+    try:
+        return list(known())
+    except Exception:
+        return []
+    finally:
+        _busy.on = False
+
+
+def _clean_extras(record: logging.LogRecord, values: list[str]) -> None:
+    # Fields passed with `extra=` can be printed by a handler's format string too.
+    for attr, value in list(vars(record).items()):
+        if attr not in _STANDARD and isinstance(value, str):
+            setattr(record, attr, scrub(value, values))
+
+
+def _clean(record: logging.LogRecord, known: Callable[[], Iterable[str]]) -> None:
+    values = _values(known)
+    _clean_extras(record, values)
     try:
         message = record.getMessage()  # format first: a secret passed as an argument counts
     except Exception:
@@ -120,11 +130,28 @@ class RedactingFilter(logging.Filter):
 def install(known: Callable[[], Iterable[str]] = lambda: ()) -> Callable[[], None]:
     """Scrub every log record made in this process from now on. Returns an undo."""
     previous = logging.getLogRecordFactory()
+    original = logging.Logger.makeRecord
 
     def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = previous(*args, **kwargs)
         _clean(record, known)
         return record
 
+    def make_record(self: logging.Logger, *args: Any, **kwargs: Any) -> logging.LogRecord:
+        # `extra=` fields are set after the factory runs, so they are scrubbed here.
+        record = original(self, *args, **kwargs)
+        if (len(args) > 8 and args[8]) or kwargs.get("extra"):
+            _clean_extras(record, _values(known))
+        return record
+
     logging.setLogRecordFactory(factory)
-    return lambda: logging.setLogRecordFactory(previous)
+    logging.Logger.makeRecord = make_record  # type: ignore[method-assign]
+
+    def undo() -> None:
+        # Only while ours are still the ones in place, so anything set since is kept.
+        if logging.getLogRecordFactory() is factory:
+            logging.setLogRecordFactory(previous)
+        if logging.Logger.makeRecord is make_record:
+            logging.Logger.makeRecord = original  # type: ignore[method-assign]
+
+    return undo

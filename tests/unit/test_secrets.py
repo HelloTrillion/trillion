@@ -384,3 +384,70 @@ def test_a_token_in_a_logged_exception_is_scrubbed() -> None:
     assert "Traceback" in written and "RuntimeError: provider refused" in written
     assert SAMPLE not in written and "known-value-123456" not in written
     assert "Stack (most recent call last)" in written
+
+
+def test_a_read_overtaken_by_a_write_does_not_bring_back_the_old_value(
+    keychain: FakeKeychain, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.secrets import store as store_mod
+
+    kc = KeychainStore()
+    keychain.items[("trillion", "slack/bot")] = "old-bot-value-0030"
+    real_get = keychain.get_password
+
+    def slow_get(service: str, username: str) -> str | None:
+        value = real_get(service, username)  # the old value is read...
+        kc.set("slack/bot", "new-bot-value-0031")  # ...and a new one lands meanwhile
+        return value
+
+    monkeypatch.setattr(keychain, "get_password", slow_get)
+    assert kc.get("slack/bot") == "old-bot-value-0030"
+    assert store_mod.handed_out() == ("new-bot-value-0031",)
+
+
+def test_a_value_is_held_even_when_the_keychain_refuses_it(
+    keychain: FakeKeychain, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.secrets import store as store_mod
+
+    def refuse(service: str, username: str, password: str) -> None:
+        raise keyring.errors.PasswordSetError("locked")
+
+    monkeypatch.setattr(keychain, "set_password", refuse)
+    with pytest.raises(SecretStoreError):
+        KeychainStore().set("stripe/api_key", "refused-but-held-0032")
+    assert "refused-but-held-0032" in store_mod.handed_out()  # the caller still has it
+
+
+def test_fields_passed_as_extra_are_scrubbed() -> None:
+    import io
+
+    undo = redact.install(lambda: ["known-value-123456"])
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s key=%(key)s other=%(other)s"))
+    log = logging.getLogger("trillion.test.redact.extra")
+    log.addHandler(handler)
+    log.propagate = False
+    try:
+        log.warning("sending", extra={"key": SAMPLE, "other": "known-value-123456"})
+    finally:
+        undo()
+        log.removeHandler(handler)
+    written = stream.getvalue()
+    assert SAMPLE not in written and "known-value-123456" not in written
+    assert written.count(redact.REDACTED) == 2
+
+
+def test_undo_leaves_what_was_installed_since_in_place() -> None:
+    before = logging.getLogRecordFactory(), logging.Logger.makeRecord
+    first = redact.install()
+    second = redact.install()
+    later = logging.getLogRecordFactory(), logging.Logger.makeRecord
+    try:
+        first()  # not the newest: undoing it must not drop the second one
+        assert (logging.getLogRecordFactory(), logging.Logger.makeRecord) == later
+    finally:
+        second()
+        first()
+    assert (logging.getLogRecordFactory(), logging.Logger.makeRecord) == before

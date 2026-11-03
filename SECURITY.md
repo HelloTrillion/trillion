@@ -193,14 +193,18 @@ is a known limit of this phase.
   and Windows Credential Manager, the DPAPI master keys and the Vault. All of
   them are refused on every OS, including where `%APPDATA%`,
   `%LOCALAPPDATA%` or `$XDG_DATA_HOME` has been moved. On Windows a
-  `\\?\` long path is read as its plain drive path first, and device paths
+  `\\?\` long path is read as its plain drive path first, trailing dots and
+  spaces in names are ignored as Windows ignores them, and device paths
   (`\\.\`), volume paths, admin shares (`C$`) and shares of this computer
-  itself (`\\localhost\`, `\\127.0.0.1\`) are refused outright. Proven by
+  itself are refused outright. This computer is recognised by any spelling:
+  `localhost` names, loopback and unspecified addresses in any form
+  (`2130706433`, `0x7f000001`, `127.1`, `[::1]`), and the machine's own host
+  name, full name, NetBIOS name and addresses. Proven by
   `tests/spine/test_credential_stores.py` and
   `tests/unit/test_deny_floor_rules.py`.
 - **Logs never carry a credential** (SEC-5). From the start of `trillion run`,
   every log record is scrubbed before it is written: its message, its
-  traceback and its stack text. Scrubbing works by the shapes providers issue
+  traceback, its stack text and any `extra=` fields. Scrubbing works by the shapes providers issue
   (Anthropic, OpenAI, Slack, Google, Stripe, Telegram, GitHub, ElevenLabs,
   AWS, JWTs, bearer headers), and by value. The values currently stored in
   the keychain, for every connector, including the secret fields inside a

@@ -10,6 +10,7 @@ string fails closed.
 from __future__ import annotations
 
 import functools
+import ipaddress
 import os
 import re
 import socket
@@ -104,6 +105,9 @@ _FOLDED_SEGMENTS: frozenset[str] = frozenset(fold(s) for s in PROTECTED_SEGMENTS
 
 
 def _folded_parts(p: PurePath) -> tuple[str, ...]:
+    if isinstance(p, PureWindowsPath):
+        # Windows drops trailing dots and spaces: `Credentials. ` opens `Credentials`.
+        return tuple(fold(part.rstrip(". ") or part) for part in p.parts)
     return tuple(fold(part) for part in p.parts)
 
 
@@ -187,22 +191,55 @@ def spellings(p: Path) -> tuple[Path, ...]:
     return (p,) if c == p else (p, c)
 
 
-# Names a UNC path can use for this computer itself: such a path reaches its own disks.
-_THIS_COMPUTER = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0--1.ipv6-literal.net", "."})
+# A UNC path to this computer reaches its own disks under another name, so any
+# spelling of it is refused: loopback and unspecified addresses in any form
+# inet_aton reads (2130706433, 0x7f000001, 127.1), localhost names, and this
+# machine's own names and addresses.
+
+
+def _address(s: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    s = s.strip("[]")
+    if s.endswith(".ipv6-literal.net"):  # Windows spells IPv6 in UNC this way
+        s = s[: -len(".ipv6-literal.net")].replace("-", ":").replace("s", "%")
+    try:
+        return ipaddress.ip_address(s.split("%")[0])
+    except ValueError:
+        pass
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(s))
+    except (OSError, ValueError):
+        return None
 
 
 @functools.cache
-def _own_names() -> frozenset[str]:
+def _own_names() -> tuple[frozenset[str], frozenset[str]]:
+    """This machine's names, folded, and its addresses. Looked up once, when first needed."""
+    names: set[str] = set()
+    addresses: set[str] = set()
     try:
-        own = socket.gethostname()
-    except OSError:
-        return frozenset()
-    return frozenset({fold(own), fold(own.split(".")[0])})
+        host = socket.gethostname()
+        names.update({host, socket.getfqdn(), socket.getfqdn(host)})
+        for info in socket.getaddrinfo(host, None):
+            addresses.add(str(info[4][0]).split("%")[0])
+    except (OSError, UnicodeError):
+        pass
+    for n in list(names):
+        short = n.split(".")[0]
+        names.update({short, short[:15]})  # the NetBIOS name is at most 15 characters
+    return frozenset(fold(n).rstrip(". ") for n in names if n), frozenset(addresses)
 
 
 def _this_computer(server: str) -> bool:
-    s = fold(server)
-    return s in _THIS_COMPUTER or s.startswith("127.") or s in _own_names()
+    s = fold(server).rstrip(". ")
+    if not s or s in {".", "?"} or s.startswith("localhost"):
+        return True
+    names, addresses = _own_names()
+    ip = _address(s)
+    if ip is not None:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        return ip.is_loopback or ip.is_unspecified or str(ip) in addresses
+    return s in names
 
 
 def plain_windows(p: PureWindowsPath) -> PureWindowsPath | None:

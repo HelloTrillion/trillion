@@ -29,6 +29,7 @@ SERVICE = "trillion"
 # values whose own field is named like a secret are noted.
 _SECRET_FIELD = re.compile(r"(?:^|_)(?:token|secret|key|password|verifier)$")
 _current: dict[str, tuple[str, ...]] = {}
+_versions: dict[str, int] = {}
 _ordered: tuple[str, ...] = ()
 _lock = threading.Lock()
 
@@ -63,10 +64,24 @@ def _held(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
-def _note(name: str, value: str | None) -> None:
-    """What is stored under `name` now. None means nothing is."""
+def _version(name: str) -> int:
+    """Taken before a read, so the read can tell whether a write overtook it."""
+    with _lock:
+        return _versions.get(name, 0)
+
+
+def _note(name: str, value: str | None, *, read_at: int | None = None) -> None:
+    """What is stored under `name` now. None means nothing is.
+
+    A write passes no `read_at` and always wins. A read passes the version it began
+    at, and is dropped when a write or delete came in since: its value is older.
+    """
     global _ordered
     with _lock:
+        if read_at is None:
+            _versions[name] = _versions.get(name, 0) + 1
+        elif _versions.get(name, 0) != read_at:
+            return
         if value:
             _current[name] = _held(value)
         else:
@@ -86,6 +101,7 @@ def forget_all() -> None:
     global _ordered
     with _lock:
         _current.clear()
+        _versions.clear()
         _ordered = ()
 
 
@@ -113,22 +129,24 @@ class KeychainStore:
         return not isinstance(backend, fail.Keyring) and backend.priority >= 1
 
     def get(self, name: str) -> str | None:
+        began = _version(name)
         try:
             value = keyring.get_password(SERVICE, name)
         except keyring.errors.KeyringError as e:
             logger.warning("keychain read of %s failed: %s", name, type(e).__name__)
             return None
-        _note(name, value)
+        _note(name, value, read_at=began)
         return value
 
     def set(self, name: str, value: str) -> None:
         if not self.available():
             raise SecretStoreError("this machine has no system keychain")
+        # Noted first, and kept if the write fails: the caller still holds the value.
+        _note(name, value)
         try:
             keyring.set_password(SERVICE, name, value)
         except keyring.errors.KeyringError as e:
             raise SecretStoreError(f"the keychain refused to store {name}") from e
-        _note(name, value)
 
     def delete(self, name: str) -> None:
         try:
@@ -151,8 +169,9 @@ class MemoryStore:
         return self._usable
 
     def get(self, name: str) -> str | None:
+        began = _version(name)
         value = self._values.get(name)
-        _note(name, value)
+        _note(name, value, read_at=began)
         return value
 
     def set(self, name: str, value: str) -> None:
