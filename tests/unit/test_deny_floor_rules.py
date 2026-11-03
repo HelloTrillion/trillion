@@ -295,3 +295,125 @@ def test_protected_names_stay_refused_in_any_case_everywhere(setup, monkeypatch)
     monkeypatch.setattr(deny_floor, "CASE_BLIND", False)
     policy, roots, granted = setup
     assert check(DEF, {"path": str(granted / ".GIT" / "config")}, policy, roots) is not None
+
+
+_CREDS = PureWindowsPath(r"C:\Users\sam\AppData\Roaming\Microsoft\Credentials")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        r"C:\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"c:\users\SAM\appdata\roaming\microsoft\credentials\ABC",
+        r"\\?\C:\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"//?/c:/Users/sam/AppData/Roaming/Microsoft/Credentials/ABC",
+        r"\\?\UNC\localhost\c$\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"\\?\UNC\fileserver\c$\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"\\localhost\C$\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"\\127.0.0.1\c$\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"\\127.0.0.1\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"\\[::1]\Users\sam\notes.txt",
+        r"\\.\C:\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC",
+        r"\\.\PhysicalDrive0",
+        r"\\?\Volume{0a1b2c3d-0000-0000-0000-000000000000}\Users\sam\x",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users\sam\x",
+    ],
+)
+def test_every_windows_spelling_of_a_credential_store_is_refused(raw):
+    # PureWindowsPath, so this runs on every OS.
+    reason = deny_floor.protected_reason(PureWindowsPath(raw), (_CREDS,))
+    assert reason is not None, raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        r"C:\Users\sam\Documents\notes.txt",
+        r"\\?\C:\Users\sam\Documents\notes.txt",
+        r"\\fileserver\team\notes.txt",
+        r"\\?\UNC\fileserver\team\notes.txt",
+    ],
+)
+def test_ordinary_windows_paths_stay_allowed(raw):
+    assert deny_floor.protected_reason(PureWindowsPath(raw), (_CREDS,)) is None, raw
+
+
+def test_a_long_path_prefix_is_read_as_the_plain_drive():
+    plain = deny_floor.plain_windows(PureWindowsPath(r"\\?\C:\a\b"))
+    assert plain == PureWindowsPath(r"C:\a\b")
+    unc = deny_floor.plain_windows(PureWindowsPath(r"\\?\UNC\server\share\a"))
+    assert unc == PureWindowsPath(r"\\server\share\a")
+
+
+_CRED_TAIL = r"\Users\sam\AppData\Roaming\Microsoft\Credentials\ABC"
+
+
+@pytest.fixture
+def this_machine(monkeypatch):
+    """A fake name and addresses for this computer, so the test does not depend on it."""
+    sock = deny_floor.socket
+    monkeypatch.setattr(sock, "gethostname", lambda: "trill-box-workstation")
+    monkeypatch.setattr(sock, "getfqdn", lambda name="": "trill-box-workstation.corp.example")
+    monkeypatch.setattr(
+        sock,
+        "getaddrinfo",
+        lambda *a, **k: [(0, 0, 0, "", ("192.168.1.50", 0)), (0, 0, 0, "", ("fe80::1%en0", 0))],
+    )
+    deny_floor._own_names.cache_clear()
+    yield
+    deny_floor._own_names.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        "localhost.",
+        "LOCALHOST",
+        "localhost.localdomain",
+        "localhost6",
+        "2130706433",
+        "0x7f000001",
+        "127.1",
+        "0177.0.0.1",
+        "127.0.0.2",
+        "0.0.0.0",  # noqa: S104 - a path spelling, not a bind
+        "[::1]",
+        "0--1.ipv6-literal.net",
+        "trill-box-workstation",
+        "TRILL-BOX-WORKSTATION.",
+        "trill-box-workstation.corp.example",
+        "TRILL-BOX-WORKS",  # the NetBIOS name, cut to 15 characters
+        "192.168.1.50",
+        "fe80--1sen0.ipv6-literal.net",
+    ],
+)
+def test_every_name_for_this_computer_in_a_unc_path_is_refused(this_machine, server):
+    for share in ("Users", "c$"):
+        for raw in (rf"\\{server}\{share}{_CRED_TAIL}", rf"\\?\UNC\{server}\{share}\notes.txt"):
+            assert deny_floor.protected_reason(PureWindowsPath(raw), (_CREDS,)), raw
+
+
+def test_a_mapped_loopback_address_is_this_computer(this_machine):
+    assert deny_floor._this_computer("::ffff:127.0.0.1")
+    assert not deny_floor._this_computer("fileserver")
+    assert not deny_floor._this_computer("192.168.1.51")
+
+
+def test_another_computer_on_the_network_stays_reachable(this_machine):
+    for raw in (r"\\fileserver\team\notes.txt", r"\\192.168.1.51\team\notes.txt"):
+        assert deny_floor.protected_reason(PureWindowsPath(raw), (_CREDS,)) is None, raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        r"C:\Users\sam\AppData\Roaming\Microsoft\Credentials.\ABC",
+        r"C:\Users\sam\AppData\Roaming\Microsoft\Credentials \ABC",
+        r"C:\Users\sam\AppData\Roaming\Microsoft\Credentials. .\ABC",
+        r"C:\Users\sam\AppData\Roaming\Microsoft.\Credentials\ABC",
+        r"C:\Users\sam\.ssh.\id_rsa",
+        r"C:\Users\sam\project\.env.",
+    ],
+)
+def test_windows_ignores_trailing_dots_and_spaces_and_so_does_the_floor(raw):
+    assert deny_floor.protected_reason(PureWindowsPath(raw), (_CREDS,)) is not None, raw

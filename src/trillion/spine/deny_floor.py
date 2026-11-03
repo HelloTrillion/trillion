@@ -9,12 +9,15 @@ string fails closed.
 
 from __future__ import annotations
 
+import functools
+import ipaddress
 import os
 import re
+import socket
 import sys
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 
 from trillion import paths
 from trillion.spine.contract import JSON, Risk, ToolDefinition
@@ -54,9 +57,43 @@ class DenyPolicy:
             protected_roots=(
                 paths.home().expanduser().resolve(),
                 paths.package_root(),
-                (Path.home() / "Library" / "Keychains").resolve(),
+                *credential_stores(),
             )
         )
+
+
+def credential_stores() -> tuple[Path, ...]:
+    """Where each operating system keeps its keychain, held on every OS (SEC-10).
+
+    A home folder copied from another machine, or a disk mounted from one, carries
+    its stores along. Moved data folders are followed, and the usual spots are kept
+    too, since a variable can change after this is read.
+    """
+    home = Path.home()
+    share = [home / ".local" / "share"]
+    roaming = [home / "AppData" / "Roaming"]
+    local = [home / "AppData" / "Local"]
+    for var, into in (("XDG_DATA_HOME", share), ("APPDATA", roaming), ("LOCALAPPDATA", local)):
+        if moved := os.environ.get(var):
+            into.append(Path(moved))
+    found = [
+        home / "Library" / "Keychains",  # macOS
+        home / ".kde" / "share" / "apps" / "kwallet",  # KWallet 4
+        home / ".kde4" / "share" / "apps" / "kwallet",
+        *(d / name for d in share for name in ("keyrings", "kwalletd")),  # Secret Service, KWallet
+        # Credential Manager, DPAPI master keys, and the Vault.
+        *(d / "Microsoft" / n for d in roaming for n in ("Credentials", "Protect", "Vault")),
+        *(d / "Microsoft" / n for d in local for n in ("Credentials", "Vault")),
+    ]
+    out: list[Path] = []
+    for p in found:
+        try:
+            r = p.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if r not in out:
+            out.append(r)
+    return tuple(out)
 
 
 def fold(s: str) -> str:
@@ -68,6 +105,9 @@ _FOLDED_SEGMENTS: frozenset[str] = frozenset(fold(s) for s in PROTECTED_SEGMENTS
 
 
 def _folded_parts(p: PurePath) -> tuple[str, ...]:
+    if isinstance(p, PureWindowsPath):
+        # Windows drops trailing dots and spaces: `Credentials. ` opens `Credentials`.
+        return tuple(fold(part.rstrip(". ") or part) for part in p.parts)
     return tuple(fold(part) for part in p.parts)
 
 
@@ -151,9 +191,93 @@ def spellings(p: Path) -> tuple[Path, ...]:
     return (p,) if c == p else (p, c)
 
 
-def protected_reason(p: PurePath, protected_roots: tuple[Path, ...]) -> str | None:
+# A UNC path to this computer reaches its own disks under another name, so any
+# spelling of it is refused: loopback and unspecified addresses in any form
+# inet_aton reads (2130706433, 0x7f000001, 127.1), localhost names, and this
+# machine's own names and addresses.
+
+
+def _address(s: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    s = s.strip("[]")
+    if s.endswith(".ipv6-literal.net"):  # Windows spells IPv6 in UNC this way
+        s = s[: -len(".ipv6-literal.net")].replace("-", ":").replace("s", "%")
+    try:
+        return ipaddress.ip_address(s.split("%")[0])
+    except ValueError:
+        pass
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(s))
+    except (OSError, ValueError):
+        return None
+
+
+@functools.cache
+def _own_names() -> tuple[frozenset[str], frozenset[str]]:
+    """This machine's names, folded, and its addresses. Looked up once, when first needed."""
+    names: set[str] = set()
+    addresses: set[str] = set()
+    try:
+        host = socket.gethostname()
+        names.update({host, socket.getfqdn(), socket.getfqdn(host)})
+        for info in socket.getaddrinfo(host, None):
+            addresses.add(str(info[4][0]).split("%")[0])
+    except (OSError, UnicodeError):
+        pass
+    for n in list(names):
+        short = n.split(".")[0]
+        names.update({short, short[:15]})  # the NetBIOS name is at most 15 characters
+    return frozenset(fold(n).rstrip(". ") for n in names if n), frozenset(addresses)
+
+
+def _this_computer(server: str) -> bool:
+    s = fold(server).rstrip(". ")
+    if not s or s in {".", "?"} or s.startswith("localhost"):
+        return True
+    names, addresses = _own_names()
+    ip = _address(s)
+    if ip is not None:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        return ip.is_loopback or ip.is_unspecified or str(ip) in addresses
+    return s in names
+
+
+def plain_windows(p: PureWindowsPath) -> PureWindowsPath | None:
+    r"""The plain drive spelling of a Windows path, or None for one that must be refused.
+
+    `\\?\C:\x` is `C:\x`, and `\\?\UNC\server\share` is `\\server\share`. Device
+    paths (`\\.\`), volume paths, admin shares (`C$`) and shares of this computer
+    itself reach the local disks under another name, so they are refused outright."""
+    drive, rest = p.drive, p.parts[1:]
+    if drive.startswith("\\\\?\\"):
+        inner = drive[4:]
+        if re.fullmatch(r"[A-Za-z]:", inner):
+            return PureWindowsPath(inner + "\\", *rest)
+        if not fold(inner).startswith("unc\\"):
+            return None  # a volume GUID, GLOBALROOT and the like
+        p = PureWindowsPath("\\\\" + inner[4:] + "\\", *rest)
+        drive = p.drive
+    if drive.startswith("\\\\.\\"):
+        return None
+    if drive.startswith("\\\\"):
+        server, _, share = drive[2:].partition("\\")
+        if not share or share.endswith("$") or _this_computer(server):
+            return None
+    return p
+
+
+def _root_forms(root: PurePath) -> tuple[PurePath, ...]:
+    return spellings(root) if isinstance(root, Path) else (root,)
+
+
+def protected_reason(p: PurePath, protected_roots: tuple[PurePath, ...]) -> str | None:
     """Why one spelling of a resolved path is protected wherever it is, or None. Shared
     with the rule for folders that can never be shared, so the two never drift."""
+    if isinstance(p, PureWindowsPath):
+        plain = plain_windows(p)
+        if plain is None:
+            return "a device path or a share of this computer is not allowed"
+        p = plain
     if _has_stream(p):
         return "a name with a colon in it is not allowed"
     folded = _folded_parts(p)
@@ -163,7 +287,7 @@ def protected_reason(p: PurePath, protected_roots: tuple[Path, ...]) -> str | No
     if folded and _is_env_file(folded[-1]):
         return "environment files are protected"
     for root in protected_roots:
-        if any(is_under(p, r) for r in spellings(root)):
+        if any(is_under(p, r) for r in _root_forms(root)):
             return "Trillion's own files are protected"
     return None
 
@@ -201,8 +325,9 @@ def refused(
     path they are about to walk to, after any folder on the way may have changed. A
     write passes `read_only_roots`, so a link swapped in to a read only share is caught
     here too (D11)."""
+    policy = DenyPolicy.default()  # resolved once for every spelling
     for form in spellings(p):
-        denial = _check_one("path", form, DenyPolicy.default(), granted_roots)
+        denial = _check_one("path", form, policy, granted_roots)
         if denial is not None:
             return denial.reason
         if read_only_roots and read_only(form, granted_roots, read_only_roots):

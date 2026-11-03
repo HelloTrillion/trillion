@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import aiosqlite.core
 import pytest
 
 from trillion.attention import quiet
+from trillion.secrets import store as secret_store
 
 
 def _daemon_connection_threads() -> None:
@@ -30,3 +33,11 @@ def _cant_tell(monkeypatch: pytest.MonkeyPatch) -> None:
     tests call the probes themselves."""
     monkeypatch.setattr(quiet, "SYSTEM_MIC", lambda host: None)
     monkeypatch.setattr(quiet, "SYSTEM_FOCUS", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_secret_registry() -> Iterator[None]:
+    """Each test starts with no stored values known to the log scrubber."""
+    secret_store.forget_all()
+    yield
+    secret_store.forget_all()

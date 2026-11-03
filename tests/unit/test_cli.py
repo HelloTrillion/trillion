@@ -122,7 +122,10 @@ def test_run_refuses_a_malformed_token_from_the_app(
 
 
 def test_run_with_the_apps_token_never_prints_it(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     import webbrowser
 
@@ -138,6 +141,8 @@ def test_run_with_the_apps_token_never_prints_it(
     held: list[Any] = []
 
     async def open_without_keychain(**kwargs: Any) -> Any:
+        # Logged while the runtime opens: scrubbing must already be on.
+        logging.getLogger("trillion.test.startup").warning("opening with %s", APP_TOKEN)
         rt = await real_open(**kwargs, persona=tmp_path, secrets=MemoryStore())
         held.append(rt)
         return rt
@@ -163,6 +168,7 @@ def test_run_with_the_apps_token_never_prints_it(
     assert "TRILLION_SESSION_TOKEN" not in os.environ
     assert "#token=" not in out + err
     assert APP_TOKEN not in out + err
+    assert "opening with [redacted]" in caplog.text and APP_TOKEN not in caplog.text
     assert "started by the desktop app" in out
     assert opened == []  # the app shows the page itself
 
