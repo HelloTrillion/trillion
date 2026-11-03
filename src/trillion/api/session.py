@@ -600,10 +600,6 @@ class Session:
         self._queued: list[str] = []
         # The cards her last reply raised: only one of those can a plain no end (SPN-2f).
         self._asked_last: set[str] = set()
-        # A barge is opening listening, and the listener that heard them over her. A
-        # "no" said to stop her is not a no to a card (VOI-15c).
-        self._barging = False
-        self._over_her: Listener | None = None
         self._closed = False
         self._greeted = False
         self._orb = ""
@@ -1373,11 +1369,7 @@ class Session:
             else:
                 # Her turn is over but its sound may not be: keep only what was heard.
                 await self.trim_tail()
-            self._barging = True
-            try:
-                await self._on_listen(NOTHING_AFTER_S)
-            finally:
-                self._barging = False
+            await self._on_listen(NOTHING_AFTER_S)
 
     # ── Talking over her (VOI-9) ─────────────────────────────────────────
 
@@ -1893,8 +1885,6 @@ class Session:
                 await self._over(ov)
                 await self._error("busy")
                 return
-            # Set first: the turn can end before this returns.
-            self._over_her = ov.listener
             await self._become_turn(ov, follow_up=False)
 
     async def _become_turn(self, ov: Overlap, *, follow_up: bool, quiet: bool = False) -> None:
@@ -1989,7 +1979,6 @@ class Session:
                 # as it opens, so her echo still in the air is hers.
                 listener.judge_by(self._judge_on(listener, self._timeline.ending_at(0.0)))
             self._listener = listener
-            self._over_her = listener if self._barging else None
             # A window left open after a quiet `listening` (VOI-7): silence nudges once.
             self._window = listener if quiet else None
             self._drafted = False
@@ -2161,9 +2150,9 @@ class Session:
             elif text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
-                over_her = listener is self._over_her
-                self._over_her = None
-                declined = None if over_her else await self._said_no(text, "voice", self._turn + 1)
+                # Said over her too: a "no" while her question still plays is the usual
+                # answer. "Stop" is never a refusal, so quieting her cancels nothing.
+                declined = await self._said_no(text, "voice", self._turn + 1)
                 # A draft was built while the card still waited: it never saw the no.
                 usable = declined is None and draft is not None and self._usable(draft, text)
                 # A used draft saves its own words: the screen shows those, so a reload

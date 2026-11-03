@@ -198,10 +198,10 @@ async def test_a_no_to_her_later_question_leaves_the_card(rt: Runtime) -> None:
     await session.close()
 
 
-async def test_a_no_said_over_her_only_stops_her(rt: Runtime) -> None:
-    """VOI-15c: talking over her to quiet her is not cancelling anything."""
+async def said_over_her(rt: Runtime, words: str) -> tuple[Page, Session, str, ScriptedProvider]:
+    """A card, then the user talks over her (a barge) and says `words`."""
     stt = hearing(rt)
-    provider = ScriptedProvider(create(rt, "note.txt", "c1"), say("Shall I?"), say("Sorry."))
+    provider = ScriptedProvider(create(rt, "note.txt", "c1"), say("Shall I?"), say("Okay."))
     rt.provider = provider
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
@@ -210,13 +210,56 @@ async def test_a_no_said_over_her_only_stops_her(rt: Runtime) -> None:
     pid = page.all("confirm.request")[0]["pending_id"]
     await session.handle({"type": "barge"})
     await speak(session, room(0.2) + tone(0.6))
-    stt.stream.say("No, no.", final=True)
+    stt.stream.say(words, final=True)
     await speak(session, room(0.6))
     await idle(session)
-    assert page.all("transcript.final")[-1]["text"] == "No, no."
+    assert page.all("transcript.final")[-1]["text"] == words
+    return page, session, pid, provider
+
+
+async def test_a_no_said_over_her_question_cancels(rt: Runtime) -> None:
+    """Answering while her question still plays is the usual way to say no."""
+    page, session, pid, provider = await said_over_her(rt, "No, no.")
+    assert await status_of(rt, pid) is Status.REJECTED
+    assert [r["pending_id"] for r in page.all("confirm.resolved")] == [pid]
+    assert not await no_open_note(provider)
+    await session.close()
+
+
+async def test_stop_said_over_her_only_stops_her(rt: Runtime) -> None:
+    """VOI-15c: quieting her is not cancelling anything."""
+    page, session, pid, provider = await said_over_her(rt, "Stop.")
     assert await status_of(rt, pid) is Status.PROPOSED
     assert page.all("confirm.resolved") == []
     assert await no_open_note(provider)
+    await session.close()
+
+
+async def test_a_card_raised_in_a_taps_answer_is_declined_by_a_no(rt: Runtime) -> None:
+    """She answers a tap by asking about another card: the no is about that one."""
+    provider = ScriptedProvider(
+        create(rt, "a.txt", "c1"),
+        say("Shall I?"),
+        create(rt, "b.txt", "c2"),
+        say("How about b.txt instead?"),
+        say("Okay, neither."),
+    )
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "write a note"})
+    await idle(session)
+    a = page.all("confirm.request")[0]["pending_id"]
+    await session.handle({"type": "cancel", "pending_id": a})
+    await page.until("confirm.request", 2)
+    await idle(session)
+    b = page.all("confirm.request")[1]["pending_id"]
+    await session.handle({"type": "turn.text", "text": "no"})
+    await idle(session)
+    assert await status_of(rt, a) is Status.REJECTED
+    assert await status_of(rt, b) is Status.REJECTED
+    assert [r["pending_id"] for r in page.all("confirm.resolved")] == [a, b]
+    assert any(n.startswith("[host]") and b in n for n in notes(last_user(provider)))
     await session.close()
 
 

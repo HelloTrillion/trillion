@@ -75,6 +75,9 @@ def test_plain_refusals(said: str) -> None:
         # Said over her, "stop" silences her; it never cancels work (VOI-15c).
         "stop",
         "Stop that.",
+        # Dismay, not an answer.
+        "oh no",
+        "Oh no!",
     ],
 )
 def test_anything_more_than_a_plain_no_is_not_one(said: str) -> None:
@@ -235,3 +238,12 @@ async def test_a_card_superseded_meanwhile_is_not_cancelled(
     assert await spine.router.cancel_on_no("no", spine.ctx(turn=2)) is None
     assert await status_of(spine, pid) is Status.SUPERSEDED
     assert await status_of(spine, newer[0]) is Status.PROPOSED
+
+
+async def test_a_card_she_asked_about_again_counts_whenever_raised(spine: Spine) -> None:
+    """ "Still want me to save it?" asks about an older card: her last reply raised it
+    again, so a plain no ends it though it was proposed turns ago."""
+    pid = await propose(spine, "note.txt")
+    r = await spine.router.cancel_on_no("no", spine.ctx(turn=5), asked=frozenset({pid}))
+    assert r is not None and r.status == "cancelled"
+    assert await status_of(spine, pid) is Status.REJECTED

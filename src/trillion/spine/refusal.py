@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 
-# Words that add nothing to a refusal.
-_FILLER = frozenset("um umm uh uhh er erm hmm hm mm ah oh well actually please sorry".split())
+# Words that add nothing to a refusal. Not "oh": "oh no" is dismay, not an answer.
+_FILLER = frozenset("um umm uh uhh er erm hmm hm mm ah well actually please sorry".split())
 
 # Each a whole refusal, apostrophes dropped ("don't" is "dont").
 _PHRASES: tuple[tuple[str, ...], ...] = tuple(

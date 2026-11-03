@@ -605,8 +605,9 @@ class Router:
 
         Only when `words`, the user's whole turn, spoken or typed, is a plain refusal,
         and exactly one card is open in the session that raised it (SPN-14), and that
-        card is what she just asked about: raised in the turn before this one, and, if
-        the caller says which cards her last reply raised (`asked`), one of those. A no
+        card is what she just asked about: one her last reply raised or asked about
+        again (`asked`, from the caller), or without that, one raised in the turn
+        before this one. A no
         to some later question of hers is not a no to an older card. It is then
         cancelled as `cancel_pending_action` would, recorded with the turn's `via`.
         Otherwise None, and nothing is touched: the model reads the words. None too
@@ -625,8 +626,9 @@ class Router:
             # None to cancel, or more than one: which one is for the model to ask.
             return None
         a = waiting[0]
-        if a.created_turn != ctx.turn - 1 or (asked is not None and a.id not in asked):
-            # Not what her last words asked about.
+        if (a.id not in asked) if asked is not None else (a.created_turn != ctx.turn - 1):
+            # Not what her last words asked about. Without `asked`, only a card raised
+            # in the turn before counts.
             return None
         r = await self.resolve(a.id, "cancel", ctx)
         # Only a cancel of its own: an earlier answer reads "cancelled" too.
