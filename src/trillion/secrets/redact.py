@@ -1,5 +1,7 @@
 """Scrub credentials from every log record before it is written (SEC-5).
 
+The message, any traceback and any stack text are all scrubbed.
+
 A mistake in a future logging statement must not be able to leak a key. Two
 nets: the shapes of keys we know, and the exact values currently in use, which
 catches a credential whose format nobody anticipated.
@@ -12,6 +14,7 @@ later would not have it.)
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import threading
@@ -25,18 +28,22 @@ _SHAPES = re.compile(
     "|".join(
         (
             r"\bsk-[A-Za-z0-9_\-]{16,}",  # Anthropic, OpenAI
-            r"(?i:bearer)\s+[A-Za-z0-9_\-\.=]{16,}",  # an Authorization header
+            # An Authorization header. A digit is required, so prose is left alone.
+            r"(?i:bearer)\s+(?=[A-Za-z0-9_\-\.=]*\d)[A-Za-z0-9_\-\.=]{16,}",
             r"\bxox(?:e\.xox)?[abeoprs]-[A-Za-z0-9\-]{10,}",  # Slack bot, user, rotating
             r"\bxapp-[A-Za-z0-9\-]{10,}",  # Slack app-level
             r"\bya29\.[A-Za-z0-9_\-\.]{20,}",  # Google access
             r"\b1//[A-Za-z0-9_\-]{20,}",  # Google refresh
             r"\bAIza[A-Za-z0-9_\-]{35}",  # Google API key
+            r"\bGOCSPX-[A-Za-z0-9_\-]{20,}",  # Google OAuth client secret
             r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe secret, restricted
             r"\bwhsec_[A-Za-z0-9]{24,}",  # Stripe webhook signing
             r"\bsk_[A-Za-z0-9]{32,}",  # ElevenLabs
-            r"\b\d{6,12}:[A-Za-z0-9_\-]{35}\b",  # Telegram bot
+            r"(?<![0-9])\d{6,12}:[A-Za-z0-9_\-]{35}(?![A-Za-z0-9_\-])",  # Telegram bot
             r"\bgh[pousr]_[A-Za-z0-9]{36,}",  # GitHub classic and app
             r"\bgithub_pat_[A-Za-z0-9_]{22,}",  # GitHub fine-grained
+            r"\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+",  # a JWT
+            r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",  # AWS access key id
         )
     )
 )
@@ -51,10 +58,17 @@ def env_secrets(env: Mapping[str, str]) -> list[str]:
     return [v for k, v in env.items() if v and _ENV_NAME.search(k.upper())]
 
 
+@functools.lru_cache(maxsize=16)
+def _longest_first(values: tuple[str, ...]) -> tuple[str, ...]:
+    # Longest first, so a value holding a shorter one is removed whole. Cached: the
+    # same values come with record after record.
+    kept = {v for v in values if len(v) >= _MIN_KNOWN}
+    return tuple(sorted(kept, key=len, reverse=True))
+
+
 def scrub(text: str, known: Iterable[str] = ()) -> str:
-    # Longest first, so a value holding a shorter one is removed whole.
-    for value in sorted(set(known), key=len, reverse=True):
-        if len(value) >= _MIN_KNOWN and value in text:
+    for value in _longest_first(tuple(known)):
+        if value in text:
             text = text.replace(value, REDACTED)
     return _SHAPES.sub(REDACTED, text)
 
@@ -79,6 +93,16 @@ def _clean(record: logging.LogRecord, known: Callable[[], Iterable[str]]) -> Non
     cleaned = scrub(message, values)
     if cleaned != message:
         record.msg, record.args = cleaned, None
+    # A traceback is formatted once and kept on the record; handlers print that text.
+    if record.exc_info and not record.exc_text:
+        try:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        except Exception:
+            record.exc_text = "(the exception could not be formatted)"
+    if record.exc_text:
+        record.exc_text = scrub(record.exc_text, values)
+    if record.stack_info:
+        record.stack_info = scrub(record.stack_info, values)
 
 
 class RedactingFilter(logging.Filter):

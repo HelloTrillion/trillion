@@ -175,6 +175,10 @@ SHAPED = {
     "github classic": "gh" + "p_" + _A36,
     "github fine grained": "github" + "_pat_" + "11ABCDEFG0" + _A36[:12] + "_" + _A36 * 2,
     "elevenlabs": "sk" + "_" + "0123456789abcdef" * 3,
+    "google client secret": "GOC" + "SPX-" + _A36[:28],
+    "jwt": "ey" + "JhbGciOiJIUzI1NiJ9" + "." + "ey" + "JzdWIiOiIxMjM0In0" + "." + _A36[:30],
+    "aws access key": "AK" + "IA" + "IOSFODNN7EXAMPLE",
+    "aws session key": "AS" + "IA" + "Y3Z5ABCDEFGH1234",
 }
 
 
@@ -190,6 +194,13 @@ def test_the_telegram_shape_needs_exactly_its_own_form() -> None:
     assert redact.scrub("ran 12:30:00 then 2024:01") == "ran 12:30:00 then 2024:01"
 
 
+def test_a_telegram_token_inside_its_api_address_is_scrubbed() -> None:
+    url = "https://api.telegram.org/bot" + SHAPED["telegram"] + "/sendMessage"
+    assert redact.scrub(f"POST {url}") == (
+        f"POST https://api.telegram.org/bot{redact.REDACTED}/sendMessage"
+    )
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -203,6 +214,10 @@ def test_the_telegram_shape_needs_exactly_its_own_form() -> None:
         "uuid 123e4567-e89b-12d3-a456-426614174000 is fine",
         "github_pat_ alone",
         "my_ya29.notes and whsec_ alone",
+        "Bearer authorization_header_missing in the reply",
+        "eyJ alone and eyJabc.notjwt here",
+        "the AKIAMARKETING plan and ASIA trip",
+        "GOCSPX- alone",
     ],
 )
 def test_ordinary_lines_are_not_mistaken_for_keys(line: str) -> None:
@@ -231,7 +246,7 @@ def test_json_entries_expose_their_secret_fields_not_their_labels() -> None:
 
     mem = MemoryStore()
     mem.set(
-        "google/account/a@example.com",
+        "google/account/b@example.com",
         json.dumps(
             {
                 "refresh_token": "nested-refresh-value-0004",
@@ -239,6 +254,9 @@ def test_json_entries_expose_their_secret_fields_not_their_labels() -> None:
                 "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
                 "email": "someone@example.com",
                 "token_type": "Bearer",
+                "id_token": "nested-id-token-0015",
+                "apiKey": "camel-api-key-0016",
+                "api_key": "snake-api-key-0017",
             }
         ),
     )
@@ -247,7 +265,13 @@ def test_json_entries_expose_their_secret_fields_not_their_labels() -> None:
         json.dumps(
             {
                 "tokens": {"access_token": "deep-access-value-0006"},
-                "client_info": {"client_id": "public-client-id-0012", "client_secret": "cs-0013-x"},
+                "client_info": {
+                    "client_id": "public-client-id-0012",
+                    "client_secret": "cs-0013-x",
+                    "token_endpoint_auth_method": "client_secret_post",
+                    "scope": "read write everything",
+                },
+                "secret_holder": {"label": "label-under-secret-0021"},
             }
         ),
     )
@@ -257,8 +281,13 @@ def test_json_entries_expose_their_secret_fields_not_their_labels() -> None:
         "nested-access-value-0005",
         "deep-access-value-0006",
         "cs-0013-x",
+        "nested-id-token-0015",
+        "camel-api-key-0016",
+        "snake-api-key-0017",
     ):
         assert v in seen
+    for v in ("client_secret_post", "read write everything", "label-under-secret-0021"):
+        assert v not in seen
     assert "someone@example.com" not in seen
     assert "https://www.googleapis.com/auth/gmail.readonly" not in seen
     assert "public-client-id-0012" not in seen
@@ -282,17 +311,15 @@ def test_secret_looking_environment_variables_are_known() -> None:
 def test_a_value_read_after_logging_started_is_still_scrubbed(
     keychain: FakeKeychain, caplog: pytest.LogCaptureFixture
 ) -> None:
-    from types import SimpleNamespace
-
     from trillion.cli.main import _secrets_in_use
 
-    rt = SimpleNamespace(secrets=KeychainStore(), token="session-" + "token-value-0010")
+    session = "session-" + "token-value-0010"
     log = logging.getLogger("trillion.test.redact.lazy")
-    log.addFilter(redact.RedactingFilter(lambda: _secrets_in_use(rt)))
+    log.addFilter(redact.RedactingFilter(lambda: _secrets_in_use(session)))
     keychain.items[("trillion", "slack/user")] = "lazy-slack-value-0011"
-    token = rt.secrets.get("slack/user")  # fetched after the scrub was in place
+    token = KeychainStore().get("slack/user")  # fetched after the scrub was in place
     with caplog.at_level(logging.INFO, logger=log.name):
-        log.info("got %s with %s", token, rt.token)
+        log.info("got %s with %s", token, session)
     assert "lazy-slack-value-0011" not in caplog.text
     assert "session-token-value-0010" not in caplog.text
 
@@ -300,3 +327,60 @@ def test_a_value_read_after_logging_started_is_still_scrubbed(
 def test_a_known_value_holding_another_is_removed_whole() -> None:
     inner, outer = "inner-value-0014", "prefix-inner-value-0014-suffix"
     assert redact.scrub(f"x {outer} y", [inner, outer]) == f"x {redact.REDACTED} y"
+
+
+def test_only_what_is_stored_now_is_held(keychain: FakeKeychain) -> None:
+    import json
+
+    from trillion.secrets import store as store_mod
+
+    kc = KeychainStore()
+    kc.set("google/account/a@example.com", json.dumps({"access_token": "first-access-0018"}))
+    kc.set("google/account/a@example.com", json.dumps({"access_token": "fresh-access-0019"}))
+    held = store_mod.handed_out()
+    assert "fresh-access-0019" in held
+    assert not any("first-access-0018" in v for v in held)  # a refreshed token replaces
+    kc.delete("google/account/a@example.com")
+    assert store_mod.handed_out() == ()
+    mem = MemoryStore()
+    mem.set("telegram/bot", "memory-value-0022")
+    mem.delete("telegram/bot")
+    assert store_mod.handed_out() == ()
+    keychain.items[("trillion", "slack/app")] = "removed-elsewhere-0023"
+    assert kc.get("slack/app") == "removed-elsewhere-0023"
+    del keychain.items[("trillion", "slack/app")]
+    assert kc.get("slack/app") is None  # gone from the keychain: forgotten here too
+    assert store_mod.handed_out() == ()
+
+
+def test_held_values_come_longest_first() -> None:
+    from trillion.secrets import store as store_mod
+
+    mem = MemoryStore()
+    mem.set("a", "short-value-01")
+    mem.set("b", "a-much-longer-value-0002")
+    assert store_mod.handed_out() == ("a-much-longer-value-0002", "short-value-01")
+
+
+def test_a_token_in_a_logged_exception_is_scrubbed() -> None:
+    import io
+
+    undo = redact.install(lambda: ["known-value-123456"])
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    log = logging.getLogger("trillion.test.redact.exc")
+    log.addHandler(handler)
+    log.propagate = False
+    try:
+        try:
+            raise RuntimeError(f"provider refused {SAMPLE} and known-value-123456")
+        except RuntimeError:
+            log.exception("the call failed")
+        log.warning("here", stack_info=True, extra={"unused": SAMPLE})
+        written = stream.getvalue()
+    finally:
+        undo()
+        log.removeHandler(handler)
+    assert "Traceback" in written and "RuntimeError: provider refused" in written
+    assert SAMPLE not in written and "known-value-123456" not in written
+    assert "Stack (most recent call last)" in written

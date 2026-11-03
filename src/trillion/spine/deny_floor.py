@@ -9,12 +9,14 @@ string fails closed.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
+import socket
 import sys
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 
 from trillion import paths
 from trillion.spine.contract import JSON, Risk, ToolDefinition
@@ -185,9 +187,60 @@ def spellings(p: Path) -> tuple[Path, ...]:
     return (p,) if c == p else (p, c)
 
 
-def protected_reason(p: PurePath, protected_roots: tuple[Path, ...]) -> str | None:
+# Names a UNC path can use for this computer itself: such a path reaches its own disks.
+_THIS_COMPUTER = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0--1.ipv6-literal.net", "."})
+
+
+@functools.cache
+def _own_names() -> frozenset[str]:
+    try:
+        own = socket.gethostname()
+    except OSError:
+        return frozenset()
+    return frozenset({fold(own), fold(own.split(".")[0])})
+
+
+def _this_computer(server: str) -> bool:
+    s = fold(server)
+    return s in _THIS_COMPUTER or s.startswith("127.") or s in _own_names()
+
+
+def plain_windows(p: PureWindowsPath) -> PureWindowsPath | None:
+    r"""The plain drive spelling of a Windows path, or None for one that must be refused.
+
+    `\\?\C:\x` is `C:\x`, and `\\?\UNC\server\share` is `\\server\share`. Device
+    paths (`\\.\`), volume paths, admin shares (`C$`) and shares of this computer
+    itself reach the local disks under another name, so they are refused outright."""
+    drive, rest = p.drive, p.parts[1:]
+    if drive.startswith("\\\\?\\"):
+        inner = drive[4:]
+        if re.fullmatch(r"[A-Za-z]:", inner):
+            return PureWindowsPath(inner + "\\", *rest)
+        if not fold(inner).startswith("unc\\"):
+            return None  # a volume GUID, GLOBALROOT and the like
+        p = PureWindowsPath("\\\\" + inner[4:] + "\\", *rest)
+        drive = p.drive
+    if drive.startswith("\\\\.\\"):
+        return None
+    if drive.startswith("\\\\"):
+        server, _, share = drive[2:].partition("\\")
+        if not share or share.endswith("$") or _this_computer(server):
+            return None
+    return p
+
+
+def _root_forms(root: PurePath) -> tuple[PurePath, ...]:
+    return spellings(root) if isinstance(root, Path) else (root,)
+
+
+def protected_reason(p: PurePath, protected_roots: tuple[PurePath, ...]) -> str | None:
     """Why one spelling of a resolved path is protected wherever it is, or None. Shared
     with the rule for folders that can never be shared, so the two never drift."""
+    if isinstance(p, PureWindowsPath):
+        plain = plain_windows(p)
+        if plain is None:
+            return "a device path or a share of this computer is not allowed"
+        p = plain
     if _has_stream(p):
         return "a name with a colon in it is not allowed"
     folded = _folded_parts(p)
@@ -197,7 +250,7 @@ def protected_reason(p: PurePath, protected_roots: tuple[Path, ...]) -> str | No
     if folded and _is_env_file(folded[-1]):
         return "environment files are protected"
     for root in protected_roots:
-        if any(is_under(p, r) for r in spellings(root)):
+        if any(is_under(p, r) for r in _root_forms(root)):
             return "Trillion's own files are protected"
     return None
 
@@ -235,8 +288,9 @@ def refused(
     path they are about to walk to, after any folder on the way may have changed. A
     write passes `read_only_roots`, so a link swapped in to a read only share is caught
     here too (D11)."""
+    policy = DenyPolicy.default()  # resolved once for every spelling
     for form in spellings(p):
-        denial = _check_one("path", form, DenyPolicy.default(), granted_roots)
+        denial = _check_one("path", form, policy, granted_roots)
         if denial is not None:
             return denial.reason
         if read_only_roots and read_only(form, granted_roots, read_only_roots):

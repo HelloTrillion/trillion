@@ -4,14 +4,16 @@ macOS Keychain, Windows Credential Manager, or Secret Service on Linux, through
 the `keyring` library. Entries are namespaced `trillion/<connector>/<field>`.
 Values are fetched when a request is made and never cached here (SEC-6).
 
-Every value a store reads or writes is noted in a process registry, so the log
-scrubber knows it (SEC-5) whichever connector asked for it, and however late.
+The values currently stored are also held in memory, by name, for one purpose:
+so the log scrubber can remove them (SEC-5) whichever connector asked for them,
+and however late. A value replaced or removed is dropped from that list too.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from typing import Any, Protocol
 
@@ -24,43 +26,67 @@ logger = logging.getLogger(__name__)
 SERVICE = "trillion"
 
 # JSON entries hold labels (emails, scopes, expiry) beside the secrets, so only
-# fields with names like these are noted.
-_SECRET_FIELDS = ("token", "secret", "key", "password", "verifier")
-_seen: set[str] = set()
-_seen_lock = threading.Lock()
+# values whose own field is named like a secret are noted.
+_SECRET_FIELD = re.compile(r"(?:^|_)(?:token|secret|key|password|verifier)$")
+_current: dict[str, tuple[str, ...]] = {}
+_ordered: tuple[str, ...] = ()
+_lock = threading.Lock()
 
 
-def _secret_leaves(data: Any, secret: bool = False) -> list[str]:
+def _field_name(k: str) -> str:
+    # apiKey and api_key read the same.
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", k).lower()
+
+
+def _secret_leaves(data: Any) -> list[str]:
+    out: list[str] = []
     if isinstance(data, dict):
-        out: list[str] = []
         for k, v in data.items():
-            named = isinstance(k, str) and any(f in k.lower() for f in _SECRET_FIELDS)
-            out += _secret_leaves(v, secret or named)
-        return out
-    if isinstance(data, list):
-        return [leaf for v in data for leaf in _secret_leaves(v, secret)]
-    return [data] if secret and isinstance(data, str) else []
+            if isinstance(v, str):
+                if isinstance(k, str) and _SECRET_FIELD.search(_field_name(k)):
+                    out.append(v)
+            else:
+                out += _secret_leaves(v)
+    elif isinstance(data, list):
+        for v in data:
+            out += _secret_leaves(v)
+    return out
 
 
-def remember(value: str | None) -> str | None:
-    """Note a value the store handed out or took in. Returns it unchanged."""
-    if not value:
-        return value
+def _held(value: str) -> tuple[str, ...]:
     found = [value]
     if value.lstrip().startswith(("{", "[")):
         try:
             found += _secret_leaves(json.loads(value))
         except ValueError:
             pass
-    with _seen_lock:
-        _seen.update(found)
-    return value
+    return tuple(dict.fromkeys(found))
 
 
-def handed_out() -> list[str]:
-    """Every secret value this process has read from or written to a store."""
-    with _seen_lock:
-        return list(_seen)
+def _note(name: str, value: str | None) -> None:
+    """What is stored under `name` now. None means nothing is."""
+    global _ordered
+    with _lock:
+        if value:
+            _current[name] = _held(value)
+        else:
+            _current.pop(name, None)
+        # Longest first, so a value holding a shorter one is scrubbed whole.
+        everything = {v for vs in _current.values() for v in vs}
+        _ordered = tuple(sorted(everything, key=len, reverse=True))
+
+
+def handed_out() -> tuple[str, ...]:
+    """The secret values currently stored that this process has read or written."""
+    return _ordered
+
+
+def forget_all() -> None:
+    """Tests only: start from an empty list."""
+    global _ordered
+    with _lock:
+        _current.clear()
+        _ordered = ()
 
 
 class SecretStoreError(RuntimeError):
@@ -88,19 +114,21 @@ class KeychainStore:
 
     def get(self, name: str) -> str | None:
         try:
-            return remember(keyring.get_password(SERVICE, name))
+            value = keyring.get_password(SERVICE, name)
         except keyring.errors.KeyringError as e:
             logger.warning("keychain read of %s failed: %s", name, type(e).__name__)
             return None
+        _note(name, value)
+        return value
 
     def set(self, name: str, value: str) -> None:
         if not self.available():
             raise SecretStoreError("this machine has no system keychain")
-        remember(value)
         try:
             keyring.set_password(SERVICE, name, value)
         except keyring.errors.KeyringError as e:
             raise SecretStoreError(f"the keychain refused to store {name}") from e
+        _note(name, value)
 
     def delete(self, name: str) -> None:
         try:
@@ -109,6 +137,7 @@ class KeychainStore:
             pass  # already gone
         except keyring.errors.KeyringError as e:
             raise SecretStoreError(f"the keychain refused to remove {name}") from e
+        _note(name, None)
 
 
 class MemoryStore:
@@ -122,16 +151,19 @@ class MemoryStore:
         return self._usable
 
     def get(self, name: str) -> str | None:
-        return remember(self._values.get(name))
+        value = self._values.get(name)
+        _note(name, value)
+        return value
 
     def set(self, name: str, value: str) -> None:
         if not self._usable:
             raise SecretStoreError("this machine has no system keychain")
-        remember(value)
         self._values[name] = value
+        _note(name, value)
 
     def delete(self, name: str) -> None:
         self._values.pop(name, None)
+        _note(name, None)
 
     def values(self) -> list[str]:
         return list(self._values.values())

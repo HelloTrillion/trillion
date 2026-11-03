@@ -188,6 +188,19 @@ def _folders_line(roots: tuple[Path, ...], narrower: dict[Path, str]) -> str:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    from trillion.secrets import redact
+
+    # Scrub from the first record, before anything opens. The session token is known
+    # once the app hands it over or the runtime makes one.
+    session: dict[str, str | None] = {"token": None}
+    undo = redact.install(lambda: _secrets_in_use(session["token"]))
+    try:
+        return await _serve(args, session)
+    finally:
+        undo()
+
+
+async def _serve(args: argparse.Namespace, session: dict[str, str | None]) -> int:
     # Imported here so `trillion --version` stays instant.
     import uvicorn
 
@@ -201,7 +214,6 @@ async def _run(args: argparse.Namespace) -> int:
     from trillion.brain.config import ConfigError, provider_from_env
     from trillion.cli.server import Server, stop_when_closed
     from trillion.files.shares import EVERYONE, ShareError, Shares
-    from trillion.secrets import redact
 
     # A `--grant` folder is a share for this run only, under the same rule as any other
     # share (the shared folders spec, D4, D10): refused before anything is opened.
@@ -225,6 +237,7 @@ async def _run(args: argparse.Namespace) -> int:
             narrower[share.path] = "saved as read only"
     # Taken out of the environment at once, so no tool or MCP server she starts inherits it.
     app_token = os.environ.pop(SESSION_TOKEN_ENV, None)
+    session["token"] = app_token
     if app_token is not None:
         try:
             session_token({SESSION_TOKEN_ENV: app_token})  # a bad one fails before anything opens
@@ -249,7 +262,7 @@ async def _run(args: argparse.Namespace) -> int:
     from trillion import build
 
     rt = await open_runtime(shares=shares, session=app_token)
-    redact.install(lambda: _secrets_in_use(rt))
+    session["token"] = rt.token
     provider = rt.provider
     try:
         app = create_app(
@@ -305,16 +318,17 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _secrets_in_use(rt: Any) -> list[str]:
+def _secrets_in_use(token: str | None) -> list[str]:
     """Every credential this process can currently send, for the log scrubber.
 
-    The store notes each value it reads or writes, for every connector, so a value
-    fetched lazily is known from the moment it is in memory.
+    The store notes each value it holds for every connector, so a value fetched
+    lazily is known from the moment it is in memory.
     """
     from trillion.secrets.redact import env_secrets
     from trillion.secrets.store import handed_out
 
-    return [v for v in (*handed_out(), *env_secrets(os.environ), rt.token) if v]
+    env = dict(os.environ)  # a snapshot: another thread may change it meanwhile
+    return [v for v in (*handed_out(), *env_secrets(env), token) if v]
 
 
 def _port_is_free(host: str, port: int) -> bool:

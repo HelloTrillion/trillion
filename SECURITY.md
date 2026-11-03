@@ -192,16 +192,23 @@ is a known limit of this phase.
   are the macOS keychains, the Linux keyrings (Secret Service and KWallet),
   and Windows Credential Manager, the DPAPI master keys and the Vault. All of
   them are refused on every OS, including where `%APPDATA%`,
-  `%LOCALAPPDATA%` or `$XDG_DATA_HOME` has been moved. Proven by
-  `tests/spine/test_credential_stores.py`.
-- **Logs never carry a credential** (SEC-5). Every log record is scrubbed
-  before it is written: by the shapes providers issue (Anthropic, OpenAI,
-  Slack, Google, Stripe, Telegram, GitHub, ElevenLabs, bearer headers), and
-  by value. The keychain store notes every value it reads or writes, for
-  every connector, including the secret fields inside a stored sign-in, so
-  a key fetched late or with no known shape is scrubbed too, as are
-  environment variables named like credentials and the session token.
-  Proven by `tests/unit/test_secrets.py`.
+  `%LOCALAPPDATA%` or `$XDG_DATA_HOME` has been moved. On Windows a
+  `\\?\` long path is read as its plain drive path first, and device paths
+  (`\\.\`), volume paths, admin shares (`C$`) and shares of this computer
+  itself (`\\localhost\`, `\\127.0.0.1\`) are refused outright. Proven by
+  `tests/spine/test_credential_stores.py` and
+  `tests/unit/test_deny_floor_rules.py`.
+- **Logs never carry a credential** (SEC-5). From the start of `trillion run`,
+  every log record is scrubbed before it is written: its message, its
+  traceback and its stack text. Scrubbing works by the shapes providers issue
+  (Anthropic, OpenAI, Slack, Google, Stripe, Telegram, GitHub, ElevenLabs,
+  AWS, JWTs, bearer headers), and by value. The values currently stored in
+  the keychain, for every connector, including the secret fields inside a
+  stored sign-in, are held in memory only for log redaction: a value
+  replaced or removed is dropped from that list. Environment variables named
+  like credentials and the session token are scrubbed too. A key fetched
+  late, or with no known shape, is still caught. Proven by
+  `tests/unit/test_secrets.py`.
 - **A file tool never opens a path by name.** It applies the floor once more,
   then walks down from the granted folder one name at a time, each step opened
   relative to the last and refused if it is a link, so a folder swapped for a
