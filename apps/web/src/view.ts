@@ -25,7 +25,8 @@ export type CardStatus = 'waiting' | 'working' | 'done' | 'declined' | 'failed' 
 export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed' | 'ready' | 'heads_up';
 
 export type Entry =
-  | { readonly kind: 'user'; readonly text: string }
+  // `seen`: she chose to say nothing to it, as to a sign-off (VOI-7).
+  | { readonly kind: 'user'; readonly text: string; readonly seen?: boolean }
   | { readonly kind: 'assistant'; readonly text: string; readonly interrupted: boolean }
   | { readonly kind: 'tool'; readonly callId: string; readonly name: string; readonly outcome: string | null; readonly ok: boolean }
   | {
@@ -236,6 +237,9 @@ const MIC_PROBLEMS: Readonly<Record<MicProblem, string>> = {
   failed: 'The microphone could not be opened.',
   silent: 'Your microphone is sending silence. Choose another in Settings, under Hearing, or check its input and gain.',
 };
+
+// Her tool for saying nothing (VOI-7): a silence she chose, never drawn as a tool.
+export const QUIET_TOOL = 'stay_quiet';
 
 const STOPS: Readonly<Record<string, string>> = {
   unheard: 'I heard something, but could not make out any words.',
@@ -490,7 +494,9 @@ function step(view: View, msg: ServerMsg): View {
     case 'history': {
       const rows = Array.isArray(msg['messages']) ? (msg['messages'] as Record<string, unknown>[]) : [];
       const entries: Entry[] = rows.flatMap((r): Entry[] => {
-        if (r['role'] === 'user') return [{ kind: 'user', text: str(r['text']) }];
+        if (r['role'] === 'user') {
+          return [r['seen'] === true ? { kind: 'user', text: str(r['text']), seen: true } : { kind: 'user', text: str(r['text']) }];
+        }
         if (r['role'] === 'host') return [hostOf(r)];
         // A heads-up kept by the app: drawn as it arrived, with Join, detail and reason.
         if (r['role'] === 'notice') {
@@ -523,7 +529,12 @@ function step(view: View, msg: ServerMsg): View {
     }
     case 'turn.complete':
       return release({ ...view, replyOpen: false, busy: false, hearing: '', pending: null });
+    case 'seen':
+      // She chose to say nothing to their last message: it was seen, not left unanswered.
+      return { ...view, entries: replaceLast(view.entries, (e) => e.kind === 'user', (e) => ({ ...e, seen: true }) as Entry) };
     case 'tool.start':
+      // Her silence is not work to show: no chip, and its end matches nothing.
+      if (msg['name'] === QUIET_TOOL) return view;
       return {
         ...view,
         replyOpen: false,
@@ -592,6 +603,8 @@ function step(view: View, msg: ServerMsg): View {
         ),
       });
     case 'notice': {
+      // A chosen silence is never a failure (VOI-7); the core sends no notice for it.
+      if (msg['code'] === 'stopped' && msg['reason'] === 'quiet') return view;
       if (msg['code'] === 'schedule') {
         const entry = scheduledOf(msg);
         const seen = (e: Entry): boolean => e.kind === 'scheduled' && entry?.kind === 'scheduled' && e.id === entry.id;

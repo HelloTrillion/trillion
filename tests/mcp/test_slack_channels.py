@@ -154,6 +154,7 @@ class Tools:
         messages: Sequence[Msg],
         tools: Sequence[Any],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         if is_naming(system):  # naming her first reply is not a turn
             yield Done(stop_reason="end", usage=Usage())

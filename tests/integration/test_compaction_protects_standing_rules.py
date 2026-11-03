@@ -46,6 +46,7 @@ class Summarizing(ScriptedProvider):
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         if system and system[0].text.startswith("You are writing notes"):
             assert tools == []  # nothing in the old conversation can make this call act
@@ -55,7 +56,7 @@ class Summarizing(ScriptedProvider):
             yield Done(stop_reason="end", usage=USAGE)
             return
         async for ev in super().stream(
-            system=system, messages=messages, tools=tools, max_tokens=max_tokens
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, quick=quick
         ):
             yield ev
 

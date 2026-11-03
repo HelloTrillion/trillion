@@ -41,8 +41,10 @@ from trillion.spine.contract import (
     ToolContext,
     ToolDefinition,
     ToolResult,
+    Via,
 )
 from trillion.spine.loop_guard import Limits
+from trillion.tools.quiet import QUIET, StayQuiet
 
 USER = Msg(role="user", blocks=(TextBlock(text="hello"),))
 
@@ -52,6 +54,7 @@ class Run:
         self.spine = spine
         self.events: list[LoopEvent] = []
         self.saved: list[Msg] = []
+        self.via: Via = "text"
 
     async def ctx(self, call_id: str) -> ToolContext:
         return ToolContext(
@@ -59,7 +62,7 @@ class Run:
             session_id="s1",
             turn=1,
             call_id=call_id,
-            via="text",
+            via=self.via,
             granted_roots=(self.spine.granted,),
         )
 
@@ -556,3 +559,121 @@ async def test_a_mixed_round_runs_in_her_order_with_the_board_last(run: Run) -> 
     # A write is in the round, so one at a time: hers first, then the board's.
     assert starts == ends == ["w1", "r1", "b1", "b2"]
     assert [r.tool_use_id for r in run.results()] == ["w1", "b1", "r1", "b2"]
+
+
+# ── Saying nothing (VOI-7) ───────────────────────────────────────────────
+
+
+def _quiet(kind: str, call_id: str = "q1", text: str = "") -> list[ModelEvent]:
+    return use(QUIET, {"kind": kind}, call_id=call_id, text=text)
+
+
+@pytest.fixture
+def quiet_run(run: Run) -> Run:
+    run.spine.registry.register(StayQuiet())
+    return run
+
+
+async def test_a_quiet_done_ends_the_turn_with_the_pair_saved(quiet_run: Run) -> None:
+    provider = ScriptedProvider(_quiet("done"))
+    done = await quiet_run.go(provider)
+    assert done.stop == "quiet" and done.quiet == "done"
+    # One model call: no further round runs after she chose silence.
+    assert len(provider.calls) == 1
+    call, answer = quiet_run.saved
+    assert call.role == "assistant"
+    assert call.blocks == (ToolUseBlock(id="q1", name=QUIET, args={"kind": "done"}),)
+    assert answer.role == "user"
+    (result,) = answer.blocks
+    assert isinstance(result, ToolResultBlock) and not result.is_error
+    assert result.tool_use_id == "q1"
+    # Nothing of hers was streamed to be shown or spoken.
+    assert not any(isinstance(e, ReplyDelta) for e in quiet_run.events)
+
+
+async def test_a_spoken_turn_may_stay_quiet_listening(quiet_run: Run) -> None:
+    quiet_run.via = "voice"
+    done = await quiet_run.go(ScriptedProvider(_quiet("listening")))
+    assert done.stop == "quiet" and done.quiet == "listening"
+
+
+async def test_a_refused_quiet_goes_on_to_her_answer(quiet_run: Run) -> None:
+    # Typed: there is no pause to wait through.
+    provider = ScriptedProvider(_quiet("listening"), say("Here is the answer."))
+    done = await quiet_run.go(provider)
+    assert done.stop == "end" and done.quiet is None
+    (result,) = quiet_run.results()
+    assert result.is_error
+    assert len(provider.calls) == 2
+    assert quiet_run.saved[-1] == Msg(
+        role="assistant", blocks=(TextBlock(text="Here is the answer."),)
+    )
+
+
+async def test_quiet_with_text_is_refused_and_the_text_is_the_reply(quiet_run: Run) -> None:
+    provider = ScriptedProvider(_quiet("done", text="You're welcome."), say("Bye."))
+    done = await quiet_run.go(provider)
+    assert done.stop == "end" and done.quiet is None
+    (result,) = quiet_run.results()
+    assert result.is_error and "alone" in result.content
+    first = quiet_run.saved[0]
+    assert first.blocks[0] == TextBlock(text="You're welcome.")
+
+
+async def test_quiet_beside_another_tool_is_refused_and_the_other_runs(quiet_run: Run) -> None:
+    round_one: list[ModelEvent] = [
+        ToolUse(id="r1", name="plain_reader", args={}),
+        ToolUse(id="q1", name=QUIET, args={"kind": "done"}),
+        Done(stop_reason="tool_use", usage=USAGE),
+    ]
+    provider = ScriptedProvider(round_one, say("Read it."))
+    done = await quiet_run.go(provider)
+    assert done.stop == "end" and done.quiet is None
+    read, quiet = quiet_run.results()
+    assert read.tool_use_id == "r1" and not read.is_error
+    assert quiet.tool_use_id == "q1" and quiet.is_error and "alone" in quiet.content
+
+
+async def test_nothing_at_all_is_still_empty_not_quiet(quiet_run: Run) -> None:
+    done = await quiet_run.go(ScriptedProvider([Done(stop_reason="end", usage=USAGE)]))
+    assert done.stop == "empty" and done.quiet is None
+
+
+@pytest.mark.parametrize("kind", ["listening", "done"])
+async def test_quiet_after_she_already_spoke_this_turn_ends_as_said(
+    quiet_run: Run, kind: str
+) -> None:
+    """She said a line before a read: a later silence is no silence. The call and its
+    answer stay saved, and the turn ends as one she spoke in."""
+    quiet_run.via = "voice"
+    provider = ScriptedProvider(
+        use("plain_reader", {}, call_id="r1", text="Checking your calendar."),
+        _quiet(kind),
+    )
+    done = await quiet_run.go(provider)
+    assert done.stop == "end" and done.quiet is None
+    assert len(provider.calls) == 2
+    read, quiet = quiet_run.results()
+    assert not read.is_error and quiet.tool_use_id == "q1" and not quiet.is_error
+
+
+async def test_whitespace_before_a_lone_quiet_is_neither_shown_nor_saved(quiet_run: Run) -> None:
+    provider = ScriptedProvider(
+        [
+            TextDelta(text="\n"),
+            TextDelta(text=" "),
+            ToolUse(id="q1", name=QUIET, args={"kind": "done"}),
+            Done(stop_reason="tool_use", usage=USAGE),
+        ]
+    )
+    done = await quiet_run.go(provider)
+    assert done.stop == "quiet" and done.quiet == "done"
+    assert not any(isinstance(e, ReplyDelta) for e in quiet_run.events)
+    assert quiet_run.saved[0].blocks == (ToolUseBlock(id="q1", name=QUIET, args={"kind": "done"}),)
+
+
+async def test_leading_whitespace_still_reaches_the_reply_it_starts(run: Run) -> None:
+    provider = ScriptedProvider([TextDelta(text="\n"), *say("Hi.")])
+    done = await run.go(provider)
+    assert done.stop == "end"
+    assert "".join(e.text for e in run.events if isinstance(e, ReplyDelta)) == "\nHi."

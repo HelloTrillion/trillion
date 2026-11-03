@@ -54,6 +54,11 @@ _OVER_NOISE = 3.0
 _MIN_SPEECH = 0.008
 # A cough is not a sentence: speech starts after this much of it.
 _ONSET_S = 0.06
+# In a window held open by words only, a voice heard this recently may be words the
+# recognizer has not reported yet (they lag): "nothing" waits, but not past patience
+# by more than this.
+WORDS_LAG_S = 1.0
+WORDS_LAG_MAX_S = 1.5
 
 
 def sounds_finished(text: str) -> bool:
@@ -91,10 +96,19 @@ def level(pcm: bytes) -> float:
 
 class EndOfSpeech:
     def __init__(
-        self, *, streaming: bool, patience_s: float = NOTHING_AFTER_S, judged: bool = False
+        self,
+        *,
+        streaming: bool,
+        patience_s: float = NOTHING_AFTER_S,
+        judged: bool = False,
+        words_only: bool = False,
     ) -> None:
         self._streaming = streaming
         self._judged = judged
+        # Only words count as speaking: the window left open after a trailed-off thought
+        # (VOI-7) ends after `patience_s` with no words, whatever the meter heard. A
+        # cough, a breath or her echo's tail must not hold it open for good.
+        self._words_only = words_only
         self._over = False
         self._patience = patience_s
         self._rest = b""
@@ -186,7 +200,8 @@ class EndOfSpeech:
         if loud > max(_MIN_SPEECH, self._noise * _OVER_NOISE):
             self._run += _WINDOW / SAMPLE_RATE
             if self._run >= _ONSET_S:
-                self._spoke = True
+                if not self._words_only:
+                    self._spoke = True
                 self._last_voice = now
         else:
             self._run = 0.0
@@ -198,7 +213,17 @@ class EndOfSpeech:
         if not self._spoke:
             if now >= DEAD_AFTER_S and self._peak < DEAD_LEVEL:
                 return "inaudible"
-            return "nothing" if now >= self._patience else None
+            if now < self._patience:
+                return None
+            if (
+                self._words_only
+                and self._last_voice > 0
+                and now - self._last_voice < WORDS_LAG_S
+                and now < self._patience + WORDS_LAG_MAX_S
+            ):
+                # A voice just now: its words may still be on their way.
+                return None
+            return "nothing"
         if self._judged:
             # The recognizer judges the end by meaning; silence alone never does.
             if self._over:

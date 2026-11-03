@@ -169,6 +169,8 @@ class OpenAICompatProvider:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        # Nothing to tune here: these servers have no common reasoning setting.
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         headers = {"content-type": "application/json"}
         key = self._api_key()

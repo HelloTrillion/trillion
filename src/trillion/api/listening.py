@@ -37,6 +37,9 @@ BATCH_WRAP_UP_S = 60.0
 _MAX_BACKLOG = 16_000 * 2 * 10
 # The window that reopens after she speaks waits this long for a first word (VOI-8).
 FOLLOW_UP_S = 3.0
+# After she stays quiet because they trailed off mid-thought, the microphone stays open
+# this long for them to go on before she nudges them once (VOI-7).
+QUIET_LISTEN_S = 3.5
 # A word reported without a time is taken as said this long before its report, the
 # usual lag of a recognizer, and lasting this long either side of then (#102).
 UNTIMED_LAG_S = 0.4
@@ -91,12 +94,13 @@ class Listener:
         patience_s: float = NOTHING_AFTER_S,
         on_turn: Callable[[str, str], Awaitable[None]] | None = None,
         watch: bool = False,
+        words_only: bool = False,
     ) -> None:
         self._provider = provider
         self._choice = choice
         self._on_partial = on_partial
         self._on_turn = on_turn
-        self._rules = self._new_rules(patience_s)
+        self._rules = self._new_rules(patience_s, words_only=words_only)
         # Watching while she speaks (VOI-9): every frame goes to the recognizer, its
         # turns come and go, and nothing ends until `hear` makes this a turn.
         self._watching = watch
@@ -132,9 +136,11 @@ class Listener:
         self._verdict: Verdict | None = None
         self.frames = 0
 
-    def _new_rules(self, patience_s: float) -> EndOfSpeech:
+    def _new_rules(self, patience_s: float, *, words_only: bool = False) -> EndOfSpeech:
         p = self._provider
-        return EndOfSpeech(streaming=p.streaming, patience_s=patience_s, judged=p.turns)
+        return EndOfSpeech(
+            streaming=p.streaming, patience_s=patience_s, judged=p.turns, words_only=words_only
+        )
 
     @property
     def open(self) -> bool:
@@ -266,17 +272,23 @@ class Listener:
         until its next words arrive."""
         return self._this_turn()
 
-    def hear(self, *, patience_s: float = NOTHING_AFTER_S, judge: Judge | None = None) -> None:
+    def hear(
+        self,
+        *,
+        patience_s: float = NOTHING_AFTER_S,
+        judge: Judge | None = None,
+        words_only: bool = False,
+    ) -> None:
         """Stop watching: from here this is listening to the user, with fresh rules for
         when they have finished. Words of the current turn count as heard, those `judge`
         keeps when one is given, and a turn the recognizer already ended is over (or
-        held, if it leads on)."""
+        held, if it leads on). With `words_only`, only words count as speaking."""
         self._watching = False
         self._verdict = None
         self._holding = False
         self._judge = judge
         said = self._this_turn()
-        self._rules = self._new_rules(patience_s)
+        self._rules = self._new_rules(patience_s, words_only=words_only)
         if not said:
             return
         self._rules.heard(final=self._turn_ended, has_text=True)

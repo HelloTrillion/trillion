@@ -374,6 +374,9 @@ def judge_for(model: str, url: str, env: Mapping[str, str], *, get: Get = httpx.
 
 Via = Literal["text", "voice"]
 Tap = Literal["confirm", "cancel"]
+# How she chose to say nothing: the user is mid-thought, or signed off.
+Quiet = Literal["listening", "done"]
+QUIETS: tuple[Quiet, ...] = ("listening", "done")
 USER, AGENT = "Sam", "Nova"
 # A real model can think for a while between messages; a scripted one never needs it.
 PATIENT_S = 300.0
@@ -416,6 +419,10 @@ class Turn:
     error: str | None = None
     # What the host told her this turn: how a background read ended, what a tap did.
     notes: tuple[str, ...] = ()
+    # How her turn ended, as `turn.complete` said: "end", "quiet", "empty"... or None
+    # when it never did. When she chose silence, `quiet` is which kind.
+    stop: str | None = None
+    quiet: Quiet | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -500,12 +507,14 @@ class Recorder:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         turn = not is_naming(system)  # naming a conversation is not a turn
         if turn:
             self.calls.append((list(system), list(messages)))
+        # Passed on, so a spoken case is measured as she would answer it.
         async for ev in self.inner.stream(
-            system=system, messages=messages, tools=tools, max_tokens=max_tokens
+            system=system, messages=messages, tools=tools, max_tokens=max_tokens, quick=quick
         ):
             if isinstance(ev, Done):
                 if ev.model:
@@ -610,6 +619,19 @@ def _spoken(msgs: Sequence[dict[str, Any]]) -> str:
             said += "."
         said = f"{said} {part}" if said else part
     return said
+
+
+def ending(msgs: Sequence[dict[str, Any]]) -> tuple[str | None, Quiet | None]:
+    """How the last turn in these messages ended, and the kind of quiet if she chose
+    silence: ("quiet", "done"), ("end", None), or (None, None) if none ended."""
+    done = [m for m in msgs if m["type"] == "turn.complete"]
+    if not done:
+        return None, None
+    stop = done[-1].get("stop")
+    stop = None if stop is None else str(stop)
+    kind = done[-1].get("quiet")
+    quiet = next((q for q in QUIETS if q == kind), None) if stop == "quiet" else None
+    return stop, quiet
 
 
 def _finished(msgs: Sequence[dict[str, Any]]) -> bool:
@@ -878,6 +900,7 @@ class Sandbox:
         errors = [str(m.get("code", "error")) for m in msgs if m["type"] == "error"]
         if error is not None:
             errors.append(error)
+        stop, quiet = ending(msgs)
         return Turn(
             said=heard[-1] if heard else ask.text,
             via=ask.via,
@@ -887,4 +910,6 @@ class Sandbox:
             tapped=tapped,
             error=errors[-1] if errors else None,
             notes=notes,
+            stop=stop,
+            quiet=quiet,
         )

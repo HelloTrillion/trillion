@@ -7,6 +7,8 @@ from evals.persona.checks import (
     as_an_ai,
     banned_opener,
     markdown,
+    no_menu,
+    one_question,
     repeated_openers,
     sentences,
     too_long,
@@ -189,3 +191,35 @@ def test_no_two_replies_within_20_turns_open_with_the_same_three_words() -> None
     edge = ["Sure, soup works."] + [f"Reply number {i}." for i in range(19)] + ["Sure, soup works."]
     assert repeated_openers(edge) == [20]  # 20 apart
     assert repeated_openers(["Yes.", "Yes.", "Yes."]) == []  # under three words: not compared
+
+
+@pytest.mark.parametrize(
+    ("reply", "found"),
+    [
+        ("Would you like me to draft it?", "would you like me to"),
+        ("Do you want me to look?", "do you want me to"),
+        ("Which do you prefer, the date or the team?", "which do you prefer"),
+        ("WOULD YOU LIKE ME TO try?", "would you like me to"),
+    ],
+)
+def test_a_menu_is_flagged_however_it_is_cased(reply: str, found: str) -> None:
+    assert no_menu(reply) == found
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Sounds like the date matters more than the mood.",
+        "You should move it. The team needs the week.",
+        "I'd keep the date.",
+        "Should I worry? No.",
+    ],
+)
+def test_a_reply_that_offers_no_menu_passes(reply: str) -> None:
+    assert no_menu(reply) is None
+
+
+def test_at_most_one_question() -> None:
+    assert one_question("Tired how? Worn out, or fed up?") == "2 questions"
+    assert one_question("The date matters. What's driving it?") is None
+    assert one_question("Keep the date.") is None

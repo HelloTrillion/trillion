@@ -45,6 +45,10 @@ _NEVER_ENDS = frozenset({"dr.", "mr.", "mrs.", "ms.", "e.g.", "i.e.", "vs."})
 _ENDS_BEFORE_A_CAPITAL = frozenset({"a.m.", "p.m.", "etc."})
 _WORD = re.compile(r"[A-Za-z0-9]+(?:['\u2019-][A-Za-z0-9]+)*")
 MAX_SENTENCES, MAX_WORDS = 3, 45
+# Handing the choice back as a menu (voice.md, when they think aloud): she says what she
+# thinks instead. Not "should I": "Should I worry? No." is no menu.
+_MENU = re.compile(r"\bwould you like me to\b|\bdo you want me to\b|\bwhich do you prefer\b")
+MAX_QUESTIONS = 1
 
 
 def _plain(text: str) -> str:
@@ -119,6 +123,18 @@ def too_long(reply: str, *, long_ok: bool = False) -> str | None:
     if long_ok and (n_sentences == 1 or re.search(r"\bboard\b", reply, re.IGNORECASE)):
         return None
     return f"{n_sentences} sentences, {n_words} words"
+
+
+def no_menu(reply: str) -> str | None:
+    """The menu a reply offers ("would you like me to", "which do you prefer"), or None."""
+    found = _MENU.search(_plain(reply))
+    return found.group(0) if found else None
+
+
+def one_question(reply: str) -> str | None:
+    """More than one question in a spoken reply, or None."""
+    n = reply.count("?")
+    return f"{n} questions" if n > MAX_QUESTIONS else None
 
 
 def repeated_openers(replies: Sequence[str], window: int = 20) -> list[int]:

@@ -619,3 +619,71 @@ describe('background reads', () => {
     expect(v.entries[2]).toEqual({ kind: 'host', text: 'Stripe numbers are in' });
   });
 });
+
+describe('staying quiet (VOI-7)', () => {
+  it('marks the user message she answered with silence as seen', () => {
+    const v = feed([
+      { type: 'reply.delta', text: 'Here it is.' },
+      { type: 'turn.complete', stop: 'end' },
+    ], sent(INITIAL, "what's on today"));
+    const after = feed([
+      { type: 'state', orb: 'processing' },
+      { type: 'tool.start', call_id: 'q1', name: 'stay_quiet', risk: 'read' },
+      { type: 'tool.end', call_id: 'q1', ok: true, summary: 'succeeded' },
+      { type: 'seen' },
+      { type: 'turn.complete', stop: 'quiet', quiet: 'done' },
+    ], sent(v, "thanks, that's all"));
+    expect(after.entries).toEqual([
+      { kind: 'user', text: "what's on today" },
+      { kind: 'assistant', text: 'Here it is.', interrupted: false },
+      { kind: 'user', text: "thanks, that's all", seen: true },
+    ]);
+  });
+
+  it('marks a spoken sign-off seen under its transcript line', () => {
+    const v = feed([
+      { type: 'transcript.final', text: 'okay thanks' },
+      { type: 'seen' },
+      { type: 'turn.complete', stop: 'quiet', quiet: 'done' },
+    ]);
+    expect(v.entries).toEqual([{ kind: 'user', text: 'okay thanks', seen: true }]);
+  });
+
+  it('shows the mark again from a reloaded conversation', () => {
+    const v = feed([
+      {
+        type: 'history',
+        messages: [
+          { role: 'user', text: 'hi' },
+          { role: 'assistant', text: 'Hello.' },
+          { role: 'user', text: 'bye for now', seen: true },
+        ],
+      },
+    ]);
+    expect(v.entries).toEqual([
+      { kind: 'user', text: 'hi' },
+      { kind: 'assistant', text: 'Hello.', interrupted: false },
+      { kind: 'user', text: 'bye for now', seen: true },
+    ]);
+  });
+
+  it('draws no chip for the silence itself', () => {
+    const v = feed([
+      { type: 'tool.start', call_id: 'q1', name: 'stay_quiet', risk: 'read' },
+      { type: 'tool.end', call_id: 'q1', ok: true, summary: 'succeeded' },
+    ]);
+    expect(v.entries).toEqual([]);
+  });
+
+  it('says "sent back nothing" only for an empty reply, never for a chosen silence', () => {
+    const quiet = feed([{ type: 'turn.complete', stop: 'quiet', quiet: 'listening' }]);
+    expect(quiet.entries).toEqual([]);
+    const stray = feed([{ type: 'notice', code: 'stopped', reason: 'quiet' }]);
+    expect(stray.entries).toEqual([]);
+    const empty = feed([
+      { type: 'notice', code: 'stopped', reason: 'empty' },
+      { type: 'turn.complete', stop: 'empty' },
+    ]);
+    expect(empty.entries).toEqual([{ kind: 'notice', text: 'The model sent back nothing. Try again, or rephrase.' }]);
+  });
+});

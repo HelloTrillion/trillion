@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 # The board tools' category (tools/workspace.py), named here so the loop needs nothing
 # from the workspace.
 WORKSPACE = "workspace"
+# Staying quiet (tools/quiet.py, VOI-7), named here for the same reason: by its name and
+# its category, so no other tool can end a turn in silence.
+QUIET = "stay_quiet"
+QUIET_CATEGORY = "quiet"
+# Why a call to stay quiet was not run: it said something else in the same round.
+ALONE = (
+    "call stay_quiet alone, with no text and no other tool; what you wrote or asked for "
+    "this round is your reply"
+)
 
 MAX_TOKENS = 4096
 INTERRUPTED = " [interrupted]"
@@ -87,6 +96,8 @@ class TurnDone:
     usage: Usage
     cost_usd: float | None = None
     error_kind: str | None = None
+    # With stop "quiet": the kind of silence she chose, "listening" or "done".
+    quiet: str | None = None
 
 
 # Asked of each call whether it runs in the background: the immediate answer if it does
@@ -117,6 +128,7 @@ async def run_turn(
     first: AsyncIterator[ModelEvent] | None = None,
     heard: Callable[[str], str | None] | None = None,
     background: Background | None = None,
+    quick: bool = False,
 ) -> TurnDone:
     """Run until the model stops asking for tools or a limit stops it.
 
@@ -135,22 +147,30 @@ async def run_turn(
     None when the user read it all instead (her voice failed or was muted).
 
     `background`, when given, may take a slow read off the turn: the call is answered
-    at once and its result arrives later, outside this turn."""
+    at once and its result arrives later, outside this turn.
+
+    `quick`, for a spoken turn, asks every model call of the turn for its first word
+    sooner (`ModelProvider.stream`). The same for every call: it never changes
+    within a turn."""
     guard = LoopGuard(limits)
+    # Whether she has said anything this turn: after that, a silence is not one.
+    spoke = False
     tools = tool_schemas(registry)
     pricing = provider.pricing()
     messages = list(history)
     usage = Usage()
     cost: float | None = 0.0 if pricing is not None else None
 
-    def done(stop: str, error_kind: str | None = None) -> TurnDone:
-        return TurnDone(stop=stop, usage=usage, cost_usd=cost, error_kind=error_kind)
+    def done(stop: str, error_kind: str | None = None, quiet: str | None = None) -> TurnDone:
+        return TurnDone(stop=stop, usage=usage, cost_usd=cost, error_kind=error_kind, quiet=quiet)
 
     async def add(msg: Msg) -> None:
         messages.append(msg)
         await save(msg)
 
-    async def call(u: ToolUse, refuse: Refusal | None = None) -> ToolResultBlock:
+    async def call(
+        u: ToolUse, refuse: Refusal | None = None, not_alone: bool = False
+    ) -> ToolResultBlock:
         definition = registry.definition(u.name)
         risk = definition.risk if definition is not None else None
         await emit(
@@ -160,6 +180,11 @@ async def run_turn(
         )
         if refuse is not None:
             response = RouterResponse(status="refused", reason=refuse, detail="cost ceiling")
+        elif not_alone and quiet(u):
+            # Silence with words or work beside it is not silence: never run.
+            response = RouterResponse(
+                status="refused", reason=Refusal.PRECONDITION_FAILED, detail=ALONE
+            )
         elif u.invalid is not None:
             response = RouterResponse(
                 status="refused", reason=Refusal.INVALID_ARGS, detail=u.invalid
@@ -184,7 +209,13 @@ async def run_turn(
         d = registry.definition(u.name)
         return d is not None and d.category == WORKSPACE
 
-    async def run_all(batch: Sequence[ToolUse], refuse: Refusal | None) -> list[Block]:
+    def quiet(u: ToolUse) -> bool:
+        d = registry.definition(u.name)
+        return u.name == QUIET and d is not None and d.category == QUIET_CATEGORY
+
+    async def run_all(
+        batch: Sequence[ToolUse], refuse: Refusal | None, not_alone: bool = False
+    ) -> list[Block]:
         reads_only = all(
             (d := registry.definition(u.name)) is not None and d.risk is Risk.READ for u in batch
         )
@@ -196,12 +227,12 @@ async def run_turn(
         if reads_only and refuse is None:
             first = [i for i in order if not board(batch[i])]
             for group in (first, order[len(first) :]):
-                done = await asyncio.gather(*(call(batch[i]) for i in group))
+                done = await asyncio.gather(*(call(batch[i], not_alone=not_alone) for i in group))
                 out.update(zip(group, done, strict=True))
         else:
             # Anything that writes or proposes runs in the order the model asked.
             for i in order:
-                out[i] = await call(batch[i], refuse)
+                out[i] = await call(batch[i], refuse, not_alone)
         # Answered in the order she asked.
         return [out[i] for i in range(len(batch))]
 
@@ -210,6 +241,8 @@ async def run_turn(
             return done("rounds")
 
         text: list[str] = []
+        # Whether any of this round's text has been shown yet.
+        shown = False
         uses: list[ToolUse] = []
         stop = "other"
         spent = Usage()
@@ -221,7 +254,7 @@ async def run_turn(
             first
             if first is not None
             else provider.stream(
-                system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS
+                system=system, messages=messages, tools=tools, max_tokens=MAX_TOKENS, quick=quick
             )
         )
         first = None
@@ -232,7 +265,13 @@ async def run_turn(
                     first_token = clock()
                 if isinstance(ev, TextDelta):
                     text.append(ev.text)
-                    await emit(ReplyDelta(text=ev.text))
+                    if shown:
+                        await emit(ReplyDelta(text=ev.text))
+                    elif "".join(text).strip():
+                        # Whitespace alone is shown only with the words it leads to:
+                        # before a lone stay_quiet there are none (VOI-7).
+                        shown = True
+                        await emit(ReplyDelta(text="".join(text)))
                 elif isinstance(ev, ToolUse):
                     uses.append(ev)
                 elif isinstance(ev, Done):
@@ -287,16 +326,36 @@ async def run_turn(
         # reply is also not cancelling the work (VOI-15c): calls handed to the spine
         # finish and are recorded before the turn ends.
         refuse = Refusal.LOOP_GUARD if over_budget else None
+        # Staying quiet is the whole of a round or no part of it (VOI-7).
+        not_alone = bool("".join(text).strip()) or len(uses) > 1
+        answered: list[Block] = []
+
+        # A lone silence keeps no whitespace written before it.
+        written = "" if not not_alone and quiet(uses[0]) else "".join(text)
 
         async def round_trip() -> None:
-            await add(_assistant("".join(text), uses, raw))  # noqa: B023
-            results = await run_all(uses, refuse)  # noqa: B023
+            await add(_assistant(written, uses, raw))  # noqa: B023
+            results = await run_all(uses, refuse, not_alone)  # noqa: B023
+            answered.extend(results)  # noqa: B023
             await add(Msg(role="user", blocks=tuple(results)))
 
         if await _finish(round_trip()):
             raise asyncio.CancelledError
         if over_budget:
             return done("cost")
+        if not not_alone and quiet(uses[0]):
+            (result,) = answered
+            if isinstance(result, ToolResultBlock) and not result.is_error:
+                if spoke:
+                    # She already said something this turn (a line before a read): the
+                    # turn ends as one she spoke in, never as a silence. Nothing more
+                    # is asked of the model; the call and its answer stay saved.
+                    return done("end")
+                # She chose to say nothing, and the call and its answer are saved as a
+                # pair like any other: later turns see the silence was hers. The session
+                # decides what the room does next.
+                return done("quiet", quiet=str(uses[0].args.get("kind")))
+        spoke = spoke or bool("".join(text).strip())
 
 
 def kept_of(written: str, heard: str | None) -> str:

@@ -184,6 +184,7 @@ class Hangs:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         await asyncio.sleep(3600)
         yield say("late")[0]
@@ -244,6 +245,7 @@ class Gated:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
         self.asked.set()
         await self.go.wait()

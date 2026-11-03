@@ -8,9 +8,15 @@ Three rules of the current API shape this adapter:
   content is kept as `ProviderRaw` and replayed; `prefix_key` says what it was
   produced under, and a turn produced under anything else is replayed as plain
   text and tool calls instead.
-- **Nothing is forced or tuned.** No `thinking`, effort or sampling parameters
-  are sent, so the request is valid on every current model and each model runs
-  at its own default.
+- **Nothing is forced or tuned, but for a spoken conversation.** No sampling
+  parameters are sent, and with her voice off no `thinking` or effort either, so
+  each model runs at its own default. While her replies are spoken (`quick`, set
+  for the whole session, typed turns included, so the cached prefix survives a
+  switch between typing and talking), she asks for the least reasoning that is
+  still recommended (`_QUICK`). A model not listed there gets its defaults, since
+  a guess could be refused. Earlier turns' signed reasoning is still replayed
+  unchanged: the API reads or drops it as the setting needs, and the setting
+  never changes within a turn.
 - **A refusal is a normal response.** It is reported as a stop reason, never
   read as an empty success.
 
@@ -66,6 +72,32 @@ _STOP: dict[str, StopReason] = {
     "max_tokens": "max_tokens",
     "refusal": "refusal",
 }
+# What a session whose replies are spoken adds to the request, by model, so her first
+# word comes sooner. The lowest effort, with adaptive thinking left on, as Anthropic
+# recommends: with thinking off, Claude Opus 5 can write a tool call as visible text
+# or leak internal tags, which would be read aloud, and Claude Sonnet 5.5 and Haiku
+# 5.5 are documented to do better on low effort than with thinking off. Claude Sonnet
+# 5 alone has thinking turned off ("disabled", valid at its default effort): it has
+# no such failure documented, only fewer tool calls. Models that do not think unless
+# asked are not listed: they already answer without it.
+_OFF: dict[str, Any] = {"thinking": {"type": "disabled"}}
+_LOW: dict[str, Any] = {"output_config": {"effort": "low"}}
+_QUICK: dict[str, dict[str, Any]] = {
+    "claude-sonnet-5": _OFF,
+    "claude-sonnet-5-5": _LOW,
+    "claude-opus-5": _LOW,
+    "claude-haiku-5-5": _LOW,
+    "claude-opus-5-5": _LOW,
+    "claude-fable-5": _LOW,
+    "claude-fable-5-1": _LOW,
+}
+
+
+def quick_params(model: str) -> dict[str, Any]:
+    """What a spoken turn sends on top of the request for this model, if anything."""
+    return _QUICK.get(re.sub(r"-\d{8}$", "", model), {})
+
+
 # US dollars per million tokens, from Anthropic's published first-party rates as of
 # 2026-10-22. A model missing here has no known price, and its cost is reported as
 # unknown rather than guessed. Cache writes bill at 1.25x input.
@@ -92,11 +124,21 @@ _LONG_PROMPT_PRICES: dict[str, tuple[float, float, float]] = {
 }
 
 
-def prefix_key(model: str, system: Sequence[SystemBlock], tools: Sequence[ToolSchema]) -> str:
-    """What a reply's reasoning is bound to, besides the messages before it."""
+def prefix_key(
+    model: str,
+    system: Sequence[SystemBlock],
+    tools: Sequence[ToolSchema],
+    first: Msg | None = None,
+) -> str:
+    """What a reply's reasoning is bound to: the model, the instructions, the tools,
+    and the messages before it. History is only appended to, except at a compaction,
+    which drops the oldest messages and puts the summary in the first kept one; so
+    the first message sent stands for the rest. A turn kept through a compaction no
+    longer matches and goes out as plain text and tool calls (BRN-5)."""
     material = json.dumps(
         {
             "model": model,
+            "first": _neutral(first) if first is not None else None,
             "system": [s.text for s in system],
             "tools": sorted(
                 (t.name, t.description, json.dumps(dict(t.input_schema), sort_keys=True))
@@ -277,8 +319,9 @@ class AnthropicProvider:
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
+        quick: bool = False,
     ) -> AsyncIterator[ModelEvent]:
-        key = prefix_key(self.model, system, tools)
+        key = prefix_key(self.model, system, tools, messages[0] if messages else None)
         request: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self._max_output,
@@ -289,6 +332,8 @@ class AnthropicProvider:
             "messages": wire_messages(messages, key),
         }
         cache_history(request["messages"])
+        if quick:
+            request.update(quick_params(self.model))
         if tools:
             request["tools"] = [
                 {"name": t.name, "description": t.description, "input_schema": dict(t.input_schema)}

@@ -11,6 +11,7 @@ from trillion.voice.endpoint import (
     HELD_MAX_S,
     HELD_QUIET_S,
     SLOW_S,
+    WORDS_LAG_MAX_S,
     EndOfSpeech,
     leads_on,
     level,
@@ -303,3 +304,45 @@ def test_new_words_after_a_held_done_leave_the_end_to_the_recognizer() -> None:
     rules.hold()
     rules.heard(final=False, has_text=True)
     assert rules.audio(room(4.0)) is None
+
+
+def test_a_window_held_open_by_words_only_ends_on_no_words() -> None:
+    """The quiet window after a trailed-off thought (VOI-7): a cough, a breath or her
+    echo's tail is loud but says nothing, and must not hold it open forever."""
+    for judged in (True, False):
+        rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=judged, words_only=True)
+        assert run(rules, tone(0.5) + room(3.0) + tone(0.4)) is None
+        assert not rules.spoke
+        assert run(rules, room(4.5)) == "nothing"
+    # Words, though, are a turn like any other.
+    rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=True, words_only=True)
+    assert run(rules, tone(0.5)) is None
+    rules.heard(final=False, has_text=True)
+    assert rules.spoke
+    assert run(rules, room(9.0)) is None  # the recognizer that judges turns decides
+    rules.turn_over()
+    assert run(rules, room(0.1)) == "end"
+
+
+def test_a_voice_just_before_the_window_ends_waits_for_its_words() -> None:
+    """The recognizer's words lag the voice by up to most of a second: someone who
+    starts again just before the window ends is not nudged over."""
+    rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=True, words_only=True)
+    assert run(rules, room(7.6) + tone(0.6)) is None
+    assert run(rules, room(0.1)) is None  # past patience, but a voice just now
+    rules.heard(final=False, has_text=True)
+    assert rules.spoke and run(rules, room(1.0)) is None
+    # A voice with no words never holds it past patience by more than the cap.
+    rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=True, words_only=True)
+    assert run(rules, room(7.6) + tone(2.0)) == "nothing"
+    assert rules.now <= 8.0 + WORDS_LAG_MAX_S + 0.05
+    # A lone cough early on still ends it at patience.
+    rules = EndOfSpeech(streaming=True, patience_s=8.0, judged=True, words_only=True)
+    assert run(rules, room(2.0) + tone(0.3) + room(5.8)) == "nothing"
+    assert abs(rules.now - 8.0) < 0.1
+
+
+def test_the_meter_alone_still_holds_an_ordinary_turn() -> None:
+    rules = EndOfSpeech(streaming=True, patience_s=3.0, judged=True)
+    assert run(rules, tone(0.5)) is None and rules.spoke
+    assert run(rules, room(4.0)) is None

@@ -14,7 +14,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -24,7 +24,7 @@ from trillion import __version__
 from trillion.api import listening
 from trillion.api.draft import Draft, same_words
 from trillion.api.jobs import STARTED, Full, Job, goes_to_background
-from trillion.api.listening import FOLLOW_UP_S, Judge, Listener
+from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S, Judge, Listener
 from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.api.trace import Trace, Via, ahead_ms
@@ -42,13 +42,18 @@ from trillion.brain.loop import (
     run_turn,
     tool_schemas,
 )
+from trillion.brain.loop import (
+    QUIET as QUIET_TOOL,
+)
 from trillion.brain.types import (
     ContextBlock,
     ModelProvider,
     Msg,
     ProviderError,
     TextBlock,
+    ToolResultBlock,
     ToolUse,
+    ToolUseBlock,
     Usage,
 )
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
@@ -74,6 +79,7 @@ from trillion.spine.router import Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.tools.folders import View, host_note, open_place
+from trillion.tools.quiet import asks
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
 from trillion.tools.routine import mine as routine_here
@@ -323,6 +329,27 @@ def background_note(title: str, job: Job, r: RouterResponse) -> str:
     return f"{head} Result: {r.to_model()}\n{_IN if ok else _NOT_IN}"
 
 
+# The host note for the one nudge after a quiet `listening` window passes in silence
+# (VOI-7). Saved as a tap's note, so its turn is the host's: she may not stay quiet on
+# it, which is also what keeps a nudge from following a nudge.
+NUDGE = (
+    "[host] They trailed off mid-thought and have been quiet a few seconds. If you can "
+    "tell what they were reaching for, offer it back in a few words as a question. If "
+    "not, say one short line inviting them to go on. Your own words."
+)
+
+
+def quiet_done(use: ToolUseBlock, result: ToolResultBlock) -> bool:
+    """A saved `stay_quiet` `done` that was accepted: the user's message before it was
+    seen, and needs no reply (VOI-7)."""
+    return (
+        use.name == QUIET_TOOL
+        and use.args.get("kind") == "done"
+        and result.tool_use_id == use.id
+        and not result.is_error
+    )
+
+
 def background_msg(note: str) -> Msg:
     """A note saved with no session to build its context: the app's mark and the note."""
     return Msg(role="user", blocks=(ContextBlock(text=BACKGROUND), TextBlock(text=note)))
@@ -457,6 +484,19 @@ class _Loaded:
 
 
 @dataclass(frozen=True, kw_only=True)
+class _Written:
+    """A summary of the oldest turns, written but not yet in place (BRN-5): the ids of
+    the messages it replaces, and the summary it was written on top of."""
+
+    summary: compact.Summary
+    ids: tuple[int, ...]
+    previous: str | None
+    # Already recorded in the store, when a turn started before it could be put in
+    # place in what the model is sent.
+    stored: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
 class BuiltInput:
     """A user input made ready to save: the message, and what committing it records."""
 
@@ -506,6 +546,22 @@ class Session:
         # reopens as after a spoken turn. Only the microphone: the build stays the app's
         # input and can approve nothing.
         self._listen_after = False
+        # How her last turn chose to say nothing, if it did, until its turn is over and
+        # the session acts on it (VOI-7), and the turn number its silence was heard as:
+        # a page's "played" for that silence never reopens the microphone.
+        self._quiet: str | None = None
+        self._quiet_turn: int | None = None
+        # The watch that goes on as the quiet window once her silence is heard.
+        self._quiet_watch: Overlap | None = None
+        # The microphone left open after a quiet `listening`: if it passes in silence,
+        # she nudges once. Let go with the listener, by anything that stops it.
+        self._window: Listener | None = None
+        # The page said she was heard to the end while her turn was still finishing:
+        # the follow-up is decided once the turn is over.
+        self._ended_early = False
+        # The number the running turn's speech is heard as: only its own "played" is
+        # remembered while it finishes, never an earlier turn's arriving late.
+        self._playing: int | None = None
         # The messages the model is sent, after the latest summary, each with its kind
         # and its id in the store. The whole conversation stays in the store.
         self._history: list[Msg] = []
@@ -515,6 +571,13 @@ class Session:
         # one was saved would lose it, and is dropped (`reloaded`).
         self._saves = 0
         self._summary: str | None = None
+        # A summary of the oldest turns being written in the background, and one written
+        # while a turn ran: it is put in place at the next pause between turns (BRN-5).
+        self._compacting: asyncio.Task[None] | None = None
+        self._written: _Written | None = None
+        # How long the history was when a summary last failed: not tried again in the
+        # background until it has grown well past that.
+        self._compact_failed_at: int | None = None
         # The turns in which she read something from outside: a page, a file, or a
         # timed ask's answer, which may quote an email (MEM-5).
         self._outside: set[int] = set()
@@ -707,8 +770,21 @@ class Session:
         unanswered = False
         # A heads-up whose line is the next message.
         awaiting: dict[str, Any] | None = None
+        # The user's last message as shown, and her call to stay quiet after it, if she
+        # made one: answered and accepted, it marks that message seen (VOI-7).
+        said: dict[str, Any] | None = None
+        hushed: ToolUseBlock | None = None
         for kind, msg in await rt.conversations.history(self.id, OWNER):
             turn += kind in USER_INPUTS
+            if kind == "tool_results":
+                for b in msg.blocks:
+                    if isinstance(b, ToolResultBlock) and hushed is not None and said:
+                        if quiet_done(hushed, b):
+                            said["seen"] = True
+                hushed = None
+                continue
+            uses = [b for b in msg.blocks if isinstance(b, ToolUseBlock)]
+            hushed = uses[0] if kind == "assistant" and len(uses) == 1 else None
             text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
             routine = routine_run(msg) if kind == "tap" else None
             ready = ready_line(msg) if kind == "tap" else None
@@ -738,6 +814,8 @@ class Session:
                 shown.append({"role": "host", "text": routine})
             elif kind in ("user", "assistant") and text:
                 shown.append({"role": msg.role, "text": text})
+            if kind == "user":
+                said = shown[-1] if text and shown and shown[-1].get("role") == "user" else None
         summary, rows = await rt.conversations.context(self.id, OWNER)
         return _Loaded(shown=shown, turn=turn, summary=summary, rows=rows, unanswered=unanswered)
 
@@ -919,6 +997,15 @@ class Session:
         if retry is not None and retry is not asyncio.current_task():
             retry.cancel()
         self._tail = None
+        # A summary being written is let go. A provider reports usage only at the end of
+        # a call, so one stopped here counts as nothing. The conversation is summarized
+        # again when it is next open and long.
+        compacting, self._compacting = self._compacting, None
+        self._written = None
+        if compacting is not None:
+            compacting.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await compacting
         task = self._task
         if task is not None:
             task.cancel()
@@ -998,6 +1085,11 @@ class Session:
                 self._let_go_heard(ov)
                 await self._leave_watch(ov)
                 await self._overlap_interrupts(ov)
+            elif self._window is not None and self._listener is self._window:
+                # They take the floor in the window left open for them: it is theirs,
+                # and no nudge follows it.
+                self._window = None
+                await self._send("mic.start", follow_up=False)
             else:
                 await self._on_listen(NOTHING_AFTER_S, held=held)
             if held and self._listener is not None:
@@ -1065,10 +1157,19 @@ class Session:
             elif ov is not None:
                 # They are talking over her end: what they meant decides what follows.
                 ov.ended = True
+            elif turn_id is not None and turn_id == self._quiet_turn:
+                # A silence she chose has nothing to be heard: what follows it is the
+                # session's, never a follow-up window (VOI-7).
+                pass
             # She has finished being heard, which is what reopens the microphone (VOI-8,
             # VOI-15b): only after a spoken turn, and never over a turn still running.
-            elif self._answered_aloud() and self._task is None and self._listener is None:
-                await self._on_listen(FOLLOW_UP_S, follow_up=True)
+            elif self._answered_aloud() and self._listener is None:
+                if self._task is None:
+                    await self._on_listen(FOLLOW_UP_S, follow_up=True)
+                elif turn_id is not None and turn_id == self._playing:
+                    # Her turn is still finishing: it opens once the turn is over. An
+                    # earlier turn's end, heard while a later one runs, opens nothing.
+                    self._ended_early = True
             await self._offer()
         elif kind in ("board.open", "board.close", "board.remove"):
             await self._on_board(kind, msg.get("id"))
@@ -1575,14 +1676,18 @@ class Session:
         await self._send("overlap.duck")
         ov.wake.set()
 
-    async def _leave_watch(self, ov: Overlap, *, patience_s: float = NOTHING_AFTER_S) -> None:
+    async def _leave_watch(
+        self, ov: Overlap, *, patience_s: float = NOTHING_AFTER_S, words_only: bool = False
+    ) -> None:
         """Stop only watching: what follows is heard as the user. Only their words count:
         her echo, before, between or after them, is left out."""
         if not ov.watching:
             return
         ov.watching = False
         ov.listener.hear(
-            patience_s=patience_s, judge=self._judge_on(ov.listener, ov.timeline, ov.past_s)
+            patience_s=patience_s,
+            judge=self._judge_on(ov.listener, ov.timeline, ov.past_s),
+            words_only=words_only,
         )
 
     def _her_heard(self) -> None:
@@ -1691,10 +1796,15 @@ class Session:
             if self._overlap is not ov or ov.promoting:
                 return
             ov.promoting = True
+            # After a quiet `listening`, this is the window left open for them (VOI-7).
+            quiet = self._quiet == "listening"
+            self._quiet, self._quiet_watch = None, None
             logger.info("talked over in session %s: follow_up", self.id)
-            await self._leave_watch(ov, patience_s=FOLLOW_UP_S)
+            await self._leave_watch(
+                ov, patience_s=QUIET_LISTEN_S if quiet else FOLLOW_UP_S, words_only=quiet
+            )
             self._spoken = None
-            await self._become_turn(ov, follow_up=True)
+            await self._become_turn(ov, follow_up=True, quiet=quiet)
 
     async def _overlap_carries_on(self, ov: Overlap) -> None:
         """An acknowledgement, or nothing at all: she carries on. Nothing is saved, and
@@ -1759,18 +1869,20 @@ class Session:
                 return
             await self._become_turn(ov, follow_up=False)
 
-    async def _become_turn(self, ov: Overlap, *, follow_up: bool) -> None:
-        """The listener that heard them over her goes on as the user's turn."""
+    async def _become_turn(self, ov: Overlap, *, follow_up: bool, quiet: bool = False) -> None:
+        """The listener that heard them over her goes on as the user's turn. With
+        `quiet`, it is the window left open after a quiet `listening` (VOI-7)."""
         self._overlap = None
         ov.watcher = None
         listener = ov.listener
         listener.promote(on_partial=self._partial, on_turn=self._turn_signal)
         self._listener = listener
+        self._window = listener if quiet else None
         self._drafted = False
         self._last_audio = self._now()
         self._warm()
         # The page's microphone is already open; this tells it the words are a turn.
-        await self._send("mic.start", follow_up=follow_up)
+        await self._send("mic.start", follow_up=follow_up, **({"quiet": True} if quiet else {}))
         # Each send can let a Stop or a close in: only a listener still open goes on.
         if self._listener is not listener:
             return
@@ -1790,6 +1902,9 @@ class Session:
         ov, self._overlap = self._overlap, None
         if ov is None:
             return
+        if ov is self._quiet_watch:
+            # The watch that was to be the quiet window ended without opening it.
+            self._quiet, self._quiet_watch = None, None
         watcher, ov.watcher = ov.watcher, None
         if watcher is not None and watcher is not asyncio.current_task():
             watcher.cancel()
@@ -1802,12 +1917,19 @@ class Session:
         await self._send("overlap.over", **({"end": True} if ov.watch else {}))
 
     async def _on_listen(
-        self, patience_s: float, *, follow_up: bool = False, held: bool = False
+        self,
+        patience_s: float,
+        *,
+        follow_up: bool = False,
+        held: bool = False,
+        quiet: bool = False,
     ) -> None:
         async with self._taking_input():
-            await self._listen(patience_s, follow_up=follow_up, held=held)
+            await self._listen(patience_s, follow_up=follow_up, held=held, quiet=quiet)
 
-    async def _listen(self, patience_s: float, *, follow_up: bool, held: bool = False) -> None:
+    async def _listen(
+        self, patience_s: float, *, follow_up: bool, held: bool = False, quiet: bool = False
+    ) -> None:
         rt = self._rt
         if self._listener is not None or self._overlap is not None:
             return
@@ -1829,6 +1951,8 @@ class Session:
                 on_partial=self._partial,
                 patience_s=patience_s,
                 on_turn=self._turn_signal,
+                # The quiet window: only words hold it open (VOI-7).
+                words_only=quiet,
             )
             # Set before it starts: what was held while it connected is judged the same way.
             listener.key_held = held
@@ -1837,13 +1961,15 @@ class Session:
                 # as it opens, so her echo still in the air is hers.
                 listener.judge_by(self._judge_on(listener, self._timeline.ending_at(0.0)))
             self._listener = listener
+            # A window left open after a quiet `listening` (VOI-7): silence nudges once.
+            self._window = listener if quiet else None
             self._drafted = False
             self._last_audio = asyncio.get_running_loop().time()
             self._warm()
             await self._state("arming")
             # The page opens the microphone now; what it sends while the recognizer is
             # still connecting is held, so the first word is not lost.
-            await self._send("mic.start", follow_up=follow_up)
+            await self._send("mic.start", follow_up=follow_up, **({"quiet": True} if quiet else {}))
             try:
                 await listener.start()
             except VoiceError as e:
@@ -1891,6 +2017,7 @@ class Session:
     async def _stop_listening(self) -> Listener | None:
         await self._end_overlap(tell=True)
         listener, self._listener = self._listener, None
+        self._window = None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -1936,6 +2063,10 @@ class Session:
 
     async def _concluded(self, verdict: Verdict) -> None:
         listener, self._listener = self._listener, None
+        # Whether this was the window left open after a quiet `listening`: let go now,
+        # whatever ended it, so it can nudge once at most.
+        window = listener is not None and listener is self._window
+        self._window = None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -1961,6 +2092,12 @@ class Session:
         elif verdict == "nothing":
             await listener.abandon()
             await self._drop_draft()
+            if window and not self._closed and self._task is None and self._rt.provider:
+                # They trailed off and stayed quiet: one short line from her, in her
+                # own words, invites them on (VOI-7). Spoken, as their turn was.
+                self._queued.append(NUDGE)
+                self._begin()
+                return
             await self._state(self._rest)
         else:
             await self._state("processing")
@@ -2105,6 +2242,7 @@ class Session:
         this one: a message that arrives meanwhile is refused as busy, and a tap's note
         is picked up by the loop. `follow_up`: it brings in background reads that ended."""
         stopped = False
+        mine = False
         try:
             if follow_up:
                 try:
@@ -2132,8 +2270,8 @@ class Session:
                 if self._rt.provider is None:
                     break
                 if self._using is None:
-                    # A draft was only started on a history that needed no summary.
-                    await self._compact_if_long()
+                    # A draft was only started on a history short enough to send.
+                    await self._compact_if_too_long()
                 await self._one_turn()
                 if not self._queued:
                     break
@@ -2141,6 +2279,7 @@ class Session:
             # Only its own: never a task that started after this one was let go.
             if self._task is asyncio.current_task():
                 self._task = None
+                mine = True
                 if self._building_day:
                     # Before anything awaits, so no input of the user's has begun: their
                     # next answer to a card is theirs again, never taken for an ask.
@@ -2155,7 +2294,41 @@ class Session:
                 await self._unuse()
         # A watch over her reply ends now unless something of hers is still to be heard.
         await self._watch_settles()
-        await self._state(self._rest)
+        if not (mine and await self._after_turn()):
+            await self._state(self._rest)
+        if mine and not self._closed:
+            # Her reply is out: only now is a long history summarized (BRN-5).
+            await self._compact_after_turn()
+
+    async def _after_turn(self) -> bool:
+        """What the microphone does now her turn is over, decided only now, so a page's
+        "played" that came while the turn was finishing is never lost. True when it
+        opened, so the orb is left to say so."""
+        quiet, self._quiet = self._quiet, None
+        early, self._ended_early = self._ended_early, False
+        if (
+            self._closed
+            or self._stopped
+            or self._task is not None
+            or self._listener is not None
+            or not self._answered_aloud()
+        ):
+            return False
+        ov = self._overlap
+        if ov is not None:
+            if quiet == "listening" and ov.watching and not ov.promoting:
+                # The page is watching over her: that watch goes on as the window once
+                # her silence is heard (`_follow_up_from`), so it is still the quiet one.
+                self._quiet, self._quiet_watch = quiet, ov
+            return False
+        if quiet == "listening":
+            # They trailed off: the floor stays theirs a while (VOI-7).
+            await self._on_listen(QUIET_LISTEN_S, follow_up=True, quiet=True)
+        elif quiet is None and early:
+            await self._on_listen(FOLLOW_UP_S, follow_up=True)
+        else:
+            return False
+        return self._listener is not None
 
     async def _one_turn(self) -> None:
         rt = self._rt
@@ -2169,6 +2342,10 @@ class Session:
         speaker: Speaker | None = None
         timeline: Timeline | None = None
         heard_as = turn
+        # A "played" from here on is this turn's, or a later one's.
+        self._ended_early = False
+        self._quiet = self._quiet_turn = self._quiet_watch = None
+        self._playing = None
         if rt.tts is not None and rt.speech is not None and not self._muted:
             # A turn's number is heard once: a tap's answer in the same turn gets its own,
             # or the page's "played" for the first would pass for it (VOI-17).
@@ -2186,10 +2363,13 @@ class Session:
                 rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes, on_audio
             )
         self._speaker = speaker
+        # With no voice there is nothing to be heard, so no "played" is this turn's.
+        self._playing = heard_as if speaker is not None else None
         self._tail = None
         # Only a spoken reply to a spoken turn is cut to what was heard: a typed one was
         # read, and so was one with her voice off (D8).
         listened = speaker is not None and (self._via == "voice" or self._aloud)
+        quick = self._quick()
         # What the turn saved of the round it was cut off in, when that was cut to what
         # was heard. Set only by the loop, so the page is told exactly what was kept.
         kept: str | None = None
@@ -2269,19 +2449,25 @@ class Session:
                 trace.draft = "dropped"
                 await self._let_go(using)
                 using = None
+            # A turn that answers the app's own note (a card's tap, a background read, the
+            # day's build) and not the user's words: she may not stay quiet on it (VOI-7).
+            host_turn = self._kinds[-1:] == ["tap"]
+            # Their words end in a question: she answers it, never stays quiet (VOI-7).
+            asked = self._asked()
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
                 registry=rt.registry.offered(self._offers),
                 system=system,
                 history=compact.with_summary(self._summary, self._history),
-                ctx=lambda call_id: self._ctx(call_id, turn=turn),
+                ctx=lambda call_id: self._ctx(call_id, turn=turn, host_turn=host_turn, asked=asked),
                 # The day board is built from its reads in one turn: none goes aside.
                 background=None if self._building_day else self._background,
                 emit=emit,
                 save=save,
                 first=using.replay() if using is not None else None,
                 heard=heard if listened else None,
+                quick=quick,
             )
             written = True
             # The model failed: her one sentence for it, spoken if her voice still works
@@ -2325,6 +2511,9 @@ class Session:
             if down is not None:
                 final = "error"
                 await self._error("provider", kind=done.error_kind, sentence=down)
+            elif done.stop == "quiet":
+                # A chosen silence is no failure: it has no notice (VOI-7).
+                await self._quiet_ends(done.quiet, heard_as)
             elif done.stop != "end":
                 await self._send("notice", code="stopped", reason=done.stop)
             # Kept before the page hears the turn is over, so the next one never waits on it.
@@ -2333,6 +2522,7 @@ class Session:
             await self._send(
                 "turn.complete",
                 stop=done.stop,
+                **({"quiet": done.quiet} if done.quiet is not None else {}),
                 cost_usd=done.cost_usd,
                 usage={
                     "input_tokens": u.input_tokens,
@@ -2375,6 +2565,20 @@ class Session:
             # However the turn ended: what counts is that a reply of hers was saved.
             self._maybe_name()
         self._rest = final
+
+    async def _quiet_ends(self, kind: str | None, heard_as: int) -> None:
+        """She chose to say nothing (VOI-7). A sign-off is marked seen, and a spoken one
+        closes the microphone; a trailed-off thought keeps it open once the turn is over."""
+        self._quiet, self._quiet_turn = kind, heard_as
+        if kind == "listening":
+            return
+        # Seen, so a sign-off never looks unanswered. Saved as the call and its answer:
+        # a reload marks it again from them.
+        await self._send("seen")
+        if self._answered_aloud():
+            # A sign-off ends active capture (VOI-15d): nothing reopens after it.
+            self._listen_after = False
+            await self._send("mic.stop", reason="done")
 
     def _remember_read(self, turn: int, name: str, args: Mapping[str, Any]) -> None:
         """A read that succeeded this turn, kept while the turn runs so a widget she
@@ -2623,7 +2827,7 @@ class Session:
         # Read after the awaits, so a trim meanwhile is in what is sent.
         history = [*self._history, built.msg]
         # A history the turn would summarize first is not the history it would send.
-        if compact.estimate(history) > rt.compact_at:
+        if compact.estimate(history) > compact.ceiling(rt.compact_at):
             return
         # The model is about to be sent her last reply: it can no longer be trimmed.
         self._tail = None
@@ -2636,6 +2840,8 @@ class Session:
             built=built,
             history_len=len(self._history),
             summary=self._summary,
+            # As the turn that replays it will send it.
+            quick=self._quick(),
         )
         self._drafted = True
 
@@ -2827,6 +3033,8 @@ class Session:
         via: Literal["voice", "text", "tap", "channel"] | None = None,
         *,
         turn: int | None = None,
+        host_turn: bool = False,
+        asked: bool = False,
     ) -> ToolContext:
         at = self._turn if turn is None else turn
         # Looked at for each call and each tap, off the event loop. A tap's context is
@@ -2842,7 +3050,17 @@ class Session:
             granted_roots=roots,
             read_only_roots=read_only,
             read_outside=at in self._outside,
+            host_turn=host_turn,
+            asked=asked,
         )
+
+    def _asked(self) -> bool:
+        """The user's words this turn, spoken or typed, end in a question mark. A used
+        draft saved the words it answered, so they are these too."""
+        if self._kinds[-1:] != ["user"]:
+            return False
+        texts = [b.text for b in self._history[-1].blocks if isinstance(b, TextBlock)]
+        return bool(texts) and asks(texts[-1])
 
     async def _save(self, kind: Kind, msg: Msg) -> None:
         # Something after her last reply: it is no longer the one to trim.
@@ -2855,41 +3073,161 @@ class Session:
         )
         self._ids.append(message_id)
 
-    async def _compact_if_long(self) -> None:
-        """Summarize the oldest turns once the history outgrows the model (BRN-5).
+    # ── Compaction (BRN-5) ───────────────────────────────────────────────
 
-        Before a turn, never during one. If the summary cannot be written, the turn
+    def _quick(self) -> bool:
+        """Her replies are spoken in this session: every turn, typed ones too, asks the
+        model for its first word sooner. Fixed for the session unless her voice is
+        turned on or off, so the cached conversation is not reset turn by turn."""
+        rt = self._rt
+        return rt.tts is not None and rt.speech is not None and not self._muted
+
+    def _between_turns(self) -> bool:
+        """Nothing is reading the history: no turn, no input being taken, no draft."""
+        return (
+            not self._closed and not self.writing() and self._draft is None and self._using is None
+        )
+
+    async def _compact_after_turn(self) -> None:
+        """Her turn is over: put a summary written meanwhile in place, and start the next
+        one if the history is still past the summary point. Never fails the turn."""
+        written, self._written = self._written, None
+        if written is not None:
+            try:
+                await self._put_in_place(written, idle=True)
+            except Exception as e:
+                logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
+        self._compact_later()
+
+    def _compact_later(self) -> None:
+        """Summarize the oldest turns in the background, once the history is past the
+        summary point. One summary at a time, and none while one waits to be put in
+        place, nor soon after one failed (`_backing_off`)."""
+        rt = self._rt
+        running = self._compacting
+        if (
+            self._closed
+            or rt.provider is None
+            or self._written is not None
+            or (running is not None and not running.done())
+            or compact.estimate(self._history) <= rt.compact_at
+            or self._backing_off()
+        ):
+            return
+        self._compacting = asyncio.create_task(self._compact_in_background())
+
+    def _backing_off(self) -> bool:
+        """A summary failed, and the history has grown by less than half the summary
+        point since: a model that cannot write one is not asked every turn."""
+        failed = self._compact_failed_at
+        grown = compact.estimate(self._history) - (failed or 0)
+        return failed is not None and grown < self._rt.compact_at // 2
+
+    async def _compact_in_background(self) -> None:
+        """Write the summary while the user carries on. A turn that starts meanwhile is
+        sent the whole history; the summary is put in place at the next pause."""
+        try:
+            written = await self._summarize(compact.TIMEOUT_S)
+            if written is not None:
+                await self._put_in_place(written, idle=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The class name only. The history stays whole and is tried again later.
+            logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
+        finally:
+            if self._compacting is asyncio.current_task():
+                self._compacting = None
+
+    async def _compact_if_too_long(self) -> None:
+        """Before a turn: only a history past the ceiling, too long to send as it is,
+        waits for a summary, and not for long (`compact.WAIT_S`): one being written is
+        given that long, or else one is written in that long. Failing that, the turn
         goes ahead on the full history: a long prompt is better than a lost one."""
+        rt = self._rt
+        if compact.estimate(self._history) <= compact.ceiling(rt.compact_at):
+            return
+        running = self._compacting
+        if running is not None and not running.done():
+            # Already being written: wait a while for that one rather than write a
+            # second. A cancelled turn, or one that waits no longer, leaves it running.
+            await asyncio.wait({running}, timeout=compact.WAIT_S)
+            written, self._written = self._written, None
+            if written is not None:
+                await self._put_in_place(written)
+            return
+        written, self._written = self._written, None
+        if written is None and not self._backing_off():
+            written = await self._summarize(compact.WAIT_S)
+        if written is not None:
+            await self._put_in_place(written)
+
+    async def _summarize(self, timeout: float) -> _Written | None:
+        """Notes on the oldest turns of the history as it is now, or None if it needs
+        none or they could not be written. Changes nothing but what was paid for."""
         rt = self._rt
         provider = rt.provider
         if provider is None or compact.estimate(self._history) <= rt.compact_at:
-            return
+            return None
         cut = compact.cut_point(self._kinds, self._history, rt.compact_keep)
         if cut is None:
-            return
+            return None
+        ids, previous, older = tuple(self._ids[:cut]), self._summary, self._history[:cut]
         try:
             summary = await asyncio.wait_for(
-                compact.summarize(
-                    provider, compaction(rt.identity), self._summary, self._history[:cut]
-                ),
-                compact.TIMEOUT_S,
+                compact.summarize(provider, compaction(rt.identity), previous, older), timeout
             )
         except (ProviderError, compact.CompactionFailed, TimeoutError) as e:
             logger.warning("compaction in session %s failed: %s", self.id, type(e).__name__)
-            return
-        await rt.conversations.compact(self.id, OWNER, self._ids[cut - 1], summary.text, rt.clock())
-        await rt.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=self.id,
-            provider=provider.name,
-            model=provider.model,
-            usage=summary.usage,
-            cost_usd=pricing.cost(summary.usage) if (pricing := provider.pricing()) else None,
-            now_ms=rt.clock(),
+            self._compact_failed_at = compact.estimate(self._history)
+            return None
+        self._compact_failed_at = None
+        # Paid for whether or not it is put in place.
+        await self._record_usage(provider, summary.usage)
+        return _Written(summary=summary, ids=ids, previous=previous)
+
+    def _still_fits(self, written: _Written) -> bool:
+        """The history still begins with what the summary replaces, after the summary it
+        was written on: no reload or other summary has changed it since."""
+        n = len(written.ids)
+        return (
+            not self._closed
+            and tuple(self._ids[:n]) == written.ids
+            and len(self._ids) > n
+            and self._summary == written.previous
         )
-        self._summary = summary.text
-        del self._history[:cut], self._kinds[:cut], self._ids[:cut]
+
+    async def _put_in_place(self, written: _Written, *, idle: bool = False) -> bool:
+        """Replace the oldest turns with their summary, in the store and in what the
+        model is sent. Only while nothing reads the history: with `idle`, a summary that
+        finds a turn running (or one starting while the store is written) is kept in
+        `_written` for that turn's end. False if it was not put in place."""
+        if idle and not self._between_turns():
+            self._written = written
+            return False
+        if not self._still_fits(written):
+            return False
+        rt = self._rt
+        if not written.stored:
+            # A change to what is saved, as `_save` is: a reload reading meanwhile is
+            # dropped.
+            self._saves += 1
+            await rt.conversations.compact(
+                self.id, OWNER, written.ids[-1], written.summary.text, rt.clock()
+            )
+            written = replace(written, stored=True)
+        if not self._still_fits(written):
+            # A reload read the store meanwhile, and has it or will.
+            return False
+        if idle and not self._between_turns():
+            # A turn started while the store was written: it is sent what it was given.
+            self._written = written
+            return False
+        n = len(written.ids)
+        self._summary = written.summary.text
+        del self._history[:n], self._kinds[:n], self._ids[:n]
         await self._send("notice", code="compacted")
+        return True
 
     async def _build_input(
         self,

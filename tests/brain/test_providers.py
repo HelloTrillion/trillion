@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable
 from typing import Any
@@ -11,6 +12,7 @@ import httpx
 import httpx2
 import pytest
 
+from trillion.brain import compact
 from trillion.brain.providers.anthropic import (
     AnthropicProvider,
     cache_history,
@@ -140,7 +142,7 @@ async def test_anthropic_request_and_stream() -> None:
     assert seen["headers"]["x-api-key"] == KEY
     body = seen["body"]
     assert body["model"] == "m1" and body["stream"] is True and body["max_tokens"] == 64000
-    # Nothing is forced or tuned, so the request is valid on every current model.
+    # A typed turn: nothing is forced or tuned, so each model runs at its defaults.
     assert not {"thinking", "temperature", "tool_choice", "output_config"} & set(body)
     # The stable block is marked cacheable (PER-5).
     assert body["system"] == [
@@ -167,6 +169,112 @@ async def test_anthropic_replays_its_own_turn_unchanged() -> None:
     await collect(p, [HISTORY[0], turn, Msg(role="user", blocks=(TextBlock(text="go on"),))])
     assert bodies[1]["messages"][1]["content"] == [dict(b) for b in done.raw.content]
     assert bodies[1]["messages"][0] == bodies[0]["messages"][0]  # earlier turns untouched
+
+
+@pytest.mark.parametrize(
+    ("model", "added"),
+    [
+        # Thinking off: at its default effort, with no failure documented for it.
+        ("claude-sonnet-5", {"thinking": {"type": "disabled"}}),
+        # The least effort, thinking left on: recommended, or the only way to less.
+        ("claude-sonnet-5-5", {"output_config": {"effort": "low"}}),
+        ("claude-haiku-5-5", {"output_config": {"effort": "low"}}),
+        ("claude-opus-5", {"output_config": {"effort": "low"}}),
+        ("claude-opus-5-5", {"output_config": {"effort": "low"}}),
+        ("claude-fable-5", {"output_config": {"effort": "low"}}),
+        ("claude-fable-5-1", {"output_config": {"effort": "low"}}),
+        # Already answers without thinking, or unknown: its defaults, never a guess.
+        ("claude-opus-4-8", {}),
+        ("m1", {}),
+    ],
+)
+async def test_a_spoken_turn_asks_for_its_first_word_sooner(
+    model: str, added: dict[str, Any]
+) -> None:
+    bodies: list[Any] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return stream_of(ANTHROPIC_STREAM)
+
+    http = anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler))
+    p = AnthropicProvider(api_key=lambda: KEY, model=model, http_client=http)
+    done = (await collect(p, HISTORY[:1]))[-1]
+    assert isinstance(done, Done) and done.raw is not None
+    tuned = {"thinking", "output_config", "temperature"}
+    assert not tuned & set(bodies[0])  # a typed turn: the model's own defaults
+    # Spoken, after a turn that thought: its signed reasoning goes back unchanged, and
+    # the API reads or drops it as the setting needs.
+    turn = Msg(role="assistant", blocks=(TextBlock(text="On it."),), raw=done.raw)
+    stream = p.stream(
+        system=SYSTEM,
+        messages=[HISTORY[0], turn, Msg(role="user", blocks=(TextBlock(text="go on"),))],
+        tools=TOOLS,
+        max_tokens=64,
+        quick=True,
+    )
+    [ev async for ev in stream]
+    assert {k: bodies[1][k] for k in tuned & set(bodies[1])} == added
+    assert bodies[1]["messages"][1]["content"] == [dict(b) for b in done.raw.content]
+    assert bodies[1]["messages"][1]["content"][0]["signature"] == "sig-abc"
+
+
+async def test_an_openai_compatible_server_is_sent_the_same_for_a_spoken_turn() -> None:
+    """These servers share no reasoning setting: `quick` changes nothing."""
+    seen: list[Any] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, content=b"data: [DONE]\n\n")
+
+    p = OpenAICompatProvider(base_url="http://x/v1", model="m", client=client(handler))
+    for quick in (False, True):
+        stream = p.stream(system=SYSTEM, messages=HISTORY, tools=TOOLS, max_tokens=64, quick=quick)
+        with contextlib.suppress(ProviderError):
+            [ev async for ev in stream]
+    assert len(seen) == 2 and seen[0] == seen[1]
+
+
+async def test_turns_kept_through_a_compaction_go_back_without_their_reasoning() -> None:
+    """Signed reasoning is bound to every message before it. A compaction drops the
+    oldest and puts the summary in the first kept one, so the turns it keeps go out
+    as plain text and tool calls; before any compaction they replay as they came."""
+    bodies: list[Any] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return stream_of(ANTHROPIC_STREAM)
+
+    p = anthropic_provider(handler)
+
+    def user(text: str) -> Msg:
+        return Msg(
+            role="user", blocks=(ContextBlock(text="<context>now</context>"), TextBlock(text=text))
+        )
+
+    async def reply(history: list[Msg]) -> Msg:
+        done = (await collect(p, history))[-1]
+        assert isinstance(done, Done)
+        return Msg(role="assistant", blocks=(TextBlock(text="On it."),), raw=done.raw)
+
+    u1, u2, u3 = user("one"), user("two"), user("three")
+    a1 = await reply([u1])
+    a2 = await reply([u1, a1, u2])
+    await collect(p, [u1, a1, u2, a2, u3])
+    kinds = [[b["type"] for b in m["content"]] for m in bodies[-1]["messages"]]
+    assert kinds[1][0] == kinds[3][0] == "thinking"  # unchanged history: replayed as it came
+
+    await collect(p, compact.with_summary("Sam said one.", [u2, a2, u3]))
+    kept = bodies[-1]["messages"][1]["content"]
+    assert [b["type"] for b in kept] == ["text"]  # no thinking, no signature
+    assert all("signature" not in b for m in bodies[-1]["messages"] for b in m["content"])
+
+    # A turn made after the compaction is bound to the summarized history, and replays.
+    after = compact.with_summary("Sam said one.", [u2, a2, u3])
+    a3 = await reply(after)
+    await collect(p, [*after, a3, user("four")])
+    assert bodies[-1]["messages"][3]["content"][0]["type"] == "thinking"
+    assert bodies[-1]["messages"][1]["content"][0]["type"] == "text"
 
 
 def test_reasoning_is_replayed_only_while_what_it_was_bound_to_is_unchanged() -> None:

@@ -187,7 +187,12 @@ class ModelProvider(Protocol):
         messages: Sequence[Msg],
         tools: Sequence[ToolSchema],
         max_tokens: int,
-    ) -> AsyncIterator[ModelEvent]: ...
+        quick: bool = False,
+    ) -> AsyncIterator[ModelEvent]:
+        """One model call. `quick`: a spoken turn, where her first word matters more
+        than depth. A provider may answer it with less reasoning; one with nothing
+        to tune ignores it."""
+        ...
 
     def pricing(self) -> Pricing | None:
         """None when the price of this model is not known: cost is then not reported."""
