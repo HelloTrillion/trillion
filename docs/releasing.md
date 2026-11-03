@@ -124,8 +124,9 @@ and run `trillion setup`, unless `--no-setup` (`TRILLION_NO_SETUP=1`).
 They do not install the desktop app (an unsigned developer build, not in releases),
 a wake-word model (deferred), or a Homebrew formula (none yet).
 
-CI tests both on every pull request (the `installer` job in
-`.github/workflows/ci.yml`), on Ubuntu, macOS and Windows: it builds the wheel as
+CI tests both (the `installer` job in `.github/workflows/ci.yml`): on Ubuntu and
+Windows for every pull request, and on macOS too for every push to main, nightly
+and on demand (Mac runners are too scarce to block a pull request). It builds the wheel as
 above but without Google, installs it with the installer and `--wheel`, runs the
 installer a second time (piped, with the environment variables) to prove a re-run
 is fine, and checks `trillion --version` from uv's tool folder. It checks that a

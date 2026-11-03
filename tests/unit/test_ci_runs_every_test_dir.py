@@ -25,3 +25,12 @@ def test_the_spine_suite_runs_on_every_os() -> None:
     assert "macos-latest" in python
     assert "if: runner.os == 'macOS'" in python
     assert "--cov=trillion.spine" in python and "--cov-fail-under=95" in python
+
+
+def test_macos_still_runs_on_main_and_nightly() -> None:
+    """macOS is off the pull request path, never dropped: main, nightly and on demand."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "schedule:" in workflow and "workflow_dispatch:" in workflow
+    for job in ("python", "installer"):
+        body = workflow.split(f"\n  {job}:\n", 1)[1]
+        assert '"ubuntu-latest", "macos-latest", "windows-latest"' in body.split("steps:", 1)[0]
