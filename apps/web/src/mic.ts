@@ -84,6 +84,21 @@ export function loudest(channels: readonly Float32Array[]): Float32Array {
   return best;
 }
 
+/** The id of the input named `name` now, when that is not `old`; null when there is none. */
+export async function sameByName(name: string | null, old: string | null): Promise<string | null> {
+  if (!name) return null;
+  let found: MediaDeviceInfo[] = [];
+  try {
+    found = (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
+  } catch {
+    return null;
+  }
+  const match = found.find(
+    (d) => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.label.trim() === name,
+  );
+  return match && match.deviceId !== old ? match.deviceId : null;
+}
+
 /** What getUserMedia is asked for: the chosen microphone, or the computer's default. */
 export function constraints(device: string | null): MediaStreamConstraints {
   return {
@@ -125,6 +140,10 @@ export interface MicHooks {
   onSetup?(setup: MicSetup): void;
   /** The microphone chosen in Settings, or null for the computer's default. */
   device?(): string | null;
+  /** The chosen microphone's name, to find it when its id has changed. */
+  deviceName?(): string | null;
+  /** The chosen microphone was found by name under a new id: remember the id. */
+  onDeviceFound?(id: string): void;
   /** The microphone could not be opened, or was lost while open. */
   onProblem(problem: MicProblem): void;
   /** Lets the Galaxy listen to the user's voice. Returns a function that detaches. */
@@ -199,6 +218,19 @@ export function createMic(hooks: MicHooks): Mic {
       if (!gone) throw error;
       device = 'default, the chosen one is missing';
       got = await navigator.mediaDevices.getUserMedia(constraints(null));
+      // Allowed now, so devices have names: the chosen one may be here under a new id.
+      const again = await sameByName(hooks.deviceName?.() ?? null, chosen);
+      if (again && mine === run) {
+        try {
+          const found = await navigator.mediaDevices.getUserMedia(constraints(again));
+          for (const track of got.getTracks()) track.stop();
+          got = found;
+          device = 'chosen, found by name';
+          hooks.onDeviceFound?.(again);
+        } catch {
+          // Keep the default.
+        }
+      }
     }
     if (mine !== run) {
       for (const track of got.getTracks()) track.stop();

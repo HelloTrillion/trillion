@@ -79,14 +79,28 @@ export function savedMic(): string | null {
   return saved && saved.length <= 200 ? saved : null;
 }
 
-export function saveMic(device: string | null): void {
-  if (device) set(MIC_KEY, device);
-  else
-    try {
-      localStorage.removeItem(MIC_KEY);
-    } catch {
-      // nothing was remembered
-    }
+const MIC_NAME_KEY = 'trillion-mic-name';
+
+/** The chosen microphone's name. The browser's id for a device can change between
+ * launches (WebKit renews it), so the name finds it again. */
+export function savedMicName(): string | null {
+  const saved = get(MIC_NAME_KEY);
+  return saved && saved.length <= 200 ? saved : null;
+}
+
+export function saveMic(device: string | null, name?: string | null): void {
+  if (device) {
+    set(MIC_KEY, device);
+    // Kept when not given: the same microphone, found again under a new id.
+    if (name?.trim()) set(MIC_NAME_KEY, name.trim());
+    return;
+  }
+  try {
+    localStorage.removeItem(MIC_KEY);
+    localStorage.removeItem(MIC_NAME_KEY);
+  } catch {
+    // nothing was remembered
+  }
 }
 
 const BARGE_KEY = 'trillion-barge';
