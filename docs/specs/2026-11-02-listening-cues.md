@@ -22,7 +22,7 @@ All of these must hold, checked when a Flux `Update` arrives during the user's t
 
 - The user's turn is open: a listener is taking their words, and it isn't her reply or an overlap watch.
 - At least 4 seconds of their speech in this turn so far (`listener.heard_s`).
-- The last word ended between 0.5 and 1.5 seconds ago, by the recognizer's word times on the stream clock. That's a pause, not a stop.
+- The last word ended between 0.5 and 1.0 seconds ago, by the recognizer's word times on the stream clock. That's a pause, not a stop.
 - The turn is not likely over:
   - Flux's `end_of_turn_confidence` on the latest message is below 0.3. Flux sends an `Update` about every 0.25 s and its confidence climbs through any pause, so a rise below 0.3 doesn't block a cue;
   - no `EagerEndOfTurn` since the last word;
