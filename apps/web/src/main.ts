@@ -31,6 +31,7 @@ import {
   failed,
   folderOffers,
   placeholder,
+  placesFound,
   saved,
   sharedFolder,
 } from './onboarding';
@@ -1126,12 +1127,26 @@ function introduce(current: Profile): void {
 let obPlaces: readonly Offer[] = [];
 
 async function loadPlaces(): Promise<void> {
-  try {
-    const r = await api('POST', '/api/folders/browse', { place: 'places' });
-    const frame = r.ok ? parseFrame(await r.json()) : null;
-    obPlaces = folderOffers(frame?.places ?? []);
-  } catch {
-    obPlaces = [];
+  // Tried twice: a slow first answer should not cost the user the quick replies.
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      const r = await api('POST', '/api/folders/browse', { place: 'places' });
+      const frame = r.ok ? parseFrame(await r.json()) : null;
+      if (frame) {
+        obPlaces = folderOffers(frame.places ?? []);
+        break;
+      }
+    } catch {
+      // Tried again below, once.
+    }
+    if (tries === 0) await new Promise((done) => setTimeout(done, 1000));
+  }
+  // Read after she already asked for a folder: the buttons appear now.
+  if (!ob) return;
+  const next = placesFound(ob, obPlaces);
+  if (next !== ob) {
+    ob = next;
+    render();
   }
 }
 
@@ -1168,6 +1183,10 @@ async function finish(): Promise<void> {
     code = 'unreachable';
   }
   if (!ob) return;
+  // The ladder may reach the folder step: know first whether one is shared (a `--grant`
+  // run has one), so nobody who has a folder is asked for one.
+  if (!code && !ob.returning && shares.last === null) await shares.load();
+  if (!ob) return;
   ob = code ? failed(ob, code, suggestion) : saved(ob, ready());
   render();
   // A timezone the browser reported but this machine does not know is not the user's
@@ -1180,14 +1199,16 @@ const ready = (): Ready => ({
   model: view.model,
   speech: view.speech !== null,
   listening: view.listening !== null,
-  // A folder her own turns reach: shared with everyone, and there.
-  folder: shares.last?.shares.some((s) => s.scope === 'everyone' && !s.state) ?? false,
+  // A folder her own turns reach: shared with everyone, and there. Null until the shares are read.
+  folder: shares.last ? shares.last.shares.some((s) => s.scope === 'everyone' && !s.state) : null,
   places: obPlaces,
 });
 
-// A folder shared in Settings while she was asking for one: she moves on.
+// A folder shared in Settings, opened from her folder step: she moves on. A share that
+// turns up any other way is not the user's answer, so she does not claim it was.
+let folderSettingsOpened = false;
 shares.onChange(() => {
-  if (ob?.step !== 'folder') return;
+  if (ob?.step !== 'folder' || !folderSettingsOpened) return;
   const next = configured(ob, ready());
   if (next === ob) return;
   ob = next;
@@ -1215,7 +1236,10 @@ function openFor(step: Onboarding['step']): void {
   if (step === 'model') void settings.open();
   else if (step === 'voice') void speechSettings.open();
   else if (step === 'listening') void listeningSettings.open();
-  else if (step === 'folder') void folders.open();
+  else if (step === 'folder') {
+    folderSettingsOpened = true;
+    void folders.open();
+  }
 }
 
 function reply(text: string): void {
@@ -1226,9 +1250,10 @@ function reply(text: string): void {
     const next = text === OPEN ? ob : decide(ob, text, ready());
     // Anything that is not "skip" means "show me": the settings for this step open.
     if (next === ob) openFor(ob.step);
+    const tapped = next !== ob && next.step === 'sharing';
     ob = next;
     render();
-    if (ob.step === 'sharing') void shareFolder();
+    if (tapped) void shareFolder();
     after();
     if (active(ob)) focusInput();
     return;

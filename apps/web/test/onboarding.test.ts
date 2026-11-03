@@ -11,6 +11,7 @@ import {
   SKIP,
   active,
   folderOffers,
+  placesFound,
   sharedFolder,
   answer,
   begin,
@@ -235,7 +236,7 @@ describe('onboarding', () => {
     for (const answers of [[], ['Sam'], ['Sam', 'Nova']]) {
       const o = answer(run(answers), SKIP);
       expect(o.step).toBe('skipped');
-      expect(said(o)).toContain('Names are in Settings, at the top');
+      expect(texts(o).some((t) => t.includes('Names are in Settings, at the top'))).toBe(true);
       expect(choices(o)).toEqual([]);
     }
   });
@@ -359,14 +360,16 @@ describe('onboarding', () => {
     const no = answer(o, choices(o)[1]?.value ?? '');
     expect(no.step).toBe('agent_name');
     expect(no.draft.agentName).toBe('Trillion');
-    expect(said(no)).toContain('just the name');
+    expect(said(no)).toBe('What would you like instead?');
 
     // A typed no, then the name alone.
     const retyped = answer(answer(o, 'no'), 'Vega');
     expect(retyped.draft.agentName).toBe('Vega');
-    // Anything else typed is a new answer: the name alone is taken as it is.
+    // "No, Vega" is Vega. A new name typed without a no is checked again.
     expect(answer(o, 'No, Vega').draft.agentName).toBe('Vega');
-    expect(answer(o, 'Vega').draft.agentName).toBe('Vega');
+    const bare = answer(o, 'Vega');
+    expect(bare.step).toBe('agent_check');
+    expect(bare.heard).toBe('Vega');
     const again = answer(o, 'how about Vega');
     expect(again.step).toBe('agent_check');
     expect(said(again)).toContain('"Vega"');
@@ -402,6 +405,95 @@ describe('onboarding', () => {
   it('caps a name at a few words', () => {
     expect(nameProblem('Maria de la Cruz')).toBeNull();
     expect(nameProblem('well I suppose you could say it is Sam')).not.toBeNull();
+  });
+
+  describe('the check step never takes an answer for a name', () => {
+    const checking = (): Onboarding => run(['Sam', 'I want to call you Nova']);
+
+    it('agrees on a yes, with or without the name and thanks', () => {
+      for (const reply of [
+        'Yes, Nova',
+        'yes',
+        'Yes!',
+        'yeah that\'s right',
+        'perfect',
+        'that is right',
+        "that's it",
+        'yes please',
+        'okay thanks',
+        'sure',
+        'yep, Nova please',
+        'sounds good',
+        'correct',
+      ]) {
+        const o = answer(checking(), reply);
+        expect(o.step, reply).toBe('directness');
+        expect(o.draft.agentName, reply).toBe('Nova');
+        expect(said(o), reply).toMatch(/^Nova it is\./);
+      }
+    });
+
+    it('asks what instead on a plain no', () => {
+      for (const reply of ['no', 'No.', 'nope', 'nah', 'no thanks', 'not quite', 'wrong']) {
+        const o = answer(checking(), reply);
+        expect(o.step, reply).toBe('agent_name');
+        expect(o.draft.agentName, reply).toBe('Trillion');
+        expect(said(o), reply).toBe('What would you like instead?');
+      }
+    });
+
+    it('takes a no with a name as that name, checked unless it is one plain word', () => {
+      expect(answer(checking(), 'no, Vega').draft.agentName).toBe('Vega');
+      expect(answer(checking(), 'nope Vega').draft.agentName).toBe('Vega');
+      const two = answer(checking(), 'no, Mary Jane');
+      expect(two.step).toBe('agent_check');
+      expect(two.heard).toBe('Mary Jane');
+      const sentence = answer(checking(), 'no, call you Vega');
+      expect(sentence.step).toBe('agent_check');
+      expect(sentence.heard).toBe('Vega');
+      expect(answer(checking(), 'no, something else').step).toBe('agent_name');
+    });
+  });
+
+  it('never takes the words of her own question as her name', () => {
+    for (const reply of ['something else', 'Something else.', 'a new name', 'no', 'nope', 'call me something else', 'a different one']) {
+      const o = run(['Sam', reply]);
+      expect(o.step, reply).toBe('agent_name');
+      expect(o.draft.agentName, reply).toBe('Trillion');
+      expect(said(o), reply).toBe('What would you like instead?');
+    }
+  });
+
+  it('takes only one or two name-like words at once; anything else is checked', () => {
+    expect(run(['Sam', 'Nova']).step).toBe('directness');
+    expect(run(['Sam', 'Mary Jane']).step).toBe('directness');
+    expect(run(['Sam', "O'Neil"]).step).toBe('directness');
+    for (const reply of ['Make It Rain', 'Nova 2', 'new Nova', 'R2-D2']) {
+      const o = run(['Sam', reply]);
+      expect(o.step, reply).toBe('agent_check');
+    }
+  });
+
+  it('keeps a name that only starts with a hum', () => {
+    expect(nameFrom('Um Ji-won')).toBe('Um Ji-won');
+    expect(nameFrom('Er Wei')).toBe('Er Wei');
+    expect(nameFrom('Uh Kim')).toBe('Uh Kim');
+    expect(nameFrom('um, Sam')).toBe('Sam');
+    expect(nameFrom('hmm. Sam')).toBe('Sam');
+    expect(run(['Um Ji-won']).draft.userName).toBe('Um Ji-won');
+  });
+
+  it('does not take yes or no as the user\'s own name', () => {
+    for (const reply of ['yes', 'no', 'nope', 'okay', 'hi', 'something else']) {
+      const o = run([reply]);
+      expect(o.step, reply).toBe('user_name');
+      expect(o.draft.userName, reply).toBe('');
+      expect(said(o), reply).toBe('I need a name to go on. What should I call you?');
+    }
+    // Coming back to change names, a yes keeps the one there is.
+    const back = answer(begin({ userName: 'Sam', agentName: 'Nova', timezone: '', directness: 'blunt' }), 'yes');
+    expect(back.step).toBe('agent_name');
+    expect(back.draft.userName).toBe('Sam');
   });
 
   describe('a folder to work in', () => {
@@ -445,7 +537,10 @@ describe('onboarding', () => {
       expect(tapped.step).toBe('sharing');
       expect(tapped.sharing).toEqual({ label: 'Desktop', path: '/Users/sam/Desktop' });
       expect(tapped.lines.at(-1)).toEqual({ who: 'you', text: 'Share Desktop' });
-      expect(active(tapped)).toBe(false);
+      // Still the script's: what is typed meanwhile never goes to the model.
+      expect(active(tapped)).toBe(true);
+      expect(answer(tapped, 'hello?')).toBe(tapped);
+      expect(decide(tapped, 'hello?', READY)).toBe(tapped);
 
       const done = sharedFolder(tapped, '', { ...READY, folder: true });
       expect(done.step).toBe('demo');
@@ -470,7 +565,7 @@ describe('onboarding', () => {
     });
 
     it('can be left for later', () => {
-      for (const reply of [LATER, 'not now', 'skip']) {
+      for (const reply of [LATER, 'not now', 'skip', 'nope', 'nah', 'no thanks', 'maybe later', 'not yet']) {
         const o = decide(asked(), reply, READY);
         expect(o.step).toBe('demo');
         expect(texts(o)).toContain('No folder for now. Settings, Shared folders, when you want one.');
@@ -481,6 +576,24 @@ describe('onboarding', () => {
       const o = configured(asked(), { ...READY, folder: true });
       expect(o.step).toBe('demo');
       expect(configured(asked(), READY).step).toBe('folder');
+    });
+
+    it('offers the places that arrive after she asked', () => {
+      const late = named({ ...READY, places: [] });
+      expect(late.places).toEqual([]);
+      const found = placesFound(late, READY.places ?? []);
+      expect(choices(found).map((c) => c.label)).toEqual(['Share Desktop', 'Share Documents', 'Another folder', 'Not now']);
+      // Only at the folder step, and never over places already offered.
+      expect(placesFound(named(EVERYTHING), READY.places ?? [])).toEqual(named(EVERYTHING));
+      const offered = asked();
+      expect(placesFound(offered, [{ label: 'Desktop', path: '/x' }])).toBe(offered);
+    });
+
+    it('does not ask while the shares are not read yet, nor say one was shared', () => {
+      const unknown = named({ ...READY, folder: null });
+      expect(unknown.step).toBe('demo');
+      expect(texts(unknown).some((t) => t.includes('a folder is shared'))).toBe(false);
+      expect(configured(asked(), { ...READY, folder: null }).step).toBe('folder');
     });
 
     it('offers Settings alone when there is no Desktop or Documents', () => {
@@ -495,6 +608,8 @@ describe('onboarding', () => {
     expect(trust(decide(named(EVERYTHING), APPROVE, EVERYTHING))).toBe(true);
     expect(trust(decide(named(EVERYTHING), DECLINE, EVERYTHING))).toBe(true);
     expect(trust(decide(named(NOTHING), 'skip', NOTHING))).toBe(true);
+    // Putting the names off ends it too.
+    for (const answers of [[], ['Sam'], ['Sam', 'Nova']]) expect(trust(answer(run(answers), SKIP))).toBe(true);
     expect(texts(decide(named(EVERYTHING), APPROVE, EVERYTHING)).filter((t) => t.includes('whoever')).length).toBe(1);
   });
 

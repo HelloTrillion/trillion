@@ -45,8 +45,9 @@ export interface Ready {
   readonly model: string | null;
   readonly speech: boolean;
   readonly listening: boolean;
-  /** A folder is shared with everyone, so her file tools reach something. */
-  readonly folder: boolean;
+  /** A folder is shared with everyone, so her file tools reach something. Null while the
+   * shares are not read yet: then she does not ask, rather than ask someone who has one. */
+  readonly folder: boolean | null;
   /** The folders she may offer to share, from the places the core lists. */
   readonly places?: readonly Offer[];
 }
@@ -102,9 +103,9 @@ const you = (text: string): Line => ({ who: 'you', text });
 const A = `['’]`;
 // Words people put in front of an answer ("ok, ...", "hmm, ...") before the part that matters.
 const FILLER = String.raw`(?:(?:hi|hey|hello|ok(?:ay)?|hmm+|um+|uh+|erm*|well|so|just|please|there)[,!. ]+)*`;
-// The same words before a bare name. Only with punctuation after them, so a name like
-// "So Yeon" stays whole; a hum needs none.
-const BARE_FILLER = /^(?:(?:hi|hey|hello|ok(?:ay)?|well|so|just|please|there)[,!.]\s*|(?:hmm+|um+|uh+|erm*)[,!. ]+)+/i;
+// The same words before a bare name, only with punctuation after them, so a name like
+// "So Yeon", "Um Ji-won" or "Er Wei" stays whole.
+const BARE_FILLER = /^(?:(?:hi|hey|hello|ok(?:ay)?|well|so|just|please|there|hmm+|um+|uh+|erm*)[,!.]\s*)+/i;
 // What may follow a lead-in before the name: a space, or a comma, colon or full stop.
 const leadIn = (phrases: string): RegExp => new RegExp(String.raw`^${FILLER}(?:${phrases})(?:\s*[,:.!]\s*|\s+)`, 'i');
 const INTRO = leadIn(
@@ -206,9 +207,40 @@ const UNSURE = new RegExp(
   String.raw`^(?:i )?(?:don${A}?t know|dunno|not sure|no idea|you (?:pick|choose|decide)|surprise me|whatever|no preference)\b`,
   'i',
 );
-const YES = new RegExp(String.raw`^(?:y|yes|yep|yeah|yup|right|correct|exactly|sure|ok(?:ay)?|that${A}?s (?:it|right))[.! ]*$`, 'i');
-const NO = /^(?:n|no|nope|nah|wrong|not (?:quite|really|right|that))[.! ]*$/i;
-const NO_THEN = /^(?:no|nope|nah)[,!. ]+/i;
+// Words that answer a question rather than name anyone: never a name on their own.
+const STOP: ReadonlySet<string> = new Set(
+  (
+    'yes y yeah yep yup ya no n nope nah sure ok okay right correct perfect fine good great thanks thank please ' +
+    'something else new name different another other anything whatever idk dunno maybe a an the it that this ' +
+    'one hi hello hey hmm um uh er erm well so just'
+  ).split(' '),
+);
+const word = (w: string): string => w.toLowerCase().replace(/[^\p{L}\p{M}']/gu, '');
+/** Only answer words ("no", "something else", "a new name"): there is no name in it. */
+const nameless = (name: string): boolean => name.split(/[\s,]+/).every((w) => !word(w) || STOP.has(word(w)));
+/** One or two words that look like a name and are not answer words. */
+const plainName = (name: string): boolean => {
+  const words = name.split(' ');
+  return words.length <= 2 && words.every((w) => /^\p{L}[\p{L}\p{M}'’.-]*$/u.test(w) && !STOP.has(word(w)));
+};
+const YES_WORD = String.raw`(?:yes|yeah|yep|yup|y|sure|ok(?:ay)?|right|correct|perfect|exactly|that${A}?s (?:it|right)|that is (?:it|right)|sounds good)`;
+const NO_WORD = String.raw`(?:no|nope|nah|n|wrong|not (?:quite|really|right|that))`;
+const SEP = String.raw`(?:[\s,.!:;-]+|$)`;
+const YES_LEAD = new RegExp(String.raw`^${YES_WORD}${SEP}`, 'i');
+const NO_LEAD = new RegExp(String.raw`^${NO_WORD}${SEP}`, 'i');
+const POLITE = new RegExp(String.raw`^(?:please|thanks|thank you|${YES_WORD})${SEP}`, 'i');
+
+/** What is left of `text` once the words that only agree or thank are taken off the front. */
+function besides(text: string, heard = ''): string {
+  let rest = text.trim();
+  const name = heard ? new RegExp(String.raw`^["“]?${esc(heard)}["”]?${SEP}`, 'i') : null;
+  for (let i = 0; i < 6; i++) {
+    const next = rest.replace(POLITE, '').replace(name ?? /$^/, '').trim();
+    if (next === rest) break;
+    rest = next;
+  }
+  return rest.replace(/^[\s,.!?:;-]+|[\s,.!?:;-]+$/g, '');
+}
 
 /** Past this many words it is a sentence the parsing missed, not a name. */
 export const NAME_WORDS = 5;
@@ -302,6 +334,8 @@ export function placeholder(o: Onboarding): string {
       return 'Or type "skip"';
     case 'folder':
       return 'Tap a folder, or type "not now"';
+    case 'sharing':
+      return 'Sharing it';
     case 'demo':
       return 'Approve or decline the card, or just say yes or no';
     default:
@@ -318,9 +352,11 @@ const ASKING: readonly Step[] = [
   'voice',
   'listening',
   'folder',
+  // The page is sharing the tapped folder: what is typed meanwhile is not for the model.
+  'sharing',
   'demo',
 ];
-const CLIMBING: readonly Step[] = ['model', 'voice', 'listening', 'folder', 'demo'];
+const CLIMBING: readonly Step[] = ['model', 'voice', 'listening', 'folder', 'sharing', 'demo'];
 
 /** True on the ladder or at the card, where a reply goes to `decide`, not `answer`. */
 export const climbing = (o: Onboarding | null): boolean => o !== null && CLIMBING.includes(o.step);
@@ -342,13 +378,16 @@ export function answer(o: Onboarding, text: string): Onboarding {
       { step: 'skipped' },
       you('Skip for now'),
       her(`Fine. I stay ${o.was} and you stay "you" until you say otherwise. Names are in Settings, at the top.`),
+      her(TRUST),
     );
   }
   const kept = text === KEEP;
   switch (o.step) {
     case 'user_name': {
-      const name = kept ? o.draft.userName : nameFrom(text);
+      const keep = kept || (o.returning && YES_LEAD.test(text.trim()) && !besides(text));
+      const name = keep ? o.draft.userName : nameFrom(text);
       const said = you(kept ? `Still ${name}` : text.trim());
+      if (!keep && name && nameless(name)) return add(o, {}, said, her('I need a name to go on. What should I call you?'));
       const problem = nameProblem(name);
       if (problem) return add(o, {}, said, her(problem));
       const ask = o.returning
@@ -360,26 +399,26 @@ export function answer(o: Onboarding, text: string): Onboarding {
       const typed = text.trim();
       const said = you(kept ? `Keep ${o.draft.agentName}` : typed);
       if (kept || keepsName(typed, o.draft.agentName) || UNSURE.test(typed)) return named(o, o.draft.agentName, said);
-      const name = nameFrom(typed, RENAME);
-      const problem = nameProblem(name);
-      if (problem) return add(o, {}, said, her(problem));
-      // Read out of a sentence: said back first, so a wrong guess is never written down.
-      if (name !== tidy(typed)) {
-        return add(o, { step: 'agent_check', heard: name }, said, her(`"${name}", then? I'd like to get it right before I write it down.`));
-      }
-      return named(o, name, said);
+      return heardName(o, nameFrom(typed, RENAME), said, plainName(tidy(typed)) && nameFrom(typed, RENAME) === tidy(typed));
     }
     case 'agent_check': {
       const heard = o.heard ?? o.draft.agentName;
       const typed = text.trim();
-      if (text === CONFIRM || YES.test(typed)) return named(o, heard, you(text === CONFIRM ? `Yes, ${heard}` : typed));
-      if (text === RETRY || NO.test(typed)) {
-        return add(o, { step: 'agent_name', heard: undefined }, you(text === RETRY ? 'No' : typed), her('Then just the name, on its own.'));
+      if (text === CONFIRM) return named(o, heard, you(`Yes, ${heard}`));
+      if (text === RETRY) return instead(o, you('No'));
+      const said = you(typed);
+      // "Yes", "Yes, Nova", "yeah that's right", "okay thanks": agreed.
+      if (YES_LEAD.test(typed) && !besides(typed, heard)) return named(o, heard, said);
+      const no = NO_LEAD.exec(typed);
+      if (no) {
+        // "no", "no thanks": ask again. "no, Vega": Vega, checked unless it is plainly a name.
+        const rest = besides(typed.slice(no[0].length));
+        if (!rest) return instead(o, said);
+        const name = nameFrom(rest, RENAME);
+        return heardName(o, name, said, plainName(rest) && name === tidy(rest) && !name.includes(' '));
       }
-      // Anything else is the name again: "No, Vega" means Vega. The line shown is what was typed.
-      const again = answer({ ...o, step: 'agent_name', heard: undefined }, typed.replace(NO_THEN, '') || typed);
-      const lines = again.lines.map((l, i) => (i === o.lines.length && l.who === 'you' ? you(typed) : l));
-      return { ...again, lines };
+      // Anything else is the name again, and is always checked: from here a guess is never taken.
+      return heardName(o, nameFrom(typed, RENAME), said, false);
     }
     case 'directness': {
       const picked = directnessFrom(text);
@@ -392,6 +431,20 @@ export function answer(o: Onboarding, text: string): Onboarding {
     default:
       return o;
   }
+}
+
+/** A name read from a reply: taken when `plain`, else said back first, so a wrong guess
+ * is never written down. Answer words alone ("something else", "no") ask again. */
+function heardName(o: Onboarding, name: string, said: Line, plain: boolean): Onboarding {
+  if (name && nameless(name)) return instead(o, said);
+  const problem = nameProblem(name);
+  if (problem) return add(o, { step: 'agent_name', heard: undefined }, said, her(problem));
+  if (plain) return named(o, name, said);
+  return add(o, { step: 'agent_check', heard: name }, said, her(`"${name}", then? I'd like to get it right before I write it down.`));
+}
+
+function instead(o: Onboarding, said: Line): Onboarding {
+  return add(o, { step: 'agent_name', heard: undefined }, said, her('What would you like instead?'));
 }
 
 /** Her name is settled: say it back, then ask about the tone. */
@@ -434,7 +487,7 @@ const has = (ready: Ready, rung: Rung): boolean =>
       : rung === 'listening'
         ? ready.listening
         : rung === 'folder'
-          ? ready.folder
+          ? ready.folder !== false
           : false;
 
 const OFFERED: readonly string[] = ['Desktop', 'Documents'];
@@ -491,7 +544,7 @@ export function decide(o: Onboarding, text: string, ready: Ready): Onboarding {
         if (!place) return o;
         return add(o, { step: 'sharing', sharing: place }, you(`Share ${place.label}`));
       }
-      if (text !== LATER && !/^(skip|later|no|not now|none)\b/.test(t)) return o;
+      if (text !== LATER && !/^(skip|later|maybe later|not (?:now|yet)|no|nope|nah|none|never ?mind)\b/.test(t)) return o;
       return climb(
         add(o, { places: undefined }, you('Not now'), her('No folder for now. Settings, Shared folders, when you want one.')),
         ready,
@@ -512,6 +565,12 @@ export function decide(o: Onboarding, text: string, ready: Ready): Onboarding {
     default:
       return o;
   }
+}
+
+/** The places were read after she asked for a folder: offer them now. */
+export function placesFound(o: Onboarding, places: readonly Offer[]): Onboarding {
+  if (o.step !== 'folder' || (o.places ?? []).length || !places.length) return o;
+  return { ...o, places };
 }
 
 /** The page shared the tapped folder (`error` empty) or was refused, in the core's words. */
@@ -536,7 +595,7 @@ export function configured(o: Onboarding, ready: Ready): Onboarding {
   if (o.step === 'listening' && ready.listening) {
     return climb(add(o, {}, her('Good. The Speak button is next to Send.')), ready, after('listening'));
   }
-  if (o.step === 'folder' && ready.folder) {
+  if (o.step === 'folder' && ready.folder === true) {
     const line = 'Good, a folder is shared. Settings, Shared folders, is where to change it.';
     return climb(add(o, { places: undefined }, her(line)), ready, after('folder'));
   }
