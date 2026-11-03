@@ -51,6 +51,8 @@ export interface Cues {
   announce(id: number, sampleRate: number): void;
   /** A kind-2 frame. */
   audio(data: ArrayBuffer): void;
+  /** Silence any cue still sounding: her reply starts, or she is stopped. */
+  stop(): void;
 }
 
 export function createCues(hooks: CueHooks): Cues {
@@ -58,6 +60,7 @@ export function createCues(hooks: CueHooks): Cues {
   let pending: { id: number; rate: number } | null = null;
   let gain: GainNode | null = null;
   let gainCtx: AudioContext | null = null;
+  const sounding = new Set<AudioBufferSourceNode>();
 
   return {
     announce(id, sampleRate) {
@@ -70,7 +73,9 @@ export function createCues(hooks: CueHooks): Cues {
       pending = null;
       if (hooks.replying() || frame.pcm.length === 0 || !(rate > 0)) return;
       const ctx = hooks.context();
-      if (!ctx) return;
+      // A sleeping context would play it later, maybe over her reply, after
+      // cue.started had already said it was heard.
+      if (!ctx || ctx.state !== 'running') return;
       if (!gain || gainCtx !== ctx) {
         gain = ctx.createGain();
         gain.gain.value = CUE_GAIN;
@@ -82,6 +87,8 @@ export function createCues(hooks: CueHooks): Cues {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(gain);
+      source.onended = () => sounding.delete(source);
+      sounding.add(source);
       source.start(ctx.currentTime + LEAD_S);
       // Measured like her reply's first sound: the lead, any silence before the
       // sound, and the time the device itself takes to play.
@@ -90,6 +97,17 @@ export function createCues(hooks: CueHooks): Cues {
       const inMs = Math.max(0, Math.round((LEAD_S + at / rate + latency) * 1000));
       hooks.flare(NOD);
       hooks.started(frame.id, inMs);
+    },
+    stop() {
+      for (const source of sounding) {
+        source.onended = null;
+        try {
+          source.stop();
+        } catch {
+          // not started yet
+        }
+      }
+      sounding.clear();
     },
   };
 }

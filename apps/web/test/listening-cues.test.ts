@@ -60,12 +60,16 @@ async function setup(over: Record<string, unknown> = {}) {
     if (path === '/api/settings/listening/choices') return Promise.resolve(json({ choices: [{ id: 'flux', name: 'Flux', download: null }] }));
     return Promise.resolve(json({ error: 'not_found' }, 404));
   };
-  const panel = createListeningSettings(fakeHost(root), api);
+  const host = fakeHost(root);
+  const panel = createListeningSettings(host, api);
   await panel.open();
   await flush();
   const box = root.querySelector('#listening-cues') as HTMLInputElement;
   const row = box.closest('label') as HTMLElement;
-  return { root, calls, box, row };
+  const change = (next: Record<string, unknown>): void => {
+    state = { ...state, ...next };
+  };
+  return { root, calls, box, row, host, panel, change };
 }
 
 afterEach(() => {
@@ -83,6 +87,26 @@ describe('the listening cues switch', () => {
 
   it('is hidden when cues are not possible', async () => {
     const { row } = await setup({ cues_possible: false });
+    expect(row.hidden).toBe(true);
+  });
+
+  it('follows a change made elsewhere (her voice) when Hearing is shown again', async () => {
+    const { row, host, panel, change } = await setup({ cues_possible: false });
+    expect(row.hidden).toBe(true);
+    host.close(); // another section, such as Voice
+    change({ cues_possible: true });
+    await panel.open();
+    await flush();
+    expect(row.hidden).toBe(false);
+  });
+
+  it('is hidden while a provider that does not judge turns is picked', async () => {
+    const whisper = { ...FLUX, kind: 'whisper', title: 'Whisper', needs_key: false, turns: false, key: null };
+    const { root, row } = await setup({ options: [FLUX, whisper] });
+    const radio = root.querySelector('input[value="whisper"]') as HTMLInputElement;
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change'));
+    await flush();
     expect(row.hidden).toBe(true);
   });
 

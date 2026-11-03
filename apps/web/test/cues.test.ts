@@ -17,9 +17,12 @@ interface Node {
   to: unknown[];
   gain?: { value: number };
   started?: number | undefined;
+  stopped?: boolean;
+  onended?: (() => void) | null;
 }
 
 class FakeContext {
+  state: AudioContextState = 'running';
   currentTime = 1;
   outputLatency = 0.04;
   baseLatency = 0;
@@ -39,7 +42,12 @@ class FakeContext {
       to: [] as unknown[],
       buffer: null,
       started: undefined as number | undefined,
+      stopped: false,
+      onended: null as (() => void) | null,
       connect: (n: unknown) => node.to.push(n),
+      stop: () => {
+        node.stopped = true;
+      },
       start: (at: number) => {
         node.started = at;
       },
@@ -151,6 +159,26 @@ describe('the cue player', () => {
     cues.audio(frame(2, 4, loud));
     cues.audio(frame(2, 4, loud));
     expect(started).toHaveLength(1);
+  });
+
+  it('drops a cue while the speaker is asleep, rather than play it late', () => {
+    ctx.state = 'suspended';
+    cues.announce(4, 1000);
+    cues.audio(frame(2, 4, loud));
+    expect(sources()).toHaveLength(0);
+    expect(flares).toEqual([]);
+    expect(started).toEqual([]);
+  });
+
+  it('stops a sounding cue when told to, and forgets finished ones', () => {
+    cues.announce(1, 1000);
+    cues.audio(frame(2, 1, loud));
+    cues.announce(2, 1000);
+    cues.audio(frame(2, 2, loud));
+    sources()[0]?.onended?.(); // the first has finished
+    cues.stop();
+    expect(sources().map((s) => s.stopped)).toEqual([false, true]);
+    cues.stop(); // nothing left to stop
   });
 
   it('plays nothing when her voice is not made here', () => {

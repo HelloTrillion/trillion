@@ -444,7 +444,7 @@ function watchFrame(pcm: ArrayBuffer): void {
       for (const frame of preroll.drain()) if (socket?.readyState === WebSocket.OPEN) socket.send(frame);
     } else {
       bargeHeld = preroll.drain();
-      voice.stop();
+      stopVoice();
       cutIn = true;
       send({ type: 'barge' });
     }
@@ -464,7 +464,11 @@ function stopWatchingSoon(): void {
 
 const voice = createVoice({
   onActive: (on) => {
-    if (on) startWatching();
+    // Her reply starts: a cue still sounding gives way.
+    if (on) {
+      cues.stop();
+      startWatching();
+    }
     render();
   },
   onEnded: (turn, playedMs) => {
@@ -480,6 +484,11 @@ const voice = createVoice({
   onSentence: (turn, seq) => send({ type: 'playback.sentence', turn_id: turn, seq }),
   attach: (node) => galaxy.attachAnalyser(node, 'playback'),
 });
+/** Silence her: her reply and any listening cue (stopped, barged in on, a new turn). */
+function stopVoice(): void {
+  voice.stop();
+  cues.stop();
+}
 // Her "mm-hm" while the user talks: apart from her reply, and a nod of the orb.
 const cues = createCues({
   context: () => voice.context(),
@@ -1442,7 +1451,7 @@ function connect(): void {
     if (msg.type === 'audio.stop' || msg.type === 'interrupted') {
       // Stopping her also brings the volume back for the next reply. A watch streaming
       // to the core is the core's to end: it may be becoming the user's turn.
-      voice.stop();
+      stopVoice();
       overlapping = false;
       if (!streamWatch) stopWatching();
     }
@@ -1500,7 +1509,7 @@ function connect(): void {
       if (overlapping) {
         // It was an interruption: the microphone is already sending, so it carries on.
         // Whatever of her is still playing stops, if nothing has stopped it yet.
-        voice.stop();
+        stopVoice();
         overlapping = false;
       } else if (micMode === 'watch' && mic.on) {
         // Already open: what was held goes first, then the microphone carries on.
@@ -1668,7 +1677,7 @@ function submit(): void {
 function sendTurn(text: string, from?: 'ask', sending?: () => void): boolean {
   if (!text || view.busy || view.link !== 'ready') return false;
   voice.unlock(); // sending is a click or a key press, which is what lets a browser play sound
-  voice.stop();
+  stopVoice();
   spokeLast = false; // a typed conversation: the microphone stays closed while she answers
   stopWatching();
   send(from ? { type: 'turn.text', text, from } : { type: 'turn.text', text });
@@ -1693,7 +1702,7 @@ input.addEventListener('input', () => {
 });
 /** Everything of hers on this page goes still: her voice, the microphone, any cut-in under way. */
 function quiet(): void {
-  voice.stop();
+  stopVoice();
   endHold();
   mic.stop();
   micMode = 'send';
@@ -1722,7 +1731,7 @@ function talk(held = false): void {
     send({ type: 'listen.stop' });
   } else if (!view.busy && view.link === 'ready') {
     voice.unlock(); // a click is what lets a browser play her answer
-    voice.stop();
+    stopVoice();
     send(held ? { type: 'listen.start', held: true } : { type: 'listen.start' });
     // Opened here, inside the click or key press, so the permission prompt belongs to it.
     void mic.start();
