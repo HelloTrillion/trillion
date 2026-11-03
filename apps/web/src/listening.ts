@@ -187,7 +187,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     early.checked = state?.think_early ?? true;
     early.disabled = busy;
     cuesRow.hidden = !o?.turns || !state?.cues_possible;
-    cues.checked = state?.cues ?? true;
+    cues.checked = state?.cues ?? false;
     cues.disabled = busy;
     keyInput.disabled = busy || !state?.keychain;
     keyInput.placeholder = o?.key ? 'Leave empty to keep the saved key' : 'Paste your key';
