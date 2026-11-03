@@ -25,8 +25,13 @@ class FakeStream:
         pause: bool = False,
         turn: Literal["maybe", "resumed", "done"] | None = None,
         words: tuple[Word, ...] = (),
+        confidence: float | None = None,
     ) -> None:
-        self._events.put_nowait(Heard(text=text, final=final, pause=pause, turn=turn, words=words))
+        self._events.put_nowait(
+            Heard(
+                text=text, final=final, pause=pause, turn=turn, words=words, confidence=confidence
+            )
+        )
 
     async def send(self, pcm: bytes) -> None:
         self.audio.extend(pcm)

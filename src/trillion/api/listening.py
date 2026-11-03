@@ -428,6 +428,9 @@ class Listener:
     async def _read(self, stream: STTStream) -> None:
         try:
             async for heard in stream.events():
+                if not heard.text and not heard.final and heard.turn is None:
+                    # Only how sure the recognizer is that the turn is over: no words.
+                    continue
                 if self._rules.is_over and not self._watching:
                     # The next turn's first words can arrive while we wrap up; they
                     # are not part of this one.
