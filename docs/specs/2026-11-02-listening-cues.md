@@ -14,7 +14,7 @@ The live test also showed that the quiet `listening` window from [staying quiet]
 4. **Sparing by design.** A cue plays only in a real mid-turn pause, and often a pause gets nothing.
 5. **The orb nods** with every cue: one soft `flare`.
 6. **A cue is hers, never the user's words.** If the recognizer transcribes a cue's echo, those words are dropped, by the same timing judgement that tells her reply's echo from the user (echo timing).
-7. **A switch:** Settings → Hearing → "Say 'mm-hm' while I talk". On by default, and shown only when cues are possible.
+7. **A switch:** Settings → Hearing → "Say 'mm-hm' while I talk". Off by default, and shown only when cues are possible. (First built on by default; in the live test her cue could reach the microphone and blur where the user's turn ended, so it stays off until tested on recorded audio.)
 
 ## When a cue plays
 

@@ -967,7 +967,7 @@ def test_thinking_early_is_on_by_default_and_can_be_turned_off(make: Any) -> Non
     assert bad.status_code == 422
 
 
-def test_listening_cues_are_on_by_default_shown_when_possible_and_saved(make: Any) -> None:
+def test_listening_cues_are_off_by_default_shown_when_possible_and_saved(make: Any) -> None:
     from tests.api.test_overlap_watch import steady
     from tests.voice.fakes import FakeSTT
     from trillion.api.runtime import CUES_PREF, ListenSettings
@@ -976,11 +976,14 @@ def test_listening_cues_are_on_by_default_shown_when_possible_and_saved(make: An
     path = "/api/settings/listening"
     got = app.client.get(path, headers=app.auth).json()
     # No hearing that judges turns, nor a voice made in the core: no cues to offer.
-    assert got["cues"] is True and got["cues_possible"] is False
+    assert got["cues"] is False and got["cues_possible"] is False
     app.rt.stt = FakeSTT(turns=True, word_times=True)
     app.rt.listening = ListenSettings(kind="deepgram", choice="en")
     steady(app.rt)
     assert app.client.get(path, headers=app.auth).json()["cues_possible"] is True
+    on = app.client.put(f"{path}/cues", json={"on": True}, headers=app.auth)
+    assert on.status_code == 200 and on.json()["cues"] is True
+    assert app.rt.listen_cues is True
     r = app.client.put(f"{path}/cues", json={"on": False}, headers=app.auth)
     assert r.status_code == 200
     assert r.json()["cues"] is False and r.json()["cues_possible"] is True

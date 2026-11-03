@@ -13,7 +13,7 @@ This is the first of the voice-flow changes. The second, an open line (a microph
    - `listening`: the user is mid-thought. The microphone stays open and the floor stays theirs.
    - `done`: the user signed off. The microphone closes and the orb rests.
 3. **Spoken turns can be either. Typed turns can only be `done`.** Typing has no pauses to wait through, so an unfinished typed thought gets an answer.
-4. **One nudge, in her words.** After a `listening` quiet, if the user says nothing for 8 seconds, she says one short line inviting them to go on. It is composed by her (PER-11), never stock text, and comes only once. Then the microphone gets its usual 3 seconds and rests.
+4. **One nudge, in her words.** After a `listening` quiet, if the user says nothing for 3.5 seconds, she offers back what they seemed to be reaching for, as a short question, or else says one short line inviting them to go on. (First built at 8 seconds; the live test showed that was far too long.) It is composed by her (PER-11), never stock text, and comes only once. Then the microphone gets its usual 3 seconds and rests.
 5. **A typed sign-off gets a "seen" mark,** saved with the conversation, so the message never looks unanswered.
 6. **She never stays quiet after a clear question,** or after a host note (a background read, a reminder, the nudge's own prompt).
 7. **Her spoken style changes with it.** Thinking aloud gets room, not menus; at most one question; a correction is taken in one line. "If there is more, offer it" goes.
@@ -40,9 +40,9 @@ This is the first of the voice-flow changes. The second, an open line (a microph
 ## The turn
 
 - **The loop.** When a round has no text and only `stay_quiet`, and the call was not refused, the call and its result are saved as a pair like any tool call, so later turns see that she chose silence. The turn ends with `TurnDone(stop="quiet")` and the kind. It is not "empty", and no notice is sent.
-- **The session, `listening`.** Nothing is spoken. The orb goes to `listening` and the microphone stays open for `QUIET_LISTEN_S = 8.0`.
+- **The session, `listening`.** Nothing is spoken. The orb goes to `listening` and the microphone stays open for `QUIET_LISTEN_S = 3.5`.
   - If the user speaks, that is a new turn as usual. She sees both parts in order.
-  - If not, one nudge turn runs: a host note says they went quiet after trailing off, and to say one short line inviting them on. The note is a host note like any other, so she can't stay quiet on it: the nudge always gets her line. It is spoken, then the usual 3-second follow-up, then rest.
+  - If not, one nudge turn runs: a host note says they trailed off, and to offer back what they were reaching for as a short question if she can tell, or else one short line inviting them on. The note is a host note like any other, so she can't stay quiet on it: the nudge always gets her line. It is spoken, then the usual 3-second follow-up, then rest.
   - Nudges never chain. A nudge's turn is a host note's turn, which can't use `stay_quiet` at all, so no second window opens.
   - Pressing to talk in the window takes the floor at once. Leaving the conversation, or Stop, ends the window and its nudge.
 - **The session, `done`.** Nothing is spoken. The microphone closes (VOI-15d: a sign-off ends active capture), and the orb rests.
@@ -108,7 +108,7 @@ The persona eval (`evals/persona/`) gains two groups and one kind of case.
   - the loop ends `quiet` and saves the pair;
   - an empty reply is still `empty`.
 - **Session:**
-  - `listening` keeps the mic open 8 seconds, then nudges once;
+  - `listening` keeps the mic open 3.5 seconds, then nudges once;
   - speaking in the window starts a normal turn and no nudge;
   - `done` closes the mic and sends the "seen" mark;
   - a typed `done` is saved and replayed;

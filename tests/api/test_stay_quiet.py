@@ -21,7 +21,7 @@ from tests.brain.fakes import USAGE, ScriptedProvider, is_naming, say, use
 from tests.voice.audio import frames, room, tone
 from tests.voice.fakes import FakeSTT
 from trillion.api import session as session_module
-from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S
+from trillion.api.listening import QUIET_LISTEN_S
 from trillion.api.runtime import ListenSettings, Runtime, open_runtime
 from trillion.api.session import NUDGE, Session
 from trillion.brain.types import Done, ModelEvent, ToolResultBlock
@@ -565,10 +565,10 @@ async def test_over_a_watch_the_quiet_window_opens_and_nudges_once(
     assert page.all("mic.start")[-1] == {"type": "mic.start", "follow_up": True, "quiet": True}
     assert session._listener is not None and session._window is session._listener
     assert session._overlap is None
-    # Past the usual three-second follow-up: still open.
-    await speak(session, room(FOLLOW_UP_S + 1.0))
+    # Most of the window: still open, no nudge yet.
+    await speak(session, room(QUIET_LISTEN_S - 0.5))
     assert session._listener is not None and nudges(rt) == 0
-    await speak(session, room(QUIET_LISTEN_S - FOLLOW_UP_S))
+    await speak(session, room(1.0))
     await page.until("mic.stop", 2)
     assert page.all("mic.stop")[-1]["reason"] == "nothing"
     await page.until("turn.complete", 2)
@@ -596,16 +596,17 @@ async def test_over_a_watch_a_cough_does_not_hold_the_window_open(
 async def test_over_a_watch_starting_again_just_before_the_end_is_a_turn(
     rt: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Their voice at 7.6 s, its first word reported at 8.3 s: Flux's words lag the
-    voice. No nudge over them, and their first words are kept."""
+    """Their voice just before the window ends, its first word reported just after:
+    Flux's words lag the voice. No nudge over them, and their first words are kept."""
     stt, page, session = await quiet_over_a_watch(rt, monkeypatch)
     listener = session._listener
     assert listener is not None
     at = listener.sent_s
-    await speak(session, room(7.6) + tone(0.7, 0.4))
+    v = QUIET_LISTEN_S - 0.4
+    await speak(session, room(v) + tone(0.7, 0.4))
     words = (
-        Word(text="actually", start_s=at + 7.6, end_s=at + 8.0),
-        Word(text="yes", start_s=at + 8.0, end_s=at + 8.3),
+        Word(text="actually", start_s=at + v, end_s=at + v + 0.4),
+        Word(text="yes", start_s=at + v + 0.4, end_s=at + v + 0.7),
     )
     stt.stream.say("actually yes", final=True, turn="done", words=words)
     await speak(session, room(0.3))

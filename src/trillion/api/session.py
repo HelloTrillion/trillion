@@ -370,8 +370,9 @@ def background_note(title: str, job: Job, r: RouterResponse) -> str:
 # (VOI-7). Saved as a tap's note, so its turn is the host's: she may not stay quiet on
 # it, which is also what keeps a nudge from following a nudge.
 NUDGE = (
-    "[host] They went quiet after trailing off mid-thought. Say one short line inviting "
-    "them to go on, in your own words."
+    "[host] They trailed off mid-thought and have been quiet a few seconds. If you can "
+    "tell what they were reaching for, offer it back in a few words as a question. If "
+    "not, say one short line inviting them to go on. Your own words."
 )
 
 

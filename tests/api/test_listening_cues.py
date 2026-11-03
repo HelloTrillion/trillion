@@ -50,7 +50,9 @@ class Wire(Page):
 
 
 @pytest.fixture(autouse=True)
-def sure(monkeypatch: pytest.MonkeyPatch) -> None:
+def sure(monkeypatch: pytest.MonkeyPatch, rt: Runtime) -> None:
+    # Cues are off unless chosen: these tests choose them.
+    rt.listen_cues = True
     # Every pause that may get a cue gets one: the coin is tested on its own.
     monkeypatch.setattr(cue_rules, "CUE_CHANCE", 1.0)
     monkeypatch.setattr(session_module, "NO_AUDIO_S", 30.0)
