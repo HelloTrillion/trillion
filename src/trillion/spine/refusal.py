@@ -35,8 +35,6 @@ _PHRASES: tuple[tuple[str, ...], ...] = tuple(
                 "cancel it",
                 "never mind",
                 "nevermind",
-                "stop",
-                "stop that",
                 "forget it",
                 "forget that",
                 "forget about it",
@@ -48,17 +46,28 @@ _PHRASES: tuple[tuple[str, ...], ...] = tuple(
 )
 
 _APOSTROPHES = re.compile("['`\N{LEFT SINGLE QUOTATION MARK}\N{RIGHT SINGLE QUOTATION MARK}]")
-_NOT_WORD = re.compile(r"[^a-z]+")
+# Only plain ASCII punctuation separates words. Anything else stays in a word and
+# so is not a refusal word: digits, other scripts, emoji, accents.
+_BETWEEN = re.compile(r"[\s.,!;:\"()\[\]-]+|\N{HORIZONTAL ELLIPSIS}")
+_QUESTION = ("?", "\N{FULLWIDTH QUESTION MARK}", "\N{INVERTED QUESTION MARK}")
+_WORD = re.compile(r"[a-z]+")
 
 
-def _words(text: str) -> list[str]:
+def _words(text: str) -> list[str] | None:
+    """The words that matter, or None when any piece is not a plain English word."""
     flat = _APOSTROPHES.sub("", text.lower())
-    return [w for w in _NOT_WORD.sub(" ", flat).split() if w not in _FILLER]
+    words = [w for w in _BETWEEN.split(flat) if w]
+    if not all(_WORD.fullmatch(w) for w in words):
+        return None
+    return [w for w in words if w not in _FILLER]
 
 
 def plain_no(text: str) -> bool:
-    """True when the whole of `text` is a plain refusal, such as "no" or "never mind"."""
-    if "?" in text:
+    """True when the whole of `text` is a plain refusal, such as "no" or "never mind".
+
+    "Stop" is not one: said over her it silences her, and that never cancels work
+    (VOI-15c)."""
+    if any(q in text for q in _QUESTION):
         # "No?" asks; it does not answer.
         return False
     words = _words(text)

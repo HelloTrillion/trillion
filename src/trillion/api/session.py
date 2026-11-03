@@ -519,6 +519,18 @@ def page_host(raw: object) -> str:
     return name if name in HOSTS else "other"
 
 
+def _no_note(response: RouterResponse | None) -> str | None:
+    """What she is told when the host declined a card on their plain no: saved with
+    their words, so she answers in her own and does not cancel it again (PER-11)."""
+    if response is None:
+        return None
+    return (
+        f"[host] Their words below are a plain no, so the app declined the card for "
+        f"{response.pending_id}. Result: {response.to_model()} It is settled: do not call "
+        "cancel_pending_action for it, and do not propose it again unless they ask."
+    )
+
+
 class Session:
     def __init__(
         self,
@@ -586,6 +598,12 @@ class Session:
         self._task: asyncio.Task[None] | None = None
         # Notes about taps that arrived mid-turn, delivered to the model afterwards.
         self._queued: list[str] = []
+        # The cards her last reply raised: only one of those can a plain no end (SPN-2f).
+        self._asked_last: set[str] = set()
+        # A barge is opening listening, and the listener that heard them over her. A
+        # "no" said to stop her is not a no to a card (VOI-15c).
+        self._barging = False
+        self._over_her: Listener | None = None
         self._closed = False
         self._greeted = False
         self._orb = ""
@@ -1264,8 +1282,10 @@ class Session:
                 self._outside.add(self._turn)
             self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
-            said_no = None if ask else await self._said_no(text, "text", self._turn)
-            await self._save_input("user", text, marker=said_no)
+            declined = None if ask else await self._said_no(text, "text", self._turn)
+            if declined is not None:
+                await self._show_declined(declined)
+            await self._save_input("user", text, marker=_no_note(declined))
             self._begin()
 
     async def _on_greet(self) -> None:
@@ -1353,7 +1373,11 @@ class Session:
             else:
                 # Her turn is over but its sound may not be: keep only what was heard.
                 await self.trim_tail()
-            await self._on_listen(NOTHING_AFTER_S)
+            self._barging = True
+            try:
+                await self._on_listen(NOTHING_AFTER_S)
+            finally:
+                self._barging = False
 
     # ── Talking over her (VOI-9) ─────────────────────────────────────────
 
@@ -1869,6 +1893,8 @@ class Session:
                 await self._over(ov)
                 await self._error("busy")
                 return
+            # Set first: the turn can end before this returns.
+            self._over_her = ov.listener
             await self._become_turn(ov, follow_up=False)
 
     async def _become_turn(self, ov: Overlap, *, follow_up: bool, quiet: bool = False) -> None:
@@ -1963,6 +1989,7 @@ class Session:
                 # as it opens, so her echo still in the air is hers.
                 listener.judge_by(self._judge_on(listener, self._timeline.ending_at(0.0)))
             self._listener = listener
+            self._over_her = listener if self._barging else None
             # A window left open after a quiet `listening` (VOI-7): silence nudges once.
             self._window = listener if quiet else None
             self._drafted = False
@@ -2134,13 +2161,18 @@ class Session:
             elif text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
-                said_no = await self._said_no(text, "voice", self._turn + 1)
+                over_her = listener is self._over_her
+                self._over_her = None
+                declined = None if over_her else await self._said_no(text, "voice", self._turn + 1)
                 # A draft was built while the card still waited: it never saw the no.
-                usable = said_no is None and draft is not None and self._usable(draft, text)
+                usable = declined is None and draft is not None and self._usable(draft, text)
                 # A used draft saves its own words: the screen shows those, so a reload
                 # shows the same.
                 shown = draft.words if usable and draft is not None else text
                 await self._send("transcript.final", text=shown)
+                if declined is not None:
+                    # Their words show first, then the card goes.
+                    await self._show_declined(declined)
                 self._via = "voice"
                 self._turn += 1
                 self.active_ms = self._rt.clock()
@@ -2157,7 +2189,7 @@ class Session:
                         draft = None
                     if self._drafted:
                         trace.draft = "dropped"
-                    await self._save_input("user", text, marker=said_no)
+                    await self._save_input("user", text, marker=_no_note(declined))
                 answer = True
                 self._collecting = False
             elif not only_her:
@@ -2226,29 +2258,35 @@ class Session:
         if self._task is None:
             self._begin()
 
-    async def _said_no(self, text: str, via: Literal["voice", "text"], turn: int) -> str | None:
-        """A plain no, as their whole turn, ends the one card waiting here (SPN-2f): the
-        host cancels it, not her. The page is told, and so is she, in a host note saved
-        with their words, so she answers in her own words and does not cancel it again.
-        None when nothing was cancelled."""
+    async def _said_no(
+        self, text: str, via: Literal["voice", "text"], turn: int
+    ) -> RouterResponse | None:
+        """A plain no, as their whole turn, ends the card her last reply raised
+        (SPN-2f): the host cancels it, not her. The cancelled card's response, or None.
+        A failure here is never the turn's: it is logged, and their words go to her."""
         if not plain_no(text):
             # Most turns: nothing to look up.
             return None
-        ctx = await self._ctx(f"no-{uuid.uuid4().hex}", via=via, turn=turn)
-        response = await self._rt.router.cancel_on_no(text, ctx)
-        if response is None or response.status != "cancelled" or response.pending_id is None:
+        try:
+            ctx = await self._ctx(f"no-{uuid.uuid4().hex}", via=via, turn=turn)
+            response = await self._rt.router.cancel_on_no(
+                text, ctx, asked=frozenset(self._asked_last)
+            )
+        except Exception as e:
+            logger.warning("plain no not applied in session %s: %s", self.id, type(e).__name__)
             return None
+        if response is None or response.pending_id is None:
+            return None
+        return response
+
+    async def _show_declined(self, response: RouterResponse) -> None:
+        """The card goes from the page, as after a tap on Decline."""
         await self._send(
             "confirm.resolved",
             pending_id=response.pending_id,
             status=response.status,
             reason=None,
             detail=None,
-        )
-        return (
-            f"[host] Their words below are a plain no, so the app declined the card for "
-            f"{response.pending_id}. Result: {response.to_model()} It is settled: do not call "
-            "cancel_pending_action for it, and do not propose it again unless they ask."
         )
 
     def _read_outside(self, name: str | None, r: RouterResponse) -> bool:
@@ -2367,6 +2405,8 @@ class Session:
         provider = rt.provider
         if provider is None:  # pragma: no cover - callers check before starting a turn
             return
+        # From here on, the cards she asks about are this reply's.
+        self._asked_last = set()
         speaking = False
         speaker: Speaker | None = None
         timeline: Timeline | None = None
@@ -2461,6 +2501,8 @@ class Session:
                     ok=r.status in ("succeeded", "confirmation_required", "started"),
                     summary=_chip(r),
                 )
+                if r.status == "confirmation_required" and r.pending_id:
+                    self._asked_last.add(r.pending_id)
                 # A call proposed again while its card waits gets no second card.
                 if r.status == "confirmation_required" and r.pending_id and not r.already_asked:
                     await self._send_card(r.pending_id)

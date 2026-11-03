@@ -126,6 +126,9 @@ async def test_a_spoken_no_cancels_and_she_is_told(rt: Runtime) -> None:
     await speak(session, room(0.6))
     await idle(session)
     assert await status_of(rt, first) is Status.REJECTED
+    # Their words show before the card goes.
+    kinds = [m["type"] for m in page.got]
+    assert kinds.index("transcript.final") < kinds.index("confirm.resolved")
     decisions = await rt.spine_store.list_decisions(first)
     assert (decisions[-1].event, decisions[-1].via) == ("rejected", "voice")
     assert any(n.startswith("[host]") and first in n for n in notes(last_user(provider)))
@@ -163,4 +166,79 @@ async def test_a_draft_made_while_the_card_waited_is_not_used(rt: Runtime) -> No
     assert len(provider.calls) == 4
     assert [m["text"] for m in page.all("reply.delta")][-1] == "Okay, I won't."
     assert any(n.startswith("[host]") and pid in n for n in notes(last_user(provider)))
+    await session.close()
+
+
+async def no_open_note(provider: ScriptedProvider) -> bool:
+    return not [n for n in notes(last_user(provider)) if n.startswith("[host]")]
+
+
+async def test_a_no_to_her_later_question_leaves_the_card(rt: Runtime) -> None:
+    """The card was asked about, then the talk moved on: she ends on another question,
+    and the no answers that one."""
+    provider = ScriptedProvider(
+        create(rt, "note.txt", "c1"),
+        say("Shall I?"),
+        say("Sunny. Want me to set a reminder too?"),
+        say("Okay."),
+    )
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "write a note saying x"})
+    await idle(session)
+    pid = page.all("confirm.request")[0]["pending_id"]
+    await session.handle({"type": "turn.text", "text": "what's the weather"})
+    await idle(session)
+    await session.handle({"type": "turn.text", "text": "no"})
+    await idle(session)
+    assert await status_of(rt, pid) is Status.PROPOSED
+    assert page.all("confirm.resolved") == []
+    assert await no_open_note(provider)
+    await session.close()
+
+
+async def test_a_no_said_over_her_only_stops_her(rt: Runtime) -> None:
+    """VOI-15c: talking over her to quiet her is not cancelling anything."""
+    stt = hearing(rt)
+    provider = ScriptedProvider(create(rt, "note.txt", "c1"), say("Shall I?"), say("Sorry."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "write a note saying x"})
+    await idle(session)
+    pid = page.all("confirm.request")[0]["pending_id"]
+    await session.handle({"type": "barge"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("No, no.", final=True)
+    await speak(session, room(0.6))
+    await idle(session)
+    assert page.all("transcript.final")[-1]["text"] == "No, no."
+    assert await status_of(rt, pid) is Status.PROPOSED
+    assert page.all("confirm.resolved") == []
+    assert await no_open_note(provider)
+    await session.close()
+
+
+async def test_a_failure_in_the_rule_never_loses_the_turn(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = ScriptedProvider(create(rt, "note.txt", "c1"), say("Shall I?"), say("Okay."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "write a note saying x"})
+    await idle(session)
+
+    async def broken(*_a: object, **_k: object) -> None:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(rt.router, "cancel_on_no", broken)
+    await session.handle({"type": "turn.text", "text": "No thanks"})
+    await idle(session)
+    told = last_user(provider)
+    assert told.blocks[-1] == TextBlock(text="No thanks")
+    assert await no_open_note(provider)
+    assert page.all("reply.delta")[-1]["text"] == "Okay."
+    assert "plain no not applied" in caplog.text and "No thanks" not in caplog.text
     await session.close()

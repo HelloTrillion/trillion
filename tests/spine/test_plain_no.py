@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from tests.spine.conftest import Spine
-from trillion.spine.confirm import Status
+from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.refusal import plain_no
 from trillion.tools.record import DecisionRecord
 
@@ -32,7 +32,6 @@ from trillion.tools.record import DecisionRecord
         "Cancel that.",
         "never mind",
         "nevermind",
-        "stop",
         "forget it",
         "um, no",
         "Uh... no, cancel that.",
@@ -65,6 +64,17 @@ def test_plain_refusals(said: str) -> None:
         "why not",
         "yes no",
         "no?",
+        "No. 2",
+        "no 3, please",
+        "No, \N{CJK UNIFIED IDEOGRAPH-660E}\N{CJK UNIFIED IDEOGRAPH-5929}",
+        "no \N{THUMBS UP SIGN}",
+        "n\N{LATIN SMALL LETTER O WITH DIAERESIS}",
+        "\N{INVERTED QUESTION MARK}no",
+        "no\N{FULLWIDTH QUESTION MARK}",
+        "no\N{FULLWIDTH COMMA} thanks",
+        # Said over her, "stop" silences her; it never cancels work (VOI-15c).
+        "stop",
+        "Stop that.",
     ],
 )
 def test_anything_more_than_a_plain_no_is_not_one(said: str) -> None:
@@ -162,3 +172,66 @@ async def test_the_record_shows_it_declined_by_the_users_words(
     r = await spine.call("decision_record", {}, turn=9)
     assert f"answer: declined ({how})" in r.content
     assert "outcome: declined, so nothing was done" in r.content
+
+
+async def test_a_no_to_a_later_question_leaves_an_older_card(spine: Spine) -> None:
+    """Card on turn 1; turn 2 is about the weather, and she ends "a reminder too?".
+    The no on turn 3 answers that, not the card."""
+    pid = await propose(spine, "note.txt")
+    assert await spine.router.cancel_on_no("no", spine.ctx(turn=3)) is None
+    assert await status_of(spine, pid) is Status.PROPOSED
+
+
+async def test_a_card_her_last_reply_did_not_raise_is_left(spine: Spine) -> None:
+    """The caller knows which cards her last reply raised: a tap's answer in between
+    raised none, so the no is not about this card."""
+    pid = await propose(spine, "note.txt")
+    ctx = spine.ctx(turn=2)
+    assert await spine.router.cancel_on_no("no", ctx, asked=frozenset()) is None
+    assert await status_of(spine, pid) is Status.PROPOSED
+    r = await spine.router.cancel_on_no("no", ctx, asked=frozenset({pid}))
+    assert r is not None and r.status == "cancelled"
+
+
+async def test_a_tap_that_wins_the_race_is_kept(
+    spine: Spine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card is listed, then tapped Approve, then the no reaches it: the tap stands,
+    nothing is cancelled, and the words go to the model unchanged."""
+    pid = await propose(spine, "note.txt")
+    real = spine.store.list_by_status
+
+    async def tapped_meanwhile(status: Status) -> list[PendingAction]:
+        found = await real(status)
+        ok = await spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap"))
+        assert ok.status == "succeeded"
+        return found
+
+    monkeypatch.setattr(spine.store, "list_by_status", tapped_meanwhile)
+    assert await spine.router.cancel_on_no("no", spine.ctx(turn=2)) is None
+    assert await status_of(spine, pid) is Status.SUCCEEDED
+    events = [d.event for d in await spine.store.list_decisions(pid)]
+    assert "rejected" not in events and events.count("approved") == 1
+    assert (spine.granted / "note.txt").read_text() == "hi"
+
+
+async def test_a_card_superseded_meanwhile_is_not_cancelled(
+    spine: Spine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = await propose(spine, "note.txt")
+    real = spine.store.list_by_status
+    newer: list[str] = []
+
+    async def superseded_meanwhile(status: Status) -> list[PendingAction]:
+        found = await real(status)
+        r = await spine.call(
+            "file_create", {"path": str(spine.granted / "note.txt"), "content": "hi"}, turn=2
+        )
+        assert r.pending_id is not None
+        newer.append(r.pending_id)
+        return found
+
+    monkeypatch.setattr(spine.store, "list_by_status", superseded_meanwhile)
+    assert await spine.router.cancel_on_no("no", spine.ctx(turn=2)) is None
+    assert await status_of(spine, pid) is Status.SUPERSEDED
+    assert await status_of(spine, newer[0]) is Status.PROPOSED
