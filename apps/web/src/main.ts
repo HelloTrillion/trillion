@@ -44,6 +44,7 @@ import {
   savedBarge,
   savedHomeDaily,
   savedMic,
+  savedMicName,
   savedTalk,
   savedTheme,
   shownTheme,
@@ -491,6 +492,8 @@ const mic = createMic({
     render(); // a watching microphone is shown once it is really open
   },
   device: savedMic,
+  deviceName: savedMicName,
+  onDeviceFound: (id) => saveMic(id),
   onProblem: (problem) => {
     endHold();
     if (streamWatch) {
@@ -896,8 +899,8 @@ const listeningSettings = createListeningSettings(
   api,
   createMicrophones(
     savedMic,
-    (id) => {
-      saveMic(id);
+    (id, name) => {
+      saveMic(id, name);
       panel.refresh();
     },
     {
@@ -909,6 +912,7 @@ const listeningSettings = createListeningSettings(
       },
       turns: () => view.listening?.turns === true,
     },
+    savedMicName,
   ),
 );
 const namesSettings = createNamesSettings(panel.host('names'), api, {

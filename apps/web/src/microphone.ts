@@ -61,8 +61,9 @@ export function bargeHint(turns: boolean): string {
 
 export function createMicrophones(
   current: () => string | null,
-  choose: (id: string | null) => void,
+  choose: (id: string | null, name?: string | null) => void,
   barge?: BargeSwitch,
+  currentName: () => string | null = () => null,
 ): Microphones {
   const card = el('div', 'settings-card');
   const head = el('div', 'settings-card-head');
@@ -105,6 +106,8 @@ export function createMicrophones(
   }
 
   let testing: { stop(): void } | null = null;
+  // Each listed input's name, by id: saved with a choice.
+  let named = new Map<string, string>();
 
   async function refresh(): Promise<void> {
     bargeNote.textContent = bargeHint(barge?.turns?.() ?? false);
@@ -115,7 +118,17 @@ export function createMicrophones(
       found = [];
     }
     const inputs = found.filter((d) => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
-    const chosen = current() ?? DEFAULT;
+    let chosen = current() ?? DEFAULT;
+    named = new Map(inputs.map((d) => [d.deviceId, d.label.trim()]));
+    const name = currentName();
+    if (chosen && !inputs.some((d) => d.deviceId === chosen) && name) {
+      // The same microphone under a new id (WebKit renews them): remember the new one.
+      const again = inputs.find((d) => d.label.trim() === name);
+      if (again) {
+        chosen = again.deviceId;
+        choose(chosen, name);
+      }
+    }
     const options = [el('option', '', 'Your computer’s default input')];
     (options[0] as HTMLOptionElement).value = DEFAULT;
     inputs.forEach((d, i) => {
@@ -210,7 +223,7 @@ export function createMicrophones(
   }
 
   pick.addEventListener('change', () => {
-    choose(pick.value || null);
+    choose(pick.value || null, named.get(pick.value) || null);
     if (testing) {
       stopTest();
       void startTest();
