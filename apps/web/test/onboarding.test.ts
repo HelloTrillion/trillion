@@ -496,6 +496,74 @@ describe('onboarding', () => {
     expect(back.draft.userName).toBe('Sam');
   });
 
+  describe('second review', () => {
+    const back = (): Onboarding => begin({ userName: 'Sam', agentName: 'Nova', timezone: '', directness: 'blunt' });
+
+    it('keeps a returning name on a yes, and reads a new one out of what follows it', () => {
+      for (const reply of ['yes', 'yes, Sam', 'Yes Sam!', 'yep thats me', "yeah, that's me", 'sure']) {
+        const o = answer(back(), reply);
+        expect(o.step, reply).toBe('agent_name');
+        expect(o.draft.userName, reply).toBe('Sam');
+        expect(said(o), reply).toMatch(/^Sam\. And I'm Nova/);
+      }
+      expect(answer(back(), 'Yes, but call me Samuel').draft.userName).toBe('Samuel');
+      expect(answer(back(), 'yes, Samuel').draft.userName).toBe('Samuel');
+    });
+
+    it('reads her name back without a yes or no in front, or "is good" after', () => {
+      for (const [reply, name] of [
+        ['sure, Nova', 'Nova'],
+        ['Yes, Nova', 'Nova'],
+        ['no, Vega', 'Vega'],
+        ['Nova is good', 'Nova'],
+        ['Nova is fine', 'Nova'],
+        ['Nova sounds good', 'Nova'],
+      ] as const) {
+        const o = run(['Sam', reply]);
+        expect(o.step, reply).toBe('agent_check');
+        expect(o.heard, reply).toBe(name);
+        expect(said(o), reply).toMatch(new RegExp(`^"${name}", then\\?`));
+        expect(answer(o, 'yes').draft.agentName, reply).toBe(name);
+      }
+    });
+
+    it('keeps her name when the user does not mind', () => {
+      for (const reply of ['i dont mind', "i don't mind", 'dunno', 'no idea', 'up to you', "it's up to you", 'whatever you like']) {
+        const o = run(['Sam', reply]);
+        expect(o.step, reply).toBe('directness');
+        expect(o.draft.agentName, reply).toBe('Trillion');
+      }
+    });
+
+    it('at the check, takes the name said again as a yes, keep it as keep it, and a yes with a new name as that name', () => {
+      const checking = (): Onboarding => run(['Sam', 'how about Nova']);
+      for (const reply of ['Nova', 'nova', 'Nova!']) {
+        const o = answer(checking(), reply);
+        expect(o.step, reply).toBe('directness');
+        expect(o.draft.agentName, reply).toBe('Nova');
+      }
+      for (const reply of ['keep Trillion', 'Trillion is fine']) {
+        const o = answer(checking(), reply);
+        expect(o.step, reply).toBe('directness');
+        expect(o.draft.agentName, reply).toBe('Trillion');
+        expect(said(o), reply).toContain('Trillion it stays.');
+      }
+      const vega = answer(checking(), 'yes but Vega');
+      expect(vega.step).toBe('agent_check');
+      expect(vega.heard).toBe('Vega');
+      expect(answer(vega, 'yes').draft.agentName).toBe('Vega');
+    });
+
+    it('drops a greeting before the user name, with or without punctuation', () => {
+      for (const reply of ['hey Sam', 'hi Sam', 'hello, Sam', 'Hey there Sam', 'hi! Sam']) {
+        expect(nameFrom(reply), reply).toBe('Sam');
+        expect(run([reply]).draft.userName, reply).toBe('Sam');
+      }
+      // A greeting alone is not a name.
+      expect(run(['hey']).step).toBe('user_name');
+    });
+  });
+
   describe('a folder to work in', () => {
     const PLACES = [
       { label: 'Home', path: '/Users/sam', kind: 'home' as const },

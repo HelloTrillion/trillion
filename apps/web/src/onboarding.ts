@@ -104,8 +104,9 @@ const A = `['’]`;
 // Words people put in front of an answer ("ok, ...", "hmm, ...") before the part that matters.
 const FILLER = String.raw`(?:(?:hi|hey|hello|ok(?:ay)?|hmm+|um+|uh+|erm*|well|so|just|please|there)[,!. ]+)*`;
 // The same words before a bare name, only with punctuation after them, so a name like
-// "So Yeon", "Um Ji-won" or "Er Wei" stays whole.
-const BARE_FILLER = /^(?:(?:hi|hey|hello|ok(?:ay)?|well|so|just|please|there|hmm+|um+|uh+|erm*)[,!.]\s*)+/i;
+// "So Yeon", "Um Ji-won" or "Er Wei" stays whole. A greeting goes either way: "Hey" is
+// not a name people give.
+const BARE_FILLER = /^(?:(?:hi|hey|hello)(?: there)?(?:[,!.]\s*|\s+)|(?:ok(?:ay)?|well|so|just|please|there|hmm+|um+|uh+|erm*)[,!.]\s*)+/i;
 // What may follow a lead-in before the name: a space, or a comma, colon or full stop.
 const leadIn = (phrases: string): RegExp => new RegExp(String.raw`^${FILLER}(?:${phrases})(?:\s*[,:.!]\s*|\s+)`, 'i');
 const INTRO = leadIn(
@@ -139,7 +140,7 @@ const RENAME = leadIn(
 // What people put after a name. A phrase goes at any time; one word only in lower case, or
 // after a lead-in or a comma, since "Sam Please" may be a name.
 const TAIL_PHRASE = new RegExp(
-  String.raw`[\s,]+(?:i think|i guess|it is|if (?:that${A}?s|that is|you don${A}?t mind)(?: (?:ok(?:ay)?|fine|alright))?|nice to meet you|for now|from now on)$`,
+  String.raw`[\s,]+(?:i think|i guess|it is|if (?:that${A}?s|that is|you don${A}?t mind)(?: (?:ok(?:ay)?|fine|alright))?|nice to meet you|for now|from now on|is (?:good|fine|great|ok(?:ay)?)|sounds good|works for me)$`,
   'i',
 );
 const WORDS = 'please|thanks|instead|then|maybe|now|here|speaking';
@@ -204,7 +205,7 @@ function keepsName(text: string, current: string): boolean {
 
 // No wish either way: she keeps the name she has.
 const UNSURE = new RegExp(
-  String.raw`^(?:i )?(?:don${A}?t know|dunno|not sure|no idea|you (?:pick|choose|decide)|surprise me|whatever|no preference)\b`,
+  String.raw`^(?:i )?(?:don${A}?t know|dunno|not sure|no idea|don${A}?t mind|you (?:pick|choose|decide)|surprise me|whatever|no preference|(?:it${A}?s )?up to you|your call)\b`,
   'i',
 );
 // Words that answer a question rather than name anyone: never a name on their own.
@@ -223,12 +224,12 @@ const plainName = (name: string): boolean => {
   const words = name.split(' ');
   return words.length <= 2 && words.every((w) => /^\p{L}[\p{L}\p{M}'’.-]*$/u.test(w) && !STOP.has(word(w)));
 };
-const YES_WORD = String.raw`(?:yes|yeah|yep|yup|y|sure|ok(?:ay)?|right|correct|perfect|exactly|that${A}?s (?:it|right)|that is (?:it|right)|sounds good)`;
+const YES_WORD = String.raw`(?:yes|yeah|yep|yup|y|sure|ok(?:ay)?|right|correct|perfect|exactly|fine|good|great|that${A}?s (?:it|right|me)|that is (?:it|right|me)|it${A}?s me|sounds good)`;
 const NO_WORD = String.raw`(?:no|nope|nah|n|wrong|not (?:quite|really|right|that))`;
 const SEP = String.raw`(?:[\s,.!:;-]+|$)`;
 const YES_LEAD = new RegExp(String.raw`^${YES_WORD}${SEP}`, 'i');
 const NO_LEAD = new RegExp(String.raw`^${NO_WORD}${SEP}`, 'i');
-const POLITE = new RegExp(String.raw`^(?:please|thanks|thank you|${YES_WORD})${SEP}`, 'i');
+const POLITE = new RegExp(String.raw`^(?:please|thanks|thank you|but|actually|${YES_WORD})${SEP}`, 'i');
 
 /** What is left of `text` once the words that only agree or thank are taken off the front. */
 function besides(text: string, heard = ''): string {
@@ -384,8 +385,12 @@ export function answer(o: Onboarding, text: string): Onboarding {
   const kept = text === KEEP;
   switch (o.step) {
     case 'user_name': {
-      const keep = kept || (o.returning && YES_LEAD.test(text.trim()) && !besides(text));
-      const name = keep ? o.draft.userName : nameFrom(text);
+      const typed = text.trim();
+      // "yes", "yes, Sam", "yep thats me" keep the name there is; "Yes, but call me
+      // Samuel" is Samuel. What follows a yes is read as a name, never taken as typed.
+      const rest = YES_LEAD.test(typed) ? besides(typed, o.draft.userName) : typed;
+      const keep = kept || (o.returning && !rest);
+      const name = keep ? o.draft.userName : nameFrom(rest || typed);
       const said = you(kept ? `Still ${name}` : text.trim());
       if (!keep && name && nameless(name)) return add(o, {}, said, her('I need a name to go on. What should I call you?'));
       const problem = nameProblem(name);
@@ -399,7 +404,11 @@ export function answer(o: Onboarding, text: string): Onboarding {
       const typed = text.trim();
       const said = you(kept ? `Keep ${o.draft.agentName}` : typed);
       if (kept || keepsName(typed, o.draft.agentName) || UNSURE.test(typed)) return named(o, o.draft.agentName, said);
-      return heardName(o, nameFrom(typed, RENAME), said, plainName(tidy(typed)) && nameFrom(typed, RENAME) === tidy(typed));
+      // "sure, Nova" and "no, Vega" are read back as the name alone, and checked.
+      const lead = YES_LEAD.exec(typed) ?? NO_LEAD.exec(typed);
+      const core = (lead && besides(typed.slice(lead[0].length))) || typed;
+      const name = nameFrom(core, RENAME);
+      return heardName(o, name, said, core === typed && plainName(tidy(typed)) && name === tidy(typed));
     }
     case 'agent_check': {
       const heard = o.heard ?? o.draft.agentName;
@@ -408,7 +417,14 @@ export function answer(o: Onboarding, text: string): Onboarding {
       if (text === RETRY) return instead(o, you('No'));
       const said = you(typed);
       // "Yes", "Yes, Nova", "yeah that's right", "okay thanks": agreed.
-      if (YES_LEAD.test(typed) && !besides(typed, heard)) return named(o, heard, said);
+      if (YES_LEAD.test(typed)) {
+        const rest = besides(typed, heard);
+        if (!rest) return named(o, heard, said);
+        return heardName(o, nameFrom(rest, RENAME), said, false);
+      }
+      // The name said again agrees, as a yes would.
+      if (tidy(typed).toLowerCase() === heard.toLowerCase()) return named(o, heard, said);
+      if (keepsName(typed, o.draft.agentName)) return named(o, o.draft.agentName, said);
       const no = NO_LEAD.exec(typed);
       if (no) {
         // "no", "no thanks": ask again. "no, Vega": Vega, checked unless it is plainly a name.
