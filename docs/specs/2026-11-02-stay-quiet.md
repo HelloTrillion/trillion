@@ -33,6 +33,7 @@ This is the first of the voice-flow changes. The second, an open line (a microph
 - Refused, so she answers instead:
   - `listening` on a typed turn ("typed: answer it");
   - on a host note's turn;
+  - when the user's words this turn, spoken or typed, end in "?" (quotes and brackets aside), even a tag question like "you know what I mean?" ("they asked: answer it, briefly"). The session sets this, not the model;
   - with any text or any other tool in the same round ("call it alone").
 - Not offered to routines, timed asks or other unattended runs.
 

@@ -250,6 +250,52 @@ async def test_a_spoken_sign_off_closes_the_microphone_and_is_seen(rt: Runtime) 
     await session.close()
 
 
+async def test_a_spoken_question_is_answered_never_waited_out(rt: Runtime) -> None:
+    """The live test: "You know what I mean?" was met with 11 s of silence and a nudge.
+    The session marks a turn that ends in a question, and the tool refuses on it."""
+    stt = hearing(rt, use(QUIET, {"kind": "listening"}, call_id="q1"), say("I do, yes."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await spoken_turn(session, stt, "it's mostly been a testing playground. You know what I mean?")
+    await asyncio.sleep(0.02)
+    complete = page.all("turn.complete")[-1]
+    assert complete["stop"] == "end" and "quiet" not in complete
+    assert "".join(m["text"] for m in page.all("reply.delta")) == "I do, yes."
+    assert session._window is None
+    last = rt.provider.calls[-1][1]  # type: ignore[union-attr]
+    (result,) = [b for b in last[-1].blocks if isinstance(b, ToolResultBlock)]
+    assert result.is_error and "question" in result.content
+    await session.close()
+
+
+async def test_the_context_says_whether_they_asked(rt: Runtime) -> None:
+    """`asked` is the session's, from the user's last words this turn, quotes and
+    brackets aside."""
+    seen: list[bool] = []
+    real = Session._ctx
+
+    async def spy(self: Session, call_id: str, *a: Any, **kw: Any) -> Any:
+        ctx = await real(self, call_id, *a, **kw)
+        seen.append(ctx.asked)
+        return ctx
+
+    hearing(
+        rt,
+        use(QUIET, {"kind": "done"}, call_id="q1"),
+        say("Sure."),
+        use(QUIET, {"kind": "done"}, call_id="q2"),
+    )
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    session._ctx = spy.__get__(session)  # type: ignore[method-assign]
+    await session.handle({"type": "turn.text", "text": 'did you say "go"?) '})
+    await idle(session)
+    await session.handle({"type": "turn.text", "text": "okay thanks"})
+    await idle(session)
+    assert seen == [True, False]
+    await session.close()
+
+
 async def test_a_typed_sign_off_is_seen_again_after_a_reload(rt: Runtime) -> None:
     hearing(rt, say("Here it is."), use(QUIET, {"kind": "done"}))
     page = Page(rt)

@@ -33,12 +33,21 @@ _SIGN_OFFS = ("thanks", "thank you", "thank you very much", "bye", "goodbye", "c
               "that's all", "that's it", "that is all")  # fmt: skip
 
 
+# Said after the last word without changing what it is: quotes, brackets, spaces.
+_CLOSERS = " \t\r\n\"')]}\u201d\u2019"
+
+
+def asks(text: str) -> bool:
+    """The words end in a question mark, closing quotes and brackets aside."""
+    return text.rstrip(_CLOSERS).endswith("?")
+
+
 def ends_the_thought(text: str) -> bool:
     """A question, or a sign-off like "thanks": the turn is likely over."""
-    t = text.strip().rstrip("\"')\u201d\u2019")
+    t = text.strip().rstrip(_CLOSERS)
     if not t:
         return True
-    if t.endswith("?"):
+    if asks(t):
         return True
     tail = " ".join(words_of(t)[-4:])
     return any(tail == s or tail.endswith(" " + s) for s in _SIGN_OFFS)

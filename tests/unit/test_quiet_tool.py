@@ -7,7 +7,7 @@ from trillion.spine.registry import ToolRegistry, runs_in_routine, runs_unattend
 from trillion.tools.quiet import CATEGORY, QUIET, StayQuiet
 
 
-def ctx(*, via: Via = "voice", host_turn: bool = False) -> ToolContext:
+def ctx(*, via: Via = "voice", host_turn: bool = False, asked: bool = False) -> ToolContext:
     return ToolContext(
         owner_id="local",
         session_id="s1",
@@ -15,6 +15,7 @@ def ctx(*, via: Via = "voice", host_turn: bool = False) -> ToolContext:
         call_id="c1",
         via=via,
         host_turn=host_turn,
+        asked=asked,
     )
 
 
@@ -36,6 +37,23 @@ async def test_never_on_a_host_note_turn() -> None:
     for kind in ("done", "listening"):
         r = await StayQuiet().execute({"kind": kind}, ctx(via="voice", host_turn=True))
         assert not r.ok and "answer" in r.content
+
+
+async def test_never_after_a_question() -> None:
+    """The live test stayed quiet on "You know what I mean?": 11 s of dead air."""
+    for kind in ("done", "listening"):
+        r = await StayQuiet().execute({"kind": kind}, ctx(via="voice", asked=True))
+        assert not r.ok and r.error_kind == "refused"
+        assert "question" in r.content and "answer" in r.content
+
+
+async def test_a_turn_with_no_question_may_be_quiet() -> None:
+    for kind in ("done", "listening"):
+        assert (await StayQuiet().execute({"kind": kind}, ctx(via="voice", asked=False))).ok
+
+
+def test_a_tag_question_gets_a_short_reply() -> None:
+    assert "you know what I mean?" in StayQuiet.definition.description
 
 
 def test_not_offered_unattended() -> None:

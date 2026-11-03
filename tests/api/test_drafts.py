@@ -449,6 +449,22 @@ async def test_a_draft_may_end_in_silence_like_any_reply(rt: Runtime) -> None:
     await session.close()
 
 
+async def test_a_draft_that_answers_a_question_may_not_stay_quiet(rt: Runtime) -> None:
+    """VOI-12 and VOI-7: the draft's words are what the turn answers, so a question
+    there refuses its silence and she answers."""
+    stt, provider = judging(rt, use("stay_quiet", {"kind": "listening"}, "q1"), say("I do, yes."))
+    session, page = await start(rt)
+    stt.stream.say("you know what I mean?", final=False, turn="maybe")
+    await until(lambda: len(provider.calls) == 1)
+    await finish(session, stt, "You know what I mean?")
+    await asyncio.sleep(0.02)
+    assert drafts() == ["used"]
+    complete = page.all("turn.complete")[-1]
+    assert complete["stop"] == "end" and "quiet" not in complete
+    assert "".join(m["text"] for m in page.all("reply.delta")) == "I do, yes."
+    await session.close()
+
+
 async def test_with_her_voice_on_every_turn_asks_for_its_first_word_sooner(
     rt: Runtime,
 ) -> None:

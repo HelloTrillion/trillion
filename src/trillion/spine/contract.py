@@ -83,6 +83,9 @@ class ToolContext:
     # not words of the user's. Set by the session from what the turn answers, never from
     # anything the model says. She may not stay quiet on such a turn (VOI-7).
     host_turn: bool = False
+    # The user's words this turn end in a question mark. Set by the session, never from
+    # anything the model says. She may not stay quiet after a question (VOI-7).
+    asked: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)

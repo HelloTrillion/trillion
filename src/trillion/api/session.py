@@ -85,7 +85,7 @@ from trillion.tools.routine import for_session as routine_tools
 from trillion.tools.routine import mine as routine_here
 from trillion.tools.routine import named as routine_named
 from trillion.tools.web import FETCH
-from trillion.voice.cues import CuePlan
+from trillion.voice.cues import CuePlan, asks
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
@@ -2488,13 +2488,15 @@ class Session:
             # A turn that answers the app's own note (a card's tap, a background read, the
             # day's build) and not the user's words: she may not stay quiet on it (VOI-7).
             host_turn = self._kinds[-1:] == ["tap"]
+            # Their words end in a question: she answers it, never stays quiet (VOI-7).
+            asked = self._asked()
             done = await run_turn(
                 provider=provider,
                 router=rt.router,
                 registry=rt.registry.offered(self._offers),
                 system=system,
                 history=compact.with_summary(self._summary, self._history),
-                ctx=lambda call_id: self._ctx(call_id, turn=turn, host_turn=host_turn),
+                ctx=lambda call_id: self._ctx(call_id, turn=turn, host_turn=host_turn, asked=asked),
                 # The day board is built from its reads in one turn: none goes aside.
                 background=None if self._building_day else self._background,
                 emit=emit,
@@ -3192,6 +3194,7 @@ class Session:
         *,
         turn: int | None = None,
         host_turn: bool = False,
+        asked: bool = False,
     ) -> ToolContext:
         at = self._turn if turn is None else turn
         # Looked at for each call and each tap, off the event loop. A tap's context is
@@ -3208,7 +3211,16 @@ class Session:
             read_only_roots=read_only,
             read_outside=at in self._outside,
             host_turn=host_turn,
+            asked=asked,
         )
+
+    def _asked(self) -> bool:
+        """The user's words this turn, spoken or typed, end in a question mark. A used
+        draft saved the words it answered, so they are these too."""
+        if self._kinds[-1:] != ["user"]:
+            return False
+        texts = [b.text for b in self._history[-1].blocks if isinstance(b, TextBlock)]
+        return bool(texts) and asks(texts[-1])
 
     async def _save(self, kind: Kind, msg: Msg) -> None:
         # Something after her last reply: it is no longer the one to trim.

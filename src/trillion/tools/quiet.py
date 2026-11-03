@@ -19,6 +19,7 @@ CATEGORY: Final = "quiet"
 KINDS: Final = ("listening", "done")
 
 _HOST_TURN = "This turn answers a note from the app, not the user: answer it."
+_ASKED = "They asked a question: answer it, briefly."
 _TYPED = "They typed it: there is no pause to wait through, so answer it."
 _SAID = {
     "listening": "You said nothing. They can go on.",
@@ -37,8 +38,9 @@ class StayQuiet(BaseTool):
             "Say nothing this turn. listening: they stopped in an unfinished sentence,"
             " still thinking aloud (spoken only). A finished sentence, even a vague one"
             ' like "I just don\'t know", gets an answer. done: they signed off, such as'
-            ' "okay, thanks" or "bye". Never after a clear question. Call it alone, with'
-            " no text."
+            ' "okay, thanks" or "bye". Never after a question: a tag question like "you'
+            ' know what I mean?" or "right?" gets a short reply. Call it alone, with no'
+            " text."
         ),
         input_schema={
             "type": "object",
@@ -59,6 +61,8 @@ class StayQuiet(BaseTool):
             return _refused("kind must be listening or done")
         if ctx.host_turn:
             return _refused(_HOST_TURN)
+        if ctx.asked:
+            return _refused(_ASKED)
         if kind == "listening" and ctx.via != "voice":
             return _refused(_TYPED)
         return ToolResult(ok=True, content=_SAID[kind], effect="none")
