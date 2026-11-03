@@ -207,7 +207,13 @@ const ERRORS: Readonly<Record<string, string>> = {
   routine_building: "She's building this conversation's routine right now. Try again in a moment.",
   bad_message: 'That message could not be sent.',
   internal: 'Something failed inside Trillion. The log has the details.',
+  unknown_type: 'Trillion did not understand something this page sent. Reload the page.',
 };
+
+/** An error with no words for it: the app says so as the app, naming the code (PER-11). */
+function unknownError(code: string): string {
+  return `Trillion reported an error this app has no text for (${code || 'no code'}). The log has the details.`;
+}
 
 const PROVIDER_ERRORS: Readonly<Record<string, string>> = {
   unauthorized: 'The model provider rejected the key.',
@@ -658,7 +664,7 @@ function step(view: View, msg: ServerMsg): View {
       const text =
         code === 'provider'
           ? sentence || (PROVIDER_ERRORS[str(msg['kind'])] ?? 'The model provider failed.')
-          : (ERRORS[code] ?? 'Something went wrong.');
+          : sentence || (ERRORS[code] ?? unknownError(code));
       return { ...view, banner: text, busy: code === 'busy' ? view.busy : false };
     }
     default:

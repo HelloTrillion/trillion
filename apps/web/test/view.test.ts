@@ -43,6 +43,20 @@ describe('view', () => {
     );
   });
 
+  it('never shows a catch-all line for an error it has no words for (PER-11)', () => {
+    // Her own sentence wins for any code the core sends one with.
+    expect(feed([{ type: 'error', code: 'mystery', sentence: 'That part of me is down.' }]).banner).toBe(
+      'That part of me is down.',
+    );
+    // Without one, the app says plainly that it is the app, and names the code.
+    const unknown = feed([{ type: 'error', code: 'mystery' }]).banner ?? '';
+    expect(unknown).toContain('mystery');
+    expect(unknown).toMatch(/^Trillion/);
+    expect(unknown).not.toMatch(/something went wrong/i);
+    expect(feed([{ type: 'error' }]).banner).toMatch(/no code/);
+    expect(feed([{ type: 'error', code: 'unknown_type' }]).banner).toMatch(/Reload the page/);
+  });
+
   it('labels a confirm of an already-settled card as such, not as a second success', () => {
     expect(toolLabel('confirm_pending_action', 'already_resolved', true)).toBe('Already settled');
   });
