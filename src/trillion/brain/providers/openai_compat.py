@@ -15,6 +15,7 @@ import httpx
 
 from trillion import net
 from trillion.brain import sse
+from trillion.brain.control_tokens import ControlTokenFilter
 from trillion.brain.types import (
     OPENING,
     ContextBlock,
@@ -189,6 +190,8 @@ class OpenAICompatProvider:
         stop: StopReason = "other"
         # index -> [id, name, accumulated JSON text]
         calls: dict[int, list[str]] = {}
+        # A local model's template tokens are never part of her reply.
+        clean = ControlTokenFilter()
         async for _, data in sse.events(self._client, self._url, headers=headers, body=body):
             if data.strip() == "[DONE]":
                 break
@@ -205,7 +208,9 @@ class OpenAICompatProvider:
             for choice in ev.get("choices") or []:
                 delta = choice.get("delta") or {}
                 if delta.get("content"):
-                    yield TextDelta(text=str(delta["content"]))
+                    text = clean.feed(str(delta["content"]))
+                    if text:
+                        yield TextDelta(text=text)
                 for tc in delta.get("tool_calls") or []:
                     slot = calls.setdefault(int(tc.get("index", 0)), ["", "", ""])
                     fn = tc.get("function") or {}
@@ -214,6 +219,9 @@ class OpenAICompatProvider:
                     slot[2] += str(fn.get("arguments") or "")
                 if choice.get("finish_reason"):
                     stop = _STOP.get(str(choice["finish_reason"]), "other")
+        rest = clean.flush()
+        if rest:
+            yield TextDelta(text=rest)
         for index in sorted(calls):
             call_id, name, raw = calls[index]
             args = sse.parse_object(raw)

@@ -9,7 +9,7 @@ import { type Hotkey, type Mode, SPACE, type TalkPrefs, fromKeydown, fromModifie
 import type { Host } from './panel';
 import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
-import type { Theme } from './prefs';
+import type { Detail, Theme } from './prefs';
 import { type Usage, breakdown, sentence } from './usage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
@@ -276,7 +276,21 @@ export function createShortcuts(
 
 // ── Appearance ───────────────────────────────────────────────────────────
 
-export function createAppearance(host: Host, current: () => Theme, choose: (t: Theme) => void): { open(): void } {
+const THEME_WORDS: Readonly<Record<Theme, string>> = { system: 'Match system', dark: 'Dark', light: 'Light' };
+const DETAIL_WORDS: Readonly<Record<Detail, string>> = { auto: 'auto performance', smooth: 'always smooth', full: 'full detail' };
+
+/** The Appearance line in Settings: the theme, then the performance choice. */
+export function appearanceSummary(theme: Theme, detail: Detail): string {
+  return `${THEME_WORDS[theme]}, ${DETAIL_WORDS[detail]}`;
+}
+
+/** The galaxy's detail, kept in this browser (prefs.ts). */
+export interface DetailChoice {
+  get(): Detail;
+  set(detail: Detail): void;
+}
+
+export function createAppearance(host: Host, current: () => Theme, choose: (t: Theme) => void, detail?: DetailChoice): { open(): void } {
   const { finish } = section(host, 'appearance', 'Appearance', 'Kept in this browser only.');
   const theme = radios<Theme>(
     'appearance',
@@ -288,10 +302,24 @@ export function createAppearance(host: Host, current: () => Theme, choose: (t: T
     ],
     choose,
   );
-  finish(theme.element);
+  const perf = detail
+    ? radios<Detail>(
+        'detail',
+        'Performance',
+        [
+          { value: 'auto', title: 'Automatic', note: 'Full detail, drawn lighter if this computer starts to drop frames.' },
+          { value: 'smooth', title: 'Always smooth', note: 'Lighter from the start. Easier on an older computer or a battery.' },
+          { value: 'full', title: 'Full detail', note: 'Every star, even if the motion stutters.' },
+        ],
+        (d) => detail.set(d),
+      )
+    : null;
+  if (perf) finish(el('h3', 'connected-heading', 'Theme'), theme.element, el('h3', 'connected-heading', 'Performance'), perf.element);
+  else finish(theme.element);
   return {
     open() {
       theme.set(current());
+      if (perf && detail) perf.set(detail.get());
       host.showModal();
     },
   };

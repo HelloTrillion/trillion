@@ -255,8 +255,11 @@ describe('once a day', () => {
   });
 });
 
+// The first Home drawn pays for a cold start: 9 s was seen on a Windows runner.
+const FIRST_DRAW_MS = 30_000;
+
 describe('Home', () => {
-  it('draws the header, the meter, the tiles and the foot', async () => {
+  it('draws the header, the meter, the tiles and the foot', { timeout: FIRST_DRAW_MS }, async () => {
     const { home } = setup();
     await home.show();
     const el = home.el;

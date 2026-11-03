@@ -630,6 +630,43 @@ async def test_a_reply_cut_off_at_the_length_limit_says_so_even_with_tool_calls(
     assert isinstance(done, Done) and done.stop_reason == "max_tokens"
 
 
+async def test_an_openai_compatible_reply_never_carries_a_control_token() -> None:
+    """A local model can end with a raw template token, split across two deltas."""
+    stream = sse(
+        ("", {"choices": [{"delta": {"content": "It is sunny.<cha"}}]}),
+        ("", {"choices": [{"delta": {"content": "nnel|>"}, "finish_reason": "stop"}]}),
+        ("", "[DONE]"),
+    )  # fmt: skip
+    p = OpenAICompatProvider(
+        base_url="http://x/v1",
+        model="m",
+        client=client(lambda r: httpx.Response(200, content=stream)),
+    )
+    events = await collect(p)
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert "".join(texts) == "It is sunny."
+    assert all(texts)
+    assert isinstance(events[-1], Done)
+
+
+async def test_a_held_back_bracket_comes_out_before_the_tool_calls() -> None:
+    stream = sse(
+        ("", {"choices": [{"delta": {"content": "a <"}}]}),
+        ("", {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "x1", "function": {"name": "file_read", "arguments": "{}"}}]}}]}),
+        ("", "[DONE]"),
+    )  # fmt: skip
+    p = OpenAICompatProvider(
+        base_url="http://x/v1",
+        model="m",
+        client=client(lambda r: httpx.Response(200, content=stream)),
+    )
+    events = await collect(p)
+    assert events[0] == TextDelta(text="a ")
+    assert events[1] == TextDelta(text="<")
+    assert isinstance(events[2], ToolUse)
+
+
 async def test_made_up_tool_call_ids_are_unique_across_replies() -> None:
     stream = sse(
         ("", {"choices": [{"delta": {"tool_calls": [
