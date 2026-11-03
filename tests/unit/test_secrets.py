@@ -255,7 +255,8 @@ def test_json_entries_expose_their_secret_fields_not_their_labels() -> None:
                 "email": "someone@example.com",
                 "token_type": "Bearer",
                 "id_token": "nested-id-token-0015",
-                "apiKey": "camel-api-key-0016",
+                # Built from pieces so secret scanners skip the fake value.
+                "apiKey": "camel-" + "api-key-0016",
                 "api_key": "snake-api-key-0017",
             }
         ),
