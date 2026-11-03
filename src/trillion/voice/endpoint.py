@@ -54,6 +54,11 @@ _OVER_NOISE = 3.0
 _MIN_SPEECH = 0.008
 # A cough is not a sentence: speech starts after this much of it.
 _ONSET_S = 0.06
+# In a window held open by words only, a voice heard this recently may be words the
+# recognizer has not reported yet (they lag): "nothing" waits, but not past patience
+# by more than this.
+WORDS_LAG_S = 1.0
+WORDS_LAG_MAX_S = 1.5
 
 
 def sounds_finished(text: str) -> bool:
@@ -208,7 +213,17 @@ class EndOfSpeech:
         if not self._spoke:
             if now >= DEAD_AFTER_S and self._peak < DEAD_LEVEL:
                 return "inaudible"
-            return "nothing" if now >= self._patience else None
+            if now < self._patience:
+                return None
+            if (
+                self._words_only
+                and self._last_voice > 0
+                and now - self._last_voice < WORDS_LAG_S
+                and now < self._patience + WORDS_LAG_MAX_S
+            ):
+                # A voice just now: its words may still be on their way.
+                return None
+            return "nothing"
         if self._judged:
             # The recognizer judges the end by meaning; silence alone never does.
             if self._over:

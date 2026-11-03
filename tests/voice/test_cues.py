@@ -53,7 +53,7 @@ def plan(rng: random.Random | None = None) -> CuePlan:
 
 def test_the_constants_are_the_spec() -> None:
     assert dict(CUES) == {"mm-hm": 0.4, "mm": 0.3, "yeah": 0.2, "go on": 0.1}
-    assert (MIN_SPEECH_S, PAUSE_MIN_S, PAUSE_MAX_S) == (4.0, 0.5, 1.5)
+    assert (MIN_SPEECH_S, PAUSE_MIN_S, PAUSE_MAX_S) == (4.0, 0.5, 1.0)
     assert (MAX_CONFIDENCE, CUE_GAP_S, CUE_MAX, GO_ON_AFTER_S) == (0.3, 8.0, 3, 12.0)
 
 
@@ -78,6 +78,14 @@ def test_each_condition_alone_blocks_a_cue() -> None:
     for change in blockers:
         assert plan().consider(**{**GOOD, **change}) is None, change
     assert plan(Never(1)).consider(**GOOD) is None
+
+
+def test_a_rising_confidence_blocks_a_cue() -> None:
+    """Flux growing surer the turn is over, even below the bar, is not a pause."""
+    p = plan()
+    assert p.consider(**{**GOOD, "now_s": 9.6, "confidence": 0.05}) is None  # too soon
+    assert p.consider(**{**GOOD, "confidence": 0.2}) is None
+    assert p.consider(**{**GOOD, "now_s": 10.1, "confidence": 0.2}) is not None
 
 
 def test_one_flip_per_pause() -> None:

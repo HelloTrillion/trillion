@@ -819,6 +819,7 @@ class Runtime:
             await self.preferences.put(OWNER, SPEECH_LAST_PREF, last.to_json(), self.clock())
         self.speech = settings
         self.tts = build_speech(settings, self.secrets)
+        self.cue_bank.voice_changed()
         for session in list(self.sessions):
             await session.settings_changed()
 

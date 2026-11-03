@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +30,11 @@ logger = logging.getLogger(__name__)
 # and never below the floor.
 _TRIM_SHARE = 0.05
 _TRIM_FLOOR = 0.003
+# The page plays a cue at this gain, under her voice: its echo is that much quieter.
+CUE_GAIN = 0.5
+# A voice that failed to make its cues is not asked again for this long, unless the
+# voice is changed: every report while the user talks would ask it otherwise.
+RETRY_AFTER_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -71,9 +78,12 @@ def trim(pcm: bytes, window_bytes: int) -> bytes:
 class CueBank:
     """The cues per voice: made in the background, read at once."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
         self._made: dict[tuple[str, str], dict[str, Cue]] = {}
         self._making: dict[tuple[str, str], asyncio.Task[None]] = {}
+        # When each voice last failed to make its cues.
+        self._failed: dict[tuple[str, str], float] = {}
 
     def get(self, tts: TTSProvider, voice: str) -> dict[str, Cue] | None:
         """The cues for this voice, or None while they are not made."""
@@ -84,9 +94,16 @@ class CueBank:
         key = (tts.name, voice)
         if key in self._made or key in self._making:
             return
+        failed = self._failed.get(key)
+        if failed is not None and self._clock() - failed < RETRY_AFTER_S:
+            return
         task = asyncio.create_task(self._make(key, tts, voice))
         self._making[key] = task
         task.add_done_callback(lambda _t: self._making.pop(key, None))
+
+    def voice_changed(self) -> None:
+        """A voice was chosen: one that failed before may be asked again at once."""
+        self._failed.clear()
 
     async def wait(self) -> None:
         """Until every cue being made is made or has failed."""
@@ -116,10 +133,14 @@ class CueBank:
                 # The kind only: never the audio, nor a message that could carry it.
                 kind = getattr(e, "kind", type(e).__name__)
                 logger.warning("listening cues for %s not made: %s", tts.name, kind)
+                self._failed[key] = self._clock()
                 return
             pcm = trim(pcm[: len(pcm) - len(pcm) % 2], window)
             if not pcm:
                 logger.warning("listening cues for %s not made: silent", tts.name)
+                self._failed[key] = self._clock()
                 return
-            made[name] = Cue(name, pcm, fmt.sample_rate, tuple(loudness(pcm, window)))
+            # As loud as it plays: under her voice, at the page's cue gain.
+            levels = tuple(v * CUE_GAIN for v in loudness(pcm, window))
+            made[name] = Cue(name, pcm, fmt.sample_rate, levels)
         self._made[key] = made

@@ -547,6 +547,59 @@ async def test_over_a_watch_a_cough_does_not_hold_the_window_open(
     await session.close()
 
 
+async def test_over_a_watch_starting_again_just_before_the_end_is_a_turn(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Their voice at 7.6 s, its first word reported at 8.3 s: Flux's words lag the
+    voice. No nudge over them, and their first words are kept."""
+    stt, page, session = await quiet_over_a_watch(rt, monkeypatch)
+    listener = session._listener
+    assert listener is not None
+    at = listener.sent_s
+    await speak(session, room(7.6) + tone(0.7, 0.4))
+    words = (
+        Word(text="actually", start_s=at + 7.6, end_s=at + 8.0),
+        Word(text="yes", start_s=at + 8.0, end_s=at + 8.3),
+    )
+    stt.stream.say("actually yes", final=True, turn="done", words=words)
+    await speak(session, room(0.3))
+    await page.until("turn.complete", 2)
+    await idle(session)
+    assert nudges(rt) == 0
+    assert page.all("mic.stop")[-1]["reason"] == "end"
+    last = rt.provider.calls[-1][1]  # type: ignore[union-attr]
+    assert "actually yes" in str(getattr(last[-1].blocks[-1], "text", ""))
+    await session.close()
+
+
+async def test_a_watch_that_ends_without_the_window_lets_the_quiet_go(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_module, "NO_AUDIO_S", 30.0)
+    stt, provider = judging(rt, use(QUIET, {"kind": "listening"}))
+    steady(rt)
+    held = provider.hold(0)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(0.2) + tone(0.6))
+    stt.stream.say("so I was thinking about the launch", final=True, turn="done")
+    await speak(session, room(0.1))
+    for _ in range(400):
+        if provider.running == 1:
+            break
+        await asyncio.sleep(0.005)
+    await session.handle({"type": "overlap.watch"})
+    held.set()
+    await page.until("turn.complete")
+    await idle(session)
+    assert session._quiet == "listening"
+    # The page stops watching (a switch turned off): nothing is left to open later.
+    await session.handle({"type": "overlap.unwatch"})
+    assert session._overlap is None and session._quiet is None
+    await session.close()
+
+
 async def test_over_a_watch_words_in_the_window_are_a_turn(
     rt: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

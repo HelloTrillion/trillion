@@ -30,7 +30,7 @@ from trillion.voice.types import VoiceError, Word
 
 __all__ = ["rt"]
 
-THOUGHT = "so I was thinking about the launch and the budget for"
+THOUGHT = "so I was thinking about the launch and the budget plan"
 
 
 class Wire(Page):
@@ -60,15 +60,21 @@ async def opened(rt: Runtime, *replies: Any) -> tuple[FakeSTT, Wire, Session]:
     return stt, page, session
 
 
-async def thinking_aloud(session: Session, stt: FakeSTT, *, confidence: float = 0.1) -> None:
+async def thinking_aloud(
+    session: Session, stt: FakeSTT, *, confidence: float = 0.1, wordless: bool = False
+) -> None:
     """Five seconds of the user's words, then most of a second's pause, as Flux reports
     them: the whole turn so far on each update, with how sure it is the turn is over."""
     await session.handle({"type": "listen.start"})
     await speak(session, room(0.2) + tone(5.0, 0.4))
     words = timed(THOUGHT, 0.3, 5.1)
     stt.stream.say(THOUGHT, final=False, words=words, confidence=confidence)
-    await speak(session, room(0.9))
-    stt.stream.say(THOUGHT, final=False, words=words, confidence=confidence)
+    await speak(session, room(0.7))
+    if wordless:
+        # In a pause Flux may report only how sure it is, with no words.
+        stt.stream.say("", final=False, confidence=confidence)
+    else:
+        stt.stream.say(THOUGHT, final=False, words=words, confidence=confidence)
     await speak(session, room(0.1))
 
 
@@ -143,7 +149,8 @@ async def test_no_cues(rt: Runtime, why: str) -> None:
 
 
 async def test_no_cues_over_her_reply(rt: Runtime) -> None:
-    """While she answers, the page watches over her: that is barge-in, not a cue."""
+    """While she answers, the page watches over her: that is barge-in, not a cue. Only
+    once their words have stopped her and become their turn may one play."""
     stt, provider = judging(rt, say("First thing. Second thing."), say("Okay."))
     steady(rt)
     held = provider.hold(0)
@@ -160,13 +167,25 @@ async def test_no_cues_over_her_reply(rt: Runtime) -> None:
         await asyncio.sleep(0.005)
     await session.handle({"type": "overlap.watch"})
     assert session._overlap is not None
+    # Only watching: a pause's report, sure the turn goes on, is nothing to answer.
+    await speak(session, room(5.0))
+    stt.stream.say("", final=False, confidence=0.05)
+    await speak(session, room(0.7))
+    stt.stream.say("", final=False, confidence=0.05)
+    await speak(session, room(0.1))
+    assert page.all("cue.play") == [] and session._task is not None
+    # Their words over her: deciding, then their turn. Any cue comes only after.
     await speak(session, tone(5.0, 0.4))
-    words = timed(THOUGHT, 0.3, 5.0)
+    at = session._overlap.listener.sent_s if session._overlap else 0.0
+    words = timed(THOUGHT, at - 4.9, at - 0.1)
     stt.stream.say(THOUGHT, final=False, words=words, confidence=0.1)
-    await speak(session, room(0.9))
+    await speak(session, room(0.7))
     stt.stream.say(THOUGHT, final=False, words=words, confidence=0.1)
     await speak(session, room(0.1))
-    assert page.all("cue.play") == []
+    kinds = [m["type"] for m in page.got]
+    if "cue.play" in kinds:
+        first = kinds.index("cue.play")
+        assert "mic.start" in kinds[:first] and kinds[:first].count("mic.start") >= 2
     held.set()
     await session.close()
 
@@ -210,7 +229,17 @@ async def test_a_cue_that_fails_to_be_made_means_no_cues(
     assert rt.cue_bank.get(rt.tts, "v1") is None
     assert "rate_limited" in caplog.text and "secret" not in caplog.text
     await thinking_aloud(session, stt)
+    await asyncio.sleep(0.01)
     assert page.all("cue.play") == []
+    # Not asked again on every report while they talk: once, until a while has passed
+    # or the voice is changed.
+    voice = rt.tts
+    assert isinstance(voice, Broken) and voice.asked == ["mm-hm"]
+    await rt.use_speech(SpeechSettings(kind="elevenlabs", voice="v1"))
+    rt.tts = voice
+    await session.settings_changed()
+    await rt.cue_bank.wait()
+    assert voice.asked == ["mm-hm", "mm-hm"]
     await session.close()
 
 
@@ -234,3 +263,97 @@ async def test_a_bank_is_closed_with_nothing_left_running() -> None:
     await asyncio.sleep(0)
     await bank.close()
     assert bank.get(Slow(), "v1") is None
+
+
+async def test_a_wordless_update_in_the_pause_brings_the_cue(rt: Runtime) -> None:
+    stt, page, session = await opened(rt)
+    await thinking_aloud(session, stt, wordless=True)
+    (play,) = page.all("cue.play")
+    assert play["cue"] in ("mm-hm", "mm", "yeah")
+    await session.close()
+
+
+async def test_speech_is_counted_from_their_first_word(rt: Runtime) -> None:
+    """Four seconds of the microphone open in silence is not four seconds of talk."""
+    stt, page, session = await opened(rt)
+    await session.handle({"type": "listen.start"})
+    await speak(session, room(4.5) + tone(1.5, 0.4))
+    words = timed("the launch plan", 4.6, 6.0)
+    stt.stream.say("the launch plan", final=False, words=words, confidence=0.1)
+    await speak(session, room(0.7))
+    stt.stream.say("the launch plan", final=False, words=words, confidence=0.1)
+    await speak(session, room(0.1))
+    assert page.all("cue.play") == []
+    await session.close()
+
+
+async def test_cue_levels_are_as_loud_as_it_plays() -> None:
+    from trillion.api.cues import CUE_GAIN
+    from trillion.api.speech import loudness
+
+    bank = CueBank()
+    voice = Steady()
+    bank.ensure(voice, "v1")
+    await bank.wait()
+    made = bank.get(voice, "v1")
+    assert made is not None
+    cue = made["mm-hm"]
+    full = max(loudness(cue.pcm, 640))
+    assert abs(max(cue.levels) - full * CUE_GAIN) < 1e-9 and CUE_GAIN == 0.5
+
+
+async def cue_heard(rt: Runtime) -> tuple[FakeSTT, Wire, Session, Word]:
+    """A cue played in their pause, and its echo as the recognizer heard it."""
+    stt, page, session = await opened(rt)
+    await thinking_aloud(session, stt)
+    (play,) = page.all("cue.play")
+    listener = session._listener
+    assert listener is not None
+    at = listener.sent_s
+    await session.handle({"type": "cue.started", "id": play["id"], "in_ms": 0})
+    await speak(session, tone(0.5, 0.02))
+    return stt, page, session, Word(text=play["cue"], start_s=at + 0.05, end_s=at + 0.4)
+
+
+async def test_a_turn_flux_ends_on_the_cue_echo_is_held_not_ended(rt: Runtime) -> None:
+    stt, page, session, echo = await cue_heard(rt)
+    said = f"{THOUGHT} {echo.text}"
+    words = (*timed(THOUGHT, 0.3, 5.1), echo)
+    stt.stream.say(said, final=True, turn="done", words=words, confidence=0.9)
+    await speak(session, room(1.0))
+    # They had only paused: still listening.
+    assert page.all("transcript.final") == [] and session._listener is not None
+    await speak(session, room(2.0))
+    await page.until("transcript.final")
+    (final,) = page.all("transcript.final")
+    assert final["text"] == THOUGHT
+    await idle(session)
+    await session.close()
+
+
+async def test_a_resumed_turn_with_only_the_cue_echo_keeps_the_draft(rt: Runtime) -> None:
+    from tests.api.test_drafts import until
+
+    stt, _page, session, echo = await cue_heard(rt)
+    words = timed(THOUGHT, 0.3, 5.1)
+    stt.stream.say(THOUGHT, final=False, turn="maybe", words=words, confidence=0.6)
+    await speak(session, room(0.1))
+    await until(lambda: session._draft is not None)
+    draft = session._draft
+    stt.stream.say(f"{THOUGHT} {echo.text}", final=False, turn="resumed", words=(*words, echo))
+    await speak(session, room(0.1))
+    assert session._draft is draft
+    # Words of theirs after it do let it go.
+    listener = session._listener
+    assert listener is not None
+    more = timed("for next year", listener.sent_s, listener.sent_s + 0.6)
+    await speak(session, tone(0.7, 0.4))
+    stt.stream.say(
+        f"{THOUGHT} {echo.text} for next year",
+        final=False,
+        turn="resumed",
+        words=(*words, echo, *more),
+    )
+    await speak(session, room(0.1))
+    await until(lambda: session._draft is None)
+    await session.close()

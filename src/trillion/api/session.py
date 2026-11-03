@@ -130,6 +130,9 @@ Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 # The listening cues sent and not yet reported playing, kept at most this many.
 _CUES_KEPT = 8
+# A recognizer that says the user carried on this soon after a cue ended may have heard
+# only the cue's echo (PER-11).
+CUE_ECHO_S = 1.5
 
 
 @dataclass
@@ -568,6 +571,8 @@ class Session:
         # a page's "played" for that silence never reopens the microphone.
         self._quiet: str | None = None
         self._quiet_turn: int | None = None
+        # The watch that goes on as the quiet window once her silence is heard.
+        self._quiet_watch: Overlap | None = None
         # The microphone left open after a quiet `listening`: if it passes in silence,
         # she nudges once. Let go with the listener, by anything that stops it.
         self._window: Listener | None = None
@@ -1824,7 +1829,7 @@ class Session:
             ov.promoting = True
             # After a quiet `listening`, this is the window left open for them (VOI-7).
             quiet = self._quiet == "listening"
-            self._quiet = None
+            self._quiet, self._quiet_watch = None, None
             logger.info("talked over in session %s: follow_up", self.id)
             await self._leave_watch(
                 ov, patience_s=QUIET_LISTEN_S if quiet else FOLLOW_UP_S, words_only=quiet
@@ -1930,6 +1935,9 @@ class Session:
         ov, self._overlap = self._overlap, None
         if ov is None:
             return
+        if ov is self._quiet_watch:
+            # The watch that was to be the quiet window ended without opening it.
+            self._quiet, self._quiet_watch = None, None
         watcher, ov.watcher = ov.watcher, None
         if watcher is not None and watcher is not asyncio.current_task():
             watcher.cancel()
@@ -2347,7 +2355,7 @@ class Session:
             if quiet == "listening" and ov.watching and not ov.promoting:
                 # The page is watching over her: that watch goes on as the window once
                 # her silence is heard (`_follow_up_from`), so it is still the quiet one.
-                self._quiet = quiet
+                self._quiet, self._quiet_watch = quiet, ov
             return False
         if quiet == "listening":
             # They trailed off: the floor stays theirs a while (VOI-7).
@@ -2372,7 +2380,7 @@ class Session:
         heard_as = turn
         # A "played" from here on is this turn's, or a later one's.
         self._ended_early = False
-        self._quiet = self._quiet_turn = None
+        self._quiet = self._quiet_turn = self._quiet_watch = None
         self._playing = None
         if rt.tts is not None and rt.speech is not None and not self._muted:
             # A turn's number is heard once: a tap's answer in the same turn gets its own,
@@ -2855,12 +2863,17 @@ class Session:
         turn = self._cue_turn
         if turn is None or turn.listener is not listener:
             turn = self._cue_turn = CueTurn(listener)
-        last = max((w.end_s for w in listener.heard_words()), default=None)
-        if heard.turn == "maybe":
+        words = listener.heard_words()
+        last = max((w.end_s for w in words), default=None)
+        if heard.turn in ("maybe", "done"):
             turn.eager_at = last
+        # How long they have been talking: from their first word of this turn.
+        judge = listener.judge
+        theirs = [w for w, k in zip(words, judge(words), strict=True) if k] if judge else words
+        first = min((w.start_s for w in theirs), default=None)
         name = turn.plan.consider(
             now_s=listener.sent_s,
-            heard_s=listener.heard_s,
+            heard_s=listener.sent_s - first if first is not None else 0.0,
             last_word_end_s=last,
             confidence=heard.confidence if heard.turn in (None, "maybe") else None,
             eager_since_word=turn.eager_at is not None and turn.eager_at == last,
@@ -2902,6 +2915,8 @@ class Session:
         if turn.judged:
             return
         turn.judged = True
+        # A turn the recognizer ends on the cue's echo is not over: they had paused.
+        listener.hold_on_echo = True
         hers = self._judge_on(listener, timeline)
         before = listener.judge
         if before is None:
@@ -2914,12 +2929,29 @@ class Session:
 
         listener.judge_by(both)
 
+    def _cue_echo_now(self) -> bool:
+        """What the recognizer heard last may be a listening cue's echo: words of hers
+        it reported, or a cue that ended only just now on the listener's clock."""
+        listener, turn = self._listener, self._cue_turn
+        if listener is None or turn is None or turn.listener is not listener:
+            return False
+        spans = turn.timeline.spans()
+        if not spans:
+            return False
+        if not same_words(listener.raw_text(), listener.text()):
+            return True
+        return listener.sent_s - max(end for _, end in spans) <= CUE_ECHO_S
+
     # ── Early thinking (VOI-12) ──────────────────────────────────────────
 
     async def _turn_signal(self, kind: str, text: str) -> None:
         """The recognizer thinks they have probably finished, or that they carried on.
         A draft starts on the first and is let go on the second."""
         if kind == "resumed":
+            draft = self._draft
+            if draft is not None and same_words(draft.words, text) and self._cue_echo_now():
+                # Only a listening cue's echo came after: what they said is the same.
+                return
             await self._drop_draft()
         elif kind == "maybe":
             await self._drop_draft()

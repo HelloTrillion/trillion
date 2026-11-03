@@ -25,7 +25,7 @@ MIN_SPEECH_S = 4.0
 GO_ON_AFTER_S = 12.0
 # A pause, not a stop: the last word ended this long ago.
 PAUSE_MIN_S = 0.5
-PAUSE_MAX_S = 1.5
+PAUSE_MAX_S = 1.0
 # The recognizer must think the turn is not over: below this.
 MAX_CONFIDENCE = 0.3
 # Words that close a thought in an obvious way, said last.
@@ -55,6 +55,8 @@ class CuePlan:
         self._last_at: float | None = None
         # The pause already decided, by when its last word ended: one flip per pause.
         self._decided: float | None = None
+        # How sure the recognizer was on its last report: rising, the turn may be ending.
+        self._sure: float | None = None
 
     def consider(
         self,
@@ -67,6 +69,11 @@ class CuePlan:
         last_words: str,
     ) -> str | None:
         """A cue to play now, or None. Each rule alone can say no."""
+        rising = confidence is not None and self._sure is not None and confidence > self._sure
+        if confidence is not None:
+            self._sure = confidence
+        if rising:
+            return None
         if (
             last_word_end_s is None
             or heard_s < MIN_SPEECH_S

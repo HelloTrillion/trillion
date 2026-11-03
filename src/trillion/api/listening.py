@@ -112,6 +112,9 @@ class Listener:
         self._turn_ended = False
         # The talk key is held down: a pause never ends the turn, only letting go does.
         self.key_held = False
+        # A turn the recognizer ends on words the judge says are hers (a listening cue's
+        # echo, PER-11) is held as if it led on: the user had only paused.
+        self.hold_on_echo = False
         # Once heard over her, which words are the user's: her echo is left out (#102).
         self._judge: Judge | None = None
         self._stream: STTStream | None = None
@@ -421,7 +424,7 @@ class Listener:
             # waiting for the user if nothing was.
             self._rules.turn_over()
             return False
-        if leads_on(self.text()):
+        if leads_on(self.text()) or self._ends_in_echo():
             # Done on "and" or "um": they are likely finding their words. Keep
             # listening; the local rules end it if quiet goes on.
             raw, words = self._raw_turn(), self.turn_words()
@@ -434,6 +437,24 @@ class Listener:
             return bool(said)
         self._rules.turn_over()
         return False
+
+    def _ends_in_echo(self) -> bool:
+        """The current turn's last word is hers, by the judge, and the session asked
+        for that to hold the turn."""
+        words = self.turn_words()
+        if not self.hold_on_echo or self._judge is None or not words:
+            return False
+        return not list(self._judge(words))[-1]
+
+    def _theirs_in_turn(self, heard: Heard) -> bool:
+        """The latest report has words of the user's in it: with a judge, only her
+        echo is not them going on."""
+        if not heard.text:
+            return False
+        words = self.turn_words()
+        if self._judge is None or not words:
+            return True
+        return any(self._judge(words))
 
     async def _read(self, stream: STTStream) -> None:
         try:
@@ -460,7 +481,7 @@ class Listener:
                         await self._on_partial(self.turn_text())
                     continue
                 # They carried on after a done that led on.
-                resumed = bool(heard.text) and self._holding and heard.turn != "done"
+                resumed = self._holding and heard.turn != "done" and self._theirs_in_turn(heard)
                 if resumed:
                     self._holding = False
                 if heard.turn == "done":
