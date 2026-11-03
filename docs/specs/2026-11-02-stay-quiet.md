@@ -53,6 +53,14 @@ This is the first of the voice-flow changes. The second, an open line (a microph
 - **The hot mic after a turn with no audio.** Today `playback.ended` can arrive while the turn's task is still set, and then the microphone never reopens. The quiet path doesn't depend on `playback.ended`, but the race is fixed here too: the follow-up is decided after the task clears.
 - **A draft** (VOI-12, thinking before the user finishes) may end in `stay_quiet` like any reply. It is used or dropped by the same rules.
 
+## The quiet window, fixed
+
+A live test showed the quiet `listening` window never opened with Flux hearing, her voice made in the core and barge-in on, and never ended once any sound had been heard. Fixed:
+
+- **Watch mode.** When the turn ends quiet `listening` and an overlap watch is open, the watch becomes the quiet window: `QUIET_LISTEN_S`, nudging once on silence. It is not the 3-second follow-up. The same holds for any path that opens a follow-up after her turn: after a quiet `listening`, it is the quiet window.
+- **Silence means no words.** In the quiet window, "nothing" means no recognized words for `QUIET_LISTEN_S`. A breath, a cough or her echo's tail doesn't hold the window open; a voice metered in the last 1.0 s only defers "nothing" briefly, since its words may still be on their way. Words, or any of the existing turn rules, end it as usual.
+- **`listening` only for an unfinished sentence.** The `stay_quiet` tool description says `listening` is for an unfinished sentence. A finished one, even a vague "I just don't know", gets an answer.
+
 ## Her spoken style (`voice.md`, PRD PER-3)
 
 Replaces "if there is more, offer it", and adds:

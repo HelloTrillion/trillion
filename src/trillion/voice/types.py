@@ -88,10 +88,6 @@ class Heard:
     turn: Literal["maybe", "resumed", "done"] | None = None
     # The current turn's words with times, from recognizers that report them (#102).
     words: tuple[Word, ...] = ()
-    # How sure a recognizer that judges turns is that this one is over, 0 to 1 (Flux's
-    # end_of_turn_confidence). None when it does not say. A report with no words may
-    # carry only this: callers that need words check `text`.
-    confidence: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

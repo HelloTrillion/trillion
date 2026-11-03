@@ -73,15 +73,6 @@ _EVENTS: dict[str, Literal["maybe", "resumed", "done"] | None] = {
     "Update": None, "StartOfTurn": None,
     "EagerEndOfTurn": "maybe", "TurnResumed": "resumed", "EndOfTurn": "done",
 }  # fmt: skip
-# The events whose end_of_turn_confidence is kept: a listening cue is weighed on them.
-_SURE = frozenset({"Update", "EagerEndOfTurn", "EndOfTurn"})
-
-
-def _confidence(raw: object) -> float | None:
-    """end_of_turn_confidence, when it is a number from 0 to 1."""
-    if isinstance(raw, bool) or not isinstance(raw, int | float) or not math.isfinite(raw):
-        return None
-    return float(raw) if 0.0 <= raw <= 1.0 else None
 
 
 def _words(raw: object) -> tuple[Word, ...]:
@@ -123,18 +114,9 @@ def parse(raw: bytes | str) -> Heard | None:
         return None
     text = str(msg.get("transcript") or "").strip()
     turn = _EVENTS[event]
-    sure = _confidence(msg.get("end_of_turn_confidence")) if event in _SURE else None
-    # An update with no words still says how sure Flux is the turn is over: through a
-    # pause, that is what a listening cue is weighed on.
-    if turn is None and not text and (event != "Update" or sure is None):
+    if turn is None and not text:
         return None
-    return Heard(
-        text=text,
-        final=turn == "done",
-        turn=turn,
-        words=_words(msg.get("words")),
-        confidence=sure,
-    )
+    return Heard(text=text, final=turn == "done", turn=turn, words=_words(msg.get("words")))
 
 
 class _Stream:

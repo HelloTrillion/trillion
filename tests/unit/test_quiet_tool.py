@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from trillion.spine.contract import ToolContext, Via
 from trillion.spine.registry import ToolRegistry, runs_in_routine, runs_unattended
-from trillion.tools.quiet import CATEGORY, QUIET, StayQuiet
+from trillion.tools.quiet import CATEGORY, QUIET, StayQuiet, asks
 
 
 def ctx(*, via: Via = "voice", host_turn: bool = False, asked: bool = False) -> ToolContext:
@@ -97,3 +97,8 @@ def test_listening_is_only_for_an_unfinished_sentence() -> None:
 def test_asking_for_a_moment_is_done_so_no_nudge_follows() -> None:
     text = StayQuiet.definition.description
     assert "asked for a moment" in text and "let me come back to you" in text
+
+
+def test_a_question_is_told_by_its_last_mark() -> None:
+    assert asks("is it ready?") and asks('she said "really?"') and asks("right?)  ")
+    assert not asks("I wonder why") and not asks("what? no.") and not asks("")

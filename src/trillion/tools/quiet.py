@@ -27,6 +27,15 @@ _SAID = {
 }
 
 
+# Said after the last word without changing what it is: quotes, brackets, spaces.
+_CLOSERS = " \t\r\n\"')]}\u201d\u2019"
+
+
+def asks(text: str) -> bool:
+    """The words end in a question mark, closing quotes and brackets aside."""
+    return text.rstrip(_CLOSERS).endswith("?")
+
+
 def _refused(text: str) -> ToolResult:
     return ToolResult(ok=False, content=text, effect="none", error_kind="refused")
 

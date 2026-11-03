@@ -95,15 +95,11 @@ class Listener:
         on_turn: Callable[[str, str], Awaitable[None]] | None = None,
         watch: bool = False,
         words_only: bool = False,
-        on_report: Callable[[Heard], Awaitable[None]] | None = None,
     ) -> None:
         self._provider = provider
         self._choice = choice
         self._on_partial = on_partial
         self._on_turn = on_turn
-        # Told of every report while the user's turn is taken, words or not: when a
-        # listening cue may play is weighed on them (PER-11).
-        self._on_report = on_report
         self._rules = self._new_rules(patience_s, words_only=words_only)
         # Watching while she speaks (VOI-9): every frame goes to the recognizer, its
         # turns come and go, and nothing ends until `hear` makes this a turn.
@@ -112,9 +108,6 @@ class Listener:
         self._turn_ended = False
         # The talk key is held down: a pause never ends the turn, only letting go does.
         self.key_held = False
-        # A turn the recognizer ends on words the judge says are hers (a listening cue's
-        # echo, PER-11) is held as if it led on: the user had only paused.
-        self.hold_on_echo = False
         # Once heard over her, which words are the user's: her echo is left out (#102).
         self._judge: Judge | None = None
         self._stream: STTStream | None = None
@@ -325,13 +318,11 @@ class Listener:
         *,
         on_partial: Callable[[str], Awaitable[None]],
         on_turn: Callable[[str, str], Awaitable[None]] | None,
-        on_report: Callable[[Heard], Awaitable[None]] | None = None,
     ) -> None:
         """Words heard over her turned out to be the user's turn (VOI-9): from here they
         are shown, and the recognizer's turn signals are passed on."""
         self._on_partial = on_partial
         self._on_turn = on_turn
-        self._on_report = on_report
 
     async def start(self) -> None:
         """Connect to the recognizer. Raises VoiceError; audio sent meanwhile is kept."""
@@ -424,7 +415,7 @@ class Listener:
             # waiting for the user if nothing was.
             self._rules.turn_over()
             return False
-        if leads_on(self.text()) or self._ends_in_echo():
+        if leads_on(self.text()):
             # Done on "and" or "um": they are likely finding their words. Keep
             # listening; the local rules end it if quiet goes on.
             raw, words = self._raw_turn(), self.turn_words()
@@ -438,32 +429,9 @@ class Listener:
         self._rules.turn_over()
         return False
 
-    def _ends_in_echo(self) -> bool:
-        """The current turn's last word is hers, by the judge, and the session asked
-        for that to hold the turn."""
-        words = self.turn_words()
-        if not self.hold_on_echo or self._judge is None or not words:
-            return False
-        return not list(self._judge(words))[-1]
-
-    def _theirs_in_turn(self, heard: Heard) -> bool:
-        """The latest report has words of the user's in it: with a judge, only her
-        echo is not them going on."""
-        if not heard.text:
-            return False
-        words = self.turn_words()
-        if self._judge is None or not words:
-            return True
-        return any(self._judge(words))
-
     async def _read(self, stream: STTStream) -> None:
         try:
             async for heard in stream.events():
-                if not heard.text and not heard.final and heard.turn is None:
-                    # Only how sure the recognizer is that the turn is over: no words.
-                    if not self._watching and not self._rules.is_over:
-                        await self._report(heard)
-                    continue
                 if self._rules.is_over and not self._watching:
                     # The next turn's first words can arrive while we wrap up; they
                     # are not part of this one.
@@ -481,7 +449,7 @@ class Listener:
                         await self._on_partial(self.turn_text())
                     continue
                 # They carried on after a done that led on.
-                resumed = self._holding and heard.turn != "done" and self._theirs_in_turn(heard)
+                resumed = bool(heard.text) and self._holding and heard.turn != "done"
                 if resumed:
                     self._holding = False
                 if heard.turn == "done":
@@ -513,7 +481,6 @@ class Listener:
                     await self._signal(heard.turn)
                 if self._provider.streaming and (heard.text or heard.final):
                     await self._on_partial(self.text())
-                await self._report(heard)
         except VoiceError as e:
             self._error = e
         except asyncio.CancelledError:
@@ -541,17 +508,6 @@ class Listener:
             self._interim = ""
         else:
             self._interim = heard.text
-
-    async def _report(self, heard: Heard) -> None:
-        if self._on_report is None:
-            return
-        try:
-            await self._on_report(heard)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            # A broken handler must not stop hearing. The class name only.
-            logger.error("report handler failed: %s", type(e).__name__)
 
     async def _signal(self, kind: str) -> None:
         if self._on_turn is None:

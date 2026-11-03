@@ -96,11 +96,6 @@ def timings(path: Path, owner_id: str, limit: int) -> list[dict[str, Any]]:
         except ValueError:
             calls = []
         item["calls"] = calls if isinstance(calls, list) else []
-        try:
-            cues = json.loads(item.pop("cues_json", None) or "null")
-        except ValueError:
-            cues = None
-        item["cues"] = cues if isinstance(cues, dict) else None
         out.append(item)
     return out
 

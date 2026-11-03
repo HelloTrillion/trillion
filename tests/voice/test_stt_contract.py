@@ -259,21 +259,7 @@ async def test_deepgram_unreachable_and_garbled() -> None:
         deepgram.parse("not json")
     assert e.value.kind == "bad_response"
     assert deepgram.parse(json.dumps({"type": "SpeechStarted"})) is None
-    assert deepgram.parse(turn_info("StartOfTurn", "")) is None
-
-
-def test_deepgram_keeps_how_sure_it_is_that_the_turn_is_over() -> None:
-    """Flux's end_of_turn_confidence: a listening cue only plays while it is low. An
-    update with no words still carries it, through a pause."""
-    assert deepgram.parse(turn_info("Update", "")) == Heard(text="", final=False, confidence=0.9)
-    raw = json.loads(turn_info("Update", ""))
-    del raw["end_of_turn_confidence"]
-    assert deepgram.parse(json.dumps(raw)) is None
-    raw["end_of_turn_confidence"] = "high"
-    assert deepgram.parse(json.dumps(raw)) is None
-    raw = json.loads(turn_info("Update", "so I", None))
-    raw["end_of_turn_confidence"] = 0.12
-    assert deepgram.parse(json.dumps(raw)) == Heard(text="so I", final=False, confidence=0.12)
+    assert deepgram.parse(turn_info("Update", "")) is None
 
 
 # ── Local Whisper ────────────────────────────────────────────────────────
@@ -372,21 +358,17 @@ async def test_a_file_that_is_not_the_pinned_one_is_never_kept(
 
 
 def test_deepgram_turn_events_become_turn_signals() -> None:
-    assert deepgram.parse(turn_info("Update", "so I")) == Heard(
-        text="so I", final=False, confidence=0.9
-    )
+    assert deepgram.parse(turn_info("Update", "so I")) == Heard(text="so I", final=False)
     assert deepgram.parse(turn_info("EagerEndOfTurn", "so I said")) == Heard(
-        text="so I said", final=False, turn="maybe", confidence=0.9
+        text="so I said", final=False, turn="maybe"
     )
     assert deepgram.parse(turn_info("TurnResumed", "so I said")) == Heard(
         text="so I said", final=False, turn="resumed"
     )
     assert deepgram.parse(turn_info("EndOfTurn", "so I said no")) == Heard(
-        text="so I said no", final=True, turn="done", confidence=0.9
+        text="so I said no", final=True, turn="done"
     )
-    assert deepgram.parse(turn_info("EndOfTurn", "")) == Heard(
-        text="", final=True, turn="done", confidence=0.9
-    )
+    assert deepgram.parse(turn_info("EndOfTurn", "")) == Heard(text="", final=True, turn="done")
     assert deepgram.parse(turn_info("StartOfTurn", "")) is None
     assert deepgram.parse(json.dumps({"type": "Connected"})) is None
 

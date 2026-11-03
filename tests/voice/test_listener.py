@@ -648,20 +648,3 @@ async def test_room_level_leaves_out_earlier_turns_words() -> None:
     await reported(listener, "c")
     assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
     await listener.abandon()
-
-
-async def test_a_report_of_only_confidence_changes_nothing_heard() -> None:
-    """Flux's word-less update in a pause carries how sure it is, and nothing else."""
-    stt = FakeSTT(turns=True, word_times=True)
-    shown: list[str] = []
-
-    async def partial(text: str) -> None:
-        shown.append(text)
-
-    listener = Listener(stt, "en", on_partial=partial)
-    await listener.start()
-    stt.stream.say("so I was", final=False, confidence=0.1)
-    stt.stream.say("", final=False, confidence=0.05)
-    await asyncio.sleep(0.01)
-    assert listener.text() == "so I was" and shown == ["so I was"]
-    await listener.abandon()

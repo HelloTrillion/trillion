@@ -17,7 +17,6 @@ from typing import Any
 import aiosqlite
 
 from trillion import paths
-from trillion.api.cues import CueBank
 from trillion.api.jobs import Jobs
 from trillion.attention import settings as watch_prefs
 from trillion.attention.mail import GoogleMail, UrgentEmail
@@ -145,9 +144,6 @@ OUT_OF_TURN = 1 << 30
 SPEECH_PREF = "speech"
 LISTEN_PREF = "listening"
 THINK_EARLY_PREF = "think_early"
-# Whether she says "mm-hm" while the user thinks aloud (PER-11). Off unless chosen:
-# her cue can reach the microphone and blur where their turn ends.
-CUES_PREF = "listen_cues"
 # Whether live widgets refresh while the board is seen (the live widgets spec).
 WIDGETS_FRESH_PREF = "widgets_fresh"
 # The last choice made, kept when the feature is switched off so that switching it
@@ -310,9 +306,6 @@ class Runtime:
     listening_last: ListenSettings | None = None
     # Whether she drafts a reply while the user may still be talking (VOI-12).
     think_early: bool = True
-    # "Say 'mm-hm' while I talk" (PER-11), and her cues per voice, made in memory.
-    listen_cues: bool = False
-    cue_bank: CueBank = field(default_factory=CueBank)
     # "Keep widgets fresh": live widgets refresh while the board is seen.
     widgets_fresh: bool = True
     # The queue that keeps them fresh, started with the server.
@@ -820,7 +813,6 @@ class Runtime:
             await self.preferences.put(OWNER, SPEECH_LAST_PREF, last.to_json(), self.clock())
         self.speech = settings
         self.tts = build_speech(settings, self.secrets)
-        self.cue_bank.voice_changed()
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -857,7 +849,6 @@ class Runtime:
         # First, so no tick or read runs on a connection that is closing.
         await self.stop_background()
         await self.jobs.stop()
-        await self.cue_bank.close()
         if self.mcp is not None:
             await self.mcp.stop()
         if self.google is not None:
@@ -974,7 +965,6 @@ async def open_runtime(
         listening_last=ListenSettings.from_json(await preferences.get(OWNER, LISTEN_LAST_PREF))
         or listening,
         think_early=await preferences.get(OWNER, THINK_EARLY_PREF) is not False,
-        listen_cues=await preferences.get(OWNER, CUES_PREF) is True,
         widgets_fresh=await preferences.get(OWNER, WIDGETS_FRESH_PREF) is not False,
         identity=load_identity(persona),
         soul=load_soul(persona),
