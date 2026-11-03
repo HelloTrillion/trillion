@@ -16,7 +16,7 @@ import logging
 import os
 import unicodedata
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -57,6 +57,7 @@ from trillion.spine.hashing import args_hash, canonical_json
 from trillion.spine.loop_guard import LoopGuard, Verdict
 from trillion.spine.lossless import encode
 from trillion.spine.neutralize import neutralize
+from trillion.spine.refusal import plain_no
 from trillion.spine.registry import ROUTINE_BOARD, ToolRegistry, runs_in_routine, runs_unattended
 from trillion.spine.retention import RETENTION_DAYS, RETENTION_MS
 from trillion.spine.store import DecisionIn, SpineStore
@@ -596,6 +597,42 @@ class Router:
         # never a "yes" half-carried-out (#83, #84, VOI-15c). The tool's own timeout
         # still bounds it, and the cancellation is honoured once all of it is written.
         return await _see_through(self._decide_and_run(a, verdict, ctx, start))
+
+    async def cancel_on_no(
+        self, words: str, ctx: ToolContext, *, asked: Collection[str] | None = None
+    ) -> RouterResponse | None:
+        """An explicit no ends a pending action (SPN-2f), whether or not the model acts.
+
+        Only when `words`, the user's whole turn, spoken or typed, is a plain refusal,
+        and exactly one card is open in the session that raised it (SPN-14), and that
+        card is what she just asked about: one her last reply raised or asked about
+        again (`asked`, from the caller), or without that, one raised in the turn
+        before this one. A no
+        to some later question of hers is not a no to an older card. It is then
+        cancelled as `cancel_pending_action` would, recorded with the turn's `via`.
+        Otherwise None, and nothing is touched: the model reads the words. None too
+        when the card was settled some other way meanwhile, by a tap say."""
+        if ctx.via not in ("voice", "text") or not plain_no(words):
+            return None
+        if not await self._known(ctx.owner_id):
+            return None
+        now = self._clock()
+        waiting = [
+            a
+            for a in await self._store.list_by_status(Status.PROPOSED)
+            if a.owner_id == ctx.owner_id and a.session_id == ctx.session_id and a.expires_at > now
+        ]
+        if len(waiting) != 1:
+            # None to cancel, or more than one: which one is for the model to ask.
+            return None
+        a = waiting[0]
+        if (a.id not in asked) if asked is not None else (a.created_turn != ctx.turn - 1):
+            # Not what her last words asked about. Without `asked`, only a card raised
+            # in the turn before counts.
+            return None
+        r = await self.resolve(a.id, "cancel", ctx)
+        # Only a cancel of its own: an earlier answer reads "cancelled" too.
+        return r if r.status == "cancelled" and r.reason is None else None
 
     async def _decide_and_run(
         self, a: PendingAction, verdict: Status, ctx: ToolContext, start: int
