@@ -19,16 +19,21 @@ import {
   OPEN,
   type Onboarding,
   type Profile,
+  type Offer,
   type Ready,
   active,
   answer,
   begin,
   choices,
+  climbing,
   configured,
   decide,
   failed,
+  folderOffers,
   placeholder,
+  placesFound,
   saved,
+  sharedFolder,
 } from './onboarding';
 import { createPanel, type Surface } from './panel';
 import { MAC, pageHost, primary, shortcut } from './platform';
@@ -1129,8 +1134,49 @@ function zone(): string {
 function introduce(current: Profile): void {
   ob = begin({ ...current, timezone: current.timezone || zone() });
   obAt = view.entries.length;
+  // A first run offers a folder later on: read the user's places now, so it is ready.
+  if (!ob.returning) void loadPlaces();
   render();
   focusInput();
+}
+
+// The Desktop and Documents, as the core finds them, for the folder step.
+let obPlaces: readonly Offer[] = [];
+
+async function loadPlaces(): Promise<void> {
+  // Tried twice: a slow first answer should not cost the user the quick replies.
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      const r = await api('POST', '/api/folders/browse', { place: 'places' });
+      const frame = r.ok ? parseFrame(await r.json()) : null;
+      if (frame) {
+        obPlaces = folderOffers(frame.places ?? []);
+        break;
+      }
+    } catch {
+      // Tried again below, once.
+    }
+    if (tries === 0) await new Promise((done) => setTimeout(done, 1000));
+  }
+  // Read after she already asked for a folder: the buttons appear now.
+  if (!ob) return;
+  const next = placesFound(ob, obPlaces);
+  if (next !== ob) {
+    ob = next;
+    render();
+  }
+}
+
+/** The folder the user tapped, shared as Settings shares one: their own act, with change access. */
+async function shareFolder(): Promise<void> {
+  const place = ob?.sharing;
+  if (!ob || !place) return;
+  const error = await shares.save({ path: place.path, access: 'change' });
+  if (!ob) return;
+  ob = sharedFolder(ob, error, ready());
+  render();
+  after();
+  if (active(ob)) focusInput();
 }
 
 async function finish(): Promise<void> {
@@ -1154,6 +1200,10 @@ async function finish(): Promise<void> {
     code = 'unreachable';
   }
   if (!ob) return;
+  // The ladder may reach the folder step: know first whether one is shared (a `--grant`
+  // run has one), so nobody who has a folder is asked for one.
+  if (!code && !ob.returning && shares.last === null) await shares.load();
+  if (!ob) return;
   ob = code ? failed(ob, code, suggestion) : saved(ob, ready());
   render();
   // A timezone the browser reported but this machine does not know is not the user's
@@ -1162,7 +1212,26 @@ async function finish(): Promise<void> {
   else after();
 }
 
-const ready = (): Ready => ({ model: view.model, speech: view.speech !== null, listening: view.listening !== null });
+const ready = (): Ready => ({
+  model: view.model,
+  speech: view.speech !== null,
+  listening: view.listening !== null,
+  // A folder her own turns reach: shared with everyone, and there. Null until the shares are read.
+  folder: shares.last ? shares.last.shares.some((s) => s.scope === 'everyone' && !s.state) : null,
+  places: obPlaces,
+});
+
+// A folder shared in Settings, opened from her folder step: she moves on. A share that
+// turns up any other way is not the user's answer, so she does not claim it was.
+let folderSettingsOpened = false;
+shares.onChange(() => {
+  if (ob?.step !== 'folder' || !folderSettingsOpened) return;
+  const next = configured(ob, ready());
+  if (next === ob) return;
+  ob = next;
+  render();
+  after();
+});
 
 /** What follows a step: the model dialog if she never got to ask, or her first real words. */
 function after(): void {
@@ -1184,18 +1253,24 @@ function openFor(step: Onboarding['step']): void {
   if (step === 'model') void settings.open();
   else if (step === 'voice') void speechSettings.open();
   else if (step === 'listening') void listeningSettings.open();
+  else if (step === 'folder') {
+    folderSettingsOpened = true;
+    void folders.open();
+  }
 }
 
 function reply(text: string): void {
   if (!ob || !active(ob)) return;
   input.value = '';
   input.style.height = '';
-  if (ob.step === 'model' || ob.step === 'voice' || ob.step === 'listening' || ob.step === 'demo') {
+  if (climbing(ob)) {
     const next = text === OPEN ? ob : decide(ob, text, ready());
     // Anything that is not "skip" means "show me": the settings for this step open.
     if (next === ob) openFor(ob.step);
+    const tapped = next !== ob && next.step === 'sharing';
     ob = next;
     render();
+    if (tapped) void shareFolder();
     after();
     if (active(ob)) focusInput();
     return;

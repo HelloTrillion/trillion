@@ -85,6 +85,16 @@ Limits of this slice:
 - **A reload mid-ladder does not resume it.** The names are saved by then, so the rest is reached from the buttons at the top.
 - The example card is not a real pending action, so it does not exercise the spine. It shows the surface only.
 
+## The third slice: names read right, a folder, and who she trusts
+
+**Names.** Her name is read out of the ways people answer her question: "call me Nova", "I want to call you Nova", "something else, Nova", "how about Nova?", "let's go with Nova", "Nova please". Keep it has as many ways ("keep it", "Trillion is fine", "nah, stick with it", "you pick"). Only one or two name-like words are taken at once ("Nova it is."); anything else is said back with Yes and No before it is used, so a wrong guess is never written to `IDENTITY.md`. At that check a yes (with or without the name, please or thanks) agrees, a plain no asks "What would you like instead?", and "no, Vega" is Vega. Answer words alone ("something else", "a new name", "no") are never a name, for her or for the user. A reply over five words is asked again rather than saved. The user's own name takes the same care ("it's Robin", "Robin here", "I'm Robin, nice to meet you", curly apostrophes).
+
+**A folder (shared folders spec, D2).** After the ears and before the card she asks for a folder to work in, saying plainly that a shared folder lets her read and change what is in it, that every change still shows a card, and that a home folder or a whole drive is never shared. The quick replies are the Desktop and Documents (when the core lists them among the places), Another folder (Settings, Shared folders) and Not now. A tap shares the folder through `POST /api/folders` with `access: change`, the same route and store as Settings; typed words never share anything, and only a folder she offered can be shared. A refusal is said in the core's words and she asks again. While the page shares it, what is typed stays with the script. The step is skipped when a folder is already shared; the page reads the shares before the ladder so a `--grant` run is never asked, and if they cannot be read she does not ask. A share made in Settings, opened from this step, moves her on. Places that arrive late still become buttons, and a failed read is tried once more.
+
+**Who she trusts (SPN-15).** As the script ends, whichever way it ends (including putting the names off), she says once that she trusts whoever is at this computer, cannot tell one voice from another, and that anything costing money or that cannot be undone waits for a tap on its card.
+
+Checked: `apps/web/test/onboarding.test.ts` covers every phrasing, the check step, the folder step's offers, tap, refusal, skip and Settings path, and the trust line on every way out.
+
 ## Left for later slices
 - Prices and spend caps at the point a key is entered (ONB-10, BRN-7).
 - Her scripted lines spoken aloud once a voice is chosen.
