@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels its older run, so the older one stops holding
+# runners (Mac runners are scarce). Runs on main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   # gitleaks lists a pull request's commits to scan them; read-only.
@@ -65,7 +71,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - run: uv sync --locked
@@ -75,6 +81,11 @@ jobs:
       # Every directory under tests/ but tests/spine, which the Spine job runs.
       - name: Every test directory but the spine's
         run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills tests/delivery tests/scheduler tests/storage tests/workspace tests/evals
+      # On macOS the spine suite runs here, not in a job of its own: one Mac runner
+      # instead of two (they are scarce, and a job that waits too long is cancelled).
+      - name: tests/unit + tests/spine (95% branch coverage on trillion.spine)
+        if: runner.os == 'macOS'
+        run: uv run pytest tests/unit tests/spine --cov=trillion.spine --cov-branch --cov-report=term-missing --cov-fail-under=95
 
   spine:
     name: Spine safety suite (${{ matrix.os }})
@@ -83,10 +94,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS runs it inside the Python job.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - run: uv sync --locked
@@ -131,8 +143,37 @@ jobs:
         # The desktop app builds on macOS only, in its own job.
         run: pnpm -r --if-present --filter '!@hellotrillion/desktop' run build
 
+  desktop-changed:
+    # Whether a pull request touches what the desktop build depends on. Pushes to main
+    # always build it.
+    name: Desktop changed?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if git diff --name-only "$base...$head" | grep -qE '^(apps/desktop/|\.github/workflows/ci\.yml$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   desktop:
     name: Desktop (macos-latest)
+    needs: desktop-changed
+    # Skipped when nothing it builds changed: a skipped job does not fail the run.
+    if: needs.desktop-changed.outputs.changed == 'true'
     runs-on: macos-latest
     # A first Tauri build compiles a few hundred crates.
     timeout-minutes: 30
@@ -197,7 +238,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - name: shellcheck install.sh
