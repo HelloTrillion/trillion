@@ -21,12 +21,13 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from trillion import __version__
-from trillion.api import listening
+from trillion.api import cues, listening
+from trillion.api.cues import Cue
 from trillion.api.draft import Draft, same_words
 from trillion.api.jobs import STARTED, Full, Job, goes_to_background
 from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S, Judge, Listener
 from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
-from trillion.api.speech import SendBytes, Speaker, describe
+from trillion.api.speech import SendBytes, Speaker, cue_frame, describe
 from trillion.api.trace import Trace, Via, ahead_ms
 from trillion.brain import compact
 from trillion.brain import title as naming
@@ -84,10 +85,11 @@ from trillion.tools.routine import for_session as routine_tools
 from trillion.tools.routine import mine as routine_here
 from trillion.tools.routine import named as routine_named
 from trillion.tools.web import FETCH
+from trillion.voice.cues import CuePlan
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
-from trillion.voice.types import VoiceError, Word
+from trillion.voice.types import Heard, VoiceError, Word
 from trillion.voice.whose import EchoShare, matched, whose
 from trillion.workspace import live
 from trillion.workspace.board import Board
@@ -124,6 +126,23 @@ ROUTINE_BUILDING = "routine_building"
 DAY_BUILD_SHOWN = "Building your day"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+# The listening cues sent and not yet reported playing, kept at most this many.
+_CUES_KEPT = 8
+
+
+@dataclass
+class CueTurn:
+    """One user turn's listening cues (PER-11): when the next may play, and where those
+    played lie on its listener's clock, so their echo is hers."""
+
+    listener: Listener
+    plan: CuePlan = field(default_factory=CuePlan)
+    timeline: Timeline = field(default_factory=lambda: Timeline(finished=True))
+    # Where the last word ended when the recognizer last said "probably finished".
+    eager_at: float | None = None
+    judged: bool = False
 
 
 @dataclass(kw_only=True)
@@ -552,6 +571,11 @@ class Session:
         # The microphone left open after a quiet `listening`: if it passes in silence,
         # she nudges once. Let go with the listener, by anything that stops it.
         self._window: Listener | None = None
+        # Listening cues (PER-11): the user turn's, and each sent, by id, until the page
+        # says it started playing.
+        self._cue_turn: CueTurn | None = None
+        self._cue_sent: dict[int, tuple[Listener, Cue]] = {}
+        self._cue_id = 0
         # The page said she was heard to the end while her turn was still finishing:
         # the follow-up is decided once the turn is over.
         self._ended_early = False
@@ -749,6 +773,8 @@ class Session:
             for a in await session._open_actions():
                 await session._send_card(a.id)
             session._started = True
+            # Her listening cues, made now so the first plays at once (PER-11).
+            session._make_cues()
             await session._state("idle")
         except BaseException:
             # Never left half started: the door would take it for the live page and
@@ -933,6 +959,8 @@ class Session:
         await self._send("model", model=self._model())
         await self._send("speech", speech=self._speech())
         await self._send("listening", listening=self._listening())
+        # A new voice makes its own cues.
+        self._make_cues()
 
     async def identity_changed(self) -> None:
         """The user renamed her or themselves. The page follows; the next turn uses it."""
@@ -1135,6 +1163,8 @@ class Session:
         elif kind == "playback.sentence":
             self._sentence_played(msg.get("turn_id"), msg.get("seq"))
             self._her_heard()
+        elif kind == "cue.started":
+            self._cue_started(msg.get("id"), msg.get("in_ms"))
         elif kind == "playback.started":
             await self._audible(msg.get("turn_id"), msg.get("in_ms"))
             self._her_heard()
@@ -1871,7 +1901,9 @@ class Session:
         self._overlap = None
         ov.watcher = None
         listener = ov.listener
-        listener.promote(on_partial=self._partial, on_turn=self._turn_signal)
+        listener.promote(
+            on_partial=self._partial, on_turn=self._turn_signal, on_report=self._cue_report
+        )
         self._listener = listener
         self._window = listener if quiet else None
         self._drafted = False
@@ -1946,6 +1978,7 @@ class Session:
                 on_turn=self._turn_signal,
                 # The quiet window: only words hold it open (VOI-7).
                 words_only=quiet,
+                on_report=self._cue_report,
             )
             # Set before it starts: what was held while it connected is judged the same way.
             listener.key_held = held
@@ -2011,6 +2044,7 @@ class Session:
         await self._end_overlap(tell=True)
         listener, self._listener = self._listener, None
         self._window = None
+        self._cue_turn = None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -2060,6 +2094,7 @@ class Session:
         # whatever ended it, so it can nudge once at most.
         window = listener is not None and listener is self._window
         self._window = None
+        self._cue_turn = None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -2778,6 +2813,106 @@ class Session:
         for s in list(self._rt.sessions):
             if s.id == self.id:
                 await s._send("conversation.title", id=self.id, title=text)
+
+    # ── Listening cues (PER-11) ──────────────────────────────────────────
+
+    def _cues_on(self) -> bool:
+        rt = self._rt
+        return (
+            rt.listen_cues
+            and cues.possible(rt)
+            and not self._muted
+            and not self._closed
+            and self._raw_send_bytes is not None
+        )
+
+    def _make_cues(self) -> None:
+        """Make her cues for the voice in use, unless made or being made."""
+        rt = self._rt
+        if self._cues_on() and rt.tts is not None and rt.speech is not None:
+            rt.cue_bank.ensure(rt.tts, rt.speech.voice)
+
+    async def _cue_report(self, heard: Heard) -> None:
+        """A recognizer report while the user's turn is taken: in a real pause
+        mid-thought she may say "mm-hm" (see `CuePlan`). Never over her reply, nor
+        while deciding whether she was talked over."""
+        rt = self._rt
+        listener = self._listener
+        if (
+            listener is None
+            or listener.watching
+            or self._task is not None
+            or self._overlap is not None
+            or not self._cues_on()
+            or rt.tts is None
+            or rt.speech is None
+        ):
+            return
+        made = rt.cue_bank.get(rt.tts, rt.speech.voice)
+        if made is None:
+            rt.cue_bank.ensure(rt.tts, rt.speech.voice)
+            return
+        turn = self._cue_turn
+        if turn is None or turn.listener is not listener:
+            turn = self._cue_turn = CueTurn(listener)
+        last = max((w.end_s for w in listener.heard_words()), default=None)
+        if heard.turn == "maybe":
+            turn.eager_at = last
+        name = turn.plan.consider(
+            now_s=listener.sent_s,
+            heard_s=listener.heard_s,
+            last_word_end_s=last,
+            confidence=heard.confidence if heard.turn in (None, "maybe") else None,
+            eager_since_word=turn.eager_at is not None and turn.eager_at == last,
+            last_words=listener.text(),
+        )
+        cue = made.get(name) if name is not None else None
+        if cue is None:
+            return
+        self._cue_id = self._cue_id % 0xFFFF_FFFF + 1
+        cue_id = self._cue_id
+        self._cue_sent[cue_id] = (listener, cue)
+        while len(self._cue_sent) > _CUES_KEPT:
+            del self._cue_sent[next(iter(self._cue_sent))]
+        # The announcement, then its audio at once: the page plays only the latest.
+        await self._send("cue.play", id=cue_id, cue=cue.name, sample_rate=cue.sample_rate)
+        send_bytes = self._raw_send_bytes
+        if send_bytes is None or self._closed:
+            return
+        try:
+            await send_bytes(cue_frame(cue_id, cue.pcm))
+        except Exception as e:
+            logger.debug("send of a cue failed: %s", type(e).__name__)
+
+    def _cue_started(self, cue_id: object, in_ms: object) -> None:
+        """The page started a cue, to be heard this far ahead: placed on its listener's
+        clock, so its echo is told from the user's words as her reply's is (#102)."""
+        if isinstance(cue_id, bool) or not isinstance(cue_id, int):
+            return
+        sent = self._cue_sent.pop(cue_id, None)
+        turn = self._cue_turn
+        if sent is None or turn is None:
+            return
+        listener, cue = sent
+        if listener is not self._listener or turn.listener is not listener or not listener.open:
+            return
+        timeline = turn.timeline
+        timeline.sentence(cue_id, written=cue.name, spoken=cue.name, levels=list(cue.levels))
+        timeline.start(cue_id, at_s=listener.sent_s + ahead_ms(in_ms) / 1000)
+        if turn.judged:
+            return
+        turn.judged = True
+        hers = self._judge_on(listener, timeline)
+        before = listener.judge
+        if before is None:
+            listener.judge_by(hers)
+            return
+
+        def both(words: Sequence[Word]) -> list[bool]:
+            # Theirs only if neither her reply's echo nor a cue's.
+            return [a and b for a, b in zip(before(words), hers(words), strict=True)]
+
+        listener.judge_by(both)
 
     # ── Early thinking (VOI-12) ──────────────────────────────────────────
 

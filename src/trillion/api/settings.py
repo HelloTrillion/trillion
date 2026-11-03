@@ -16,7 +16,9 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from trillion.api import cues
 from trillion.api.runtime import (
+    CUES_PREF,
     LISTEN_PREF,
     MODEL_PREF,
     OWNER,
@@ -101,6 +103,12 @@ class ListenProbe(BaseModel):
 
 
 class ThinkEarly(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    on: StrictBool
+
+
+class Cues(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     on: StrictBool
@@ -372,6 +380,8 @@ def create_router(rt: Runtime) -> APIRouter:
             "last": {"kind": last.kind, "choice": last.choice} if last else None,
             "active": rt.stt is not None,
             "think_early": rt.think_early,
+            "cues": rt.listen_cues,
+            "cues_possible": cues.possible(rt),
             "keychain": rt.secrets.available(),
         }
 
@@ -397,6 +407,13 @@ def create_router(rt: Runtime) -> APIRouter:
         """Whether she starts a draft while the user may still be talking (VOI-12)."""
         rt.think_early = body.on
         await rt.preferences.put(OWNER, THINK_EARLY_PREF, body.on, rt.clock())
+        return describe_listening()
+
+    @router.put("/listening/cues")
+    async def save_cues(body: Cues) -> Any:
+        """Whether she says "mm-hm" while the user thinks aloud (PER-11)."""
+        rt.listen_cues = body.on
+        await rt.preferences.put(OWNER, CUES_PREF, body.on, rt.clock())
         return describe_listening()
 
     # ── The board: live widgets (the live widgets spec) ──

@@ -48,8 +48,23 @@ OnAudio = Callable[[int, str, str, list[float]], None]
 _DEFAULT_RATE = 16_000
 
 
+# A listening cue's audio (PER-11): kind 2, the cue's id in place of the turn, seq 0.
+FRAME_CUE = 0x02
+
+
 def frame(turn: int, sentence: int, pcm: bytes) -> bytes:
     return _HEADER.pack(FRAME_AUDIO, turn, sentence) + pcm
+
+
+def cue_frame(cue_id: int, pcm: bytes) -> bytes:
+    """One listening cue's whole audio, in one frame."""
+    return _HEADER.pack(FRAME_CUE, cue_id, 0) + pcm
+
+
+def loudness(pcm: bytes, window_bytes: int) -> list[float]:
+    """Loudness (0 to 1) of each window of PCM16, the last part window included."""
+    loud = _Loudness(window_bytes)
+    return loud.feed(pcm) + loud.flush()
 
 
 class Speaker:
