@@ -35,6 +35,18 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def keychain(monkeypatch: pytest.MonkeyPatch) -> MemoryStore:
+    """A working keychain, whatever the machine running the tests has, and never its own."""
+    import keyring
+
+    store = MemoryStore()
+    monkeypatch.setattr("trillion.secrets.store.KeychainStore", lambda: store)
+    backend = type("Backend", (), {"name": "macOS Keyring"})()
+    monkeypatch.setattr(keyring, "get_keyring", lambda: backend)
+    return store
+
+
+@pytest.fixture(autouse=True)
 def sound(monkeypatch: pytest.MonkeyPatch) -> None:
     """A running sound server with a microphone, whatever the machine running the tests has."""
     fake = {"info": "", "list": "2\talsa_input.usb\tx\n", "status": "", "inspect": ""}
