@@ -165,6 +165,12 @@ A base class `BaseTool` supplies the defaults: `target` returns the tool name, `
   - `already_resolved`, which returns the recorded outcome
 - On confirm: deny floor again → precheck again (a failure moves the action to `invalidated` and returns `refused(precondition_changed)` with the new facts, so the host can `represent()` it) → claim atomically → execute → record the outcome and the decision.
 
+`async def cancel_on_no(words, ctx) -> RouterResponse | None`
+
+- An explicit no ends a pending action (SPN-2f) without relying on the model. When the user's whole turn, spoken or typed (`via` voice or text), is a plain refusal ("no", "no thanks", "cancel that", "never mind", "stop", give or take filler such as "um" and punctuation; `spine/refusal.py`), and exactly one unexpired action is open in the session that raised it, the host cancels it through `resolve(..., "cancel")`, so the decision record shows it declined with that `via`.
+- Anything more than a plain no ("no, wait, make it say hello"), no open action, or more than one is left to the model. A "yes" is never read here: approval keeps every rule above.
+- The turn still goes to the model, with a `[host]` note saying the card was declined, so she answers in her own words and does not cancel it again.
+
 Execution exceptions are caught as `failed(error_kind=<exception class>, detail=<message, neutralized>)`. Tracebacks go to the log. Argument values never do.
 
 ### 4.3 Deny floor

@@ -75,6 +75,7 @@ from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
 from trillion.spine.loop_guard import LoopGuard
+from trillion.spine.refusal import plain_no
 from trillion.spine.router import Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
@@ -1263,7 +1264,8 @@ class Session:
                 self._outside.add(self._turn)
             self.active_ms = self._rt.clock()
             self._arrived = self._starting("text")
-            await self._save_input("user", text)
+            said_no = None if ask else await self._said_no(text, "text", self._turn)
+            await self._save_input("user", text, marker=said_no)
             self._begin()
 
     async def _on_greet(self) -> None:
@@ -2132,7 +2134,9 @@ class Session:
             elif text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
-                usable = draft is not None and self._usable(draft, text)
+                said_no = await self._said_no(text, "voice", self._turn + 1)
+                # A draft was built while the card still waited: it never saw the no.
+                usable = said_no is None and draft is not None and self._usable(draft, text)
                 # A used draft saves its own words: the screen shows those, so a reload
                 # shows the same.
                 shown = draft.words if usable and draft is not None else text
@@ -2153,7 +2157,7 @@ class Session:
                         draft = None
                     if self._drafted:
                         trace.draft = "dropped"
-                    await self._save_input("user", text)
+                    await self._save_input("user", text, marker=said_no)
                 answer = True
                 self._collecting = False
             elif not only_her:
@@ -2221,6 +2225,31 @@ class Session:
         self._queued.append(note + response.to_model())
         if self._task is None:
             self._begin()
+
+    async def _said_no(self, text: str, via: Literal["voice", "text"], turn: int) -> str | None:
+        """A plain no, as their whole turn, ends the one card waiting here (SPN-2f): the
+        host cancels it, not her. The page is told, and so is she, in a host note saved
+        with their words, so she answers in her own words and does not cancel it again.
+        None when nothing was cancelled."""
+        if not plain_no(text):
+            # Most turns: nothing to look up.
+            return None
+        ctx = await self._ctx(f"no-{uuid.uuid4().hex}", via=via, turn=turn)
+        response = await self._rt.router.cancel_on_no(text, ctx)
+        if response is None or response.status != "cancelled" or response.pending_id is None:
+            return None
+        await self._send(
+            "confirm.resolved",
+            pending_id=response.pending_id,
+            status=response.status,
+            reason=None,
+            detail=None,
+        )
+        return (
+            f"[host] Their words below are a plain no, so the app declined the card for "
+            f"{response.pending_id}. Result: {response.to_model()} It is settled: do not call "
+            "cancel_pending_action for it, and do not propose it again unless they ask."
+        )
 
     def _read_outside(self, name: str | None, r: RouterResponse) -> bool:
         """A call that succeeded with someone else's words. A confirmed card counts as
@@ -3311,10 +3340,10 @@ class Session:
             self._title_source = "words"
             await self._broadcast_title(title)
 
-    async def _save_input(self, kind: Kind, text: str) -> None:
+    async def _save_input(self, kind: Kind, text: str, *, marker: str | None = None) -> None:
         """A user input, with the context it was said in. Both are saved together and
         replayed unchanged on every later turn: history is only ever appended to."""
-        await self._commit_input(kind, await self._build_input(kind, text))
+        await self._commit_input(kind, await self._build_input(kind, text, marker=marker))
 
     def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
         """What she has saved that bears on this message, as untrusted text (MEM-5),

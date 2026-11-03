@@ -99,6 +99,17 @@ def _where(p: Path) -> str:
         return p.as_posix()
 
 
+def _folder(p: Path) -> str:
+    """A folder was named where a file was meant: say so, with a file name to use."""
+    return f"{_where(p)} is a folder; name a file inside it, such as {_where(p / 'note.txt')}"
+
+
+# Told to the model with each write tool: the path is the file, never its folder.
+_NAME_A_FILE = (
+    "`path` names a file inside a granted folder, not a folder, such as ~/Desktop/note.txt. "
+)
+
+
 def _preview(text: str, limit: int = _PREVIEW_CHARS) -> str:
     """The start of some content, on one line, quoted, and marked when cut. The router
     neutralizes and bounds the whole card; this only makes it readable."""
@@ -271,7 +282,9 @@ class FileRead(_OffLoop):
 class FileCreate(_OffLoop):
     definition = ToolDefinition(
         name="file_create",
-        description=("Create a new file; never replaces an existing one. " + ASKS_BY_CARD),
+        description=(
+            "Create a new file; never replaces an existing one. " + _NAME_A_FILE + ASKS_BY_CARD
+        ),
         input_schema=_PATH_AND_CONTENT,
         risk=Risk.IRREVERSIBLE,
         category="files",
@@ -292,6 +305,8 @@ class FileCreate(_OffLoop):
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         p = _path(args)
+        if p.is_dir():
+            return Precondition.failed(_folder(p))
         if p.exists():
             return Precondition.failed("a file with that name already exists")
         if not p.parent.is_dir():
@@ -332,6 +347,7 @@ class FileOverwrite(_OffLoop):
         name="file_overwrite",
         description=(
             "Replace the whole contents of an existing file. "
+            + _NAME_A_FILE
             + ASKS_BY_CARD
             + " Only a tap approves it."
         ),
@@ -360,9 +376,10 @@ class FileOverwrite(_OffLoop):
         return _content_fingerprint(args)
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
-        if _path(args).is_file():
+        p = _path(args)
+        if p.is_file():
             return Precondition.passed()
-        return Precondition.failed("no such file")
+        return Precondition.failed(_folder(p) if p.is_dir() else "no such file")
 
     def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         data = _bytes(args)
@@ -404,9 +421,10 @@ class FileAppend(_OffLoop):
         return _content_fingerprint(args)
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
-        if _path(args).is_file():
+        p = _path(args)
+        if p.is_file():
             return Precondition.passed()
-        return Precondition.failed("no such file")
+        return Precondition.failed(_folder(p) if p.is_dir() else "no such file")
 
     def _execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         data = _bytes(args)
@@ -470,7 +488,7 @@ class FileEdit(_OffLoop):
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         p = _path(args)
         if not p.is_file():
-            return Precondition.failed("no such file")
+            return Precondition.failed(_folder(p) if p.is_dir() else "no such file")
         if p.stat().st_size > MAX_READ_BYTES:
             return Precondition.failed(f"larger than {human_size(MAX_READ_BYTES)}")
         text = _read_text(p)
