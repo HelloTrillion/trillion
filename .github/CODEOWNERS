@@ -1,10 +1,10 @@
 # Safety-critical areas need a maintainer review. See CONTRIBUTING.md.
-*                           @kevinfremon
+*                           @HelloTrillion
 
-/src/trillion/spine/        @kevinfremon
-/src/trillion/persona/      @kevinfremon
-/persona/                   @kevinfremon
-/src/trillion/voice/        @kevinfremon
-/tests/spine/               @kevinfremon
-/.github/                   @kevinfremon
-/scripts/containment_check.py @kevinfremon
+/src/trillion/spine/        @HelloTrillion
+/src/trillion/persona/      @HelloTrillion
+/persona/                   @HelloTrillion
+/src/trillion/voice/        @HelloTrillion
+/tests/spine/               @HelloTrillion
+/.github/                   @HelloTrillion
+/scripts/containment_check.py @HelloTrillion
