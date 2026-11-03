@@ -299,10 +299,6 @@ class Listener:
         """Keep only the words `judge` keeps as the user's (#102)."""
         self._judge = judge
 
-    @property
-    def judge(self) -> Judge | None:
-        return self._judge
-
     def watch(self) -> None:
         """Back to watching, after deciding that what was heard was not a turn. Words
         held are let go; which words were heard is the session's to remember."""

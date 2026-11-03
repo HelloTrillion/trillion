@@ -28,7 +28,7 @@ This is the first of the voice-flow changes. The second, an open line (a microph
  "required": ["kind"], "additionalProperties": false}
 ```
 
-- Description: "Say nothing this turn. `listening`: they are still thinking aloud or trailed off mid-thought (spoken only). `done`: they signed off, such as "okay, thanks" or "bye". Never after a clear question. Call it alone, with no text."
+- Description: "Say nothing this turn. listening: they stopped in an unfinished sentence, still thinking aloud (spoken only). A finished sentence, even a vague one like "I just don't know", gets an answer. done: they signed off, such as "okay, thanks" or "bye", or asked for a moment, such as "let me come back to you". Never after a question: a tag question like "you know what I mean?" or "right?" gets a short reply. Call it alone, with no text."
 - Risk `read`, no card. It changes nothing; its result only says what the host will do.
 - Refused, so she answers instead:
   - `listening` on a typed turn ("typed: answer it");
