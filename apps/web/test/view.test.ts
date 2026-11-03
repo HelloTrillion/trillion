@@ -54,7 +54,11 @@ describe('view', () => {
     expect(unknown).toMatch(/^Trillion/);
     expect(unknown).not.toMatch(/something went wrong/i);
     expect(feed([{ type: 'error' }]).banner).toMatch(/no code/);
-    expect(feed([{ type: 'error', code: 'unknown_type' }]).banner).toMatch(/Reload the page/);
+    // The page and the core may be different versions: either side may be the newer.
+    const mismatch = feed([{ type: 'error', code: 'unknown_type' }]).banner ?? '';
+    expect(mismatch).toMatch(/different versions/);
+    expect(mismatch).toMatch(/restart Trillion/i);
+    expect(mismatch).toMatch(/reload/i);
   });
 
   it('labels a confirm of an already-settled card as such, not as a second success', () => {

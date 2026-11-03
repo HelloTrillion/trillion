@@ -2,7 +2,7 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
-import { createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
+import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
 import { type Choice, createFolderPanel, createShares, createSharedFolders, footText, loadRoutines, parseFrame } from './folders';
 import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, matches } from './hotkey';
 import * as desktop from './desktop';
@@ -188,9 +188,10 @@ let talkGlobal: boolean | null = null;
 let shellKeys = new ShellKeys(talkKeys);
 let version = '';
 // How much the galaxy draws, as chosen in this browser: automatic unless changed (GAL-6).
+let detailChoice = savedDetail();
 const galaxy = createGalaxy(canvas, {
   theme: shownTheme(themeChoice, systemLight.matches),
-  perfMode: perfModeOf(savedDetail()),
+  perfMode: perfModeOf(detailChoice),
 });
 
 // The docked orb's size and place come from DOCK; the CSS (its button, the hole in the workspace) reads them here.
@@ -974,10 +975,12 @@ const appearance = createAppearance(
     panel.refresh();
   },
   {
-    get: savedDetail,
+    get: () => detailChoice,
     set: (d) => {
+      detailChoice = d;
       saveDetail(d);
       galaxy.setPerfMode(perfModeOf(d));
+      panel.refresh();
     },
   },
 );
@@ -1087,7 +1090,7 @@ panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 's
 panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
-panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail', summary: () => ({ system: 'Match system', dark: 'Dark', light: 'Light' })[themeChoice], open: () => appearance.open() });
+panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });

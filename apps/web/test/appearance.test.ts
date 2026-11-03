@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
-import { createAppearance } from '../src/browser';
+import { appearanceSummary, createAppearance } from '../src/browser';
 import { type Detail, perfModeOf, saveDetail, savedDetail } from '../src/prefs';
 
 function host() {
@@ -29,6 +29,12 @@ describe('how much detail the galaxy draws (GAL-6)', () => {
     expect(perfModeOf('auto')).toBe('auto');
     expect(perfModeOf('smooth')).toBe('on');
     expect(perfModeOf('full')).toBe('off');
+  });
+
+  it('is named beside the theme in the Appearance summary', () => {
+    expect(appearanceSummary('system', 'auto')).toBe('Match system, auto performance');
+    expect(appearanceSummary('dark', 'smooth')).toBe('Dark, always smooth');
+    expect(appearanceSummary('light', 'full')).toBe('Light, full detail');
   });
 
   it('is a choice under Appearance beside the theme', () => {

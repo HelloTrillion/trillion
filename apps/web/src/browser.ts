@@ -276,6 +276,14 @@ export function createShortcuts(
 
 // ── Appearance ───────────────────────────────────────────────────────────
 
+const THEME_WORDS: Readonly<Record<Theme, string>> = { system: 'Match system', dark: 'Dark', light: 'Light' };
+const DETAIL_WORDS: Readonly<Record<Detail, string>> = { auto: 'auto performance', smooth: 'always smooth', full: 'full detail' };
+
+/** The Appearance line in Settings: the theme, then the performance choice. */
+export function appearanceSummary(theme: Theme, detail: Detail): string {
+  return `${THEME_WORDS[theme]}, ${DETAIL_WORDS[detail]}`;
+}
+
 /** The galaxy's detail, kept in this browser (prefs.ts). */
 export interface DetailChoice {
   get(): Detail;

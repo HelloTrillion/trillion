@@ -207,7 +207,7 @@ const ERRORS: Readonly<Record<string, string>> = {
   routine_building: "She's building this conversation's routine right now. Try again in a moment.",
   bad_message: 'That message could not be sent.',
   internal: 'Something failed inside Trillion. The log has the details.',
-  unknown_type: 'Trillion did not understand something this page sent. Reload the page.',
+  unknown_type: 'This page and Trillion may be different versions: Trillion did not understand what the page sent. Restart Trillion, then reload the page.',
 };
 
 /** An error with no words for it: the app says so as the app, naming the code (PER-11). */
