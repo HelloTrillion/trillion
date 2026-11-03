@@ -3,6 +3,7 @@
  * keys talk to her. Kept in localStorage; if that is blocked the defaults hold.
  */
 
+import type { PerfMode } from '@hellotrillion/galaxy';
 import { DEFAULT_TALK, type Hotkey, type Mode, type TalkPrefs } from './hotkey';
 
 /** What the user chose: a theme, or whatever the computer is set to. */
@@ -42,6 +43,24 @@ export function shownTheme(choice: Theme, prefersLight: boolean): 'dark' | 'ligh
 }
 
 export const saveTheme = (theme: Theme): void => set(THEME_KEY, theme);
+
+/** How much the galaxy draws: lighter when frames drop, always lighter, or always full (GAL-6). */
+export type Detail = 'auto' | 'smooth' | 'full';
+
+const DETAIL_KEY = 'trillion-detail';
+
+/** The saved choice. Nothing saved, or a damaged value, means automatic. */
+export function savedDetail(): Detail {
+  const saved = get(DETAIL_KEY);
+  return saved === 'smooth' || saved === 'full' ? saved : 'auto';
+}
+
+export const saveDetail = (detail: Detail): void => set(DETAIL_KEY, detail);
+
+/** The galaxy's own name for each choice: its performance mode on, off or automatic. */
+export function perfModeOf(detail: Detail): PerfMode {
+  return detail === 'smooth' ? 'on' : detail === 'full' ? 'off' : 'auto';
+}
 
 function hotkeyOf(raw: unknown): Hotkey | null {
   if (typeof raw !== 'object' || raw === null) return null;
