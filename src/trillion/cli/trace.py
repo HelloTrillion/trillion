@@ -104,6 +104,8 @@ def _table(rows: Sequence[Row], when: Callable[[int], str]) -> list[str]:
     out = [line(head)]
     for r, b in zip(rows, body, strict=True):
         out.append(line(b))
+        if (cued := _cues(r.get("cues"))) is not None:
+            out.append(cued)
         calls = r.get("calls") or []
         if len(calls) > 1:
             for i, c in enumerate(calls, 1):
@@ -113,6 +115,19 @@ def _table(rows: Sequence[Row], when: Callable[[int], str]) -> list[str]:
                     f"{_tokens([c])} tokens, {_cached([c])} cached"
                 )
     return out
+
+
+def _cues(cues: object) -> str | None:
+    """A spoken turn's listening cues (PER-11): sent, played, and why the recognizer's
+    other reports got none, most common first."""
+    if not isinstance(cues, Mapping):
+        return None
+    skipped = cues.get("skipped") or {}
+    why = ", ".join(
+        f"{k} {n}" for k, n in sorted(skipped.items(), key=lambda kv: (-int(kv[1]), kv[0]))
+    )
+    said = f"      cues: {cues.get('sent', 0)} sent, {cues.get('played', 0)} played"
+    return said + (f"; none: {why}" if why else "")
 
 
 def _free(turns: Sequence[Row]) -> list[str]:

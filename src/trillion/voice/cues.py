@@ -9,6 +9,7 @@ words in, a cue or nothing out. Times are on the recognizer's clock.
 from __future__ import annotations
 
 import random
+from collections import Counter
 
 from trillion.voice.overlap import words_of
 
@@ -64,8 +65,8 @@ class CuePlan:
         self._last_at: float | None = None
         # The pause already decided, by when its last word ended: one flip per pause.
         self._decided: float | None = None
-        # How sure the recognizer was on its last report: rising, the turn may be ending.
-        self._sure: float | None = None
+        # Each report that got no cue, by the first rule that said no. Only names.
+        self.skipped: Counter[str] = Counter()
 
     def consider(
         self,
@@ -77,35 +78,51 @@ class CuePlan:
         eager_since_word: bool,
         last_words: str,
     ) -> str | None:
-        """A cue to play now, or None. Each rule alone can say no."""
-        rising = confidence is not None and self._sure is not None and confidence > self._sure
-        if confidence is not None:
-            self._sure = confidence
-        if rising:
-            return None
-        if (
-            last_word_end_s is None
-            or heard_s < MIN_SPEECH_S
-            or self.count >= CUE_MAX
-            or (self._last_at is not None and now_s - self._last_at < CUE_GAP_S)
-        ):
-            return None
-        pause = now_s - last_word_end_s
-        if not PAUSE_MIN_S <= pause <= PAUSE_MAX_S:
-            return None
-        if confidence is None or confidence >= MAX_CONFIDENCE or eager_since_word:
-            return None
-        if ends_the_thought(last_words):
-            return None
-        if self._decided == last_word_end_s:
-            return None
-        self._decided = last_word_end_s
-        if self._rng.random() >= CUE_CHANCE:
+        """A cue to play now, or None. Each rule alone can say no, and the first to say
+        it is counted in `skipped`."""
+        reason = self._refusal(
+            now_s, heard_s, last_word_end_s, confidence, eager_since_word, last_words
+        )
+        if reason is None:
+            self._decided = last_word_end_s
+            if self._rng.random() >= CUE_CHANCE:
+                reason = "coin"
+        if reason is not None:
+            self.skipped[reason] += 1
             return None
         cue = self._pick(heard_s)
         self.count += 1
         self.last, self._last_at = cue, now_s
         return cue
+
+    def _refusal(
+        self,
+        now_s: float,
+        heard_s: float,
+        last_word_end_s: float | None,
+        confidence: float | None,
+        eager_since_word: bool,
+        last_words: str,
+    ) -> str | None:
+        if last_word_end_s is None:
+            return "no_words"
+        if heard_s < MIN_SPEECH_S:
+            return "short"
+        if self.count >= CUE_MAX:
+            return "max"
+        if self._last_at is not None and now_s - self._last_at < CUE_GAP_S:
+            return "gap"
+        if not PAUSE_MIN_S <= now_s - last_word_end_s <= PAUSE_MAX_S:
+            return "pause"
+        if confidence is None or confidence >= MAX_CONFIDENCE:
+            return "confident"
+        if eager_since_word:
+            return "eager"
+        if ends_the_thought(last_words):
+            return "ends"
+        if self._decided == last_word_end_s:
+            return "decided"
+        return None
 
     def _pick(self, heard_s: float) -> str:
         options = [

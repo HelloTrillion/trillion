@@ -13,6 +13,7 @@ import contextlib
 import logging
 import re
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -146,6 +147,21 @@ class CueTurn:
     # Where the last word ended when the recognizer last said "probably finished".
     eager_at: float | None = None
     judged: bool = False
+    # What became of each report, for the turn's trace: cues sent and played, and why
+    # the rest got none. The plan counts its own reasons; these are the session's.
+    sent: int = 0
+    played: int = 0
+    skipped: Counter[str] = field(default_factory=Counter)
+    # The trace of the turn these words became, once they did.
+    trace: Trace | None = None
+
+    def summary(self) -> dict[str, Any]:
+        """Counts and reason names only: never anything said."""
+        return {
+            "sent": self.sent,
+            "played": self.played,
+            "skipped": dict(self.skipped + self.plan.skipped),
+        }
 
 
 @dataclass(kw_only=True)
@@ -579,7 +595,7 @@ class Session:
         # Listening cues (PER-11): the user turn's, and each sent, by id, until the page
         # says it started playing.
         self._cue_turn: CueTurn | None = None
-        self._cue_sent: dict[int, tuple[Listener, Cue]] = {}
+        self._cue_sent: dict[int, tuple[CueTurn, Cue]] = {}
         self._cue_id = 0
         # The page said she was heard to the end while her turn was still finishing:
         # the follow-up is decided once the turn is over.
@@ -2102,7 +2118,7 @@ class Session:
         # whatever ended it, so it can nudge once at most.
         window = listener is not None and listener is self._window
         self._window = None
-        self._cue_turn = None
+        cue_turn, self._cue_turn = self._cue_turn, None
         watchdog, self._watchdog = self._watchdog, None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
@@ -2142,6 +2158,10 @@ class Session:
             quiet = listener.quiet_s
             trace = self._starting("voice", ago=quiet)
             trace.endpoint_s = quiet
+            if cue_turn is not None and cue_turn.listener is listener:
+                # Why cues did or didn't play while they spoke (PER-11).
+                cue_turn.trace = trace
+                trace.cues = cue_turn.summary()
             self._task = asyncio.create_task(self._heard(listener, trace))
 
     async def _heard(self, listener: Listener, trace: Trace) -> None:
@@ -2848,23 +2868,26 @@ class Session:
         while deciding whether she was talked over."""
         rt = self._rt
         listener = self._listener
-        if (
-            listener is None
-            or listener.watching
-            or self._task is not None
-            or self._overlap is not None
-            or not self._cues_on()
-            or rt.tts is None
-            or rt.speech is None
-        ):
-            return
-        made = rt.cue_bank.get(rt.tts, rt.speech.voice)
-        if made is None:
-            rt.cue_bank.ensure(rt.tts, rt.speech.voice)
+        if listener is None or not cues.possible(rt):
             return
         turn = self._cue_turn
         if turn is None or turn.listener is not listener:
             turn = self._cue_turn = CueTurn(listener)
+        made = None
+        if listener.watching:
+            why = "watching"
+        elif self._task is not None or self._overlap is not None:
+            why = "busy"
+        elif not self._cues_on() or rt.tts is None or rt.speech is None:
+            why = "off"
+        else:
+            made = rt.cue_bank.get(rt.tts, rt.speech.voice)
+            if made is None:
+                rt.cue_bank.ensure(rt.tts, rt.speech.voice)
+            why = "not_made"
+        if made is None:
+            turn.skipped[why] += 1
+            return
         words = listener.heard_words()
         last = max((w.end_s for w in words), default=None)
         if heard.turn in ("maybe", "done"):
@@ -2881,16 +2904,20 @@ class Session:
             eager_since_word=turn.eager_at is not None and turn.eager_at == last,
             last_words=listener.text(),
         )
-        cue = made.get(name) if name is not None else None
+        if name is None:
+            return
+        cue = made.get(name)
         if cue is None:
+            turn.skipped["not_made"] += 1
             return
         self._cue_id = self._cue_id % 0xFFFF_FFFF + 1
         cue_id = self._cue_id
-        self._cue_sent[cue_id] = (listener, cue)
+        self._cue_sent[cue_id] = (turn, cue)
         while len(self._cue_sent) > _CUES_KEPT:
             del self._cue_sent[next(iter(self._cue_sent))]
         # The announcement, then its audio at once: the page plays only the latest.
         await self._send("cue.play", id=cue_id, cue=cue.name, sample_rate=cue.sample_rate)
+        turn.sent += 1
         send_bytes = self._raw_send_bytes
         if send_bytes is None or self._closed:
             return
@@ -2905,11 +2932,16 @@ class Session:
         if isinstance(cue_id, bool) or not isinstance(cue_id, int):
             return
         sent = self._cue_sent.pop(cue_id, None)
-        turn = self._cue_turn
-        if sent is None or turn is None:
+        if sent is None:
             return
-        listener, cue = sent
-        if listener is not self._listener or turn.listener is not listener or not listener.open:
+        cued, cue = sent
+        cued.played += 1
+        if cued.trace is not None:
+            # Played after the words became a turn: its trace is not yet saved.
+            cued.trace.cues = cued.summary()
+        turn = self._cue_turn
+        listener = cued.listener
+        if turn is not cued or listener is not self._listener or not listener.open:
             return
         timeline = turn.timeline
         timeline.sentence(cue_id, written=cue.name, spoken=cue.name, levels=list(cue.levels))

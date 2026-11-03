@@ -5,9 +5,12 @@ times its words), her voice made in the core, and barge-in on."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sqlite3
 import struct
 from collections.abc import AsyncIterator
+from contextlib import closing
 from typing import Any
 
 import pytest
@@ -19,11 +22,13 @@ from tests.api.test_session import Page, idle
 from tests.brain.fakes import say
 from tests.voice.audio import room, tone
 from tests.voice.fakes import FakeSTT
+from trillion import paths
 from trillion.api import session as session_module
 from trillion.api.cues import CueBank, trim
 from trillion.api.runtime import ListenSettings, Runtime, SpeechSettings
 from trillion.api.session import Session
 from trillion.brain.types import TextBlock
+from trillion.storage import inspect
 from trillion.voice import cues as cue_rules
 from trillion.voice.providers.system import SystemVoice
 from trillion.voice.types import VoiceError, Word
@@ -61,20 +66,27 @@ async def opened(rt: Runtime, *replies: Any) -> tuple[FakeSTT, Wire, Session]:
 
 
 async def thinking_aloud(
-    session: Session, stt: FakeSTT, *, confidence: float = 0.1, wordless: bool = False
+    session: Session,
+    stt: FakeSTT,
+    *,
+    confidence: float = 0.1,
+    wordless: bool = False,
+    then: float | None = None,
 ) -> None:
     """Five seconds of the user's words, then most of a second's pause, as Flux reports
-    them: the whole turn so far on each update, with how sure it is the turn is over."""
+    them: the whole turn so far on each update, with how sure it is the turn is over
+    (`then` on the second update, when it changed)."""
     await session.handle({"type": "listen.start"})
     await speak(session, room(0.2) + tone(5.0, 0.4))
     words = timed(THOUGHT, 0.3, 5.1)
     stt.stream.say(THOUGHT, final=False, words=words, confidence=confidence)
     await speak(session, room(0.7))
+    later = confidence if then is None else then
     if wordless:
         # In a pause Flux may report only how sure it is, with no words.
-        stt.stream.say("", final=False, confidence=confidence)
+        stt.stream.say("", final=False, confidence=later)
     else:
-        stt.stream.say(THOUGHT, final=False, words=words, confidence=confidence)
+        stt.stream.say(THOUGHT, final=False, words=words, confidence=later)
     await speak(session, room(0.1))
 
 
@@ -356,4 +368,69 @@ async def test_a_resumed_turn_with_only_the_cue_echo_keeps_the_draft(rt: Runtime
     )
     await speak(session, room(0.1))
     await until(lambda: session._draft is None)
+    await session.close()
+
+
+def recorded() -> list[Any]:
+    """Each turn's cue tally as saved, oldest first: None where cues were not possible."""
+    with closing(sqlite3.connect(paths.db_path())) as db:
+        rows = db.execute("SELECT cues_json FROM turn_timings ORDER BY id").fetchall()
+    return [json.loads(c) if c is not None else None for (c,) in rows]
+
+
+async def finish_turn(session: Session, stt: FakeSTT, page: Wire) -> None:
+    stt.stream.say(f"{THOUGHT} next year", final=True, turn="done", confidence=0.9)
+    await speak(session, room(0.3))
+    await page.until("turn.complete")
+    await idle(session)
+
+
+async def test_a_rising_confidence_under_the_bar_still_gets_a_cue(rt: Runtime) -> None:
+    """Flux grows surer report by report through any pause. The live test played no
+    cue at all while that blocked one."""
+    stt, page, session = await opened(rt)
+    await thinking_aloud(session, stt, confidence=0.05, then=0.25)
+    (play,) = page.all("cue.play")
+    assert play["cue"] in ("mm-hm", "mm", "yeah")
+    await session.close()
+
+
+async def test_each_turn_records_its_cues_and_why_others_did_not_play(rt: Runtime) -> None:
+    stt, page, session = await opened(rt)
+    await thinking_aloud(session, stt)
+    (play,) = page.all("cue.play")
+    await session.handle({"type": "cue.started", "id": play["id"], "in_ms": 0})
+    await finish_turn(session, stt, page)
+    (cues,) = recorded()
+    assert cues["sent"] == 1 and cues["played"] == 1
+    # The first report came too soon after the last word: not yet a pause.
+    assert cues["skipped"].get("pause", 0) >= 1
+    assert set(cues) == {"sent", "played", "skipped"}
+    assert all(isinstance(n, int) for n in cues["skipped"].values())
+    # A typed turn has no cues to record.
+    await session.handle({"type": "turn.text", "text": "and another thing"})
+    await idle(session)
+    assert recorded()[-1] is None
+    # What `trillion doctor --trace` reads.
+    spoken, typed = inspect.timings(paths.db_path(), "local", 10)
+    assert spoken["cues"] == cues and typed["cues"] is None
+    await session.close()
+
+
+async def test_a_turn_with_cues_switched_off_records_why(rt: Runtime) -> None:
+    stt, page, session = await opened(rt)
+    rt.listen_cues = False
+    await thinking_aloud(session, stt)
+    await finish_turn(session, stt, page)
+    (cues,) = recorded()
+    assert cues["sent"] == 0 and cues["played"] == 0 and set(cues["skipped"]) == {"off"}
+    await session.close()
+
+
+async def test_a_sure_end_is_recorded_as_confident(rt: Runtime) -> None:
+    stt, page, session = await opened(rt)
+    await thinking_aloud(session, stt, confidence=0.6)
+    await finish_turn(session, stt, page)
+    (cues,) = recorded()
+    assert cues["sent"] == 0 and cues["skipped"].get("confident", 0) >= 1
     await session.close()

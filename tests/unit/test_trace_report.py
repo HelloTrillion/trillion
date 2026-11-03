@@ -113,3 +113,10 @@ def test_each_turn_says_whether_a_draft_was_used() -> None:
     lines = [ln for ln in out.splitlines() if "claude-sonnet-5" in ln]
     assert " used " in lines[0] and " dropped " in lines[1]
     assert "used" not in lines[2] and "dropped" not in lines[2]
+
+
+def test_a_spoken_turn_says_what_became_of_its_cues() -> None:
+    cues = {"sent": 1, "played": 1, "skipped": {"pause": 3, "coin": 1, "confident": 5}}
+    out = trace.report([row(cues=cues), row(via="text")])
+    lines = [ln for ln in out.splitlines() if "cues:" in ln]
+    assert lines == ["      cues: 1 sent, 1 played; none: confident 5, pause 3, coin 1"]

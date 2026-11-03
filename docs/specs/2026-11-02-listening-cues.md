@@ -24,13 +24,22 @@ All of these must hold, checked when a Flux `Update` arrives during the user's t
 - At least 4 seconds of their speech in this turn so far (`listener.heard_s`).
 - The last word ended between 0.5 and 1.5 seconds ago, by the recognizer's word times on the stream clock. That's a pause, not a stop.
 - The turn is not likely over:
-  - Flux's `end_of_turn_confidence` on the latest message is below 0.3;
+  - Flux's `end_of_turn_confidence` on the latest message is below 0.3. Flux sends an `Update` about every 0.25 s and its confidence climbs through any pause, so a rise below 0.3 doesn't block a cue;
   - no `EagerEndOfTurn` since the last word;
   - and the last words do not end the thought in an obvious way (a question mark, or a sign-off like "thanks").
 - At least 8 seconds since the last cue, and at most 3 cues in one turn.
 - A coin flip says yes (`CUE_CHANCE = 0.5`), so many pauses get nothing.
 
 The cue is picked at random from the four, never the same one twice in a row. "go on" is used only once the turn has run past 12 seconds of speech. The pick is weighted: mm-hm 0.4, mm 0.3, yeah 0.2, go on 0.1.
+
+## What each turn records
+
+A spoken turn's row in `turn_timings` keeps `cues_json` (migration 017), so `trillion doctor --trace` can say why cues did or didn't play: `{"sent": n, "played": n, "skipped": {reason: count}}`. `played` counts the page's `cue.started`. Each recognizer report that got no cue is counted once, by the first rule that said no:
+
+- the session's: `watching` (an overlap watch), `busy` (her turn or an overlap), `off` (the switch, mute, or no page audio), `not_made` (her cues are not made yet);
+- the plan's: `no_words`, `short`, `max`, `gap`, `pause`, `confident`, `eager`, `ends`, `decided` (this pause already had its flip), `coin`.
+
+Only counts and rule names: nothing the user said. NULL for typed turns, and when cues aren't possible.
 
 ## How it plays
 

@@ -80,12 +80,42 @@ def test_each_condition_alone_blocks_a_cue() -> None:
     assert plan(Never(1)).consider(**GOOD) is None
 
 
-def test_a_rising_confidence_blocks_a_cue() -> None:
-    """Flux growing surer the turn is over, even below the bar, is not a pause."""
+def test_a_rising_confidence_under_the_bar_still_cues() -> None:
+    """Flux reports every quarter second and grows surer through any pause: below the
+    bar that is still a pause. The live test played no cue at all."""
     p = plan()
     assert p.consider(**{**GOOD, "now_s": 9.6, "confidence": 0.05}) is None  # too soon
-    assert p.consider(**{**GOOD, "confidence": 0.2}) is None
-    assert p.consider(**{**GOOD, "now_s": 10.1, "confidence": 0.2}) is not None
+    assert p.consider(**{**GOOD, "confidence": 0.2}) is not None
+
+
+def test_each_refusal_is_counted_by_its_first_reason() -> None:
+    cases: list[tuple[dict[str, Any], str]] = [
+        ({"last_word_end_s": None}, "no_words"),
+        ({"heard_s": MIN_SPEECH_S - 0.1}, "short"),
+        ({"last_word_end_s": GOOD["now_s"] - PAUSE_MIN_S + 0.1}, "pause"),
+        ({"confidence": MAX_CONFIDENCE}, "confident"),
+        ({"confidence": None}, "confident"),
+        ({"eager_since_word": True}, "eager"),
+        ({"last_words": "what do you think?"}, "ends"),
+        # Two at once: only the first is counted.
+        ({"heard_s": 1.0, "eager_since_word": True}, "short"),
+    ]
+    for change, reason in cases:
+        p = plan()
+        assert p.consider(**{**GOOD, **change}) is None
+        assert p.skipped == {reason: 1}, change
+    p = plan(Never(1))
+    assert p.consider(**GOOD) is None and p.skipped == {"coin": 1}
+    assert p.consider(**{**GOOD, "now_s": 10.1}) is None
+    assert p.skipped == {"coin": 1, "decided": 1}
+
+
+def test_gap_and_max_are_counted() -> None:
+    p = plan()
+    assert p.consider(**at(10.0, 6.0)) is not None and not p.skipped
+    assert p.consider(**at(12.0, 8.0)) is None and p.skipped == {"gap": 1}
+    p.count = CUE_MAX
+    assert p.consider(**at(30.0, 26.0)) is None and p.skipped["max"] == 1
 
 
 def test_one_flip_per_pause() -> None:
