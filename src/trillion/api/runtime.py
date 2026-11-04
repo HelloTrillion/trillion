@@ -232,17 +232,17 @@ def model_provider_id(
     return None
 
 
-def metered_model(
+def metered_resolve(
     meter: Meter,
-    provider: ModelProvider | None,
     settings: ModelSettings | None,
-    source: Source,
+    secrets: SecretStore,
     env: Mapping[str, str] | None,
-) -> MeteredModel | None:
-    """The model, behind the spend gate."""
+) -> tuple[MeteredModel | None, Source]:
+    """The model the settings or the environment choose, behind the spend gate."""
+    provider, source = resolve(settings, secrets, env)
     if provider is None:
-        return None
-    return meter.model(provider, model_provider_id(settings, source, env))
+        return None, source
+    return meter.model(provider, model_provider_id(settings, source, env)), source
 
 
 def metered_speech(
@@ -322,7 +322,9 @@ class Runtime:
     ledger: Ledger
     gate: Gate
     # Every paid call goes through it: the model, the voice and hearing below are
-    # wrapped in it whenever they are set (see `__setattr__`).
+    # wrapped in it whenever they are set (see `__setattr__`). It must stay declared
+    # before `provider`, `tts` and `stt`: the generated __init__ sets fields in this
+    # order, and setting any of those three reads it.
     meter: Meter
     secrets: SecretStore
     memory: MemoryBook
@@ -423,17 +425,23 @@ class Runtime:
     _arranging: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # The model, voice and hearing are only ever held metered. What sets one with
-        # its provider id (open_runtime, use_model, use_speech, use_listening) wraps it
-        # first; anything else (a stand-in, in tests) is wrapped here, with no id: it
-        # is recorded, and never capped.
+        # The model, voice and hearing are only ever held metered. open_runtime and
+        # use_model, use_speech and use_listening set them metered already, with the
+        # provider id of what they chose. Anything else set here (a stand-in, in tests)
+        # is metered against the cap of what is chosen now, or none when nothing is.
         if name in _METERED and value is not None:
-            if name == "provider":
-                value = self.meter.model(value, None)
-            elif name == "tts":
-                value = self.meter.voice(value, None)
-            else:
-                value = self.meter.hearing(value, None)
+            if name == "provider" and not isinstance(value, MeteredModel):
+                pid = model_provider_id(self.settings, self.source, self.env)
+                value = self.meter.model(value, pid)
+            elif name == "tts" and not isinstance(value, MeteredVoice):
+                speech = self.speech
+                pid = prices.voice_provider_id(speech.kind, speech.base_url) if speech else None
+                value = self.meter.voice(value, pid)
+            elif name == "stt" and not isinstance(value, MeteredHearing):
+                heard = self.listening
+                value = self.meter.hearing(
+                    value, prices.hearing_provider_id(heard.kind) if heard else None
+                )
         super().__setattr__(name, value)
 
     @property
@@ -849,9 +857,7 @@ class Runtime:
     async def use_model(self, settings: ModelSettings | None) -> None:
         """Adopt saved settings (or none) and tell every open session."""
         self.settings = settings
-        provider, source = resolve(settings, self.secrets, self.env)
-        self.source = source
-        self.provider = metered_model(self.meter, provider, settings, source, self.env)
+        self.provider, self.source = metered_resolve(self.meter, settings, self.secrets, self.env)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -909,6 +915,9 @@ class Runtime:
             await self.channels.close()
         if self.slack is not None:
             await self.slack.close()
+        # Rows whose caller was stopped above are still being written: they finish
+        # before the database closes.
+        await self.meter.drain()
         for conn in self._connections:
             await conn.close()
         self._connections.clear()
@@ -985,7 +994,6 @@ async def open_runtime(
     preferences = SqlitePreferences(chat_conn)
     keychain = secrets if secrets is not None else KeychainStore()
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
-    provider, source = resolve(settings, keychain, env)
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
     book = MemoryBook(SqliteMemoryStore(chat_conn), memory or paths.memory_dir(), OWNER)
     # The files are the truth: whatever changed on disk since last time is adopted
@@ -1008,6 +1016,7 @@ async def open_runtime(
         prices=PriceBook(lambda: preferences.get(OWNER, metered.PREF)),
         owner_id=OWNER,
     )
+    provider, source = metered_resolve(meter, settings, keychain, env)
     rt = Runtime(
         router=router,
         registry=registry,
@@ -1023,7 +1032,7 @@ async def open_runtime(
         rules=standing,
         compact_at=(budget := _compact_at(env)),
         compact_keep=min(compact.KEEP, budget // 4),
-        provider=metered_model(meter, provider, settings, source, env),
+        provider=provider,
         source=source,
         settings=settings,
         speech=speech,

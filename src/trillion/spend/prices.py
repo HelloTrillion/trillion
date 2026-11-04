@@ -16,6 +16,7 @@ came from; a model whose rate could not be confirmed is left out, not guessed.
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import re
 from collections.abc import Mapping
@@ -372,24 +373,44 @@ def _host(kind: Literal["custom"], base_url: str | None) -> str | None:
     return urlsplit(checked).hostname if checked else None
 
 
+# OpenAI's own API, however it was entered: billed as the "openai" kind is.
+_OPENAI_HOST = "api.openai.com"
+
+
+def _on_this_computer(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def provider_id(kind: str, base_url: str | None) -> str | None:
     """Which cap a model counts against: "anthropic", "openai", "local", or
-    "custom:<host>" by the host of its checked base URL. None for a custom model
+    "custom:<host>" by the host of its checked base URL. A custom address on this
+    computer (localhost, 127.0.0.0/8, ::1, *.localhost) is "local", and OpenAI's own
+    address is "openai", whichever kind it was entered as. None for a custom model
     whose address does not pass the check, or a kind this version does not know."""
     if kind in ("anthropic", "openai", "local"):
         return kind
     if kind == "custom" and (host := _host("custom", base_url)):
+        if _on_this_computer(host):
+            return "local"
+        if host == _OPENAI_HOST:
+            return "openai"
         return f"custom:{host}"
     return None
 
 
 def voice_provider_id(kind: str, base_url: str | None) -> str | None:
     """Which cap a voice (a `voice.catalog.SPEECH` kind) counts against. The
-    system voice runs on this computer and is never capped: None."""
+    system voice, and a speech server on this computer, are free and never capped:
+    None."""
     if kind == "elevenlabs":
         return "elevenlabs"
     if kind == "custom" and (host := _host("custom", base_url)):
-        return f"openai-voice:{host}"
+        return None if _on_this_computer(host) else f"openai-voice:{host}"
     return None
 
 

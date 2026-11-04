@@ -14,6 +14,8 @@ import pytest
 
 from tests.api.test_server import App, home, make  # noqa: F401
 from tests.brain.fakes import ScriptedProvider, say, use
+from tests.voice.fakes import FakeSTT
+from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import (
     ListenSettings,
     Runtime,
@@ -75,6 +77,14 @@ def handed_out(rt: Runtime) -> list[Any]:
             ModelSettings(kind="local", model="gemma", base_url="http://localhost:11434/v1"),
             "local",
         ),
+        (
+            ModelSettings(kind="custom", model="gemma", base_url="http://127.0.0.1:8080/v1"),
+            "local",
+        ),
+        (
+            ModelSettings(kind="custom", model="gpt-6-sol", base_url="https://api.openai.com/v1"),
+            "openai",
+        ),
     ],
 )
 async def test_every_model_the_runtime_hands_out_is_metered_after_a_swap(
@@ -92,6 +102,39 @@ async def test_a_model_set_directly_is_metered_too(rt: Runtime) -> None:
     assert isinstance(rt.provider, MeteredModel) and rt.provider.provider_id is None
     await rt.use_model(None)
     assert rt.provider is None
+
+
+async def test_one_set_directly_counts_against_the_cap_of_what_is_chosen(rt: Runtime) -> None:
+    await rt.use_model(ModelSettings(kind="anthropic", model="claude-opus-5-5"))
+    rt.provider = ScriptedProvider()
+    assert isinstance(rt.provider, MeteredModel) and rt.provider.provider_id == "anthropic"
+    await rt.use_speech(SpeechSettings(kind="elevenlabs", voice="v1"))
+    rt.tts = FakeVoice()
+    assert isinstance(rt.tts, MeteredVoice) and rt.tts.provider_id == "elevenlabs"
+    await rt.use_listening(ListenSettings(kind="deepgram", choice="en"))
+    rt.stt = FakeSTT()
+    assert isinstance(rt.stt, MeteredHearing) and rt.stt.provider_id == "deepgram"
+
+
+async def test_closing_waits_for_rows_still_being_written(rt: Runtime) -> None:
+    order: list[str] = []
+    stop = rt.stop_background
+
+    async def stopped() -> None:
+        await stop()
+        order.append("stopped")
+
+    async def drained() -> None:
+        if "drained" not in order:
+            # The database is still open.
+            await rt.conversations._conn.execute("SELECT 1")
+            order.append("drained")
+
+    rt.stop_background = stopped  # type: ignore[method-assign]
+    rt.meter.drain = drained  # type: ignore[method-assign]
+    await rt.close()
+    assert order == ["stopped", "drained"]
+    rt.stop_background = stop  # type: ignore[method-assign]
 
 
 @pytest.mark.parametrize(
@@ -152,13 +195,18 @@ async def test_what_was_chosen_is_metered_from_the_start(
         assert isinstance(again.stt, MeteredHearing) and again.stt.provider_id == "deepgram"
     finally:
         await again.close()
-    env = {OPENAI_BASE_URL: "https://api.deepseek.com/v1", MODEL: "deepseek-flash"}
-    custom = await open_runtime(persona=tmp_path, secrets=secrets, env=env)
-    try:
-        assert isinstance(custom.provider, MeteredModel)
-        assert custom.provider.provider_id == "custom:api.deepseek.com"
-    finally:
-        await custom.close()
+    for base_url, pid in [
+        ("https://api.deepseek.com/v1", "custom:api.deepseek.com"),
+        ("http://localhost:11434/v1", "local"),
+        ("https://api.openai.com/v1", "openai"),
+    ]:
+        env = {OPENAI_BASE_URL: base_url, MODEL: "some-model"}
+        custom = await open_runtime(persona=tmp_path, secrets=secrets, env=env)
+        try:
+            assert isinstance(custom.provider, MeteredModel)
+            assert custom.provider.provider_id == pid
+        finally:
+            await custom.close()
 
 
 # ── Counted once ─────────────────────────────────────────────────────────
@@ -194,11 +242,10 @@ def test_a_turn_records_one_row_per_model_call_and_nothing_twice(home: Path) -> 
 
 # ── Nothing goes around it ───────────────────────────────────────────────
 
-# The calls named `stream`, `synthesize` or `open` that reach a provider, allowed where
-# they are. A provider's own module talks to its service; the meter wraps them all; the
-# rest are handed the runtime's metered provider (rt.provider, rt.tts, rt.stt), which the
-# tests above check is always metered.
-HANDED = "is handed the runtime's metered provider"
+# Every `stream`, `synthesize` and `open` in the source, called or only named, and every
+# `getattr` of one, is a provider call unless it is allowed here. The receiver cannot
+# be typed from the source, so the list is of where each one is and what it is on.
+HANDED = "is handed the runtime's metered provider, which the tests above check"
 ALLOWED_MODULES = {
     "spend/metered.py": "the meter: the one place a wrapped provider is called",
     "brain/providers/anthropic.py": "a provider's own module, talking to its service",
@@ -209,18 +256,35 @@ ALLOWED_MODULES = {
     "voice/providers/whisper.py": "a provider's own module, on this computer",
     "voice/providers/system.py": "a provider's own module, on this computer",
 }
+# (module, function, method, receiver): calls on the metered provider.
 ALLOWED_CALLS = {
-    ("brain/loop.py", "run_turn", "stream"): f"a turn's model calls: {HANDED}",
-    ("api/draft.py", "Draft._run", "stream"): f"an early draft (VOI-12): {HANDED}",
-    ("brain/compact.py", "summarize", "stream"): f"the session's summary: {HANDED}",
-    ("brain/title.py", "name.ask", "stream"): f"naming a conversation: {HANDED}",
-    ("workspace/fill.py", "fill.ask", "stream"): f"a live widget's fill-in: {HANDED}",
-    ("attention/mail.py", "UrgentEmail.judge.ask", "stream"): f"a watcher's judge: {HANDED}",
-    ("attention/words.py", "ask.run", "stream"): f"a watcher's line: {HANDED}",
-    ("channels/answer.py", "Answerer.answer", "stream"): f"a channel's answer: {HANDED}",
-    ("api/speech.py", "Speaker._synthesize", "synthesize"): f"her voice: {HANDED}",
-    ("api/listening.py", "Listener.start", "open"): f"hearing: {HANDED}",
+    ("brain/loop.py", "run_turn", "stream", "provider"): f"a turn's model calls: {HANDED}",
+    ("api/draft.py", "Draft._run", "stream", "provider"): f"an early draft: {HANDED}",
+    ("brain/compact.py", "summarize", "stream", "provider"): f"a summary: {HANDED}",
+    ("brain/title.py", "name.ask", "stream", "provider"): f"naming: {HANDED}",
+    ("workspace/fill.py", "fill.ask", "stream", "provider"): f"a widget's fill-in: {HANDED}",
+    ("attention/mail.py", "UrgentEmail.judge.ask", "stream", "provider"): f"a judge: {HANDED}",
+    ("attention/words.py", "ask.run", "stream", "provider"): f"a watcher's line: {HANDED}",
+    ("channels/answer.py", "Answerer.answer", "stream", "provider"): f"a channel: {HANDED}",
+    ("api/speech.py", "Speaker._synthesize", "synthesize", "self._provider"): f"voice: {HANDED}",
+    ("api/listening.py", "Listener.start", "open", "self._provider"): f"hearing: {HANDED}",
 }
+# (module, receiver): what is not a provider at all.
+NOT_PROVIDERS = {
+    ("api/session.py", "clock"): "the event loop's clock: `clock.open` is not a call",
+    ("brain/sse.py", "client"): "an HTTP client's streamed request",
+    ("tools/web.py", "pool"): "an HTTP connection pool's streamed request",
+    ("voice/models.py", "http"): "an HTTP client downloading a model file",
+    ("voice/models.py", "part"): "a file being written",
+    ("tools/files.py", "p"): "a file being read",
+    ("cli/main.py", "webbrowser"): "opening the app in the browser",
+    ("skills/parse.py", "os"): "a file descriptor",
+    ("spine/router.py", "self"): "a response's own fields, read by name",
+    ("spine/audit.py", "os"): "a file descriptor",
+    ("spine/deny_floor.py", "os"): "a file descriptor",
+    ("tools/beneath.py", "os"): "a file descriptor",
+}
+NAMES = frozenset({"stream", "synthesize", "open"})
 
 
 def _source() -> Iterator[tuple[str, ast.Module]]:
@@ -228,74 +292,164 @@ def _source() -> Iterator[tuple[str, ast.Module]]:
         yield path.relative_to(SRC).as_posix(), ast.parse(path.read_text(), str(path))
 
 
-def _calls(tree: ast.Module) -> Iterator[tuple[str, ast.Call]]:
-    """Every call, with the dotted name of the function or method it is made in."""
+def _nodes(tree: ast.Module) -> Iterator[tuple[str, ast.AST]]:
+    """Every node, with the dotted name of the function or class it is in."""
 
-    def walk(node: ast.AST, scope: list[str]) -> Iterator[tuple[str, ast.Call]]:
+    def walk(node: ast.AST, scope: list[str]) -> Iterator[tuple[str, ast.AST]]:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
                 yield from walk(child, [*scope, child.name])
                 continue
-            if isinstance(child, ast.Call):
-                yield ".".join(scope), child
+            yield ".".join(scope), child
             yield from walk(child, scope)
 
     yield from walk(tree, [])
 
 
-def _reaches_a_provider(call: ast.Call) -> str | None:
-    """The method's name when this call can reach a paid provider. The receiver cannot
-    be typed from the source, so: any `synthesize`; a `stream` sent a model's messages
-    or system prompt; an `open` given a recognizer's choice; and any of the three on a
-    receiver named like a provider."""
-    func = call.func
-    if not isinstance(func, ast.Attribute) or func.attr not in ("stream", "synthesize", "open"):
-        return None
-    keywords = {k.arg for k in call.keywords}
-    receiver = ast.unparse(func.value).lower()
-    named = any(word in receiver for word in ("provider", "tts", "stt", "model", "voice"))
-    if func.attr == "synthesize" or named:
-        return func.attr
-    if func.attr == "stream" and keywords & {"messages", "system"}:
-        return func.attr
-    if func.attr == "open" and "choice" in keywords:
-        return func.attr
-    return None
+def _provider_uses(tree: ast.Module) -> Iterator[tuple[str, str, str]]:
+    """(function, method, receiver) for every `x.stream`, `x.synthesize` or `x.open`,
+    called or not, and every `getattr(x, "stream")` and the like."""
+    for scope, node in _nodes(tree):
+        if isinstance(node, ast.Attribute) and node.attr in NAMES:
+            yield scope, node.attr, ast.unparse(node.value)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            name = node.args[1]
+            if not isinstance(name, ast.Constant) or name.value in NAMES:
+                # A name worked out at run time could be any of them.
+                yield scope, "getattr", ast.unparse(node.args[0])
 
 
 def test_nothing_calls_a_provider_except_through_the_meter() -> None:
-    found: set[tuple[str, str, str]] = set()
+    found: set[tuple[str, str, str, str]] = set()
+    excused: set[tuple[str, str]] = set()
     for module, tree in _source():
         if module in ALLOWED_MODULES:
             continue
-        for scope, call in _calls(tree):
-            method = _reaches_a_provider(call)
-            if method is not None:
-                found.add((module, scope, method))
+        for scope, method, receiver in _provider_uses(tree):
+            if (module, receiver) in NOT_PROVIDERS:
+                excused.add((module, receiver))
+            else:
+                found.add((module, scope, method, receiver))
     stray = found - set(ALLOWED_CALLS)
     assert not stray, f"a provider call outside the meter: {sorted(stray)}"
-    # And the allow-list holds nothing that is no longer there.
+    # And neither list holds anything that is no longer there.
     assert found == set(ALLOWED_CALLS)
+    assert excused == set(NOT_PROVIDERS)
 
 
-def test_the_scan_sees_a_provider_call_written_anywhere() -> None:
-    tree = ast.parse(
-        "async def f(p, http):\n"
-        "    p.stream(system=[], messages=[], tools=[], max_tokens=1)\n"
-        "    p.synthesize('hi', voice='v')\n"
-        "    await p.open(choice='en')\n"
-        "    http.stream('GET', 'https://example.com')\n"
-    )
-    found = [_reaches_a_provider(call) for _, call in _calls(tree)]
-    assert [m for m in found if m] == ["stream", "synthesize", "open"]
+@pytest.mark.parametrize(
+    "line",
+    [
+        "p.stream(system=[], messages=[], tools=[], max_tokens=1)",
+        "p.stream(msgs, tools=t)",
+        "llm.stream(messages)",
+        "brain.stream(**kw)",
+        "s = rt.provider.stream",
+        "getattr(rt.provider, 'stream')",
+        "getattr(rt.provider, name)",
+        "tts.synthesize('hi', voice='v')",
+        "speaker.synthesize",
+        "await ears.open(choice='en')",
+        "f = rt.stt.open",
+    ],
+)
+def test_the_scan_sees_a_provider_use_however_it_is_written(line: str) -> None:
+    tree = ast.parse(f"async def f():\n    {line}\n")
+    assert list(_provider_uses(tree)), line
+
+
+# ── Nothing builds one around it ─────────────────────────────────────────
+
+# Making a provider: what may make one, and where. The runtime makes the ones it
+# holds through its `metered_*` helpers; anything else only lists, checks or prepares,
+# which costs nothing, or makes something that is not a provider at all.
+CONSTRUCTORS = frozenset(
+    {
+        "build",
+        "build_speech",
+        "build_listening",
+        "resolve",
+        "provider_from_env",
+        "AnthropicProvider",
+        "OpenAICompatProvider",
+        "ElevenLabs",
+        "CompatibleSpeech",
+        "Deepgram",
+        "LocalWhisper",
+        "SystemVoice",
+    }
+)
+FREE = "only lists, checks or prepares: free, and never handed out"
+NOT_A_PROVIDER = "builds something that is not a provider"
+BUILDERS = {
+    "brain/config.py": "where a model provider is made, for the runtime's helpers to meter",
+    "voice/catalog.py": "where a voice or hearing provider is made, for the same",
+}
+ALLOWED_BUILDS = {
+    ("api/runtime.py", "build_speech", "option.build"): "the builder metered_speech calls",
+    ("api/runtime.py", "build_listening", "option.build"): "the builder metered_listening calls",
+    ("api/runtime.py", "metered_speech", "build_speech"): "metered as it is made",
+    ("api/runtime.py", "metered_listening", "build_listening"): "metered as it is made",
+    ("api/runtime.py", "metered_resolve", "resolve"): "metered as it is made",
+    ("api/settings.py", "create_router.voices", "option.build"): f"Settings: {FREE}",
+    ("api/settings.py", "create_router.listen_choices", "option.build"): f"Settings: {FREE}",
+    ("api/settings.py", "create_router.prepare_listening", "option.build"): f"Settings: {FREE}",
+    ("cli/doctor.py", "check_model", "config.resolve"): f"the doctor: {FREE}",
+    ("cli/doctor.py", "check_speech", "option.build"): f"the doctor: {FREE}",
+    ("cli/doctor.py", "check_listening.ask", "option.build"): f"the doctor: {FREE}",
+    ("cli/doctor.py", "check_credentials", "speech.build"): f"the doctor: {FREE}",
+    ("cli/doctor.py", "check_credentials", "listen.build"): f"the doctor: {FREE}",
+    ("cli/main.py", "_serve", "provider_from_env"): "fails a half-made setting early",
+    ("api/mcp.py", "create_mcp_router.add", "catalog.build"): NOT_A_PROVIDER,
+    ("connectors/google/tools.py", "GmailDraft.run", "self.build"): NOT_A_PROVIDER,
+    ("connectors/google/tools.py", "GmailSend.run", "self.build"): NOT_A_PROVIDER,
+    ("scheduler/runner.py", "Scheduler._routine.work", "routines.build"): NOT_A_PROVIDER,
+    ("workspace/blocks.py", "_blocks", "build"): NOT_A_PROVIDER,
+    ("workspace/widgets.py", "validate_widget", "build"): NOT_A_PROVIDER,
+}
+
+
+def _builds(tree: ast.Module) -> Iterator[tuple[str, str]]:
+    """(function, callee) for every call that may make a provider. A `resolve` on
+    anything but the model config is a path's, and is left out."""
+    for scope, node in _nodes(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in CONSTRUCTORS:
+            yield scope, func.id
+        elif isinstance(func, ast.Attribute) and func.attr in CONSTRUCTORS:
+            if func.attr == "resolve" and ast.unparse(func.value) != "config":
+                continue
+            yield scope, ast.unparse(func)
+
+
+def test_nothing_makes_a_provider_outside_the_metered_helpers() -> None:
+    found = {
+        (module, scope, callee)
+        for module, tree in _source()
+        if module not in BUILDERS
+        for scope, callee in _builds(tree)
+    }
+    stray = found - set(ALLOWED_BUILDS)
+    assert not stray, f"a provider made outside the metered helpers: {sorted(stray)}"
+    assert found == set(ALLOWED_BUILDS)
 
 
 def test_only_the_meter_records_usage() -> None:
     callers = [
         (module, scope)
         for module, tree in _source()
-        for scope, call in _calls(tree)
-        if (isinstance(call.func, ast.Attribute) and call.func.attr == "record_usage")
-        or (isinstance(call.func, ast.Name) and call.func.id == "record_usage")
+        for scope, node in _nodes(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "record_usage")
+            or (isinstance(node.func, ast.Name) and node.func.id == "record_usage")
+        )
     ]
     assert callers == [("spend/metered.py", "Meter.record")]

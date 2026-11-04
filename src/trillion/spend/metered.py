@@ -21,6 +21,7 @@ counted for whoever started it.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
@@ -96,6 +97,11 @@ class PriceBook:
         return self._rates
 
 
+# How long a caller's `ready` may take before its row is written without its
+# conversation.
+READY_TIMEOUT_S = 5.0
+
+
 class Meter:
     """What every metered provider shares: the gate it asks, the ledger it counts in,
     the store it records to, the prices and the clock."""
@@ -116,24 +122,58 @@ class Meter:
         self.clock = clock
         self.prices = prices if prices is not None else PriceBook(None)
         self.owner_id = owner_id
+        self.ready_timeout_s = READY_TIMEOUT_S
+        # Records still being written, held until done: a cancelled caller no longer
+        # holds them, and `drain` waits for them before the database closes.
+        self._recording: set[asyncio.Future[None]] = set()
+
+    # A provider already metered is wrapped again only for another provider id: what
+    # it wraps is wrapped, never the wrapper, so a call is never counted twice.
 
     def model(self, inner: ModelProvider, provider_id: str | None) -> MeteredModel:
         if isinstance(inner, MeteredModel):
-            return inner
+            if inner.provider_id == provider_id:
+                return inner
+            inner = inner.inner
         return MeteredModel(inner, provider_id, self)
 
     def voice(self, inner: TTSProvider, provider_id: str | None) -> MeteredVoice:
         if isinstance(inner, MeteredVoice):
-            return inner
+            if inner.provider_id == provider_id:
+                return inner
+            inner = inner.inner
         return MeteredVoice(inner, provider_id, self)
 
     def hearing(self, inner: STTProvider, provider_id: str | None) -> MeteredHearing:
         if isinstance(inner, MeteredHearing):
-            return inner
+            if inner.provider_id == provider_id:
+                return inner
+            inner = inner.inner
         return MeteredHearing(inner, provider_id, self)
 
     def price(self, provider_id: str, model: str, usage: Usage | float) -> float | None:
         return prices.price(provider_id, model, usage, self.prices.rates())
+
+    async def _ready(self, call: Call) -> bool:
+        """The caller's conversation exists, as far as can be told. A `ready` that
+        fails, hangs or is cancelled on its own is a failed one: the row is still
+        written, without the conversation."""
+        if call.ready is None:
+            return True
+        try:
+            await asyncio.wait_for(call.ready(), self.ready_timeout_s)
+            return True
+        except asyncio.CancelledError:
+            # Ours to stop only if this task was cancelled; otherwise it was the
+            # caller's own, and the stream it is recorded for is not being stopped.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+        except Exception as e:
+            log.warning("usage recorded without its conversation: %s", type(e).__name__)
+            return False
+        log.warning("usage recorded without its conversation: CancelledError")
+        return False
 
     async def record(
         self,
@@ -145,36 +185,44 @@ class Meter:
         usage: Usage,
         unit: Unit,
         quantity: float,
-        cost: float | None,
+        price: Callable[[], float | None],
     ) -> None:
-        """Write one row and count it. Never raises: the call it records is done."""
-        if call.ready is not None:
-            try:
-                await call.ready()
-            except Exception as e:
-                log.warning("usage not recorded: its caller failed (%s)", type(e).__name__)
+        """Write one row and count it. Never raises: the call it records is done.
+
+        A row that cannot name its conversation (its `ready` failed, or the store
+        refused the conversation) is written once more without it, so its dollars
+        are still there after a restart."""
+        conversation = call.conversation_id if await self._ready(call) else None
+        try:
+            cost = price()
+        except Exception as e:
+            # Unpriced, so it counts by its quantity, never as $0. The kind only.
+            log.warning("usage for %s not priced: %s", provider, type(e).__name__)
+            cost = None
         at = self.clock()
         # The store files a row with no provider id under its provider's name: the
         # ledger counts it there too, so memory and a reload agree.
-        row = Row(
-            provider if provider_id is None else provider_id, call.caller, unit, quantity, cost, at
-        )
+        pid = provider if provider_id is None else provider_id
+        row = Row(pid, call.caller, unit, quantity, cost, at)
         try:
-            await self.store.record_usage(
-                owner_id=self.owner_id,
-                conversation_id=call.conversation_id,
-                provider=provider,
-                model=model,
-                usage=usage,
-                cost_usd=cost,
-                now_ms=at,
-                provider_id=provider_id,
-                caller=call.caller,
-                units=unit,
-            )
-        except Exception as e:
-            # The kind only: never an amount.
-            log.warning("usage not recorded for %s: %s", provider, type(e).__name__)
+            for attempt in (conversation, None) if conversation is not None else (None,):
+                try:
+                    await self.store.record_usage(
+                        owner_id=self.owner_id,
+                        conversation_id=attempt,
+                        provider=provider,
+                        model=model,
+                        usage=usage,
+                        cost_usd=cost,
+                        now_ms=at,
+                        provider_id=provider_id,
+                        caller=call.caller,
+                        units=unit,
+                    )
+                    break
+                except Exception as e:
+                    # The kind only: never an amount.
+                    log.warning("usage not recorded for %s: %s", provider, type(e).__name__)
         finally:
             try:
                 self.ledger.add(row)
@@ -184,14 +232,15 @@ class Meter:
     async def settle(self, record: Coroutine[Any, Any, None]) -> None:
         """Run a record to the end even if the caller is cancelled meanwhile."""
         task = asyncio.ensure_future(record)
-        # Held until it is done: a cancelled caller no longer holds it.
-        _recording.add(task)
-        task.add_done_callback(_recording.discard)
+        self._recording.add(task)
+        task.add_done_callback(self._recording.discard)
         await asyncio.shield(task)
 
-
-# Records still being written whose caller has gone.
-_recording: set[asyncio.Future[None]] = set()
+    async def drain(self) -> None:
+        """Wait for every record still being written. Call it before the database
+        closes. Never raises."""
+        while self._recording:
+            await asyncio.gather(*list(self._recording), return_exceptions=True)
 
 
 async def _close(stream: object) -> None:
@@ -295,7 +344,7 @@ class MeteredModel(_Wrapper):
                             usage=ev.usage,
                             unit="tokens",
                             quantity=_tokens(ev.usage),
-                            cost=self._cost(ev.usage),
+                            price=functools.partial(self._cost, ev.usage),
                         )
                     )
                 yield ev
@@ -355,7 +404,8 @@ class MeteredVoice(_Wrapper):
                 await self._meter.settle(self._record(call, len(text)))
 
     async def _record(self, call: Call, chars: int) -> None:
-        assert self.provider_id is not None  # noqa: S101 - only a billed sentence records
+        pid = self.provider_id
+        assert pid is not None  # noqa: S101 - only a billed sentence records
         model = str(getattr(self.inner, "model", self.inner.name))
         await self._meter.record(
             call,
@@ -365,7 +415,7 @@ class MeteredVoice(_Wrapper):
             usage=Usage(input_tokens=chars),
             unit="chars",
             quantity=chars,
-            cost=self._meter.price(self.provider_id, model, chars),
+            price=lambda: self._meter.price(pid, model, chars),
         )
 
 
@@ -462,7 +512,8 @@ class _MeteredStream:
 
     async def _record(self) -> None:
         owner = self._owner
-        assert owner.provider_id is not None  # noqa: S101 - only a hosted stream records
+        pid = owner.provider_id
+        assert pid is not None  # noqa: S101 - only a hosted stream records
         # Whole seconds, rounded up: the row and the ledger hold the same number.
         seconds = math.ceil(self._bytes / _SECOND_BYTES)
         await owner._meter.record(
@@ -473,5 +524,5 @@ class _MeteredStream:
             usage=Usage(input_tokens=seconds),
             unit="seconds",
             quantity=seconds,
-            cost=owner._meter.price(owner.provider_id, self._model, seconds),
+            price=lambda: owner._meter.price(pid, self._model, seconds),
         )

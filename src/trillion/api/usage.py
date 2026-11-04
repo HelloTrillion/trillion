@@ -1,8 +1,10 @@
 """Month-to-date API usage, read back for the pill (BRN-4).
 
-Read only: every model turn and compaction already writes a `usage` row. A turn
-whose provider has no prices keeps its cost NULL, and is counted here as unpriced
-tokens, never as $0, so the bill can never look smaller than it is.
+Read only: every paid call (each model call, a sentence spoken, a stream heard)
+already writes one `usage` row, through the metered providers (BRN-7). A call whose
+provider has no prices keeps its cost NULL, and is counted here as unpriced units,
+never as $0, so the bill can never look smaller than it is. `unpriced_turns` keeps
+its old name for the API, and counts those calls.
 """
 
 from __future__ import annotations

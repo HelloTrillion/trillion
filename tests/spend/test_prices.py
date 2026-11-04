@@ -318,6 +318,26 @@ def test_model_provider_ids() -> None:
     assert provider_id("custom", "http://192.168.1.20:8080/v1") == "custom:192.168.1.20"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://127.5.0.1/v1",
+        "http://[::1]:8080/v1",
+        "http://ollama.localhost/v1",
+    ],
+)
+def test_a_custom_model_on_this_computer_is_local_and_its_voice_free(url: str) -> None:
+    assert provider_id("custom", url) == "local"
+    assert voice_provider_id("custom", url) is None
+
+
+def test_openais_own_address_is_openai_whatever_it_is_called() -> None:
+    assert provider_id("custom", "https://api.openai.com/v1") == "openai"
+    assert provider_id("custom", "https://API.OpenAI.com/v1/") == "openai"
+
+
 def test_a_custom_model_without_a_usable_address_has_no_id() -> None:
     assert provider_id("custom", None) is None
     assert provider_id("custom", "not a url") is None

@@ -573,6 +573,8 @@ class SqliteConversationStore:
                 "cache_read_tokens",
                 "cache_write_tokens",
                 "cost_usd",
+                # Named before the spend caps, when a row was a turn: it counts unpriced
+                # rows, which are now one per model call (BRN-7). Kept for the API.
                 "unpriced_turns",
                 "unpriced_tokens",
                 "provider_id",

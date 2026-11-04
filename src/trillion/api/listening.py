@@ -542,10 +542,15 @@ class Listener:
         reader, stream = self._reader, self._stream
         self._reader = self._stream = None
         self._backlog.clear()
-        if reader is not None and not reader.done():
-            reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reader
-        if stream is not None:
-            with contextlib.suppress(Exception):
-                await stream.close()
+        try:
+            if reader is not None and not reader.done():
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader
+        finally:
+            # Closed whatever happens to this call: a metered recognizer counts its
+            # seconds when its stream closes (BRN-7), so a second cancellation here
+            # must not leave it open. Shielded, so the close runs to its end.
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(stream.close())

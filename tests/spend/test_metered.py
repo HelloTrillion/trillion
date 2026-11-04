@@ -47,6 +47,9 @@ class Store:
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
         self.fail = False
+        # Refuses a row that names a conversation, as the foreign key does for one
+        # that does not exist.
+        self.no_conversations = False
         self.wait: asyncio.Event | None = None
 
     async def record_usage(self, **row: Any) -> None:
@@ -54,6 +57,8 @@ class Store:
             await self.wait.wait()
         if self.fail:
             raise RuntimeError("the database is gone")
+        if self.no_conversations and row["conversation_id"] is not None:
+            raise RuntimeError("FOREIGN KEY constraint failed")
         self.rows.append(row)
 
     async def spend_since(
@@ -340,6 +345,102 @@ async def test_the_metered_model_looks_like_what_it_wraps() -> None:
     assert inner.model == "claude-sonnet-5-5"
     # Wrapping a metered provider again changes nothing.
     assert meter.model(metered, "anthropic") is metered
+
+
+async def test_a_failed_ready_still_keeps_the_dollars_without_the_conversation() -> None:
+    meter, store, ledger, _ = await meter_for()
+
+    async def broken() -> None:
+        raise RuntimeError("no conversation")
+
+    with as_caller("background", "c9", ready=broken):
+        events = await ask(meter.model(Model(), "anthropic"))
+    assert isinstance(events[-1], Done)
+    (row,) = store.rows
+    assert row["conversation_id"] is None and row["cost_usd"] is not None
+    assert ledger.spent("anthropic").dollars == pytest.approx(row["cost_usd"])
+
+
+async def test_a_ready_cancelled_on_its_own_never_cancels_the_stream() -> None:
+    meter, store, _, _ = await meter_for()
+
+    async def cancelled() -> None:
+        raise asyncio.CancelledError
+
+    with as_caller("background", "c9", ready=cancelled):
+        events = await ask(meter.model(Model(), "anthropic"))
+    assert isinstance(events[-1], Done)
+    assert [r["conversation_id"] for r in store.rows] == [None]
+
+
+async def test_a_ready_that_hangs_is_given_up_on() -> None:
+    meter, store, _, _ = await meter_for()
+    meter.ready_timeout_s = 0.01
+
+    async def hangs() -> None:
+        await asyncio.Event().wait()
+
+    with as_caller("background", "c9", ready=hangs):
+        await ask(meter.model(Model(), "anthropic"))
+    assert [r["conversation_id"] for r in store.rows] == [None]
+
+
+async def test_a_row_refused_for_its_conversation_is_kept_without_it() -> None:
+    meter, store, _, _ = await meter_for()
+    store.no_conversations = True
+    with as_caller("conversation", "gone"):
+        await ask(meter.model(Model(), "anthropic"))
+    (row,) = store.rows
+    assert row["conversation_id"] is None and row["caller"] == "conversation"
+
+
+async def test_a_pricing_failure_records_the_row_unpriced(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    meter, store, ledger, _ = await meter_for()
+
+    def broken(*_args: Any) -> float | None:
+        raise ValueError("bad rate")
+
+    monkeypatch.setattr(prices, "price", broken)
+    events = await ask(meter.model(Model(), "anthropic"))
+    assert isinstance(events[-1], Done)
+    (row,) = store.rows
+    assert row["cost_usd"] is None
+    # Counted by its tokens, never as $0.
+    assert ledger.spent("anthropic").units == 1_100_000
+    assert "ValueError" in caplog.text and "$" not in caplog.text
+
+
+async def test_drain_waits_for_rows_whose_caller_has_gone() -> None:
+    meter, store, _, _ = await meter_for()
+    store.wait = asyncio.Event()
+    task = asyncio.create_task(ask(meter.model(Model(), "anthropic")))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    drained = asyncio.create_task(meter.drain())
+    await asyncio.sleep(0)
+    assert not drained.done()
+    store.wait.set()
+    await drained
+    assert len(store.rows) == 1
+    # Nothing left to wait for.
+    await meter.drain()
+
+
+async def test_wrapping_a_metered_provider_with_another_id_wraps_what_it_wraps() -> None:
+    meter, _, _, _ = await meter_for()
+    inner = Model()
+    first = meter.model(inner, None)
+    again = meter.model(first, "anthropic")
+    assert again is not first and again.inner is inner and again.provider_id == "anthropic"
+    voice = meter.voice(Voice(), None)
+    assert meter.voice(voice, "elevenlabs").inner is voice.inner
+    hearing = meter.hearing(Hearing(), None)
+    assert meter.hearing(hearing, "deepgram").inner is hearing.inner
 
 
 # ── User prices ──────────────────────────────────────────────────────────

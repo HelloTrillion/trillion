@@ -648,3 +648,27 @@ async def test_room_level_leaves_out_earlier_turns_words() -> None:
     await reported(listener, "c")
     assert listener.room_level() == pytest.approx(0.001 / 2**0.5, rel=0.1)
     await listener.abandon()
+
+
+async def test_abandoning_closes_the_stream_even_when_it_is_cancelled_meanwhile() -> None:
+    # A closed stream is what a metered recognizer counts its seconds on (BRN-7).
+    stt = FakeSTT()
+    listener = Listener(stt, "one", on_partial=nothing)
+    await listener.start()
+    stream = stt.stream
+    let_go = asyncio.Event()
+    close = stream.close
+
+    async def slow_close() -> None:
+        await let_go.wait()
+        await close()
+
+    stream.close = slow_close  # type: ignore[method-assign]
+    task = asyncio.create_task(listener.abandon())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    let_go.set()
+    await asyncio.sleep(0.01)
+    assert stream.closed
