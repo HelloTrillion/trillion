@@ -418,3 +418,36 @@ def test_the_module_says_what_its_public_names_are() -> None:
         "hearing_provider_id",
         "parse_user_prices",
     }
+
+
+# ── The ceiling rate: estimating what nothing priced ─────────────────────
+
+
+def test_the_ceiling_rate_is_the_providers_highest_token_rate() -> None:
+    highest = 0.0
+    for (pid, _model), rate in prices.TABLE.items():
+        if pid == "anthropic":
+            longer = rate.long_prompt.output if rate.long_prompt else 0.0
+            highest = max(highest, rate.output, longer)
+    assert prices.ceiling_rate("anthropic", "tokens") == highest
+    assert prices.ceiling_rate("custom:api.deepseek.com", "tokens") == 3.96
+
+
+def test_the_ceiling_rate_for_characters_and_seconds_is_the_highest_per_unit() -> None:
+    assert prices.ceiling_rate("elevenlabs", "chars") == 0.04
+    assert prices.ceiling_rate("deepgram", "seconds") == 0.0078
+
+
+def test_no_rate_in_the_table_means_no_ceiling() -> None:
+    assert prices.ceiling_rate("custom:example.com", "tokens") is None
+    assert prices.ceiling_rate("elevenlabs", "tokens") is None
+    assert prices.ceiling_rate("anthropic", "chars") is None
+
+
+def test_an_estimate_prices_units_at_the_ceiling() -> None:
+    ceiling = prices.ceiling_rate("anthropic", "tokens")
+    assert ceiling is not None
+    assert prices.estimate("anthropic", "tokens", 2_000_000) == pytest.approx(2 * ceiling)
+    assert prices.estimate("elevenlabs", "chars", 10_000) == pytest.approx(0.4)
+    assert prices.estimate("deepgram", "seconds", 600) == pytest.approx(0.078)
+    assert prices.estimate("custom:example.com", "tokens", 1000) is None

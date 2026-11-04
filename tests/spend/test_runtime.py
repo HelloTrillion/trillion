@@ -8,11 +8,15 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
+import pytest
+
 from tests.api.test_server import App, home, make  # noqa: F401
 from tests.api.test_usage import NOW, in_chicago, read
 from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.brain.types import Usage
 from trillion.persona import setup
+from trillion.secrets.store import MemoryStore
 from trillion.spend.gate import PREF, Caps
 from trillion.zones import month_start
 
@@ -89,3 +93,32 @@ def test_a_new_timezone_reloads_the_ledger_from_the_new_start(make: Any) -> None
     portal.call(app.rt.use_profile, setup.Profile(user_name="Sam", timezone="America/Chicago"))
     assert not app.rt.ledger.stale
     assert app.rt.ledger.spent("anthropic").dollars == 0.0
+
+
+def test_a_failed_load_closes_what_was_opened(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from trillion.api import runtime
+    from trillion.spend.gate import Gate
+
+    opened: list[aiosqlite.Connection] = []
+    real = runtime.connect
+
+    async def connect(path: Path) -> aiosqlite.Connection:
+        conn = await real(path)
+        opened.append(conn)
+        return conn
+
+    async def broken(self: Gate) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(runtime, "connect", connect)
+    monkeypatch.setattr(Gate, "reload_caps", broken)
+
+    async def attempt() -> None:
+        with pytest.raises(OSError):
+            await open_runtime(secrets=MemoryStore(), env={}, persona=home)
+        assert opened
+        for conn in opened:
+            with pytest.raises(ValueError):
+                await conn.execute("SELECT 1")
+
+    asyncio.run(attempt())

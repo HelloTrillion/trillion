@@ -5,16 +5,21 @@ States, at the thresholds the spend caps spec sets, each reached *at* its number
 - `over_soft` at the soft cap;
 - `capped` at the hard cap, where `check_model` and `check_voice` refuse.
 
-**Dollars and units.** A provider's month can hold priced calls (dollars) and calls
-nothing priced (tokens, characters or seconds), for example one model in the price
-table and another not. Dollars are compared with the caps. When the month also has
-unpriced units, those are compared with the same cap numbers read as units, and the
-worse of the two states wins. So unpriced use is never dropped, and pricing one model
-never lifts the cap on the rest.
+**Dollars and units.** Every set of caps says its unit.
+- **Dollar caps** (the usual) compare the month's priced dollars plus an estimate for
+  its unpriced units: those calls priced at the provider's dearest rate in the price
+  table (`prices.ceiling_rate`), so a model newer than the table is never counted for
+  less than it may cost. A provider with no rate in the table cannot be estimated:
+  its unpriced units count toward no cap, and `unestimated` reports them so Settings
+  can ask for a price.
+- **Unit caps** (tokens, characters or seconds), for a provider nothing prices,
+  compare only the unpriced units in that unit. Dollars, and units of another kind,
+  are ignored, and `unestimated` reports units of another kind.
 
 **Where caps come from.** The preference `spend_caps`, `{provider_id: {soft, hard,
 warn_pct}}`, read by `reload_caps` at startup and again after every write to it.
-- `null` for `soft` or `hard` means that cap is removed.
+- `null` for `soft` or `hard` means that cap is removed. `unit` is "dollars" when
+  left out.
 - A provider with no entry has no caps: an existing install is given the defaults
   once, on upgrade, and a new key is saved with them.
 - A malformed entry, or a malformed preference, counts as `DEFAULT`, so a typo never
@@ -31,9 +36,10 @@ import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from trillion.brain.types import ProviderError
+from trillion.spend import prices
 from trillion.spend.caller import current
 from trillion.spend.ledger import Ledger
 from trillion.spend.types import Caller, Unit
@@ -44,10 +50,10 @@ log = logging.getLogger(__name__)
 PREF = "spend_caps"
 
 State = Literal["ok", "warned", "over_soft", "capped"]
-_ORDER: tuple[State, ...] = ("ok", "warned", "over_soft", "capped")
 
 # What a cap is counted in: dollars, or the unit of the calls nothing priced.
-CapUnit = Literal["dollars"] | Unit
+CapUnit = Literal["dollars", "tokens", "chars", "seconds"]
+_CAP_UNITS: tuple[CapUnit, ...] = get_args(CapUnit)
 
 # Never capped: it runs on this computer.
 UNCAPPED = frozenset({"local"})
@@ -55,15 +61,18 @@ UNCAPPED = frozenset({"local"})
 
 @dataclass(frozen=True)
 class Caps:
-    """A provider's monthly caps. None means that cap is removed. Read as dollars
-    against priced spend, and as units against unpriced spend."""
+    """A provider's monthly caps, in `unit`. None means that cap is removed."""
 
     soft: float | None
     hard: float | None
     warn_pct: int = 80
+    unit: CapUnit = "dollars"
 
 
 DEFAULT = Caps(20.0, 50.0, 80)
+# For a provider the price table has no rate for: roughly $20 and $50 at about $4 per
+# million tokens.
+DEFAULT_TOKENS = Caps(5_000_000, 12_000_000, 80, "tokens")
 NO_CAPS = Caps(None, None, 80)
 
 
@@ -97,7 +106,10 @@ def _caps(raw: Any) -> Caps | None:
     pct = raw.get("warn_pct", DEFAULT.warn_pct)
     if isinstance(pct, bool) or not isinstance(pct, int) or not 1 <= pct <= 100:
         return None
-    return Caps(soft, hard, pct)
+    unit = raw.get("unit", "dollars")
+    if unit not in _CAP_UNITS:
+        return None
+    return Caps(soft, hard, pct, unit)
 
 
 def parse_caps(raw: Any) -> dict[str, Caps]:
@@ -185,15 +197,44 @@ class Gate:
             raise RuntimeError("the spend caps are not loaded yet")
         return self._caps.get(provider_id, self._fallback)
 
+    def spent_dollars(self, provider_id: str) -> float:
+        """This month's priced dollars, plus the estimate for what nothing priced."""
+        spent = self._ledger.spent(provider_id)
+        extra = None
+        if spent.units and spent.unit is not None:
+            extra = prices.estimate(provider_id, spent.unit, spent.units)
+        return spent.dollars + (extra or 0.0)
+
+    def _counted(self, provider_id: str, caps: Caps) -> float:
+        """The month so far, in the caps' unit."""
+        if caps.unit == "dollars":
+            return self.spent_dollars(provider_id)
+        spent = self._ledger.spent(provider_id)
+        return spent.units if spent.unit == caps.unit else 0.0
+
+    def unestimated(self, provider_id: str | None) -> tuple[float, Unit] | None:
+        """Unpriced units this month that count toward none of this provider's caps:
+        under dollar caps, those with no rate in the table to estimate from; under unit
+        caps, those of another unit. None when everything is counted."""
+        if provider_id is None or provider_id in UNCAPPED:
+            return None
+        caps = self.caps(provider_id)
+        spent = self._ledger.spent(provider_id)
+        if not spent.units or spent.unit is None:
+            return None
+        if caps.unit == "dollars":
+            if prices.ceiling_rate(provider_id, spent.unit) is not None:
+                return None
+        elif caps.unit == spent.unit:
+            return None
+        return spent.units, spent.unit
+
     def state(self, provider_id: str | None) -> State:
         """Where a provider stands this month. Reads only what is in memory."""
         if provider_id is None or provider_id in UNCAPPED:
             return "ok"
         caps = self.caps(provider_id)
-        spent = self._ledger.spent(provider_id)
-        by_dollars = _state(spent.dollars, caps)
-        by_units = _state(spent.units, caps) if spent.units else "ok"
-        return max(by_dollars, by_units, key=_ORDER.index)
+        return _state(self._counted(provider_id, caps), caps)
 
     async def refresh(self) -> None:
         """Count from the right start of the month again if the timezone moved it."""
@@ -222,10 +263,4 @@ class Gate:
         # Only a hard cap refuses.
         if caps.hard is None or self.state(provider_id) != "capped":
             return
-        spent = self._ledger.spent(provider_id)
-        # The dollar cap when dollars reached it, else the units that did.
-        if spent.dollars >= caps.hard or spent.unit is None:
-            unit: CapUnit = "dollars"
-        else:
-            unit = spent.unit
-        raise error(provider_id, current().caller, caps.hard, unit)
+        raise error(provider_id, current().caller, caps.hard, caps.unit)

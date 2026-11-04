@@ -996,8 +996,14 @@ async def open_runtime(
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
     )
     # Before anything that can reach a provider is started: the gate never fails open.
-    await ledger.load()
-    await gate.reload_caps()
+    try:
+        await ledger.load()
+        await gate.reload_caps()
+    except BaseException:
+        # Nothing else is running yet: closing the connections leaves nothing behind.
+        for conn in rt._connections:
+            await conn.close()
+        raise
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):

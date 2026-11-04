@@ -8,9 +8,11 @@ from typing import Any
 import pytest
 
 from trillion.brain.types import ProviderError
+from trillion.spend import prices
 from trillion.spend.caller import as_caller
 from trillion.spend.gate import (
     DEFAULT,
+    DEFAULT_TOKENS,
     NO_CAPS,
     Caps,
     Gate,
@@ -109,8 +111,8 @@ async def test_the_warning_follows_its_own_percentage() -> None:
     assert gate.state("anthropic") == "warned"
 
 
-async def test_an_unpriced_provider_reads_its_caps_as_units() -> None:
-    caps = {"custom:example.com": {"soft": 1000, "hard": 5000, "warn_pct": 80}}
+async def test_unit_caps_count_units_at_the_hard_number() -> None:
+    caps = {"custom:example.com": {"soft": 1000, "hard": 5000, "unit": "tokens"}}
     gate, ledger = await gate_for(caps)
     spend(ledger, "custom:example.com", quantity=799)
     assert gate.state("custom:example.com") == "ok"
@@ -118,31 +120,69 @@ async def test_an_unpriced_provider_reads_its_caps_as_units() -> None:
     assert gate.state("custom:example.com") == "warned"
     spend(ledger, "custom:example.com", quantity=200)
     assert gate.state("custom:example.com") == "over_soft"
-    spend(ledger, "custom:example.com", quantity=4000)
-    assert gate.state("custom:example.com") == "capped"
-
-
-async def test_characters_are_units_too() -> None:
-    gate, ledger = await gate_for({"openai-voice:example.com": {"soft": 100, "hard": 200}})
-    spend(ledger, "openai-voice:example.com", quantity=200, unit="chars")
-    assert gate.state("openai-voice:example.com") == "capped"
-
-
-async def test_priced_and_unpriced_use_together_take_the_worse_state() -> None:
-    caps = {"custom:example.com": {"soft": 100, "hard": 1000, "warn_pct": 80}}
-    gate, ledger = await gate_for(caps)
-    # $1 is well under a $100 soft cap, but 1000 unpriced tokens is at the hard cap.
-    spend(ledger, "custom:example.com", cost=1.0)
-    spend(ledger, "custom:example.com", quantity=1000)
-    assert gate.state("custom:example.com") == "capped"
-
-
-async def test_unpriced_units_never_lower_what_dollars_say() -> None:
-    caps = {"custom:example.com": {"soft": 100, "hard": 1000, "warn_pct": 80}}
-    gate, ledger = await gate_for(caps)
-    spend(ledger, "custom:example.com", cost=100.0)
-    spend(ledger, "custom:example.com", quantity=5)
+    spend(ledger, "custom:example.com", quantity=3999)
     assert gate.state("custom:example.com") == "over_soft"
+    spend(ledger, "custom:example.com", quantity=1)
+    assert gate.state("custom:example.com") == "capped"
+
+
+async def test_unit_caps_ignore_dollars() -> None:
+    gate, ledger = await gate_for(
+        {"custom:example.com": {"soft": 10, "hard": 20, "unit": "tokens"}}
+    )
+    spend(ledger, "custom:example.com", cost=10_000.0)
+    assert gate.state("custom:example.com") == "ok"
+
+
+async def test_a_unit_cap_counts_only_its_own_unit() -> None:
+    caps = {"openai-voice:example.com": {"soft": 100, "hard": 200, "unit": "chars"}}
+    gate, ledger = await gate_for(caps)
+    spend(ledger, "openai-voice:example.com", quantity=10_000, unit="tokens")
+    assert gate.state("openai-voice:example.com") == "ok"
+    assert gate.unestimated("openai-voice:example.com") == (10_000, "tokens")
+    gate2, ledger2 = await gate_for(caps)
+    spend(ledger2, "openai-voice:example.com", quantity=200, unit="chars")
+    assert gate2.state("openai-voice:example.com") == "capped"
+    assert gate2.unestimated("openai-voice:example.com") is None
+
+
+async def test_a_few_unpriced_tokens_never_cap_a_dollar_provider() -> None:
+    gate, ledger = await gate_for(CAPS)
+    spend(ledger, "anthropic", cost=1.0)
+    spend(ledger, "anthropic", quantity=1000)
+    assert gate.state("anthropic") == "ok"
+
+
+async def test_a_new_models_tokens_count_at_the_providers_ceiling_rate() -> None:
+    ceiling = prices.ceiling_rate("anthropic", "tokens")
+    assert ceiling is not None
+    gate, ledger = await gate_for(CAPS)
+    spend(ledger, "anthropic", cost=1.0)
+    # Unpriced tokens worth $15.50 at the ceiling, plus $1 priced: past the $16 warning.
+    spend(ledger, "anthropic", quantity=15.5 / ceiling * 1_000_000)
+    assert gate.state("anthropic") == "warned"
+    assert gate.spent_dollars("anthropic") == pytest.approx(16.5)
+    # Another $34 of unpriced tokens passes the $50 hard cap.
+    spend(ledger, "anthropic", quantity=34 / ceiling * 1_000_000)
+    assert gate.state("anthropic") == "capped"
+    assert gate.unestimated("anthropic") is None
+
+
+async def test_characters_count_at_the_voices_ceiling_rate() -> None:
+    gate, ledger = await gate_for({"elevenlabs": {"soft": 1, "hard": 2}})
+    # 50,000 characters at $0.04 a thousand is $2.
+    spend(ledger, "elevenlabs", quantity=50_000, unit="chars")
+    assert gate.state("elevenlabs") == "capped"
+
+
+async def test_unpriced_use_with_no_rate_to_estimate_from_is_reported_not_counted() -> None:
+    gate, ledger = await gate_for({"custom:example.com": {"soft": 20, "hard": 50}})
+    assert gate.unestimated("custom:example.com") is None
+    spend(ledger, "custom:example.com", quantity=10**9)
+    assert gate.state("custom:example.com") == "ok"
+    assert gate.unestimated("custom:example.com") == (10**9, "tokens")
+    spend(ledger, "custom:example.com", cost=50.0)
+    assert gate.state("custom:example.com") == "capped"
 
 
 async def test_removed_caps_are_never_capped() -> None:
@@ -190,10 +230,24 @@ def test_caps_parse_from_the_preference() -> None:
     got = parse_caps(
         {
             "anthropic": {"soft": 10, "hard": 30.5, "warn_pct": 90},
-            "openai": {"soft": None, "hard": 40},
+            "openai": {"soft": None, "hard": 40, "unit": "dollars"},
+            "custom:example.com": {"soft": 1000, "hard": 2000, "unit": "tokens"},
+            "openai-voice:example.com": {"soft": 1, "hard": 2, "unit": "chars"},
+            "deepgram": {"soft": 60, "hard": 120, "unit": "seconds"},
         }
     )
-    assert got == {"anthropic": Caps(10.0, 30.5, 90), "openai": Caps(None, 40.0, 80)}
+    assert got == {
+        "anthropic": Caps(10.0, 30.5, 90, "dollars"),
+        "openai": Caps(None, 40.0, 80, "dollars"),
+        "custom:example.com": Caps(1000.0, 2000.0, 80, "tokens"),
+        "openai-voice:example.com": Caps(1.0, 2.0, 80, "chars"),
+        "deepgram": Caps(60.0, 120.0, 80, "seconds"),
+    }
+
+
+def test_the_token_defaults_are_about_the_dollar_defaults_at_four_dollars_a_million() -> None:
+    assert DEFAULT == Caps(20.0, 50.0, 80, "dollars")
+    assert DEFAULT_TOKENS == Caps(5_000_000, 12_000_000, 80, "tokens")
 
 
 def test_no_preference_means_no_entries() -> None:
@@ -217,6 +271,8 @@ def test_no_preference_means_no_entries() -> None:
         {"soft": 20, "hard": 50, "warn_pct": 101},
         {"soft": 20, "hard": 50, "warn_pct": 80.5},
         {"soft": 20, "hard": 50, "warn_pct": True},
+        {"soft": 20, "hard": 50, "unit": "euros"},
+        {"soft": 20, "hard": 50, "unit": None},
     ],
 )
 def test_a_malformed_entry_falls_back_to_the_defaults(entry: Any) -> None:
@@ -309,7 +365,8 @@ async def test_check_voice_refuses_as_a_voice_error_with_kind_capped() -> None:
 
 
 async def test_a_refusal_on_units_names_the_unit() -> None:
-    gate, ledger = await gate_for({"custom:example.com": {"soft": 10, "hard": 100}})
+    caps = {"custom:example.com": {"soft": 10, "hard": 100, "unit": "tokens"}}
+    gate, ledger = await gate_for(caps)
     spend(ledger, "custom:example.com", quantity=100)
     with pytest.raises(SpendCapped) as caught:
         await gate.check_model("custom:example.com")

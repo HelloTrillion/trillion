@@ -33,6 +33,8 @@ __all__ = [
     "Rate",
     "Unit",
     "UserPrices",
+    "ceiling_rate",
+    "estimate",
     "hearing_provider_id",
     "parse_user_prices",
     "price",
@@ -257,6 +259,40 @@ def price(
     if provider_id == "local":
         return 0.0
     return None
+
+
+# ── Estimating what nothing priced ───────────────────────────────────────
+
+
+def _highest(rate: Rate) -> float:
+    """A token rate's dearest part, per million tokens, long prompts included."""
+    parts = [rate.input, rate.output, rate.cache_read, rate.cache_write]
+    if rate.long_prompt is not None:
+        parts.append(_highest(rate.long_prompt))
+    return max(parts)
+
+
+def ceiling_rate(provider_id: str, unit: Unit) -> float | None:
+    """The dearest rate in the table for this provider and unit: per million tokens
+    (the highest of any model's rates, which is its output rate in practice), per
+    thousand characters, or per minute. It prices a call nothing priced, such as a
+    model newer than the table, so that call is never counted for less than it may
+    cost. None when the table has no rate in that unit for the provider."""
+    rates = [
+        _highest(r) if unit == "tokens" else r.per_unit
+        for (pid, _model), r in TABLE.items()
+        if pid == provider_id and r.unit == unit
+    ]
+    return max(rates) if rates else None
+
+
+def estimate(provider_id: str, unit: Unit, quantity: float) -> float | None:
+    """US dollars for `quantity` units nothing priced, at `ceiling_rate`, or None."""
+    rate = ceiling_rate(provider_id, unit)
+    if rate is None:
+        return None
+    per = {"tokens": 1_000_000, "chars": 1_000, "seconds": 60}[unit]
+    return quantity / per * rate
 
 
 # ── User prices ──────────────────────────────────────────────────────────
