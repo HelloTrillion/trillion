@@ -96,13 +96,18 @@ class Usage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # US dollars the provider itself says this call cost (OpenRouter does), or None
+    # when it does not say. It wins over the price table (see trillion.spend.prices).
+    reported_cost: float | None = None
 
     def __add__(self, other: Usage) -> Usage:
+        costs = [c for c in (self.reported_cost, other.reported_cost) if c is not None]
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reported_cost=sum(costs) if costs else None,
         )
 
 

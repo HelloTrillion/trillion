@@ -7,9 +7,11 @@ the capability ladder free: a local model and no key at all.
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -35,6 +37,8 @@ from trillion.brain.types import (
     ToolUseBlock,
     Usage,
 )
+
+OPENROUTER_HOST = "openrouter.ai"
 
 _STOP: dict[str, StopReason] = {
     "stop": "end",
@@ -107,6 +111,7 @@ def request_body(
     tools: Sequence[ToolSchema],
     max_tokens: int | None = None,
     cap_field: str = "max_tokens",
+    reports_cost: bool = False,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
@@ -114,6 +119,9 @@ def request_body(
         "stream_options": {"include_usage": True},
         "messages": _messages(system, messages),
     }
+    if reports_cost:
+        # OpenRouter adds what the call cost to the final usage chunk when asked.
+        body["usage"] = {"include": True}
     if max_tokens is not None:
         body[cap_field] = max_tokens
     if tools:
@@ -154,6 +162,8 @@ class OpenAICompatProvider:
         # OpenAI's own API renamed the output cap; local servers still use the old name.
         self._cap_field = cap_field
         self._url = base_url.rstrip("/") + "/chat/completions"
+        # OpenRouter says what each call cost, which beats any price table.
+        self._reports_cost = urlsplit(base_url).hostname == OPENROUTER_HOST
         self._client = client or httpx.AsyncClient(timeout=sse.TIMEOUT, limits=net.KEEP_ALIVE)
 
     async def warm(self) -> None:
@@ -184,6 +194,7 @@ class OpenAICompatProvider:
             tools=tools,
             max_tokens=self._max_output,
             cap_field=self._cap_field,
+            reports_cost=self._reports_cost,
         )
         usage = Usage()
         served = ""
@@ -202,7 +213,7 @@ class OpenAICompatProvider:
             if isinstance(ev.get("error"), dict):
                 raise ProviderError(str(ev["error"].get("type") or "provider_error"))
             if isinstance(ev.get("usage"), dict):
-                usage = _usage(ev["usage"])
+                usage = _usage(ev["usage"], reported=self._reports_cost)
             if not served and ev.get("model"):
                 served = str(ev["model"])
             for choice in ev.get("choices") or []:
@@ -240,7 +251,7 @@ class OpenAICompatProvider:
         yield Done(stop_reason=stop, usage=usage, model=served)
 
 
-def _usage(raw: dict[str, Any]) -> Usage:
+def _usage(raw: dict[str, Any], *, reported: bool = False) -> Usage:
     def n(key: str) -> int:
         value = raw.get(key)
         return value if isinstance(value, int) else 0
@@ -252,7 +263,15 @@ def _usage(raw: dict[str, Any]) -> Usage:
         input_tokens=max(0, n("prompt_tokens") - cached),
         output_tokens=n("completion_tokens"),
         cache_read_tokens=cached,
+        reported_cost=_cost(raw.get("cost")) if reported else None,
     )
+
+
+def _cost(value: Any) -> float | None:
+    """A reported cost in US dollars, or None for anything that is not one."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) and value >= 0 else None
 
 
 async def list_models(
