@@ -71,7 +71,8 @@ class AttentionStore(Protocol):
         details: Mapping[str, str | None] | None = None,
     ) -> list[str]:
         """Record each key not yet known as claimed, with its detail, and return those,
-        in order. A key already known, or repeated, is left out: it is never told again."""
+        in order. A key already known, or repeated, is left out: it is never told again.
+        A deferred key (`release`) is claimed again."""
         ...
 
     async def telling(self, owner_id: str, keys: Sequence[str], notice_id: str) -> None:
@@ -85,6 +86,12 @@ class AttentionStore(Protocol):
 
     async def silent(self, owner_id: str, keys: Sequence[str]) -> None:
         """These claimed keys were judged not worth saying (D6)."""
+        ...
+
+    async def release(self, owner_id: str, keys: Sequence[str]) -> None:
+        """These claimed keys were never told (refused at a spend cap before anything
+        was said): deferred, so the watcher's next read claims them afresh. A deferred
+        find is not known, and not listed in recent finds."""
         ...
 
     async def repair(self, owner_id: str) -> int:

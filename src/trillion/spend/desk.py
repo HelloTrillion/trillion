@@ -20,8 +20,17 @@ another it lapses, and her next turn carries a host note saying she is back on t
 usual one (PER-11), once.
 
 **Once a month.** The preference `spend_told` records, per provider and month, that
-the warning notice was given (`warned`) and that the soft cap was mentioned
-(`over_soft`), and holds the lapse notes still to be said (`back`).
+the warning notice was given (`warned`), that the soft cap was mentioned
+(`over_soft`) and that background work was said to be paused (`paused`), and holds
+the lapse notes still to be said (`back`).
+
+**Paused work.** At a hard cap, background work on that provider is refused (the
+spend caps spec, decision 7): it never moves to another model. Each kind tells the
+desk (`pause`, or `held` before it starts), and `paused` lists the kinds refused this
+month while the provider is still capped. It is kept in memory only: once the cap is
+raised, or the month turns, the provider is not capped and the list is empty, and the
+work runs again on its own next turn. The first pause of a month gives one notice
+through the one door, fixed words of the app's, since the capped model can't word it.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from trillion.spend.gate import DEFAULT_CHARS, DEFAULT_SECONDS, DEFAULT_TOKENS, PREF, Gate
+from trillion.spend.types import Work
 from trillion.zones import month_start, next_month_start
 
 log = logging.getLogger(__name__)
@@ -262,6 +272,16 @@ def warning_title(name: str, spent: str, soft: str) -> str:
     return f"{name} has used {spent} of its {soft} soft cap this month"
 
 
+def paused_title(name: str, cap: str) -> str:
+    """The one notice that background work paused: every kind of it runs on her model,
+    so all of it waits, whichever was refused first."""
+    return f"Routines, watchers and channel replies are paused: {name} is at its {cap} cap"
+
+
+# The kinds of background work, in the order `paused` lists them.
+WORK: tuple[Work, ...] = ("routines", "asks", "watchers", "channels", "titles", "board")
+
+
 # ── The desk ─────────────────────────────────────────────────────────────
 
 
@@ -289,6 +309,8 @@ class SpendDesk:
         self._switches: dict[str, Switch] = {}
         self._cards: dict[str, Card] = {}
         self._told: dict[str, Any] = {}
+        # Background work refused at a hard cap: provider id to (month, kinds).
+        self._paused: dict[str, tuple[str, set[Work]]] = {}
         # Told after a choice changed a card, and after a switch began or lapsed: the
         # cards changed, and the legs whose switch changed.
         self.changed: Callable[[Sequence[Card], frozenset[Leg]], Awaitable[None]] | None = None
@@ -648,3 +670,58 @@ class SpendDesk:
                 await self.notify(f"spend:warned:{pid}:{month}", title)
             except Exception as e:
                 log.warning("spend warning not given: %s", type(e).__name__)
+
+    # ── Background work at the hard cap ──
+
+    async def held(self, work: Work, provider_id: str | None) -> bool:
+        """Before background work starts: True when its provider is at its hard cap,
+        recorded as paused (`pause`), so the work is not begun. Never raises."""
+        if provider_id is None:
+            return False
+        try:
+            await self._gate.refresh()
+            capped = self._gate.state(provider_id) == "capped"
+        except Exception as e:
+            # Not known: the gate still refuses the call itself if it must.
+            log.warning("spend state not read: %s", type(e).__name__)
+            return False
+        if capped:
+            await self.pause(provider_id, work)
+        return capped
+
+    async def pause(self, provider_id: str, work: Work) -> None:
+        """`work` was refused at this provider's hard cap. The first time this month,
+        one notice through the one door (SUR-9), shown, not spoken. Never raises."""
+        month = self.month()
+        found = self._paused.get(provider_id)
+        if found is None or found[0] != month:
+            found = (month, set())
+            self._paused[provider_id] = found
+        found[1].add(work)
+        told = dict(self._told_in("paused"))
+        if told.get(provider_id) == month:
+            return
+        told[provider_id] = month
+        # Recorded first, with no await since the check: two kinds refused at once
+        # give one notice, and one that fails to write is not tried again.
+        self._told = {**self._told, "paused": told}
+        try:
+            await self._save_told()
+            caps = self._gate.caps(provider_id)
+            title = paused_title(friendly(provider_id), cap_words(float(caps.hard or 0), caps.unit))
+            if self.notify is not None:
+                await self.notify(f"spend:paused:{provider_id}:{month}", title)
+        except Exception as e:
+            log.warning("spend pause notice not given: %s", type(e).__name__)
+
+    def paused(self, provider_id: str) -> list[Work]:
+        """The kinds of background work refused this month at this provider's hard cap,
+        while it is still capped: empty once the cap is raised or the month turns."""
+        found = self._paused.get(provider_id)
+        if found is None:
+            return []
+        month, kinds = found
+        if month != self.month() or self._gate.state(provider_id) != "capped":
+            del self._paused[provider_id]
+            return []
+        return [w for w in WORK if w in kinds]

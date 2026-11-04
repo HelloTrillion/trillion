@@ -14,6 +14,11 @@ Telling has a 20 s limit of its own; one that fails or runs out leaves its finds
 claimed, never told twice. At start the runner marks told the claimed finds
 whose notice was written before a stop.
 
+At a hard spend cap (the spend caps spec) the watchers pause: a check is not begun, so
+its place (cursor and last check) stays where it was and what it would have read is
+read after the cap lifts. A judge refused at the cap mid-way gives its finds back and
+puts the place back, for the same reason. Neither is a failure.
+
 A notice's title is the watcher's own ("Meeting soon"), never the find's: the system
 notification shows it on a lock screen, and an invite title or an email subject is
 someone else's words. The specifics are only in her line.
@@ -30,17 +35,19 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from trillion.attention import words
 from trillion.attention.settings import AttentionSettings
-from trillion.attention.store import KEEP, AttentionStore, Cursor
+from trillion.attention.store import KEEP, AttentionStore, Cursor, WatcherState
 from trillion.brain.types import ModelProvider, Usage
 from trillion.connectors.google.client import GoogleCallError
 from trillion.scheduler.store import Notice, ScheduleStore, https_link
 from trillion.spend.caller import as_caller
+from trillion.spend.gate import SpendCapped
+from trillion.spend.types import Work
 from trillion.spine.clock import Clock
 
 if TYPE_CHECKING:
@@ -154,6 +161,7 @@ class AttentionRunner:
         settings: Callable[[], AttentionSettings],
         google: Callable[[], GoogleConnection | None] = lambda: None,
         registry: ToolRegistry | None = None,
+        held: Callable[[Work], Awaitable[bool]] | None = None,
         tick_s: float = TICK_S,
         check_timeout_s: float = CHECK_TIMEOUT_S,
         tell_timeout_s: float = TELL_TIMEOUT_S,
@@ -167,6 +175,8 @@ class AttentionRunner:
         self._settings = settings
         self._google = google
         self._registry = registry
+        # Whether her model is at its hard spend cap, so the watchers wait.
+        self._held = held
         self.tick_s = tick_s
         self._check_timeout_s = check_timeout_s
         self._tell_timeout_s = tell_timeout_s
@@ -256,6 +266,10 @@ class AttentionRunner:
             logger.error("attention %s failed: %s", w.name, type(e).__name__)
 
     async def _run(self, w: Watcher, settings: AttentionSettings, now: int) -> None:
+        if self._held is not None and await self._held("watchers"):
+            # Not begun: its place stays, so it reads the same again once the cap lifts.
+            logger.info("attention %s: paused at the spend cap", w.name)
+            return
         # Taken first: a reset after this (turned off and on) outranks this check.
         generation = self._store.generation(self._owner, w.name)
         state = await self._store.state(self._owner, w.name)
@@ -298,14 +312,36 @@ class AttentionRunner:
             logger.info("attention %s: nothing new", w.name)
             return
         # Its own task, so a stop lets a notice half written finish (`stop`).
-        telling = asyncio.ensure_future(self._telling_step(w, ctx, [by_key[k] for k in new]))
+        telling = asyncio.ensure_future(
+            self._telling_step(w, ctx, [by_key[k] for k in new], state, generation)
+        )
         self._telling.add(telling)
         telling.add_done_callback(self._telling.discard)
         await asyncio.shield(telling)
 
-    async def _telling_step(self, w: Watcher, ctx: WatchContext, finds: list[Find]) -> None:
+    async def _telling_step(
+        self,
+        w: Watcher,
+        ctx: WatchContext,
+        finds: list[Find],
+        before: WatcherState,
+        generation: int,
+    ) -> None:
         try:
             notice = await asyncio.wait_for(self._tell(w, ctx, finds), self._tell_timeout_s)
+        except SpendCapped:
+            # Refused at the hard cap before anything was said: its finds are given back
+            # and its place put back, so they are read again once the cap lifts.
+            logger.info("attention %s: paused at the spend cap", w.name)
+            await self._store.release(self._owner, [f.key for f in finds])
+            await self._store.checked(
+                self._owner,
+                w.name,
+                before.last_check_ms if before.last_check_ms is not None else ctx.now_ms,
+                cursor=before.cursor,
+                generation=generation,
+            )
+            return
         except Exception as e:
             # Its finds stay claimed: never told twice (D5), shown in Settings as lost.
             logger.warning("attention %s telling failed: %s", w.name, error_kind(e))
@@ -322,7 +358,7 @@ class AttentionRunner:
     async def _tell(self, w: Watcher, ctx: WatchContext, finds: list[Find]) -> Notice | None:
         # A watcher's judging and wording are work nobody is waiting on, in no
         # conversation: the metered provider records each call as that (BRN-7).
-        with as_caller("background"):
+        with as_caller("background", work="watchers"):
             return await self._tell_as_background(w, ctx, finds)
 
     async def _tell_as_background(

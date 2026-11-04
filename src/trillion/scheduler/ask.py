@@ -44,9 +44,10 @@ from trillion.brain.types import (
 from trillion.files.shares import EVERYONE, routine_scope
 from trillion.persona import day
 from trillion.persona.prompt import Identity, scheduled, volatile_context
-from trillion.scheduler.runner import AskFailed, Built, Busy, NoModel
+from trillion.scheduler.runner import AskFailed, Built, Busy, Capped, NoModel
 from trillion.scheduler.store import Schedule
 from trillion.spend.caller import as_caller
+from trillion.spend.types import Work
 from trillion.spine.contract import ToolContext, Via
 from trillion.spine.registry import ROUTINE_BOARD, ROUTINE_NOTHING, ToolRegistry
 from trillion.spine.router import Router
@@ -393,7 +394,8 @@ class _Run:
             # conversation: a routine's cost is its conversation's, so the cost line there
             # has it. A timed ask's conversation is only kept once something happens in
             # it, and a paid call is something: it is made to exist before the row.
-            with as_caller("background", self.conversation, ready=ensure):
+            work: Work = "routines" if self.routine else "asks"
+            with as_caller("background", self.conversation, ready=ensure, work=work):
                 done = await run_turn(
                     provider=provider,
                     router=a._router,
@@ -414,6 +416,9 @@ class _Run:
                 reads.end(self.conversation, self.turn)
         self.stop = done.stop
         if done.stop == "provider_error":
+            if done.error_kind == "capped":
+                # At the hard spend cap: skipped, never failed (the spend caps spec).
+                raise Capped(getattr(provider, "provider_id", None))
             if not self.began and done.error_kind in _UNAVAILABLE:
                 raise NoModel
             raise AskFailed(f"the model failed: {done.error_kind or 'other'}")

@@ -9,3 +9,5 @@ from typing import Literal
 Caller = Literal["conversation", "background"]
 # What a usage row's quantity counts, and what a price is per.
 Unit = Literal["tokens", "chars", "seconds"]
+# Background work, by what the user would call it: what pauses at a hard cap.
+Work = Literal["routines", "asks", "watchers", "channels", "titles", "board"]

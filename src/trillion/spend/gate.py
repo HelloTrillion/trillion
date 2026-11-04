@@ -42,7 +42,7 @@ from trillion.brain.types import ProviderError
 from trillion.spend import prices
 from trillion.spend.caller import current
 from trillion.spend.ledger import Ledger
-from trillion.spend.types import Caller, Unit
+from trillion.spend.types import Caller, Unit, Work
 from trillion.voice.types import VoiceError
 
 log = logging.getLogger(__name__)
@@ -216,6 +216,9 @@ class Gate:
         # The preference itself is malformed: every provider gets its defaults.
         self._malformed = False
         self._loading = asyncio.Lock()
+        # Told when background work labelled with what it is (`as_caller(work=...)`)
+        # is refused, so it can be listed as paused and said once (`SpendDesk.pause`).
+        self.refused: Callable[[str, Work], Awaitable[None]] | None = None
 
     async def reload_caps(self) -> None:
         """Read the caps again. Call it at startup and after every write to them."""
@@ -314,4 +317,10 @@ class Gate:
         # Only a hard cap refuses.
         if caps.hard is None or self.state(provider_id) != "capped":
             return
-        raise error(provider_id, current().caller, caps.hard, caps.unit)
+        call = current()
+        if call.caller == "background" and call.work is not None and self.refused is not None:
+            try:
+                await self.refused(provider_id, call.work)
+            except Exception as e:
+                log.warning("paused work not recorded: %s", type(e).__name__)
+        raise error(provider_id, call.caller, caps.hard, caps.unit)

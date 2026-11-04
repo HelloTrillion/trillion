@@ -13,6 +13,10 @@ it in place. Any failure keeps the old data and is counted on the widget; after 
 in a row it is left alone until the board is opened anew. Nothing is added to the
 conversation; what the model call used is recorded with it, as background work (the
 metered provider records it, BRN-7).
+
+At a hard spend cap (the spend caps spec) a refresh is not begun, and one refused
+mid-way keeps the old data without counting a failure: the board stays as it was,
+and is refreshed again once the cap lifts.
 """
 
 from __future__ import annotations
@@ -28,6 +32,8 @@ from typing import Any, Protocol
 
 from trillion.brain.types import ModelProvider
 from trillion.spend.caller import as_caller
+from trillion.spend.gate import SpendCapped
+from trillion.spend.types import Work
 from trillion.spine.contract import ToolCall, ToolContext, ToolDefinition
 from trillion.spine.router import RouterResponse
 from trillion.workspace import fill, live
@@ -95,6 +101,7 @@ class Refresher:
         enabled: Callable[[], bool],
         tell: Callable[[str, str, bool], Awaitable[None]],
         shares: Callable[[], Awaitable[tuple[tuple[Path, ...], tuple[Path, ...]]]] | None = None,
+        held: Callable[[Work], Awaitable[bool]] | None = None,
         tick_s: float = TICK_S,
     ) -> None:
         self._boards = boards
@@ -111,6 +118,8 @@ class Refresher:
         self._tell = tell
         # The folders her own turns reach, looked at off the event loop for each read.
         self._shares = shares
+        # Whether her model is at its hard spend cap, so refreshes wait.
+        self._held = held
         self.tick_s = tick_s
         self._seen: set[str] = set()
         # In order; a refresh the user asked for goes first.
@@ -272,6 +281,9 @@ class Refresher:
         provider = self._provider()
         if len(mine) != 1 or not self._live(mine[0]) or provider is None:
             return False
+        if self._held is not None and await self._held("board"):
+            # Not begun: the board stays as it was, and it is due again next time.
+            return False
         widget = mine[0]
         key = (conversation_id, widget_id)
         now = self._clock()
@@ -279,14 +291,21 @@ class Refresher:
         self._tried[key] = now
         self.in_flight = key
         await self._tell_safely(conversation_id, widget_id, True)
+        capped = False
         try:
             ok = await self._run(conversation_id, widget, provider)
+        except SpendCapped:
+            # Refused at the hard cap: the old data stays, and it is not a failure.
+            logger.info("refresh of a widget paused at the spend cap")
+            ok, capped = False, True
         except Exception as e:
             logger.warning("refresh of a widget failed: %s", type(e).__name__)
             ok = False
         finally:
             self.in_flight = None
             await self._tell_safely(conversation_id, widget_id, False)
+        if capped:
+            return True
         if ok:
             self._fails.pop(key, None)
         else:
@@ -328,7 +347,7 @@ class Refresher:
             )
         # Nobody is waiting on a refresh: it is background work, counted with the
         # conversation whose board it is.
-        with as_caller("background", conversation_id):
+        with as_caller("background", conversation_id, work="board"):
             answer, _usage = await fill.fill(provider, widget, results)
         if answer is None:
             return False

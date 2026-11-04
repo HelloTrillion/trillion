@@ -156,6 +156,8 @@ class Channels:
             return
         try:
             reply = await self._answerer.answer(m)
+            if reply is None:
+                return  # paused at a spend cap: nothing is sent
             await adapter.reply(m, reply)
         except Exception as e:  # one bad message never stops the channel
             logger.warning("channel message not answered: %s", type(e).__name__)

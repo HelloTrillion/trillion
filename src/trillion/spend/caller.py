@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import NamedTuple
 
-from trillion.spend.types import Caller
+from trillion.spend.types import Caller, Work
 
 
 class Call(NamedTuple):
@@ -24,6 +24,8 @@ class Call(NamedTuple):
     # is only saved once something happens in it (a timed ask) makes it exist here, so
     # the row can name it.
     ready: Callable[[], Awaitable[None]] | None = None
+    # The background work it is, so a refusal at a hard cap can say what paused.
+    work: Work | None = None
 
 
 UNSET = Call("background", None)
@@ -37,10 +39,11 @@ def as_caller(
     conversation_id: str | None = None,
     *,
     ready: Callable[[], Awaitable[None]] | None = None,
+    work: Work | None = None,
 ) -> Iterator[Call]:
     """Label every paid call made inside the block. Blocks nest; leaving one puts back
     the caller from outside it."""
-    call = Call(caller, conversation_id, ready)
+    call = Call(caller, conversation_id, ready, work)
     token = _current.set(call)
     try:
         yield call

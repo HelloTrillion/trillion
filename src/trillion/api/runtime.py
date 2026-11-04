@@ -68,6 +68,7 @@ from trillion.spend.desk import KNOWN_PREF, SpendDesk, Switch
 from trillion.spend.gate import Gate
 from trillion.spend.ledger import Ledger
 from trillion.spend.metered import Meter, MeteredHearing, MeteredModel, MeteredVoice, PriceBook
+from trillion.spend.types import Work
 from trillion.spine.audit import audit_key
 from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
@@ -640,8 +641,14 @@ class Runtime:
         if legs:
             await self.use_switches(legs)
 
+    async def held(self, work: Work) -> bool:
+        """Whether background work of this kind waits: her model is at its hard spend
+        cap. Recorded as paused when it is (`SpendDesk.held`)."""
+        return await self.spend.held(work, getattr(self.provider, "provider_id", None))
+
     async def _spend_notice(self, key: str, title: str) -> None:
-        """A spend warning, through the one door (SUR-9): shown, never spoken."""
+        """A spend notice (a warning, or background work paused), through the one door
+        (SUR-9): shown, never spoken."""
         if self.schedules is None or self.door is None:
             return
         if await self.schedules.has_notice(OWNER, key):
@@ -1325,6 +1332,7 @@ async def open_runtime(
             names=lambda: (rt.identity.agent_name, rt.identity.user_name),
             clock=rt.clock,
             owner=OWNER,
+            held=rt.held,
         ),
         rt.clock,
         slack=rt.slack.slack,
@@ -1362,7 +1370,9 @@ async def open_runtime(
             holds=rt.routine_holds,
         ),
     )
-    rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
+    rt.scheduler = Scheduler(
+        schedules, lambda: rt.clock(), asker, rt.door, routines=asker, held=rt.held
+    )
     rt.quiet = Quiet(settings=lambda: rt.attention_settings, zone=rt.zone, host=rt.live_host)
     rt.door.quiet = rt.quiet
     rt.attention_store = SqliteAttentionStore(attention_conn)
@@ -1376,6 +1386,7 @@ async def open_runtime(
         settings=lambda: rt.attention_settings,
         google=lambda: rt.google,
         registry=registry,
+        held=rt.held,
     )
     meetings = Meetings(GoogleCalendar(lambda: rt.google), clock=lambda: rt.clock(), zone=rt.zone)
     rt.attention.add(meetings)
@@ -1431,6 +1442,7 @@ async def open_runtime(
         enabled=lambda: rt.widgets_fresh,
         tell=rt.send_refreshing,
         shares=rt.reach,
+        held=rt.held,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)
@@ -1462,6 +1474,8 @@ async def open_runtime(
     # a switch saved before a restart still applies, unless the 1st has passed since.
     desk.notify = rt._spend_notice
     desk.changed = rt._spend_changed
+    # Background work refused at a hard cap is listed as paused, and said once.
+    gate.refused = desk.pause
     await rt._seed_known()
     await rt._remember_model(settings)
     # A lapse picks again by itself; a switch still in force is picked here.

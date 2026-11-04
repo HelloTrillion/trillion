@@ -74,7 +74,7 @@ from trillion.scheduler.store import https_link
 from trillion.spend import desk as spend
 from trillion.spend.caller import as_caller
 from trillion.spend.gate import VoiceCapped
-from trillion.spend.types import Caller
+from trillion.spend.types import Caller, Work
 from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
@@ -137,6 +137,7 @@ _R = TypeVar("_R")
 
 def _calls_as(
     caller: Caller,
+    work: Work | None = None,
 ) -> Callable[
     [Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]]],
     Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]],
@@ -151,7 +152,7 @@ def _calls_as(
     ) -> Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]]:
         @functools.wraps(method)
         async def run(session: Session, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-            with as_caller(caller, session.id):
+            with as_caller(caller, session.id, work=work):
                 return await method(session, *args, **kwargs)
 
         return run
@@ -2921,11 +2922,14 @@ class Session:
         return said, Msg(role="assistant", blocks=(TextBlock(text=answer),))
 
     # Her naming the conversation is the title writer's, which nobody waits on.
-    @_calls_as("background")
+    @_calls_as("background", work="titles")
     async def _name(self, said: Msg, reply: Msg) -> None:
         rt = self._rt
         provider = rt.provider
         if provider is None:
+            return
+        if await rt.held("titles"):
+            # At the hard spend cap: the first-words title stays, and nothing is said.
             return
         # Its call is recorded by the metered provider, even if the session closes.
         named, _usage = await naming.name(provider, [said, reply])

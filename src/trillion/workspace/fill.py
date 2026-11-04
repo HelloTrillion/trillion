@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from trillion.brain.types import Done, ModelProvider, Msg, SystemBlock, TextBlock, TextDelta, Usage
+from trillion.spend.gate import SpendCapped
 from trillion.spine.untrusted import wrap
 from trillion.workspace.kit import BoardError, Widget
 from trillion.workspace.schema import FIELDS
@@ -160,6 +161,9 @@ async def fill(
 
     try:
         await asyncio.wait_for(ask(), timeout_s)
+    except SpendCapped:
+        # Refused at the hard cap: not a failed fill-in, which the refresher counts.
+        raise
     except Exception as e:  # best effort: the old data stays
         logger.info("refresh fill-in failed: %s", type(e).__name__)
         return None, usage
