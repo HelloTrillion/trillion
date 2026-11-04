@@ -15,9 +15,12 @@ claimed, never told twice. At start the runner marks told the claimed finds
 whose notice was written before a stop.
 
 At a hard spend cap (the spend caps spec) the watchers pause: a check is not begun, so
-its place (cursor and last check) stays where it was and what it would have read is
-read after the cap lifts. A judge refused at the cap mid-way gives its finds back and
-puts the place back, for the same reason. Neither is a failure.
+its place (cursor and last check) stays where it was, and once the cap lifts it reads
+on from there. A watcher still reads back no further than its own limit: the urgent
+email watcher reads mail from the last day at most (`mail.MAX_BACK_MS`), so mail older
+than that by the time the cap lifts is not read. A watcher refused at the cap mid-way,
+judging or wording, gives its finds back and puts its place back, for the same
+reason. Neither is a failure.
 
 A notice's title is the watcher's own ("Meeting soon"), never the find's: the system
 notification shows it on a lock screen, and an invite title or an email subject is

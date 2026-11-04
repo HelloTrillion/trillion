@@ -48,17 +48,21 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
     await runtime.close()
 
 
-def handed_out(rt: Runtime) -> list[Any]:
+def background(rt: Runtime) -> list[Any]:
     """Every model the runtime hands to work it starts on its own."""
     assert rt.scheduler is not None and rt.attention is not None
     assert rt.refresher is not None and rt.channels is not None
     return [
-        rt.provider,
+        rt.background_provider,  # titles and interrupted sends
         rt.scheduler._routines._provider(),  # routines and timed asks
         rt.attention._provider(),  # the watchers
         rt.refresher._provider(),  # board fill
         rt.channels._answerer.provider(),  # channels
     ]
+
+
+def handed_out(rt: Runtime) -> list[Any]:
+    return [rt.provider, *background(rt)]
 
 
 # ── What the runtime hands out ───────────────────────────────────────────
@@ -95,6 +99,29 @@ async def test_every_model_the_runtime_hands_out_is_metered_after_a_swap(
         assert isinstance(provider, MeteredModel)
         assert provider is rt.provider
         assert provider.provider_id == pid
+
+
+async def test_background_work_keeps_the_usual_model_through_a_switch(rt: Runtime) -> None:
+    """A switch is for the conversation only (decision 7, BRN-11): background work is
+    handed the usual model, metered against its own cap."""
+    from trillion.spend.desk import Switch
+
+    await rt.use_model(ModelSettings(kind="anthropic", model="claude-opus-5-5"))
+    local = ModelSettings(kind="local", model="gemma", base_url="http://localhost:11434/v1")
+    rt.spend._switches["anthropic"] = Switch(
+        leg="model",
+        to="local/gemma",
+        label="gemma",
+        month=rt.spend.month(),
+        until_ms=rt.spend.until(),
+        settings=local.to_json(),
+    )
+    await rt.use_switches(frozenset({"model"}))
+    assert isinstance(rt.provider, MeteredModel) and rt.provider.provider_id == "local"
+    usual = rt.background_provider
+    assert isinstance(usual, MeteredModel) and usual.provider_id == "anthropic"
+    for provider in background(rt):
+        assert provider is usual
 
 
 async def test_a_model_set_directly_is_metered_too(rt: Runtime) -> None:

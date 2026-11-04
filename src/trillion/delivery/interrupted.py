@@ -17,6 +17,7 @@ from typing import Protocol
 from trillion.attention import words
 from trillion.brain.types import ModelProvider, Usage
 from trillion.scheduler.store import Notice
+from trillion.spend.gate import SpendCapped
 from trillion.spine.confirm import PendingAction
 from trillion.spine.router import Settled
 from trillion.spine.untrusted import wrap
@@ -76,9 +77,14 @@ async def line(
 ) -> tuple[str | None, Usage]:
     """Her one line about `a`, or None, and what the call used (BRN-4)."""
     shown = f"The tool it used: {a.tool}\n\n" + wrap("interrupted_action", a.summary)
-    return await words.ask(
-        provider, _INSTRUCTIONS[outcome], shown, f"interrupted {a.id}", timeout_s
-    )
+    try:
+        return await words.ask(
+            provider, _INSTRUCTIONS[outcome], shown, f"interrupted {a.id}", timeout_s
+        )
+    except SpendCapped:
+        # At the hard cap: a safety notice is still given, by its title.
+        logger.info("interrupted %s: no line at the spend cap", a.id)
+        return None, Usage()
 
 
 async def tell(

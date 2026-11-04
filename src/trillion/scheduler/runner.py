@@ -21,7 +21,8 @@ paused routine is not run, and after three failures in a row it pauses itself.
 At a hard spend cap (the spend caps spec) a routine or timed ask is not run: its run is
 `skipped` with the reason `capped`, never failed, retried or counted toward a pause.
 The schedule has already moved on, so it next runs at its next time, if the cap has
-lifted by then.
+lifted by then. One that had already begun (said something or called a tool) when its
+next call was refused may have acted: it is reported failed, like any run cut off.
 
 The runner never touches a surface. It writes notices and tells the door (SUR-9).
 """
@@ -89,6 +90,8 @@ class Capped(Exception):
 
 # A run not made because its model is at its hard spend cap: the run log's reason.
 CAPPED = "capped"
+# A run that had begun when its model reached the hard cap: failed, with this reason.
+CAPPED_MIDWAY = "stopped partway: its model reached the spend cap"
 
 
 class AskFailed(Exception):

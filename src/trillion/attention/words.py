@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from trillion.brain.types import Done, ModelProvider, Msg, SystemBlock, TextBlock, TextDelta, Usage
+from trillion.spend.gate import SpendCapped
 from trillion.spine.untrusted import wrap
 
 if TYPE_CHECKING:
@@ -96,7 +97,8 @@ async def ask(
     provider: ModelProvider, instructions: str, shown: str, what: str, timeout_s: float = TIMEOUT_S
 ) -> tuple[str | None, Usage]:
     """One small call, no tools: its answer as one line (`clean`), or None on a failure,
-    a timeout or an answer cut off at the token limit. `what` names it in the log."""
+    a timeout or an answer cut off at the token limit. `what` names it in the log.
+    Refused at a hard spend cap, it raises `SpendCapped`."""
     text: list[str] = []
     usage = Usage()
     cut = False
@@ -117,6 +119,10 @@ async def ask(
 
     try:
         await asyncio.wait_for(run(), timeout_s)
+    except SpendCapped:
+        # Refused at the hard cap: the caller decides (a watcher pauses and reads again
+        # later), never told as if she had nothing to say.
+        raise
     except Exception as e:
         logger.info("%s: no line: %s", what, type(e).__name__)
         return None, usage

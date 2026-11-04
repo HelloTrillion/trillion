@@ -2925,7 +2925,8 @@ class Session:
     @_calls_as("background", work="titles")
     async def _name(self, said: Msg, reply: Msg) -> None:
         rt = self._rt
-        provider = rt.provider
+        # Background work: the usual model, never a switch (`background_provider`).
+        provider = rt.background_provider
         if provider is None:
             return
         if await rt.held("titles"):

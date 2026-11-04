@@ -42,6 +42,7 @@ from trillion.brain.types import ModelEvent, Msg, TextBlock
 from trillion.channels.base import Inbound
 from trillion.scheduler.when import Repeat
 from trillion.spend.gate import ModelCapped
+from trillion.spend.ledger import Row
 from trillion.spend.types import Work
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
@@ -139,7 +140,7 @@ async def test_a_routine_at_the_cap_is_skipped_capped_and_waits_for_its_next_tim
     assert await runs(rt) == [("skipped", "capped")]
     # Said once, by the app, shown and not spoken; no failed or missed notice.
     assert [(n[1], n[2], n[3]) for n in await notices(rt)] == [("heads_up", PAUSED, None)]
-    assert rt.spend.paused("anthropic") == ["routines"]
+    assert await rt.spend.paused("anthropic") == ["routines", "titles", "board"]
 
     # Its next time, still capped: skipped again, and nothing more said.
     at(rt, ms("2026-11-11T09:00"))
@@ -169,7 +170,7 @@ async def test_a_timed_ask_at_the_cap_is_skipped_and_leaves_no_conversation(
     ) as cur:
         assert (await cur.fetchone())[0] == 0  # type: ignore[index]
     # Two kinds paused, one notice.
-    assert rt.spend.paused("anthropic") == ["routines", "asks"]
+    assert await rt.spend.paused("anthropic") == ["routines", "asks", "titles", "board"]
     assert [n[2] for n in await paused_notices(rt)] == [PAUSED]
 
 
@@ -201,10 +202,10 @@ async def test_routines_resume_when_the_cap_is_raised(rt: Runtime) -> None:
     await capped(rt, provider)
     await rt.schedules.create(daily(kind="ask", target=None, next_due_ms=now))
     await rt.scheduler.tick()
-    assert rt.spend.paused("anthropic") == ["asks"]
+    assert await rt.spend.paused("anthropic") == ["asks", "titles", "board"]
 
     await caps(rt, anthropic=RAISED)
-    assert rt.spend.paused("anthropic") == []
+    assert await rt.spend.paused("anthropic") == []
     at(rt, ms("2026-11-11T09:00"))
     await rt.scheduler.tick()
     assert len(provider.calls) == 1
@@ -222,14 +223,14 @@ async def test_everything_resumes_on_the_1st_and_a_new_month_says_so_again(
     await capped(rt, provider)
     await rt.schedules.create(daily(kind="ask", target=None, next_due_ms=now))
     await rt.scheduler.tick()
-    assert rt.spend.paused("anthropic") == ["asks"]
+    assert await rt.spend.paused("anthropic") == ["asks", "titles", "board"]
     assert len(await paused_notices(rt)) == 1
 
     # The 1st: a new month has spent nothing, so it runs.
     first = next_month_start(now, rt.zone() or "")
     at(rt, ms("2026-12-01T09:00"))
     assert rt.clock() >= first
-    assert rt.spend.paused("anthropic") == []
+    assert await rt.spend.paused("anthropic") == []
     await rt.scheduler.tick()
     assert len(provider.calls) == 1
     assert [r[0] for r in await runs(rt)] == ["skipped", "delivered"]
@@ -360,14 +361,14 @@ async def test_a_judge_refused_mid_way_gives_its_finds_back(watching: Watching) 
     assert found.status == "told"
 
 
-async def test_the_runtime_watchers_ask_before_they_read(rt: Runtime) -> None:
+async def test_the_runtime_holds_background_work_until_the_cap_is_raised(rt: Runtime) -> None:
     quiet(rt)
     await capped(rt, ScriptedProvider())
     assert await rt.held("watchers")
-    assert rt.spend.paused("anthropic") == ["watchers"]
+    assert await rt.spend.paused("anthropic") == ["titles", "board"]
     await caps(rt, anthropic=RAISED)
     assert not await rt.held("watchers")
-    assert rt.spend.paused("anthropic") == []
+    assert await rt.spend.paused("anthropic") == []
 
 
 # ── Titles, board refreshes and channel replies: dropped quietly ─────────
@@ -385,7 +386,7 @@ async def test_a_title_at_the_cap_is_dropped_quietly(rt: Runtime) -> None:
         await session._name(said, reply)
         assert provider.calls == []
         assert page.all("conversation.title") == [] and page.all("error") == []
-        assert rt.spend.paused("anthropic") == ["titles"]
+        assert await rt.spend.paused("anthropic") == ["titles", "board"]
     finally:
         await session.close()
 
@@ -413,7 +414,7 @@ async def test_a_channel_reply_at_the_cap_is_not_made_and_nothing_is_kept(
     assert await rt.channels._answerer.answer(m) is None
     assert provider.calls == []
     assert not await rt.conversations.exists(m.conversation, OWNER)
-    assert rt.spend.paused("anthropic") == ["channels"]
+    assert await rt.spend.paused("anthropic") == ["titles", "board"]
 
 
 async def test_a_channel_reply_refused_mid_way_is_dropped_too(rt: Runtime) -> None:
@@ -469,7 +470,7 @@ async def test_a_board_refresh_at_the_cap_leaves_the_board_as_it_was(world: Worl
     assert world.page.all("board.refreshing") == []
     assert await world.board() == before
     assert world.refresher._fails == {}
-    assert rt.spend.paused("anthropic") == ["board"]
+    assert await rt.spend.paused("anthropic") == ["titles", "board"]
 
     # Raised: it refreshes on the next step.
     await caps(rt, anthropic=RAISED)
@@ -517,5 +518,210 @@ async def test_a_deferred_find_is_claimed_again_and_never_deleted(tmp_path: Path
         assert await store.claim("local", "email", ["k1"], NOW + 2) == []
         async with conn.execute("SELECT COUNT(*) FROM attention_finds") as cur:
             assert (await cur.fetchone())[0] == 3  # type: ignore[index]
+    finally:
+        await conn.close()
+
+
+# ── Review fixes: the usual model, words, began work, paused kinds, 018 ──
+
+
+async def test_a_switch_never_carries_background_work(rt: Runtime) -> None:
+    """A switch is for the conversation (decision 7, BRN-11): at the usual model's cap a
+    routine is skipped, and the model switched to is never called for it."""
+    from tests.api.test_spend_session import GEMMA
+    from trillion.spend.desk import Switch
+
+    assert rt.schedules is not None and rt.scheduler is not None
+    quiet(rt)
+    now = ms("2026-11-10T09:00")
+    at(rt, now)
+    await capped(rt, ScriptedProvider())
+    rt.spend._switches["anthropic"] = Switch(
+        leg="model",
+        to="local/gemma",
+        label="gemma",
+        month=rt.spend.month(),
+        until_ms=next_month_start(now, rt.zone() or ""),
+        settings=GEMMA.to_json(),
+    )
+    await rt.use_switches(frozenset({"model"}))
+    local = ScriptedProvider(say("never"))
+    rt.provider = local
+    assert getattr(rt.provider, "provider_id", None) == "local"
+    background = rt.background_provider
+    assert getattr(background, "provider_id", None) == "anthropic"
+    assert background is not rt.provider
+
+    await rt.schedules.create(daily(next_due_ms=now))
+    await rt.scheduler.tick()
+    assert local.calls == []
+    assert await runs(rt) == [("skipped", "capped")]
+    assert "routines" in await rt.spend.paused("anthropic")
+
+    # Even unasked, the gate refuses it on the usual model: no call goes to the switch.
+    rt.scheduler._held = None
+    await rt.schedules.create(daily(id="b2c3d4e5", kind="ask", target=None, next_due_ms=now))
+    await rt.scheduler.tick()
+    assert local.calls == []
+    assert await runs(rt) == [("skipped", "capped"), ("skipped", "capped")]
+
+
+async def test_a_watcher_wording_refused_at_the_cap_is_not_told(tmp_path: Path) -> None:
+    from tests.unit.attention.test_runner import Watcher
+    from trillion.attention import words
+    from trillion.attention.runner import Find
+    from trillion.delivery import interrupted
+
+    # Words refused at the cap raise, never come back as "nothing to say".
+    with pytest.raises(ModelCapped):
+        await words.line(ScriptedProvider(refused()), "meetings", [], "")
+    # A safety notice still has its title: no line, nothing raised.
+    action = type("A", (), {"tool": "t", "summary": "s", "id": "a1"})()
+    assert await interrupted.line(ScriptedProvider(refused()), "unknown", action) == (  # type: ignore[arg-type]
+        None,
+        interrupted.Usage(),
+    )
+
+    a, b = await connect(tmp_path / "t.db"), await connect(tmp_path / "t.db")
+    try:
+        await migrate(a)
+        store = SqliteAttentionStore(a)
+        door = Door()
+        clock = FakeClock(NOW)
+        provider: list[Any] = [ScriptedProvider(refused(), say("Planning starts at ten."))]
+        runner = AttentionRunner(
+            store,
+            SqliteScheduleStore(b),
+            door,
+            clock=clock,
+            owner="local",
+            provider=lambda: provider[0],
+            settings=lambda: ON,
+        )
+        w = Watcher(finds=[Find(key="meeting:1", title="Planning", facts={"title": "x"})])
+        runner.add(w)
+        await runner.tick()
+        assert door.notices == []  # not told while "watchers are paused"
+        assert await store.recent("local", clock()) == []
+        clock.advance(int(w.interval_s * 1000))
+        await runner.tick()
+        (n,) = door.notices
+        assert n.text == "Planning starts at ten."
+    finally:
+        await a.close()
+        await b.close()
+
+
+async def test_a_run_that_had_begun_when_refused_is_failed_with_the_reason(
+    rt: Runtime,
+) -> None:
+    from tests.brain.fakes import use
+    from trillion.scheduler.runner import CAPPED_MIDWAY
+
+    assert rt.schedules is not None and rt.scheduler is not None
+    quiet(rt)
+    now = ms("2026-11-10T09:00")
+    at(rt, now)
+    # A timed ask that called a tool, then was refused on its next round.
+    await on_model(
+        rt, ANTHROPIC, ScriptedProvider(use("describe_self", {}, "c1", text="Looking."), refused())
+    )
+    await rt.schedules.create(daily(kind="ask", target=None, next_due_ms=now))
+    await rt.scheduler.tick()
+    assert await runs(rt) == [("failed", CAPPED_MIDWAY)]
+    assert [n[1] for n in await notices(rt)] == ["failed"]
+    # A routine likewise, counted as a failure in a row.
+    rt.provider = ScriptedProvider(use("describe_self", {}, "c2", text="Looking."), refused())
+    await rt.schedules.create(daily(id="b2c3d4e5", next_due_ms=now))
+    await rt.scheduler.tick()
+    assert (await runs(rt))[-1] == ("failed", CAPPED_MIDWAY)
+    s = await rt.schedules.get("b2c3d4e5")
+    assert s is not None and s.failures == 1
+
+
+async def test_paused_lists_the_work_set_up_and_holds_across_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.api.test_spend_session import _open, _secrets
+
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    first = await _open(tmp_path, _secrets())
+    try:
+        assert first.schedules is not None
+        await on_model(first, ANTHROPIC, ScriptedProvider())
+        await caps(first, anthropic=CAPS)
+        await first.schedules.create(daily(next_due_ms=None))
+        await first.schedules.create(daily(id="b2c3d4e5", kind="ask", target=None))
+        await first.conversations._conn.execute(
+            "INSERT INTO usage (owner_id, conversation_id, provider, model, input_tokens,"
+            " output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, created_at,"
+            " provider_id, caller, units)"
+            " VALUES ('local', NULL, 'anthropic', 'm', 1, 1, 0, 0, 50.0, ?, 'anthropic',"
+            " 'background', 'tokens')",
+            (first.clock(),),
+        )
+        await first.conversations._conn.commit()
+    finally:
+        await first.close()
+    again = await _open(tmp_path, _secrets())
+    try:
+        # Nothing has run since the restart: what is set up is listed, in order.
+        assert await again.spend.paused("anthropic") == ["routines", "asks", "titles", "board"]
+        # Turned off, a kind is not listed; another provider pauses nothing.
+        again.widgets_fresh = False
+        assert await again.spend.paused("anthropic") == ["routines", "asks", "titles"]
+        await caps(again, anthropic=CAPS, openai=CAPS)
+        again.ledger.add(Row("openai", "conversation", "tokens", 0, 50.0, again.clock()))
+        assert again.gate.state("openai") == "capped"
+        assert await again.spend.paused("openai") == []
+    finally:
+        await again.close()
+
+
+async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> None:
+    from importlib.resources import files
+
+    before = tmp_path / "before"
+    before.mkdir()
+    for entry in (files("trillion.storage") / "migrations").iterdir():
+        if entry.name.endswith(".sql") and entry.name < "018":
+            (before / entry.name).write_text(entry.read_text(encoding="utf-8"), encoding="utf-8")
+    conn = await connect(tmp_path / "old.db")
+    try:
+        await migrate(conn, before)
+        for i, status in enumerate(("claimed", "told", "silent", "dismissed")):
+            await conn.execute(
+                "INSERT INTO attention_finds (rowid, owner_id, key, watcher, first_seen_ms,"
+                " notice_id, status, dismissed_ms, detail) VALUES (?, 'local', ?, 'email', ?,"
+                " ?, ?, ?, ?)",
+                (
+                    10 + 3 * i,
+                    f"k{i}",
+                    NOW + i,
+                    f"n{i}" if status == "told" else None,
+                    status,
+                    NOW if status == "dismissed" else None,
+                    f"detail {i}",
+                ),
+            )
+        await conn.commit()
+        sql = "SELECT rowid, * FROM attention_finds ORDER BY rowid"
+        async with conn.execute(sql) as cur:
+            rows = [tuple(r) for r in await cur.fetchall()]
+        assert await migrate(conn) == ["018_attention_deferred"]
+        async with conn.execute(sql) as cur:
+            assert [tuple(r) for r in await cur.fetchall()] == rows
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'attention_finds'"
+            " AND sql IS NOT NULL"
+        ) as cur:
+            assert [r[0] for r in await cur.fetchall()] == ["attention_finds_recent"]
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'attention_finds_before%'"
+        ) as cur:
+            assert await cur.fetchall() == []
+        await conn.execute("UPDATE attention_finds SET status = 'deferred' WHERE key = 'k0'")
+        async with conn.execute("PRAGMA foreign_key_check") as cur:
+            assert await cur.fetchall() == []
     finally:
         await conn.close()

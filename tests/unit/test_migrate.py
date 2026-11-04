@@ -117,7 +117,7 @@ SHIPPED = {
     "016_decision_events.sql": ("7ed1dbea2c94cd2255016b0afba2045a98b11a7448650c25e529cc0c71cf52bb"),
     "017_usage_spend.sql": "14f30b86a751145bcaf72fa291f509d54e0c2545be606df1ee38d331c6e410e5",
     "018_attention_deferred.sql": (
-        "ab8425e02546653704a4a077934e5149131e02fc4037c4d84b8df0520bf07a6e"
+        "521447edaea29b579b5dde70a3e573e2826531ea653abce865e80318f1d98d8d"
     ),
 }
 

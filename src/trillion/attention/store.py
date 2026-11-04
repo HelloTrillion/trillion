@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol
 
-FindStatus = Literal["claimed", "told", "silent", "dismissed"]
+FindStatus = Literal["claimed", "told", "silent", "dismissed", "deferred"]
 # Recent finds, as Settings lists them: the dedup window the spec names.
 RECENT_MS = 14 * 86_400_000
 

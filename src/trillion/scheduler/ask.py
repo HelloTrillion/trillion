@@ -44,7 +44,7 @@ from trillion.brain.types import (
 from trillion.files.shares import EVERYONE, routine_scope
 from trillion.persona import day
 from trillion.persona.prompt import Identity, scheduled, volatile_context
-from trillion.scheduler.runner import AskFailed, Built, Busy, Capped, NoModel
+from trillion.scheduler.runner import CAPPED_MIDWAY, AskFailed, Built, Busy, Capped, NoModel
 from trillion.scheduler.store import Schedule
 from trillion.spend.caller import as_caller
 from trillion.spend.types import Work
@@ -417,7 +417,10 @@ class _Run:
         self.stop = done.stop
         if done.stop == "provider_error":
             if done.error_kind == "capped":
-                # At the hard spend cap: skipped, never failed (the spend caps spec).
+                if self.began or self.touched:
+                    # It had begun, and may have acted: a run cut off, told as failed.
+                    raise AskFailed(CAPPED_MIDWAY)
+                # Refused before it began: skipped, never failed (the spend caps spec).
                 raise Capped(getattr(provider, "provider_id", None))
             if not self.began and done.error_kind in _UNAVAILABLE:
                 raise NoModel

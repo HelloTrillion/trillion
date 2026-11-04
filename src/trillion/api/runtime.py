@@ -37,6 +37,7 @@ from trillion.brain.providers.anthropic import DEFAULT_MODEL
 from trillion.brain.standing import StandingRules
 from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.channels.answer import Answerer
+from trillion.channels.manager import PLATFORMS as CHANNEL_PLATFORMS
 from trillion.channels.manager import Channels
 from trillion.connectors.google.connection import GoogleConnection
 from trillion.connectors.mcp.config import load as mcp_load
@@ -472,6 +473,9 @@ class Runtime:
     # Wakes at the next 1st, when a switch until then ends (BRN-8).
     _month_timer: asyncio.Task[None] | None = None
     month_look_s: float = MONTH_LOOK_S
+    # The usual model, as chosen, while a switch puts another in `provider`: what
+    # background work runs on (`background_provider`).
+    _usual_model: MeteredModel | None = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -535,8 +539,21 @@ class Runtime:
             return ListenSettings(kind="whisper", choice=str(choice or ""))
         return chosen
 
+    @property
+    def background_provider(self) -> ModelProvider | None:
+        """The model background work runs on: always the usual one, never a switch.
+        A switch is the user's choice for their conversation only (the spend caps spec,
+        decision 7, BRN-11): routines, watchers, refreshes, channels and titles never
+        move to another model, so at the usual one's hard cap they pause, and its gate
+        refuses them if they try."""
+        chosen = model_provider_id(self.settings, self.source, self.env)
+        if self._model_switch(chosen) is None:
+            return self.provider
+        return self._usual_model
+
     def _pick_model(self) -> tuple[MeteredModel | None, Source]:
         provider, source = metered_resolve(self.meter, self.settings, self.secrets, self.env)
+        self._usual_model = provider
         switched = self._model_switch(provider.provider_id if provider is not None else None)
         if switched is not None:
             # Built from the switch alone: the environment chooses only the usual one.
@@ -644,7 +661,32 @@ class Runtime:
     async def held(self, work: Work) -> bool:
         """Whether background work of this kind waits: her model is at its hard spend
         cap. Recorded as paused when it is (`SpendDesk.held`)."""
-        return await self.spend.held(work, getattr(self.provider, "provider_id", None))
+        usual = self.background_provider
+        return await self.spend.held(work, getattr(usual, "provider_id", None))
+
+    async def background_work(self) -> tuple[str | None, frozenset[Work]]:
+        """The provider background work runs on (the usual model's), and the kinds of
+        it set up now: what pauses at that provider's hard cap (`SpendDesk.paused`)."""
+        kinds: set[Work] = {"titles"}
+        if self.widgets_fresh:
+            kinds.add("board")
+        if self.schedules is not None:
+            for s in await self.schedules.active(OWNER):
+                if s.kind == "ask" and s.paused_ms is None:
+                    kinds.add("routines" if s.target is not None else "asks")
+        if self.attention is not None:
+            for w in self.attention.watchers:
+                try:
+                    if w.enabled(self.attention_settings):
+                        kinds.add("watchers")
+                except Exception as e:
+                    logger.warning("watcher %s: can't tell if on: %s", w.name, type(e).__name__)
+        channels = self.channels
+        if channels is not None and any(
+            channels.on.get(p) and channels.configured(p) for p in CHANNEL_PLATFORMS
+        ):
+            kinds.add("channels")
+        return getattr(self.background_provider, "provider_id", None), frozenset(kinds)
 
     async def _spend_notice(self, key: str, title: str) -> None:
         """A spend notice (a warning, or background work paused), through the one door
@@ -938,11 +980,13 @@ class Runtime:
             return
         try:
             # Work nobody is waiting on, in no conversation: its model call is the
-            # metered provider's to record.
+            # metered provider's to record. Deliberately labelled with no kind of work:
+            # it is a safety notice, never paused or listed as paused. At a hard cap its
+            # wording call is refused and the notice is still given, by its title.
             with as_caller("background"):
                 made, _usage = await interrupted.tell(
                     self.schedules,
-                    self.provider,
+                    self.background_provider,
                     OWNER,
                     settled,
                     self.spine_store.get_pending,
@@ -1262,6 +1306,7 @@ async def open_runtime(
         compact_at=(budget := _compact_at(env)),
         compact_keep=min(compact.KEEP, budget // 4),
         provider=provider,
+        _usual_model=provider,
         source=source,
         settings=settings,
         speech=speech,
@@ -1326,7 +1371,7 @@ async def open_runtime(
         paths.channels_config_path(),
         Answerer(
             conversations=rt.conversations,
-            provider=lambda: rt.provider,
+            provider=lambda: rt.background_provider,
             # No shared folders and no standing rules: a channel answers, it never acts.
             system=lambda: system_blocks(rt.identity, rt.soul),
             names=lambda: (rt.identity.agent_name, rt.identity.user_name),
@@ -1349,7 +1394,7 @@ async def open_runtime(
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
     rt.jobs = Jobs(clock=lambda: rt.clock(), changed=rt.send_jobs)
     asker = Asker(
-        provider=lambda: rt.provider,
+        provider=lambda: rt.background_provider,
         router=router,
         registry=registry,
         conversations=rt.conversations,
@@ -1382,7 +1427,7 @@ async def open_runtime(
         rt.door,
         clock=lambda: rt.clock(),
         owner=OWNER,
-        provider=lambda: rt.provider,
+        provider=lambda: rt.background_provider,
         settings=lambda: rt.attention_settings,
         google=lambda: rt.google,
         registry=registry,
@@ -1435,7 +1480,7 @@ async def open_runtime(
         boards=rt.boards,
         router=router,
         definition=registry.definition,
-        provider=lambda: rt.provider,
+        provider=lambda: rt.background_provider,
         clock=lambda: rt.clock(),
         owner=OWNER,
         busy=rt.turn_running,
@@ -1476,6 +1521,7 @@ async def open_runtime(
     desk.changed = rt._spend_changed
     # Background work refused at a hard cap is listed as paused, and said once.
     gate.refused = desk.pause
+    desk.background = rt.background_work
     await rt._seed_known()
     await rt._remember_model(settings)
     # A lapse picks again by itself; a switch still in force is picked here.
