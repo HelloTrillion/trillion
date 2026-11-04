@@ -20,6 +20,7 @@ from trillion.brain.types import (
     ToolUseBlock,
     Usage,
 )
+from trillion.spend.ledger import Caller, Unit
 
 Kind = Literal["user", "tap", "assistant", "tool_results"]
 # Only something the user said advances the turn the model acts in (VOI-15a). A tap
@@ -487,11 +488,19 @@ class SqliteConversationStore:
         usage: Usage,
         cost_usd: float | None,
         now_ms: int,
+        # The cap this call counts against (trillion.spend.prices); None stores
+        # `provider` there, as the migration did for old rows.
+        provider_id: str | None = None,
+        caller: Caller = "conversation",
+        # What `usage` counts: a voice row's characters or a hearing row's seconds go
+        # in input_tokens, with the other three left at 0.
+        units: Unit = "tokens",
     ) -> None:
         await self._conn.execute(
             "INSERT INTO usage (owner_id, conversation_id, provider, model, input_tokens,"
-            " output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, created_at,"
+            " provider_id, caller, units)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 owner_id,
                 conversation_id,
@@ -503,8 +512,26 @@ class SqliteConversationStore:
                 usage.cache_write_tokens,
                 cost_usd,
                 now_ms,
+                provider if provider_id is None else provider_id,
+                caller,
+                units,
             ),
         )
+
+    async def spend_since(self, owner_id: str, since_ms: int) -> list[dict[str, Any]]:
+        """Spend per provider id, caller and unit since a moment (BRN-7), for the
+        ledger. `cost_usd` sums the priced rows, None when none was priced;
+        `unpriced` is the quantity of the rows nothing priced, never $0."""
+        async with self._conn.execute(
+            "SELECT provider_id, caller, units, SUM(cost_usd),"
+            " SUM(CASE WHEN cost_usd IS NULL THEN input_tokens + output_tokens"
+            " + cache_read_tokens + cache_write_tokens ELSE 0 END)"
+            " FROM usage WHERE owner_id = ? AND created_at >= ?"
+            " GROUP BY provider_id, caller, units",
+            (owner_id, since_ms),
+        ) as cur:
+            names = ("provider_id", "caller", "units", "cost_usd", "unpriced")
+            return [dict(zip(names, r, strict=True)) for r in await cur.fetchall()]
 
     async def usage_since(self, owner_id: str, since_ms: int) -> list[dict[str, Any]]:
         """Usage per provider and model since a moment (BRN-4). A NULL cost is unknown,

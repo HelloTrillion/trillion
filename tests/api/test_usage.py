@@ -10,9 +10,9 @@ from typing import Any
 
 from tests.api.test_server import App, home, make  # noqa: F401
 from trillion.api.runtime import OWNER
-from trillion.api.usage import month_start
 from trillion.brain.types import Usage
 from trillion.persona import setup
+from trillion.zones import month_start
 
 PATH = "/api/usage"
 NOW = 1792670400000  # 2026-10-22 12:00 UTC

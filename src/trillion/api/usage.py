@@ -7,22 +7,12 @@ tokens, never as $0, so the bill can never look smaller than it is.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
 
 from trillion.api.runtime import OWNER, Runtime
-
-
-def month_start(now_ms: int, zone: str) -> tuple[str, int]:
-    """The month `now_ms` falls in, and when it began: midnight on the 1st in `zone`,
-    or in this machine's local time when no zone is set."""
-    # A naive datetime is local time, and .timestamp() reads it back as local time.
-    now = datetime.fromtimestamp(now_ms / 1000, ZoneInfo(zone) if zone else None)
-    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    return f"{start:%Y-%m}", int(start.timestamp() * 1000)
+from trillion.zones import month_start
 
 
 def create_usage_router(rt: Runtime) -> APIRouter:
