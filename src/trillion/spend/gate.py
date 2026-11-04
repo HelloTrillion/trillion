@@ -249,6 +249,10 @@ class Gate:
         spent = self._ledger.spent(provider_id)
         return spent.units if spent.unit == caps.unit else 0.0
 
+    def counted(self, provider_id: str) -> float:
+        """The month so far, in the unit of this provider's caps."""
+        return self._counted(provider_id, self.caps(provider_id))
+
     def unestimated(self, provider_id: str | None) -> tuple[float, Unit] | None:
         """Unpriced units this month that count toward none of this provider's caps:
         under dollar caps, those with no rate in the table to estimate from; under unit

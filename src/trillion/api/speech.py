@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trillion.persona.prompt import degraded
+from trillion.spend.gate import VoiceCapped
 from trillion.voice.sentences import SentenceSplitter
 from trillion.voice.speakable import speakable
 from trillion.voice.timeline import WINDOW_S
@@ -45,6 +46,8 @@ SendJson = Callable[..., Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
 # Her audio for a sentence as it is sent: seq, as written, as said, loudness per 20 ms.
 OnAudio = Callable[[int, str, str, list[float]], None]
+# Her voice reached its hard cap (BRN-7): the session says so, and offers the card.
+OnCapped = Callable[[VoiceCapped], Awaitable[None]]
 _DEFAULT_RATE = 16_000
 
 
@@ -63,6 +66,7 @@ class Speaker:
         send: SendJson,
         send_bytes: SendBytes,
         on_audio: OnAudio | None = None,
+        on_capped: OnCapped | None = None,
     ) -> None:
         self._provider = provider
         self._voice = voice
@@ -70,6 +74,7 @@ class Speaker:
         self._send = send
         self._send_bytes = send_bytes
         self._on_audio = on_audio
+        self._on_capped = on_capped
         fmt = provider.output_format
         rate = fmt.sample_rate * fmt.channels if fmt is not None else _DEFAULT_RATE
         # Bytes of PCM16 in one loudness window.
@@ -209,6 +214,11 @@ class Speaker:
                     if pending:
                         await self._send_bytes(frame(self._turn, seq, pending))
                     break
+                except VoiceCapped as e:
+                    # Refused before anything was sent: the sentence before it finished,
+                    # and the rest of the reply is text.
+                    await self._capped(e)
+                    break
                 except VoiceError as e:
                     # Speaking again is only ever speaking again: nothing the reply did is
                     # repeated, because the speaker holds text and never a tool call. A
@@ -229,6 +239,22 @@ class Speaker:
     def _report(self, seq: int, written: str, spoken: str, levels: list[float]) -> None:
         if self._on_audio is not None and levels:
             self._on_audio(seq, written, spoken, levels)
+
+    async def _capped(self, e: VoiceCapped) -> None:
+        if self._failed:
+            return
+        self._failed = self._down = True
+        logger.warning("speech provider %s is at its cap", self._provider.name)
+        if self._on_capped is None:
+            await self._send(
+                "error", code="speech", kind=e.kind, sentence=degraded("voice", "other")
+            )
+            return
+        try:
+            await self._on_capped(e)
+        except Exception as err:
+            # The class name only, as everywhere: the reply itself is unaffected.
+            logger.error("telling of the voice cap failed: %s", type(err).__name__)
 
     async def _fail(self, kind: str) -> None:
         if self._failed:

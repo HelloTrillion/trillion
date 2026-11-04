@@ -1,0 +1,592 @@
+"""Your conversation at the caps (BRN-7, BRN-8): the spend card, the switch that lasts
+until the 1st, and what is said once a month.
+
+**The spend card.** At a hard cap the session sends one line from the app and then a
+card with the choices that cap allows. It is the app's card, not a pending action. A
+choice is accepted only from the conversation it was sent to, while its page is open,
+and only by a tap (SPN-14): it is about money. Cards are kept in the preference
+`spend_cards`, so a reload, or a restart, shows a card still waiting, or one put off
+with "stop for now", from the banner. A card closes when it is answered by raising or
+switching, and is no longer shown once its provider is not capped.
+
+**The switch.** "Use X until Dec 1" is the preference `spend_switch`, `{provider_id:
+{leg, to, label, until_ms, settings}}`, until midnight on the next 1st in the user's
+timezone. The runtime applies it whenever it picks a model, voice or hearing, so it
+holds after a restart. Once its time has passed it lapses, and her next turn carries a
+host note saying she is back on the usual one (PER-11), once.
+
+**Once a month.** The preference `spend_told` records, per provider and month, that
+the warning notice was given (`warned`) and that the soft cap was mentioned
+(`over_soft`), and holds the lapse notes still to be said (`back`).
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import uuid
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
+from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
+
+from trillion.spend.gate import DEFAULT_CHARS, DEFAULT_SECONDS, DEFAULT_TOKENS, PREF, Gate
+from trillion.zones import month_start, next_month_start
+
+log = logging.getLogger(__name__)
+
+SWITCH_PREF = "spend_switch"
+CARDS_PREF = "spend_cards"
+TOLD_PREF = "spend_told"
+# The model last chosen on each provider, so a card can offer one already set up.
+KNOWN_PREF = "models_known"
+
+Leg = Literal["model", "voice", "hearing"]
+Status = Literal["open", "stopped", "raised", "switched"]
+# A card still to be shown: waiting for a choice, or put off from the banner.
+_STANDING: frozenset[str] = frozenset({"open", "stopped"})
+# What each leg's card offers besides raising and switching.
+_STOP: dict[Leg, str] = {"model": "stop", "voice": "text", "hearing": "type"}
+
+
+# ── Words ────────────────────────────────────────────────────────────────
+
+_NAMES = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "elevenlabs": "ElevenLabs",
+    "deepgram": "Deepgram",
+    "local": "this computer",
+}
+_HOSTS = {"openrouter.ai": "OpenRouter", "api.deepseek.com": "DeepSeek", "api.openai.com": "OpenAI"}
+
+
+def friendly(provider_id: str) -> str:
+    """A provider as the user knows it: its name, or the host of a custom address."""
+    if provider_id in _NAMES:
+        return _NAMES[provider_id]
+    _kind, _, host = provider_id.partition(":")
+    return _HOSTS.get(host, host) if host else provider_id
+
+
+def _number(n: float, word: str, plural: bool) -> str:
+    s = "s" if plural and n != 1 else ""
+    if n >= 1_000_000 and round(n / 1_000_000, 1) * 1_000_000 == round(n):
+        return f"{n / 1_000_000:g} million {word}{s}"
+    return f"{n:,.0f} {word}{s}"
+
+
+def _words(n: float, unit: str, *, plural: bool) -> str:
+    if unit == "dollars":
+        return f"${n:,.0f}" if float(n).is_integer() else f"${n:,.2f}"
+    if unit == "seconds":
+        return _number(n / 60, "minute", plural)
+    return _number(n, "character" if unit == "chars" else "token", plural)
+
+
+def cap_words(cap: float, unit: str) -> str:
+    """A cap as it is named before the word cap: "$50", "12 million token"."""
+    return _words(cap, unit, plural=False)
+
+
+def amount_words(n: float, unit: str) -> str:
+    """An amount spent: "$16.50", "4.2 million tokens"."""
+    if unit == "dollars":
+        return f"${n:,.2f}"
+    return _words(n, unit, plural=True)
+
+
+# The step a raise suggests: $25, and for a cap counted in units, half that unit's
+# default hard cap, which is the same $25 at the rate the default assumes.
+_STEP = {
+    "dollars": 25.0,
+    "tokens": float(DEFAULT_TOKENS.hard or 0) / 2,
+    "chars": float(DEFAULT_CHARS.hard or 0) / 2,
+    "seconds": float(DEFAULT_SECONDS.hard or 0) / 2,
+}
+
+
+def next_step(cap: float, unit: str) -> float:
+    """The next round step above `cap`: $50 suggests $75, $60 suggests $75 too."""
+    step = _STEP.get(unit, 25.0)
+    return (math.floor(cap / step + 1e-9) + 1) * step
+
+
+def until_words(until_ms: int, zone: str) -> str:
+    """The day a switch ends, as the banner says it: "Dec 1"."""
+    at = datetime.fromtimestamp(until_ms / 1000, ZoneInfo(zone) if zone else None)
+    return f"{at:%b} {at.day}"
+
+
+def using_line(label: str, until_ms: int, zone: str) -> str:
+    return f"Using {label} until {until_words(until_ms, zone)}"
+
+
+# ── What is kept ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, kw_only=True)
+class Switch:
+    leg: Leg
+    # The target as the card named it: "local/gemma", "system", "whisper".
+    to: str
+    label: str
+    until_ms: int
+    # What the runtime builds: a model's settings, or Whisper's model.
+    settings: dict[str, Any] | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, raw: Any) -> Switch | None:
+        if not isinstance(raw, dict):
+            return None
+        leg, to, label, until = (raw.get(k) for k in ("leg", "to", "label", "until_ms"))
+        settings = raw.get("settings")
+        if leg not in _STOP or not isinstance(to, str) or not isinstance(label, str):
+            return None
+        if isinstance(until, bool) or not isinstance(until, int):
+            return None
+        if settings is not None and not isinstance(settings, dict):
+            return None
+        return cls(leg=leg, to=to, label=label, until_ms=until, settings=settings)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Card:
+    id: str
+    conversation_id: str
+    leg: Leg
+    provider_id: str
+    cap: float
+    unit: str
+    line: str
+    month: str
+    status: Status = "open"
+    options: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+
+    def to_page(self) -> dict[str, Any]:
+        """The `spend.card` message's body. A switch's settings stay in the core."""
+        return {
+            "id": self.id,
+            "provider_id": self.provider_id,
+            "leg": self.leg,
+            "cap": self.cap,
+            "unit": self.unit,
+            "cap_text": cap_words(self.cap, self.unit),
+            "line": self.line,
+            "status": self.status,
+            "options": [{k: v for k, v in o.items() if k != "settings"} for o in self.options],
+        }
+
+    def to_json(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["options"] = list(self.options)
+        return out
+
+    @classmethod
+    def from_json(cls, raw: Any) -> Card | None:
+        try:
+            return cls(
+                id=str(raw["id"]),
+                conversation_id=str(raw["conversation_id"]),
+                leg=raw["leg"],
+                provider_id=str(raw["provider_id"]),
+                cap=float(raw["cap"]),
+                unit=str(raw["unit"]),
+                line=str(raw["line"]),
+                month=str(raw["month"]),
+                status=raw["status"],
+                options=tuple(o for o in raw["options"] if isinstance(o, dict)),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+
+class Refused(Exception):
+    """A card's choice refused. `code` is safe to show."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class Prefs(Protocol):
+    async def get(self, owner_id: str, key: str) -> Any: ...
+
+    async def put(self, owner_id: str, key: str, value: Any, now_ms: int) -> None: ...
+
+
+# Writes one notice through the one door, under a key that is never used twice.
+Notify = Callable[[str, str], Awaitable[None]]
+
+
+# ── Host notes (PER-11): what she is told, so she says it in her own words ──
+
+
+def soft_note(name: str, soft: str, spent: str) -> str:
+    return (
+        f"[host] Spending on {name} this month has passed the {soft} soft cap the user "
+        f"set: {spent} so far. Nothing has stopped. Mention it once, briefly, in your own "
+        "words, and carry on with what they asked."
+    )
+
+
+def back_note(label: str, usual: str) -> str:
+    return (
+        f"[host] The switch to {label} ended with the new month: you are back on {usual}. "
+        "Say so once, briefly, in your own words."
+    )
+
+
+def warning_title(name: str, spent: str, soft: str) -> str:
+    return f"{name} has used {spent} of its {soft} soft cap this month"
+
+
+# ── The desk ─────────────────────────────────────────────────────────────
+
+
+class SpendDesk:
+    def __init__(
+        self,
+        *,
+        prefs: Prefs,
+        gate: Gate,
+        clock: Callable[[], int],
+        zone: Callable[[], str],
+        owner: str,
+        live: Callable[[str], bool],
+        notify: Notify | None = None,
+    ) -> None:
+        self._prefs = prefs
+        self._gate = gate
+        self._clock = clock
+        self._zone = zone
+        self._owner = owner
+        # Whether a conversation's page is open now.
+        self._live = live
+        # Public so the runtime can set it once the door exists.
+        self.notify = notify
+        self._switches: dict[str, Switch] = {}
+        self._cards: dict[str, Card] = {}
+        self._told: dict[str, Any] = {}
+        # Told after a choice changed a card, and after a switch began or lapsed.
+        self.changed: Callable[[Sequence[Card], bool], Awaitable[None]] | None = None
+
+    def month(self) -> str:
+        return month_start(self._clock(), self._zone())[0]
+
+    async def load(self) -> None:
+        raw = await self._prefs.get(self._owner, SWITCH_PREF)
+        found = raw.items() if isinstance(raw, dict) else ()
+        self._switches = {
+            pid: s for pid, v in found if isinstance(pid, str) and (s := Switch.from_json(v))
+        }
+        raw = await self._prefs.get(self._owner, CARDS_PREF)
+        cards = (Card.from_json(v) for v in raw.values()) if isinstance(raw, dict) else ()
+        self._cards = {c.id: c for c in cards if c is not None}
+        raw = await self._prefs.get(self._owner, TOLD_PREF)
+        self._told = raw if isinstance(raw, dict) else {}
+
+    # ── Switches ──
+
+    def switch(self, provider_id: str | None) -> Switch | None:
+        """The switch in force for a provider now, if any."""
+        if provider_id is None:
+            return None
+        s = self._switches.get(provider_id)
+        return s if s is not None and self._clock() < s.until_ms else None
+
+    def banner(self) -> list[dict[str, Any]]:
+        """The `spend.switch` message's switches: each says what is used, and until when."""
+        zone = self._zone()
+        return [
+            {
+                "provider_id": pid,
+                "leg": s.leg,
+                "to": s.to,
+                "label": s.label,
+                "until_ms": s.until_ms,
+                "line": using_line(s.label, s.until_ms, zone),
+            }
+            for pid, s in sorted(self._switches.items())
+            if self.switch(pid) is not None
+        ]
+
+    async def lapse(self, usual: Callable[[str, Switch], str]) -> bool:
+        """End every switch whose time has passed, and keep a note for her to say she
+        is back on `usual`. True when one ended."""
+        now = self._clock()
+        ended = {pid: s for pid, s in self._switches.items() if now >= s.until_ms}
+        if not ended:
+            return False
+        for pid in ended:
+            del self._switches[pid]
+        back = dict(self._told.get("back") or {})
+        for pid, s in ended.items():
+            back[pid] = back_note(s.label, usual(pid, s))
+        self._told = {**self._told, "back": back}
+        await self._save_switches()
+        await self._save_told()
+        if self.changed is not None:
+            await self.changed((), True)
+        return True
+
+    async def _save_switches(self) -> None:
+        value = {pid: s.to_json() for pid, s in self._switches.items()}
+        await self._prefs.put(self._owner, SWITCH_PREF, value, self._clock())
+
+    async def _save_told(self) -> None:
+        await self._prefs.put(self._owner, TOLD_PREF, self._told, self._clock())
+
+    # ── Cards ──
+
+    def _shown(self, c: Card) -> bool:
+        return (
+            c.status in _STANDING
+            and c.month == self.month()
+            and self._gate.state(c.provider_id) == "capped"
+        )
+
+    def cards_for(self, conversation_id: str) -> list[Card]:
+        """The cards a page on this conversation shows: those still to be answered."""
+        return [
+            c
+            for c in self._cards.values()
+            if c.conversation_id == conversation_id and self._shown(c)
+        ]
+
+    def standing(self, conversation_id: str, provider_id: str) -> Card | None:
+        """This conversation's card for a capped provider, if it has one still shown."""
+        return next(
+            (c for c in self.cards_for(conversation_id) if c.provider_id == provider_id), None
+        )
+
+    async def card(
+        self,
+        conversation_id: str,
+        leg: Leg,
+        provider_id: str,
+        line: str,
+        options: Iterable[dict[str, Any]],
+    ) -> Card:
+        """The card for this cap here: the one already shown, with today's choices, or
+        a new one."""
+        caps = self._gate.caps(provider_id)
+        cap = float(caps.hard or 0.0)
+        found = self.standing(conversation_id, provider_id)
+        chosen = tuple(options)
+        if found is not None:
+            card = replace(found, options=chosen, line=line, cap=cap)
+        else:
+            card = Card(
+                id=uuid.uuid4().hex,
+                conversation_id=conversation_id,
+                leg=leg,
+                provider_id=provider_id,
+                cap=cap,
+                unit=caps.unit,
+                line=line,
+                month=self.month(),
+                options=chosen,
+            )
+        self._cards[card.id] = card
+        await self._save_cards()
+        return card
+
+    def raise_option(self, provider_id: str) -> dict[str, Any]:
+        caps = self._gate.caps(provider_id)
+        hard = float(caps.hard or 0.0)
+        amount = max(
+            next_step(hard, caps.unit), next_step(self._gate.counted(provider_id), caps.unit)
+        )
+        return {"choice": "raise", "amount": amount, "unit": caps.unit}
+
+    def until(self) -> int:
+        return next_month_start(self._clock(), self._zone())
+
+    def switch_option(
+        self, to: str, label: str, settings: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        until = self.until()
+        out: dict[str, Any] = {
+            "choice": f"switch:{to}",
+            "label": label,
+            "until_ms": until,
+            "until": until_words(until, self._zone()),
+        }
+        if settings is not None:
+            out["settings"] = settings
+        return out
+
+    @staticmethod
+    def stop_option(leg: Leg) -> dict[str, Any]:
+        return {"choice": _STOP[leg]}
+
+    async def _save_cards(self) -> None:
+        month = self.month()
+        # Only this month's: an older card can no longer be answered.
+        self._cards = {k: c for k, c in self._cards.items() if c.month == month}
+        value = {k: c.to_json() for k, c in self._cards.items()}
+        await self._prefs.put(self._owner, CARDS_PREF, value, self._clock())
+
+    async def choose(
+        self,
+        card_id: str,
+        choice: str,
+        amount: float | None,
+        session_id: str,
+        via: str,
+    ) -> Card:
+        """A tap on a card. Refused unless it comes by a tap, from the page the card was
+        sent to, for a choice the card offered, while the card is still shown."""
+        card = self._cards.get(card_id)
+        if card is None:
+            raise Refused("unknown_card")
+        if session_id != card.conversation_id or not self._live(session_id):
+            raise Refused("wrong_session")
+        if via != "tap":
+            # Money is only ever moved by a tap on the owner's own screen (SPN-14).
+            raise Refused("not_a_tap")
+        if not self._shown(card):
+            raise Refused("closed")
+        option = next((o for o in card.options if o.get("choice") == choice), None)
+        if option is None:
+            raise Refused("unknown_choice")
+        pid = card.provider_id
+        status: Status
+        if choice == "raise":
+            await self._raise(pid, amount)
+            status = "raised"
+        elif choice.startswith("switch:"):
+            until = option.get("until_ms")
+            self._switches[pid] = Switch(
+                leg=card.leg,
+                to=choice.removeprefix("switch:"),
+                label=str(option.get("label") or ""),
+                until_ms=until if isinstance(until, int) else self.until(),
+                settings=option.get("settings"),
+            )
+            await self._save_switches()
+            status = "switched"
+        else:
+            status = "stopped"
+        changed = [replace(card, status=status)]
+        if status != "stopped":
+            # Every card for this cap is answered by it, in any conversation.
+            changed += [
+                replace(c, status=status)
+                for c in self._cards.values()
+                if c.provider_id == pid and c.id != card.id and c.status in _STANDING
+            ]
+        for c in changed:
+            self._cards[c.id] = c
+        await self._save_cards()
+        if self.changed is not None:
+            await self.changed(changed, status == "switched")
+        return changed[0]
+
+    async def _raise(self, provider_id: str, amount: float | None) -> None:
+        if (
+            amount is None
+            or isinstance(amount, bool)
+            or not isinstance(amount, int | float)
+            or not math.isfinite(amount)
+            or amount < 0
+            or amount <= self._gate.counted(provider_id)
+        ):
+            raise Refused("bad_amount")
+        raw = await self._prefs.get(self._owner, PREF)
+        all_caps = dict(raw) if isinstance(raw, dict) else {}
+        caps = self._gate.caps(provider_id)
+        soft = caps.soft if caps.soft is None or caps.soft <= amount else float(amount)
+        all_caps[provider_id] = {
+            "soft": soft,
+            "hard": float(amount),
+            "warn_pct": caps.warn_pct,
+            "unit": caps.unit,
+        }
+        await self._prefs.put(self._owner, PREF, all_caps, self._clock())
+        await self._gate.reload_caps()
+
+    # ── Once a month ──
+
+    def _told_in(self, what: str) -> Mapping[str, Any]:
+        found = self._told.get(what)
+        return found if isinstance(found, dict) else {}
+
+    def notes(self, provider_ids: Iterable[str | None]) -> list[tuple[str, str]]:
+        """The host notes her next turn carries, as (key, text): a soft cap passed this
+        month and not yet mentioned, and a switch that lapsed. Marked said by `said`."""
+        month = self.month()
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        mentioned = self._told_in("over_soft")
+        for pid in provider_ids:
+            if pid is None or pid in seen:
+                continue
+            seen.add(pid)
+            if mentioned.get(pid) == month or self._gate.state(pid) != "over_soft":
+                continue
+            caps = self._gate.caps(pid)
+            if caps.soft is None:
+                continue
+            spent = amount_words(self._gate.counted(pid), caps.unit)
+            note = soft_note(friendly(pid), cap_words(caps.soft, caps.unit), spent)
+            out.append((f"over_soft:{pid}", note))
+        for pid, note in sorted(self._told_in("back").items()):
+            if isinstance(note, str):
+                out.append((f"back:{pid}", note))
+        return out
+
+    async def said(self, keys: Iterable[str]) -> None:
+        """The notes under `keys` rode with a saved message: never again."""
+        keys = list(keys)
+        if not keys:
+            return
+        month = self.month()
+        mentioned = dict(self._told_in("over_soft"))
+        back = dict(self._told_in("back"))
+        for key in keys:
+            what, _, pid = key.partition(":")
+            if what == "over_soft":
+                mentioned[pid] = month
+            elif what == "back":
+                back.pop(pid, None)
+        self._told = {**self._told, "over_soft": mentioned, "back": back}
+        await self._save_told()
+
+    async def warn(self, provider_ids: Iterable[str | None]) -> None:
+        """One notice through the one door the first time a provider reaches its
+        warning this month (SUR-9). Shown, not spoken: it has no words of hers."""
+        if self.notify is None:
+            return
+        month = self.month()
+        warned = dict(self._told_in("warned"))
+        due: list[str] = []
+        for pid in dict.fromkeys(p for p in provider_ids if p is not None):
+            if warned.get(pid) == month or self._gate.state(pid) == "ok":
+                continue
+            caps = self._gate.caps(pid)
+            if caps.soft is None:
+                continue
+            due.append(pid)
+            warned[pid] = month
+        if not due:
+            return
+        # Recorded first: a notice that fails to write is not tried every turn.
+        self._told = {**self._told, "warned": warned}
+        await self._save_told()
+        for pid in due:
+            caps = self._gate.caps(pid)
+            title = warning_title(
+                friendly(pid),
+                amount_words(self._gate.counted(pid), caps.unit),
+                cap_words(float(caps.soft or 0.0), caps.unit),
+            )
+            try:
+                await self.notify(f"spend:warned:{pid}:{month}", title)
+            except Exception as e:
+                log.warning("spend warning not given: %s", type(e).__name__)

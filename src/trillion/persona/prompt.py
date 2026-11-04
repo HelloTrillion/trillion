@@ -214,6 +214,23 @@ def degraded(leg: Leg, kind: str) -> str:
     return lines.get(f"{leg}.{kind}") or lines[f"{leg}.other"]
 
 
+# The app's line for a leg stopped at its hard cap (BRN-8). Kept here, not in
+# degraded.md: they are the app's words, not a prompt, and change nothing she is sent.
+_CAPPED: dict[Leg, str] = {
+    "model": "I've reached the {cap} cap for {provider} this month, so I've stopped "
+    "before spending more.",
+    "voice": "I've reached the {cap} cap for {provider} this month, so I'll answer in text.",
+    "hearing": "I've reached the {cap} cap for {provider} this month, so I've stopped "
+    "listening, but you can still type.",
+}
+
+
+def capped(leg: Leg, provider: str, cap: str) -> str:
+    """The app's one line for a leg stopped at its hard cap (BRN-7): which cap, whose,
+    and what happens next. `cap` is already in words ("$50")."""
+    return _CAPPED[leg].replace("{cap}", cap).replace("{provider}", provider)
+
+
 def compaction(identity: Identity) -> str:
     """What the summarizer is told (BRN-5). Authored, like every other instruction."""
     return _fill(_prompt("compact.md"), identity)

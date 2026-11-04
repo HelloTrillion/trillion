@@ -25,7 +25,14 @@ from trillion.attention.payments import Payments
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
 from trillion.brain import compact
-from trillion.brain.config import OPENAI_BASE_URL, ModelSettings, Source, resolve
+from trillion.brain.config import (
+    NEEDS_KEY,
+    OPENAI_BASE_URL,
+    ModelSettings,
+    Source,
+    resolve,
+    secret_name,
+)
 from trillion.brain.standing import StandingRules
 from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.channels.answer import Answerer
@@ -56,6 +63,7 @@ from trillion.skills.library import Entry, Library
 from trillion.spend import gate as spend_gate
 from trillion.spend import metered, prices
 from trillion.spend.caller import as_caller
+from trillion.spend.desk import KNOWN_PREF, SpendDesk, Switch
 from trillion.spend.gate import Gate
 from trillion.spend.ledger import Ledger
 from trillion.spend.metered import Meter, MeteredHearing, MeteredModel, MeteredVoice, PriceBook
@@ -122,7 +130,9 @@ from trillion.tools.workspace import (
     WorkspaceUpdate,
 )
 from trillion.tools.workspace import definitions as board_definitions
+from trillion.voice import models as voice_models
 from trillion.voice.catalog import listen_option, speech_option
+from trillion.voice.providers import whisper
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
 from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
@@ -265,6 +275,29 @@ def metered_listening(
     return meter.hearing(stt, prices.hearing_provider_id(settings.kind))
 
 
+def _voice_pid(speech: SpeechSettings | None) -> str | None:
+    return prices.voice_provider_id(speech.kind, speech.base_url) if speech else None
+
+
+def _hearing_pid(listening: ListenSettings | None) -> str | None:
+    return prices.hearing_provider_id(listening.kind) if listening else None
+
+
+async def whisper_choice() -> str | None:
+    """A local Whisper model ready on this computer, or None: installed and downloaded,
+    so a switch to it hears at once. Looked at off the event loop."""
+
+    def look() -> str | None:
+        if not whisper.available():
+            return None
+        root = paths.models_dir() / "whisper"
+        return next(
+            (p.id for p, _ in whisper.PACKS if voice_models.installed(p, root / p.id)), None
+        )
+
+    return await asyncio.to_thread(look)
+
+
 # Every paid provider the runtime holds goes through the spend gate.
 _METERED = frozenset({"provider", "tts", "stt"})
 
@@ -321,6 +354,9 @@ class Runtime:
     # empty count.
     ledger: Ledger
     gate: Gate
+    # Your conversation at the caps: the spend cards, the switch until the 1st, and what
+    # is said once a month (BRN-8).
+    spend: SpendDesk
     # Every paid call goes through it: the model, the voice and hearing below are
     # wrapped in it whenever they are set (see `__setattr__`). It must stay declared
     # before `provider`, `tts` and `stt`: the generated __init__ sets fields in this
@@ -431,18 +467,135 @@ class Runtime:
         # is metered against the cap of what is chosen now, or none when nothing is.
         if name in _METERED and value is not None:
             if name == "provider" and not isinstance(value, MeteredModel):
-                pid = model_provider_id(self.settings, self.source, self.env)
-                value = self.meter.model(value, pid)
+                value = self.meter.model(value, self._model_pid())
             elif name == "tts" and not isinstance(value, MeteredVoice):
-                speech = self.speech
-                pid = prices.voice_provider_id(speech.kind, speech.base_url) if speech else None
-                value = self.meter.voice(value, pid)
+                value = self.meter.voice(value, _voice_pid(self.speech_used))
             elif name == "stt" and not isinstance(value, MeteredHearing):
-                heard = self.listening
-                value = self.meter.hearing(
-                    value, prices.hearing_provider_id(heard.kind) if heard else None
-                )
+                value = self.meter.hearing(value, _hearing_pid(self.listening_used))
         super().__setattr__(name, value)
+
+    # ── What is used now: the user's choice, or a switch until the 1st (BRN-8) ──
+
+    def _model_pid(self) -> str | None:
+        """The cap the model in use counts against: the chosen one's, or what it was
+        switched to."""
+        chosen = model_provider_id(self.settings, self.source, self.env)
+        switched = self._model_switch(chosen)
+        if switched is not None:
+            return model_provider_id(switched, "settings", self.env)
+        return chosen
+
+    def _model_switch(self, chosen: str | None) -> ModelSettings | None:
+        s = self.spend.switch(chosen)
+        if s is None or s.leg != "model":
+            return None
+        return ModelSettings.from_json(s.settings)
+
+    @property
+    def speech_used(self) -> SpeechSettings | None:
+        """The voice she speaks in now: the chosen one, or the computer's own while a
+        switch lasts."""
+        chosen = self.speech
+        s = self.spend.switch(_voice_pid(chosen))
+        if chosen is not None and s is not None and s.leg == "voice":
+            return SpeechSettings(kind="system")
+        return chosen
+
+    @property
+    def listening_used(self) -> ListenSettings | None:
+        """How she hears now: the chosen way, or local Whisper while a switch lasts."""
+        chosen = self.listening
+        s = self.spend.switch(_hearing_pid(chosen))
+        if chosen is not None and s is not None and s.leg == "hearing":
+            choice = (s.settings or {}).get("choice")
+            return ListenSettings(kind="whisper", choice=str(choice or ""))
+        return chosen
+
+    def _pick_model(self) -> tuple[MeteredModel | None, Source]:
+        provider, source = metered_resolve(self.meter, self.settings, self.secrets, self.env)
+        switched = self._model_switch(provider.provider_id if provider is not None else None)
+        if switched is not None:
+            # Built from the switch alone: the environment chooses only the usual one.
+            other, _ = metered_resolve(self.meter, switched, self.secrets, {})
+            if other is not None:
+                return other, source
+        return provider, source
+
+    async def _remember_model(self, settings: ModelSettings | None) -> None:
+        """The model last chosen on each provider: what a spend card can offer."""
+        pid = model_provider_id(settings, "settings", self.env) if settings else None
+        if settings is None or pid is None:
+            return
+        raw = await self.preferences.get(OWNER, KNOWN_PREF)
+        known = dict(raw) if isinstance(raw, dict) else {}
+        if known.get(pid) != settings.to_json():
+            known[pid] = settings.to_json()
+            await self.preferences.put(OWNER, KNOWN_PREF, known, self.clock())
+
+    async def model_choices(self, capped: str) -> list[tuple[str, ModelSettings]]:
+        """Models already set up on a provider with budget left, local first: what a
+        card at `capped`'s hard cap offers. Each as (provider id, settings)."""
+        raw = await self.preferences.get(OWNER, KNOWN_PREF)
+        out: list[tuple[str, ModelSettings]] = []
+        for pid, value in raw.items() if isinstance(raw, dict) else ():
+            settings = ModelSettings.from_json(value)
+            if settings is None or pid == capped or self.gate.state(pid) == "capped":
+                continue
+            if model_provider_id(settings, "settings", self.env) != pid:
+                continue
+            # Only one whose key is still there: a removed key is not set up any more.
+            if settings.kind in NEEDS_KEY and not self.secrets.get(secret_name(settings.kind)):
+                continue
+            out.append((pid, settings))
+        out.sort(key=lambda found: (found[0] != "local", found[0], found[1].model))
+        return out
+
+    async def whisper_ready(self) -> str | None:
+        return await whisper_choice()
+
+    async def use_switches(self) -> None:
+        """Pick the model, voice and hearing again, as a switch now says, and tell
+        every open page: their banner and what they play or hear with."""
+        self.provider, self.source = self._pick_model()
+        self.tts = metered_speech(self.meter, self.speech_used, self.secrets)
+        self.stt = metered_listening(self.meter, self.listening_used, self.secrets)
+        banner = self.spend.banner()
+        for session in list(self.sessions):
+            await session.settings_changed()
+            await session.send("spend.switch", switches=banner)
+
+    def _usual(self, pid: str, s: Switch) -> str:
+        """What a lapsed switch goes back to, in words."""
+        if s.leg == "model":
+            return self.settings.model if self.settings is not None else "the usual model"
+        if s.leg == "voice":
+            return "your usual voice"
+        return "your usual way of listening"
+
+    async def spend_tick(self) -> None:
+        """A switch whose time has passed ends now: she is back on the usual one. The
+        desk tells `_spend_changed`, which picks the usual one again."""
+        await self.spend.lapse(self._usual)
+
+    async def _spend_changed(self, cards: Any, switched: bool) -> None:
+        """A card was answered: its pages hear so, and a switch takes effect now."""
+        for card in cards:
+            for session in list(self.sessions):
+                if session.id == card.conversation_id:
+                    await session.send("spend.resolved", id=card.id, status=card.status)
+        if switched:
+            await self.use_switches()
+
+    async def _spend_notice(self, key: str, title: str) -> None:
+        """A spend warning, through the one door (SUR-9): shown, never spoken."""
+        if self.schedules is None or self.door is None:
+            return
+        if await self.schedules.has_notice(OWNER, key):
+            return
+        notice = await self.schedules.attention_notice(
+            OWNER, key, title=title, text=None, now_ms=self.clock()
+        )
+        await self.door.added(notice)
 
     @property
     def granted_roots(self) -> tuple[Path, ...]:
@@ -857,7 +1010,8 @@ class Runtime:
     async def use_model(self, settings: ModelSettings | None) -> None:
         """Adopt saved settings (or none) and tell every open session."""
         self.settings = settings
-        self.provider, self.source = metered_resolve(self.meter, settings, self.secrets, self.env)
+        await self._remember_model(settings)
+        self.provider, self.source = self._pick_model()
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -868,7 +1022,7 @@ class Runtime:
             self.speech_last = last
             await self.preferences.put(OWNER, SPEECH_LAST_PREF, last.to_json(), self.clock())
         self.speech = settings
-        self.tts = metered_speech(self.meter, settings, self.secrets)
+        self.tts = metered_speech(self.meter, self.speech_used, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -878,7 +1032,7 @@ class Runtime:
             self.listening_last = last
             await self.preferences.put(OWNER, LISTEN_LAST_PREF, last.to_json(), self.clock())
         self.listening = settings
-        self.stt = metered_listening(self.meter, settings, self.secrets)
+        self.stt = metered_listening(self.meter, self.listening_used, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -1017,6 +1171,14 @@ async def open_runtime(
         owner_id=OWNER,
     )
     provider, source = metered_resolve(meter, settings, keychain, env)
+    desk = SpendDesk(
+        prefs=preferences,
+        gate=gate,
+        clock=lambda: rt.clock(),
+        zone=lambda: rt.zone() or "",
+        owner=OWNER,
+        live=lambda conversation_id: conversation_id in rt.by_conversation,
+    )
     rt = Runtime(
         router=router,
         registry=registry,
@@ -1026,6 +1188,7 @@ async def open_runtime(
         preferences=preferences,
         ledger=ledger,
         gate=gate,
+        spend=desk,
         meter=meter,
         secrets=keychain,
         memory=book,
@@ -1062,6 +1225,7 @@ async def open_runtime(
         await ledger.load()
         await gate.reload_caps()
         await meter.prices.reload()
+        await desk.load()
     except BaseException:
         # Nothing else is running yet: closing the connections leaves nothing behind.
         for conn in rt._connections:
@@ -1235,4 +1399,12 @@ async def open_runtime(
     doubt = await router.in_doubt(rt.clock() - IN_DOUBT_DAYS * DAY_MS)
     told = {s.id for s in settled}
     rt.tell_soon(settled + [s for s in doubt if s.id not in told])
+    # Spend: a warning goes through the door, an answered card is told to its page, and
+    # a switch saved before a restart still applies, unless the 1st has passed since.
+    desk.notify = rt._spend_notice
+    desk.changed = rt._spend_changed
+    await rt._remember_model(settings)
+    # A lapse picks again by itself; a switch still in force is picked here.
+    if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
+        await rt.use_switches()
     return rt
