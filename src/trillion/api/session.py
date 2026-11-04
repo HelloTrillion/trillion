@@ -800,8 +800,12 @@ class Session:
                 await session._send("jobs", count=running)
             for a in await session._open_actions():
                 await session._send_card(a.id)
-            # A spend card still to be answered, and a switch in force, for the banner.
+            # A spend card still to be answered, with its choices as they are now, and a
+            # switch in force, for the banner. A switch made for a month now over ends
+            # first.
+            await session._spend_tick()
             for card in rt.spend.cards_for(session.id):
+                card = await session._fresh_card(card)
                 await session._send("spend.card", **card.to_page())
             banner = rt.spend.banner()
             if banner:
@@ -1176,6 +1180,8 @@ class Session:
                 await self._conclude("end")
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
+        elif kind == "spend.choice":
+            await self._on_spend_choice(msg)
         elif kind == "greet":
             await self._on_greet()
         elif kind == "day.build":
@@ -1433,6 +1439,8 @@ class Session:
             or rt.provider is None
             or self._listener is not None
             or not (running or self._tail is not None)
+            # Hearing at its cap is not tried while she talks (BRN-8).
+            or self._hearing_held()
         ):
             await self._barge_instead()
             return
@@ -1779,6 +1787,8 @@ class Session:
             or rt.tts.where != "core"
             or rt.speech_used is None
             or not (running or self._tail is not None or unheard)
+            # Hearing at its cap is not tried while she talks (BRN-8).
+            or self._hearing_held()
         ):
             await self._send("overlap.over", end=True)
             return
@@ -3732,7 +3742,7 @@ class Session:
             for pid, settings in await rt.model_choices(provider_id):
                 out.append(
                     desk.switch_option(
-                        f"{pid}/{settings.model}", settings.model, settings.to_json()
+                        f"{pid}/{settings.model}", settings.model, settings.to_json(), pid
                     )
                 )
         elif leg == "voice":
@@ -3756,7 +3766,8 @@ class Session:
             cap=caps.hard,
             unit=caps.unit,
             sentence=line,
-            **({"say": "system"} if leg == "voice" else {}),
+            # Muted, nothing is said aloud, in any voice.
+            **({"say": "system"} if leg == "voice" and not self._muted else {}),
         )
         try:
             card = await rt.spend.card(
@@ -3767,6 +3778,46 @@ class Session:
             logger.warning("spend card not made in session %s: %s", self.id, type(e).__name__)
             return
         await self._send("spend.card", **card.to_page())
+
+    async def _fresh_card(self, card: spend.Card) -> spend.Card:
+        """A shown card with its choices as they are now: a model capped since it was
+        made is no longer offered, and the raise steps from the cap as it is now."""
+        rt = self._rt
+        options = await self._spend_options(card.leg, card.provider_id)
+        return await rt.spend.card(self.id, card.leg, card.provider_id, card.line, options)
+
+    async def _on_spend_choice(self, msg: Mapping[str, Any]) -> None:
+        """A tap on a spend card (BRN-8). Like a tap on an approval card (SPN-14), it is
+        taken only as this page's own act: the session it came on and "tap" are the
+        server's to say, never the message's."""
+        card_id, choice, amount = msg.get("id"), msg.get("choice"), msg.get("amount")
+        if (
+            not isinstance(card_id, str)
+            or not card_id
+            or not isinstance(choice, str)
+            or not choice
+            or (
+                amount is not None
+                and (isinstance(amount, bool) or not isinstance(amount, int | float))
+            )
+        ):
+            await self._error("bad_message")
+            return
+        self.active_ms = self._rt.clock()
+        async with self._taking_input():
+            await self._spend_chosen(card_id, choice, amount)
+
+    async def _spend_chosen(self, card_id: str, choice: str, amount: float | None) -> None:
+        rt = self._rt
+        found = next((c for c in rt.spend.cards_for(self.id) if c.id == card_id), None)
+        options = None
+        if found is not None:
+            # Judged against what the card would offer now, not when it was shown.
+            options = await self._spend_options(found.leg, found.provider_id)
+        try:
+            await rt.spend.choose(card_id, choice, amount, self.id, "tap", options)
+        except spend.Refused as e:
+            await self._send("spend.refused", id=card_id, code=e.code)
 
     async def _voice_capped(self, e: VoiceCapped) -> None:
         await self._spend_capped("voice", e.provider_id, self._capped_line("voice", e.provider_id))

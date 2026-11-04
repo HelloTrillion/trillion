@@ -3,17 +3,21 @@ until the 1st, and what is said once a month.
 
 **The spend card.** At a hard cap the session sends one line from the app and then a
 card with the choices that cap allows. It is the app's card, not a pending action. A
-choice is accepted only from the conversation it was sent to, while its page is open,
-and only by a tap (SPN-14): it is about money. Cards are kept in the preference
-`spend_cards`, so a reload, or a restart, shows a card still waiting, or one put off
-with "stop for now", from the banner. A card closes when it is answered by raising or
-switching, and is no longer shown once its provider is not capped.
+choice comes as a `spend.choice` message on the page's own socket, like a tap on an
+approval card, and is accepted only from the conversation it was sent to and only by a
+tap (SPN-14): it is about money. One is answered at a time, and against the choices
+the card would offer now. Cards are kept in the preference `spend_cards`, so a reload,
+or a restart, shows a card still waiting, or one put off with "stop for now", from the
+banner. A card closes when it is answered by raising or switching, and is no longer
+shown once its provider is not capped.
 
 **The switch.** "Use X until Dec 1" is the preference `spend_switch`, `{provider_id:
-{leg, to, label, until_ms, settings}}`, until midnight on the next 1st in the user's
-timezone. The runtime applies it whenever it picks a model, voice or hearing, so it
-holds after a restart. Once its time has passed it lapses, and her next turn carries a
-host note saying she is back on the usual one (PER-11), once.
+{leg, to, label, month, until_ms, settings}}`. It holds for the month it was made in,
+in the user's timezone; `until_ms`, the next 1st, is for the banner. The runtime
+applies it whenever it picks a model, voice or hearing, so it holds after a restart,
+and follows a switch to a provider that was switched in turn. Once the month is
+another it lapses, and her next turn carries a host note saying she is back on the
+usual one (PER-11), once.
 
 **Once a month.** The preference `spend_told` records, per provider and month, that
 the warning notice was given (`warned`) and that the soft cap was mentioned
@@ -22,6 +26,7 @@ the warning notice was given (`warned`) and that the soft cap was mentioned
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import uuid
@@ -107,6 +112,15 @@ _STEP = {
 }
 
 
+# The highest a raise may go, so a slip of the finger is refused, not written.
+MOST = {
+    "dollars": 10_000.0,
+    "tokens": float(DEFAULT_TOKENS.hard or 0) * 100,
+    "chars": float(DEFAULT_CHARS.hard or 0) * 100,
+    "seconds": float(DEFAULT_SECONDS.hard or 0) * 100,
+}
+
+
 def next_step(cap: float, unit: str) -> float:
     """The next round step above `cap`: $50 suggests $75, $60 suggests $75 too."""
     step = _STEP.get(unit, 25.0)
@@ -132,6 +146,9 @@ class Switch:
     # The target as the card named it: "local/gemma", "system", "whisper".
     to: str
     label: str
+    # The month it is for ("2026-11"): it lapses once the month is another. `until_ms`
+    # is when that is expected, for the banner only.
+    month: str
     until_ms: int
     # What the runtime builds: a model's settings, or Whisper's model.
     settings: dict[str, Any] | None = None
@@ -144,14 +161,14 @@ class Switch:
         if not isinstance(raw, dict):
             return None
         leg, to, label, until = (raw.get(k) for k in ("leg", "to", "label", "until_ms"))
-        settings = raw.get("settings")
+        month, settings = raw.get("month"), raw.get("settings")
         if leg not in _STOP or not isinstance(to, str) or not isinstance(label, str):
             return None
-        if isinstance(until, bool) or not isinstance(until, int):
+        if isinstance(until, bool) or not isinstance(until, int) or not isinstance(month, str):
             return None
         if settings is not None and not isinstance(settings, dict):
             return None
-        return cls(leg=leg, to=to, label=label, until_ms=until, settings=settings)
+        return cls(leg=leg, to=to, label=label, month=month, until_ms=until, settings=settings)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -272,8 +289,11 @@ class SpendDesk:
         self._switches: dict[str, Switch] = {}
         self._cards: dict[str, Card] = {}
         self._told: dict[str, Any] = {}
-        # Told after a choice changed a card, and after a switch began or lapsed.
-        self.changed: Callable[[Sequence[Card], bool], Awaitable[None]] | None = None
+        # Told after a choice changed a card, and after a switch began or lapsed: the
+        # cards changed, and the legs whose switch changed.
+        self.changed: Callable[[Sequence[Card], frozenset[Leg]], Awaitable[None]] | None = None
+        # One choice at a time: a double tap is answered once.
+        self._choosing = asyncio.Lock()
 
     def month(self) -> str:
         return month_start(self._clock(), self._zone())[0]
@@ -297,7 +317,7 @@ class SpendDesk:
         if provider_id is None:
             return None
         s = self._switches.get(provider_id)
-        return s if s is not None and self._clock() < s.until_ms else None
+        return s if s is not None and s.month == self.month() else None
 
     def banner(self) -> list[dict[str, Any]]:
         """The `spend.switch` message's switches: each says what is used, and until when."""
@@ -316,10 +336,10 @@ class SpendDesk:
         ]
 
     async def lapse(self, usual: Callable[[str, Switch], str]) -> bool:
-        """End every switch whose time has passed, and keep a note for her to say she
+        """End every switch made for another month, and keep a note for her to say she
         is back on `usual`. True when one ended."""
-        now = self._clock()
-        ended = {pid: s for pid, s in self._switches.items() if now >= s.until_ms}
+        month = self.month()
+        ended = {pid: s for pid, s in self._switches.items() if s.month != month}
         if not ended:
             return False
         for pid in ended:
@@ -331,7 +351,7 @@ class SpendDesk:
         await self._save_switches()
         await self._save_told()
         if self.changed is not None:
-            await self.changed((), True)
+            await self.changed((), frozenset(s.leg for s in ended.values()))
         return True
 
     async def _save_switches(self) -> None:
@@ -408,8 +428,13 @@ class SpendDesk:
         return next_month_start(self._clock(), self._zone())
 
     def switch_option(
-        self, to: str, label: str, settings: dict[str, Any] | None = None
+        self,
+        to: str,
+        label: str,
+        settings: dict[str, Any] | None = None,
+        target: str | None = None,
     ) -> dict[str, Any]:
+        """`target` is the provider id switched to, when it can be capped."""
         until = self.until()
         out: dict[str, Any] = {
             "choice": f"switch:{to}",
@@ -419,6 +444,8 @@ class SpendDesk:
         }
         if settings is not None:
             out["settings"] = settings
+        if target is not None:
+            out["target"] = target
         return out
 
     @staticmethod
@@ -439,9 +466,23 @@ class SpendDesk:
         amount: float | None,
         session_id: str,
         via: str,
+        options: Sequence[dict[str, Any]] | None = None,
     ) -> Card:
         """A tap on a card. Refused unless it comes by a tap, from the page the card was
-        sent to, for a choice the card offered, while the card is still shown."""
+        sent to, for a choice the card offered and still offers (`options`, made fresh
+        by the caller), while the card is still shown. One at a time."""
+        async with self._choosing:
+            return await self._choose(card_id, choice, amount, session_id, via, options)
+
+    async def _choose(
+        self,
+        card_id: str,
+        choice: str,
+        amount: float | None,
+        session_id: str,
+        via: str,
+        options: Sequence[dict[str, Any]] | None,
+    ) -> Card:
         card = self._cards.get(card_id)
         if card is None:
             raise Refused("unknown_card")
@@ -452,13 +493,22 @@ class SpendDesk:
             raise Refused("not_a_tap")
         if not self._shown(card):
             raise Refused("closed")
-        option = next((o for o in card.options if o.get("choice") == choice), None)
+        offered = next((o for o in card.options if o.get("choice") == choice), None)
+        if offered is None:
+            raise Refused("unknown_choice")
+        target = offered.get("target")
+        if isinstance(target, str) and self._gate.state(target) == "capped":
+            # It had budget when the card was shown, and has none now.
+            raise Refused("target_capped")
+        current = tuple(options) if options is not None else card.options
+        option = next((o for o in current if o.get("choice") == choice), None)
         if option is None:
             raise Refused("unknown_choice")
         pid = card.provider_id
         status: Status
+        legs: frozenset[Leg] = frozenset()
         if choice == "raise":
-            await self._raise(pid, amount)
+            await self._raise(pid, option.get("amount") if amount is None else amount)
             status = "raised"
         elif choice.startswith("switch:"):
             until = option.get("until_ms")
@@ -466,14 +516,16 @@ class SpendDesk:
                 leg=card.leg,
                 to=choice.removeprefix("switch:"),
                 label=str(option.get("label") or ""),
+                month=self.month(),
                 until_ms=until if isinstance(until, int) else self.until(),
                 settings=option.get("settings"),
             )
             await self._save_switches()
             status = "switched"
+            legs = frozenset({card.leg})
         else:
             status = "stopped"
-        changed = [replace(card, status=status)]
+        changed = [replace(card, status=status, options=current)]
         if status != "stopped":
             # Every card for this cap is answered by it, in any conversation.
             changed += [
@@ -485,10 +537,15 @@ class SpendDesk:
             self._cards[c.id] = c
         await self._save_cards()
         if self.changed is not None:
-            await self.changed(changed, status == "switched")
+            await self.changed(changed, legs)
         return changed[0]
 
-    async def _raise(self, provider_id: str, amount: float | None) -> None:
+    def most(self, unit: str) -> float:
+        """The highest a raise may go: $10,000, or 100 times the unit's default."""
+        return MOST.get(unit, MOST["dollars"])
+
+    async def _raise(self, provider_id: str, amount: Any) -> None:
+        caps = self._gate.caps(provider_id)
         if (
             amount is None
             or isinstance(amount, bool)
@@ -496,11 +553,12 @@ class SpendDesk:
             or not math.isfinite(amount)
             or amount < 0
             or amount <= self._gate.counted(provider_id)
+            or (caps.hard is not None and amount < caps.hard)
+            or amount > self.most(caps.unit)
         ):
             raise Refused("bad_amount")
         raw = await self._prefs.get(self._owner, PREF)
         all_caps = dict(raw) if isinstance(raw, dict) else {}
-        caps = self._gate.caps(provider_id)
         soft = caps.soft if caps.soft is None or caps.soft <= amount else float(amount)
         all_caps[provider_id] = {
             "soft": soft,

@@ -654,11 +654,13 @@ def test_saving_puts_the_key_in_the_keychain_and_nowhere_else(
     # Not in the response, not in the database, not in a log.
     assert SAMPLE_KEY not in r.text
     saved = '{"kind": "anthropic", "model": "model-a", "base_url": null, "max_output": 8000}'
-    assert app.rows("SELECT value_json FROM preferences") == [
-        (saved,),
-        # The model last chosen on each provider, for a spend card to offer (BRN-8).
-        ('{"anthropic": ' + saved + "}",),
-    ]
+    assert sorted(app.rows("SELECT value_json FROM preferences")) == sorted(
+        [
+            (saved,),
+            # The model last chosen on each provider, for a spend card to offer (BRN-8).
+            ('{"anthropic": ' + saved + "}",),
+        ]
+    )
     # Read while the app still runs: closing it would fold the -wal file into the
     # database and delete it, and an earlier frame the -wal held would go unread.
     scanned = []

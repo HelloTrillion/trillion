@@ -33,6 +33,7 @@ from trillion.brain.config import (
     resolve,
     secret_name,
 )
+from trillion.brain.providers.anthropic import DEFAULT_MODEL
 from trillion.brain.standing import StandingRules
 from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.channels.answer import Answerer
@@ -141,6 +142,7 @@ from trillion.workspace.live import Reads
 from trillion.workspace.packs import told
 from trillion.workspace.refresh import Refresher
 from trillion.workspace.service import Boards
+from trillion.zones import next_month_start
 
 logger = logging.getLogger(__name__)
 # On stop, quiet notices' notifications still on their way get this long.
@@ -296,6 +298,13 @@ async def whisper_choice() -> str | None:
         )
 
     return await asyncio.to_thread(look)
+
+
+# The three legs a switch can move.
+LEGS = ("model", "voice", "hearing")
+# The longest the month timer sleeps before it looks again: a clock or a timezone
+# that moves is caught within this.
+MONTH_LOOK_S = 3600.0
 
 
 # Every paid provider the runtime holds goes through the spend gate.
@@ -459,6 +468,9 @@ class Runtime:
     # Held while Home's layout is read, changed and saved, so the page and her tool
     # never write over each other's change.
     _arranging: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Wakes at the next 1st, when a switch until then ends (BRN-8).
+    _month_timer: asyncio.Task[None] | None = None
+    month_look_s: float = MONTH_LOOK_S
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -486,10 +498,21 @@ class Runtime:
         return chosen
 
     def _model_switch(self, chosen: str | None) -> ModelSettings | None:
-        s = self.spend.switch(chosen)
-        if s is None or s.leg != "model":
-            return None
-        return ModelSettings.from_json(s.settings)
+        """Where a switch leads, followed to its end: switched to B, and B switched in
+        turn to C, the model is C. A loop stops at the last model before it repeats."""
+        found: ModelSettings | None = None
+        seen = {chosen}
+        pid = chosen
+        while True:
+            s = self.spend.switch(pid)
+            settings = ModelSettings.from_json(s.settings) if s and s.leg == "model" else None
+            if settings is None:
+                return found
+            pid = model_provider_id(settings, "settings", self.env)
+            found = settings
+            if pid in seen:
+                return found
+            seen.add(pid)
 
     @property
     def speech_used(self) -> SpeechSettings | None:
@@ -553,12 +576,15 @@ class Runtime:
     async def whisper_ready(self) -> str | None:
         return await whisper_choice()
 
-    async def use_switches(self) -> None:
-        """Pick the model, voice and hearing again, as a switch now says, and tell
+    async def use_switches(self, legs: frozenset[str] = frozenset(LEGS)) -> None:
+        """Pick again, as a switch now says, the legs whose switch changed, and tell
         every open page: their banner and what they play or hear with."""
-        self.provider, self.source = self._pick_model()
-        self.tts = metered_speech(self.meter, self.speech_used, self.secrets)
-        self.stt = metered_listening(self.meter, self.listening_used, self.secrets)
+        if "model" in legs:
+            self.provider, self.source = self._pick_model()
+        if "voice" in legs:
+            self.tts = metered_speech(self.meter, self.speech_used, self.secrets)
+        if "hearing" in legs:
+            self.stt = metered_listening(self.meter, self.listening_used, self.secrets)
         banner = self.spend.banner()
         for session in list(self.sessions):
             await session.settings_changed()
@@ -573,18 +599,46 @@ class Runtime:
         return "your usual way of listening"
 
     async def spend_tick(self) -> None:
-        """A switch whose time has passed ends now: she is back on the usual one. The
+        """A switch made for a month now over ends: she is back on the usual one. The
         desk tells `_spend_changed`, which picks the usual one again."""
         await self.spend.lapse(self._usual)
 
-    async def _spend_changed(self, cards: Any, switched: bool) -> None:
+    def month_timer(self) -> None:
+        """Wake at the next 1st, so the legs and the banner flip without waiting for a
+        turn. Started again if it was running; stopped by `close`."""
+        if self._month_timer is not None:
+            self._month_timer.cancel()
+        self._month_timer = asyncio.create_task(self._month_turns())
+
+    async def _month_turns(self) -> None:
+        while True:
+            wait_ms = next_month_start(self.clock(), self.zone() or "") - self.clock()
+            await asyncio.sleep(max(0.0, min(wait_ms / 1000, self.month_look_s)))
+            try:
+                await self.spend_tick()
+            except Exception as e:
+                logger.warning("the month's switches not checked: %s", type(e).__name__)
+
+    async def _seed_known(self) -> None:
+        """Once, on the first start with spend cards: the models already set up, so a
+        card can offer them. A key in the keychain stands for its kind at the model
+        known for it; Anthropic has a default model, and OpenAI and a custom address do
+        not, so those wait until one is chosen. The saved model is remembered too."""
+        if await self.preferences.get(OWNER, KNOWN_PREF) is not None:
+            return
+        known: dict[str, Any] = {}
+        if self.secrets.get(secret_name("anthropic")):
+            known["anthropic"] = ModelSettings(kind="anthropic", model=DEFAULT_MODEL).to_json()
+        await self.preferences.put(OWNER, KNOWN_PREF, known, self.clock())
+
+    async def _spend_changed(self, cards: Any, legs: frozenset[str]) -> None:
         """A card was answered: its pages hear so, and a switch takes effect now."""
         for card in cards:
             for session in list(self.sessions):
                 if session.id == card.conversation_id:
                     await session.send("spend.resolved", id=card.id, status=card.status)
-        if switched:
-            await self.use_switches()
+        if legs:
+            await self.use_switches(legs)
 
     async def _spend_notice(self, key: str, title: str) -> None:
         """A spend warning, through the one door (SUR-9): shown, never spoken."""
@@ -1058,6 +1112,11 @@ class Runtime:
         await self.preferences.put(OWNER, ONBOARDING_PREF, "skipped", self.clock())
 
     async def close(self) -> None:
+        if self._month_timer is not None:
+            self._month_timer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._month_timer
+            self._month_timer = None
         # First, so no tick or read runs on a connection that is closing.
         await self.stop_background()
         await self.jobs.stop()
@@ -1403,8 +1462,10 @@ async def open_runtime(
     # a switch saved before a restart still applies, unless the 1st has passed since.
     desk.notify = rt._spend_notice
     desk.changed = rt._spend_changed
+    await rt._seed_known()
     await rt._remember_model(settings)
     # A lapse picks again by itself; a switch still in force is picked here.
     if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
         await rt.use_switches()
+    rt.month_timer()
     return rt

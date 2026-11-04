@@ -32,11 +32,13 @@ from trillion.api.runtime import (
 )
 from trillion.api.session import Session
 from trillion.brain.config import ModelSettings
+from trillion.brain.providers.anthropic import DEFAULT_MODEL
 from trillion.brain.types import ContextBlock, ModelEvent, Msg, TextBlock
 from trillion.persona.prompt import capped
 from trillion.secrets.store import MemoryStore
 from trillion.spend import desk
 from trillion.spend.gate import PREF as CAPS_PREF
+from trillion.spend.gate import VoiceCapped
 from trillion.spend.ledger import Row
 from trillion.zones import month_start, next_month_start
 
@@ -229,7 +231,7 @@ async def test_her_voice_at_the_cap_finishes_the_sentence_and_goes_to_text(rt: R
     assert options(card) == ["raise", "switch:system", "text"]
 
     # Text only: the next reply is text, with no second line and no second card.
-    assert (await rt.spend.choose(card["id"], "text", None, session.id, "tap")).status == "stopped"
+    assert (await tap(session, page, card["id"], "text"))["status"] == "stopped"
     rt.provider = ScriptedProvider(say("Quietly."))
     await session.handle({"type": "turn.text", "text": "again"})
     await idle(session)
@@ -299,41 +301,75 @@ async def capped_card(rt: Runtime) -> tuple[Session, Page, dict[str, Any]]:
     return session, page, page.all("spend.card")[-1]
 
 
+async def tap(
+    session: Session, page: Page, card_id: str, choice: str, amount: float | None = None
+) -> dict[str, Any]:
+    """A tap on the card, as the page sends it: the answer it gets back."""
+    before = len(page.got)
+    msg: dict[str, Any] = {"type": "spend.choice", "id": card_id, "choice": choice}
+    if amount is not None:
+        msg["amount"] = amount
+    await session.handle(msg)
+    answers = [m for m in page.got[before:] if m["type"] in ("spend.resolved", "spend.refused")]
+    assert answers, [m["type"] for m in page.got[before:]]
+    return answers[0]
+
+
 async def test_raise_writes_the_cap_and_she_can_go_on(rt: Runtime) -> None:
     session, page, card = await capped_card(rt)
-    with pytest.raises(desk.Refused) as low:
-        await rt.spend.choose(card["id"], "raise", 50.0, session.id, "tap")
-    assert low.value.code == "bad_amount"  # not above what is already spent
-    with pytest.raises(desk.Refused):
-        await rt.spend.choose(card["id"], "raise", -1.0, session.id, "tap")
+    for low in (50.0, -1.0, 20_000.0):  # not above what is spent; nor past $10,000
+        assert (await tap(session, page, card["id"], "raise", low)) == {
+            "type": "spend.refused",
+            "id": card["id"],
+            "code": "bad_amount",
+        }
 
-    done = await rt.spend.choose(card["id"], "raise", 80.0, session.id, "tap")
+    done = await tap(session, page, card["id"], "raise", 80.0)
 
-    assert done.status == "raised"
+    assert done == {"type": "spend.resolved", "id": card["id"], "status": "raised"}
     assert await rt.preferences.get(OWNER, CAPS_PREF) == {
         "anthropic": {"soft": 20.0, "hard": 80.0, "warn_pct": 80, "unit": "dollars"}
     }
     assert rt.gate.state("anthropic") == "over_soft"
-    assert page.all("spend.resolved")[-1] == {
-        "type": "spend.resolved",
-        "id": card["id"],
-        "status": "raised",
-    }
     rt.provider = ScriptedProvider(say("Back."))
     await session.handle({"type": "turn.text", "text": "and now?"})
     await idle(session)
     assert "".join(m["text"] for m in page.all("reply.delta")) == "Back."
     # Answered: it cannot be answered again.
-    with pytest.raises(desk.Refused) as again:
-        await rt.spend.choose(card["id"], "stop", None, session.id, "tap")
-    assert again.value.code == "closed"
+    assert (await tap(session, page, card["id"], "stop"))["code"] == "closed"
 
 
-async def test_a_choice_from_another_session_or_not_by_a_tap_is_refused(rt: Runtime) -> None:
+async def test_a_raise_with_no_amount_is_the_suggested_step(rt: Runtime) -> None:
+    session, page, card = await capped_card(rt)
+    assert (await tap(session, page, card["id"], "raise"))["status"] == "raised"
+    assert rt.gate.caps("anthropic").hard == 75.0
+
+
+async def test_a_double_tap_is_answered_once(rt: Runtime) -> None:
+    session, page, card = await capped_card(rt)
+    first = {"type": "spend.choice", "id": card["id"], "choice": "raise", "amount": 80}
+    second = {"type": "spend.choice", "id": card["id"], "choice": "raise", "amount": 100}
+    await asyncio.gather(session.handle(first), session.handle(second))
+    assert [m["status"] for m in page.all("spend.resolved")] == ["raised"]
+    assert [m["code"] for m in page.all("spend.refused")] == ["closed"]
+    assert rt.gate.caps("anthropic").hard in (80.0, 100.0)
+
+
+async def test_another_live_conversation_cannot_answer_the_card(rt: Runtime) -> None:
+    """SPN-14: only the page the card was sent to, and the session says which that is,
+    not the message."""
+    _session, _page, card = await capped_card(rt)
+    other_page = Page(rt)
+    other = await Session.start(rt, other_page.send, None)
+    msg = {"type": "spend.choice", "id": card["id"], "choice": "raise", "amount": 80}
+    await other.handle(msg | {"session": _session.id, "via": "tap"})
+    assert other_page.all("spend.refused")[-1]["code"] == "wrong_session"
+    assert rt.gate.caps("anthropic").hard == 50.0
+
+
+async def test_the_desk_takes_nothing_but_a_tap_from_the_cards_session(rt: Runtime) -> None:
     session, _page, card = await capped_card(rt)
-    other = await Session.start(rt, Page(rt).send, None)
     for who, via, code in (
-        (other.id, "tap", "wrong_session"),
         ("no-such-session", "tap", "wrong_session"),
         (session.id, "voice", "not_a_tap"),
         (session.id, "text", "not_a_tap"),
@@ -350,29 +386,45 @@ async def test_a_choice_from_another_session_or_not_by_a_tap_is_refused(rt: Runt
     assert rt.gate.caps("anthropic").hard == 50.0
 
 
+async def test_a_switch_to_a_model_capped_since_the_card_is_refused(rt: Runtime) -> None:
+    await on_model(rt, GPT, ScriptedProvider())
+    session, page, card = await capped_card(rt)
+    assert "switch:openai/gpt-test" in options(card)
+    await caps(rt, anthropic=CAPS, openai=CAPS)
+    spend(rt, "openai", 50.0)  # capped since the card was shown
+    answer = await tap(session, page, card["id"], "switch:openai/gpt-test")
+    assert answer["code"] == "target_capped"
+    assert rt.spend.switch("anthropic") is None
+
+
 async def test_stop_keeps_the_card_for_the_banner_after_a_reload(rt: Runtime) -> None:
-    session, _page, card = await capped_card(rt)
-    done = await rt.spend.choose(card["id"], "stop", None, session.id, "tap")
-    assert done.status == "stopped"
+    session, page, card = await capped_card(rt)
+    assert (await tap(session, page, card["id"], "stop"))["status"] == "stopped"
+    # Since it was put off, another model was set up.
+    await on_model(rt, GPT, ScriptedProvider())
+    await on_model(rt, ANTHROPIC, ScriptedProvider())
     page = Page(rt)
     await session.close()
-    await Session.start(rt, page.send, session.id)
+    session = await Session.start(rt, page.send, session.id)
     (again,) = page.all("spend.card")
     assert again["id"] == card["id"] and again["status"] == "stopped"
+    # Shown with its choices as they are now.
+    assert options(again) == ["raise", "switch:local/gemma", "switch:openai/gpt-test", "stop"]
     # Still answerable from the banner.
-    assert (await rt.spend.choose(card["id"], "raise", 75.0, session.id, "tap")).status == "raised"
+    assert (await tap(session, page, card["id"], "raise", 75.0))["status"] == "raised"
 
 
 async def test_switch_uses_the_model_until_the_1st_and_says_so(rt: Runtime) -> None:
     session, page, card = await capped_card(rt)
-    done = await rt.spend.choose(card["id"], "switch:local/gemma", None, session.id, "tap")
-    assert done.status == "switched"
+    tts = rt.tts
+    assert (await tap(session, page, card["id"], "switch:local/gemma"))["status"] == "switched"
     until = next_month_start(rt.clock(), rt.zone() or "")
     assert await rt.preferences.get(OWNER, desk.SWITCH_PREF) == {
         "anthropic": {
             "leg": "model",
             "to": "local/gemma",
             "label": "gemma",
+            "month": month_start(rt.clock(), rt.zone() or "")[0],
             "until_ms": until,
             "settings": GEMMA.to_json(),
         }
@@ -380,10 +432,51 @@ async def test_switch_uses_the_model_until_the_1st_and_says_so(rt: Runtime) -> N
     assert rt.provider is not None and rt.provider.provider_id == "local"
     assert rt.provider.model == "gemma"
     assert rt.settings == ANTHROPIC  # the user's choice is unchanged
+    assert rt.tts is tts  # only the leg that switched is picked again
     (switch,) = page.all("spend.switch")[-1]["switches"]
     assert switch["provider_id"] == "anthropic" and switch["until_ms"] == until
     assert switch["line"].startswith("Using gemma until ")
     assert page.all("model")[-1]["model"]["model"] == "gemma"
+
+
+async def test_switches_are_followed_to_their_end_and_warn_where_she_is(rt: Runtime) -> None:
+    """Anthropic switched to OpenAI; OpenAI then nears its soft cap (warned, as it is
+    the one in use), reaches its hard cap, and is switched to the local model."""
+    await on_model(rt, GEMMA, ScriptedProvider())
+    await on_model(rt, GPT, ScriptedProvider())
+    await on_model(rt, ANTHROPIC, ScriptedProvider())
+    await caps(rt, anthropic=CAPS, openai=CAPS)
+    spend(rt, "anthropic", 50.0)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "hello?"})
+    await idle(session)
+    card = page.all("spend.card")[-1]
+    await tap(session, page, card["id"], "switch:openai/gpt-test")
+    assert rt.provider is not None and rt.provider.provider_id == "openai"
+
+    spend(rt, "openai", 16.5)
+    rt.provider = ScriptedProvider(say("On OpenAI."))
+    await session.handle({"type": "turn.text", "text": "and?"})
+    await idle(session)
+    assert rt.schedules is not None
+    assert await rt.schedules.has_notice(OWNER, f"spend:warned:openai:{month_of(rt)}")
+
+    spend(rt, "openai", 40.0)
+    await session.handle({"type": "turn.text", "text": "more?"})
+    await idle(session)
+    card = page.all("spend.card")[-1]
+    assert card["provider_id"] == "openai"
+    assert options(card) == ["raise", "switch:local/gemma", "stop"]
+    await tap(session, page, card["id"], "switch:local/gemma")
+    assert rt.provider is not None and rt.provider.provider_id == "local"
+    # A loop never hangs: it stops at the last model before it repeats.
+    rt.spend._switches["local"] = rt.spend._switches["anthropic"]
+    assert rt._model_switch("anthropic") is not None
+
+
+def month_of(rt: Runtime) -> str:
+    return month_start(rt.clock(), rt.zone() or "")[0]
 
 
 async def test_the_switch_survives_a_restart_and_lapses_on_the_1st(
@@ -393,8 +486,8 @@ async def test_the_switch_survives_a_restart_and_lapses_on_the_1st(
     secrets = _secrets()
     rt = await _open(tmp_path, secrets)
     try:
-        session, _page, card = await capped_card(rt)
-        await rt.spend.choose(card["id"], "switch:local/gemma", None, session.id, "tap")
+        session, page, card = await capped_card(rt)
+        await tap(session, page, card["id"], "switch:local/gemma")
         until = next_month_start(rt.clock(), rt.zone() or "")
     finally:
         await rt.close()
@@ -424,6 +517,73 @@ async def test_the_switch_survives_a_restart_and_lapses_on_the_1st(
         assert "back on" not in sent_text(provider, 1)  # said once
     finally:
         await rt.close()
+
+
+async def test_the_1st_flips_the_switch_without_waiting_for_a_turn(rt: Runtime) -> None:
+    session, page, card = await capped_card(rt)
+    await tap(session, page, card["id"], "switch:local/gemma")
+    until = next_month_start(rt.clock(), rt.zone() or "")
+    rt.clock = lambda: until + 1_000
+    rt.month_look_s = 0.01
+    rt.month_timer()
+    for _ in range(400):
+        if page.all("spend.switch")[-1]["switches"] == []:
+            break
+        await asyncio.sleep(0.005)
+    assert page.all("spend.switch")[-1]["switches"] == []
+    assert rt.provider is not None and rt.provider.provider_id == "anthropic"
+
+
+async def test_a_page_opened_on_the_1st_finds_the_switch_ended(rt: Runtime) -> None:
+    session, page, card = await capped_card(rt)
+    await tap(session, page, card["id"], "switch:local/gemma")
+    until = next_month_start(rt.clock(), rt.zone() or "")
+    rt.clock = lambda: until + 1_000
+    fresh = Page(rt)
+    await Session.start(rt, fresh.send, None)
+    assert rt.provider is not None and rt.provider.provider_id == "anthropic"
+    assert all(m["switches"] == [] for m in fresh.all("spend.switch"))
+
+
+async def test_after_a_hearing_card_the_microphone_does_not_reopen_by_itself(
+    rt: Runtime,
+) -> None:
+    await on_model(rt, ANTHROPIC, ScriptedProvider())
+    await caps(rt, deepgram=CAPS)
+    spend(rt, "deepgram", 50.0)
+    rt.listening = ListenSettings(kind="deepgram", choice="en")
+    rt.stt = stt = FakeSTT()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    starts = len(page.all("mic.start"))
+    # What follows a spoken reply, or a quiet one: the microphone would reopen.
+    await session._on_listen(1.0, follow_up=True)
+    await session._on_listen(1.0, follow_up=True, quiet=True)
+    assert len(page.all("mic.start")) == starts
+    assert stt.streams == []
+    assert len(page.all("spend.card")) == 1  # and nothing said twice
+
+
+async def test_muted_the_voice_line_is_not_for_the_computer_to_say(rt: Runtime) -> None:
+    await on_model(rt, ANTHROPIC, ScriptedProvider())
+    await caps(rt, elevenlabs=CAPS)
+    spend(rt, "elevenlabs", 50.0)
+    rt.speech = SpeechSettings(kind="elevenlabs", voice="v1")
+    rt.tts = FakeVoice()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "speech.mute", "muted": True})
+    await session._voice_capped(VoiceCapped("elevenlabs", "conversation", 50.0, "dollars"))
+    (error,) = page.all("error")
+    assert error["code"] == "capped" and "say" not in error
+
+
+async def test_models_already_set_up_are_known_from_the_first_start(rt: Runtime) -> None:
+    """A key in the keychain stands for its kind; Anthropic has a default model."""
+    assert await rt.preferences.get(OWNER, desk.KNOWN_PREF) == {
+        "anthropic": ModelSettings(kind="anthropic", model=DEFAULT_MODEL).to_json()
+    }
 
 
 # ── The warning and the soft cap ─────────────────────────────────────────
@@ -477,7 +637,8 @@ async def test_past_the_soft_cap_her_next_turn_carries_one_host_note(rt: Runtime
 # ── The endpoint ─────────────────────────────────────────────────────────
 
 
-def test_the_endpoint_answers_a_tap_from_the_cards_session_only(make: Any) -> None:
+def test_a_tap_on_the_socket_answers_the_card(make: Any) -> None:
+    """The choice is a message on the page's own socket, as an approval's tap is."""
     app: App = make(say("never"))
     portal = app.client.portal
     assert portal is not None
@@ -492,25 +653,12 @@ def test_the_endpoint_answers_a_tap_from_the_cards_session_only(make: Any) -> No
     with app.connect() as chat:
         chat.ws.send_json({"type": "turn.text", "text": "hello?"})
         card = chat.until("spend.card")[-1]
-        sid = chat.session["id"]
-        body = {"id": card["id"], "choice": "raise", "amount": 75, "via": "tap"}
-        url = "/api/spend/choice"
-        assert app.client.post(url, json=body | {"session": sid}).status_code == 401
-        headers = app.auth | {"origin": "http://evil.example"}
-        refused = app.client.post(url, json=body | {"session": sid}, headers=headers)
-        assert refused.status_code == 403
-        wrong = app.client.post(url, json=body | {"session": "other"}, headers=app.auth)
-        assert (wrong.status_code, wrong.json()) == (403, {"error": "wrong_session"})
-        spoken = app.client.post(
-            url, json=body | {"session": sid, "via": "voice"}, headers=app.auth
-        )
-        assert (spoken.status_code, spoken.json()) == (403, {"error": "not_a_tap"})
-        low = app.client.post(url, json=body | {"session": sid, "amount": 10}, headers=app.auth)
-        assert (low.status_code, low.json()) == (400, {"error": "bad_amount"})
-        ok = app.client.post(url, json=body | {"session": sid}, headers=app.auth)
-        assert ok.status_code == 200 and ok.json()["status"] == "raised"
-        assert app.rt.gate.caps("anthropic").hard == 75.0
+        chat.ws.send_json({"type": "spend.choice", "id": card["id"], "choice": "raise"})
         assert chat.until("spend.resolved")[-1]["status"] == "raised"
+    assert app.rt.gate.caps("anthropic").hard == 75.0
+    # There is no HTTP way in.
+    body = {"id": card["id"], "choice": "raise", "amount": 100}
+    assert app.client.post("/api/spend/choice", json=body, headers=app.auth).status_code == 404
 
 
 async def test_month_of_and_the_friendly_words() -> None:
