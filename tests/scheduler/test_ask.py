@@ -85,8 +85,10 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
 
 
 def asker(rt: Runtime, provider: ScriptedProvider | None) -> Asker:
+    # Metered, as the runtime hands it over: the metered provider records each call.
+    metered = rt.meter.model(provider, None) if provider is not None else None
     return Asker(
-        provider=lambda: provider,
+        provider=lambda: metered,
         router=rt.router,
         registry=rt.registry,
         conversations=rt.conversations,

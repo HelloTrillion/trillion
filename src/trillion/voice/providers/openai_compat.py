@@ -38,6 +38,8 @@ class CompatibleSpeech:
     name = NAME
     where: Where = "core"
     output_format: AudioFormat | None = FORMAT
+    # What a sentence is priced by (BRN-7).
+    model = MODEL
 
     def __init__(self, *, base_url: str, client: httpx.AsyncClient | None = None) -> None:
         self._base = base_url.rstrip("/")

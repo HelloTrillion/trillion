@@ -16,6 +16,7 @@ from trillion.brain.types import (
     ToolUse,
     Usage,
 )
+from trillion.spend.caller import current
 
 USAGE = Usage(input_tokens=10, output_tokens=5)
 
@@ -59,6 +60,9 @@ class ScriptedProvider:
         self._replies = list(replies)
         self._pricing = pricing
         self.calls: list[tuple[Sequence[SystemBlock], list[Msg]]] = []
+        # Who made each call, and for which conversation (BRN-7).
+        self.callers: list[str] = []
+        self.conversations: list[str | None] = []
 
     def pricing(self) -> Pricing | None:
         return self._pricing
@@ -81,6 +85,8 @@ class ScriptedProvider:
         self.max_tokens.append(max_tokens)
         self.quick.append(quick)
         self.calls.append((system, list(messages)))
+        self.callers.append(current().caller)
+        self.conversations.append(current().conversation_id)
         self.tool_calls.append(list(tools))
         if not self._replies:
             raise ProviderError("script_exhausted")

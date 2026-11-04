@@ -47,7 +47,8 @@ class ElevenLabs:
     ) -> None:
         # The key is fetched for each request and never held (SEC-6).
         self._api_key = api_key
-        self._model = model
+        # Public: the spend gate prices a sentence by it (BRN-7).
+        self.model = model
         self._client = client or httpx.AsyncClient(timeout=_TIMEOUT, limits=net.KEEP_ALIVE)
 
     async def warm(self) -> None:
@@ -64,7 +65,7 @@ class ElevenLabs:
                 url,
                 params={"output_format": _OUTPUT},
                 headers={"xi-api-key": self._api_key()},
-                json={"text": text, "model_id": self._model},
+                json={"text": text, "model_id": self.model},
             ) as r:
                 if r.status_code != 200:
                     await r.aread()

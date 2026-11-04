@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Concatenate, Literal, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
 from trillion import __version__
@@ -47,14 +48,12 @@ from trillion.brain.loop import (
 )
 from trillion.brain.types import (
     ContextBlock,
-    ModelProvider,
     Msg,
     ProviderError,
     TextBlock,
     ToolResultBlock,
     ToolUse,
     ToolUseBlock,
-    Usage,
 )
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
 from trillion.delivery import door as delivery
@@ -71,6 +70,8 @@ from trillion.persona.prompt import (
 )
 from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
 from trillion.scheduler.store import https_link
+from trillion.spend.caller import as_caller
+from trillion.spend.types import Caller
 from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
@@ -126,6 +127,33 @@ ROUTINE_BUILDING = "routine_building"
 DAY_BUILD_SHOWN = "Building your day"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _calls_as(
+    caller: Caller,
+) -> Callable[
+    [Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]]],
+    Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]],
+]:
+    """Every paid call made inside the method counts as `caller`, for this session's
+    conversation (BRN-7), and so does every task it starts. On each way into the
+    session, since some (a notice the door hands over, a turn it begins) start on a
+    task of someone else's."""
+
+    def wrap(
+        method: Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]],
+    ) -> Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]]:
+        @functools.wraps(method)
+        async def run(session: Session, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+            with as_caller(caller, session.id):
+                return await method(session, *args, **kwargs)
+
+        return run
+
+    return wrap
 
 
 @dataclass(kw_only=True)
@@ -1057,6 +1085,7 @@ class Session:
 
     # ── Incoming messages ────────────────────────────────────────────────
 
+    @_calls_as("conversation")
     async def handle(self, msg: Mapping[str, Any]) -> None:
         if self._closed:
             return
@@ -2000,6 +2029,7 @@ class Session:
                 # Closed while it connected: nobody will close it otherwise.
                 await listener.abandon()
 
+    @_calls_as("conversation")
     async def audio(self, pcm: bytes) -> None:
         """A binary frame from the page: microphone audio, 16 kHz mono PCM16 (VOI-1)."""
         ov = self._overlap
@@ -2053,6 +2083,7 @@ class Session:
         await self._hearing_down(kind)
         await self._state(self._rest)
 
+    @_calls_as("conversation")
     async def _hearing_down(self, kind: str) -> None:
         """She cannot hear: say so in one sentence, aloud if her voice works (VOI-14)."""
         said = degraded("hearing", kind)
@@ -2291,6 +2322,7 @@ class Session:
     def _begin(self, *, follow_up: bool = False) -> None:
         self._task = asyncio.create_task(self._run(follow_up=follow_up))
 
+    @_calls_as("conversation")
     async def _run(self, *, follow_up: bool = False) -> None:
         """Turns, one after another, until nothing is waiting.
 
@@ -2547,19 +2579,8 @@ class Session:
                 # Written and saved, but still to be heard: kept in case she is talked
                 # over while it plays.
                 self._tail = (speaker, reply_id)
-            # Recorded before her last words are voiced: the model's work is done and
-            # paid for even if she is talked over while they play.
-            await asyncio.shield(
-                rt.conversations.record_usage(
-                    owner_id=OWNER,
-                    conversation_id=self.id,
-                    provider=provider.name,
-                    model=provider.model,
-                    usage=done.usage,
-                    cost_usd=done.cost_usd,
-                    now_ms=rt.clock(),
-                )
-            )
+            # Each model call of the turn was recorded as it ended, by the metered
+            # provider (BRN-7).
             if speaker is not None:
                 if down is not None:
                     await speaker.pause()
@@ -2824,15 +2845,16 @@ class Session:
             return None
         return said, Msg(role="assistant", blocks=(TextBlock(text=answer),))
 
+    # Her naming the conversation is the title writer's, which nobody waits on.
+    @_calls_as("background")
     async def _name(self, said: Msg, reply: Msg) -> None:
         rt = self._rt
         provider = rt.provider
         if provider is None:
             return
-        named, usage = await naming.name(provider, [said, reply])
+        # Its call is recorded by the metered provider, even if the session closes.
+        named, _usage = await naming.name(provider, [said, reply])
         try:
-            # Recorded even if the session closes meanwhile: the call was paid for.
-            await asyncio.shield(self._record_usage(provider, usage))
             if named is None:
                 return
             if await rt.conversations.set_title(self.id, OWNER, named, "model"):
@@ -2859,6 +2881,7 @@ class Session:
             await self._drop_draft()
             await self._start_draft(text)
 
+    @_calls_as("conversation")
     async def _start_draft(self, words: str) -> None:
         """Her first call for these words, sent exactly as the confirmed turn would
         send it, and held. Nothing is saved, shown, said or run.
@@ -2932,27 +2955,10 @@ class Session:
         await self._let_go(using)
 
     async def _let_go(self, draft: Draft) -> None:
-        """Stop a draft nobody will replay, and count what it cost. A provider reports
-        usage at the end of a call, so one stopped before then counts as nothing."""
+        """Stop a draft nobody will replay. What it cost was recorded by the metered
+        provider when its call ended (BRN-7): a provider reports usage at the end of a
+        call, so one stopped before then counts as nothing."""
         await draft.cancel()
-        # The model it asked, which may no longer be the one in use.
-        if draft.provider is not None:
-            await self._record_usage(draft.provider, draft.usage())
-
-    async def _record_usage(self, provider: ModelProvider, usage: Usage) -> None:
-        """Count a side call's cost against this conversation, unless it used nothing."""
-        if usage == Usage():
-            return
-        pricing = provider.pricing()
-        await self._rt.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=self.id,
-            provider=provider.name,
-            model=provider.model,
-            usage=usage,
-            cost_usd=pricing.cost(usage) if pricing is not None else None,
-            now_ms=self._rt.clock(),
-        )
 
     # ── Timing (ONB-11) ──────────────────────────────────────────────────
 
@@ -3222,6 +3228,7 @@ class Session:
         if written is not None:
             await self._put_in_place(written)
 
+    @_calls_as("conversation")
     async def _summarize(self, timeout: float) -> _Written | None:
         """Notes on the oldest turns of the history as it is now, or None if it needs
         none or they could not be written. Changes nothing but what was paid for."""
@@ -3242,8 +3249,7 @@ class Session:
             self._compact_failed_at = compact.estimate(self._history)
             return None
         self._compact_failed_at = None
-        # Paid for whether or not it is put in place.
-        await self._record_usage(provider, summary.usage)
+        # Paid for whether or not it is put in place: the metered provider recorded it.
         return _Written(summary=summary, ids=ids, previous=previous)
 
     def _still_fits(self, written: _Written) -> bool:
@@ -3565,6 +3571,7 @@ class Session:
             raise
         self._ids.extend(ids)
 
+    @_calls_as("conversation")
     async def _say_notices(self, said: list[str]) -> None:
         """Her words for the notices, through the normal speech path. Runs as the
         session's task, so nothing else starts over it, and "stop" stops it."""

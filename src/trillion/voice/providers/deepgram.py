@@ -190,8 +190,17 @@ class Deepgram:
     def _auth(self) -> dict[str, str]:
         return {"Authorization": f"Token {self._api_key()}"}
 
+    @staticmethod
+    def _language(choice: str) -> str:
+        return choice if any(c.id == choice for c in CHOICES) else CHOICES[0].id
+
+    def model_for(self, choice: str) -> str:
+        """The model a stream opened with this choice listens with: what its seconds
+        are priced by (BRN-7)."""
+        return MODELS.get(self._language(choice), MODELS["en"])
+
     async def open(self, *, choice: str) -> _Stream:
-        language = choice if any(c.id == choice for c in CHOICES) else CHOICES[0].id
+        language = self._language(choice)
         try:
             socket = await self._connect(listen_url(language), self._auth())
         except InvalidStatus as e:

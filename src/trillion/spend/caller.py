@@ -8,7 +8,7 @@ counts as `background`, so it is capped the stricter way.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import NamedTuple
@@ -20,6 +20,10 @@ class Call(NamedTuple):
     caller: Caller
     # The conversation the call is for, when there is one.
     conversation_id: str | None = None
+    # Awaited before a usage row for the call is written: a caller whose conversation
+    # is only saved once something happens in it (a timed ask) makes it exist here, so
+    # the row can name it.
+    ready: Callable[[], Awaitable[None]] | None = None
 
 
 UNSET = Call("background", None)
@@ -28,10 +32,15 @@ _current: ContextVar[Call | None] = ContextVar("trillion_spend_caller", default=
 
 
 @contextmanager
-def as_caller(caller: Caller, conversation_id: str | None = None) -> Iterator[Call]:
+def as_caller(
+    caller: Caller,
+    conversation_id: str | None = None,
+    *,
+    ready: Callable[[], Awaitable[None]] | None = None,
+) -> Iterator[Call]:
     """Label every paid call made inside the block. Blocks nest; leaving one puts back
     the caller from outside it."""
-    call = Call(caller, conversation_id)
+    call = Call(caller, conversation_id, ready)
     token = _current.set(call)
     try:
         yield call

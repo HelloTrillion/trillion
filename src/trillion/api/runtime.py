@@ -25,9 +25,9 @@ from trillion.attention.payments import Payments
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
 from trillion.brain import compact
-from trillion.brain.config import ModelSettings, Source, resolve
+from trillion.brain.config import OPENAI_BASE_URL, ModelSettings, Source, resolve
 from trillion.brain.standing import StandingRules
-from trillion.brain.types import ModelProvider, SystemBlock, Usage
+from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.channels.answer import Answerer
 from trillion.channels.manager import Channels
 from trillion.connectors.google.connection import GoogleConnection
@@ -54,8 +54,11 @@ from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
 from trillion.spend import gate as spend_gate
+from trillion.spend import metered, prices
+from trillion.spend.caller import as_caller
 from trillion.spend.gate import Gate
 from trillion.spend.ledger import Ledger
+from trillion.spend.metered import Meter, MeteredHearing, MeteredModel, MeteredVoice, PriceBook
 from trillion.spine.audit import audit_key
 from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
@@ -215,6 +218,57 @@ def build_listening(settings: ListenSettings | None, secrets: SecretStore) -> ST
     return option.build(secrets)
 
 
+def model_provider_id(
+    settings: ModelSettings | None, source: Source, env: Mapping[str, str] | None
+) -> str | None:
+    """The cap the model in use counts against (BRN-7). The environment configures
+    either an OpenAI-compatible address, read as a custom model there, or Anthropic,
+    as `brain.config.provider_from_env` does."""
+    if source == "env":
+        base_url = (os.environ if env is None else env).get(OPENAI_BASE_URL, "").strip()
+        return prices.provider_id("custom", base_url) if base_url else "anthropic"
+    if source == "settings" and settings is not None:
+        return prices.provider_id(settings.kind, settings.base_url)
+    return None
+
+
+def metered_model(
+    meter: Meter,
+    provider: ModelProvider | None,
+    settings: ModelSettings | None,
+    source: Source,
+    env: Mapping[str, str] | None,
+) -> MeteredModel | None:
+    """The model, behind the spend gate."""
+    if provider is None:
+        return None
+    return meter.model(provider, model_provider_id(settings, source, env))
+
+
+def metered_speech(
+    meter: Meter, settings: SpeechSettings | None, secrets: SecretStore
+) -> MeteredVoice | None:
+    """The chosen voice, behind the spend gate; the system voice is never capped."""
+    tts = build_speech(settings, secrets)
+    if tts is None or settings is None:
+        return None
+    return meter.voice(tts, prices.voice_provider_id(settings.kind, settings.base_url))
+
+
+def metered_listening(
+    meter: Meter, settings: ListenSettings | None, secrets: SecretStore
+) -> MeteredHearing | None:
+    """The chosen recognizer, behind the spend gate; local Whisper is never capped."""
+    stt = build_listening(settings, secrets)
+    if stt is None or settings is None:
+        return None
+    return meter.hearing(stt, prices.hearing_provider_id(settings.kind))
+
+
+# Every paid provider the runtime holds goes through the spend gate.
+_METERED = frozenset({"provider", "tts", "stt"})
+
+
 # The desktop app makes the session token and hands it to the server it starts (D2).
 SESSION_TOKEN_ENV = "TRILLION_SESSION_TOKEN"  # noqa: S105 - a variable name, not a secret
 _URL_SAFE_32 = re.compile(r"[A-Za-z0-9_-]{32,}")
@@ -267,6 +321,9 @@ class Runtime:
     # empty count.
     ledger: Ledger
     gate: Gate
+    # Every paid call goes through it: the model, the voice and hearing below are
+    # wrapped in it whenever they are set (see `__setattr__`).
+    meter: Meter
     secrets: SecretStore
     memory: MemoryBook
     # What the user told her to always or never do, outside every conversation (BRN-5).
@@ -364,6 +421,20 @@ class Runtime:
     # Held while Home's layout is read, changed and saved, so the page and her tool
     # never write over each other's change.
     _arranging: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # The model, voice and hearing are only ever held metered. What sets one with
+        # its provider id (open_runtime, use_model, use_speech, use_listening) wraps it
+        # first; anything else (a stand-in, in tests) is wrapped here, with no id: it
+        # is recorded, and never capped.
+        if name in _METERED and value is not None:
+            if name == "provider":
+                value = self.meter.model(value, None)
+            elif name == "tts":
+                value = self.meter.voice(value, None)
+            else:
+                value = self.meter.hearing(value, None)
+        super().__setattr__(name, value)
 
     @property
     def granted_roots(self) -> tuple[Path, ...]:
@@ -629,23 +700,6 @@ class Runtime:
             if session.id == conversation_id:
                 await session.send("board.refreshing", id=widget_id, on=on)
 
-    async def record_refresh_usage(
-        self, conversation_id: str, provider: ModelProvider, usage: Usage
-    ) -> None:
-        """A refresh's model call, counted with the conversation like a turn's (BRN-4)."""
-        if usage == Usage():
-            return
-        pricing = provider.pricing()
-        await self.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=conversation_id,
-            provider=provider.name,
-            model=provider.model,
-            usage=usage,
-            cost_usd=pricing.cost(usage) if pricing is not None else None,
-            now_ms=self.clock(),
-        )
-
     def tell_soon(self, settled: list[Settled]) -> None:
         """Tell the user about `settled` in the background: a model call never holds
         startup. Held until it ends, and stopped with the rest."""
@@ -660,18 +714,18 @@ class Runtime:
         door, its model call recorded (BRN-4). Never raises."""
         if self.schedules is None or self.door is None:
             return
-        provider = self.provider
         try:
-            made, usage = await interrupted.tell(
-                self.schedules,
-                provider,
-                OWNER,
-                settled,
-                self.spine_store.get_pending,
-                now_ms=self.clock(),
-            )
-            if provider is not None and usage != Usage():
-                await self.record_attention_usage(provider, usage)
+            # Work nobody is waiting on, in no conversation: its model call is the
+            # metered provider's to record.
+            with as_caller("background"):
+                made, _usage = await interrupted.tell(
+                    self.schedules,
+                    self.provider,
+                    OWNER,
+                    settled,
+                    self.spine_store.get_pending,
+                    now_ms=self.clock(),
+                )
             for n in made:
                 await self.door.added(n)
         except Exception as e:
@@ -688,20 +742,6 @@ class Runtime:
                 logger.warning("checking interrupted sends failed: %s", type(e).__name__)
                 continue
             await self.tell_interrupted(settled)
-
-    async def record_attention_usage(self, provider: ModelProvider, usage: Usage) -> None:
-        """A watcher's wording or judging call: background work, in no conversation,
-        recorded like any other (BRN-4)."""
-        pricing = provider.pricing()
-        await self.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=None,
-            provider=provider.name,
-            model=provider.model,
-            usage=usage,
-            cost_usd=pricing.cost(usage) if pricing is not None else None,
-            now_ms=self.clock(),
-        )
 
     def live_host(self) -> str | None:
         """Where the live page runs, from its hello; None with no page open."""
@@ -809,7 +849,9 @@ class Runtime:
     async def use_model(self, settings: ModelSettings | None) -> None:
         """Adopt saved settings (or none) and tell every open session."""
         self.settings = settings
-        self.provider, self.source = resolve(settings, self.secrets, self.env)
+        provider, source = resolve(settings, self.secrets, self.env)
+        self.source = source
+        self.provider = metered_model(self.meter, provider, settings, source, self.env)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -820,7 +862,7 @@ class Runtime:
             self.speech_last = last
             await self.preferences.put(OWNER, SPEECH_LAST_PREF, last.to_json(), self.clock())
         self.speech = settings
-        self.tts = build_speech(settings, self.secrets)
+        self.tts = metered_speech(self.meter, settings, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -830,7 +872,7 @@ class Runtime:
             self.listening_last = last
             await self.preferences.put(OWNER, LISTEN_LAST_PREF, last.to_json(), self.clock())
         self.listening = settings
-        self.stt = build_listening(settings, self.secrets)
+        self.stt = metered_listening(self.meter, settings, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -956,6 +998,16 @@ async def open_runtime(
     # profile moves the ledger too. It counts the month the usage pill counts.
     ledger = Ledger(conversations, lambda: rt.clock(), lambda: rt.zone() or "", owner_id=OWNER)
     gate = Gate(ledger, lambda: preferences.get(OWNER, spend_gate.PREF))
+    # Read at startup below, and again by `meter.prices.reload()` after every write to
+    # the preference, as the caps are.
+    meter = Meter(
+        gate=gate,
+        ledger=ledger,
+        store=conversations,
+        clock=lambda: rt.clock(),
+        prices=PriceBook(lambda: preferences.get(OWNER, metered.PREF)),
+        owner_id=OWNER,
+    )
     rt = Runtime(
         router=router,
         registry=registry,
@@ -965,18 +1017,19 @@ async def open_runtime(
         preferences=preferences,
         ledger=ledger,
         gate=gate,
+        meter=meter,
         secrets=keychain,
         memory=book,
         rules=standing,
         compact_at=(budget := _compact_at(env)),
         compact_keep=min(compact.KEEP, budget // 4),
-        provider=provider,
+        provider=metered_model(meter, provider, settings, source, env),
         source=source,
         settings=settings,
         speech=speech,
-        tts=build_speech(speech, keychain),
+        tts=metered_speech(meter, speech, keychain),
         listening=listening,
-        stt=build_listening(listening, keychain),
+        stt=metered_listening(meter, listening, keychain),
         speech_last=SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_LAST_PREF))
         or speech,
         listening_last=ListenSettings.from_json(await preferences.get(OWNER, LISTEN_LAST_PREF))
@@ -999,6 +1052,7 @@ async def open_runtime(
     try:
         await ledger.load()
         await gate.reload_caps()
+        await meter.prices.reload()
     except BaseException:
         # Nothing else is running yet: closing the connections leaves nothing behind.
         for conn in rt._connections:
@@ -1088,7 +1142,6 @@ async def open_runtime(
         owner=OWNER,
         provider=lambda: rt.provider,
         settings=lambda: rt.attention_settings,
-        spent=rt.record_attention_usage,
         google=lambda: rt.google,
         registry=registry,
     )
@@ -1145,7 +1198,6 @@ async def open_runtime(
         busy=rt.turn_running,
         enabled=lambda: rt.widgets_fresh,
         tell=rt.send_refreshing,
-        spent=rt.record_refresh_usage,
         shares=rt.reach,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):

@@ -30,7 +30,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -40,6 +40,7 @@ from trillion.attention.store import KEEP, AttentionStore, Cursor
 from trillion.brain.types import ModelProvider, Usage
 from trillion.connectors.google.client import GoogleCallError
 from trillion.scheduler.store import Notice, ScheduleStore, https_link
+from trillion.spend.caller import as_caller
 from trillion.spine.clock import Clock
 
 if TYPE_CHECKING:
@@ -140,9 +141,6 @@ class DoorLike(Protocol):
     async def added(self, notice: Notice) -> None: ...
 
 
-Spent = Callable[[ModelProvider, Usage], Awaitable[None]]
-
-
 class AttentionRunner:
     def __init__(
         self,
@@ -154,7 +152,6 @@ class AttentionRunner:
         owner: str,
         provider: Callable[[], ModelProvider | None],
         settings: Callable[[], AttentionSettings],
-        spent: Spent | None = None,
         google: Callable[[], GoogleConnection | None] = lambda: None,
         registry: ToolRegistry | None = None,
         tick_s: float = TICK_S,
@@ -168,7 +165,6 @@ class AttentionRunner:
         self._owner = owner
         self._provider = provider
         self._settings = settings
-        self._spent = spent
         self._google = google
         self._registry = registry
         self.tick_s = tick_s
@@ -324,11 +320,17 @@ class AttentionRunner:
             logger.warning("attention %s: door failed: %s", w.name, type(e).__name__)
 
     async def _tell(self, w: Watcher, ctx: WatchContext, finds: list[Find]) -> Notice | None:
+        # A watcher's judging and wording are work nobody is waiting on, in no
+        # conversation: the metered provider records each call as that (BRN-7).
+        with as_caller("background"):
+            return await self._tell_as_background(w, ctx, finds)
+
+    async def _tell_as_background(
+        self, w: Watcher, ctx: WatchContext, finds: list[Find]
+    ) -> Notice | None:
         provider = ctx.provider
         if isinstance(w, Judge):
             said = await w.judge(ctx, finds)
-            if provider is not None:
-                await self._spend(provider, said.usage)
             # Only finds it was given, once each: a judge can't tell one it made up.
             given = {f.key: f for f in finds}
             told = list({f.key: given[f.key] for f in said.told if f.key in given}.values())
@@ -342,8 +344,7 @@ class AttentionRunner:
         else:
             told, text = finds, None
             if provider is not None and not _all_stale(finds, ctx.now_ms):
-                text, usage = await words.line(provider, w.name, finds, ctx.notes)
-                await self._spend(provider, usage)
+                text, _usage = await words.line(provider, w.name, finds, ctx.notes)
         keys = [f.key for f in told]
         notice_id = uuid.uuid4().hex
         await self._store.telling(self._owner, keys, notice_id)
@@ -363,14 +364,6 @@ class AttentionRunner:
         await self._store.told(self._owner, keys, notice.id)
         logger.info("attention %s: told %d", w.name, len(told))
         return notice
-
-    async def _spend(self, provider: ModelProvider, usage: Usage) -> None:
-        if self._spent is None or usage == Usage():
-            return
-        try:
-            await self._spent(provider, usage)
-        except Exception as e:
-            logger.warning("attention usage not recorded: %s", type(e).__name__)
 
 
 def error_kind(e: BaseException) -> str:

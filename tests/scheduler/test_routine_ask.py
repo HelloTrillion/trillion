@@ -55,8 +55,10 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
 
 
 def asker(rt: Runtime, provider: Recording | None, **kw: Any) -> Asker:
+    # Metered, as the runtime hands it over: the metered provider records each call.
+    metered = rt.meter.model(provider, None) if provider is not None else None
     return Asker(
-        provider=lambda: provider,
+        provider=lambda: metered,
         router=rt.router,
         registry=rt.registry,
         conversations=rt.conversations,
@@ -146,11 +148,12 @@ async def test_the_request_is_the_hosts_and_the_reply_hers(rt: Runtime) -> None:
     # It never counts as the user's: no user message, and the title is the routine's.
     assert "user" not in kinds
     assert await rt.conversations.title_of(target, "local") == ("Monday revenue", "user")
-    # Its cost is the conversation's.
+    # Its cost is the conversation's: one row for each of its two model calls.
     async with rt.conversations._conn.execute(
-        "SELECT COUNT(*) FROM usage WHERE conversation_id = ?", (target,)
+        "SELECT COUNT(*) FROM usage WHERE conversation_id = ? AND caller = 'background'",
+        (target,),
     ) as cur:
-        assert (await cur.fetchone())[0] == 1  # type: ignore[index]
+        assert (await cur.fetchone())[0] == 2  # type: ignore[index]
 
 
 async def test_it_gets_the_board_and_nothing_else_a_timed_ask_does_not(rt: Runtime) -> None:
@@ -182,10 +185,11 @@ async def test_nothing_to_say_keeps_nothing_but_its_cost(rt: Runtime) -> None:
     assert built.nothing and built.outcome == "nothing"
     assert await rt.conversations.history(target, "local") == []
     assert await rt.boards.current(target) is None  # type: ignore[union-attr]
+    # One row for each of its two model calls.
     async with rt.conversations._conn.execute(
         "SELECT COUNT(*) FROM usage WHERE conversation_id = ?", (target,)
     ) as cur:
-        assert (await cur.fetchone())[0] == 1  # type: ignore[index]
+        assert (await cur.fetchone())[0] == 2  # type: ignore[index]
 
 
 async def test_no_board_and_no_words_is_nothing_too(rt: Runtime) -> None:

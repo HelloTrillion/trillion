@@ -14,8 +14,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from importlib.resources import files
 
-from trillion.brain.types import Done, ModelProvider, Msg, SystemBlock, TextBlock, TextDelta, Usage
+from trillion.brain.types import ModelProvider, Msg, SystemBlock, TextBlock, TextDelta
 from trillion.channels.base import MAX_IN, MAX_OUT, Inbound
+from trillion.spend.caller import as_caller
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 
 logger = logging.getLogger(__name__)
@@ -70,15 +71,18 @@ class Answerer:
                 SystemBlock(text=overlay(m.platform, m.name, agent, user)),
             ]
             text: list[str] = []
-            usage = Usage()
             try:
-                async for ev in provider.stream(
-                    system=system, messages=[*_tidy(past), said], tools=[], max_tokens=MAX_TOKENS
-                ):
-                    if isinstance(ev, TextDelta):
-                        text.append(ev.text)
-                    elif isinstance(ev, Done):
-                        usage = usage + ev.usage
+                # A channel's answer is background work, counted with its conversation:
+                # the metered provider records the call (BRN-7).
+                with as_caller("background", cid):
+                    async for ev in provider.stream(
+                        system=system,
+                        messages=[*_tidy(past), said],
+                        tools=[],
+                        max_tokens=MAX_TOKENS,
+                    ):
+                        if isinstance(ev, TextDelta):
+                            text.append(ev.text)
             except Exception as e:
                 logger.warning("channel reply failed: %s", type(e).__name__)
                 return "Sorry, I can't answer right now."
@@ -90,15 +94,6 @@ class Answerer:
                 "assistant",
                 Msg(role="assistant", blocks=(TextBlock(text=reply),)),
                 self.clock(),
-            )
-            await store.record_usage(
-                owner_id=self.owner,
-                conversation_id=cid,
-                provider=provider.name,
-                model=provider.model,
-                usage=usage,
-                cost_usd=(p.cost(usage) if (p := provider.pricing()) is not None else None),
-                now_ms=self.clock(),
             )
             return reply
 
