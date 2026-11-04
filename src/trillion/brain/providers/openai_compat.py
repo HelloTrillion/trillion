@@ -257,8 +257,10 @@ def _usage(raw: dict[str, Any], *, reported: bool = False) -> Usage:
         return value if isinstance(value, int) else 0
 
     details = raw.get("prompt_tokens_details")
-    cached = details.get("cached_tokens") if isinstance(details, dict) else 0
-    cached = cached if isinstance(cached, int) else 0
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    if not isinstance(cached, int):
+        # DeepSeek reports its cache hits in a field of its own.
+        cached = n("prompt_cache_hit_tokens")
     return Usage(
         input_tokens=max(0, n("prompt_tokens") - cached),
         output_tokens=n("completion_tokens"),

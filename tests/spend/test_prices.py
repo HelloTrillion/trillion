@@ -170,8 +170,18 @@ def test_only_the_listed_openai_models_have_a_long_context_tier() -> None:
     assert tiered == set(_OPENAI_LONG)
 
 
-def test_a_dated_openai_id_prices_like_its_alias() -> None:
-    assert price("openai", "gpt-4o-2024-08-06", MILLION) == price("openai", "gpt-4o", MILLION)
+def test_a_dated_openai_id_is_unpriced_unless_listed() -> None:
+    # An OpenAI snapshot can bill differently from its alias (gpt-4o-2024-05-13 did).
+    assert price("openai", "gpt-4o-2024-08-06", MILLION) is None
+    assert price("openai", "gpt-4o-2024-05-13", MILLION) is None
+
+
+def test_only_anthropic_dated_ids_price_like_their_alias() -> None:
+    dated = price("anthropic", "claude-haiku-4-5-20251001", MILLION)
+    assert dated == price("anthropic", "claude-haiku-4-5", MILLION) is not None
+    assert price("openai", "gpt-4o-20240806", MILLION) is None
+    mine = parse_user_prices({"custom:example.com": {"m": {"input": 1, "output": 1}}})
+    assert price("custom:example.com", "m-20250101", MILLION, mine) is None
 
 
 def test_elevenlabs_flash_per_thousand_characters() -> None:
@@ -250,6 +260,20 @@ def test_reported_cost_adds_up_and_stays_none_when_nothing_reported() -> None:
     assert (Usage() + Usage()).reported_cost is None
     assert (Usage() + Usage(reported_cost=0.5)).reported_cost == 0.5
     assert (Usage(reported_cost=0.25) + Usage(reported_cost=0.5)).reported_cost == 0.75
+
+
+def test_a_partly_reported_total_is_not_reported() -> None:
+    reported = Usage(input_tokens=10, reported_cost=0.25)
+    unreported = Usage(input_tokens=10)
+    # A round that used tokens without saying what they cost makes the total unknown.
+    assert (reported + unreported).reported_cost is None
+    assert (unreported + reported).reported_cost is None
+    # Once unknown, later reported rounds do not bring a partial figure back.
+    assert (reported + unreported + reported).reported_cost is None
+    # An empty Usage() is the starting point of a sum, and changes nothing.
+    assert (Usage() + reported + Usage() + reported).reported_cost == 0.5
+    # A reported zero is a real zero, even with no tokens.
+    assert (Usage(reported_cost=0.0) + reported).reported_cost == 0.25
 
 
 # ── User prices from the preference ─────────────────────────────────────
@@ -365,6 +389,17 @@ async def test_other_servers_are_not_asked_and_a_cost_they_send_is_ignored() -> 
     body, done = await _run("http://localhost:11434/v1", _WITH_COST)
     assert "usage" not in body
     assert done.usage.reported_cost is None
+
+
+async def test_deepseek_cache_hits_are_read_from_its_own_field() -> None:
+    chunk = {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 5}}
+    chunk["usage"]["prompt_cache_hit_tokens"] = 60
+    _, done = await _run("https://api.deepseek.com", _stream(chunk))
+    assert done.usage == Usage(input_tokens=40, output_tokens=5, cache_read_tokens=60)
+    # The standard field wins when both are sent.
+    chunk["usage"]["prompt_tokens_details"] = {"cached_tokens": 30}
+    _, done = await _run("https://api.deepseek.com", _stream(chunk))
+    assert done.usage.cache_read_tokens == 30
 
 
 async def test_an_openrouter_cost_that_is_not_a_number_is_left_out() -> None:

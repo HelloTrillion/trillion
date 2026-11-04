@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 Unit = Literal["tokens", "chars", "seconds"]
-UNITS: tuple[Unit, ...] = get_args(Unit)
+_UNITS: tuple[Unit, ...] = get_args(Unit)
 ANY = "*"
 
 
@@ -133,7 +133,8 @@ _ANTHROPIC: dict[str, Rate] = {
 }
 
 # OpenAI: the Standard tier. Cache writes are the 30-minute write rate where the page
-# lists one. Long context is more than 272K input tokens, for the models that list it.
+# lists one, kept for completeness: the compatible provider reports no writes today.
+# Long context is more than 272K input tokens, for the models that list it.
 # Pro models are left out: the page gives them no cached-input rate.
 _OPENAI_SOURCE = "https://developers.openai.com/api/docs/pricing"
 _OPENAI_LONG_OVER = 272_000
@@ -219,15 +220,17 @@ TABLE: dict[tuple[str, str], Rate] = {
 
 # ── Looking a price up ───────────────────────────────────────────────────
 
-# A dated id prices like its alias: Anthropic's "-20251001", OpenAI's "-2024-08-06".
-_DATED = re.compile(r"-(\d{8}|\d{4}-\d{2}-\d{2})$")
+# An Anthropic dated id ("-20251001") prices like its alias. Only Anthropic's: an
+# OpenAI snapshot can bill differently from its alias, so it is unpriced unless listed.
+_ANTHROPIC_DATED = re.compile(r"-\d{8}$")
 
 
 def rate_for(rates: UserPrices | None, provider_id: str, model: str) -> Rate | None:
     """The rate for this model: its own, its alias's, then the provider's "*"."""
     if not rates:
         return None
-    for key in (model, _DATED.sub("", model), ANY):
+    alias = _ANTHROPIC_DATED.sub("", model) if provider_id == "anthropic" else model
+    for key in dict.fromkeys((model, alias, ANY)):
         if (rate := rates.get((provider_id, key))) is not None:
             return rate
     return None
@@ -275,7 +278,7 @@ def _user_rate(raw: Any) -> Rate | None:
     if not isinstance(raw, dict):
         return None
     unit = raw.get("unit", "tokens")
-    if unit not in UNITS:
+    if unit not in _UNITS:
         return None
     if unit != "tokens":
         per_unit = _amount(raw, "per_unit", required=True)
