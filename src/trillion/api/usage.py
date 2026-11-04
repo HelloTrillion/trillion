@@ -20,8 +20,8 @@ def create_usage_router(rt: Runtime) -> APIRouter:
 
     @router.get("")
     async def read() -> dict[str, Any]:
-        zone = rt.profile.timezone if rt.profile is not None else ""
-        month, since = month_start(rt.clock(), zone)
+        # The same zone the spend ledger counts in, so the pill and the caps agree.
+        month, since = month_start(rt.clock(), rt.zone() or "")
         rows = await rt.conversations.usage_since(OWNER, since)
         priced = [r["cost_usd"] for r in rows if r["cost_usd"] is not None]
         return {

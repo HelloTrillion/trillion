@@ -53,6 +53,9 @@ from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
+from trillion.spend import gate as spend_gate
+from trillion.spend.gate import Gate
+from trillion.spend.ledger import Ledger
 from trillion.spine.audit import audit_key
 from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
@@ -259,6 +262,11 @@ class Runtime:
     # Her board per conversation (SUR-1), saved beside the conversation.
     board_store: SqliteBoardStore
     preferences: SqlitePreferences
+    # This month's spend per provider, and the caps it is held to (BRN-7). Both are
+    # loaded before `open_runtime` returns, so no paid call is ever let through on an
+    # empty count.
+    ledger: Ledger
+    gate: Gate
     secrets: SecretStore
     memory: MemoryBook
     # What the user told her to always or never do, outside every conversation (BRN-5).
@@ -838,6 +846,8 @@ class Runtime:
         self.identity = load_identity(self.persona_dir)
         await self.preferences.put(OWNER, ONBOARDING_PREF, None, self.clock())
         self.onboarding_skipped = False
+        # A new timezone moves the start of the month the caps count from.
+        await self.gate.refresh()
         for session in list(self.sessions):
             await session.identity_changed()
 
@@ -941,13 +951,20 @@ async def open_runtime(
     await book.sync(_now_ms())
     listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
     standing = StandingRules(rules or paths.rules_path())
+    conversations = SqliteConversationStore(chat_conn)
+    # Lambdas that read `rt` once it exists, so a test that replaces `rt.clock` or the
+    # profile moves the ledger too. It counts the month the usage pill counts.
+    ledger = Ledger(conversations, lambda: rt.clock(), lambda: rt.zone() or "", owner_id=OWNER)
+    gate = Gate(ledger, lambda: preferences.get(OWNER, spend_gate.PREF))
     rt = Runtime(
         router=router,
         registry=registry,
         spine_store=store,
-        conversations=SqliteConversationStore(chat_conn),
+        conversations=conversations,
         board_store=SqliteBoardStore(chat_conn),
         preferences=preferences,
+        ledger=ledger,
+        gate=gate,
         secrets=keychain,
         memory=book,
         rules=standing,
@@ -978,6 +995,9 @@ async def open_runtime(
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
     )
+    # Before anything that can reach a provider is started: the gate never fails open.
+    await ledger.load()
+    await gate.reload_caps()
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
