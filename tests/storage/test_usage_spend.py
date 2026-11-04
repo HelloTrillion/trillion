@@ -55,7 +55,7 @@ async def test_the_migration_upgrades_a_database_holding_old_rows(tmp_path: Path
         ("openai-compatible", "openai-compatible", "conversation", "tokens"),
     ]
     async with conn.execute("PRAGMA index_list(usage)") as cur:
-        assert "usage_by_owner_provider_time" in [r[1] for r in await cur.fetchall()]
+        assert "usage_by_owner_time" in [r[1] for r in await cur.fetchall()]
     await conn.close()
 
 
@@ -142,3 +142,56 @@ async def test_spend_since_sums_each_provider_and_caller_apart(
             "unpriced": 0,
         },
     ]
+
+
+async def test_reading_the_month_seeks_by_owner_and_time(store: SqliteConversationStore) -> None:
+    async with store._conn.execute(
+        "EXPLAIN QUERY PLAN SELECT provider_id FROM usage"
+        " WHERE owner_id = 'local' AND created_at >= 1 AND created_at <= 2"
+    ) as cur:
+        plan = " ".join(str(r[-1]) for r in await cur.fetchall())
+    assert "USING INDEX usage_by_owner_time (owner_id=? AND created_at>? AND created_at<?)" in plan
+
+
+async def test_spend_since_can_stop_at_a_moment(store: SqliteConversationStore) -> None:
+    for when in (10, 20):
+        await store.record_usage(
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="anthropic",
+            model="m",
+            usage=Usage(input_tokens=1),
+            cost_usd=1.0,
+            now_ms=when,
+        )
+    (row,) = await store.spend_since(OWNER, 0, 19)
+    assert row["cost_usd"] == 1.0
+
+
+async def test_the_pill_never_counts_characters_or_seconds_as_tokens(
+    store: SqliteConversationStore,
+) -> None:
+    await store.record_usage(
+        owner_id=OWNER,
+        conversation_id=None,
+        provider="anthropic",
+        model="m",
+        usage=Usage(input_tokens=50),
+        cost_usd=None,
+        now_ms=1,
+    )
+    await store.record_usage(
+        owner_id=OWNER,
+        conversation_id=None,
+        provider="elevenlabs",
+        model="v",
+        usage=Usage(input_tokens=1200),
+        cost_usd=None,
+        now_ms=1,
+        provider_id="elevenlabs",
+        units="chars",
+    )
+    rows = {r["provider_id"]: r for r in await store.usage_since(OWNER, 0)}
+    assert (rows["anthropic"]["unit"], rows["anthropic"]["unpriced_tokens"]) == ("tokens", 50)
+    voice = rows["elevenlabs"]
+    assert (voice["unit"], voice["unpriced_tokens"], voice["unpriced"]) == ("chars", 0, 1200)

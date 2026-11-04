@@ -25,6 +25,7 @@ from typing import Any, Literal, get_args
 from urllib.parse import urlsplit
 
 from trillion.brain.types import Pricing, Usage
+from trillion.spend.types import Unit
 
 __all__ = [
     "ANY",
@@ -40,7 +41,6 @@ __all__ = [
     "voice_provider_id",
 ]
 
-Unit = Literal["tokens", "chars", "seconds"]
 _UNITS: tuple[Unit, ...] = get_args(Unit)
 ANY = "*"
 

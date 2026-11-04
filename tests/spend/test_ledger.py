@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from trillion.brain.types import Usage
-from trillion.spend.ledger import Caller, Ledger, Row, Share, Spent, Unit
+from trillion.spend.ledger import Ledger, Row, Share, Spent
+from trillion.spend.types import Caller, Unit
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
@@ -160,3 +163,89 @@ async def test_the_timezone_can_be_read_each_time(store: SqliteConversationStore
     ledger = Ledger(store, Clock(at(2026, 11, 4)), lambda: ZONE)
     await ledger.load()
     assert ledger.spent("anthropic").dollars == 0.25
+
+
+async def test_priced_and_unpriced_rows_are_both_counted(store: SqliteConversationStore) -> None:
+    # One provider, two models: one with a price, one without.
+    await record(store, NOV_1 + MINUTE, pid="custom:example.com", cost=0.4)
+    await record(store, NOV_1 + MINUTE, pid="custom:example.com", cost=None, tokens=900)
+    ledger = Ledger(store, Clock(at(2026, 11, 4)), ZONE)
+    await ledger.load()
+    got = ledger.spent("custom:example.com")
+    assert (got.dollars, got.units, got.unit) == (0.4, 900, "tokens")
+    assert got.by_caller["conversation"] == Share(dollars=0.4, units=900)
+
+
+async def test_nothing_is_read_before_the_ledger_loads(store: SqliteConversationStore) -> None:
+    clock = Clock(at(2026, 11, 4))
+    ledger = Ledger(store, clock, ZONE)
+    # Zeros here would let every call through: the gate must never fail open.
+    with pytest.raises(RuntimeError, match="not loaded"):
+        ledger.spent("anthropic")
+    with pytest.raises(RuntimeError, match="not loaded"):
+        ledger.add(Row("anthropic", "conversation", "tokens", 1, 0.1, clock.now))
+
+
+class SlowSource:
+    """A store whose read waits until told, so calls can land while it loads."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.until: int | None = None
+        self.go = asyncio.Event()
+
+    async def spend_since(
+        self, owner_id: str, since_ms: int, until_ms: int | None = None
+    ) -> list[dict[str, Any]]:
+        self.until = until_ms
+        await self.go.wait()
+        return self.rows
+
+
+async def test_a_call_counted_while_loading_is_neither_lost_nor_counted_twice() -> None:
+    clock = Clock(at(2026, 11, 4))
+    read_at = clock.now
+    source = SlowSource(
+        [
+            {
+                "provider_id": "anthropic",
+                "caller": "conversation",
+                "units": "tokens",
+                "cost_usd": 1.0,
+                "unpriced": 0,
+            }
+        ]
+    )
+    ledger = Ledger(source, clock, ZONE)
+    loading = asyncio.create_task(ledger.load())
+    await asyncio.sleep(0)
+    assert source.until == read_at  # the read stops at the moment it began
+    with pytest.raises(RuntimeError, match="already loading"):
+        await ledger.load()
+    clock.now += MINUTE
+    # Already in what the read returns: stamped at its cut.
+    ledger.add(Row("anthropic", "conversation", "tokens", 1, 1.0, read_at))
+    # Recorded after the cut: the read cannot have it.
+    ledger.add(Row("anthropic", "conversation", "tokens", 1, 0.5, clock.now))
+    source.go.set()
+    await loading
+    assert ledger.spent("anthropic").dollars == 1.5
+
+
+async def test_a_new_timezone_mid_month_moves_the_start_and_asks_for_a_reload(
+    store: SqliteConversationStore,
+) -> None:
+    # 23:30 on 31 October in Chicago is already 1 November in New York.
+    await record(store, at(2026, 10, 31, 23, 30), cost=2.0)
+    await record(store, at(2026, 11, 2), cost=1.0)
+    zone = {"now": ZONE}
+    ledger = Ledger(store, Clock(at(2026, 11, 4)), lambda: zone["now"])
+    await ledger.load()
+    assert ledger.spent("anthropic").dollars == 1.0
+    zone["now"] = "America/New_York"
+    # Same month, new start: what was counted stays counted until the reload.
+    assert ledger.spent("anthropic").dollars == 1.0
+    assert ledger.stale
+    await ledger.load()
+    assert not ledger.stale
+    assert ledger.spent("anthropic").dollars == 3.0

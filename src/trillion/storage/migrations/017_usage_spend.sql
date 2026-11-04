@@ -22,5 +22,6 @@ ALTER TABLE usage ADD COLUMN units TEXT NOT NULL DEFAULT 'tokens'
 -- cap uses: they still show in the usage pill, and count against no cap.
 UPDATE usage SET provider_id = provider WHERE provider_id IS NULL;
 
--- The ledger reads this month's rows per provider at startup.
-CREATE INDEX usage_by_owner_provider_time ON usage (owner_id, provider_id, created_at);
+-- The ledger and the usage pill read this month's rows for every provider at once: a
+-- range on created_at, which an index with provider_id between could not seek.
+CREATE INDEX usage_by_owner_time ON usage (owner_id, created_at);

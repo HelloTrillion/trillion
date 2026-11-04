@@ -12,6 +12,7 @@ from tests.api.test_server import App, home, make  # noqa: F401
 from trillion.api.runtime import OWNER
 from trillion.brain.types import Usage
 from trillion.persona import setup
+from trillion.spend.types import Unit
 from trillion.zones import month_start
 
 PATH = "/api/usage"
@@ -28,6 +29,7 @@ def spend(
     model: str = "claude-test",
     cost: float | None = 0.5,
     tokens: tuple[int, int, int, int] = (1000, 200, 0, 0),
+    units: Unit = "tokens",
 ) -> None:
     portal = app.client.portal
     assert portal is not None
@@ -49,6 +51,7 @@ def spend(
             ),
             cost_usd=cost,
             now_ms=at,
+            units=units,
         )
     )
 
@@ -123,6 +126,9 @@ def test_rows_are_grouped_by_provider_and_model_with_tokens_summed(make: Any) ->
         "cost_usd": 1.2,
         "unpriced_turns": 0,
         "unpriced_tokens": 0,
+        "provider_id": "anthropic",
+        "unit": "tokens",
+        "unpriced": 0,
     }
     assert [r["model"] for r in rows] == ["claude-test", "claude-other"]
 
@@ -162,3 +168,22 @@ def test_a_mixed_month_totals_priced_rows_and_counts_the_rest_as_unpriced(make: 
     assert usage["unpriced_tokens"] == 340_000
     # Priced first, then by tokens: the biggest bill leads.
     assert [r["model"] for r in usage["rows"]] == ["claude-test", "deepseek-chat"]
+
+
+def test_unpriced_characters_are_never_shown_as_tokens(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    spend(app, NOW - MINUTE, cost=None, tokens=(500, 0, 0, 0))
+    spend(
+        app,
+        NOW - MINUTE,
+        provider="elevenlabs",
+        model="eleven_flash_v2_5",
+        cost=None,
+        tokens=(1200, 0, 0, 0),
+        units="chars",
+    )
+    usage = read(app)
+    assert usage["unpriced_tokens"] == 500
+    voice = next(r for r in usage["rows"] if r["unit"] == "chars")
+    assert (voice["unpriced_tokens"], voice["unpriced"]) == (0, 1200)
