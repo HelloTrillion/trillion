@@ -125,6 +125,12 @@ class Ledger:
             self.stale = True
         self._month = now
 
+    def roll(self) -> None:
+        """Bring the month up to date without reading anything: a new month starts at
+        zero, and a moved start sets `stale`. Raises before the first load."""
+        self._ready()
+        self._roll()
+
     async def load(self) -> None:
         """Read this month's rows from midnight on the 1st, in the user's timezone.
         Call it once at startup, and again when `stale`.

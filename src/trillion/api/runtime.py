@@ -1002,7 +1002,9 @@ async def open_runtime(
     except BaseException:
         # Nothing else is running yet: closing the connections leaves nothing behind.
         for conn in rt._connections:
-            await conn.close()
+            # Each is closed whatever the last one did, and the first failure is raised.
+            with contextlib.suppress(Exception):
+                await conn.close()
         raise
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     describe = registry.get(DESCRIBE_SELF)

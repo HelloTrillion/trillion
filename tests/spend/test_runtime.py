@@ -122,3 +122,59 @@ def test_a_failed_load_closes_what_was_opened(home: Path, monkeypatch: pytest.Mo
                 await conn.execute("SELECT 1")
 
     asyncio.run(attempt())
+
+
+def test_a_failed_reload_on_a_new_timezone_still_saves_the_profile(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app: App = make()
+    portal = app.client.portal
+    assert portal is not None
+    app.rt.clock = lambda: NOW
+    app.rt.profile = setup.Profile(user_name="Sam", timezone="UTC")
+    portal.call(app.rt.ledger.load)
+
+    async def broken() -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(app.rt.ledger, "load", broken)
+    portal.call(app.rt.use_profile, setup.Profile(user_name="Sam", timezone="America/Chicago"))
+    assert app.rt.profile is not None and app.rt.profile.timezone == "America/Chicago"
+    assert app.rt.ledger.stale
+
+
+def test_a_failed_close_never_hides_the_failure_or_skips_a_connection(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.api import runtime
+    from trillion.spend.gate import Gate
+
+    closed: list[int] = []
+    real = runtime.connect
+
+    async def connect(path: Path) -> aiosqlite.Connection:
+        conn = await real(path)
+        index = len(closed) + 100
+        original = conn.close
+
+        async def close() -> None:
+            closed.append(index)
+            await original()
+            if len(closed) == 1:
+                raise RuntimeError("close failed")
+
+        conn.close = close  # type: ignore[method-assign]
+        return conn
+
+    async def broken(self: Gate) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(runtime, "connect", connect)
+    monkeypatch.setattr(Gate, "reload_caps", broken)
+
+    async def attempt() -> None:
+        with pytest.raises(OSError):
+            await open_runtime(secrets=MemoryStore(), env={}, persona=home)
+
+    asyncio.run(attempt())
+    assert len(closed) == 4

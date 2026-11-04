@@ -249,3 +249,18 @@ async def test_a_new_timezone_mid_month_moves_the_start_and_asks_for_a_reload(
     await ledger.load()
     assert not ledger.stale
     assert ledger.spent("anthropic").dollars == 3.0
+
+
+async def test_roll_notices_a_moved_start_without_reading(
+    store: SqliteConversationStore,
+) -> None:
+    zone = [ZONE]
+    ledger = Ledger(store, Clock(at(2026, 11, 4)), lambda: zone[0])
+    with pytest.raises(RuntimeError):
+        ledger.roll()
+    await ledger.load()
+    ledger.roll()
+    assert not ledger.stale
+    zone[0] = "UTC"
+    ledger.roll()
+    assert ledger.stale

@@ -19,6 +19,7 @@ from trillion.spend.gate import (
     ModelCapped,
     SpendCapped,
     VoiceCapped,
+    default_for,
     parse_caps,
 )
 from trillion.spend.ledger import Ledger, Row
@@ -312,6 +313,89 @@ async def test_caps_are_read_again_on_reload() -> None:
     assert gate.state("anthropic") == "capped"
     await gate.reload_caps()
     assert gate.state("anthropic") == "over_soft"
+
+
+def test_the_defaults_suit_what_the_table_can_price() -> None:
+    assert default_for("anthropic") == DEFAULT
+    assert default_for("custom:api.deepseek.com") == DEFAULT
+    assert default_for("elevenlabs") == DEFAULT
+    assert default_for("deepgram") == DEFAULT
+    assert default_for("custom:example.com") == DEFAULT_TOKENS
+    assert default_for("openai-voice:example.com") == Caps(400_000, 1_000_000, 80, "chars")
+
+
+async def test_a_malformed_entry_for_a_host_with_no_rate_still_caps() -> None:
+    gate, ledger = await gate_for({"custom:example.com": "oops"})
+    assert gate.caps("custom:example.com") == DEFAULT_TOKENS
+    spend(ledger, "custom:example.com", quantity=12_000_001)
+    assert gate.state("custom:example.com") == "capped"
+
+
+async def test_a_malformed_preference_caps_a_host_with_no_rate_in_tokens() -> None:
+    gate, _ = await gate_for("oops")
+    assert gate.caps("custom:example.com") == DEFAULT_TOKENS
+    assert gate.caps("openai-voice:example.com").unit == "chars"
+
+
+async def test_many_small_calls_add_up_to_the_cap_exactly() -> None:
+    gate, ledger = await gate_for(CAPS)
+    for _ in range(1600):
+        spend(ledger, "anthropic", cost=0.01)
+    assert gate.state("anthropic") == "warned"
+    for _ in range(400):
+        spend(ledger, "anthropic", cost=0.01)
+    assert gate.state("anthropic") == "over_soft"
+    for _ in range(3000):
+        spend(ledger, "anthropic", cost=0.01)
+    assert gate.state("anthropic") == "capped"
+
+
+class Failing(Rows):
+    """A store whose reads fail while `broken` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.broken = False
+
+    async def spend_since(
+        self, owner_id: str, since_ms: int, until_ms: int | None = None
+    ) -> list[dict[str, Any]]:
+        if self.broken:
+            raise OSError("disk")
+        return await super().spend_since(owner_id, since_ms, until_ms)
+
+
+async def test_a_failed_reload_keeps_the_old_counts_and_tries_again_next_time(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    zone = ["UTC"]
+    rows = Failing()
+    ledger = Ledger(rows, Clock(), lambda: zone[0])
+    await ledger.load()
+    gate = Gate(ledger, source(CAPS))
+    await gate.reload_caps()
+    spend(ledger, "anthropic", cost=30.0)
+    zone[0] = "America/Chicago"
+    rows.broken = True
+    # The call is judged on the counts the ledger has.
+    await gate.check_model("anthropic")
+    assert ledger.stale
+    assert gate.state("anthropic") == "over_soft"
+    assert "30" not in caplog.text and "reload" in caplog.text
+    rows.broken = False
+    rows.rows = [
+        {"provider_id": "anthropic", "caller": "conversation", "units": "tokens"}
+        | {"cost_usd": 60.0, "unpriced": 0}
+    ]
+    with pytest.raises(ModelCapped):
+        await gate.check_model("anthropic")
+    assert not ledger.stale
+
+
+def test_only_the_subclasses_of_spend_capped_can_be_made() -> None:
+    with pytest.raises(TypeError):
+        SpendCapped("anthropic", "background", 50.0, "dollars")
+    assert ModelCapped("anthropic", "background", 50.0, "dollars").kind == "capped"
 
 
 async def test_the_gate_refuses_to_answer_before_its_caps_are_read() -> None:

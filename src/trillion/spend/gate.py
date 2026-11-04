@@ -22,8 +22,8 @@ warn_pct}}`, read by `reload_caps` at startup and again after every write to it.
   left out.
 - A provider with no entry has no caps: an existing install is given the defaults
   once, on upgrade, and a new key is saved with them.
-- A malformed entry, or a malformed preference, counts as `DEFAULT`, so a typo never
-  removes protection.
+- A malformed entry, or a malformed preference, counts as `default_for` that
+  provider, so a typo never removes protection.
 
 `local`, and a provider id of None (the system voice, local Whisper, an address that
 does not pass the check), are never capped.
@@ -73,7 +73,34 @@ DEFAULT = Caps(20.0, 50.0, 80)
 # For a provider the price table has no rate for: roughly $20 and $50 at about $4 per
 # million tokens.
 DEFAULT_TOKENS = Caps(5_000_000, 12_000_000, 80, "tokens")
+# For a voice with no rate in the table: roughly $20 and $50 at about $0.05 per
+# thousand characters.
+DEFAULT_CHARS = Caps(400_000, 1_000_000, 80, "chars")
+# For hearing with no rate in the table: 600 and 1500 minutes, roughly $20 and $50 at
+# about $0.033 a minute.
+DEFAULT_SECONDS = Caps(600 * 60, 1500 * 60, 80, "seconds")
 NO_CAPS = Caps(None, None, 80)
+
+# What each kind of provider id counts when nothing prices it.
+_VOICE_IDS = ("elevenlabs", "openai-voice:")
+_HEARING_IDS = ("deepgram",)
+
+
+def _unit_of(provider_id: str) -> Unit:
+    if provider_id.startswith(_VOICE_IDS):
+        return "chars"
+    if provider_id.startswith(_HEARING_IDS):
+        return "seconds"
+    return "tokens"
+
+
+def default_for(provider_id: str) -> Caps:
+    """The caps a provider starts with: `DEFAULT` in dollars when the price table can
+    price it, else the default in its own unit, so it is still capped."""
+    unit = _unit_of(provider_id)
+    if prices.ceiling_rate(provider_id, unit) is not None:
+        return DEFAULT
+    return {"tokens": DEFAULT_TOKENS, "chars": DEFAULT_CHARS, "seconds": DEFAULT_SECONDS}[unit]
 
 
 # ── The preference ───────────────────────────────────────────────────────
@@ -114,7 +141,8 @@ def _caps(raw: Any) -> Caps | None:
 
 def parse_caps(raw: Any) -> dict[str, Caps]:
     """The preference `spend_caps` as caps per provider id. A malformed entry is
-    `DEFAULT`, never dropped; a key that is not a provider id is skipped."""
+    `default_for` that provider, never dropped; a key that is not a provider id is
+    skipped."""
     if not isinstance(raw, dict):
         return {}
     out: dict[str, Caps] = {}
@@ -124,7 +152,7 @@ def parse_caps(raw: Any) -> dict[str, Caps]:
         caps = _caps(entry)
         if caps is None:
             log.warning("spend caps for %s are malformed: using the defaults", pid)
-            caps = DEFAULT
+            caps = default_for(pid)
         out[pid] = caps
     return out
 
@@ -140,6 +168,8 @@ class SpendCapped(Exception):
     kind: str
 
     def __init__(self, provider_id: str, caller: Caller, cap: float, unit: CapUnit) -> None:
+        if type(self) is SpendCapped:
+            raise TypeError("raise ModelCapped or VoiceCapped, not SpendCapped")
         # The next class in line is ProviderError or VoiceError, which takes a kind.
         super().__init__("capped", f"{provider_id} is at its {cap:g} {unit} cap this month")
         self.kind = "capped"
@@ -160,14 +190,19 @@ class VoiceCapped(SpendCapped, VoiceError):
 # ── The gate ─────────────────────────────────────────────────────────────
 
 
+def _reached(spent: float, limit: float) -> bool:
+    """At or over a limit. Spend is a sum of many small floats (5000 calls at $0.01 add
+    up to a hair under $50), so a hair under counts as at."""
+    return spent >= limit or math.isclose(spent, limit, rel_tol=1e-9, abs_tol=1e-9)
+
+
 def _state(spent: float, caps: Caps) -> State:
-    if caps.hard is not None and spent >= caps.hard:
+    if caps.hard is not None and _reached(spent, caps.hard):
         return "capped"
     if caps.soft is not None:
-        if spent >= caps.soft:
+        if _reached(spent, caps.soft):
             return "over_soft"
-        # In whole numbers on both sides, so 80% of $20 is exactly $16.
-        if spent * 100 >= caps.soft * caps.warn_pct:
+        if _reached(spent, caps.soft * caps.warn_pct / 100):
             return "warned"
     return "ok"
 
@@ -178,8 +213,8 @@ class Gate:
         self._ledger = ledger
         self._source = caps_source
         self._caps: dict[str, Caps] | None = None
-        # Caps for every provider when the preference itself is malformed.
-        self._fallback = NO_CAPS
+        # The preference itself is malformed: every provider gets its defaults.
+        self._malformed = False
         self._loading = asyncio.Lock()
 
     async def reload_caps(self) -> None:
@@ -189,13 +224,15 @@ class Gate:
         if malformed:
             log.warning("the spend caps preference is malformed: using the defaults")
         self._caps = parse_caps(raw)
-        self._fallback = DEFAULT if malformed else NO_CAPS
+        self._malformed = malformed
 
     def caps(self, provider_id: str) -> Caps:
         if self._caps is None:
             # Never fail open: no answer until the caps have been read.
             raise RuntimeError("the spend caps are not loaded yet")
-        return self._caps.get(provider_id, self._fallback)
+        if (caps := self._caps.get(provider_id)) is not None:
+            return caps
+        return default_for(provider_id) if self._malformed else NO_CAPS
 
     def spent_dollars(self, provider_id: str) -> float:
         """This month's priced dollars, plus the estimate for what nothing priced."""
@@ -237,14 +274,24 @@ class Gate:
         return _state(self._counted(provider_id, caps), caps)
 
     async def refresh(self) -> None:
-        """Count from the right start of the month again if the timezone moved it."""
-        # Reading the ledger is what notices a moved start.
-        self._ledger.spent(None)
+        """Count from the right start of the month again if the timezone moved it.
+
+        A reload that fails is logged and leaves `stale` set, so the next check tries
+        again; meanwhile the counts already held answer."""
+        self._ledger.roll()
         if not self._ledger.stale:
             return
         async with self._loading:
-            if self._ledger.stale:
+            if not self._ledger.stale:
+                return
+            try:
                 await self._ledger.load()
+            except Exception as e:
+                # The kind of failure only: never an amount.
+                log.warning(
+                    "the spend ledger could not reload (%s): using the counts it has",
+                    type(e).__name__,
+                )
 
     async def check_model(self, provider_id: str | None) -> None:
         """Before a model call: raises `ModelCapped` at the hard cap."""
