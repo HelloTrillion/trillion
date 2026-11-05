@@ -316,7 +316,10 @@ NAMES = frozenset({"stream", "synthesize", "open"})
 
 def _source() -> Iterator[tuple[str, ast.Module]]:
     for path in sorted(SRC.rglob("*.py")):
-        yield path.relative_to(SRC).as_posix(), ast.parse(path.read_text(), str(path))
+        yield (
+            path.relative_to(SRC).as_posix(),
+            ast.parse(path.read_text(encoding="utf-8"), str(path)),
+        )
 
 
 def _nodes(tree: ast.Module) -> Iterator[tuple[str, ast.AST]]:
