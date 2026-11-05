@@ -126,6 +126,24 @@ export function buttonLabel(needsYou: number): string {
   return `Helpers, ${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`;
 }
 
+export interface Run extends LastRun {
+  readonly conversation_id: string | null;
+}
+
+/** How a run ended, as its history says it. */
+export function outcomeText(run: LastRun): string {
+  switch (run.outcome) {
+    case 'succeeded':
+      return 'Done';
+    case 'nothing':
+      return 'Nothing for you';
+    case 'skipped':
+      return run.reason ? `Skipped: ${run.reason}` : 'Skipped';
+    default:
+      return run.reason ? `Failed: ${run.reason}` : 'Failed';
+  }
+}
+
 function parseList(raw: unknown): HelperList | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { helpers?: unknown; needs_you?: unknown };
@@ -187,6 +205,11 @@ interface Row {
 }
 
 const NO_LIST = "Couldn't read her helpers. Try again in a moment.";
+const NOT_DONE = "That didn't work. It may have just finished or been removed.";
+const NOT_REACHED = "Trillion didn't answer. Is it still running?";
+
+/** The schedule id in a routine's or a timed ask's helper id. */
+const scheduleOf = (id: string): string => id.slice(id.indexOf(':') + 1);
 
 export function createHelpers(d: HelpersDeps): HelpersPanel {
   const element = el('div', 'hp');
@@ -216,6 +239,38 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   listView.tabIndex = -1;
   element.append(listView);
 
+  // ── Details: one helper, its runs, and what can be done with it ──
+  const detailsView = el('div', 'hp-details');
+  detailsView.tabIndex = -1;
+  detailsView.hidden = true;
+  const backBtn = el('button', 'quiet hp-back', 'Back to helpers');
+  backBtn.type = 'button';
+  const dName = el('h3', 'hp-d-name');
+  const dJob = el('p', 'hp-d-job');
+  const dStatus = el('p', 'hp-d-status');
+  const dNext = el('p', 'hp-d-next');
+  const dActions = el('div', 'hp-d-actions');
+  const toggle = el('button', '');
+  toggle.type = 'button';
+  const talk = el('button', 'approve', 'Talk to it');
+  talk.type = 'button';
+  dActions.append(toggle, talk);
+  const confirm = el('div', 'hp-d-confirm');
+  const confirmYes = el('button', '', 'Cancel it');
+  confirmYes.type = 'button';
+  const confirmNo = el('button', 'quiet', 'Keep it');
+  confirmNo.type = 'button';
+  confirm.append(el('p', '', "Cancel this timed ask? It won't happen."), confirmYes, confirmNo);
+  confirm.hidden = true;
+  const dNote = el('p', 'hp-d-note');
+  const runsHead = el('h4', '', 'Recent runs');
+  const runsList = el('ul', 'hp-runs');
+  const runsNote = el('p', 'hp-d-note');
+  detailsView.append(backBtn, dName, dJob, dStatus, dNext, dActions, confirm, dNote, runsHead, runsList, runsNote);
+  element.append(detailsView);
+  // The helper whose details are shown, or null on the list.
+  let showing: string | null = null;
+
   const rows = new Map<string, Row>();
   const listeners: ((n: number) => void)[] = [];
   let current: HelperList = { helpers: [], needs_you: 0 };
@@ -235,6 +290,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     words.append(name, status);
     main.append(dot, words);
     const inline = el('div', 'hp-inline');
+    main.addEventListener('click', () => void showDetails(h.id));
     li.append(main, inline);
     return { li, dot, name, status, inline, strip: null, steps: '', helper: h };
   }
@@ -305,6 +361,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
 
   function tick(): void {
     for (const r of rows.values()) if (r.helper.state === 'working') drawRow(r);
+    if (showing !== null && helperOf(showing)?.state === 'working') drawDetails();
   }
 
   function clock(): void {
@@ -353,8 +410,155 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     const words = summaryLine(next);
     if (summary.textContent !== words) summary.textContent = words;
     for (const l of listeners) l(next.needs_you);
+    if (showing !== null) {
+      // Its helper left the list (a fired ask, a removed routine): back to the list.
+      if (rows.has(showing)) drawDetails();
+      else back(false);
+    }
     clock();
   }
+
+  function helperOf(id: string | null): Helper | null {
+    return id === null ? null : (rows.get(id)?.helper ?? null);
+  }
+
+  function drawDetails(): void {
+    const h = helperOf(showing);
+    if (!h) return;
+    const now = d.now();
+    if (dName.textContent !== h.name) dName.textContent = h.name;
+    dJob.textContent = h.job;
+    const status = statusLine(h, now, d.capName());
+    dStatus.textContent = status === h.job ? '' : status;
+    dStatus.hidden = !dStatus.textContent;
+    const next = h.next_ms === null ? '' : `${h.kind === 'watcher' ? 'Next check' : 'Next run'}: ${timeText(h.next_ms, now)}`;
+    dNext.textContent = next;
+    dNext.hidden = !next;
+    // A timed ask can't be paused, only cancelled; a watcher is turned off and on.
+    const words =
+      h.kind === 'ask' ? 'Cancel' : h.kind === 'watcher' ? (h.state === 'paused' ? 'Turn on' : 'Turn off') : h.state === 'paused' ? 'Resume' : 'Pause';
+    if (toggle.textContent !== words) toggle.textContent = words;
+  }
+
+  function drawRuns(runs: readonly Run[] | null): void {
+    runsList.replaceChildren(
+      ...(runs ?? []).map((run) => {
+        const li = el('li', 'hp-run');
+        li.append(el('span', 'hp-run-at', timeText(run.at_ms, d.now())), el('span', 'hp-run-what', outcomeText(run)));
+        if (run.conversation_id) {
+          const open = el('button', 'quiet', 'Open');
+          open.type = 'button';
+          const id = run.conversation_id;
+          open.addEventListener('click', () => d.open(id));
+          li.append(open);
+        }
+        return li;
+      }),
+    );
+    runsNote.textContent = runs === null ? "Couldn't read its runs." : runs.length ? '' : 'No runs yet.';
+    runsNote.hidden = !runsNote.textContent;
+  }
+
+  async function loadRuns(id: string): Promise<void> {
+    let runs: Run[] | null = null;
+    try {
+      const r = await d.api('GET', `/api/helpers/${encodeURIComponent(id)}/runs`);
+      const body = r.ok ? ((await r.json()) as { runs?: unknown }) : null;
+      runs = Array.isArray(body?.runs) ? (body.runs as Run[]) : null;
+    } catch {
+      runs = null;
+    }
+    if (showing === id) drawRuns(runs);
+  }
+
+  async function showDetails(id: string): Promise<void> {
+    if (!rows.has(id)) return;
+    showing = id;
+    dNote.textContent = '';
+    confirm.hidden = true;
+    drawRuns([]);
+    runsNote.hidden = true;
+    drawDetails();
+    listView.hidden = true;
+    detailsView.hidden = false;
+    backBtn.focus();
+    await loadRuns(id);
+  }
+
+  /** Back to the list, with focus on the helper's row when `focus`. */
+  function back(focus = true): void {
+    const was = showing;
+    showing = null;
+    detailsView.hidden = true;
+    listView.hidden = false;
+    if (focus) (was ? rows.get(was)?.li.querySelector<HTMLButtonElement>('.hp-main') : null)?.focus();
+  }
+
+  /** One of the existing routes; the push that follows redraws the panel. */
+  async function act(method: 'POST' | 'PUT' | 'DELETE', path: string, body: unknown): Promise<void> {
+    dNote.textContent = '';
+    toggle.disabled = true;
+    try {
+      const r = await d.api(method, path, body);
+      if (!r.ok) dNote.textContent = NOT_DONE;
+    } catch {
+      dNote.textContent = NOT_REACHED;
+    } finally {
+      toggle.disabled = false;
+    }
+  }
+
+  backBtn.addEventListener('click', () => back());
+  // Escape in the details goes back to the list, and no further: the panel stays open.
+  detailsView.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    back();
+  });
+  toggle.addEventListener('click', () => {
+    const h = helperOf(showing);
+    if (!h) return;
+    if (h.kind === 'ask') {
+      confirm.hidden = false;
+      confirmNo.focus();
+      return;
+    }
+    if (h.kind === 'watcher') {
+      const name = h.id.slice('watcher:'.length);
+      void act('PUT', '/api/attention/settings', { watchers: { [name]: h.state === 'paused' } });
+      return;
+    }
+    const what = h.state === 'paused' ? 'resume' : 'pause';
+    void act('POST', `/api/routines/${encodeURIComponent(scheduleOf(h.id))}/${what}`, {});
+  });
+  confirmNo.addEventListener('click', () => {
+    confirm.hidden = true;
+    toggle.focus();
+  });
+  confirmYes.addEventListener('click', () => {
+    const h = helperOf(showing);
+    confirm.hidden = true;
+    if (h) void act('DELETE', `/api/schedules/${encodeURIComponent(scheduleOf(h.id))}`, {});
+  });
+  talk.addEventListener('click', () => {
+    const id = showing;
+    if (!id) return;
+    dNote.textContent = '';
+    talk.disabled = true;
+    void (async () => {
+      try {
+        const r = await d.api('POST', `/api/helpers/${encodeURIComponent(id)}/conversation`, {});
+        const body = r.ok ? ((await r.json()) as { conversation_id?: unknown }) : null;
+        if (typeof body?.conversation_id === 'string') d.open(body.conversation_id);
+        else dNote.textContent = r.status === 404 ? 'There is no conversation for it yet.' : NOT_DONE;
+      } catch {
+        dNote.textContent = NOT_REACHED;
+      } finally {
+        talk.disabled = false;
+      }
+    })();
+  });
 
   async function load(): Promise<void> {
     try {
@@ -375,6 +579,8 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     element,
     async open() {
       isOpen = true;
+      // Each opening starts on the list.
+      if (showing !== null) back(false);
       element.classList.toggle('hp-phone', d.phone());
       await load();
       clock();

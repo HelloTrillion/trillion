@@ -8,6 +8,7 @@ import {
   createHelpers,
   elapsedText,
   groupOf,
+  outcomeText,
   statusLine,
   summaryLine,
   timeText,
@@ -285,5 +286,206 @@ describe('the Helpers panel', () => {
     const { helpers, root } = panel(list([]), { phone: () => true });
     await helpers.open();
     expect(root.classList.contains('hp-phone')).toBe(true);
+  });
+});
+
+// ── Details, history and actions ─────────────────────────────────────────
+
+type Answer = (body: unknown) => Response;
+
+function details(first: HelperList, answers: Record<string, Answer> = {}) {
+  const calls: { method: string; path: string; body: unknown }[] = [];
+  const api: Api = async (method, path, body) => {
+    calls.push({ method, path, body });
+    const answer = answers[`${method} ${path}`];
+    if (answer) return answer(body);
+    if (method === 'GET' && path === '/api/helpers') return json(first);
+    if (method === 'GET' && path.endsWith('/runs')) return json({ runs: [] });
+    return json({ error: 'not_found' }, 404);
+  };
+  const opened: string[] = [];
+  const helpers = createHelpers({
+    api,
+    send: () => undefined,
+    open: (id) => opened.push(id),
+    openStep: () => undefined,
+    now: () => NOW,
+    phone: () => false,
+    capName: () => null,
+  });
+  document.body.append(helpers.element);
+  const show = async (id: string): Promise<HTMLElement> => {
+    await helpers.open();
+    (row(helpers.element, id).querySelector('.hp-main') as HTMLButtonElement).click();
+    await flush();
+    return helpers.element.querySelector('.hp-details') as HTMLElement;
+  };
+  return { helpers, calls, opened, show, root: helpers.element };
+}
+
+const press = (root: ParentNode, text: string): void => {
+  const b = [...root.querySelectorAll('button')].find((x) => x.textContent === text && !x.closest('[hidden]'));
+  if (!b) throw new Error(`no button "${text}"`);
+  b.click();
+};
+const hasButton = (root: ParentNode, text: string): boolean => [...root.querySelectorAll('button')].some((x) => x.textContent === text && !x.closest('[hidden]'));
+
+describe('outcome words', () => {
+  it('says how each run ended', () => {
+    expect(outcomeText({ at_ms: 0, outcome: 'succeeded', reason: null })).toBe('Done');
+    expect(outcomeText({ at_ms: 0, outcome: 'nothing', reason: null })).toBe('Nothing for you');
+    expect(outcomeText({ at_ms: 0, outcome: 'skipped', reason: 'paused' })).toBe('Skipped: paused');
+    expect(outcomeText({ at_ms: 0, outcome: 'skipped', reason: null })).toBe('Skipped');
+    expect(outcomeText({ at_ms: 0, outcome: 'failed', reason: 'no model set up' })).toBe('Failed: no model set up');
+    expect(outcomeText({ at_ms: 0, outcome: 'failed', reason: null })).toBe('Failed');
+  });
+});
+
+describe('a helper’s details', () => {
+  it('shows its name, job, next run and its last runs, each with Open when it has a conversation', async () => {
+    const { show, calls, opened } = details(list([helper()]), {
+      'GET /api/helpers/routine%3Aaaaaaaaa/runs': () =>
+        json({
+          runs: [
+            { at_ms: at(7, 0), outcome: 'failed', reason: "couldn't reach the inbox", conversation_id: 'c-1' },
+            { at_ms: at(7, 0, 4), outcome: 'nothing', reason: null, conversation_id: null },
+            { at_ms: at(7, 0, 3), outcome: 'succeeded', reason: null, conversation_id: 'c-3' },
+          ],
+        }),
+    });
+    const d = await show('routine:aaaaaaaa');
+    expect(calls.map((c) => c.path)).toContain('/api/helpers/routine%3Aaaaaaaaa/runs');
+    expect(d.querySelector('h3')?.textContent).toBe('Morning brief');
+    expect(d.textContent).toContain('Reads your inbox and calendar');
+    expect(d.textContent).toContain('Next run: 9:55');
+    const runs = [...d.querySelectorAll('.hp-runs li')].map((li) => li.textContent);
+    expect(runs[0]).toContain("7:00Failed: couldn't reach the inbox");
+    expect(runs[1]).toContain('Nothing for you');
+    expect(runs[2]).toContain('Done');
+    expect(d.querySelectorAll('.hp-runs li')[1]?.querySelector('button')).toBeNull();
+    press(d.querySelectorAll('.hp-runs li')[0] as HTMLElement, 'Open');
+    expect(opened).toEqual(['c-1']);
+  });
+
+  it('says when there are no runs yet, or they cannot be read', async () => {
+    const one = details(list([helper()]));
+    expect((await one.show('routine:aaaaaaaa')).textContent).toContain('No runs yet.');
+    document.body.replaceChildren();
+    const two = details(list([helper()]), { 'GET /api/helpers/routine%3Aaaaaaaaa/runs': () => json({}, 500) });
+    expect((await two.show('routine:aaaaaaaa')).textContent).toContain("Couldn't read its runs.");
+  });
+
+  it('pauses and resumes a routine by the routines routes, and follows the push', async () => {
+    const { show, calls, helpers } = details(list([helper()]), {
+      'POST /api/routines/aaaaaaaa/pause': () => json({ routines: [] }),
+      'POST /api/routines/aaaaaaaa/resume': () => json({ routines: [] }),
+    });
+    const d = await show('routine:aaaaaaaa');
+    press(d, 'Pause');
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: '/api/routines/aaaaaaaa/pause', body: {} });
+    helpers.update(list([helper({ state: 'paused' })]));
+    expect(d.textContent).toContain('paused');
+    press(d, 'Resume');
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: '/api/routines/aaaaaaaa/resume', body: {} });
+  });
+
+  it('turns a watcher off and on through its settings', async () => {
+    const watcher = helper({ id: 'watcher:payments', kind: 'watcher', name: 'Payments', job: 'Watches your payments' });
+    const { show, calls, helpers } = details(list([watcher]), { 'PUT /api/attention/settings': () => json({}) });
+    const d = await show('watcher:payments');
+    expect(d.textContent).toContain('Next check: 9:55');
+    press(d, 'Turn off');
+    await flush();
+    expect(calls).toContainEqual({ method: 'PUT', path: '/api/attention/settings', body: { watchers: { payments: false } } });
+    helpers.update(list([{ ...watcher, state: 'paused' }]));
+    press(d, 'Turn on');
+    await flush();
+    expect(calls).toContainEqual({ method: 'PUT', path: '/api/attention/settings', body: { watchers: { payments: true } } });
+  });
+
+  it('cancels a timed ask only after a second, plain button', async () => {
+    const ask = helper({ id: 'ask:bbbbbbbb', kind: 'ask', name: 'Remind me at 4', job: 'Today at 16:00' });
+    const { show, calls } = details(list([ask]), { 'DELETE /api/schedules/bbbbbbbb': () => json({}) });
+    const d = await show('ask:bbbbbbbb');
+    expect(hasButton(d, 'Pause')).toBe(false);
+    press(d, 'Cancel');
+    expect(d.textContent).toContain("Cancel this timed ask? It won't happen.");
+    press(d, 'Keep it');
+    expect(hasButton(d, 'Cancel it')).toBe(false);
+    expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+    press(d, 'Cancel');
+    press(d, 'Cancel it');
+    await flush();
+    expect(calls).toContainEqual({ method: 'DELETE', path: '/api/schedules/bbbbbbbb', body: {} });
+  });
+
+  it('says so when an action does not go through', async () => {
+    const { show } = details(list([helper()]), { 'POST /api/routines/aaaaaaaa/pause': () => json({ error: 'not_found' }, 404) });
+    const d = await show('routine:aaaaaaaa');
+    press(d, 'Pause');
+    await flush();
+    expect(d.textContent).toContain("That didn't work. It may have just finished or been removed.");
+  });
+
+  it('opens its conversation with Talk to it, the way History does', async () => {
+    const { show, calls, opened } = details(list([helper()]), {
+      'POST /api/helpers/routine%3Aaaaaaaaa/conversation': () => json({ conversation_id: 'c-9' }),
+    });
+    const d = await show('routine:aaaaaaaa');
+    press(d, 'Talk to it');
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: '/api/helpers/routine%3Aaaaaaaaa/conversation', body: {} });
+    expect(opened).toEqual(['c-9']);
+  });
+
+  it('says when there is no conversation to open yet', async () => {
+    const { show, opened } = details(list([helper()]), {
+      'POST /api/helpers/routine%3Aaaaaaaaa/conversation': () => json({ error: 'no_conversation' }, 404),
+    });
+    const d = await show('routine:aaaaaaaa');
+    press(d, 'Talk to it');
+    await flush();
+    expect(opened).toEqual([]);
+    expect(d.textContent).toContain('There is no conversation for it yet.');
+  });
+
+  it('goes back to the list with Back or Escape, focus on its row, and Escape goes no further', async () => {
+    const { show, root } = details(list([helper(), helper({ id: 'routine:dddddddd', name: 'Evening wrap' })]));
+    let d = await show('routine:dddddddd');
+    expect(d.hidden).toBe(false);
+    expect((root.querySelector('.hp-list') as HTMLElement).hidden).toBe(true);
+    expect(root.contains(document.activeElement)).toBe(true);
+    press(d, 'Back to helpers');
+    expect(d.hidden).toBe(true);
+    expect(document.activeElement).toBe(row(root, 'routine:dddddddd').querySelector('.hp-main'));
+
+    (row(root, 'routine:dddddddd').querySelector('.hp-main') as HTMLButtonElement).click();
+    await flush();
+    d = root.querySelector('.hp-details') as HTMLElement;
+    const page = vi.fn();
+    window.addEventListener('keydown', page);
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    window.removeEventListener('keydown', page);
+    expect(page).not.toHaveBeenCalled();
+    expect(d.hidden).toBe(true);
+    expect(document.activeElement).toBe(row(root, 'routine:dddddddd').querySelector('.hp-main'));
+  });
+
+  it('goes back to the list when its helper leaves it', async () => {
+    const { show, helpers, root } = details(list([helper()]));
+    const d = await show('routine:aaaaaaaa');
+    helpers.update(list([]));
+    expect(d.hidden).toBe(true);
+    expect((root.querySelector('.hp-list') as HTMLElement).hidden).toBe(false);
+  });
+
+  it('opens on the list again each time the panel opens', async () => {
+    const { show, helpers, root } = details(list([helper()]));
+    await show('routine:aaaaaaaa');
+    helpers.closed();
+    await helpers.open();
+    expect((root.querySelector('.hp-details') as HTMLElement).hidden).toBe(true);
   });
 });
