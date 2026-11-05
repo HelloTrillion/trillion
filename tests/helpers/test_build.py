@@ -111,6 +111,7 @@ class Sources:
     watching: list[WatcherStatus] = field(default_factory=list)
     paused_work: set[Work] = field(default_factory=set)
     open_cards: list[PendingAction] = field(default_factory=list)
+    talks: dict[str, str] = field(default_factory=dict)
     owner: str = OWNER
 
     def now_ms(self) -> int:
@@ -118,6 +119,9 @@ class Sources:
 
     async def cards(self) -> list[PendingAction]:
         return list(self.open_cards)
+
+    async def conversations(self) -> dict[str, str]:
+        return dict(self.talks)
 
     async def watchers(self) -> list[WatcherStatus]:
         return list(self.watching)
@@ -414,6 +418,9 @@ class Real:
 
     async def cards(self) -> list[PendingAction]:
         return []
+
+    async def conversations(self) -> dict[str, str]:
+        return {}
 
     async def capped(self) -> Collection[Work]:
         return ()

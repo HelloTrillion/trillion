@@ -21,7 +21,7 @@ from tests.helpers.test_build import (
     run,
     watcher,
 )
-from trillion.helpers.build import helpers
+from trillion.helpers.build import helpers, snapshot
 from trillion.helpers.model import Waiting, to_json
 from trillion.spine.confirm import PendingAction, Status
 from trillion.spine.contract import Risk
@@ -118,7 +118,6 @@ async def test_a_card_from_the_main_conversation_lands_on_no_helper() -> None:
 @pytest.mark.parametrize(
     ("name", "connected", "error", "text"),
     [
-        ("meetings", False, None, "Connect Google to use Meetings"),
         ("email", False, None, "Connect Google to use Urgent email"),
         ("payments", False, None, "Connect Stripe to use Payments"),
         ("meetings", True, "signed_out", "Sign in to Google again"),
@@ -229,3 +228,31 @@ async def test_meetings_with_heads_ups_off_still_hold_her_voice() -> None:
     off = dataclasses.replace(holding, on=False, next_check_ms=None)
     (h,) = await helpers(Sources(watching=[off]))
     assert (h.state, h.job) == ("paused", "Tells you before a meeting starts")
+
+
+async def test_a_card_in_a_watchers_own_conversation_waits_on_it() -> None:
+    src = Sources(watching=[watcher("email")], talks={"watcher:email": "conv-w"})
+    src.open_cards = [card(session_id="conv-w", summary="Watch mail from Sam")]
+    (h,) = await helpers(src)
+    assert (h.state, h.conversation_id) == ("needs_you", "conv-w")
+    assert [w.text for w in h.waiting] == ["Watch mail from Sam"]
+
+
+async def test_the_list_says_when_the_earliest_open_card_lapses() -> None:
+    src = Sources(Schedules([routine()]))
+    assert (await snapshot(src))[1] is None
+    src.open_cards = [
+        card(id="p1", expires_at=NOW + 9000),
+        card(id="p2", expires_at=NOW + 4000),
+        card(id="p3", expires_at=NOW + 1000, status=Status.APPROVED),
+        card(id="p4", session_id="main-conv", expires_at=NOW + 2000),
+    ]
+    # A card on no helper still lapses: the list may not change, but it is cheap.
+    assert (await snapshot(src))[1] == NOW + 2000
+
+
+async def test_meetings_not_connected_ask_nothing() -> None:
+    # On from the start, once Calendar is connected: not connected is no step.
+    waiting = watcher("meetings", on=False, connected=False, next_check_ms=None)
+    (h,) = await helpers(Sources(watching=[waiting]))
+    assert (h.state, h.waiting) == ("paused", ())

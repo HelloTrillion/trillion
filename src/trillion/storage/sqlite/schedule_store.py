@@ -107,12 +107,19 @@ class SqliteScheduleStore:
         conn: aiosqlite.Connection,
         *,
         cancelled: Callable[[str], Awaitable[None]] | None = None,
+        changed: Callable[[], None] | None = None,
     ) -> None:
         self._conn = conn
+        # Told after each write that changes a schedule or a run: the helpers panel.
+        self.changed = changed
         # Told the id of each routine cancelled, whichever way: what was kept for it
         # alone (its shared folders) goes with it.
         self._cancelled = cancelled
         self._lock = asyncio.Lock()
+
+    def _told(self, did: bool = True) -> None:
+        if did and self.changed is not None:
+            self.changed()
 
     @asynccontextmanager
     async def _tx(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -160,6 +167,7 @@ class SqliteScheduleStore:
                     s.failures,
                 ),
             )
+        self._told()
 
     async def get(self, schedule_id: str) -> Schedule | None:
         async with self._conn.execute(
@@ -205,6 +213,7 @@ class SqliteScheduleStore:
                 " WHERE id = ? AND status = 'active'",
                 (next_due_ms, next_due_ms, schedule_id),
             )
+        self._told()
         return added
 
     async def cancel(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:
@@ -227,6 +236,7 @@ class SqliteScheduleStore:
                     " AND status IN ('queued', 'blocked')",
                     (now_ms, schedule_id),
                 )
+        self._told(gone)
         if routine and self._cancelled is not None:
             await self._cancelled(schedule_id)
         return gone
@@ -238,7 +248,9 @@ class SqliteScheduleStore:
                 " AND status = 'active' AND target IS NOT NULL AND paused_ms IS NULL",
                 (now_ms, schedule_id, owner_id),
             )
-            return cur.rowcount == 1
+            done = cur.rowcount == 1
+        self._told(done)
+        return done
 
     async def resume(self, owner_id: str, schedule_id: str, next_due_ms: int | None) -> bool:
         async with self._tx() as conn:
@@ -248,7 +260,9 @@ class SqliteScheduleStore:
                 " WHERE id = ? AND owner_id = ? AND status = 'active' AND paused_ms IS NOT NULL",
                 (next_due_ms, next_due_ms, schedule_id, owner_id),
             )
-            return cur.rowcount == 1
+            done = cur.rowcount == 1
+        self._told(done)
+        return done
 
     async def set_conversation(self, schedule_id: str, conversation_id: str) -> None:
         async with self._tx() as conn:
@@ -256,6 +270,7 @@ class SqliteScheduleStore:
                 "UPDATE schedules SET conversation_id = ? WHERE id = ?",
                 (conversation_id, schedule_id),
             )
+        self._told()
 
     async def add_note(self, owner_id: str, schedule_id: str, line: str) -> bool:
         async with self._tx() as conn:
@@ -293,6 +308,7 @@ class SqliteScheduleStore:
                 (worker, now_ms, now_ms, now_ms, kind, kind, retry_before_ms),
             ) as cur:
                 row = await cur.fetchone()
+        self._told(row is not None)
         return _run(row) if row is not None else None
 
     async def finish(
@@ -310,7 +326,9 @@ class SqliteScheduleStore:
                 " WHERE id = ? AND status IN ('running', 'interrupted')",
                 (status, now_ms, detail, run_id),
             )
-            return cur.rowcount == 1
+            done = cur.rowcount == 1
+        self._told(done)
+        return done
 
     async def block(self, run_id: int, now_ms: int, detail: str) -> None:
         async with self._tx() as conn:
@@ -319,6 +337,7 @@ class SqliteScheduleStore:
                 " detail = ? WHERE id = ? AND status = 'running'",
                 (now_ms, detail, run_id),
             )
+        self._told()
 
     async def reclaim(self, worker: str, now_ms: int) -> list[Run]:
         # Assumes one Trillion process per data folder: a run claimed by any other
@@ -331,6 +350,7 @@ class SqliteScheduleStore:
                 (now_ms, worker, RECLAIM_GRACE_MS, now_ms),
             ) as cur:
                 rows = await cur.fetchall()
+        self._told(bool(rows))
         return [_run(r) for r in rows]
 
     async def requeue(self, run_id: int, detail: str) -> None:
@@ -341,6 +361,7 @@ class SqliteScheduleStore:
                 " WHERE id = ? AND status = 'interrupted'",
                 (detail, run_id),
             )
+        self._told()
 
     async def recent(self, owner_id: str, limit: int) -> list[Result]:
         async with self._conn.execute(
@@ -373,6 +394,20 @@ class SqliteScheduleStore:
             (owner_id,),
         ) as cur:
             return {str(r["schedule_id"]): _run(r) for r in await cur.fetchall()}
+
+    async def history(
+        self, owner_id: str, schedule_id: str, limit: int
+    ) -> list[tuple[Run, str | None]]:
+        async with self._conn.execute(
+            "SELECT r.*, n.conversation_id AS opens FROM task_runs r"
+            " JOIN schedules s ON s.id = r.schedule_id"
+            " LEFT JOIN notices n ON n.id = r.result_notice"
+            " WHERE s.owner_id = ? AND r.schedule_id = ? AND r.status NOT IN ('queued', 'running')"
+            " ORDER BY COALESCE(r.finished_ms, r.claimed_ms, r.due_ms) DESC, r.id DESC LIMIT ?",
+            (owner_id, schedule_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(_run(r), str(r["opens"]) if r["opens"] is not None else None) for r in rows]
 
     async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]:
         async with self._conn.execute(
@@ -462,6 +497,7 @@ class SqliteScheduleStore:
                 " detail = COALESCE(?, detail), result_notice = ? WHERE id = ?",
                 (status, now_ms, detail, n.id, run_id),
             )
+        self._told()
         return n
 
     async def ready_notice(

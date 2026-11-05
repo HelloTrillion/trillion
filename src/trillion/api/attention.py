@@ -149,6 +149,7 @@ def create_attention_router(rt: Runtime) -> APIRouter:
             for name in WATCHERS:
                 if chosen.on(name) and not before.on(name) and rt.attention_store is not None:
                     await rt.attention_store.reset(OWNER, name)
+        rt.helpers_changed()
         return await described(ask=False)
 
     async def finds() -> dict[str, Any]:

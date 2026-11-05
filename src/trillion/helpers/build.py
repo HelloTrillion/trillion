@@ -29,11 +29,11 @@ unknown times last.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Protocol
 
 from trillion.attention.runner import WatcherStatus
-from trillion.attention.settings import TITLED
+from trillion.attention.settings import ON_UNTIL_CONNECTED, TITLED
 from trillion.helpers.model import Helper, HelperState, LastRun, Outcome, Waiting
 from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
@@ -86,7 +86,6 @@ _ERROR_ELSE = "something went wrong"
 
 # The step a watcher switched on but not connected waits for, by what it reads.
 _CONNECT = {
-    "meetings": "Connect Google to use Meetings",
     "email": "Connect Google to use Urgent email",
     "payments": "Connect Stripe to use Payments",
 }
@@ -144,29 +143,52 @@ class Sources(Protocol):
         Anyone else's, answered or lapsed are left out here."""
         ...
 
+    async def conversations(self) -> Mapping[str, str]:
+        """The conversation made for a helper by "Talk to it", by helper id
+        (the preference `helper_conversations`): a watcher's."""
+        ...
+
 
 async def helpers(sources: Sources) -> list[Helper]:
+    return (await snapshot(sources))[0]
+
+
+async def snapshot(sources: Sources) -> tuple[list[Helper], int | None]:
+    """The list, and when it next changes by itself: the earliest open card lapsing,
+    which nobody's change announces. None when no card is open."""
     owner = sources.owner
     capped = set(await sources.capped())
     active = await sources.schedules.active(owner)
     last = await sources.schedules.last_results(owner)
     now_ms = sources.now_ms()
     now = await sources.schedules.running(owner, now_ms)
-    cards = _open_cards(await sources.cards(), owner, now_ms)
+    open_cards = _still_open(await sources.cards(), owner, now_ms)
+    cards = _by_conversation(open_cards)
+    wake = min((a.expires_at for a in open_cards), default=None)
+    talks = await sources.conversations()
     found = [_scheduled(s, last.get(s.id), now.get(s.id), capped, cards) for s in active]
-    found += [_watcher(w, capped, cards) for w in await sources.watchers()]
-    return _ordered(h for h in found if h is not None)
+    found += [
+        _watcher(w, capped, cards, talks.get(f"watcher:{w.name}")) for w in await sources.watchers()
+    ]
+    return _ordered(h for h in found if h is not None), wake
 
 
-def _open_cards(
-    cards: Sequence[PendingAction], owner: str, now_ms: int
-) -> dict[str, list[Waiting]]:
-    """Cards still waiting for a yes or no, by the conversation they were raised in,
-    oldest first."""
+def _still_open(cards: Sequence[PendingAction], owner: str, now_ms: int) -> list[PendingAction]:
+    """Cards still waiting for a yes or no, oldest first."""
+    return sorted(
+        (
+            a
+            for a in cards
+            if a.owner_id == owner and a.status == Status.PROPOSED and a.expires_at > now_ms
+        ),
+        key=lambda a: a.created_at,
+    )
+
+
+def _by_conversation(cards: Sequence[PendingAction]) -> dict[str, list[Waiting]]:
+    """Open cards by the conversation they were raised in."""
     out: dict[str, list[Waiting]] = {}
-    for a in sorted(cards, key=lambda a: a.created_at):
-        if a.owner_id != owner or a.status != Status.PROPOSED or a.expires_at <= now_ms:
-            continue
+    for a in cards:
         out.setdefault(a.session_id, []).append(
             Waiting(type="approval", id=a.id, text=a.summary, at_ms=a.created_at)
         )
@@ -209,7 +231,7 @@ def _scheduled(
         state=state,
         doing=s.title if state == "working" else None,
         since_ms=since if state == "working" else None,
-        last_run=_last_run(last),
+        last_run=last_run_of(last),
         # A paused routine's due time stays put, but it won't run then.
         next_ms=None if paused else s.next_due_ms,
         waiting=tuple(waiting),
@@ -217,9 +239,13 @@ def _scheduled(
     )
 
 
-def _watcher(w: WatcherStatus, capped: set[Work], cards: dict[str, list[Waiting]]) -> Helper:
-    # Its own conversation comes with "Talk to it" (step three of the core).
-    conversation: str | None = None
+def _watcher(
+    w: WatcherStatus,
+    capped: set[Work],
+    cards: dict[str, list[Waiting]],
+    conversation: str | None,
+) -> Helper:
+    # Its own conversation is made at the first "Talk to it"; a card raised there is its.
     waiting = _step(w) + _in(cards, conversation)
     # It follows whether it runs at all: meetings with heads-ups off still hold her
     # voice during a meeting, so they are not paused.
@@ -254,7 +280,9 @@ def _step(w: WatcherStatus) -> list[Waiting]:
     if w.last_error == "signed_out" and w.name in _GOOGLE:
         at = w.last_error_ms if w.last_error_ms is not None else w.last_check_ms
         return [Waiting(type="step", id=step, text=_SIGN_IN, at_ms=at)]
-    if not w.connected:
+    # Meetings are on from the start, once Calendar is connected: not connected is no
+    # request. Email and payments are off until the user turns them on.
+    if not w.connected and w.name not in ON_UNTIL_CONNECTED:
         # When it was disconnected is not kept anywhere.
         text = _CONNECT.get(w.name, f"Connect {TITLED.get(w.name, w.name)}")
         return [Waiting(type="step", id=step, text=text, at_ms=None)]
@@ -273,9 +301,12 @@ def _state(*, waiting: bool, working: bool, paused: bool, capped: bool) -> Helpe
     return "idle"
 
 
-def _last_run(run: Run | None) -> LastRun | None:
-    if run is None:
-        return None
+def last_run_of(run: Run | None) -> LastRun | None:
+    return run_of(run) if run is not None else None
+
+
+def run_of(run: Run) -> LastRun:
+    """A finished run as the panel tells it: when, its outcome, and why in plain words."""
     at = run.finished_ms or run.started_ms or run.claimed_ms or run.due_ms
     outcome = _OUTCOMES.get(run.status, "failed")
     reason = run.detail if outcome in ("failed", "skipped") else None

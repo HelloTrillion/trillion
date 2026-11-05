@@ -679,3 +679,14 @@ async def test_status_reads_each_probe_on_its_own(world: World) -> None:
     r = await world.runner(Half(name="email"))
     (email,) = await r.statuses()
     assert (email.on, email.connected) == (False, True)
+
+
+async def test_a_check_starting_and_ending_is_told(world: World) -> None:
+    told: list[int] = []
+    r = await world.runner(Watcher(), Watcher(name="payments", on=False))
+    r.changed = lambda: told.append(1)
+    await r.tick()
+    assert len(told) == 2
+    # Not due: nothing starts, nothing is told.
+    await r.tick()
+    assert len(told) == 2

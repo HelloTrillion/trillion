@@ -283,3 +283,65 @@ async def test_running_names_each_schedule_with_a_run_under_way(
     assert await store.running("local", dead) == {}
     await store.finish(first.id, "delivered", DUE + 9)
     assert await store.running("local", DUE + 9) == {}
+
+
+async def test_history_lists_one_schedules_finished_runs_newest_first(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(kind="ask", target="own"))
+    await store.create(schedule(id="e5f6a7b8", kind="ask"))
+    for i in range(3):
+        at = DUE + i * 60_000
+        await store.enqueue("a1b2c3d4", at, at + 60_000, 120.0, at)
+        run = await store.claim("w1", at, 0)
+        assert run is not None
+        if i == 1:
+            n = await store.finish_with_notice(
+                run.id,
+                "delivered",
+                at + 5,
+                owner_id="local",
+                source_id="a1b2c3d4",
+                kind="ready",
+                title="Your Monday revenue is ready",
+                text="Ready.",
+                due_ms=at,
+                late=False,
+                conversation_id="conv-1",
+            )
+            assert n is not None
+        else:
+            await store.finish(run.id, "nothing", at + 5, detail="nothing")
+    await store.enqueue("a1b2c3d4", DUE + 600_000, DUE + 700_000, 120.0, DUE + 600_000)
+    assert await store.claim("w1", DUE + 600_000, 0) is not None  # running: not history yet
+    got = await store.history("local", "a1b2c3d4", 2)
+    assert [(r.status, conversation) for r, conversation in got] == [
+        ("nothing", None),
+        ("delivered", "conv-1"),
+    ]
+    assert await store.history("local", "e5f6a7b8", 10) == []
+    assert await store.history("someone", "a1b2c3d4", 10) == []
+
+
+async def test_every_change_is_told(tmp_path: Path) -> None:
+    conn = await connect(tmp_path / "t.db")
+    try:
+        await migrate(conn)
+        told: list[int] = []
+        store = SqliteScheduleStore(conn, changed=lambda: told.append(1))
+        await store.create(schedule(kind="ask", target="own"))
+        await store.enqueue("a1b2c3d4", DUE, DUE + 86_400_000, 120.0, DUE)
+        run = await store.claim("w1", DUE, 0)
+        assert run is not None
+        await store.finish(run.id, "delivered", DUE + 1)
+        await store.pause("local", "a1b2c3d4", DUE + 2)
+        await store.resume("local", "a1b2c3d4", None)
+        await store.cancel("local", "a1b2c3d4", DUE + 3)
+        assert len(told) == 7
+        # A look that changed nothing tells nothing: the scheduler looks every tick.
+        assert await store.claim("w1", DUE + 4, 0) is None
+        assert not await store.pause("local", "a1b2c3d4", DUE + 5)
+        await store.active("local")
+        assert len(told) == 7
+    finally:
+        await conn.close()

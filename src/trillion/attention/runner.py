@@ -189,8 +189,11 @@ class AttentionRunner:
         tick_s: float = TICK_S,
         check_timeout_s: float = CHECK_TIMEOUT_S,
         tell_timeout_s: float = TELL_TIMEOUT_S,
+        changed: Callable[[], None] | None = None,
     ) -> None:
         self._store = store
+        # Told when a check starts and ends: the helpers panel.
+        self.changed = changed
         self._notices = notices
         self._door = door
         self._clock = clock
@@ -325,7 +328,8 @@ class AttentionRunner:
         except Exception as e:
             logger.error("attention %s failed: %s", w.name, type(e).__name__)
         finally:
-            self._checking.pop(w.name, None)
+            if self._checking.pop(w.name, None) is not None and self.changed is not None:
+                self.changed()
 
     async def _run(self, w: Watcher, settings: AttentionSettings, now: int) -> None:
         if self._held is not None and await self._held("watchers"):
@@ -333,6 +337,8 @@ class AttentionRunner:
             logger.info("attention %s: paused at the spend cap", w.name)
             return
         self._checking[w.name] = now
+        if self.changed is not None:
+            self.changed()
         # Taken first: a reset after this (turned off and on) outranks this check.
         generation = self._store.generation(self._owner, w.name)
         state = await self._store.state(self._owner, w.name)
