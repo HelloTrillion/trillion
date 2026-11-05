@@ -49,3 +49,37 @@ def test_a_process_whose_input_closes_stops() -> None:
     finally:
         if child.poll() is None:
             child.kill()
+
+
+def test_stopping_while_the_app_still_holds_the_input_exits_cleanly() -> None:
+    # Quitting the app stops the server first, with its input still open: the waiting
+    # thread must not hold stdin's lock while Python closes it, or Python aborts and
+    # macOS shows a crash report.
+    script = (
+        "import sys, types\n"
+        "from trillion.cli.server import stop_when_closed\n"
+        "stop_when_closed(sys.stdin.buffer, types.SimpleNamespace(should_exit=False))\n"
+        "print('ready', flush=True)\n"
+        "import time; time.sleep(0.2)\n"
+        "sys.exit(0)\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready"
+        code = child.wait(timeout=10)
+        assert child.stderr is not None
+        err = child.stderr.read()
+        assert code == 0, err
+        assert "Fatal Python error" not in err
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        if child.poll() is None:
+            child.kill()
