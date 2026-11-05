@@ -27,7 +27,6 @@ from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from trillion.brain.loop import (
-    CallTimed,
     LoopEvent,
     ReplyDelta,
     ToolEnded,
@@ -41,13 +40,14 @@ from trillion.brain.types import (
     Msg,
     SystemBlock,
     TextBlock,
-    Usage,
 )
 from trillion.files.shares import EVERYONE, routine_scope
 from trillion.persona import day
 from trillion.persona.prompt import Identity, scheduled, volatile_context
-from trillion.scheduler.runner import AskFailed, Built, Busy, NoModel
+from trillion.scheduler.runner import CAPPED_MIDWAY, AskFailed, Built, Busy, Capped, NoModel
 from trillion.scheduler.store import Schedule
+from trillion.spend.caller import as_caller
+from trillion.spend.types import Work
 from trillion.spine.contract import ToolContext, Via
 from trillion.spine.registry import ROUTINE_BOARD, ROUTINE_NOTHING, ToolRegistry
 from trillion.spine.router import Router
@@ -336,9 +336,6 @@ class _Run:
         # A routine's request is the host's, saved as a tap is: never the user's words,
         # and it advances no turn of theirs.
         asked: Kind = "tap" if self.routine else "user"
-        pricing = provider.pricing()
-        spent = Usage()
-        cost: float | None = 0.0 if pricing is not None else None
 
         async def ensure() -> None:
             # Kept only once something happens in it: an ask blocked on every tick for an
@@ -351,21 +348,6 @@ class _Run:
                 else:
                     self.held.append((asked, ask, now_ms))
                 self.created = True
-
-        async def settle(usage: Usage, cost_usd: float | None) -> None:
-            if not self.created and usage == Usage():
-                return
-            await ensure()
-            # A routine's cost is its conversation's, so the cost line there has it.
-            await a._conversations.record_usage(
-                owner_id=a._owner,
-                conversation_id=self.conversation,
-                provider=provider.name,
-                model=provider.model,
-                usage=usage,
-                cost_usd=cost_usd,
-                now_ms=a._clock(),
-            )
 
         async def ctx(call_id: str) -> ToolContext:
             roots, read_only = await a._shares(self.scope)
@@ -382,13 +364,7 @@ class _Run:
             )
 
         async def emit(ev: LoopEvent) -> None:
-            nonlocal spent, cost
-            if isinstance(ev, CallTimed):
-                # Counted as it is spent, so a run cut off still records what it used.
-                spent = spent + ev.usage
-                if pricing is not None and cost is not None:
-                    cost += pricing.cost(ev.usage)
-            elif isinstance(ev, ReplyDelta):
+            if isinstance(ev, ReplyDelta):
                 self.began = True
                 self.last.append(ev.text)
             elif isinstance(ev, ToolStarted):
@@ -413,26 +389,23 @@ class _Run:
 
         done: TurnDone
         try:
-            done = await run_turn(
-                provider=provider,
-                router=a._router,
-                registry=self.tools,
-                system=system,
-                history=[ask],
-                ctx=ctx,
-                emit=emit,
-                save=save,
-            )
-        except BaseException:
-            # Timed out, cancelled or broken: what it spent is recorded all the same, and
-            # a second cancellation cannot cut the write short.
-            try:
-                await asyncio.shield(settle(spent, cost))
-            except Exception as e:
-                logger.warning(
-                    "usage of timed ask %s not recorded: %s", self.schedule.id, type(e).__name__
+            # Work nobody is waiting on. Each model call is recorded as it ends by the
+            # metered provider, so a run cut off still records what it used, with its
+            # conversation: a routine's cost is its conversation's, so the cost line there
+            # has it. A timed ask's conversation is only kept once something happens in
+            # it, and a paid call is something: it is made to exist before the row.
+            work: Work = "routines" if self.routine else "asks"
+            with as_caller("background", self.conversation, ready=ensure, work=work):
+                done = await run_turn(
+                    provider=provider,
+                    router=a._router,
+                    registry=self.tools,
+                    system=system,
+                    history=[ask],
+                    ctx=ctx,
+                    emit=emit,
+                    save=save,
                 )
-            raise
         finally:
             reads = a.routines.reads
             if self.routine and reads is not None:
@@ -441,9 +414,14 @@ class _Run:
                 # only its own turns, and `Refresher.forget`, which holds no reads)
                 # never drops them.
                 reads.end(self.conversation, self.turn)
-        await settle(done.usage, done.cost_usd)
         self.stop = done.stop
         if done.stop == "provider_error":
+            if done.error_kind == "capped":
+                if self.began or self.touched:
+                    # It had begun, and may have acted: a run cut off, told as failed.
+                    raise AskFailed(CAPPED_MIDWAY)
+                # Refused before it began: skipped, never failed (the spend caps spec).
+                raise Capped(getattr(provider, "provider_id", None))
             if not self.began and done.error_kind in _UNAVAILABLE:
                 raise NoModel
             raise AskFailed(f"the model failed: {done.error_kind or 'other'}")

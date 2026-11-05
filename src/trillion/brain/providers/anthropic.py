@@ -59,6 +59,7 @@ from trillion.brain.types import (
     ToolUseBlock,
     Usage,
 )
+from trillion.spend import prices
 
 NAME = "anthropic"
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -96,32 +97,6 @@ _QUICK: dict[str, dict[str, Any]] = {
 def quick_params(model: str) -> dict[str, Any]:
     """What a spoken turn sends on top of the request for this model, if anything."""
     return _QUICK.get(re.sub(r"-\d{8}$", "", model), {})
-
-
-# US dollars per million tokens, from Anthropic's published first-party rates as of
-# 2026-10-22. A model missing here has no known price, and its cost is reported as
-# unknown rather than guessed. Cache writes bill at 1.25x input.
-_PRICES: dict[str, tuple[float, float, float]] = {  # input, output, cache read
-    "claude-fable-5-1": (10.0, 50.0, 0.25),
-    "claude-fable-5": (10.0, 50.0, 1.0),
-    "claude-opus-5-5": (4.0, 20.0, 0.20),
-    "claude-opus-5": (5.0, 25.0, 0.50),
-    "claude-opus-4-8": (5.0, 25.0, 0.50),
-    "claude-opus-4-7": (5.0, 25.0, 0.50),
-    "claude-opus-4-6": (5.0, 25.0, 0.50),
-    "claude-opus-4-5": (5.0, 25.0, 0.50),
-    "claude-sonnet-5-5": (2.0, 10.0, 0.10),
-    "claude-sonnet-5": (2.0, 10.0, 0.20),
-    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
-    "claude-haiku-5-5": (0.10, 0.50, 0.01),
-    "claude-haiku-4-5": (1.0, 5.0, 0.10),
-}
-# Rates for a request whose prompt (input + cache reads + cache writes) is over the
-# threshold; the whole request is billed at these.
-_LONG_PROMPT_OVER = 100_000
-_LONG_PROMPT_PRICES: dict[str, tuple[float, float, float]] = {
-    "claude-haiku-5-5": (0.50, 2.50, 0.05),
-}
 
 
 def prefix_key(
@@ -264,6 +239,15 @@ def _fail(e: anthropic.APIError) -> ProviderError:
     return ProviderError("provider_error", type(e).__name__)
 
 
+def _usage(u: Any) -> Usage:
+    return Usage(
+        input_tokens=u.input_tokens or 0,
+        output_tokens=u.output_tokens or 0,
+        cache_read_tokens=u.cache_read_input_tokens or 0,
+        cache_write_tokens=u.cache_creation_input_tokens or 0,
+    )
+
+
 def _client(api_key: str, http_client: Any = None) -> AsyncAnthropic:
     # One retry: a person is waiting, and the loop reports a failure plainly.
     return AsyncAnthropic(api_key=api_key, max_retries=1, http_client=http_client)
@@ -271,6 +255,9 @@ def _client(api_key: str, http_client: Any = None) -> AsyncAnthropic:
 
 class AnthropicProvider:
     name = NAME
+    # `stream` takes `on_usage`, told the usage so far as the reply goes: the prompt's
+    # tokens when it starts, so a reply stopped before its end is still counted.
+    reports_usage_so_far = True
 
     def __init__(
         self,
@@ -296,21 +283,11 @@ class AnthropicProvider:
         await net.warm(self._http_client, str(_client("", self._http_client).base_url))
 
     def pricing(self) -> Pricing | None:
+        # US dollars per million tokens, from the one price table. A model missing
+        # there has no known price, and its cost is reported as unknown, not guessed.
         model = re.sub(r"-\d{8}$", "", self.model)  # a dated id prices like its alias
-        if (rates := _PRICES.get(model)) is None:
-            return None
-        long = _LONG_PROMPT_PRICES.get(model)
-        return Pricing(
-            input=rates[0],
-            output=rates[1],
-            cache_read=rates[2],
-            cache_write=rates[0] * 1.25,
-            long_prompt_over=_LONG_PROMPT_OVER if long else 0,
-            long_prompt=long
-            and Pricing(
-                input=long[0], output=long[1], cache_read=long[2], cache_write=long[0] * 1.25
-            ),
-        )
+        rate = prices.TABLE.get(("anthropic", model))
+        return rate.pricing() if rate else None
 
     async def stream(
         self,
@@ -320,6 +297,7 @@ class AnthropicProvider:
         tools: Sequence[ToolSchema],
         max_tokens: int,
         quick: bool = False,
+        on_usage: Callable[[Usage], None] | None = None,
     ) -> AsyncIterator[ModelEvent]:
         key = prefix_key(self.model, system, tools, messages[0] if messages else None)
         request: dict[str, Any] = {
@@ -343,6 +321,8 @@ class AnthropicProvider:
             client = _client(self._api_key(), self._http_client)
             async with client.messages.stream(**request) as stream:
                 async for event in stream:
+                    if on_usage is not None and event.type in ("message_start", "message_delta"):
+                        on_usage(_usage(stream.current_message_snapshot.usage))
                     if event.type == "text" and event.text:
                         yield TextDelta(text=event.text)
                 final = await stream.get_final_message()
@@ -362,15 +342,9 @@ class AnthropicProvider:
                     args=args if isinstance(args, dict) else {},
                     invalid=None if ok else "arguments were not a JSON object",
                 )
-        u = final.usage
         yield Done(
             stop_reason=_STOP.get(str(final.stop_reason), "other"),
-            usage=Usage(
-                input_tokens=u.input_tokens or 0,
-                output_tokens=u.output_tokens or 0,
-                cache_read_tokens=u.cache_read_input_tokens or 0,
-                cache_write_tokens=u.cache_creation_input_tokens or 0,
-            ),
+            usage=_usage(final.usage),
             raw=ProviderRaw(provider=NAME, prefix_key=key, content=tuple(content)),
             model=str(final.model or ""),
         )

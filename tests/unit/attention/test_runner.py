@@ -17,7 +17,7 @@ from tests.scheduler.conftest import FakeClock
 from trillion.attention import runner
 from trillion.attention.runner import AttentionRunner, Find, Said, WatchContext
 from trillion.attention.settings import DEFAULT, AttentionSettings
-from trillion.brain.types import ModelProvider, ProviderError, TextBlock, Usage
+from trillion.brain.types import ProviderError, TextBlock
 from trillion.connectors.google.client import GoogleCallError
 from trillion.delivery.door import READY, notification
 from trillion.scheduler.store import Notice
@@ -94,7 +94,6 @@ class World:
     provider: ScriptedProvider | None
     stores: list[object] = field(default_factory=list)
     conns: list[object] = field(default_factory=list)
-    spent: list[Usage] = field(default_factory=list)
 
     async def runner(self, *watchers: Watcher, timeout_s: float = 20.0) -> AttentionRunner:
         a = await connect(self.tmp / "t.db")
@@ -103,9 +102,6 @@ class World:
         self.conns += [a, b]
         self.attention = SqliteAttentionStore(a)
         self.schedules = SqliteScheduleStore(b)
-
-        async def spend(p: ModelProvider, u: Usage) -> None:
-            self.spent.append(u)
 
         r = AttentionRunner(
             self.attention,
@@ -116,7 +112,6 @@ class World:
             provider=lambda: self.provider,
             settings=lambda: DEFAULT,
             check_timeout_s=timeout_s,
-            spent=spend,
         )
         for w in watchers:
             r.add(w)
@@ -154,7 +149,8 @@ async def test_a_new_find_becomes_one_notice_with_her_words(world: World) -> Non
     (f,) = await world.attention.recent(OWNER, NOW)
     assert (f.status, f.notice_id, f.watcher) == ("told", n.id, "meetings")
     assert (await world.attention.state(OWNER, "meetings")).last_check_ms == NOW
-    assert world.spent  # every paid call is recorded
+    # Every paid call is made as background work, which the metered provider records.
+    assert world.provider is not None and world.provider.callers == ["background"]
 
 
 async def test_the_find_reaches_the_model_as_untrusted_with_no_tools(world: World) -> None:

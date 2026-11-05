@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,10 +25,22 @@ from trillion.attention.payments import Payments
 from trillion.attention.quiet import Quiet
 from trillion.attention.runner import AttentionRunner
 from trillion.brain import compact
-from trillion.brain.config import ModelSettings, Source, resolve
+from trillion.brain.config import (
+    NEEDS_KEY,
+    OPENAI_BASE_URL,
+    ConfigError,
+    ModelSettings,
+    Source,
+    endpoint,
+    keyless,
+    resolve,
+    secret_name,
+)
+from trillion.brain.providers.anthropic import DEFAULT_MODEL
 from trillion.brain.standing import StandingRules
-from trillion.brain.types import ModelProvider, SystemBlock, Usage
+from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.channels.answer import Answerer
+from trillion.channels.manager import PLATFORMS as CHANNEL_PLATFORMS
 from trillion.channels.manager import Channels
 from trillion.connectors.google.connection import GoogleConnection
 from trillion.connectors.mcp.config import load as mcp_load
@@ -53,6 +65,14 @@ from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
 from trillion.skills.library import Entry, Library
+from trillion.spend import gate as spend_gate
+from trillion.spend import metered, prices
+from trillion.spend.caller import as_caller
+from trillion.spend.desk import KNOWN_PREF, Leg, SpendDesk, Switch, caps_on_note
+from trillion.spend.gate import UNCAPPED, Caps, Gate, default_for
+from trillion.spend.ledger import BEFORE_CAPS, Ledger
+from trillion.spend.metered import Meter, MeteredHearing, MeteredModel, MeteredVoice, PriceBook
+from trillion.spend.types import Work
 from trillion.spine.audit import audit_key
 from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import DenyPolicy
@@ -116,7 +136,9 @@ from trillion.tools.workspace import (
     WorkspaceUpdate,
 )
 from trillion.tools.workspace import definitions as board_definitions
+from trillion.voice import models as voice_models
 from trillion.voice.catalog import listen_option, speech_option
+from trillion.voice.providers import whisper
 from trillion.voice.types import STTProvider, TTSProvider
 from trillion.workspace.board import Board
 from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
@@ -125,6 +147,7 @@ from trillion.workspace.live import Reads
 from trillion.workspace.packs import told
 from trillion.workspace.refresh import Refresher
 from trillion.workspace.service import Boards
+from trillion.zones import next_month_start
 
 logger = logging.getLogger(__name__)
 # On stop, quiet notices' notifications still on their way get this long.
@@ -212,6 +235,100 @@ def build_listening(settings: ListenSettings | None, secrets: SecretStore) -> ST
     return option.build(secrets)
 
 
+def model_provider_id(
+    settings: ModelSettings | None, source: Source, env: Mapping[str, str] | None
+) -> str | None:
+    """The cap the model in use counts against (BRN-7). The environment configures
+    either an OpenAI-compatible address, read as a custom model there, or Anthropic,
+    as `brain.config.provider_from_env` does."""
+    if source == "env":
+        base_url = (os.environ if env is None else env).get(OPENAI_BASE_URL, "").strip()
+        return prices.provider_id("custom", base_url) if base_url else "anthropic"
+    if source == "settings" and settings is not None:
+        return prices.provider_id(settings.kind, settings.base_url)
+    return None
+
+
+def metered_resolve(
+    meter: Meter,
+    settings: ModelSettings | None,
+    secrets: SecretStore,
+    env: Mapping[str, str] | None,
+) -> tuple[MeteredModel | None, Source]:
+    """The model the settings or the environment choose, behind the spend gate."""
+    provider, source = resolve(settings, secrets, env)
+    if provider is None:
+        return None, source
+    return meter.model(provider, model_provider_id(settings, source, env)), source
+
+
+def metered_speech(
+    meter: Meter, settings: SpeechSettings | None, secrets: SecretStore
+) -> MeteredVoice | None:
+    """The chosen voice, behind the spend gate; the system voice is never capped."""
+    tts = build_speech(settings, secrets)
+    if tts is None or settings is None:
+        return None
+    return meter.voice(tts, prices.voice_provider_id(settings.kind, settings.base_url))
+
+
+def metered_listening(
+    meter: Meter, settings: ListenSettings | None, secrets: SecretStore
+) -> MeteredHearing | None:
+    """The chosen recognizer, behind the spend gate; local Whisper is never capped."""
+    stt = build_listening(settings, secrets)
+    if stt is None or settings is None:
+        return None
+    return meter.hearing(stt, prices.hearing_provider_id(settings.kind))
+
+
+# Set after the first start with spend caps: the one-time note that caps are on is
+# given only then (BRN-7). Caps themselves are given on every start.
+SPEND_SEEDED_PREF = "spend_seeded"
+# The provider id of the custom address the custom key was saved for. Every custom
+# address shares one key slot, so a card offers a custom model only on that address.
+CUSTOM_KEY_FOR_PREF = "custom_key_for"
+
+
+def caps_json(caps: Caps) -> dict[str, Any]:
+    """Caps as the preference `spend_caps` keeps them."""
+    return {"soft": caps.soft, "hard": caps.hard, "warn_pct": caps.warn_pct, "unit": caps.unit}
+
+
+def _voice_pid(speech: SpeechSettings | None) -> str | None:
+    return prices.voice_provider_id(speech.kind, speech.base_url) if speech else None
+
+
+def _hearing_pid(listening: ListenSettings | None) -> str | None:
+    return prices.hearing_provider_id(listening.kind) if listening else None
+
+
+async def whisper_choice() -> str | None:
+    """A local Whisper model ready on this computer, or None: installed and downloaded,
+    so a switch to it hears at once. Looked at off the event loop."""
+
+    def look() -> str | None:
+        if not whisper.available():
+            return None
+        root = paths.models_dir() / "whisper"
+        return next(
+            (p.id for p, _ in whisper.PACKS if voice_models.installed(p, root / p.id)), None
+        )
+
+    return await asyncio.to_thread(look)
+
+
+# The three legs a switch can move.
+LEGS = ("model", "voice", "hearing")
+# The longest the month timer sleeps before it looks again: a clock or a timezone
+# that moves is caught within this.
+MONTH_LOOK_S = 3600.0
+
+
+# Every paid provider the runtime holds goes through the spend gate.
+_METERED = frozenset({"provider", "tts", "stt"})
+
+
 # The desktop app makes the session token and hands it to the server it starts (D2).
 SESSION_TOKEN_ENV = "TRILLION_SESSION_TOKEN"  # noqa: S105 - a variable name, not a secret
 _URL_SAFE_32 = re.compile(r"[A-Za-z0-9_-]{32,}")
@@ -259,6 +376,19 @@ class Runtime:
     # Her board per conversation (SUR-1), saved beside the conversation.
     board_store: SqliteBoardStore
     preferences: SqlitePreferences
+    # This month's spend per provider, and the caps it is held to (BRN-7). Both are
+    # loaded before `open_runtime` returns, so no paid call is ever let through on an
+    # empty count.
+    ledger: Ledger
+    gate: Gate
+    # Your conversation at the caps: the spend cards, the switch until the 1st, and what
+    # is said once a month (BRN-8).
+    spend: SpendDesk
+    # Every paid call goes through it: the model, the voice and hearing below are
+    # wrapped in it whenever they are set (see `__setattr__`). It must stay declared
+    # before `provider`, `tts` and `stt`: the generated __init__ sets fields in this
+    # order, and setting any of those three reads it.
+    meter: Meter
     secrets: SecretStore
     memory: MemoryBook
     # What the user told her to always or never do, outside every conversation (BRN-5).
@@ -356,6 +486,371 @@ class Runtime:
     # Held while Home's layout is read, changed and saved, so the page and her tool
     # never write over each other's change.
     _arranging: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Wakes at the next 1st, when a switch until then ends (BRN-8).
+    _month_timer: asyncio.Task[None] | None = None
+    month_look_s: float = MONTH_LOOK_S
+    # The usual model, as chosen, while a switch puts another in `provider`: what
+    # background work runs on (`background_provider`).
+    _usual_model: MeteredModel | None = None
+    # Held while the preference `spend_caps` is read, changed and saved here.
+    _writing_caps: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # The model, voice and hearing are only ever held metered. open_runtime and
+        # use_model, use_speech and use_listening set them metered already, with the
+        # provider id of what they chose. Anything else set here (a stand-in, in tests)
+        # is metered against the cap of what is chosen now, or none when nothing is.
+        if name in _METERED and value is not None:
+            if name == "provider" and not isinstance(value, MeteredModel):
+                value = self.meter.model(value, self._model_pid())
+            elif name == "tts" and not isinstance(value, MeteredVoice):
+                value = self.meter.voice(value, _voice_pid(self.speech_used))
+            elif name == "stt" and not isinstance(value, MeteredHearing):
+                value = self.meter.hearing(value, _hearing_pid(self.listening_used))
+        super().__setattr__(name, value)
+
+    # ── What is used now: the user's choice, or a switch until the 1st (BRN-8) ──
+
+    def _model_pid(self) -> str | None:
+        """The cap the model in use counts against: the chosen one's, or what it was
+        switched to."""
+        chosen = model_provider_id(self.settings, self.source, self.env)
+        switched = self._model_switch(chosen)
+        if switched is not None:
+            return model_provider_id(switched, "settings", self.env)
+        return chosen
+
+    def _model_switch(self, chosen: str | None) -> ModelSettings | None:
+        """Where a switch leads, followed to its end: switched to B, and B switched in
+        turn to C, the model is C. A loop stops at the last model before it repeats."""
+        found: ModelSettings | None = None
+        seen = {chosen}
+        pid = chosen
+        while True:
+            s = self.spend.switch(pid)
+            settings = ModelSettings.from_json(s.settings) if s and s.leg == "model" else None
+            if settings is None:
+                return found
+            pid = model_provider_id(settings, "settings", self.env)
+            found = settings
+            if pid in seen:
+                return found
+            seen.add(pid)
+
+    @property
+    def speech_used(self) -> SpeechSettings | None:
+        """The voice she speaks in now: the chosen one, or the computer's own while a
+        switch lasts."""
+        chosen = self.speech
+        s = self.spend.switch(_voice_pid(chosen))
+        if chosen is not None and s is not None and s.leg == "voice":
+            return SpeechSettings(kind="system")
+        return chosen
+
+    @property
+    def listening_used(self) -> ListenSettings | None:
+        """How she hears now: the chosen way, or local Whisper while a switch lasts."""
+        chosen = self.listening
+        s = self.spend.switch(_hearing_pid(chosen))
+        if chosen is not None and s is not None and s.leg == "hearing":
+            choice = (s.settings or {}).get("choice")
+            return ListenSettings(kind="whisper", choice=str(choice or ""))
+        return chosen
+
+    @property
+    def background_provider(self) -> ModelProvider | None:
+        """The model background work runs on: always the usual one, never a switch.
+        A switch is the user's choice for their conversation only (the spend caps spec,
+        decision 7, BRN-11): routines, watchers, refreshes, channels and titles never
+        move to another model, so at the usual one's hard cap they pause, and its gate
+        refuses them if they try."""
+        chosen = model_provider_id(self.settings, self.source, self.env)
+        if self._model_switch(chosen) is None:
+            return self.provider
+        return self._usual_model
+
+    def _pick_model(self) -> tuple[MeteredModel | None, Source]:
+        provider, source = metered_resolve(self.meter, self.settings, self.secrets, self.env)
+        self._usual_model = provider
+        switched = self._model_switch(provider.provider_id if provider is not None else None)
+        if switched is not None:
+            # Built from the switch alone: the environment chooses only the usual one.
+            other, _ = metered_resolve(self.meter, switched, self.secrets, {})
+            if other is not None:
+                return other, source
+        return provider, source
+
+    async def _remember_model(self, settings: ModelSettings | None) -> None:
+        """The model last chosen on each provider: what a spend card can offer."""
+        pid = model_provider_id(settings, "settings", self.env) if settings else None
+        if settings is None or pid is None:
+            return
+        raw = await self.preferences.get(OWNER, KNOWN_PREF)
+        known = dict(raw) if isinstance(raw, dict) else {}
+        if known.get(pid) != settings.to_json():
+            known[pid] = settings.to_json()
+            await self.preferences.put(OWNER, KNOWN_PREF, known, self.clock())
+
+    async def model_choices(self, capped: str) -> list[tuple[str, ModelSettings]]:
+        """Models already set up on a provider with budget left, local first: what a
+        card at `capped`'s hard cap offers. Each as (provider id, settings)."""
+        raw = await self.preferences.get(OWNER, KNOWN_PREF)
+        out: list[tuple[str, ModelSettings]] = []
+        for pid, value in raw.items() if isinstance(raw, dict) else ():
+            settings = ModelSettings.from_json(value)
+            if settings is None or pid == capped or self.gate.state(pid) == "capped":
+                continue
+            if model_provider_id(settings, "settings", self.env) != pid:
+                continue
+            # Only one whose key is still there: a removed key is not set up any more.
+            if settings.kind in NEEDS_KEY and not self.secrets.get(secret_name(settings.kind)):
+                continue
+            if settings.kind == "custom" and not await self._custom_key_fits(pid, settings):
+                continue
+            out.append((pid, settings))
+        out.sort(key=lambda found: (found[0] != "local", found[0], found[1].model))
+        return out
+
+    async def _custom_key_fits(self, pid: str, settings: ModelSettings) -> bool:
+        """Whether a known custom model may be switched to without sending the one
+        custom key to an address it was not saved for: there is no key, the address
+        is never sent one, or the key was saved for this address (else, for a key saved
+        before that was recorded, the custom model chosen now is on it)."""
+        if not self.secrets.get(secret_name("custom")):
+            return True
+        try:
+            url = endpoint("custom", settings.base_url)
+        except ConfigError:
+            return False
+        if url is not None and keyless(url):
+            return True
+        saved_for = await self.preferences.get(OWNER, CUSTOM_KEY_FOR_PREF)
+        if isinstance(saved_for, str):
+            return saved_for == pid
+        chosen = self.settings
+        return (
+            chosen is not None
+            and chosen.kind == "custom"
+            and model_provider_id(chosen, "settings", self.env) == pid
+        )
+
+    async def whisper_ready(self) -> str | None:
+        return await whisper_choice()
+
+    async def use_switches(self, legs: frozenset[str] = frozenset(LEGS)) -> None:
+        """Pick again, as a switch now says, the legs whose switch changed, and tell
+        every open page: their banner and what they play or hear with."""
+        if "model" in legs:
+            self.provider, self.source = self._pick_model()
+        if "voice" in legs:
+            self.tts = metered_speech(self.meter, self.speech_used, self.secrets)
+        if "hearing" in legs:
+            self.stt = metered_listening(self.meter, self.listening_used, self.secrets)
+        banner = self.spend.banner()
+        for session in list(self.sessions):
+            await session.settings_changed()
+            await session.send("spend.switch", switches=banner)
+
+    def _usual(self, pid: str, s: Switch) -> str:
+        """What a lapsed switch goes back to, in words."""
+        if s.leg == "model":
+            return self.settings.model if self.settings is not None else "the usual model"
+        if s.leg == "voice":
+            return "your usual voice"
+        return "your usual way of listening"
+
+    async def spend_tick(self) -> None:
+        """A switch made for a month now over ends: she is back on the usual one. The
+        desk tells `_spend_changed`, which picks the usual one again."""
+        await self.spend.lapse(self._usual)
+
+    def month_timer(self) -> None:
+        """Wake at the next 1st, so the legs and the banner flip without waiting for a
+        turn. Started again if it was running; stopped by `close`."""
+        if self._month_timer is not None:
+            self._month_timer.cancel()
+        self._month_timer = asyncio.create_task(self._month_turns())
+
+    async def _month_turns(self) -> None:
+        while True:
+            wait_ms = next_month_start(self.clock(), self.zone() or "") - self.clock()
+            await asyncio.sleep(max(0.0, min(wait_ms / 1000, self.month_look_s)))
+            try:
+                await self.spend_tick()
+            except Exception as e:
+                logger.warning("the month's switches not checked: %s", type(e).__name__)
+
+    async def _seed_known(self) -> None:
+        """Once, on the first start with spend cards: the models already set up, so a
+        card can offer them. A key in the keychain stands for its kind at the model
+        known for it; Anthropic has a default model, and OpenAI and a custom address do
+        not, so those wait until one is chosen. The saved model is remembered too."""
+        if await self.preferences.get(OWNER, KNOWN_PREF) is not None:
+            return
+        known: dict[str, Any] = {}
+        if self.secrets.get(secret_name("anthropic")):
+            known["anthropic"] = ModelSettings(kind="anthropic", model=DEFAULT_MODEL).to_json()
+        await self.preferences.put(OWNER, KNOWN_PREF, known, self.clock())
+
+    # ── Caps: what is set up, and the defaults it starts with (BRN-7) ──
+
+    async def spend_set_up(
+        self, *, in_use: bool = False
+    ) -> list[tuple[Leg, str | None, str | None]]:
+        """Every provider set up now, as (leg, provider id, model): the model in use
+        and what a switch put in its place, the voice and hearing, then (unless only
+        those `in_use`) each model known. A provider id of None runs on this computer,
+        or has an address that does not pass the check. The model is None where it is
+        not known."""
+        out: list[tuple[Leg, str | None, str | None]] = []
+        if self.source in ("settings", "env"):
+            usual = model_provider_id(self.settings, self.source, self.env)
+            if self.source == "settings" and self.settings is not None:
+                model: str | None = self.settings.model
+            else:
+                model = getattr(self._usual_model or self.provider, "model", None)
+            out.append(("model", usual, model))
+            switched = self._model_switch(usual)
+            if switched is not None:
+                out.append(
+                    ("model", model_provider_id(switched, "settings", self.env), switched.model)
+                )
+        if self.speech is not None:
+            out.append(("voice", _voice_pid(self.speech), None))
+        if self.listening is not None:
+            out.append(("hearing", _hearing_pid(self.listening), None))
+        if in_use:
+            return out
+        raw = await self.preferences.get(OWNER, KNOWN_PREF)
+        for pid, value in sorted(raw.items()) if isinstance(raw, dict) else ():
+            settings = ModelSettings.from_json(value)
+            if settings is not None and model_provider_id(settings, "settings", self.env) == pid:
+                out.append(("model", pid, settings.model))
+        return out
+
+    async def _caps_now(self) -> dict[str, Any] | None:
+        """The preference `spend_caps` to change, or None when it is malformed."""
+        raw = await self.preferences.get(OWNER, spend_gate.PREF)
+        if raw is None:
+            return {}
+        return dict(raw) if isinstance(raw, dict) else None
+
+    async def write_caps(self, provider_id: str, caps: Caps) -> None:
+        """Save one provider's caps, then have the gate read them. A malformed
+        preference holds every provider to its defaults (the gate), so those are
+        written for each one set up rather than lost."""
+        async with self._writing_caps:
+            found = await self._caps_now()
+            if found is None:
+                found = {
+                    pid: caps_json(default_for(pid))
+                    for _leg, pid, _model in await self.spend_set_up()
+                    if pid is not None and pid not in UNCAPPED
+                }
+            found[provider_id] = caps_json(caps)
+            await self.preferences.put(OWNER, spend_gate.PREF, found, self.clock())
+            await self.gate.reload_caps()
+
+    async def seed_caps(self, provider_ids: Iterable[str | None]) -> list[str]:
+        """Give `default_for` to each of these providers that has no caps entry yet,
+        never touching one that has. Returns those given them. A malformed preference
+        is left alone: the gate already holds every provider to its defaults."""
+        async with self._writing_caps:
+            found = await self._caps_now()
+            if found is None:
+                return []
+            added = [
+                pid
+                for pid in dict.fromkeys(provider_ids)
+                if pid is not None and pid not in UNCAPPED and pid not in found
+            ]
+            if not added:
+                return []
+            for pid in added:
+                found[pid] = caps_json(default_for(pid))
+            await self.preferences.put(OWNER, spend_gate.PREF, found, self.clock())
+            await self.gate.reload_caps()
+            return added
+
+    async def _seed_caps_in_use(self) -> None:
+        """On every start: each provider in use (the model, what a switch put in its
+        place, the voice and hearing) with no caps entry gets the defaults, so a model
+        set by the environment after the first start is capped too. An entry already
+        there, even one whose caps the user removed (null), is never touched.
+
+        On the first start with spend caps only, her next turn carries one note saying
+        so (PER-11). A model known from before is given them when it is chosen again or
+        switched to. The caps are saved first: a note that fails to keep never leaves a
+        provider uncapped."""
+        in_use = await self.spend_set_up(in_use=True)
+        added = await self.seed_caps([pid for _leg, pid, _m in in_use])
+        if await self.preferences.get(OWNER, SPEND_SEEDED_PREF):
+            return
+        await self.preferences.put(OWNER, SPEND_SEEDED_PREF, True, self.clock())
+        if not added:
+            return
+        try:
+            before = self.ledger.spent(BEFORE_CAPS)
+            note = caps_on_note(
+                [(pid, default_for(pid)) for pid in added],
+                uncounted=bool(before.all_units or before.dollars),
+            )
+            await self.spend.tell_once("caps_on", note)
+        except Exception as e:
+            logger.warning("the note that caps are on was not kept: %s", type(e).__name__)
+
+    async def _spend_changed(self, cards: Any, legs: frozenset[str]) -> None:
+        """A card was answered: its pages hear so, and a switch takes effect now."""
+        for card in cards:
+            for session in list(self.sessions):
+                if session.id == card.conversation_id:
+                    await session.send("spend.resolved", id=card.id, status=card.status)
+        if legs:
+            await self.use_switches(legs)
+            # What a switch put in use is capped like anything chosen (BRN-7).
+            await self.seed_caps([self._model_pid()])
+
+    async def held(self, work: Work) -> bool:
+        """Whether background work of this kind waits: her model is at its hard spend
+        cap. Recorded as paused when it is (`SpendDesk.held`)."""
+        usual = self.background_provider
+        return await self.spend.held(work, getattr(usual, "provider_id", None))
+
+    async def background_work(self) -> tuple[str | None, frozenset[Work]]:
+        """The provider background work runs on (the usual model's), and the kinds of
+        it set up now: what pauses at that provider's hard cap (`SpendDesk.paused`)."""
+        kinds: set[Work] = {"titles"}
+        if self.widgets_fresh:
+            kinds.add("board")
+        if self.schedules is not None:
+            for s in await self.schedules.active(OWNER):
+                if s.kind == "ask" and s.paused_ms is None:
+                    kinds.add("routines" if s.target is not None else "asks")
+        if self.attention is not None:
+            for w in self.attention.watchers:
+                try:
+                    if w.enabled(self.attention_settings):
+                        kinds.add("watchers")
+                except Exception as e:
+                    logger.warning("watcher %s: can't tell if on: %s", w.name, type(e).__name__)
+        channels = self.channels
+        if channels is not None and any(
+            channels.on.get(p) and channels.configured(p) for p in CHANNEL_PLATFORMS
+        ):
+            kinds.add("channels")
+        return getattr(self.background_provider, "provider_id", None), frozenset(kinds)
+
+    async def _spend_notice(self, key: str, title: str) -> None:
+        """A spend notice (a warning, or background work paused), through the one door
+        (SUR-9): shown, never spoken."""
+        if self.schedules is None or self.door is None:
+            return
+        if await self.schedules.has_notice(OWNER, key):
+            return
+        notice = await self.schedules.attention_notice(
+            OWNER, key, title=title, text=None, now_ms=self.clock()
+        )
+        await self.door.added(notice)
 
     @property
     def granted_roots(self) -> tuple[Path, ...]:
@@ -621,23 +1116,6 @@ class Runtime:
             if session.id == conversation_id:
                 await session.send("board.refreshing", id=widget_id, on=on)
 
-    async def record_refresh_usage(
-        self, conversation_id: str, provider: ModelProvider, usage: Usage
-    ) -> None:
-        """A refresh's model call, counted with the conversation like a turn's (BRN-4)."""
-        if usage == Usage():
-            return
-        pricing = provider.pricing()
-        await self.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=conversation_id,
-            provider=provider.name,
-            model=provider.model,
-            usage=usage,
-            cost_usd=pricing.cost(usage) if pricing is not None else None,
-            now_ms=self.clock(),
-        )
-
     def tell_soon(self, settled: list[Settled]) -> None:
         """Tell the user about `settled` in the background: a model call never holds
         startup. Held until it ends, and stopped with the rest."""
@@ -652,18 +1130,20 @@ class Runtime:
         door, its model call recorded (BRN-4). Never raises."""
         if self.schedules is None or self.door is None:
             return
-        provider = self.provider
         try:
-            made, usage = await interrupted.tell(
-                self.schedules,
-                provider,
-                OWNER,
-                settled,
-                self.spine_store.get_pending,
-                now_ms=self.clock(),
-            )
-            if provider is not None and usage != Usage():
-                await self.record_attention_usage(provider, usage)
+            # Work nobody is waiting on, in no conversation: its model call is the
+            # metered provider's to record. Deliberately labelled with no kind of work:
+            # it is a safety notice, never paused or listed as paused. At a hard cap its
+            # wording call is refused and the notice is still given, by its title.
+            with as_caller("background"):
+                made, _usage = await interrupted.tell(
+                    self.schedules,
+                    self.background_provider,
+                    OWNER,
+                    settled,
+                    self.spine_store.get_pending,
+                    now_ms=self.clock(),
+                )
             for n in made:
                 await self.door.added(n)
         except Exception as e:
@@ -680,20 +1160,6 @@ class Runtime:
                 logger.warning("checking interrupted sends failed: %s", type(e).__name__)
                 continue
             await self.tell_interrupted(settled)
-
-    async def record_attention_usage(self, provider: ModelProvider, usage: Usage) -> None:
-        """A watcher's wording or judging call: background work, in no conversation,
-        recorded like any other (BRN-4)."""
-        pricing = provider.pricing()
-        await self.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=None,
-            provider=provider.name,
-            model=provider.model,
-            usage=usage,
-            cost_usd=pricing.cost(usage) if pricing is not None else None,
-            now_ms=self.clock(),
-        )
 
     def live_host(self) -> str | None:
         """Where the live page runs, from its hello; None with no page open."""
@@ -801,7 +1267,8 @@ class Runtime:
     async def use_model(self, settings: ModelSettings | None) -> None:
         """Adopt saved settings (or none) and tell every open session."""
         self.settings = settings
-        self.provider, self.source = resolve(settings, self.secrets, self.env)
+        await self._remember_model(settings)
+        self.provider, self.source = self._pick_model()
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -812,7 +1279,7 @@ class Runtime:
             self.speech_last = last
             await self.preferences.put(OWNER, SPEECH_LAST_PREF, last.to_json(), self.clock())
         self.speech = settings
-        self.tts = build_speech(settings, self.secrets)
+        self.tts = metered_speech(self.meter, self.speech_used, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -822,7 +1289,7 @@ class Runtime:
             self.listening_last = last
             await self.preferences.put(OWNER, LISTEN_LAST_PREF, last.to_json(), self.clock())
         self.listening = settings
-        self.stt = build_listening(settings, self.secrets)
+        self.stt = metered_listening(self.meter, self.listening_used, self.secrets)
         for session in list(self.sessions):
             await session.settings_changed()
 
@@ -838,6 +1305,8 @@ class Runtime:
         self.identity = load_identity(self.persona_dir)
         await self.preferences.put(OWNER, ONBOARDING_PREF, None, self.clock())
         self.onboarding_skipped = False
+        # A new timezone moves the start of the month the caps count from.
+        await self.gate.refresh()
         for session in list(self.sessions):
             await session.identity_changed()
 
@@ -846,6 +1315,11 @@ class Runtime:
         await self.preferences.put(OWNER, ONBOARDING_PREF, "skipped", self.clock())
 
     async def close(self) -> None:
+        if self._month_timer is not None:
+            self._month_timer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._month_timer
+            self._month_timer = None
         # First, so no tick or read runs on a connection that is closing.
         await self.stop_background()
         await self.jobs.stop()
@@ -857,6 +1331,9 @@ class Runtime:
             await self.channels.close()
         if self.slack is not None:
             await self.slack.close()
+        # Rows whose caller was stopped above are still being written: they finish
+        # before the database closes.
+        await self.meter.drain()
         for conn in self._connections:
             await conn.close()
         self._connections.clear()
@@ -933,7 +1410,6 @@ async def open_runtime(
     preferences = SqlitePreferences(chat_conn)
     keychain = secrets if secrets is not None else KeychainStore()
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
-    provider, source = resolve(settings, keychain, env)
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
     book = MemoryBook(SqliteMemoryStore(chat_conn), memory or paths.memory_dir(), OWNER)
     # The files are the truth: whatever changed on disk since last time is adopted
@@ -941,25 +1417,55 @@ async def open_runtime(
     await book.sync(_now_ms())
     listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
     standing = StandingRules(rules or paths.rules_path())
+    conversations = SqliteConversationStore(chat_conn)
+    # Lambdas that read `rt` once it exists, so a test that replaces `rt.clock` or the
+    # profile moves the ledger too. It counts the month the usage pill counts.
+    ledger = Ledger(conversations, lambda: rt.clock(), lambda: rt.zone() or "", owner_id=OWNER)
+    gate = Gate(ledger, lambda: preferences.get(OWNER, spend_gate.PREF))
+    # Read at startup below, and again by `meter.prices.reload()` after every write to
+    # the preference, as the caps are.
+    meter = Meter(
+        gate=gate,
+        ledger=ledger,
+        store=conversations,
+        clock=lambda: rt.clock(),
+        prices=PriceBook(lambda: preferences.get(OWNER, metered.PREF)),
+        owner_id=OWNER,
+    )
+    gate.user_rates = meter.prices.rates
+    provider, source = metered_resolve(meter, settings, keychain, env)
+    desk = SpendDesk(
+        prefs=preferences,
+        gate=gate,
+        clock=lambda: rt.clock(),
+        zone=lambda: rt.zone() or "",
+        owner=OWNER,
+        live=lambda conversation_id: conversation_id in rt.by_conversation,
+    )
     rt = Runtime(
         router=router,
         registry=registry,
         spine_store=store,
-        conversations=SqliteConversationStore(chat_conn),
+        conversations=conversations,
         board_store=SqliteBoardStore(chat_conn),
         preferences=preferences,
+        ledger=ledger,
+        gate=gate,
+        spend=desk,
+        meter=meter,
         secrets=keychain,
         memory=book,
         rules=standing,
         compact_at=(budget := _compact_at(env)),
         compact_keep=min(compact.KEEP, budget // 4),
         provider=provider,
+        _usual_model=provider,
         source=source,
         settings=settings,
         speech=speech,
-        tts=build_speech(speech, keychain),
+        tts=metered_speech(meter, speech, keychain),
         listening=listening,
-        stt=build_listening(listening, keychain),
+        stt=metered_listening(meter, listening, keychain),
         speech_last=SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_LAST_PREF))
         or speech,
         listening_last=ListenSettings.from_json(await preferences.get(OWNER, LISTEN_LAST_PREF))
@@ -978,6 +1484,19 @@ async def open_runtime(
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
     )
+    # Before anything that can reach a provider is started: the gate never fails open.
+    try:
+        await ledger.load()
+        await gate.reload_caps()
+        await meter.prices.reload()
+        await desk.load()
+    except BaseException:
+        # Nothing else is running yet: closing the connections leaves nothing behind.
+        for conn in rt._connections:
+            # Each is closed whatever the last one did, and the first failure is raised.
+            with contextlib.suppress(Exception):
+                await conn.close()
+        raise
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
@@ -1005,12 +1524,13 @@ async def open_runtime(
         paths.channels_config_path(),
         Answerer(
             conversations=rt.conversations,
-            provider=lambda: rt.provider,
+            provider=lambda: rt.background_provider,
             # No shared folders and no standing rules: a channel answers, it never acts.
             system=lambda: system_blocks(rt.identity, rt.soul),
             names=lambda: (rt.identity.agent_name, rt.identity.user_name),
             clock=rt.clock,
             owner=OWNER,
+            held=rt.held,
         ),
         rt.clock,
         slack=rt.slack.slack,
@@ -1027,7 +1547,7 @@ async def open_runtime(
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
     rt.jobs = Jobs(clock=lambda: rt.clock(), changed=rt.send_jobs)
     asker = Asker(
-        provider=lambda: rt.provider,
+        provider=lambda: rt.background_provider,
         router=router,
         registry=registry,
         conversations=rt.conversations,
@@ -1048,7 +1568,9 @@ async def open_runtime(
             holds=rt.routine_holds,
         ),
     )
-    rt.scheduler = Scheduler(schedules, lambda: rt.clock(), asker, rt.door, routines=asker)
+    rt.scheduler = Scheduler(
+        schedules, lambda: rt.clock(), asker, rt.door, routines=asker, held=rt.held
+    )
     rt.quiet = Quiet(settings=lambda: rt.attention_settings, zone=rt.zone, host=rt.live_host)
     rt.door.quiet = rt.quiet
     rt.attention_store = SqliteAttentionStore(attention_conn)
@@ -1058,11 +1580,11 @@ async def open_runtime(
         rt.door,
         clock=lambda: rt.clock(),
         owner=OWNER,
-        provider=lambda: rt.provider,
+        provider=lambda: rt.background_provider,
         settings=lambda: rt.attention_settings,
-        spent=rt.record_attention_usage,
         google=lambda: rt.google,
         registry=registry,
+        held=rt.held,
     )
     meetings = Meetings(GoogleCalendar(lambda: rt.google), clock=lambda: rt.clock(), zone=rt.zone)
     rt.attention.add(meetings)
@@ -1111,14 +1633,14 @@ async def open_runtime(
         boards=rt.boards,
         router=router,
         definition=registry.definition,
-        provider=lambda: rt.provider,
+        provider=lambda: rt.background_provider,
         clock=lambda: rt.clock(),
         owner=OWNER,
         busy=rt.turn_running,
         enabled=lambda: rt.widgets_fresh,
         tell=rt.send_refreshing,
-        spent=rt.record_refresh_usage,
         shares=rt.reach,
+        held=rt.held,
     )
     for name in (BOARD_SHOW, BOARD_UPDATE, BOARD_REMOVE, BOARD_CLOSE):
         board_tool = registry.get(name)
@@ -1146,4 +1668,22 @@ async def open_runtime(
     doubt = await router.in_doubt(rt.clock() - IN_DOUBT_DAYS * DAY_MS)
     told = {s.id for s in settled}
     rt.tell_soon(settled + [s for s in doubt if s.id not in told])
+    # Spend: a warning goes through the door, an answered card is told to its page, and
+    # a switch saved before a restart still applies, unless the 1st has passed since.
+    desk.notify = rt._spend_notice
+    desk.changed = rt._spend_changed
+    # A raise on a card is written by the one writer, as Settings' changes are.
+    desk.write_caps = rt.write_caps
+    # Background work refused at a hard cap is listed as paused, and said once.
+    gate.refused = desk.pause
+    desk.background = rt.background_work
+    await rt._seed_known()
+    await rt._remember_model(settings)
+    # After the ledger and the caps are read: the defaults for what is in use and has
+    # none, on every start.
+    await rt._seed_caps_in_use()
+    # A lapse picks again by itself; a switch still in force is picked here.
+    if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
+        await rt.use_switches()
+    rt.month_timer()
     return rt

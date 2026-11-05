@@ -18,6 +18,12 @@ conversation or its own, where it builds a board. A board becomes a 'ready' noti
 naming the conversation to open; nothing worth saying, no notice at all (AGT-6). A
 paused routine is not run, and after three failures in a row it pauses itself.
 
+At a hard spend cap (the spend caps spec) a routine or timed ask is not run: its run is
+`skipped` with the reason `capped`, never failed, retried or counted toward a pause.
+The schedule has already moved on, so it next runs at its next time, if the cap has
+lifted by then. One that had already begun (said something or called a tool) when its
+next call was refused may have acted: it is reported failed, like any run cut off.
+
 The runner never touches a surface. It writes notices and tells the door (SUR-9).
 """
 
@@ -44,6 +50,8 @@ from trillion.scheduler.store import (
     ScheduleStore,
 )
 from trillion.scheduler.when import WhenError, next_after
+from trillion.spend.gate import SpendCapped
+from trillion.spend.types import Work
 from trillion.spine.clock import Clock
 
 logger = logging.getLogger(__name__)
@@ -70,6 +78,20 @@ class NoModel(Exception):
 class Busy(Exception):
     """A page is open on the routine's conversation and her turn is running there. The
     run waits, blocked, for a later tick: two writers would interleave its history."""
+
+
+class Capped(Exception):
+    """Her model refused the run at its hard spend cap. Skipped, never failed."""
+
+    def __init__(self, provider_id: str | None) -> None:
+        super().__init__("capped")
+        self.provider_id = provider_id
+
+
+# A run not made because its model is at its hard spend cap: the run log's reason.
+CAPPED = "capped"
+# A run that had begun when its model reached the hard cap: failed, with this reason.
+CAPPED_MIDWAY = "stopped partway: its model reached the spend cap"
 
 
 class AskFailed(Exception):
@@ -160,6 +182,7 @@ class Scheduler:
         door: DoorLike,
         *,
         routines: Routines | None = None,
+        held: Callable[[Work], Awaitable[bool]] | None = None,
         tick_s: float = TICK_S,
         ask_timeout_s: float = ASK_TIMEOUT_S,
         routine_timeout_s: float = ROUTINE_TIMEOUT_S,
@@ -170,6 +193,8 @@ class Scheduler:
         self._run_ask = run_ask
         self._door = door
         self._routines = routines
+        # Whether her model is at its hard spend cap, so this kind of work waits.
+        self._held = held
         self.tick_s = tick_s
         self._ask_timeout_s = ask_timeout_s
         self._routine_timeout_s = routine_timeout_s
@@ -356,6 +381,9 @@ class Scheduler:
         if now - run.due_ms > ASK_WINDOW_MS:
             await self._notice(run, s, "missed", None, "missed", "more than an hour late")
             return
+        if self._held is not None and await self._held("routines" if s.target else "asks"):
+            await self._capped(run, s)
+            return
         if s.target is not None:
             await self._routine(run, s, late)
             return
@@ -376,6 +404,8 @@ class Scheduler:
         try:
             async with limit:
                 return await work()
+        except (Capped, SpendCapped):
+            await self._capped(run, s)
         except NoModel:
             await self._store.block(run.id, self._clock(), "no model")
         except Busy:
@@ -390,6 +420,12 @@ class Scheduler:
             logger.warning("timed ask %s failed: %s", s.id, type(e).__name__)
             await self._notice(run, s, "failed", None, "failed", type(e).__name__)
         raise _Handled
+
+    async def _capped(self, run: Run, s: Schedule) -> None:
+        """Not run at a hard spend cap: skipped, and nobody told but the one notice the
+        spend desk gives."""
+        logger.info("schedule %s not run: its model is at its spend cap", s.id)
+        await self._store.finish(run.id, "skipped", self._clock(), detail=CAPPED)
 
     async def _routine(self, run: Run, s: Schedule, late: bool) -> None:
         """Run a routine where it lands, and tell the user only when there is

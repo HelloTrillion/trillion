@@ -4,7 +4,7 @@ import './app.css';
 import { type Inline, parse } from './format';
 import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
 import { type Choice, createFolderPanel, createShares, createSharedFolders, footText, loadRoutines, parseFrame } from './folders';
-import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, matches } from './hotkey';
+import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, enterInField, matches } from './hotkey';
 import * as desktop from './desktop';
 import { icon } from './icons';
 import { createConnected } from './connected';
@@ -67,7 +67,8 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { type Usage, fetchUsage, pill, sentence } from './usage';
+import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
+import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
@@ -151,6 +152,15 @@ function takeToken(): string | null {
 const canvas = $<HTMLCanvasElement>('galaxy');
 const statusEl = $('status');
 const bannerEl = $('banner');
+// Under the banner: a switch made at a spend cap while it lasts, then any spend card,
+// one put off with "stop for now" kept there as a line to choose again from (BRN-8).
+const switchEl = document.createElement('div');
+switchEl.className = 'spend';
+const spendEl = document.createElement('div');
+spendEl.className = 'spend';
+bannerEl.after(switchEl, spendEl);
+// Its api is read when a button is pressed, long after the page has set it up.
+const switchLines = createSwitchLines(switchEl, (method, path, body) => api(method, path, body));
 const transcriptEl = $('transcript');
 const form = $<HTMLFormElement>('ask');
 const input = $<HTMLTextAreaElement>('input');
@@ -601,8 +611,11 @@ function entries(): readonly Entry[] {
   return merged.entries;
 }
 
-function send(body: Record<string, unknown>): void {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(body));
+/** Write to the core on this page's socket. False when it is not open, so nothing went. */
+function send(body: Record<string, unknown>): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(body));
+  return true;
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────
@@ -813,12 +826,15 @@ function render(): void {
   desktop.reportState(desktop.orbState(orbShown), captionOf(view));
 
   const noModel = ready && view.model === null;
+  // A spend card says its line itself: the banner does not say it again.
+  const bannerLine = view.banner && !spendCards.has(view.banner) ? view.banner : '';
   const banner =
     linkText ||
-    view.banner ||
+    bannerLine ||
     (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model in Settings to get started.' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
+  drawSwitches();
 
   // Introductions need no model: the app writes the names, not her.
   const canType = ready && (!noModel || introducing);
@@ -1080,13 +1096,32 @@ async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
   usageBtn.hidden = usage === null;
   if (usage) {
+    // Amber near or over a soft cap, red at a hard one; the words name the provider and cap.
+    const at = pillState(usage);
+    usageBtn.classList.toggle('warned', at.state === 'warned');
+    usageBtn.classList.toggle('capped', at.state === 'capped');
     usageBtn.textContent = pill(usage);
-    usageBtn.title = sentence(usage);
-    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${sentence(usage)}`);
+    usageBtn.title = at.title || sentence(usage);
+    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${sentence(usage)}${at.note ? ` ${at.note}` : ''}`);
   }
+  // Raised in Settings, not on the card: nothing is capped now, so the calm stop is over.
+  if (usage?.providers && view.capped && !usage.providers.some((p) => p.state === 'capped')) apply({ ...view, capped: false });
+  drawSwitches();
   return usage;
 }
-const usageSettings = createUsageSettings(panel.host('usage'), refreshUsage);
+const usageSettings = createUsageSettings(panel.host('usage'), refreshUsage, api);
+// A spend card's choice goes on this page's own socket, and only from a click (SPN-14).
+/** Each switch in force, with whether its usual provider is still at its cap. */
+function drawSwitches(): void {
+  switchLines.render(view.link === 'ready' ? view.switches : [], (pid) => {
+    const p = usage?.providers?.find((x) => x.provider_id === pid);
+    return { name: p?.name ?? 'the usual one', capped: p?.state === 'capped' };
+  });
+}
+const spendCards = createSpendCards(spendEl, (body) => send(body), undefined, (card, status) => {
+  // Raised on a provider that has a switch: the banner asks whether to go back now.
+  if (status === 'raised') switchLines.raised(card.provider_id);
+});
 const HER = 'Her';
 const YOU = 'You';
 const COMPUTER = 'This computer';
@@ -1099,7 +1134,7 @@ panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
-panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
+panel.add({ id: 'usage', label: 'Usage and limits', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
@@ -1520,6 +1555,12 @@ function connect(): void {
       if (reveal.unhide) sidebar.setHidden(false);
       if (reveal.raise) sidebar.raise(reveal.raise);
     }
+    // At a spend limit the card must be seen too, as an approval's is: on a phone the sheet rises.
+    if (spendReveals(msg)) {
+      const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
+      if (reveal.unhide) sidebar.setHidden(false);
+      if (reveal.raise) sidebar.raise(reveal.raise);
+    }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
@@ -1634,6 +1675,10 @@ function connect(): void {
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     // Whether a turn was running before this message, for an error that ends Home's build.
     const busyBefore = view.busy;
+    if (msg.type === 'session' || msg.type.startsWith('spend.')) spendCards.handle(msg);
+    // At her voice's cap the app's line may be said in the computer's own voice.
+    speakCapped(msg, view.speech === null);
+    if (msg.type === 'spend.resolved' || (msg.type === 'error' && msg['code'] === 'capped')) void refreshUsage();
     apply(reduce(view, msg));
     // A routine finished somewhere else: its conversation is marked until opened.
     const built = unreadFor(msg, view);
@@ -1844,6 +1889,8 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev?: KeyboardEvent): void 
 }
 
 addEventListener('keydown', (ev) => {
+  // Enter in a field (a limit, a raise, a search) is that field's own: never a page shortcut.
+  if (ev.key === 'Enter' && enterInField(ev.target, input)) return;
   // One order for Escape (escapeAction). The thread list keeps only the Escapes it uses itself.
   if (ev.key === 'Escape') {
     const action = escapeAction({

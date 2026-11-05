@@ -43,6 +43,7 @@ from trillion.attention.runner import JSON, Find, Said, WatchContext
 from trillion.attention.settings import AttentionSettings
 from trillion.brain.types import Done, Msg, SystemBlock, TextBlock, TextDelta, Usage
 from trillion.connectors.google.client import GoogleCallError
+from trillion.spend.gate import SpendCapped
 
 if TYPE_CHECKING:
     from trillion.connectors.google.connection import GoogleConnection
@@ -375,6 +376,9 @@ class UrgentEmail:
 
         try:
             await asyncio.wait_for(ask(), self._timeout)
+        except SpendCapped:
+            # Not judged, and not judged silent: the runner gives these back for later.
+            raise
         except Exception as e:
             logger.info("email: not judged: %s", type(e).__name__)
             return Said(text=None, told=(), usage=usage)

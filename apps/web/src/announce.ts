@@ -4,11 +4,14 @@
  * carries the same news. Pure, so every case can be tested; only used while hidden,
  * so nothing is announced twice.
  */
-import { STATE_TEXT, type View } from './view';
+import { CAPPED_TEXT, STATE_TEXT, type View } from './view';
 
 /** The words in the sidebar's status. */
 export function statusText(view: View): string {
-  if (view.link === 'ready') return view.noticeSpeaking ? 'Speaking' : STATE_TEXT[view.orb];
+  if (view.link === 'ready') {
+    if (view.noticeSpeaking) return 'Speaking';
+    return view.capped && view.orb === 'idle' ? CAPPED_TEXT : STATE_TEXT[view.orb];
+  }
   return view.link === 'connecting' ? 'Connecting' : 'Offline';
 }
 

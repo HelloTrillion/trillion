@@ -32,6 +32,9 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Speaking up: the spoken notice | ✓ | ✓ | ✓ | while a page is open | ✓, with the floating orb |
 | Speaking up: mic probe | ✓ macOS 14.2+ | ✓ | ✓ with `pactl` (PulseAudio 16+ or `pipewire-pulse`) or `pw-dump` | ✓, except a call in the same browser | ✓, except a call in a WebKit app |
 | Speaking up: Focus probe | best effort, mostly can't tell | can't tell | ✓ GNOME, and desktops that report Do Not Disturb | as the OS | as the OS |
+| Spend caps: the gate, prices, paused background work | ✓ | ✓ | ✓ | ✓ (server-side) | ✓ |
+| Spend caps: the pill, Usage and limits, the card at the cap | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Spend caps: the spoken line at the cap | ✓ | ✓ | ✓ | while a page is open, with voice on | ✓ |
 | Shared folders: shares, the card, Settings | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Shared folders: the folder browser | ✓ | ✓ | ✓ | ✓ (drawn by the page from the server's listing) | ✓ |
 | Shared folders: the system folder picker | — | — | — | not available | ✓ `NSOpenPanel` |

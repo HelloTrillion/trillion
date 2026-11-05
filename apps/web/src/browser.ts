@@ -10,7 +10,8 @@ import type { Host } from './panel';
 import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
 import type { Detail, Theme } from './prefs';
-import { type Usage, breakdown, sentence } from './usage';
+import { createProviderBlocks } from './spend';
+import { type Usage, UNCOUNTED_BEFORE_CAPS, breakdown, sentence } from './usage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -425,30 +426,39 @@ export function createBoardSettings(
 
 // ── API usage ────────────────────────────────────────────────────────────
 
-export function createUsageSettings(host: Host, load: () => Promise<Usage | null>): { open(): Promise<void> } {
+export function createUsageSettings(host: Host, load: () => Promise<Usage | null>, api: Api): { open(): Promise<void> } {
   const { finish } = section(
     host,
     'usage',
-    'API usage',
-    'What the model providers report for this month so far. A model without prices counts tokens only. Voice services are not counted yet.',
+    'Usage and limits',
+    'You pay each service directly. Trillion warns you at the first amount and stops using that service at the second, until you raise it or the month ends.',
   );
   const list = el('ul', 'settings-list');
   const total = el('p', 'settings-hint');
-  finish(list, total);
+  const byModel = el('details', 'spend-more');
+  byModel.append(el('summary', '', 'Details by model'), list, total);
+  // Shown only on an install whose upgrade month had use no cap counts.
+  const before = el('div');
+  function rows(u: Usage | null): void {
+    if (!u) return;
+    before.replaceChildren(...(u.uncounted_before_caps ? [el('p', 'settings-hint', UNCOUNTED_BEFORE_CAPS)] : []));
+    const found = breakdown(u);
+    list.replaceChildren(
+      ...(found.length
+        ? found.map((r) => {
+            const item = el('li', 'settings-path', r.name);
+            item.append(el('br'), el('span', 'settings-hint', r.detail));
+            return item;
+          })
+        : [el('li', 'settings-empty', 'Nothing yet this month.')]),
+    );
+    total.textContent = sentence(u);
+  }
+  const blocks = createProviderBlocks(api, load, rows);
+  finish(blocks.element, before, byModel);
   return {
     async open() {
-      const u = await load();
-      const rows = u ? breakdown(u) : [];
-      list.replaceChildren(
-        ...(rows.length
-          ? rows.map((r) => {
-              const item = el('li', 'settings-path', r.name);
-              item.append(el('br'), el('span', 'settings-hint', r.detail));
-              return item;
-            })
-          : [el('li', 'settings-empty', u ? 'Nothing yet this month.' : 'Usage could not be read right now.')]),
-      );
-      total.textContent = u ? sentence(u) : '';
+      await blocks.open();
       host.showModal();
     },
   };

@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Concatenate, Literal, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
 from trillion import __version__
@@ -47,14 +48,12 @@ from trillion.brain.loop import (
 )
 from trillion.brain.types import (
     ContextBlock,
-    ModelProvider,
     Msg,
     ProviderError,
     TextBlock,
     ToolResultBlock,
     ToolUse,
     ToolUseBlock,
-    Usage,
 )
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
 from trillion.delivery import door as delivery
@@ -64,6 +63,7 @@ from trillion.persona import day
 from trillion.persona.prompt import (
     JobNote,
     PendingNote,
+    capped,
     compaction,
     degraded,
     greeting,
@@ -71,6 +71,10 @@ from trillion.persona.prompt import (
 )
 from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
 from trillion.scheduler.store import https_link
+from trillion.spend import desk as spend
+from trillion.spend.caller import as_caller
+from trillion.spend.gate import VoiceCapped
+from trillion.spend.types import Caller, Work
 from trillion.spine import labels
 from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
@@ -126,6 +130,34 @@ ROUTINE_BUILDING = "routine_building"
 DAY_BUILD_SHOWN = "Building your day"
 __all__ = ["OUT_OF_TURN", "PROTOCOL", "Session"]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _calls_as(
+    caller: Caller,
+    work: Work | None = None,
+) -> Callable[
+    [Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]]],
+    Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]],
+]:
+    """Every paid call made inside the method counts as `caller`, for this session's
+    conversation (BRN-7), and so does every task it starts. On each way into the
+    session, since some (a notice the door hands over, a turn it begins) start on a
+    task of someone else's."""
+
+    def wrap(
+        method: Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]],
+    ) -> Callable[Concatenate[Session, _P], Coroutine[Any, Any, _R]]:
+        @functools.wraps(method)
+        async def run(session: Session, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+            with as_caller(caller, session.id, work=work):
+                return await method(session, *args, **kwargs)
+
+        return run
+
+    return wrap
 
 
 @dataclass(kw_only=True)
@@ -507,6 +539,8 @@ class BuiltInput:
     via: Literal["voice", "text", "ask"] = "text"
     # The host note on where the folder browser is that rode with it, if any.
     folder_note: str | None = None
+    # The spend notes that rode with it (a soft cap passed, a switch ended): said once.
+    spend_notes: tuple[str, ...] = ()
 
 
 # Where a page can say it runs, in its hello. Anything else is "other".
@@ -767,6 +801,16 @@ class Session:
                 await session._send("jobs", count=running)
             for a in await session._open_actions():
                 await session._send_card(a.id)
+            # A spend card still to be answered, with its choices as they are now, and a
+            # switch in force, for the banner. A switch made for a month now over ends
+            # first.
+            await session._spend_tick()
+            for card in rt.spend.cards_for(session.id):
+                card = await session._fresh_card(card)
+                await session._send("spend.card", **card.to_page())
+            banner = rt.spend.banner()
+            if banner:
+                await session._send("spend.switch", switches=banner)
             session._started = True
             await session._state("idle")
         except BaseException:
@@ -936,12 +980,12 @@ class Session:
 
     def _speech(self) -> dict[str, Any] | None:
         rt = self._rt
-        s = rt.speech
+        s = rt.speech_used
         return describe(rt.tts, s.kind if s else None, s.voice if s else None)
 
     def _listening(self) -> dict[str, Any] | None:
         rt = self._rt
-        s = rt.listening
+        s = rt.listening_used
         return listening.describe(rt.stt, s.kind if s else None, s.choice if s else None)
 
     async def settings_changed(self) -> None:
@@ -1057,6 +1101,7 @@ class Session:
 
     # ── Incoming messages ────────────────────────────────────────────────
 
+    @_calls_as("conversation")
     async def handle(self, msg: Mapping[str, Any]) -> None:
         if self._closed:
             return
@@ -1136,6 +1181,8 @@ class Session:
                 await self._conclude("end")
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
+        elif kind == "spend.choice":
+            await self._on_spend_choice(msg)
         elif kind == "greet":
             await self._on_greet()
         elif kind == "day.build":
@@ -1388,18 +1435,20 @@ class Session:
         running = task is not None and not task.done() and task is not self._notice_task
         if (
             rt.stt is None
-            or rt.listening is None
+            or rt.listening_used is None
             or not rt.stt.turns
             or rt.provider is None
             or self._listener is not None
             or not (running or self._tail is not None)
+            # Hearing at its cap is not tried while she talks (BRN-8).
+            or self._hearing_held()
         ):
             await self._barge_instead()
             return
         tail = self._tail[0] if self._tail is not None else None
         # Nothing heard is shown until it turns out to be the user's turn, and no
         # draft starts from it: her reply must stay as it is until then.
-        listener = Listener(rt.stt, rt.listening.choice, on_partial=self._unshown)
+        listener = Listener(rt.stt, rt.listening_used.choice, on_partial=self._unshown)
         ov = Overlap(listener=listener, started=self._now(), speaker=self._speaker or tail)
         self._overlap = ov
         try:
@@ -1727,7 +1776,7 @@ class Session:
         unheard = self._spoken is not None and self._spoken[0] != self._played
         if (
             rt.stt is None
-            or rt.listening is None
+            or rt.listening_used is None
             or not rt.stt.turns
             or not rt.stt.word_times
             or rt.provider is None
@@ -1737,8 +1786,10 @@ class Session:
             or rt.tts is None
             # Her echo is told apart by her own audio: a voice the page makes has none.
             or rt.tts.where != "core"
-            or rt.speech is None
+            or rt.speech_used is None
             or not (running or self._tail is not None or unheard)
+            # Hearing at its cap is not tried while she talks (BRN-8).
+            or self._hearing_held()
         ):
             await self._send("overlap.over", end=True)
             return
@@ -1749,7 +1800,7 @@ class Session:
             wake.set()  # judged at once, not at the next tick
 
         # Nothing heard is shown, and no draft starts from it.
-        listener = Listener(rt.stt, rt.listening.choice, on_partial=heard, watch=True)
+        listener = Listener(rt.stt, rt.listening_used.choice, on_partial=heard, watch=True)
         now = self._now()
         # Her reply on this listener's clock: the one playing, or, before her voice
         # starts, the one coming.
@@ -1951,7 +2002,7 @@ class Session:
         rt = self._rt
         if self._listener is not None or self._overlap is not None:
             return
-        if rt.stt is None or rt.listening is None:
+        if rt.stt is None or rt.listening_used is None:
             if not follow_up:
                 await self._error("no_listening")
         elif rt.provider is None:
@@ -1961,11 +2012,15 @@ class Session:
         elif await self._routine_building():
             # Before the microphone opens: no words heard, no draft paid for, all refused.
             return
+        elif follow_up and self._hearing_held():
+            # At its cap, the microphone does not reopen by itself (BRN-8): the user can
+            # still press it, and hears why.
+            return
         else:
             self._spoken = None
             listener = Listener(
                 rt.stt,
-                rt.listening.choice,
+                rt.listening_used.choice,
                 on_partial=self._partial,
                 patience_s=patience_s,
                 on_turn=self._turn_signal,
@@ -1990,6 +2045,9 @@ class Session:
             await self._send("mic.start", follow_up=follow_up, **({"quiet": True} if quiet else {}))
             try:
                 await listener.start()
+            except VoiceCapped as e:
+                await self._listening_capped(e)
+                return
             except VoiceError as e:
                 await self._listening_failed(e.kind)
                 return
@@ -2000,6 +2058,7 @@ class Session:
                 # Closed while it connected: nobody will close it otherwise.
                 await listener.abandon()
 
+    @_calls_as("conversation")
     async def audio(self, pcm: bytes) -> None:
         """A binary frame from the page: microphone audio, 16 kHz mono PCM16 (VOI-1)."""
         ov = self._overlap
@@ -2053,18 +2112,42 @@ class Session:
         await self._hearing_down(kind)
         await self._state(self._rest)
 
+    async def _listening_capped(self, e: VoiceCapped) -> None:
+        """Hearing is at its hard cap: the microphone stops, she says why, aloud if her
+        voice works, and the card offers what can be done (BRN-8). Typing still works."""
+        logger.warning("listening at its cap in session %s", self.id)
+        await self._stop_listening()
+        await self._send("mic.stop", reason="failed")
+        line = self._capped_line("hearing", e.provider_id)
+        await self._spend_capped("hearing", e.provider_id, line)
+        await self._say_line(line)
+        await self._state(self._rest)
+
+    @_calls_as("conversation")
     async def _hearing_down(self, kind: str) -> None:
         """She cannot hear: say so in one sentence, aloud if her voice works (VOI-14)."""
         said = degraded("hearing", kind)
         await self._error("listening", kind=kind, sentence=said)
+        await self._say_line(said)
+
+    @_calls_as("conversation")
+    async def _say_line(self, said: str) -> None:
+        """One sentence of the app's, outside a turn, aloud if her voice works."""
         rt = self._rt
-        if rt.tts is None or rt.speech is None or self._muted:
+        if rt.tts is None or rt.speech_used is None or self._muted or self._voice_held():
             return
         # Not a spoken turn any more: the end of this sentence must not reopen the
         # microphone that just failed, or one fault would repeat itself forever.
         self._via = "text"
         heard_as = rt.out_of_turn()
-        speaker = Speaker(rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes)
+        speaker = Speaker(
+            rt.tts,
+            rt.speech_used.voice,
+            heard_as,
+            self._send,
+            self._send_bytes,
+            on_capped=self._voice_capped,
+        )
         self._saying = True
         try:
             await speaker.feed(said)
@@ -2291,6 +2374,7 @@ class Session:
     def _begin(self, *, follow_up: bool = False) -> None:
         self._task = asyncio.create_task(self._run(follow_up=follow_up))
 
+    @_calls_as("conversation")
     async def _run(self, *, follow_up: bool = False) -> None:
         """Turns, one after another, until nothing is waiting.
 
@@ -2388,6 +2472,8 @@ class Session:
 
     async def _one_turn(self) -> None:
         rt = self._rt
+        # A switch whose time has passed ends before the turn takes its model (BRN-8).
+        await self._spend_tick()
         # The turn she acts in is fixed when it starts. Nothing that happens while she
         # works, a tap least of all, can move her into a later one.
         turn = self._turn
@@ -2404,7 +2490,12 @@ class Session:
         self._ended_early = False
         self._quiet = self._quiet_turn = self._quiet_watch = None
         self._playing = None
-        if rt.tts is not None and rt.speech is not None and not self._muted:
+        if (
+            rt.tts is not None
+            and rt.speech_used is not None
+            and not self._muted
+            and not self._voice_held()
+        ):
             # A turn's number is heard once: a tap's answer in the same turn gets its own,
             # or the page's "played" for the first would pass for it (VOI-17).
             heard_as = rt.out_of_turn() if self._voiced == turn else turn
@@ -2418,7 +2509,13 @@ class Session:
                 tl.sentence(seq, written=written, spoken=spoken, levels=levels, at_s=at)
 
             speaker = Speaker(
-                rt.tts, rt.speech.voice, heard_as, self._send, self._send_bytes, on_audio
+                rt.tts,
+                rt.speech_used.voice,
+                heard_as,
+                self._send,
+                self._send_bytes,
+                on_audio,
+                on_capped=self._voice_capped,
             )
         self._speaker = speaker
         # With no voice there is nothing to be heard, so no "played" is this turn's.
@@ -2532,8 +2629,14 @@ class Session:
             written = True
             # The model failed: her one sentence for it, spoken if her voice still works
             # and shown either way (VOI-14). Authored, since there is nobody to compose it.
+            # At its hard cap the line says which cap (BRN-8); what was written before the
+            # refusal is already saved, and is spoken before it.
+            at_cap = done.stop == "provider_error" and done.error_kind == "capped"
+            capped_pid = getattr(provider, "provider_id", None) if at_cap else None
             down = (
-                degraded("model", done.error_kind or "other")
+                self._capped_line("model", capped_pid)
+                if capped_pid is not None
+                else degraded("model", done.error_kind or "other")
                 if done.stop == "provider_error"
                 else None
             )
@@ -2547,19 +2650,8 @@ class Session:
                 # Written and saved, but still to be heard: kept in case she is talked
                 # over while it plays.
                 self._tail = (speaker, reply_id)
-            # Recorded before her last words are voiced: the model's work is done and
-            # paid for even if she is talked over while they play.
-            await asyncio.shield(
-                rt.conversations.record_usage(
-                    owner_id=OWNER,
-                    conversation_id=self.id,
-                    provider=provider.name,
-                    model=provider.model,
-                    usage=done.usage,
-                    cost_usd=done.cost_usd,
-                    now_ms=rt.clock(),
-                )
-            )
+            # Each model call of the turn was recorded as it ended, by the metered
+            # provider (BRN-7).
             if speaker is not None:
                 if down is not None:
                     await speaker.pause()
@@ -2568,7 +2660,10 @@ class Session:
                 self._spoken = (heard_as, rt.clock())
             if timeline is not None:
                 timeline.finish()
-            if down is not None:
+            if down is not None and capped_pid is not None:
+                final = "error"
+                await self._spend_capped("model", capped_pid, down)
+            elif down is not None:
                 final = "error"
                 await self._error("provider", kind=done.error_kind, sentence=down)
             elif done.stop == "quiet":
@@ -2591,6 +2686,8 @@ class Session:
                     "cache_write_tokens": u.cache_write_tokens,
                 },
             )
+            # A provider this turn took to its warning is said once, through the door.
+            await self._spend_warn()
         except asyncio.CancelledError:
             if timeline is not None:
                 timeline.stop(at_s=self._clock_now())
@@ -2824,15 +2921,20 @@ class Session:
             return None
         return said, Msg(role="assistant", blocks=(TextBlock(text=answer),))
 
+    # Her naming the conversation is the title writer's, which nobody waits on.
+    @_calls_as("background", work="titles")
     async def _name(self, said: Msg, reply: Msg) -> None:
         rt = self._rt
-        provider = rt.provider
+        # Background work: the usual model, never a switch (`background_provider`).
+        provider = rt.background_provider
         if provider is None:
             return
-        named, usage = await naming.name(provider, [said, reply])
+        if await rt.held("titles"):
+            # At the hard spend cap: the first-words title stays, and nothing is said.
+            return
+        # Its call is recorded by the metered provider, even if the session closes.
+        named, _usage = await naming.name(provider, [said, reply])
         try:
-            # Recorded even if the session closes meanwhile: the call was paid for.
-            await asyncio.shield(self._record_usage(provider, usage))
             if named is None:
                 return
             if await rt.conversations.set_title(self.id, OWNER, named, "model"):
@@ -2859,6 +2961,7 @@ class Session:
             await self._drop_draft()
             await self._start_draft(text)
 
+    @_calls_as("conversation")
     async def _start_draft(self, words: str) -> None:
         """Her first call for these words, sent exactly as the confirmed turn would
         send it, and held. Nothing is saved, shown, said or run.
@@ -2932,27 +3035,10 @@ class Session:
         await self._let_go(using)
 
     async def _let_go(self, draft: Draft) -> None:
-        """Stop a draft nobody will replay, and count what it cost. A provider reports
-        usage at the end of a call, so one stopped before then counts as nothing."""
+        """Stop a draft nobody will replay. What it cost was recorded by the metered
+        provider when its call ended (BRN-7): a provider reports usage at the end of a
+        call, so one stopped before then counts as nothing."""
         await draft.cancel()
-        # The model it asked, which may no longer be the one in use.
-        if draft.provider is not None:
-            await self._record_usage(draft.provider, draft.usage())
-
-    async def _record_usage(self, provider: ModelProvider, usage: Usage) -> None:
-        """Count a side call's cost against this conversation, unless it used nothing."""
-        if usage == Usage():
-            return
-        pricing = provider.pricing()
-        await self._rt.conversations.record_usage(
-            owner_id=OWNER,
-            conversation_id=self.id,
-            provider=provider.name,
-            model=provider.model,
-            usage=usage,
-            cost_usd=pricing.cost(usage) if pricing is not None else None,
-            now_ms=self._rt.clock(),
-        )
 
     # ── Timing (ONB-11) ──────────────────────────────────────────────────
 
@@ -2994,8 +3080,10 @@ class Session:
             first_in_session=self._timed == 0,
             provider=provider.name if provider is not None else "",
             model=provider.model if provider is not None else "",
-            voice=rt.speech.kind if voiced and rt.speech is not None else None,
-            ears=rt.listening.kind if trace.via == "voice" and rt.listening is not None else None,
+            voice=rt.speech_used.kind if voiced and rt.speech_used is not None else None,
+            ears=rt.listening_used.kind
+            if trace.via == "voice" and rt.listening_used is not None
+            else None,
             stop=stop,
         )
         self._timed += 1
@@ -3140,7 +3228,7 @@ class Session:
         model for its first word sooner. Fixed for the session unless her voice is
         turned on or off, so the cached conversation is not reset turn by turn."""
         rt = self._rt
-        return rt.tts is not None and rt.speech is not None and not self._muted
+        return rt.tts is not None and rt.speech_used is not None and not self._muted
 
     def _between_turns(self) -> bool:
         """Nothing is reading the history: no turn, no input being taken, no draft."""
@@ -3222,6 +3310,7 @@ class Session:
         if written is not None:
             await self._put_in_place(written)
 
+    @_calls_as("conversation")
     async def _summarize(self, timeout: float) -> _Written | None:
         """Notes on the oldest turns of the history as it is now, or None if it needs
         none or they could not be written. Changes nothing but what was paid for."""
@@ -3242,8 +3331,7 @@ class Session:
             self._compact_failed_at = compact.estimate(self._history)
             return None
         self._compact_failed_at = None
-        # Paid for whether or not it is put in place.
-        await self._record_usage(provider, summary.usage)
+        # Paid for whether or not it is put in place: the metered provider recorded it.
         return _Written(summary=summary, ids=ids, previous=previous)
 
     def _still_fits(self, written: _Written) -> bool:
@@ -3337,6 +3425,10 @@ class Session:
         folder_note = self._folder_note
         if folder_note is not None:
             notes = (*notes, ContextBlock(text=folder_note))
+        # A soft cap passed, or a switch ended: told once, in her own words (PER-11).
+        await self._spend_tick()
+        spend_notes = self._rt.spend.notes(self._in_use())
+        notes = (*notes, *(ContextBlock(text=note) for _, note in spend_notes))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
         return BuiltInput(
             msg=Msg(role="user", blocks=blocks),
@@ -3344,6 +3436,7 @@ class Session:
             brought=brought,
             via=via,
             folder_note=folder_note,
+            spend_notes=tuple(key for key, _ in spend_notes),
         )
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
@@ -3360,6 +3453,11 @@ class Session:
             # never an ask's words, which she wrote and a page could have chosen.
             self._rt.web.ledger.said(self.id, built.text)
         await self._save(kind, built.msg)
+        if built.spend_notes:
+            try:
+                await self._rt.spend.said(built.spend_notes)
+            except Exception as e:
+                logger.warning("spend note not marked in session %s: %s", self.id, type(e).__name__)
         if kind == "user" and self._title_source is None:
             await self._show_first_words()
 
@@ -3539,7 +3637,7 @@ class Session:
                 # The page's only: never spoken, never saved as her message.
                 detail=n.detail,
             )
-        if said and rt.tts is not None and rt.speech is not None and not self._muted:
+        if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:
                 self._task = self._notice_task = asyncio.create_task(self._say_notices(said))
 
@@ -3565,18 +3663,26 @@ class Session:
             raise
         self._ids.extend(ids)
 
+    @_calls_as("conversation")
     async def _say_notices(self, said: list[str]) -> None:
         """Her words for the notices, through the normal speech path. Runs as the
         session's task, so nothing else starts over it, and "stop" stops it."""
         rt = self._rt
-        if rt.tts is None or rt.speech is None:  # pragma: no cover - checked by deliver
+        if rt.tts is None or rt.speech_used is None:  # pragma: no cover - checked by deliver
             self._task = None
             return
         turn = rt.out_of_turn()
         # Not a spoken turn: when she has said it, the microphone stays closed.
         self._via = "text"
         self._listen_after = False
-        speaker = Speaker(rt.tts, rt.speech.voice, turn, self._send, self._send_bytes)
+        speaker = Speaker(
+            rt.tts,
+            rt.speech_used.voice,
+            turn,
+            self._send,
+            self._send_bytes,
+            on_capped=self._voice_capped,
+        )
         try:
             await self._state("speaking", notice=True)
             for text in said:
@@ -3599,6 +3705,141 @@ class Session:
 
     async def _error(self, code: str, **extra: Any) -> None:
         await self._send("error", code=code, **extra)
+
+    # ── At the spend caps (BRN-7, BRN-8) ─────────────────────────────────
+
+    async def _spend_tick(self) -> None:
+        try:
+            await self._rt.spend_tick()
+        except Exception as e:
+            # The switch stays as it was, and is looked at again next turn.
+            logger.warning("spend switch not checked in session %s: %s", self.id, type(e).__name__)
+
+    def _held(self, provider: object) -> bool:
+        """A leg at its hard cap that this conversation was already told of: it is
+        not tried again until the card is answered or the cap lifts."""
+        pid = getattr(provider, "provider_id", None)
+        rt = self._rt
+        return (
+            pid is not None
+            and rt.gate.state(pid) == "capped"
+            and rt.spend.standing(self.id, pid) is not None
+        )
+
+    def _voice_held(self) -> bool:
+        return self._held(self._rt.tts)
+
+    def _hearing_held(self) -> bool:
+        return self._held(self._rt.stt)
+
+    def _capped_line(self, leg: spend.Leg, provider_id: str) -> str:
+        caps = self._rt.gate.caps(provider_id)
+        cap = spend.cap_words(float(caps.hard or 0.0), caps.unit)
+        return capped(leg, spend.friendly(provider_id), cap)
+
+    async def _spend_options(self, leg: spend.Leg, provider_id: str) -> list[dict[str, Any]]:
+        """What the card at this cap offers: a raise, what can be switched to until the
+        1st, and putting it off."""
+        rt = self._rt
+        desk = rt.spend
+        out = [desk.raise_option(provider_id)]
+        if leg == "model":
+            for pid, settings in await rt.model_choices(provider_id):
+                out.append(
+                    desk.switch_option(
+                        f"{pid}/{settings.model}", settings.model, settings.to_json(), pid
+                    )
+                )
+        elif leg == "voice":
+            out.append(desk.switch_option("system", "the computer's voice"))
+        else:
+            choice = await rt.whisper_ready()
+            if choice is not None:
+                out.append(desk.switch_option("whisper", "local Whisper", {"choice": choice}))
+        out.append(desk.stop_option(leg))
+        return out
+
+    async def _spend_capped(self, leg: spend.Leg, provider_id: str, line: str) -> None:
+        """The app's one line in the banner, then the card (BRN-8). Her voice capped,
+        the line is not hers to say: the page may say it in the computer's voice."""
+        rt = self._rt
+        caps = rt.gate.caps(provider_id)
+        await self._error(
+            "capped",
+            leg=leg,
+            provider_id=provider_id,
+            cap=caps.hard,
+            unit=caps.unit,
+            sentence=line,
+            # Muted, nothing is said aloud, in any voice.
+            **({"say": "system"} if leg == "voice" and not self._muted else {}),
+        )
+        try:
+            card = await rt.spend.card(
+                self.id, leg, provider_id, line, await self._spend_options(leg, provider_id)
+            )
+        except Exception as e:
+            # The line was shown; the card comes with the next refusal.
+            logger.warning("spend card not made in session %s: %s", self.id, type(e).__name__)
+            return
+        await self._send("spend.card", **card.to_page())
+
+    async def _fresh_card(self, card: spend.Card) -> spend.Card:
+        """A shown card with its choices as they are now: a model capped since it was
+        made is no longer offered, and the raise steps from the cap as it is now."""
+        rt = self._rt
+        options = await self._spend_options(card.leg, card.provider_id)
+        return await rt.spend.card(self.id, card.leg, card.provider_id, card.line, options)
+
+    async def _on_spend_choice(self, msg: Mapping[str, Any]) -> None:
+        """A tap on a spend card (BRN-8). Like a tap on an approval card (SPN-14), it is
+        taken only as this page's own act: the session it came on and "tap" are the
+        server's to say, never the message's."""
+        card_id, choice, amount = msg.get("id"), msg.get("choice"), msg.get("amount")
+        if (
+            not isinstance(card_id, str)
+            or not card_id
+            or not isinstance(choice, str)
+            or not choice
+            or (
+                amount is not None
+                and (isinstance(amount, bool) or not isinstance(amount, int | float))
+            )
+        ):
+            await self._error("bad_message")
+            return
+        self.active_ms = self._rt.clock()
+        async with self._taking_input():
+            await self._spend_chosen(card_id, choice, amount)
+
+    async def _spend_chosen(self, card_id: str, choice: str, amount: float | None) -> None:
+        rt = self._rt
+        found = next((c for c in rt.spend.cards_for(self.id) if c.id == card_id), None)
+        options = None
+        if found is not None:
+            # Judged against what the card would offer now, not when it was shown.
+            options = await self._spend_options(found.leg, found.provider_id)
+        try:
+            await rt.spend.choose(card_id, choice, amount, self.id, "tap", options)
+        except spend.Refused as e:
+            await self._send("spend.refused", id=card_id, code=e.code)
+        except Exception as e:
+            # The page waits on an answer: it hears this one failed, and may try again.
+            logger.warning("spend choice failed in session %s: %s", self.id, type(e).__name__)
+            await self._send("spend.refused", id=card_id, code="failed")
+
+    async def _voice_capped(self, e: VoiceCapped) -> None:
+        await self._spend_capped("voice", e.provider_id, self._capped_line("voice", e.provider_id))
+
+    def _in_use(self) -> list[str | None]:
+        rt = self._rt
+        return [getattr(p, "provider_id", None) for p in (rt.provider, rt.tts, rt.stt)]
+
+    async def _spend_warn(self) -> None:
+        try:
+            await self._rt.spend.warn(self._in_use())
+        except Exception as e:
+            logger.warning("spend warning not checked in session %s: %s", self.id, type(e).__name__)
 
     async def _send_bytes(self, data: bytes) -> None:
         if self._closed or self._raw_send_bytes is None:

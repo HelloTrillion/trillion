@@ -26,6 +26,8 @@ async def test_applies_once_and_records_checksum(tmp_path):
         "014_routines",
         "015_attention",
         "016_decision_events",
+        "017_usage_spend",
+        "018_attention_deferred",
     ]
     assert await migrate(conn) == []
     async with conn.execute("SELECT id FROM owners") as cur:
@@ -113,6 +115,10 @@ SHIPPED = {
     "014_routines.sql": "8f464a56fa9e92e11293af638c5f14e72da1bf8517858e17fac9af055588bedf",
     "015_attention.sql": "cce2497b7bb1199dffb1f7925dbe37c8c8d621a19cbd416d27497a023bb58ea6",
     "016_decision_events.sql": ("7ed1dbea2c94cd2255016b0afba2045a98b11a7448650c25e529cc0c71cf52bb"),
+    "017_usage_spend.sql": "14f30b86a751145bcaf72fa291f509d54e0c2545be606df1ee38d331c6e410e5",
+    "018_attention_deferred.sql": (
+        "521447edaea29b579b5dde70a3e573e2826531ea653abce865e80318f1d98d8d"
+    ),
 }
 
 

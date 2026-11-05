@@ -41,7 +41,7 @@ from trillion.api.session import PROTOCOL, Session, page_host
 from trillion.api.settings import create_router
 from trillion.api.skills import create_skills_router
 from trillion.api.slack import create_slack_router
-from trillion.api.usage import create_usage_router
+from trillion.api.usage import create_spend_router, create_usage_router
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +197,7 @@ def create_app(
     app.include_router(create_router(rt))
     app.include_router(create_persona_router(rt))
     app.include_router(create_usage_router(rt))
+    app.include_router(create_spend_router(rt))
     app.include_router(create_conversations_router(rt))
     app.include_router(create_mcp_router(rt))
     app.include_router(create_callback_router(rt))

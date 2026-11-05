@@ -142,7 +142,8 @@ async def test_a_hostile_memory_cannot_break_out_or_grant_anything(home: Path) -
     await rt.memory.write(
         type="feedback", text=poison, source="imported_claim", moves=False, now_ms=rt.clock()
     )
-    provider = rt.provider
+    assert rt.provider is not None
+    provider = rt.provider.inner
     assert isinstance(provider, ScriptedProvider)
     page = Page(rt)
     session = await Session.start(rt, page.send, None)

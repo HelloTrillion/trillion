@@ -222,6 +222,12 @@ interface Focusable {
  * Settings, which take keys themselves. With Settings open the message box in the
  * sidebar still talks.
  */
+/** Enter pressed in a field other than the message box: that field's own, not the page's. */
+export function enterInField(target: EventTarget | null, input: unknown): boolean {
+  if (typeof HTMLElement === 'undefined' || !(target instanceof HTMLElement) || target === input) return false;
+  return target.closest('input, textarea, select, [contenteditable]') !== null;
+}
+
 export function contextOf(target: Focusable | null, input: Focusable & { readonly value: string }, settingsOpen: boolean): Context {
   return {
     inMessageBox: target === input,

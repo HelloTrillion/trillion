@@ -629,7 +629,14 @@ def test_checking_a_key_lists_models_and_stores_nothing(make: Any, offers: list)
     app = make(model=False)
     body = {"kind": "anthropic", "api_key": SAMPLE_KEY}
     r = app.client.post("/api/settings/model/models", json=body, headers=app.auth)
-    assert r.json() == {"models": [{"id": "model-a", "label": "Model A", "max_output": 8000}]}
+    (found,) = r.json()["models"]
+    assert {k: found[k] for k in ("id", "label", "max_output")} == {
+        "id": "model-a",
+        "label": "Model A",
+        "max_output": 8000,
+    }
+    # What it would cost is said before anything is saved (ONB-9).
+    assert found["estimate"] and r.json()["cost"]["provider_id"] == "anthropic"
     assert offers == [("anthropic", None, SAMPLE_KEY)]
     assert app.secrets.values() == [] and app.rt.provider is None
 
@@ -653,9 +660,17 @@ def test_saving_puts_the_key_in_the_keychain_and_nowhere_else(
     assert state["keys"]["anthropic"] == {"saved": True, "ends": "abcd"}
     # Not in the response, not in the database, not in a log.
     assert SAMPLE_KEY not in r.text
-    assert app.rows("SELECT value_json FROM preferences") == [
-        ('{"kind": "anthropic", "model": "model-a", "base_url": null, "max_output": 8000}',)
-    ]
+    saved = '{"kind": "anthropic", "model": "model-a", "base_url": null, "max_output": 8000}'
+    assert sorted(app.rows("SELECT value_json FROM preferences")) == sorted(
+        [
+            (saved,),
+            # The model last chosen on each provider, for a spend card to offer (BRN-8).
+            ('{"anthropic": ' + saved + "}",),
+            # Its provider starts with the default caps, and the upgrade seeding is done.
+            ('{"anthropic": {"soft": 20.0, "hard": 50.0, "warn_pct": 80, "unit": "dollars"}}',),
+            ("true",),
+        ]
+    )
     # Read while the app still runs: closing it would fold the -wal file into the
     # database and delete it, and an earlier frame the -wal held would go unread.
     scanned = []

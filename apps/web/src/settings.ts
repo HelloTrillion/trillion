@@ -7,6 +7,7 @@
  */
 
 import type { Host } from './panel';
+import { type Cost, FREE, createCapStep } from './spend';
 
 export type Kind = 'anthropic' | 'openai' | 'local' | 'custom';
 
@@ -17,7 +18,12 @@ export interface ModelState {
   readonly keys: Readonly<Partial<Record<Kind, { readonly saved: boolean; readonly ends: string } | null>>>;
   readonly keychain: boolean;
   readonly defaults: { readonly local: string };
+  /** Roughly what each kind costs, and the caps a key for it will have (ONB-9). */
+  readonly costs?: Readonly<Partial<Record<Kind, Cost>>>;
 }
+
+/** On this computer: nothing to pay, nothing to cap (ONB-10). */
+const LOCAL_COST: Cost = { provider_id: null, name: null, estimate: FREE, pricing_url: null, caps: null };
 
 interface Choice {
   readonly id: string;
@@ -210,6 +216,9 @@ export function createSettings(dialog: Host, api: Api): Settings {
   check.type = 'button';
   modelRow.append(modelLabel, modelSelect, check);
 
+  // What the chosen provider costs, and its caps, saved with the key (BRN-7, ONB-9).
+  const spend = createCapStep('settings');
+
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -221,7 +230,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
   close.type = 'button';
   actions.append(save, close);
 
-  form.append(title, intro, lock, choices, keyRow, addressRow, modelRow, status, actions);
+  form.append(title, intro, lock, choices, keyRow, addressRow, modelRow, spend.element, status, actions);
   dialog.replaceChildren(form);
 
   const option = (): Option => OPTIONS.find((o) => o.kind === kind) ?? (OPTIONS[0] as Option);
@@ -250,6 +259,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
     keyRow.hidden = !o.takesKey || locked;
     addressRow.hidden = !o.takesAddress || locked;
     modelRow.hidden = locked;
+    if (locked) spend.element.hidden = true;
     keyInput.disabled = busy || !state?.keychain;
     keyInput.placeholder = saved ? 'Leave empty to keep the saved key' : o.needsKey ? 'Paste your key' : 'Optional';
     keyHint.textContent = saved
@@ -277,6 +287,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
     const saved = state?.saved;
     addressInput.value =
       saved?.kind === next && saved.base_url ? saved.base_url : next === 'local' ? (state?.defaults.local ?? '') : '';
+    spend.show(state?.costs?.[next] ?? (next === 'local' ? LOCAL_COST : null));
     setModels(saved?.kind === next ? [{ id: saved.model, label: saved.model }] : []);
   }
 
@@ -310,7 +321,10 @@ export function createSettings(dialog: Host, api: Api): Settings {
       status.textContent = await problem(r, modelReach(option()));
       return false;
     }
-    const found = ((await r.json()) as { models: Choice[] }).models;
+    const listed = (await r.json()) as { models: Choice[]; cost?: Cost };
+    const found = listed.models;
+    // The address is known now, so its cost is too.
+    if (listed.cost) spend.show(listed.cost);
     setModels(found);
     status.textContent = !found.length
       ? 'It answered, but offers no models.'
@@ -340,6 +354,11 @@ export function createSettings(dialog: Host, api: Api): Settings {
   });
   save.addEventListener('click', () =>
     void run(async () => {
+      const wrong = spend.problem();
+      if (wrong) {
+        status.textContent = wrong;
+        return;
+      }
       status.textContent = 'Saving…';
       const r = await api('PUT', '/api/settings/model', { ...body(), model: modelSelect.value });
       if (!r.ok) {
@@ -348,6 +367,12 @@ export function createSettings(dialog: Host, api: Api): Settings {
       }
       state = (await r.json()) as ModelState;
       keyInput.value = '';
+      // The core gave the provider its caps with the key; a change to them follows.
+      const capsWrong = await spend.save(api);
+      if (capsWrong) {
+        status.textContent = `The model is saved, but its limits are not: ${capsWrong}`;
+        return;
+      }
       dialog.close();
     }),
   );

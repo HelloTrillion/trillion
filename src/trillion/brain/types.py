@@ -96,13 +96,29 @@ class Usage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # US dollars the provider itself says this call cost (OpenRouter does), or None
+    # when it does not say. It wins over the price table (see trillion.spend.prices).
+    reported_cost: float | None = None
 
     def __add__(self, other: Usage) -> Usage:
+        # A round that used tokens without a reported cost makes the total unknown: a
+        # partial figure must never stand in for it. An empty Usage() changes nothing.
+        sides = [u for u in (self, other) if u.reported_cost is not None or not u._empty()]
+        unknown = not sides or any(u.reported_cost is None for u in sides)
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reported_cost=None if unknown else sum(u.reported_cost or 0.0 for u in sides),
+        )
+
+    def _empty(self) -> bool:
+        return not (
+            self.input_tokens
+            or self.output_tokens
+            or self.cache_read_tokens
+            or self.cache_write_tokens
         )
 
 

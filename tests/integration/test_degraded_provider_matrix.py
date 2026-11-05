@@ -34,9 +34,10 @@ def no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def voiced(app: App, voice: Any | None = None) -> Any:
-    app.rt.tts = voice or FakeVoice()
+    app.rt.tts = voice = voice or FakeVoice()
     app.rt.speech = SpeechSettings(kind="elevenlabs", voice="v1")
-    return app.rt.tts
+    # The stand-in itself: the runtime holds it metered.
+    return voice
 
 
 def collect(chat: Chat, *until: str) -> tuple[list[dict[str, Any]], list[int]]:

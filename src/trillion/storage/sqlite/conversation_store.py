@@ -20,6 +20,7 @@ from trillion.brain.types import (
     ToolUseBlock,
     Usage,
 )
+from trillion.spend.types import Caller, Unit
 
 Kind = Literal["user", "tap", "assistant", "tool_results"]
 # Only something the user said advances the turn the model acts in (VOI-15a). A tap
@@ -111,6 +112,13 @@ def _load_raw(text: str | None) -> ProviderRaw | None:
         prefix_key=str(raw["prefix_key"]),
         content=tuple(raw["content"]),
     )
+
+
+# A usage row's quantity in its unit is the sum of its four token columns: tokens, or
+# a voice row's characters or a hearing row's seconds, kept in input_tokens with the
+# other three at 0.
+# No end: later than any row's created_at.
+_FOREVER = 2**62
 
 
 class SqliteConversationStore:
@@ -487,11 +495,19 @@ class SqliteConversationStore:
         usage: Usage,
         cost_usd: float | None,
         now_ms: int,
+        # The cap this call counts against (trillion.spend.prices); None stores
+        # `provider` there, as the migration did for old rows.
+        provider_id: str | None = None,
+        caller: Caller = "conversation",
+        # What `usage` counts: a voice row's characters or a hearing row's seconds go
+        # in input_tokens, with the other three left at 0.
+        units: Unit = "tokens",
     ) -> None:
         await self._conn.execute(
             "INSERT INTO usage (owner_id, conversation_id, provider, model, input_tokens,"
-            " output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, created_at,"
+            " provider_id, caller, units)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 owner_id,
                 conversation_id,
@@ -503,20 +519,49 @@ class SqliteConversationStore:
                 usage.cache_write_tokens,
                 cost_usd,
                 now_ms,
+                provider if provider_id is None else provider_id,
+                caller,
+                units,
             ),
         )
 
+    async def spend_since(
+        self, owner_id: str, since_ms: int, until_ms: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Spend per provider id, caller and unit from `since_ms`, up to and
+        including `until_ms` when given (BRN-7), for the ledger. `cost_usd` sums the priced
+        rows, None when none was priced; `unpriced` is the quantity of the rows
+        nothing priced, never $0."""
+        async with self._conn.execute(
+            "SELECT provider_id, caller, units, SUM(cost_usd),"
+            " SUM(CASE WHEN cost_usd IS NULL THEN input_tokens + output_tokens"
+            " + cache_read_tokens + cache_write_tokens ELSE 0 END),"
+            " SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)"
+            " FROM usage WHERE owner_id = ? AND created_at >= ? AND created_at <= ?"
+            " GROUP BY provider_id, caller, units",
+            (owner_id, since_ms, _FOREVER if until_ms is None else until_ms),
+        ) as cur:
+            names = ("provider_id", "caller", "units", "cost_usd", "unpriced", "quantity")
+            return [dict(zip(names, r, strict=True)) for r in await cur.fetchall()]
+
     async def usage_since(self, owner_id: str, since_ms: int) -> list[dict[str, Any]]:
         """Usage per provider and model since a moment (BRN-4). A NULL cost is unknown,
-        not free: it is left out of `cost_usd` and counted in `unpriced_*` instead."""
+        not free: it is left out of `cost_usd` and counted in `unpriced_*` instead.
+
+        Rows are also split by provider id and unit. `unpriced` is the unpriced
+        quantity in `unit`; `unpriced_tokens` is that quantity only when the unit is
+        tokens, so characters or seconds are never shown as tokens."""
         async with self._conn.execute(
             "SELECT provider, model, SUM(input_tokens), SUM(output_tokens),"
             " SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(cost_usd),"
             " SUM(cost_usd IS NULL),"
+            " SUM(CASE WHEN cost_usd IS NULL AND units = 'tokens' THEN input_tokens"
+            " + output_tokens + cache_read_tokens + cache_write_tokens ELSE 0 END),"
+            " provider_id, units,"
             " SUM(CASE WHEN cost_usd IS NULL THEN input_tokens + output_tokens"
             " + cache_read_tokens + cache_write_tokens ELSE 0 END)"
             " FROM usage WHERE owner_id = ? AND created_at >= ?"
-            " GROUP BY provider, model"
+            " GROUP BY provider, model, provider_id, units"
             " ORDER BY SUM(cost_usd) IS NULL, SUM(cost_usd) DESC,"
             " SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) DESC",
             (owner_id, since_ms),
@@ -529,8 +574,13 @@ class SqliteConversationStore:
                 "cache_read_tokens",
                 "cache_write_tokens",
                 "cost_usd",
+                # Named before the spend caps, when a row was a turn: it counts unpriced
+                # rows, which are now one per model call (BRN-7). Kept for the API.
                 "unpriced_turns",
                 "unpriced_tokens",
+                "provider_id",
+                "unit",
+                "unpriced",
             )
             rows = [dict(zip(names, row, strict=True)) for row in await cur.fetchall()]
         for r in rows:

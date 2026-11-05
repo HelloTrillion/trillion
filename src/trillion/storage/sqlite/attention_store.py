@@ -64,8 +64,10 @@ class SqliteAttentionStore:
         if not keys:
             return set()
         marks = ", ".join("?" for _ in keys)
+        # A deferred find (`release`) is not known: it is claimed again.
+        sql = f"SELECT key FROM attention_finds WHERE owner_id = ? AND key IN ({marks})"  # noqa: S608 - placeholders only
         async with self._conn.execute(
-            f"SELECT key FROM attention_finds WHERE owner_id = ? AND key IN ({marks})",  # noqa: S608 - placeholders only
+            sql + " AND status != 'deferred'",
             (owner_id, *keys),
         ) as cur:
             return {str(r["key"]) for r in await cur.fetchall()}
@@ -87,7 +89,10 @@ class SqliteAttentionStore:
                 async with conn.execute(
                     "INSERT INTO attention_finds"
                     " (owner_id, key, watcher, first_seen_ms, status, detail)"
-                    " VALUES (?, ?, ?, ?, 'claimed', ?) ON CONFLICT (owner_id, key) DO NOTHING"
+                    " VALUES (?, ?, ?, ?, 'claimed', ?) ON CONFLICT (owner_id, key) DO UPDATE"
+                    # A deferred find (`release`) is claimed again, as it was first seen.
+                    " SET status = 'claimed', notice_id = NULL"
+                    " WHERE attention_finds.status = 'deferred'"
                     " RETURNING key",
                     (owner_id, key, watcher, now_ms, detail[:300] if detail else None),
                 ) as cur:
@@ -112,6 +117,15 @@ class SqliteAttentionStore:
 
     async def silent(self, owner_id: str, keys: Sequence[str]) -> None:
         await self._claimed(owner_id, keys, "status = 'silent', notice_id = NULL")
+
+    async def release(self, owner_id: str, keys: Sequence[str]) -> None:
+        async with self._tx() as conn:
+            for key in keys:
+                await conn.execute(
+                    "UPDATE attention_finds SET status = 'deferred'"
+                    " WHERE owner_id = ? AND key = ? AND status = 'claimed' AND notice_id IS NULL",
+                    (owner_id, key),
+                )
 
     async def repair(self, owner_id: str) -> int:
         async with self._tx() as conn:
@@ -142,7 +156,7 @@ class SqliteAttentionStore:
         async with self._conn.execute(
             "SELECT f.key, f.watcher, f.first_seen_ms, f.status, f.notice_id, f.dismissed_ms,"
             " f.detail, n.title FROM attention_finds f LEFT JOIN notices n ON n.id = f.notice_id"
-            " WHERE f.owner_id = ? AND f.first_seen_ms >= ?"
+            " WHERE f.owner_id = ? AND f.first_seen_ms >= ? AND f.status != 'deferred'"
             " ORDER BY f.first_seen_ms DESC, f.rowid",
             (owner_id, now_ms - RECENT_MS),
         ) as cur:

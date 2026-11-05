@@ -274,10 +274,10 @@ Commands run as argument lists, never through a shell, with a 2 s timeout.
 ## Cost
 
 Each judging or wording call is background work and is recorded in usage like any
-other call. When the spending caps (BRN-7/8, not yet built) arrive, these calls are
-background work under them: at the hard cap the email and payment watchers pause and
-Settings says so. Until then the cost is bounded by the intervals: at most one call
-per watcher per check, and none when nothing is new.
+other call. The [spend caps](2026-11-04-spend-caps.md) (BRN-7/8) now exist, and these
+calls are background work under them: at the hard cap the watchers pause and Settings
+says so. Below the cap the cost is bounded by the intervals: at most one call per
+watcher per check, and none when nothing is new.
 
 ## Platforms
 

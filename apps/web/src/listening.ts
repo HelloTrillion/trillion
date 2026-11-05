@@ -10,6 +10,7 @@
 import { type Api, type Reach, errorText } from './settings';
 import type { Microphones } from './microphone';
 import type { Host } from './panel';
+import { type Cost, createCapStep } from './spend';
 
 interface Option {
   readonly kind: string;
@@ -22,6 +23,8 @@ interface Option {
   readonly key_link: string | null;
   readonly install_hint: string | null;
   readonly key: { readonly saved: boolean; readonly ends: string } | null;
+  /** Roughly what it costs, and the caps a key for it will have (ONB-9). */
+  readonly cost?: Cost;
 }
 
 interface State {
@@ -127,6 +130,9 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   );
   earlyRow.append(early, earlyWords);
 
+  // What the chosen way of hearing costs, and its caps, saved with the key (BRN-7, ONB-9).
+  const spend = createCapStep('listening');
+
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -136,7 +142,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   const close = el('button', 'settings-close', 'Close');
   close.type = 'button';
   actions.append(save, close);
-  form.append(title, intro, choices, keyRow, pickRow, earlyRow, status, ...(microphones ? [microphones.element] : []), actions);
+  form.append(title, intro, choices, keyRow, pickRow, spend.element, earlyRow, status, ...(microphones ? [microphones.element] : []), actions);
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
@@ -239,6 +245,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
     status.textContent = '';
     setChoices([]);
     const o = option();
+    spend.show(o?.cost ?? null);
     // Nothing to paste, or a key already saved: say at once what is available.
     if (o && (!o.needs_key || o.key)) void run(list);
   }
@@ -287,6 +294,11 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
   );
   save.addEventListener('click', () =>
     void run(async () => {
+      const wrong = kind === OFF ? null : spend.problem();
+      if (wrong) {
+        status.textContent = wrong;
+        return;
+      }
       status.textContent = 'Saving…';
       const body = kind === OFF ? { kind: null } : { kind, choice: pick.value, ...keyBody() };
       const r = await api('PUT', '/api/settings/listening', body);
@@ -295,6 +307,12 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
         return;
       }
       state = (await r.json()) as State;
+      // The core gave hearing its caps with the key; a change to them follows.
+      const capsWrong = kind === OFF ? null : await spend.save(api);
+      if (capsWrong) {
+        status.textContent = `Hearing is saved, but its limits are not: ${capsWrong}`;
+        return;
+      }
       dialog.close();
     }),
   );

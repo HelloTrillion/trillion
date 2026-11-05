@@ -522,6 +522,17 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+/* Near or over a soft cap, and at a hard cap (BRN-7). The title names the provider. */
+.usage-pill.warned {
+  color: var(--color-amber);
+  border-color: var(--color-amber);
+}
+
+.usage-pill.capped {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
 /* A round button that holds one icon: Settings, the sidebar, New conversation. */
 .icon-btn {
   display: inline-grid;
@@ -654,8 +665,9 @@ body[data-sidebar='hidden'] .workspace {
      on the panel's bottom edge, its buttons level with the orb and ending just left of
      it, and is as tall as the hole, so nothing above it scrolls under the orb. The
      scroller drops its own padding here: a sticky row stops above that padding, which
-     left it floating mid-panel over the rows behind it. */
-  .workspace .panel-body:has(.settings-actions) {
+     left it floating mid-panel over the rows behind it. A row that holds only Done is
+     hidden in the workspace, so a section with one (Usage, About) keeps the padding. */
+  .workspace .panel-body:has(.settings-actions:has(> :not(.settings-close))) {
     padding-bottom: 0;
   }
 
@@ -1192,6 +1204,165 @@ body[data-sidebar='hidden'] .workspace {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-1);
+}
+
+/* ── Spend caps: the switch line, the card at a cap, and the caps in Settings ── */
+
+.spend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spend[hidden] {
+  display: none;
+}
+
+.banner.spend-switch {
+  margin: 0;
+  border-color: var(--color-accent);
+}
+
+.spend-stopped {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-color: var(--color-danger);
+}
+
+.spend-card {
+  border-color: var(--color-danger);
+}
+
+.spend-card .card-title {
+  color: var(--color-danger);
+}
+
+.spend-line {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.spend-card .settings-row {
+  margin-bottom: 10px;
+}
+
+.spend-card .settings-row input {
+  flex: 1 1 120px;
+}
+
+.spend-card .card-actions {
+  flex-wrap: wrap;
+}
+
+.spend-step,
+.spend-caps,
+.spend-providers,
+.spend-provider,
+.spend-body,
+.spend-more {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spend-step p,
+.spend-provider p {
+  margin: 0;
+}
+
+/* An empty message takes no room, and stays in place to be read out when it fills. */
+.spend-provider > .spend-status:empty {
+  margin-top: -8px;
+}
+
+/* A hint with nothing to say (no warning about the limits, say) takes no room. */
+.spend-step p:empty,
+.spend-body > p:empty,
+.spend-caps > p:empty {
+  display: none;
+}
+
+.spend-status {
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+.spend-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.spend-what {
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+
+.spend-big {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.spend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.spend-more summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+.spend-more[open] summary {
+  margin-bottom: 4px;
+}
+
+.spend-switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-hint .spend-change {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.spend-provider {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.spend-provider h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.spend-provider p {
+  margin: 0;
+}
+
+.spend-provider a,
+.spend-step a,
+.spend-prices {
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+.settings-warn.spend-capped {
+  border-color: var(--color-danger);
 }
 
 /* ── Ask bar ─────────────────────────────────────────────────────────── */

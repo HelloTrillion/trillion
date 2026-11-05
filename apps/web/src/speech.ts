@@ -8,6 +8,7 @@
 
 import { type Api, type Reach, errorText } from './settings';
 import type { Host } from './panel';
+import { type Cost, FREE, createCapStep } from './spend';
 
 interface Option {
   readonly kind: string;
@@ -19,6 +20,8 @@ interface Option {
   readonly key_link: string | null;
   readonly takes_url: boolean;
   readonly key: { readonly saved: boolean; readonly ends: string } | null;
+  /** Roughly what it costs, and the caps a key for it will have (ONB-9). */
+  readonly cost?: Cost;
 }
 
 interface State {
@@ -124,6 +127,9 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   sample.type = 'button';
   voiceRow.append(voiceLabel, voiceSelect, check, sample);
 
+  // What the chosen voice costs, and its caps, saved with the key (BRN-7, ONB-9).
+  const spend = createCapStep('speech');
+
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -133,7 +139,7 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   const close = el('button', 'settings-close', 'Close');
   close.type = 'button';
   actions.append(save, close);
-  form.append(title, intro, choices, keyRow, urlRow, voiceRow, status, actions);
+  form.append(title, intro, choices, keyRow, urlRow, voiceRow, spend.element, status, actions);
   dialog.replaceChildren(form);
 
   const option = (): Option | null => state?.options.find((o) => o.kind === kind) ?? null;
@@ -186,6 +192,8 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
     urlInput.value = was?.kind === next ? (was.base_url ?? '') : '';
     status.textContent = '';
     const o = option();
+    // The computer's own voice costs nothing, whatever an older core says (ONB-10).
+    spend.show(o ? (o.cost ?? (o.where === 'client' ? { provider_id: null, name: null, estimate: FREE, pricing_url: null, caps: null } : null)) : null);
     if (o?.where === 'client') {
       const list = 'speechSynthesis' in window ? systemVoices(speechSynthesis.getVoices(), navigator.language) : [];
       setVoices(list);
@@ -249,7 +257,9 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
         status.textContent = await problem(r);
         return;
       }
-      const found = ((await r.json()) as { voices: Choice[] }).voices;
+      const listed = (await r.json()) as { voices: Choice[]; cost?: Cost };
+      const found = listed.voices;
+      if (listed.cost) spend.show(listed.cost);
       setVoices(found);
       status.textContent = found.length
         ? `It works. ${found.length} voice${found.length === 1 ? '' : 's'} available.`
@@ -266,6 +276,11 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
   });
   save.addEventListener('click', () =>
     void run(async () => {
+      const wrong = kind === OFF ? null : spend.problem();
+      if (wrong) {
+        status.textContent = wrong;
+        return;
+      }
       status.textContent = 'Saving…';
       const body = kind === OFF ? { kind: null } : { kind, voice: voiceSelect.value, ...keyBody() };
       const r = await api('PUT', '/api/settings/speech', body);
@@ -274,6 +289,12 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
         return;
       }
       state = (await r.json()) as State;
+      // The core gave the voice its caps with the key; a change to them follows.
+      const capsWrong = kind === OFF ? null : await spend.save(api);
+      if (capsWrong) {
+        status.textContent = `The voice is saved, but its limits are not: ${capsWrong}`;
+        return;
+      }
       dialog.close();
     }),
   );

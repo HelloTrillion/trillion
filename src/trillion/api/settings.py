@@ -1,4 +1,5 @@
-"""Settings the user makes in the app: which model, and its key (SEC-1, SEC-7, SEC-8).
+"""Settings the user makes in the app: which model, and its key (SEC-1, SEC-7, SEC-8),
+and what each provider may spend (BRN-7).
 
 This is a privileged path. It is reachable only with the session token, from
 the app's own origin, and never by the model: no tool can read or write here.
@@ -10,13 +11,15 @@ database, or logged. The app only ever shows that a key exists and how it ends.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 
 from trillion.api.runtime import (
+    CUSTOM_KEY_FOR_PREF,
     LISTEN_PREF,
     MODEL_PREF,
     OWNER,
@@ -26,11 +29,18 @@ from trillion.api.runtime import (
     ListenSettings,
     Runtime,
     SpeechSettings,
+    caps_json,
+    model_provider_id,
 )
+from trillion.api.usage import leg_of, provider_row
 from trillion.brain import config
 from trillion.brain.config import NEEDS_KEY, TAKES_KEY, ConfigError, Kind, ModelSettings
+from trillion.brain.providers.anthropic import DEFAULT_MODEL
 from trillion.brain.types import ProviderError
 from trillion.secrets.store import SecretStoreError
+from trillion.spend import metered, prices
+from trillion.spend.desk import MOST, friendly
+from trillion.spend.gate import DEFAULT, UNCAPPED, Caps, CapUnit, default_for, unit_default
 from trillion.voice.catalog import (
     LISTENING,
     SPEECH,
@@ -128,6 +138,64 @@ class ListenPrepare(BaseModel):
     choice: str = Field(max_length=200)
 
 
+# A cap: null for none, else a finite number of dollars or units, never below zero.
+_Amount = Annotated[StrictFloat | StrictInt, Field(ge=0, le=1e9, allow_inf_nan=False)]
+
+
+class SpendCaps(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    soft: _Amount | None
+    hard: _Amount | None
+    # Left out: kept as it is, or the default for a provider with no caps yet.
+    warn_pct: Annotated[StrictInt, Field(ge=1, le=100)] | None = None
+    unit: CapUnit | None = None
+
+
+# A provider id that can be capped (trillion.spend.prices): a known one, or a custom
+# address's host. Never "local": a model on this computer has no cap.
+_PROVIDER_ID = re.compile(
+    r"^(?:anthropic|openai|elevenlabs|deepgram|(?:custom|openai-voice):[a-z0-9][a-z0-9.:-]{0,252})$"
+)
+# Enough for every model anyone sets a price for, and no more.
+_MOST_PRICES = 500
+_MOST_PRICED_PROVIDERS = 50
+# The highest rate a price may give, in dollars per million tokens, thousand
+# characters or minute: far above any real one, so a slip of the finger is refused.
+_MOST_RATE = 1e6
+_RATE_KEYS = frozenset({"unit", "input", "output", "cache_read", "cache_write", "per_unit"})
+
+# Before an address is typed it is not known whether it is on this computer.
+_ANY_ADDRESS = "Free if it runs on this computer; otherwise priced by the server you point it at."
+
+
+def _capped_id(provider_id: str) -> str | None:
+    """None when this is a provider id that takes caps, else the error code."""
+    if provider_id in UNCAPPED:
+        return "never_capped"
+    return None if _PROVIDER_ID.match(provider_id) else "unknown_provider"
+
+
+def cost(
+    rt: Runtime, provider_id: str | None, model: str | None, *, known: bool = True
+) -> dict[str, Any]:
+    """What a key step shows before the key is saved: roughly what it costs, where its
+    prices are, and the caps it will have (those saved, else its defaults). `known` is
+    False while the provider id waits on an address still to be typed."""
+    caps: Caps | None = None
+    if provider_id is not None and provider_id not in UNCAPPED:
+        caps = rt.gate.saved(provider_id) or default_for(provider_id)
+    return {
+        "provider_id": provider_id,
+        "name": friendly(provider_id) if provider_id else None,
+        "estimate": (
+            prices.cost_line(provider_id, model, rt.meter.prices.rates()) if known else _ANY_ADDRESS
+        ),
+        "pricing_url": prices.pricing_url(provider_id),
+        "caps": caps_json(caps) if caps is not None else None,
+    }
+
+
 def _fail(status: int, code: str) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
@@ -149,7 +217,67 @@ def _describe(rt: Runtime) -> dict[str, Any]:
         "keys": keys,
         "keychain": rt.secrets.available(),
         "defaults": {"local": config.LOCAL_URL},
+        "costs": _model_costs(rt),
     }
+
+
+def _model_costs(rt: Runtime) -> dict[str, Any]:
+    """Each kind's cost line and caps, for the model step before a key is saved. A
+    model chosen before is the one priced; for Anthropic, else its default model. A
+    custom address is known only once typed (the model list then says)."""
+    s = rt.settings
+
+    def chosen(kind: str) -> str | None:
+        return s.model if s is not None and s.kind == kind else None
+
+    custom = prices.provider_id("custom", s.base_url) if s and s.kind == "custom" else None
+    return {
+        "anthropic": cost(rt, "anthropic", chosen("anthropic") or DEFAULT_MODEL),
+        "openai": cost(rt, "openai", chosen("openai")),
+        "custom": (
+            cost(rt, custom, chosen("custom"))
+            if custom is not None
+            else cost(rt, None, None, known=False)
+        ),
+        "local": cost(rt, "local", None),
+    }
+
+
+def _check_prices(raw: dict[str, Any]) -> str | None:
+    """None when every price is one `parse_user_prices` keeps, for a provider that
+    takes caps, in that provider's unit; else the error code. Nothing is dropped."""
+    if len(raw) > _MOST_PRICED_PROVIDERS:
+        return "too_many"
+    count = 0
+    for pid, models in raw.items():
+        if (code := _capped_id(pid)) is not None:
+            return code
+        if not isinstance(models, dict):
+            return "bad_price"
+        unit = prices.unit_of(pid)
+        allowed = _RATE_KEYS - {"per_unit"} if unit == "tokens" else {"unit", "per_unit"}
+        for model, rate in models.items():
+            count += 1
+            if not model or len(model) > 200:
+                return "bad_model"
+            if not isinstance(rate, dict) or not set(rate) <= allowed:
+                return "bad_price"
+            if rate.get("unit", "tokens") != unit:
+                return "bad_unit"
+            parsed = prices.parse_user_prices({pid: {model: rate}})
+            if not parsed:
+                return "bad_price"
+            (kept,) = parsed.values()
+            parts = (kept.input, kept.output, kept.cache_read, kept.cache_write, kept.per_unit)
+            if any(v > _MOST_RATE for v in parts):
+                return "bad_price"
+            if not any(parts) and (unit == "tokens" or not prices.can_price(pid)):
+                # Free counts nothing: over the table's rate or the reported cost, or
+                # in place of caps in tokens or characters, which it would move to
+                # dollars. A model that is free runs on this computer, uncapped. Only
+                # a voice or hearing rate the table has may be zero, for a plan.
+                return "zero_price"
+    return "too_many" if count > _MOST_PRICES else None
 
 
 def create_router(rt: Runtime) -> APIRouter:
@@ -185,7 +313,14 @@ def create_router(rt: Runtime) -> APIRouter:
     @router.post("/model/models")
     async def models(body: Probe) -> Any:
         found = await probe(body)
-        return found if isinstance(found, JSONResponse) else {"models": found}
+        if isinstance(found, JSONResponse):
+            return found
+        # What each costs, before the key is saved (ONB-9).
+        pid = prices.provider_id(body.kind, body.base_url)
+        user = rt.meter.prices.rates()
+        for m in found:
+            m["estimate"] = prices.cost_line(pid, m["id"], user)
+        return {"models": found, "cost": cost(rt, pid, None)}
 
     @router.put("/model")
     async def save(body: Save) -> Any:
@@ -213,7 +348,13 @@ def create_router(rt: Runtime) -> APIRouter:
             kind=body.kind, model=body.model, base_url=base_url, max_output=chosen["max_output"]
         )
         await rt.preferences.put(OWNER, MODEL_PREF, settings.to_json(), rt.clock())
+        if body.kind == "custom" and body.api_key:
+            # Which address the one custom key is for: a card offers no other (BRN-8).
+            key_for = model_provider_id(settings, "settings", rt.env)
+            await rt.preferences.put(OWNER, CUSTOM_KEY_FOR_PREF, key_for, rt.clock())
         await rt.use_model(settings)
+        # A provider with no caps yet starts with the defaults (BRN-7).
+        await rt.seed_caps([model_provider_id(settings, "settings", rt.env)])
         logger.info("model settings saved: %s", body.kind)
         return _describe(rt)
 
@@ -248,6 +389,7 @@ def create_router(rt: Runtime) -> APIRouter:
                     "key": {"saved": True, "ends": value[-4:] if len(value) >= 20 else ""}
                     if value
                     else None,
+                    "cost": speech_cost(o),
                 }
             )
         s, last = rt.speech, rt.speech_last
@@ -263,6 +405,15 @@ def create_router(rt: Runtime) -> APIRouter:
             "active": rt.tts is not None,
             "keychain": rt.secrets.available(),
         }
+
+    def speech_cost(option: SpeechOption) -> dict[str, Any]:
+        """A voice's cost line and caps. One at an address is known once it is typed:
+        the saved one's, else the voice list says."""
+        s = rt.speech
+        if option.takes_url and not (s is not None and s.kind == option.kind and s.base_url):
+            return cost(rt, None, None, known=False)
+        base_url = s.base_url if s is not None and s.kind == option.kind else None
+        return cost(rt, prices.voice_provider_id(option.kind, base_url), None)
 
     def speech_url(option: SpeechOption, base_url: str | None) -> str | None:
         """The checked address, by the rule a compatible model's follows (#33)."""
@@ -298,7 +449,10 @@ def create_router(rt: Runtime) -> APIRouter:
         if option is None:
             return _fail(400, "unknown_provider")
         found = await voices(option, body.api_key, body.base_url)
-        return found if isinstance(found, JSONResponse) else {"voices": found}
+        if isinstance(found, JSONResponse):
+            return found
+        pid = prices.voice_provider_id(option.kind, body.base_url)
+        return {"voices": found, "cost": cost(rt, pid, None)}
 
     @router.put("/speech")
     async def save_speech(body: SpeechSave) -> Any:
@@ -328,6 +482,7 @@ def create_router(rt: Runtime) -> APIRouter:
         )
         await rt.preferences.put(OWNER, SPEECH_PREF, chosen.to_json(), rt.clock())
         await rt.use_speech(chosen)
+        await rt.seed_caps([prices.voice_provider_id(chosen.kind, chosen.base_url)])
         logger.info("speech settings saved: %s", option.kind)
         return describe_speech()
 
@@ -363,6 +518,7 @@ def create_router(rt: Runtime) -> APIRouter:
                     "key": {"saved": True, "ends": value[-4:] if len(value) >= 20 else ""}
                     if value
                     else None,
+                    "cost": cost(rt, prices.hearing_provider_id(o.kind), None),
                 }
             )
         s, last = rt.listening, rt.listening_last
@@ -465,6 +621,7 @@ def create_router(rt: Runtime) -> APIRouter:
         settings = ListenSettings(kind=option.kind, choice=body.choice)
         await rt.preferences.put(OWNER, LISTEN_PREF, settings.to_json(), rt.clock())
         await rt.use_listening(settings)
+        await rt.seed_caps([prices.hearing_provider_id(option.kind)])
         logger.info("listening settings saved: %s", option.kind)
         return describe_listening()
 
@@ -480,6 +637,79 @@ def create_router(rt: Runtime) -> APIRouter:
         await rt.use_listening(rt.listening)
         logger.info("key removed: %s", option.kind)
         return describe_listening()
+
+    # ── Spend: caps and prices per provider (BRN-7) ──
+    # Declared before the caps route, which would otherwise take "prices" for an id.
+
+    @router.get("/spend/prices")
+    async def read_prices() -> dict[str, Any]:
+        raw = await rt.preferences.get(OWNER, metered.PREF)
+        return {"prices": raw if isinstance(raw, dict) else {}}
+
+    @router.put("/spend/prices")
+    async def save_prices(body: Annotated[dict[str, Any], Body()]) -> Any:
+        """The user's own prices, `{provider_id: {model: rate}}`, replacing those saved.
+        A rate it would not use is refused, never quietly dropped."""
+        if (code := _check_prices(body)) is not None:
+            return _fail(400, code)
+        before = await rt.preferences.get(OWNER, metered.PREF)
+        await rt.preferences.put(OWNER, metered.PREF, body, rt.clock())
+        await rt.meter.prices.reload()
+        # A provider now priced, whose caps are still the ones in its own unit that it
+        # started with, is counted in dollars from here: in dollars it is held to the
+        # same $20 and $50 as any other.
+        for pid in body:
+            if body[pid] and rt.gate.saved(pid) == unit_default(pid):
+                await rt.write_caps(pid, DEFAULT)
+        # One that lost its last price, and nothing else prices, would count nothing in
+        # dollars: its default caps go back to its own unit. Dollar caps the user chose
+        # are kept, and `unestimated` reports what they no longer count.
+        rates = rt.meter.prices.rates()
+        for pid in before if isinstance(before, dict) else ():
+            if not isinstance(pid, str) or _capped_id(pid) is not None or body.get(pid):
+                continue
+            if not prices.can_price(pid, rates) and rt.gate.saved(pid) == DEFAULT:
+                await rt.write_caps(pid, unit_default(pid))
+        logger.info("spend prices saved")
+        return {"prices": body}
+
+    async def known(provider_id: str) -> bool:
+        """Set up now, given caps before, or spent on this month."""
+        if rt.gate.saved(provider_id) is not None:
+            return True
+        spent = rt.ledger.spent(provider_id)
+        if spent.dollars or spent.all_units:
+            return True
+        return any(pid == provider_id for _leg, pid, _m in await rt.spend_set_up())
+
+    @router.put("/spend/{provider_id}")
+    async def save_caps(provider_id: str, body: SpendCaps) -> Any:
+        """One provider's caps. Null removes a cap, and is kept as the user's choice."""
+        if (code := _capped_id(provider_id)) is not None:
+            return _fail(400, code)
+        if not await known(provider_id):
+            return _fail(400, "unknown_provider")
+        before = rt.gate.saved(provider_id)
+        start = before or default_for(provider_id)
+        unit = body.unit or start.unit
+        if unit not in ("dollars", prices.unit_of(provider_id)):
+            return _fail(400, "bad_unit")
+        if unit == "dollars" and not prices.can_price(provider_id, rt.meter.prices.rates()):
+            # Nothing could count it: a dollar cap would never be reached.
+            return _fail(400, "no_price")
+        soft = None if body.soft is None else float(body.soft)
+        hard = None if body.hard is None else float(body.hard)
+        if soft is not None and hard is not None and hard < soft:
+            return _fail(400, "hard_below_soft")
+        if any(v is not None and v > MOST[unit] for v in (soft, hard)):
+            return _fail(400, "too_high")
+        warn_pct = body.warn_pct if body.warn_pct is not None else start.warn_pct
+        await rt.write_caps(provider_id, Caps(soft, hard, warn_pct, unit))
+        logger.info("spend caps saved: %s", provider_id)
+        model = next(
+            (m for _leg, pid, m in await rt.spend_set_up() if pid == provider_id and m), None
+        )
+        return await provider_row(rt, leg_of(provider_id), provider_id, model)
 
     return router
 
