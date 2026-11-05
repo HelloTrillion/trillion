@@ -329,13 +329,14 @@ async def test_a_choice_that_fails_unexpectedly_is_refused_so_the_page_can_retry
     session, page, card = await capped_card(rt)
 
     async def broken(*_a: Any, **_k: Any) -> Any:
-        raise RuntimeError("disk on fire 80.0")
+        raise RuntimeError("disk on fire 88.25")
 
     monkeypatch.setattr(rt.spend, "choose", broken)
-    answer = await tap(session, page, card["id"], "raise", 80.0)
+    answer = await tap(session, page, card["id"], "raise", 88.25)
     assert answer == {"type": "spend.refused", "id": card["id"], "code": "failed"}
-    # Logged by kind only: no amounts.
-    assert "80" not in caplog.text
+    # Logged by kind only: no amounts, and not the error's words. (A plain "80" also
+    # turns up inside the random ids in the log line.)
+    assert "88.25" not in caplog.text and "disk on fire" not in caplog.text
 
 
 async def test_raise_writes_the_cap_and_she_can_go_on(rt: Runtime) -> None:
