@@ -4,7 +4,7 @@ import './app.css';
 import { type Inline, parse } from './format';
 import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
 import { type Choice, createFolderPanel, createShares, createSharedFolders, footText, loadRoutines, parseFrame } from './folders';
-import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, matches } from './hotkey';
+import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, enterInField, matches } from './hotkey';
 import * as desktop from './desktop';
 import { icon } from './icons';
 import { createConnected } from './connected';
@@ -67,7 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { createSpendCards, createSwitchLines, speakCapped } from './spend';
+import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
@@ -826,9 +826,11 @@ function render(): void {
   desktop.reportState(desktop.orbState(orbShown), captionOf(view));
 
   const noModel = ready && view.model === null;
+  // A spend card says its line itself: the banner does not say it again.
+  const bannerLine = view.banner && !spendCards.has(view.banner) ? view.banner : '';
   const banner =
     linkText ||
-    view.banner ||
+    bannerLine ||
     (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model in Settings to get started.' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
@@ -1130,7 +1132,7 @@ panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
-panel.add({ id: 'usage', label: 'API usage', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
+panel.add({ id: 'usage', label: 'Usage and limits', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
@@ -1551,6 +1553,12 @@ function connect(): void {
       if (reveal.unhide) sidebar.setHidden(false);
       if (reveal.raise) sidebar.raise(reveal.raise);
     }
+    // At a spend limit the card must be seen too, as an approval's is: on a phone the sheet rises.
+    if (spendReveals(msg)) {
+      const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
+      if (reveal.unhide) sidebar.setHidden(false);
+      if (reveal.raise) sidebar.raise(reveal.raise);
+    }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
@@ -1879,6 +1887,8 @@ function onTalk(action: ReturnType<TalkKeys['down']>, ev?: KeyboardEvent): void 
 }
 
 addEventListener('keydown', (ev) => {
+  // Enter in a field (a limit, a raise, a search) is that field's own: never a page shortcut.
+  if (ev.key === 'Enter' && enterInField(ev.target, input)) return;
   // One order for Escape (escapeAction). The thread list keeps only the Escapes it uses itself.
   if (ev.key === 'Escape') {
     const action = escapeAction({

@@ -430,7 +430,7 @@ export function createUsageSettings(host: Host, load: () => Promise<Usage | null
   const { finish } = section(
     host,
     'usage',
-    'API usage',
+    'Usage and limits',
     'You pay each service directly. Trillion warns you at the first amount and stops using that service at the second, until you raise it or the month ends.',
   );
   const list = el('ul', 'settings-list');

@@ -118,6 +118,8 @@ export interface View {
   readonly banner: string | null;
   /** While a spend cap has her on something else until the 1st: "Using Gemma until Dec 1". */
   readonly switches: readonly { readonly provider_id: string; readonly line: string }[];
+  /** Stopped at a spend limit the user set: not a failure, so the orb stays calm. */
+  readonly capped: boolean;
   /** Her board for this conversation (the workspace's widgets), or null when she has made none. */
   readonly board: Board | null;
   /** Reads of this conversation still running in the background, as the core last counted them. */
@@ -145,6 +147,7 @@ export const INITIAL: View = {
   draft: null,
   banner: null,
   switches: [],
+  capped: false,
   board: null,
   jobs: 0,
 };
@@ -428,7 +431,7 @@ export function backgroundLine(count: number): string {
 
 /** A user message the page is about to send: shown at once, before the core echoes anything. */
 export function sent(view: View, text: string): View {
-  return { ...view, busy: true, replyOpen: false, banner: null, pending: text, draft: null, entries: [...view.entries, { kind: 'user', text }] };
+  return { ...view, busy: true, replyOpen: false, banner: null, capped: false, pending: text, draft: null, entries: [...view.entries, { kind: 'user', text }] };
 }
 
 /** Drop the last user entry with this text: the one `sent` added. */
@@ -471,6 +474,7 @@ function step(view: View, msg: ServerMsg): View {
         banner: null,
         // A switch in force is sent again after this, for any conversation.
         switches: [],
+        capped: false,
         // Another conversation: its own board follows, if it has one, and its own count of reads.
         board: null,
         jobs: 0,
@@ -478,6 +482,9 @@ function step(view: View, msg: ServerMsg): View {
     }
     case 'board':
       return { ...view, board: boardOf(msg['board']) };
+    case 'spend.resolved':
+      // Raised or switched: she can go on, so the calm "stopped" status goes.
+      return msg['status'] === 'raised' || msg['status'] === 'switched' ? { ...view, capped: false } : view;
     case 'spend.switch': {
       // Each switch made at a spend cap, as the core words it; an empty list clears them.
       const list = Array.isArray(msg['switches']) ? (msg['switches'] as unknown[]) : [];
@@ -533,7 +540,10 @@ function step(view: View, msg: ServerMsg): View {
       // The app's own line, drawn just before the turn it starts.
       return str(msg['text']) ? { ...view, entries: [...view.entries, { kind: 'host', text: str(msg['text']) }] } : view;
     case 'state': {
-      const orb = ORBS.find((o) => o === msg['orb']) ?? view.orb;
+      const said = ORBS.find((o) => o === msg['orb']) ?? view.orb;
+      // A turn that ended at a spend limit is a choice the user made, not a failure.
+      const orb = view.capped && said === 'error' ? 'idle' : said;
+      if (orb === 'processing') view = { ...view, capped: false };
       const noticeSpeaking = orb === 'speaking' && msg['notice'] === true;
       const next = { ...view, orb, noticeSpeaking, busy: busyOf(orb, noticeSpeaking) };
       // Her turn has started: the message was taken up.
@@ -661,7 +671,7 @@ function step(view: View, msg: ServerMsg): View {
         // At a spend cap: the app's own line (BRN-8). The card follows as its own message.
         const text = sentence || ERRORS['capped'] || '';
         const ears = msg['leg'] === 'hearing' ? { mic: false, hearing: '' } : {};
-        return { ...view, ...ears, busy: false, banner: text };
+        return { ...view, ...ears, busy: false, banner: text, capped: true, orb: view.orb === 'error' ? 'idle' : view.orb };
       }
       if (code === 'speech') {
         // Her voice failed; the reply itself carries on as text (VOI-14).
@@ -720,6 +730,9 @@ export function expire(view: View, now: number): View {
     ),
   };
 }
+
+/** The status while stopped at a spend limit, in place of "Ready". */
+export const CAPPED_TEXT = 'Stopped at your cap';
 
 export const STATE_TEXT: Readonly<Record<Orb, string>> = {
   idle: 'Ready',

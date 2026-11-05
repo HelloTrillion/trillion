@@ -5,7 +5,10 @@ import { createListeningSettings } from '../src/listening';
 import type { Host } from '../src/panel';
 import { type Api, createSettings } from '../src/settings';
 import { createSpeechSettings } from '../src/speech';
-import { FREE, type Cost, createCapStep, createSpendCards, createSwitchLines, shortEstimate, speakCapped } from '../src/spend';
+import { revealForCard } from '../src/sidebar';
+import { FREE, type Cost, createCapStep, createSpendCards, createSwitchLines, fromField, shortEstimate, speakCapped, spendReveals, toField } from '../src/spend';
+import { statusText } from '../src/announce';
+import { enterInField } from '../src/hotkey';
 import type { ProviderUsage, Usage } from '../src/usage';
 import { INITIAL, reduce as update } from '../src/view';
 
@@ -83,6 +86,29 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe('numbers in fields', () => {
+  it('are grouped, and read back with commas or spaces', () => {
+    expect(toField(5_000_000, 'tokens')).toBe('5,000,000');
+    expect(toField(12.5, 'dollars')).toBe('12.5');
+    expect(fromField('5,000,000', 'tokens')).toBe(5_000_000);
+    expect(fromField('5 000 000', 'tokens')).toBe(5_000_000);
+    expect(fromField('$1,500.50', 'dollars')).toBe(1500.5);
+    expect(fromField('1,500', 'seconds')).toBe(90_000);
+    expect(fromField('lots', 'dollars')).toBeUndefined();
+  });
+});
+
+describe('Enter in a field', () => {
+  it('belongs to the field, never to a page shortcut, except in the message box', () => {
+    const box = document.createElement('textarea');
+    const other = document.createElement('input');
+    document.body.append(box, other);
+    expect(enterInField(other, box)).toBe(true);
+    expect(enterInField(box, box)).toBe(false);
+    expect(enterInField(document.body, box)).toBe(false);
+  });
 });
 
 describe('the words', () => {
@@ -181,7 +207,7 @@ describe('the limits in a key step', () => {
     const s = step({ ...anthropicCost, provider_id: 'deepgram', name: 'Deepgram', caps: { soft: 36_000, hard: 90_000, warn_pct: 80, unit: 'seconds' } });
     expect(s.element.textContent).toContain('Warns at 600 minutes, stops at 1,500 minutes a month.');
     button(s.element, 'Change').click();
-    expect(field(s.element, 'Stop at (minutes a month)').value).toBe('1500');
+    expect(field(s.element, 'Stop at (minutes a month)').value).toBe('1,500');
     type(field(s.element, 'Stop at (minutes a month)'), '2000');
     await s.save(api);
     expect(calls[0]?.body).toEqual({ soft: 36_000, hard: 120_000 });
@@ -570,6 +596,45 @@ describe('Settings, Usage: one block per service', () => {
     expect(block('Anthropic').textContent).toContain('Saved. Switch back to Anthropic now?');
   });
 
+  it('clears its last message as soon as a field is edited', async () => {
+    const { block } = await openUsage([provider()], { 'PUT /api/settings/spend/anthropic': () => json({}) });
+    button(block('Anthropic'), 'Save').click();
+    await flush();
+    const b = block('Anthropic');
+    expect(b.querySelector('[role="status"]')?.textContent).toBe('Saved.');
+    type(field(b, STOP), '1');
+    expect(b.querySelector('[role="status"]')?.textContent).toBe('');
+    expect(b.textContent).toContain("Stop at can't be lower than Warn me at.");
+    expect(b.textContent).not.toContain('Saved.');
+  });
+
+  it('saves on Enter in a field, and keeps the key from the page', async () => {
+    const { block, calls } = await openUsage([provider()], { 'PUT /api/settings/spend/anthropic': () => json({}) });
+    const page = vi.fn();
+    window.addEventListener('keydown', page);
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    field(block('Anthropic'), STOP).dispatchEvent(enter);
+    window.removeEventListener('keydown', page);
+    await flush();
+    expect(page).not.toHaveBeenCalled();
+    expect(enter.defaultPrevented).toBe(true);
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1);
+  });
+
+  it('never says a price is unknown once the user has given one', async () => {
+    const { block } = await openUsage([unpriced({ unestimated: { units: 1_000, unit: 'tokens' } })], {
+      'GET /api/settings/spend/prices': () => json({ prices: { 'custom:api.example.com': { mystery: { input: 1, output: 2 } } } }),
+    });
+    const b = block('api.example.com');
+    expect(b.textContent).toContain("1k tokens aren't counted in dollars yet. Check the price under More options.");
+    expect(b.textContent).not.toContain("doesn't know");
+  });
+
+  it('shows big numbers grouped', async () => {
+    const { block } = await openUsage([unpriced()]);
+    expect(field(block('api.example.com'), 'Warn me at (tokens a month)').value).toBe('5,000,000');
+  });
+
   it('says a service on this computer costs nothing and has no limit', async () => {
     const { block } = await openUsage([
       provider({ provider_id: null, name: 'Your model', soft: null, hard: null, spent: 0, estimate: FREE, pricing_url: null, split: { conversation: 0, background: 0 } }),
@@ -648,8 +713,13 @@ describe('the spend card', () => {
   it('raises on Enter in the field', () => {
     const { root, sent, spend } = cards();
     spend.handle(card());
+    const page = vi.fn();
+    window.addEventListener('keydown', page);
     field(root, RAISE).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    window.removeEventListener('keydown', page);
     expect(sent).toEqual([{ type: 'spend.choice', id: 'c1', choice: 'raise', amount: 75 }]);
+    // No page shortcut sees the key.
+    expect(page).not.toHaveBeenCalled();
   });
 
   it('sends a switch without an amount, and waits for the answer', () => {
@@ -759,7 +829,7 @@ describe('the spend card', () => {
     expect(labels(root)).toEqual(['Raise to $75', "Use the computer's voice until Dec 1", 'Text only']);
     spend.reset();
     spend.handle(card({ id: 'h', leg: 'hearing', provider_id: 'deepgram', unit: 'seconds', cap: 90_000, options: [{ choice: 'raise', amount: 135_000, unit: 'seconds' }, { choice: 'type' }] }));
-    expect(field(root, 'New cap (minutes a month)').value).toBe('2250');
+    expect(field(root, 'New cap (minutes a month)').value).toBe('2,250');
     button(root, 'Type for now').click();
     expect(sent).toEqual([{ type: 'spend.choice', id: 'h', choice: 'type' }]);
   });
@@ -770,6 +840,18 @@ describe('the spend card', () => {
     type(field(root, 'New cap (minutes a month)'), '3000');
     button(root, 'Raise to 3,000 minutes').click();
     expect(sent).toEqual([{ type: 'spend.choice', id: 'h', choice: 'raise', amount: 180_000 }]);
+  });
+
+  it('knows the line it says, so the banner need not say it again, after Not now too', () => {
+    const { spend } = cards();
+    const line = card().line;
+    expect(spend.has(line)).toBe(false);
+    spend.handle(card());
+    expect(spend.has(line)).toBe(true);
+    spend.handle({ type: 'spend.resolved', id: 'c1', status: 'stopped' });
+    expect(spend.has(line)).toBe(true);
+    spend.handle({ type: 'spend.resolved', id: 'c1', status: 'raised' });
+    expect(spend.has(line)).toBe(false);
   });
 
   it('starts empty for another conversation', () => {
@@ -786,6 +868,27 @@ describe('the banner at a cap', () => {
     const v = update({ ...INITIAL, link: 'ready', busy: true }, { type: 'error', code: 'capped', leg: 'model', provider_id: 'anthropic', cap: 50, unit: 'dollars', sentence: line });
     expect(v.banner).toBe(line);
     expect(v.busy).toBe(false);
+  });
+
+  it('is a calm stop, not a failure: no error orb, and its own status', () => {
+    let v = update({ ...INITIAL, link: 'ready', busy: true, orb: 'processing' }, { type: 'error', code: 'capped', leg: 'model', sentence: 'At the cap.' });
+    v = update(v, { type: 'state', orb: 'error' });
+    expect(v.orb).toBe('idle');
+    expect(statusText(v)).toBe('Stopped at your cap');
+    // A failure that is not a cap still shows as one.
+    expect(update({ ...INITIAL, link: 'ready' }, { type: 'state', orb: 'error' }).orb).toBe('error');
+    // Raised: the stop is over.
+    v = update(v, { type: 'spend.resolved', id: 'c1', status: 'raised' });
+    expect(statusText(v)).toBe('Ready');
+  });
+
+  it('brings the card into view on a phone, as an approval card is', () => {
+    expect(spendReveals({ type: 'spend.card', id: 'c1' })).toBe(true);
+    expect(spendReveals({ type: 'error', code: 'capped' })).toBe(true);
+    expect(spendReveals({ type: 'error', code: 'provider' })).toBe(false);
+    expect(spendReveals({ type: 'spend.resolved', id: 'c1' })).toBe(false);
+    // What main does with it: the collapsed sheet on a phone rises to half.
+    expect(revealForCard(true, false)).toEqual({ unhide: false, raise: 'half' });
   });
 
   it('turns the microphone off when hearing is capped', () => {

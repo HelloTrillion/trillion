@@ -85,16 +85,16 @@ const A_MONTH: Readonly<Record<Unit, string>> = {
   seconds: 'minutes a month',
 };
 
-/** An amount as a field shows it: hearing, kept in seconds, is typed in minutes. */
+/** An amount as a field shows it, grouped ("5,000,000"): hearing, kept in seconds, is typed in minutes. */
 export function toField(n: number | null, unit: Unit): string {
   if (n === null) return '';
   const shown = unit === 'seconds' ? n / 60 : n;
-  return String(Math.round(shown * 100) / 100);
+  return shown.toLocaleString('en', { maximumFractionDigits: 2 });
 }
 
-/** A field's text as the core's amount: null when empty, undefined when it is not one. */
+/** A field's text as the core's amount, commas and spaces allowed: null when empty, undefined when it is not one. */
 export function fromField(text: string, unit: Unit): number | null | undefined {
-  const t = text.trim().replace(/^\$/, '').replace(/,/g, '');
+  const t = text.trim().replace(/^\$/, '').replace(/[,\s]/g, '');
   if (!t) return null;
   const n = Number(t);
   if (!Number.isFinite(n) || n < 0) return undefined;
@@ -240,6 +240,12 @@ export function createCapStep(prefix: string): CapStep {
   }
   soft.input.addEventListener('input', summary);
   hard.input.addEventListener('input', summary);
+  // Enter in a limit saves nothing by itself, and is no shortcut for the page either.
+  fields.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
   change.addEventListener('click', () => {
     fields.hidden = false;
     change.hidden = true;
@@ -408,6 +414,19 @@ export function createProviderBlocks(api: Api, load: () => Promise<Usage | null>
       parts = { section: el('section', 'spend-provider'), body: el('div', 'spend-body'), said: status(), tail: el('div', 'spend-body') };
       parts.section.append(parts.body, parts.said, parts.tail);
       sections.set(key, parts);
+      const said = parts.said;
+      const section = parts.section;
+      // An edit makes the last message old news, "Saved." above all.
+      section.addEventListener('input', () => {
+        said.textContent = '';
+      });
+      // Enter in a field is the block's Save, and is no shortcut for the page.
+      section.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' || !(ev.target instanceof HTMLInputElement)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        section.querySelector<HTMLButtonElement>('.spend-actions button')?.click();
+      });
     }
     const { section, said, tail } = parts;
     const body = parts.body;
@@ -430,8 +449,11 @@ export function createProviderBlocks(api: Api, load: () => Promise<Usage | null>
     if (state) body.append(el('p', p.state === 'capped' ? 'settings-warn spend-capped' : 'settings-warn', state));
     if (p.unestimated) {
       const what = p.leg === 'model' ? "this model's price" : "this service's rate";
+      const counted = `${amountText(p.unestimated.units, p.unestimated.unit)} aren't counted in dollars yet`;
+      // With a price of the user's own already given, the price is known: never say otherwise.
+      const priced = Object.keys(prices[pid] ?? {}).length > 0;
       body.append(
-        el('p', 'settings-warn', `${amountText(p.unestimated.units, p.unestimated.unit)} aren't counted in dollars yet: Trillion doesn't know ${what}. Add it under More options.`),
+        el('p', 'settings-warn', priced ? `${counted}. Check the price under More options.` : `${counted}: Trillion doesn't know ${what}. Add it under More options.`),
       );
     }
 
@@ -689,6 +711,8 @@ interface Shown {
 export interface SpendCards {
   /** A message from the core: the cards' own, and `session`, which starts afresh. */
   handle(msg: ServerMsg): void;
+  /** A card says this line already, whole or as its banner line: the banner need not. */
+  has(line: string): boolean;
   reset(): void;
 }
 
@@ -774,6 +798,8 @@ export function createSpendCards(
       input.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Enter') return;
         ev.preventDefault();
+        // Raise, and nothing else: no shortcut of the page's sees it.
+        ev.stopPropagation();
         choose(raise);
       });
     }
@@ -837,6 +863,7 @@ export function createSpendCards(
   reset();
   return {
     reset,
+    has: (line) => !!line && [...cards.values()].some((s) => s.card.line === line),
     handle(msg) {
       if (msg.type === 'session') {
         // Another connection, maybe another conversation: the core sends its cards again.
@@ -966,6 +993,11 @@ export function createSwitchLines(root: HTMLElement, api: Api): SwitchLines {
       draw();
     },
   };
+}
+
+/** A message that puts something about a spend limit on screen: the sheet must show it. */
+export function spendReveals(msg: ServerMsg): boolean {
+  return msg.type === 'spend.card' || (msg.type === 'error' && msg['code'] === 'capped');
 }
 
 /**

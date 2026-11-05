@@ -423,11 +423,12 @@ async def test_the_upgrade_gives_every_provider_in_use_the_defaults(where: Path)
         assert await rt.preferences.get(OWNER, SPEND_SEEDED_PREF) is True
         ((key, note),) = rt.spend.notes([])
         assert key == "once:caps_on"
-        assert note.startswith("[host] Spending caps are now on")
+        assert note.startswith("[host] Spending limits are now on")
+        assert "soft cap" not in note and "hard cap" not in note
         for words in (
-            "Anthropic: a $20 soft cap (a warning at 80%) and a $50 hard cap",
+            "Anthropic: a warning at $20 (an early heads-up at 80% of it) and a stop at $50",
+            "Settings, under Usage and limits",
             "ElevenLabs",
-            "Settings, under Usage",
             "in your own words",
         ):
             assert words in note
@@ -698,3 +699,26 @@ def test_a_provider_still_priced_another_way_keeps_dollars(make: Any) -> None:
     put(app, "/api/settings/spend/prices", {"openai": {"gpt-x": {"input": 1, "output": 2}}})
     put(app, "/api/settings/spend/prices", {})
     assert stored(app, CAPS_PREF)["openai"] == DEFAULTS
+
+
+# ── A price given mid-month counts what came before it ───────────────────
+
+
+def test_a_price_counts_tokens_used_before_it_toward_the_dollar_caps(make: Any) -> None:
+    app = make()
+    pid = "custom:llm.example.com"
+    call(app, app.rt.seed_caps, [pid])
+    app.rt.ledger.add(Row(pid, "conversation", "tokens", 2_000_000, None, app.rt.clock()))
+    assert app.rt.gate.unestimated(pid) is None  # counted in tokens, its own unit
+    put(app, "/api/settings/spend/prices", {pid: {"m1": {"input": 1, "output": 22}}})
+    assert app.rt.gate.caps(pid).unit == "dollars"
+    # (20 * $1 + $22) / 21 = $2 a million: the 2M tokens from before are $4.
+    assert app.rt.gate.counted(pid) == pytest.approx(4.0)
+    assert app.rt.gate.unestimated(pid) is None
+    (row,) = [
+        p
+        for p in app.client.get("/api/usage", headers=app.auth).json()["providers"]
+        if p["provider_id"] == pid
+    ]
+    assert row["unestimated"] is None
+    assert row["spent"] == pytest.approx(4.0)

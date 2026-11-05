@@ -294,9 +294,31 @@ def ceiling_rate(provider_id: str, unit: Unit) -> float | None:
     return max(rates) if rates else None
 
 
-def estimate(provider_id: str, unit: Unit, quantity: float) -> float | None:
-    """US dollars for `quantity` units nothing priced, at `ceiling_rate`, or None."""
-    rate = ceiling_rate(provider_id, unit)
+# The talk the estimates assume (TALK_INPUT and TALK_OUTPUT a turn) is about 20 input
+# tokens to each output one: a token of unknown kind is priced at that blend.
+_INPUT_SHARE = 20
+
+
+def user_rate(provider_id: str, unit: Unit, user_prices: UserPrices | None) -> float | None:
+    """The dearest of the user's own rates for this provider and unit: per million
+    tokens, blended 20 input to 1 output, or per thousand characters or per minute.
+    It prices units used before the price was given. None when they gave none."""
+    rates = [
+        (_INPUT_SHARE * r.input + r.output) / (_INPUT_SHARE + 1) if unit == "tokens" else r.per_unit
+        for (pid, _model), r in (user_prices or {}).items()
+        if pid == provider_id and r.unit == unit
+    ]
+    return max(rates) if rates else None
+
+
+def estimate(
+    provider_id: str, unit: Unit, quantity: float, user_prices: UserPrices | None = None
+) -> float | None:
+    """US dollars for `quantity` units nothing priced: at the user's own rate for the
+    provider when they gave one, else at `ceiling_rate`; or None."""
+    rate = user_rate(provider_id, unit, user_prices)
+    if rate is None:
+        rate = ceiling_rate(provider_id, unit)
     if rate is None:
         return None
     per = {"tokens": 1_000_000, "chars": 1_000, "seconds": 60}[unit]

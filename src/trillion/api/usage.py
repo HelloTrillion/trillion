@@ -91,7 +91,7 @@ async def provider_row(
             return part.all_units if spent.all_unit == caps.unit else 0.0
         extra = None
         if part.units and spent.unit is not None:
-            extra = prices.estimate(provider_id, spent.unit, part.units)
+            extra = prices.estimate(provider_id, spent.unit, part.units, user)
         return _round(part.dollars + (extra or 0.0))
 
     switch = rt.spend.switch(provider_id)

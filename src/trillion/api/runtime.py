@@ -1392,6 +1392,7 @@ async def open_runtime(
         prices=PriceBook(lambda: preferences.get(OWNER, metered.PREF)),
         owner_id=OWNER,
     )
+    gate.user_rates = meter.prices.rates
     provider, source = metered_resolve(meter, settings, keychain, env)
     desk = SpendDesk(
         prefs=preferences,

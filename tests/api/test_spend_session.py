@@ -642,12 +642,27 @@ async def test_the_warning_is_one_notice_once_a_month(rt: Runtime) -> None:
     held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
     delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
     found = [n.title for n in held] + [m["title"] for m in delivered]
-    assert found == ["Anthropic has used $16.50 of its $20 soft cap this month"]
+    assert found == ["Anthropic is close to your $20 warning ($16.50 so far)"]
     told = await rt.preferences.get(OWNER, desk.TOLD_PREF)
     assert told["warned"] == {"anthropic": month_start(rt.clock(), rt.zone() or "")[0]}
     # Not spoken: it has no words of hers.
     assert all(m["text"] is None for m in delivered)
-    assert "soft cap" not in sent_text(provider, 0)  # warned is not over
+    assert "[host]" not in sent_text(provider, 0)  # warned is not over
+
+
+async def test_past_the_warning_the_notice_says_so(rt: Runtime) -> None:
+    await on_model(rt, ANTHROPIC, ScriptedProvider(say("One.")))
+    await caps(rt, anthropic=CAPS)
+    spend(rt, "anthropic", 23.1)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "one"})
+    await idle(session)
+    assert rt.schedules is not None
+    held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
+    delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
+    found = [n.title for n in held] + [m["title"] for m in delivered]
+    assert found == ["Anthropic is past your $20 warning ($23.10 so far)"]
 
 
 async def test_past_the_soft_cap_her_next_turn_carries_one_host_note(rt: Runtime) -> None:
@@ -664,9 +679,10 @@ async def test_past_the_soft_cap_her_next_turn_carries_one_host_note(rt: Runtime
     await idle(session)
 
     first = sent_text(provider, 0)
-    assert "[host]" in first and "Anthropic" in first and "$20 soft cap" in first
+    assert "[host]" in first and "Anthropic" in first and "$20 warning" in first
+    assert "soft cap" not in first
     assert "in your own words" in first
-    assert "soft cap" not in sent_text(provider, 1)
+    assert "[host]" not in sent_text(provider, 1)
     told = await rt.preferences.get(OWNER, desk.TOLD_PREF)
     assert told["over_soft"] == {"anthropic": month_start(rt.clock(), rt.zone() or "")[0]}
 

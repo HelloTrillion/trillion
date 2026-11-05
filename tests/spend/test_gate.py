@@ -187,6 +187,32 @@ async def test_unpriced_use_with_no_rate_to_estimate_from_is_reported_not_counte
     assert gate.state("custom:example.com") == "capped"
 
 
+async def test_unpriced_tokens_from_before_a_price_count_at_the_users_rate() -> None:
+    """A price given mid-month counts the tokens used before it too, blended at the
+    spec's 20 input tokens to 1 output: (20 * input + output) / 21 per million."""
+    gate, ledger = await gate_for({"custom:example.com": {"soft": 3, "hard": 6}})
+    spend(ledger, "custom:example.com", quantity=2_000_000)
+    assert gate.unestimated("custom:example.com") == (2_000_000, "tokens")
+    gate.user_rates = lambda: {
+        ("custom:example.com", "m"): prices.Rate(input=1.0, output=22.0, source="user")
+    }
+    # (20 * 1 + 22) / 21 = $2 a million: 2M tokens are $4, past the $3 warning.
+    assert gate.spent_dollars("custom:example.com") == pytest.approx(4.0)
+    assert gate.state("custom:example.com") == "over_soft"
+    assert gate.unestimated("custom:example.com") is None
+
+
+async def test_the_dearest_user_rate_of_a_provider_counts_and_wins_over_the_table() -> None:
+    gate, ledger = await gate_for(CAPS)
+    spend(ledger, "anthropic", quantity=1_000_000)
+    gate.user_rates = lambda: {
+        ("anthropic", "a"): prices.Rate(input=1.0, output=1.0, source="user"),
+        ("anthropic", "b"): prices.Rate(input=2.0, output=2.0, source="user"),
+        ("elevenlabs", "*"): prices.Rate(unit="chars", per_unit=99.0, source="user"),
+    }
+    assert gate.spent_dollars("anthropic") == pytest.approx(2.0)
+
+
 async def test_removed_caps_are_never_capped() -> None:
     gate, ledger = await gate_for({"anthropic": {"soft": None, "hard": None}})
     spend(ledger, "anthropic", cost=10_000.0, quantity=10**9)

@@ -263,7 +263,7 @@ Notify = Callable[[str, str], Awaitable[None]]
 
 def soft_note(name: str, soft: str, spent: str) -> str:
     return (
-        f"[host] Spending on {name} this month has passed the {soft} soft cap the user "
+        f"[host] Spending on {name} this month has passed the {soft} warning the user "
         f"set: {spent} so far. Nothing has stopped. Mention it once, briefly, in your own "
         "words, and carry on with what they asked."
     )
@@ -281,20 +281,26 @@ def caps_on_note(caps: Sequence[tuple[str, Caps]]) -> str:
     them. `caps` is (provider id, caps) for each provider given them."""
     parts = []
     for pid, c in caps:
-        soft = f"a {cap_words(c.soft, c.unit)} soft cap" if c.soft is not None else "no soft cap"
-        hard = f"a {cap_words(c.hard, c.unit)} hard cap" if c.hard is not None else "no hard cap"
-        parts.append(f"{friendly(pid)}: {soft} (a warning at {c.warn_pct}%) and {hard} a month")
+        warn = (
+            f"a warning at {cap_words(c.soft, c.unit)} (an early heads-up at {c.warn_pct}% of it)"
+            if c.soft is not None
+            else "no warning"
+        )
+        stop = f"a stop at {cap_words(c.hard, c.unit)}" if c.hard is not None else "no stop"
+        parts.append(f"{friendly(pid)}: {warn} and {stop} a month")
     return (
-        "[host] Spending caps are now on, so a runaway routine or a long day can't run up "
-        f"the user's bill unnoticed. {'; '.join(parts)}. At the soft cap nothing stops; "
-        "at the hard cap you stop before spending more and they choose what happens. They "
-        "can change or remove these in Settings, under Usage. Tell them once, briefly, in "
-        "your own words, and carry on with what they asked."
+        "[host] Spending limits are now on, so a runaway routine or a long day can't run "
+        f"up the user's bill unnoticed. {'; '.join(parts)}. At the warning nothing stops; "
+        "at the stop you stop before spending more and they choose what happens. They can "
+        "change or remove these in Settings, under Usage and limits. Tell them once, "
+        "briefly, in your own words, and carry on with what they asked."
     )
 
 
-def warning_title(name: str, spent: str, soft: str) -> str:
-    return f"{name} has used {spent} of its {soft} soft cap this month"
+def warning_title(name: str, spent: str, soft: str, *, past: bool = False) -> str:
+    """The one notice at a provider's warning: close to it, or already past it."""
+    where = "past" if past else "close to"
+    return f"{name} is {where} your {soft} warning ({spent} so far)"
 
 
 def paused_title(name: str, cap: str) -> str:
@@ -731,6 +737,7 @@ class SpendDesk:
                 friendly(pid),
                 amount_words(self._gate.counted(pid), caps.unit),
                 cap_words(float(caps.soft or 0.0), caps.unit),
+                past=self._gate.state(pid) != "warned",
             )
             try:
                 await self.notify(f"spend:warned:{pid}:{month}", title)

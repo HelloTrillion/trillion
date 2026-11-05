@@ -7,11 +7,12 @@ States, at the thresholds the spend caps spec sets, each reached *at* its number
 
 **Dollars and units.** Every set of caps says its unit.
 - **Dollar caps** (the usual) compare the month's priced dollars plus an estimate for
-  its unpriced units: those calls priced at the provider's dearest rate in the price
-  table (`prices.ceiling_rate`), so a model newer than the table is never counted for
-  less than it may cost. A provider with no rate in the table cannot be estimated:
-  its unpriced units count toward no cap, and `unestimated` reports them so Settings
-  can ask for a price.
+  its unpriced units: those calls priced at the user's own rate for the provider when
+  they gave one (`prices.user_rate`), so a price given mid-month counts what came
+  before it too; else at the provider's dearest rate in the price table
+  (`prices.ceiling_rate`), so a model newer than the table is never counted for less
+  than it may cost. A provider with neither cannot be estimated: its unpriced units
+  count toward no cap, and `unestimated` reports them so Settings can ask for a price.
 - **Unit caps** (tokens, characters or seconds), for a provider nothing prices,
   compare every unit in that unit, priced or not, so a price given later never
   stops them counting. Dollars are ignored, and `unestimated` reports units of
@@ -226,6 +227,9 @@ class Gate:
         # Told when background work labelled with what it is (`as_caller(work=...)`)
         # is refused, so it can be listed as paused and said once (`SpendDesk.pause`).
         self.refused: Callable[[str, Work], Awaitable[None]] | None = None
+        # The user's own prices (`PriceBook.rates`): they also price what was used
+        # before they were given.
+        self.user_rates: Callable[[], prices.UserPrices] = dict
 
     async def reload_caps(self) -> None:
         """Read the caps again. Call it at startup and after every write to them."""
@@ -249,7 +253,7 @@ class Gate:
         spent = self._ledger.spent(provider_id)
         extra = None
         if spent.units and spent.unit is not None:
-            extra = prices.estimate(provider_id, spent.unit, spent.units)
+            extra = prices.estimate(provider_id, spent.unit, spent.units, self.user_rates())
         return spent.dollars + (extra or 0.0)
 
     def _counted(self, provider_id: str, caps: Caps) -> float:
@@ -278,7 +282,7 @@ class Gate:
             return spent.all_units, spent.all_unit
         if not spent.units or spent.unit is None:
             return None
-        if prices.ceiling_rate(provider_id, spent.unit) is not None:
+        if prices.estimate(provider_id, spent.unit, spent.units, self.user_rates()) is not None:
             return None
         return spent.units, spent.unit
 
