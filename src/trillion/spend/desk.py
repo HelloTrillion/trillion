@@ -84,8 +84,12 @@ def friendly(provider_id: str) -> str:
     """A provider as the user knows it: its name, or the host of a custom address."""
     if provider_id in _NAMES:
         return _NAMES[provider_id]
-    _kind, _, host = provider_id.partition(":")
-    return _HOSTS.get(host, host) if host else provider_id
+    kind, _, host = provider_id.partition(":")
+    if not host:
+        return provider_id
+    name = _HOSTS.get(host, host)
+    # A voice and a model can share a host: the voice says so.
+    return f"{name} (voice)" if kind == "openai-voice" else name
 
 
 def _number(n: float, word: str, plural: bool) -> str:
@@ -337,6 +341,10 @@ class SpendDesk:
         self.changed: Callable[[Sequence[Card], frozenset[Leg]], Awaitable[None]] | None = None
         # One choice at a time: a double tap is answered once.
         self._choosing = asyncio.Lock()
+        # Saves one provider's caps and has the gate read them, behind the same lock
+        # as every other write to them. Public so the runtime can set it; without it,
+        # the desk writes the preference itself.
+        self.write_caps: Callable[[str, Caps], Awaitable[None]] | None = None
 
     def month(self) -> str:
         return month_start(self._clock(), self._zone())[0]
@@ -600,9 +608,12 @@ class SpendDesk:
             or amount > self.most(caps.unit)
         ):
             raise Refused("bad_amount")
+        soft = caps.soft if caps.soft is None or caps.soft <= amount else float(amount)
+        if self.write_caps is not None:
+            await self.write_caps(provider_id, Caps(soft, float(amount), caps.warn_pct, caps.unit))
+            return
         raw = await self._prefs.get(self._owner, PREF)
         all_caps = dict(raw) if isinstance(raw, dict) else {}
-        soft = caps.soft if caps.soft is None or caps.soft <= amount else float(amount)
         all_caps[provider_id] = {
             "soft": soft,
             "hard": float(amount),

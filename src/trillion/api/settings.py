@@ -39,7 +39,7 @@ from trillion.brain.types import ProviderError
 from trillion.secrets.store import SecretStoreError
 from trillion.spend import metered, prices
 from trillion.spend.desk import MOST, friendly
-from trillion.spend.gate import UNCAPPED, Caps, CapUnit, default_for
+from trillion.spend.gate import DEFAULT, UNCAPPED, Caps, CapUnit, default_for, unit_default
 from trillion.voice.catalog import (
     LISTENING,
     SPEECH,
@@ -138,7 +138,7 @@ class ListenPrepare(BaseModel):
 
 
 # A cap: null for none, else a finite number of dollars or units, never below zero.
-_Amount = Annotated[StrictFloat | StrictInt, Field(ge=0, allow_inf_nan=False)]
+_Amount = Annotated[StrictFloat | StrictInt, Field(ge=0, le=1e9, allow_inf_nan=False)]
 
 
 class SpendCaps(BaseModel):
@@ -158,6 +158,10 @@ _PROVIDER_ID = re.compile(
 )
 # Enough for every model anyone sets a price for, and no more.
 _MOST_PRICES = 500
+_MOST_PRICED_PROVIDERS = 50
+# The highest rate a price may give, in dollars per million tokens, thousand
+# characters or minute: far above any real one, so a slip of the finger is refused.
+_MOST_RATE = 1e6
 _RATE_KEYS = frozenset({"unit", "input", "output", "cache_read", "cache_write", "per_unit"})
 
 # Before an address is typed it is not known whether it is on this computer.
@@ -241,6 +245,8 @@ def _model_costs(rt: Runtime) -> dict[str, Any]:
 def _check_prices(raw: dict[str, Any]) -> str | None:
     """None when every price is one `parse_user_prices` keeps, for a provider that
     takes caps, in that provider's unit; else the error code. Nothing is dropped."""
+    if len(raw) > _MOST_PRICED_PROVIDERS:
+        return "too_many"
     count = 0
     for pid, models in raw.items():
         if (code := _capped_id(pid)) is not None:
@@ -257,8 +263,16 @@ def _check_prices(raw: dict[str, Any]) -> str | None:
                 return "bad_price"
             if rate.get("unit", "tokens") != unit:
                 return "bad_unit"
-            if not prices.parse_user_prices({pid: {model: rate}}):
+            parsed = prices.parse_user_prices({pid: {model: rate}})
+            if not parsed:
                 return "bad_price"
+            (kept,) = parsed.values()
+            parts = (kept.input, kept.output, kept.cache_read, kept.cache_write, kept.per_unit)
+            if any(v > _MOST_RATE for v in parts):
+                return "bad_price"
+            if unit == "tokens" and not any(parts) and prices.can_price(pid):
+                # Free would stop the table's rate, or the reported cost, counting.
+                return "zero_price"
     return "too_many" if count > _MOST_PRICES else None
 
 
@@ -632,19 +646,39 @@ def create_router(rt: Runtime) -> APIRouter:
             return _fail(400, code)
         await rt.preferences.put(OWNER, metered.PREF, body, rt.clock())
         await rt.meter.prices.reload()
+        # A provider now priced, whose caps are still the ones in its own unit that it
+        # started with, is counted in dollars from here: in dollars it is held to the
+        # same $20 and $50 as any other.
+        for pid in body:
+            if body[pid] and rt.gate.saved(pid) == unit_default(pid):
+                await rt.write_caps(pid, DEFAULT)
         logger.info("spend prices saved")
         return {"prices": body}
+
+    async def known(provider_id: str) -> bool:
+        """Set up now, given caps before, or spent on this month."""
+        if rt.gate.saved(provider_id) is not None:
+            return True
+        spent = rt.ledger.spent(provider_id)
+        if spent.dollars or spent.all_units:
+            return True
+        return any(pid == provider_id for _leg, pid, _m in await rt.spend_set_up())
 
     @router.put("/spend/{provider_id}")
     async def save_caps(provider_id: str, body: SpendCaps) -> Any:
         """One provider's caps. Null removes a cap, and is kept as the user's choice."""
         if (code := _capped_id(provider_id)) is not None:
             return _fail(400, code)
+        if not await known(provider_id):
+            return _fail(400, "unknown_provider")
         before = rt.gate.saved(provider_id)
         start = before or default_for(provider_id)
         unit = body.unit or start.unit
         if unit not in ("dollars", prices.unit_of(provider_id)):
             return _fail(400, "bad_unit")
+        if unit == "dollars" and not prices.can_price(provider_id, rt.meter.prices.rates()):
+            # Nothing could count it: a dollar cap would never be reached.
+            return _fail(400, "no_price")
         soft = None if body.soft is None else float(body.soft)
         hard = None if body.hard is None else float(body.hard)
         if soft is not None and hard is not None and hard < soft:

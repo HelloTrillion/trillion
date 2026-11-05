@@ -13,8 +13,9 @@ States, at the thresholds the spend caps spec sets, each reached *at* its number
   its unpriced units count toward no cap, and `unestimated` reports them so Settings
   can ask for a price.
 - **Unit caps** (tokens, characters or seconds), for a provider nothing prices,
-  compare only the unpriced units in that unit. Dollars, and units of another kind,
-  are ignored, and `unestimated` reports units of another kind.
+  compare every unit in that unit, priced or not, so a price given later never
+  stops them counting. Dollars are ignored, and `unestimated` reports units of
+  another kind.
 
 **Where caps come from.** The preference `spend_caps`, `{provider_id: {soft, hard,
 warn_pct}}`, read by `reload_caps` at startup and again after every write to it.
@@ -96,10 +97,16 @@ def _unit_of(provider_id: str) -> Unit:
 
 def default_for(provider_id: str) -> Caps:
     """The caps a provider starts with: `DEFAULT` in dollars when the price table can
-    price it, else the default in its own unit, so it is still capped."""
-    unit = _unit_of(provider_id)
-    if prices.ceiling_rate(provider_id, unit) is not None:
+    price it, or the provider reports each call's cost (OpenRouter), else the default
+    in its own unit, so it is still capped."""
+    if prices.can_price(provider_id):
         return DEFAULT
+    return unit_default(provider_id)
+
+
+def unit_default(provider_id: str) -> Caps:
+    """The default caps in the provider's own unit, for when nothing prices it."""
+    unit = _unit_of(provider_id)
     return {"tokens": DEFAULT_TOKENS, "chars": DEFAULT_CHARS, "seconds": DEFAULT_SECONDS}[unit]
 
 
@@ -250,7 +257,7 @@ class Gate:
         if caps.unit == "dollars":
             return self.spent_dollars(provider_id)
         spent = self._ledger.spent(provider_id)
-        return spent.units if spent.unit == caps.unit else 0.0
+        return spent.all_units if spent.all_unit == caps.unit else 0.0
 
     def counted(self, provider_id: str) -> float:
         """The month so far, in the unit of this provider's caps."""
@@ -264,12 +271,14 @@ class Gate:
             return None
         caps = self.caps(provider_id)
         spent = self._ledger.spent(provider_id)
+        if caps.unit != "dollars":
+            # Every unit of the caps' own counts, priced or not.
+            if not spent.all_units or spent.all_unit is None or spent.all_unit == caps.unit:
+                return None
+            return spent.all_units, spent.all_unit
         if not spent.units or spent.unit is None:
             return None
-        if caps.unit == "dollars":
-            if prices.ceiling_rate(provider_id, spent.unit) is not None:
-                return None
-        elif caps.unit == spent.unit:
+        if prices.ceiling_rate(provider_id, spent.unit) is not None:
             return None
         return spent.units, spent.unit
 

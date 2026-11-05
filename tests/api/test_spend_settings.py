@@ -5,6 +5,7 @@ one note that says so (BRN-7, ONB-9, ONB-10, PER-11)."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from trillion.spend import prices
 from trillion.spend.desk import KNOWN_PREF
 from trillion.spend.gate import PREF as CAPS_PREF
 from trillion.spend.gate import Caps
+from trillion.spend.ledger import Row
 from trillion.spend.metered import PREF as PRICES_PREF
 
 DEFAULTS = {"soft": 20.0, "hard": 50.0, "warn_pct": 80, "unit": "dollars"}
@@ -45,11 +47,18 @@ def put(app: App, path: str, body: Any, **kw: Any) -> Any:
     return app.client.put(path, json=body, headers=kw.pop("headers", app.auth), **kw)
 
 
+def known(app: App, *pids: str) -> None:
+    """Providers with spend this month: caps may be set for them."""
+    for pid in pids:
+        app.rt.ledger.add(Row(pid, "conversation", prices.unit_of(pid), 1, None, app.rt.clock()))
+
+
 # ── PUT /api/settings/spend/{provider_id} ────────────────────────────────
 
 
 def test_caps_are_saved_and_the_gate_holds_to_them_at_once(make: Any) -> None:
     app = make()
+    known(app, "anthropic")
     r = put(app, "/api/settings/spend/anthropic", {"soft": 30, "hard": 60, "warn_pct": 90})
     assert r.status_code == 200
     body = r.json()
@@ -63,6 +72,7 @@ def test_caps_are_saved_and_the_gate_holds_to_them_at_once(make: Any) -> None:
 
 def test_null_removes_a_cap_and_says_so(make: Any) -> None:
     app = make()
+    known(app, "openai")
     r = put(app, "/api/settings/spend/openai", {"soft": None, "hard": None})
     assert r.status_code == 200
     assert (r.json()["soft"], r.json()["hard"]) == (None, None)
@@ -74,6 +84,7 @@ def test_null_removes_a_cap_and_says_so(make: Any) -> None:
 
 def test_other_providers_caps_are_left_as_they_were(make: Any) -> None:
     app = make()
+    known(app, "anthropic", "openai")
     put(app, "/api/settings/spend/anthropic", {"soft": 1, "hard": 2})
     put(app, "/api/settings/spend/openai", {"soft": 3, "hard": 4})
     assert set(stored(app, CAPS_PREF)) == {"anthropic", "openai"}
@@ -100,6 +111,7 @@ def test_caps_are_checked_before_anything_is_saved(
     make: Any, body: dict[str, Any], status: int, error: str
 ) -> None:
     app = make()
+    known(app, "anthropic")
     r = put(app, "/api/settings/spend/anthropic", body)
     assert (r.status_code, r.json()["error"]) == (status, error)
     assert stored(app, CAPS_PREF) is None
@@ -107,6 +119,7 @@ def test_caps_are_checked_before_anything_is_saved(
 
 def test_numbers_that_are_not_finite_are_refused(make: Any) -> None:
     app = make()
+    known(app, "anthropic")
     for raw in ('{"soft": 1, "hard": Infinity}', '{"soft": NaN, "hard": 5}'):
         r = app.client.put(
             "/api/settings/spend/anthropic",
@@ -126,6 +139,7 @@ def test_numbers_that_are_not_finite_are_refused(make: Any) -> None:
 )
 def test_a_provider_id_with_a_colon_and_dots_is_routed(make: Any, path: str) -> None:
     app = make()
+    known(app, "custom:api.deepseek.com")
     r = put(app, path, {"soft": 5, "hard": 10})
     assert r.status_code == 200, r.text
     assert r.json()["provider_id"] == "custom:api.deepseek.com"
@@ -134,6 +148,7 @@ def test_a_provider_id_with_a_colon_and_dots_is_routed(make: Any, path: str) -> 
 
 def test_an_unpriced_provider_can_be_capped_in_its_own_unit(make: Any) -> None:
     app = make()
+    known(app, "custom:llm.example.com", "openai-voice:tts.example.com")
     ok = put(app, "/api/settings/spend/custom:llm.example.com", {"soft": 1e6, "hard": 2e6})
     # With no unit given, a new entry takes the unit of its defaults.
     assert ok.json()["unit"] == "tokens"
@@ -141,6 +156,18 @@ def test_an_unpriced_provider_can_be_capped_in_its_own_unit(make: Any) -> None:
         app, "/api/settings/spend/openai-voice:tts.example.com", {"soft": 1, "hard": 2}
     ).json()
     assert voice["unit"] == "chars"
+    # Dollars only once something can price it (M6).
+    no_price = put(
+        app,
+        "/api/settings/spend/custom:llm.example.com",
+        {"soft": 1, "hard": 2, "unit": "dollars"},
+    )
+    assert (no_price.status_code, no_price.json()["error"]) == (400, "no_price")
+    put(
+        app,
+        "/api/settings/spend/prices",
+        {"custom:llm.example.com": {"*": {"input": 1, "output": 2}}},
+    )
     back = put(
         app,
         "/api/settings/spend/custom:llm.example.com",
@@ -160,6 +187,8 @@ def test_an_unpriced_provider_can_be_capped_in_its_own_unit(make: Any) -> None:
         ("custom:", "unknown_provider"),
         ("custom:Bad Host", "unknown_provider"),
         ("prices.extra", "unknown_provider"),
+        # A provider that is not set up, has no caps and has spent nothing.
+        ("custom:never.example.com", "unknown_provider"),
     ],
 )
 def test_only_a_provider_that_can_be_capped_takes_caps(make: Any, pid: str, error: str) -> None:
@@ -243,6 +272,7 @@ def test_saving_a_model_gives_its_provider_the_defaults(make: Any, offers: list)
 
 def test_saving_a_key_never_overwrites_caps_already_there(make: Any, offers: list) -> None:
     app = make(model=False)
+    known(app, "anthropic")
     put(app, "/api/settings/spend/anthropic", {"soft": None, "hard": 5})
     put(
         app, "/api/settings/model", {"kind": "anthropic", "model": "model-a", "api_key": SAMPLE_KEY}
@@ -307,6 +337,7 @@ def test_the_model_step_shows_each_kinds_cost_and_default_caps(make: Any) -> Non
 
 def test_the_model_list_says_what_each_model_costs(make: Any, offers: list) -> None:
     app = make(model=False)
+    known(app, "custom:llm.example.com")
     put(app, "/api/settings/spend/custom:llm.example.com", {"soft": 1, "hard": 2})
     body = {"kind": "custom", "base_url": "https://llm.example.com/v1", "api_key": SAMPLE_KEY}
     found = app.client.post("/api/settings/model/models", json=body, headers=app.auth).json()
@@ -368,7 +399,7 @@ def where(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-async def test_the_upgrade_gives_every_provider_set_up_the_defaults(where: Path) -> None:
+async def test_the_upgrade_gives_every_provider_in_use_the_defaults(where: Path) -> None:
     secrets = _secrets()
     gpt = ModelSettings(kind="openai", model="gpt-6-sol")
     await _before_caps(
@@ -382,10 +413,11 @@ async def test_the_upgrade_gives_every_provider_set_up_the_defaults(where: Path)
     )
     rt = await _open(where, secrets)
     try:
+        # Only what is in use: a model known from before is given caps when it is
+        # chosen again, or switched to.
         assert await rt.preferences.get(OWNER, CAPS_PREF) == {
             "anthropic": DEFAULTS,
             "elevenlabs": DEFAULTS,
-            "openai": DEFAULTS,
         }
         assert rt.gate.caps("anthropic") == Caps(20.0, 50.0, 80)
         assert await rt.preferences.get(OWNER, SPEND_SEEDED_PREF) is True
@@ -395,7 +427,6 @@ async def test_the_upgrade_gives_every_provider_set_up_the_defaults(where: Path)
         for words in (
             "Anthropic: a $20 soft cap (a warning at 80%) and a $50 hard cap",
             "ElevenLabs",
-            "OpenAI",
             "Settings, under Usage",
             "in your own words",
         ):
@@ -461,3 +492,166 @@ async def test_a_fresh_install_is_marked_seeded_with_nothing_to_tell(where: Path
         assert rt.spend.notes([]) == []
     finally:
         await rt.close()
+
+
+async def test_the_caps_are_saved_even_if_the_note_cannot_be(
+    where: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.spend.desk import SpendDesk
+
+    secrets = _secrets()
+    await _before_caps(
+        where,
+        secrets,
+        **{MODEL_PREF: ModelSettings(kind="anthropic", model="claude-sonnet-5-5").to_json()},
+    )
+
+    async def broken(self: SpendDesk, name: str, note: str) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(SpendDesk, "tell_once", broken)
+    rt = await _open(where, secrets)
+    try:
+        assert (await rt.preferences.get(OWNER, CAPS_PREF))["anthropic"] == DEFAULTS
+    finally:
+        await rt.close()
+
+
+# ── Review fixes: prices move caps to dollars, one writer, bounds ────────
+
+
+def test_a_price_moves_caps_still_at_their_unit_defaults_to_dollars(make: Any) -> None:
+    app = make()
+    call(app, app.rt.seed_caps, ["custom:llm.example.com", "custom:other.example.com"])
+    known(app, "custom:other.example.com")
+    put(app, "/api/settings/spend/custom:other.example.com", {"soft": 10, "hard": 20})
+    mine = {
+        "custom:llm.example.com": {"m1": {"input": 1, "output": 2}},
+        "custom:other.example.com": {"m1": {"input": 1, "output": 2}},
+    }
+    assert put(app, "/api/settings/spend/prices", mine).status_code == 200
+    caps = stored(app, CAPS_PREF)
+    assert caps["custom:llm.example.com"] == DEFAULTS
+    # Caps the user chose are never changed.
+    assert caps["custom:other.example.com"]["unit"] == "tokens"
+    assert app.rt.gate.caps("custom:llm.example.com") == Caps(20.0, 50.0, 80)
+
+
+def test_openrouter_starts_in_dollars(make: Any) -> None:
+    app = make()
+    call(app, app.rt.seed_caps, ["custom:openrouter.ai"])
+    assert stored(app, CAPS_PREF) == {"custom:openrouter.ai": DEFAULTS}
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ({f"custom:h{i}.example.com": {} for i in range(51)}, "too_many"),
+        ({"openai": {"gpt-x": {"input": 10**400, "output": 1}}}, "bad_price"),
+        ({"openai": {"gpt-x": {"input": 1e7, "output": 1}}}, "bad_price"),
+        ({"openai": {"gpt-x": {"input": 0, "output": 0}}}, "zero_price"),
+        ({"custom:openrouter.ai": {"*": {"input": 0, "output": 0}}}, "zero_price"),
+    ],
+)
+def test_prices_are_bounded(make: Any, body: Any, error: str) -> None:
+    app = make()
+    r = put(app, "/api/settings/spend/prices", body)
+    assert (r.status_code, r.json()["error"]) == (400, error)
+    assert stored(app, PRICES_PREF) is None
+
+
+def test_a_free_voice_rate_or_unknown_model_may_be_zero(make: Any) -> None:
+    app = make()
+    body = {
+        "elevenlabs": {"*": {"unit": "chars", "per_unit": 0}},
+        "custom:llm.example.com": {"m1": {"input": 0, "output": 0}},
+    }
+    assert put(app, "/api/settings/spend/prices", body).status_code == 200
+
+
+def test_caps_are_bounded(make: Any) -> None:
+    app = make()
+    known(app, "anthropic")
+    for body in ({"soft": 1, "hard": 1e10}, {"soft": 10**400, "hard": None}):
+        r = put(app, "/api/settings/spend/anthropic", body)
+        assert r.status_code == 422, body
+    assert stored(app, CAPS_PREF) is None
+
+
+def test_a_malformed_preference_keeps_every_set_up_provider_at_its_defaults(
+    make: Any,
+) -> None:
+    from trillion.api.runtime import SpeechSettings
+
+    app = make()
+    app.rt.settings = ModelSettings(kind="anthropic", model="claude-sonnet-5-5")
+    app.rt.source = "settings"
+    app.rt.speech = SpeechSettings(kind="elevenlabs", voice="v1")
+    call(app, app.rt.preferences.put, OWNER, CAPS_PREF, "garbage", 0)
+    call(app, app.rt.gate.reload_caps)
+    assert put(app, "/api/settings/spend/anthropic", {"soft": 1, "hard": 2}).status_code == 200
+    assert stored(app, CAPS_PREF) == {
+        "anthropic": {"soft": 1.0, "hard": 2.0, "warn_pct": 80, "unit": "dollars"},
+        "elevenlabs": DEFAULTS,
+    }
+
+
+@pytest.fixture
+async def rt(where: Path) -> Any:
+    runtime = await _open(where, _secrets())
+    runtime.settings = ModelSettings(kind="anthropic", model="claude-sonnet-5-5")
+    runtime.source = "settings"
+    yield runtime
+    await runtime.close()
+
+
+async def test_a_raise_on_the_card_goes_through_the_one_writer(rt: Runtime) -> None:
+    from trillion.api.runtime import SpeechSettings
+
+    rt.speech = SpeechSettings(kind="elevenlabs", voice="v1")
+    await rt.preferences.put(OWNER, CAPS_PREF, "garbage", rt.clock())
+    await rt.gate.reload_caps()
+    await rt.spend._raise("anthropic", 75.0)
+    caps = await rt.preferences.get(OWNER, CAPS_PREF)
+    assert caps["anthropic"]["hard"] == 75.0
+    assert caps["elevenlabs"] == DEFAULTS
+
+
+async def test_a_raise_and_a_settings_change_at_once_both_hold(rt: Runtime) -> None:
+    await rt.preferences.put(OWNER, CAPS_PREF, {"anthropic": DEFAULTS}, rt.clock())
+    await rt.gate.reload_caps()
+    await asyncio.gather(
+        rt.spend._raise("anthropic", 75.0),
+        rt.write_caps("openai", Caps(1.0, 2.0, 80)),
+        rt.write_caps("elevenlabs", Caps(3.0, 4.0, 80)),
+    )
+    caps = await rt.preferences.get(OWNER, CAPS_PREF)
+    assert caps["anthropic"]["hard"] == 75.0
+    assert caps["openai"]["hard"] == 2.0 and caps["elevenlabs"]["hard"] == 4.0
+
+
+def test_a_voice_and_a_model_at_one_host_are_told_apart() -> None:
+    from trillion.spend.desk import friendly
+
+    assert friendly("custom:x.example.com") == "x.example.com"
+    assert friendly("openai-voice:x.example.com") == "x.example.com (voice)"
+    assert friendly("openai-voice:api.openai.com") == "OpenAI (voice)"
+
+
+async def test_what_a_switch_puts_in_use_gets_the_defaults(rt: Runtime) -> None:
+    from trillion.spend import desk
+
+    target = ModelSettings(kind="custom", model="m1", base_url="https://api.deepseek.com/v1")
+    switch = desk.Switch(
+        leg="model",
+        to="deepseek/m1",
+        label="m1",
+        month=rt.spend.month(),
+        until_ms=rt.spend.until(),
+        settings=target.to_json(),
+    )
+    await rt.preferences.put(OWNER, desk.SWITCH_PREF, {"anthropic": switch.to_json()}, rt.clock())
+    await rt.spend.load()
+    await rt._spend_changed([], frozenset({"model"}))
+    caps = await rt.preferences.get(OWNER, CAPS_PREF)
+    assert caps["custom:api.deepseek.com"] == DEFAULTS

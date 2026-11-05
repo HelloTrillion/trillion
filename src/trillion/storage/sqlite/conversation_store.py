@@ -535,12 +535,13 @@ class SqliteConversationStore:
         async with self._conn.execute(
             "SELECT provider_id, caller, units, SUM(cost_usd),"
             " SUM(CASE WHEN cost_usd IS NULL THEN input_tokens + output_tokens"
-            " + cache_read_tokens + cache_write_tokens ELSE 0 END)"
+            " + cache_read_tokens + cache_write_tokens ELSE 0 END),"
+            " SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)"
             " FROM usage WHERE owner_id = ? AND created_at >= ? AND created_at <= ?"
             " GROUP BY provider_id, caller, units",
             (owner_id, since_ms, _FOREVER if until_ms is None else until_ms),
         ) as cur:
-            names = ("provider_id", "caller", "units", "cost_usd", "unpriced")
+            names = ("provider_id", "caller", "units", "cost_usd", "unpriced", "quantity")
             return [dict(zip(names, r, strict=True)) for r in await cur.fetchall()]
 
     async def usage_since(self, owner_id: str, since_ms: int) -> list[dict[str, Any]]:

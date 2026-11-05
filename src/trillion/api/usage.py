@@ -86,7 +86,8 @@ async def provider_row(
         if part is None:
             return 0.0
         if caps.unit != "dollars":
-            return part.units if spent.unit == caps.unit else 0.0
+            # Every unit in the caps' own, priced or not, as the gate counts them.
+            return part.all_units if spent.all_unit == caps.unit else 0.0
         extra = None
         if part.units and spent.unit is not None:
             extra = prices.estimate(provider_id, spent.unit, part.units)

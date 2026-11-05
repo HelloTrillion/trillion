@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -374,14 +375,18 @@ async def test_a_failed_reload_keeps_the_old_counts_and_tries_again_next_time(
     await ledger.load()
     gate = Gate(ledger, source(CAPS))
     await gate.reload_caps()
-    spend(ledger, "anthropic", cost=30.0)
+    spend(ledger, "anthropic", cost=30.37)
     zone[0] = "America/Chicago"
     rows.broken = True
     # The call is judged on the counts the ledger has.
     await gate.check_model("anthropic")
     assert ledger.stale
     assert gate.state("anthropic") == "over_soft"
-    assert "30" not in caplog.text and "reload" in caplog.text
+    # The kind of failure only, never an amount: checked in the messages themselves,
+    # not the log's file and line.
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("reload" in m for m in messages)
+    assert not any(re.search(r"\b30(?:\.37)?\b", m) for m in messages)
     rows.broken = False
     rows.rows = [
         {"provider_id": "anthropic", "caller": "conversation", "units": "tokens"}
@@ -474,3 +479,32 @@ async def test_check_counts_from_the_new_start_after_the_timezone_moves() -> Non
         await gate.check_model("anthropic")
     assert not ledger.stale
     assert rows.reads == 2
+
+
+# ── A provider priced by its own reported cost, and units priced or not ──
+
+
+def test_openrouter_reports_its_cost_so_it_starts_in_dollars() -> None:
+    assert default_for("custom:openrouter.ai") == DEFAULT
+    assert default_for("custom:llm.example.com") == DEFAULT_TOKENS
+
+
+async def test_a_thousand_openrouter_calls_at_a_dollar_reach_the_cap() -> None:
+    pid = "custom:openrouter.ai"
+    gate, ledger = await gate_for({pid: {"soft": 20, "hard": 50, "warn_pct": 80}})
+    for _ in range(1_000):
+        spend(ledger, pid, cost=1.0, quantity=500)
+    assert gate.state(pid) == "capped"
+    with pytest.raises(ModelCapped):
+        await gate.check_model(pid)
+
+
+async def test_caps_in_tokens_count_priced_calls_too() -> None:
+    """A provider priced after its caps were set in tokens still counts every token."""
+    pid = "custom:llm.example.com"
+    gate, ledger = await gate_for({pid: {"soft": 1000, "hard": 2000, "unit": "tokens"}})
+    spend(ledger, pid, cost=0.01, quantity=1500)
+    spend(ledger, pid, cost=None, quantity=600)
+    assert gate.counted(pid) == 2100
+    assert gate.state(pid) == "capped"
+    assert gate.unestimated(pid) is None

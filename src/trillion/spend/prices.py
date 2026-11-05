@@ -30,10 +30,12 @@ from trillion.spend.types import Unit
 
 __all__ = [
     "ANY",
+    "REPORTS_COST",
     "TABLE",
     "Rate",
     "Unit",
     "UserPrices",
+    "can_price",
     "ceiling_rate",
     "cost_line",
     "estimate",
@@ -318,6 +320,18 @@ FREE = "Runs on this computer: no cost, no cap."
 # Pricing pages the table has no entry to take a source from.
 _PRICING_PAGES = {"custom:openrouter.ai": "https://openrouter.ai/models"}
 _OPENROUTER = "custom:openrouter.ai"
+# Providers that report each call's cost themselves (`usage.cost`).
+REPORTS_COST = frozenset({_OPENROUTER})
+
+
+def can_price(provider_id: str, user_prices: UserPrices | None = None) -> bool:
+    """Whether a provider's calls can be counted in dollars: the table has a rate for
+    it in its unit, it reports each call's cost, or the user gave it a price."""
+    if provider_id in REPORTS_COST:
+        return True
+    if ceiling_rate(provider_id, unit_of(provider_id)) is not None:
+        return True
+    return any(pid == provider_id for pid, _model in user_prices or {})
 
 
 def unit_of(provider_id: str) -> Unit:
@@ -446,9 +460,13 @@ def _amount(raw: Mapping[str, Any], key: str, *, required: bool) -> float | None
     value = raw[key]
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    if not math.isfinite(value) or value < 0:
+    try:
+        if not math.isfinite(value) or value < 0:
+            return None
+        return float(value)
+    except OverflowError:
+        # An integer too big for a float.
         return None
-    return float(value)
 
 
 def _user_rate(raw: Any) -> Rate | None:

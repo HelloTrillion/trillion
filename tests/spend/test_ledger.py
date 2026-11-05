@@ -116,9 +116,11 @@ async def test_conversation_and_background_are_counted_apart(
         units=30,
         unit="tokens",
         by_caller={
-            "conversation": Share(dollars=1.0, units=0),
-            "background": Share(dollars=0.5, units=30),
+            "conversation": Share(dollars=1.0, units=0, all_units=100),
+            "background": Share(dollars=0.5, units=30, all_units=130),
         },
+        all_units=230,
+        all_unit="tokens",
     )
 
 
@@ -132,7 +134,7 @@ async def test_add_counts_a_new_call_without_reading_the_store_again(
     ledger.add(Row("deepgram", "background", "seconds", 30, None, clock.now))
     got = ledger.spent("deepgram")
     assert (got.dollars, got.units, got.unit) == (0.01, 30, "seconds")
-    assert got.by_caller["background"] == Share(dollars=0.0, units=30)
+    assert got.by_caller["background"] == Share(dollars=0.0, units=30, all_units=30)
     assert ledger.spent("openai") == Spent(dollars=0.0, units=0, unit=None, by_caller={})
 
 
@@ -173,7 +175,7 @@ async def test_priced_and_unpriced_rows_are_both_counted(store: SqliteConversati
     await ledger.load()
     got = ledger.spent("custom:example.com")
     assert (got.dollars, got.units, got.unit) == (0.4, 900, "tokens")
-    assert got.by_caller["conversation"] == Share(dollars=0.4, units=900)
+    assert got.by_caller["conversation"] == Share(dollars=0.4, units=900, all_units=1000)
 
 
 async def test_nothing_is_read_before_the_ledger_loads(store: SqliteConversationStore) -> None:
@@ -264,3 +266,36 @@ async def test_roll_notices_a_moved_start_without_reading(
     zone[0] = "UTC"
     ledger.roll()
     assert ledger.stale
+
+
+# ── Every unit, priced or not: what a cap counted in units holds to ──────
+
+
+async def test_all_units_count_priced_and_unpriced_calls_per_caller(
+    store: SqliteConversationStore,
+) -> None:
+    clock = Clock(at(2026, 11, 4))
+    await record(store, at(2026, 11, 2), cost=1.0, tokens=100)
+    await record(store, at(2026, 11, 2), cost=None, tokens=40, caller="background")
+    ledger = Ledger(store, clock, ZONE)
+    await ledger.load()
+    ledger.add(Row("anthropic", "conversation", "tokens", 7, 0.5, clock.now))
+    spent = ledger.spent("anthropic")
+    # Dollars and the unpriced quantity are as before; every unit is counted too.
+    assert (spent.dollars, spent.units, spent.unit) == (1.5, 40, "tokens")
+    assert (spent.all_units, spent.all_unit) == (147, "tokens")
+    assert spent.by_caller["conversation"].all_units == 107
+    assert spent.by_caller["background"].all_units == 40
+
+
+async def test_a_store_without_the_total_counts_its_unpriced_units() -> None:
+    rows = [
+        {"provider_id": "x", "caller": "conversation", "units": "tokens"}
+        | {"cost_usd": None, "unpriced": 30}
+    ]
+    ledger = Ledger(SlowSource(rows), Clock(at(2026, 11, 4)), ZONE)
+    source = ledger._store
+    assert isinstance(source, SlowSource)
+    source.go.set()
+    await ledger.load()
+    assert ledger.spent("x").all_units == 30

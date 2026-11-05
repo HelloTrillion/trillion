@@ -45,6 +45,8 @@ class Share:
 
     dollars: float = 0.0
     units: float = 0
+    # Every unit, priced or not.
+    all_units: float = 0
 
 
 @dataclass(frozen=True)
@@ -52,12 +54,15 @@ class Spent:
     """A provider's month so far. `dollars` sums the priced calls and `units` the
     quantity of the calls nothing priced; a provider with both kinds (one model
     priced, another not) has both nonzero. `unit` is the unit of `units` only, None
-    while there is no unpriced call."""
+    while there is no unpriced call. `all_units` counts every call's quantity, priced
+    or not, in `all_unit`: what caps counted in units hold to."""
 
     dollars: float = 0.0
     units: float = 0
     unit: Unit | None = None
     by_caller: Mapping[Caller, Share] = field(default_factory=dict)
+    all_units: float = 0
+    all_unit: Unit | None = None
 
 
 @dataclass
@@ -66,17 +71,35 @@ class _Tally:
     units: float = 0
     unit: Unit | None = None
     by_caller: dict[Caller, Share] = field(default_factory=dict)
+    all_units: float = 0
+    all_unit: Unit | None = None
 
-    def count(self, caller: Caller, unit: Unit, cost: float | None, quantity: float) -> None:
+    def count(
+        self,
+        caller: Caller,
+        unit: Unit,
+        cost: float | None,
+        quantity: float,
+        total: float | None = None,
+    ) -> None:
+        """One call, or a sum of them: `quantity` is what nothing priced, and `total`
+        every unit, priced or not (the call's own quantity when left out)."""
+        total = quantity if total is None else total
         share = self.by_caller.get(caller, Share())
+        dollars, units = share.dollars, share.units
         if cost is not None:
             self.dollars += cost
-            share = Share(dollars=share.dollars + cost, units=share.units)
+            dollars += cost
         elif quantity:
             self.units += quantity
             self.unit = unit
-            share = Share(dollars=share.dollars, units=share.units + quantity)
-        self.by_caller[caller] = share
+            units += quantity
+        if total:
+            self.all_units += total
+            self.all_unit = unit
+        self.by_caller[caller] = Share(
+            dollars=dollars, units=units, all_units=share.all_units + total
+        )
 
 
 class Ledger:
@@ -152,8 +175,10 @@ class Ledger:
         tallies: dict[str | None, _Tally] = {}
         for r in rows:
             tally = tallies.setdefault(r["provider_id"], _Tally())
-            tally.count(r["caller"], r["units"], r["cost_usd"], 0)
-            tally.count(r["caller"], r["units"], None, r["unpriced"])
+            # A store that does not sum every unit gives the unpriced ones only.
+            total = r.get("quantity", r["unpriced"]) or 0
+            tally.count(r["caller"], r["units"], r["cost_usd"], 0, total)
+            tally.count(r["caller"], r["units"], None, r["unpriced"], 0)
         held, self._held = self._held, None
         self._month, self._tallies, self._loaded, self.stale = month, tallies, True, False
         for row in held:
@@ -189,4 +214,6 @@ class Ledger:
             units=tally.units,
             unit=tally.unit,
             by_caller=dict(tally.by_caller),
+            all_units=tally.all_units,
+            all_unit=tally.all_unit,
         )

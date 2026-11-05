@@ -133,6 +133,7 @@ async def test_spend_since_sums_each_provider_and_caller_apart(
             "units": "tokens",
             "cost_usd": None,
             "unpriced": 40,
+            "quantity": 40,
         },
         {
             "provider_id": "anthropic",
@@ -140,6 +141,7 @@ async def test_spend_since_sums_each_provider_and_caller_apart(
             "units": "tokens",
             "cost_usd": 0.75,
             "unpriced": 0,
+            "quantity": 200,
         },
     ]
 
@@ -195,3 +197,21 @@ async def test_the_pill_never_counts_characters_or_seconds_as_tokens(
     assert (rows["anthropic"]["unit"], rows["anthropic"]["unpriced_tokens"]) == ("tokens", 50)
     voice = rows["elevenlabs"]
     assert (voice["unit"], voice["unpriced_tokens"], voice["unpriced"]) == ("chars", 0, 1200)
+
+
+async def test_spend_since_also_sums_every_unit_priced_or_not(
+    store: SqliteConversationStore,
+) -> None:
+    for cost in (0.5, None):
+        await store.record_usage(
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="openrouter",
+            model="m",
+            usage=Usage(input_tokens=10, output_tokens=5),
+            cost_usd=cost,
+            now_ms=20,
+            provider_id="custom:openrouter.ai",
+        )
+    (row,) = await store.spend_since(OWNER, 0)
+    assert (row["cost_usd"], row["unpriced"], row["quantity"]) == (0.5, 15, 30)

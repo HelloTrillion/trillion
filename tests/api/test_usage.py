@@ -447,3 +447,31 @@ def test_background_work_paused_at_the_hard_cap_is_listed_by_kind(make: Any) -> 
     assert row["paused"] == ["titles", "board"]
     app.rt.widgets_fresh = False
     assert providers(app)["anthropic"]["paused"] == ["titles"]
+
+
+def test_caps_in_tokens_count_priced_tokens_in_the_split_too(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    custom = ModelSettings(kind="custom", model="m1", base_url="https://llm.example.com/v1")
+    on_model(app, custom)
+    set_caps(app, **{"custom:llm.example.com": {"soft": 5000, "hard": 9000, "unit": "tokens"}})
+    for cost, caller in ((0.01, "conversation"), (None, "background")):
+        call(
+            app,
+            partial(
+                app.rt.conversations.record_usage,
+                owner_id=OWNER,
+                conversation_id=None,
+                provider="custom",
+                model="m1",
+                usage=Usage(input_tokens=3000, output_tokens=1000),
+                cost_usd=cost,
+                now_ms=NOW - MINUTE,
+                provider_id="custom:llm.example.com",
+                caller=caller,
+            ),
+        )
+    recount(app)
+    row = providers(app)["custom:llm.example.com"]
+    assert (row["spent"], row["unestimated"]) == (8000, None)
+    assert row["split"] == {"conversation": 4000, "background": 4000}
