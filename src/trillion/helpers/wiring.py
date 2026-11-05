@@ -56,10 +56,23 @@ class RuntimeSources:
 
 
 async def talks(rt: Runtime) -> dict[str, str]:
+    """Each helper's own conversation, by helper id. One deleted since is forgotten
+    here, with any note still kept for it."""
     raw = await rt.preferences.get(OWNER, CONVERSATIONS_PREF)
     if not isinstance(raw, dict):
         return {}
-    return {str(k): v for k, v in raw.items() if isinstance(v, str)}
+    found = {str(k): v for k, v in raw.items() if isinstance(v, str)}
+    gone = {c for c in found.values() if not await rt.conversations.exists(c, OWNER)}
+    if not gone:
+        return found
+    async with rt.helper_talks:
+        # Read again under the lock: only what is gone is taken out, never one just made.
+        now = await rt.preferences.get(OWNER, CONVERSATIONS_PREF)
+        kept = {k: v for k, v in (now if isinstance(now, dict) else {}).items() if v not in gone}
+        await rt.preferences.put(OWNER, CONVERSATIONS_PREF, kept, rt.clock())
+    for conversation_id in gone:
+        await rt.helper_note_said(conversation_id)
+    return {k: v for k, v in found.items() if v not in gone}
 
 
 async def built(rt: Runtime) -> Built:

@@ -357,7 +357,7 @@ async def test_a_card_raised_and_answered_is_pushed(rt: Runtime) -> None:
     assert seen[-1]["needs_you"] == 1
     (h,) = [h for h in seen[-1]["helpers"] if h["id"] == f"routine:{RID}"]
     assert h["waiting"] == [
-        {"type": "approval", "id": "p1", "text": "Create the revenue sheet", "at_ms": now}
+        {"type": "approval", "id": "p1", "text": "Approve a change", "at_ms": now}
     ]
     await rt.spine_store.transition(
         "p1",
@@ -533,6 +533,8 @@ async def test_two_taps_at_once_make_one_routine_conversation(rt: Runtime) -> No
 
 
 async def test_notes_kept_and_said_at_once_all_hold(rt: Runtime) -> None:
+    for c in ("c0", "c1", "c2"):
+        await rt.conversations.create(c, OWNER, rt.clock())
     await rt.helper_note_keep("c0", "zero")
     await asyncio.gather(
         rt.helper_note_keep("c1", "one"),
@@ -571,3 +573,35 @@ async def test_a_page_opening_builds_the_list_for_it(rt: Runtime) -> None:
     session = await Session.start(rt, page.send, None)
     await pushed(page, 1)
     await session.close()
+
+
+def test_a_deleted_helper_conversation_is_forgotten_when_read(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    made = post(app, f"{PATH}/watcher:email/conversation").json()["conversation_id"]
+    call(app, app.rt.conversations.delete, made, OWNER, NOW)
+    rows = {h["id"]: h for h in app.client.get(PATH, headers=app.auth).json()["helpers"]}
+    assert rows["watcher:email"]["conversation_id"] is None
+    assert call(app, app.rt.preferences.get, OWNER, CONVERSATIONS_PREF) == {}
+    assert call(app, app.rt.helper_note, made) is None
+    assert call(app, app.rt.preferences.get, OWNER, "helper_notes") == {}
+
+
+async def test_connections_changing_by_themselves_reach_the_panel(rt: Runtime) -> None:
+    assert rt.google is not None and rt.mcp is not None
+    told: list[int] = []
+    rt.helpers_live = None
+    original = rt.helpers_changed
+    assert rt.google.changed == original and rt.mcp.moved == original
+    rt.google.changed = rt.mcp.moved = lambda: told.append(1)
+    rt.google.refresh_tools()
+    assert told == [1]
+
+
+async def test_a_note_for_a_deleted_conversation_is_forgotten_when_read(rt: Runtime) -> None:
+    for c in ("c1", "c2"):
+        await rt.conversations.create(c, OWNER, rt.clock())
+        await rt.helper_note_keep(c, f"note {c}")
+    await rt.conversations.delete("c2", OWNER, rt.clock())
+    assert await rt.helper_note("c1") == "note c1"
+    assert await rt.preferences.get(OWNER, "helper_notes") == {"c1": "note c1"}

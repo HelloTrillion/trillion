@@ -345,3 +345,22 @@ async def test_every_change_is_told(tmp_path: Path) -> None:
         assert len(told) == 7
     finally:
         await conn.close()
+
+
+async def test_an_enqueue_that_changes_nothing_tells_nothing(tmp_path: Path) -> None:
+    conn = await connect(tmp_path / "t.db")
+    try:
+        await migrate(conn)
+        told: list[int] = []
+        store = SqliteScheduleStore(conn, changed=lambda: told.append(1))
+        await store.create(schedule(kind="ask", target="own"))
+        told.clear()
+        assert await store.enqueue("a1b2c3d4", DUE, DUE + 86_400_000, 120.0, DUE)
+        assert len(told) == 1
+        # The same occurrence again, the schedule already moved on: nothing changed.
+        assert not await store.enqueue("a1b2c3d4", DUE, DUE + 86_400_000, 120.0, DUE)
+        assert len(told) == 1
+        assert not await store.enqueue("nope0000", DUE, None, 120.0, DUE)
+        assert len(told) == 1
+    finally:
+        await conn.close()

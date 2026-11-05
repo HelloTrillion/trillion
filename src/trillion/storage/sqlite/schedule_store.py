@@ -207,13 +207,14 @@ class SqliteScheduleStore:
                 (schedule_id, due_ms, timeout_s, now_ms, schedule_id),
             )
             added = cur.rowcount == 1
-            await conn.execute(
+            # Only when it moves: the same occurrence again changes nothing.
+            moved = await conn.execute(
                 "UPDATE schedules SET next_due_ms = ?,"
                 " status = CASE WHEN ? IS NULL THEN 'done' ELSE status END"
-                " WHERE id = ? AND status = 'active'",
-                (next_due_ms, next_due_ms, schedule_id),
+                " WHERE id = ? AND status = 'active' AND next_due_ms IS NOT ?",
+                (next_due_ms, next_due_ms, schedule_id, next_due_ms),
             )
-        self._told()
+        self._told(added or moved.rowcount == 1)
         return added
 
     async def cancel(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:

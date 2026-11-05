@@ -59,7 +59,7 @@ async def test_a_card_in_a_routines_conversation_waits_on_that_routine() -> None
     h = one(found, "routine:r1")
     assert h.state == "needs_you"
     assert h.waiting == (
-        Waiting(type="approval", id="p1", text="Create the revenue sheet", at_ms=NOW - 60_000),
+        Waiting(type="approval", id="p1", text="Approve a change", at_ms=NOW - 60_000),
     )
     assert one(found, "routine:r2").state == "idle"
     assert to_json(found)["needs_you"] == 1
@@ -235,7 +235,9 @@ async def test_a_card_in_a_watchers_own_conversation_waits_on_it() -> None:
     src.open_cards = [card(session_id="conv-w", summary="Watch mail from Sam")]
     (h,) = await helpers(src)
     assert (h.state, h.conversation_id) == ("needs_you", "conv-w")
-    assert [w.text for w in h.waiting] == ["Watch mail from Sam"]
+    # Fixed words: the list goes to every page, and the card's own words stay in
+    # the conversation it was raised in.
+    assert [w.text for w in h.waiting] == ["Approve a change"]
 
 
 async def test_the_list_says_when_the_earliest_open_card_lapses() -> None:

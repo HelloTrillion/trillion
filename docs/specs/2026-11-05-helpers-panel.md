@@ -39,9 +39,9 @@ Each helper has:
 - `since_ms`: when the current run started (for "working, 0:12").
 - `last_run`: `{at_ms, outcome: "succeeded" | "skipped" | "failed" | "nothing", reason}` or null. `nothing` is a run that had nothing for you (AGT-6).
 - `next_ms`: its next scheduled time, or null (watchers: the next check).
-- `waiting`: what needs you, `[{type: "approval" | "question" | "step", id, text}]`, empty when nothing does.
+- `waiting`: what needs you, `[{type: "approval" | "question" | "step", id, text, at_ms}]`, empty when nothing does. `at_ms` is when it began waiting, or null when that isn't known; Needs you lists the oldest first. An approval's `text` is always "Approve a change", never the card's own words: the list goes to every page.
 - `conversation_id`: the conversation "Talk to it" opens, or null if none exists yet.
-- `paused`: a routine you paused, else null. The page offers Pause or Resume from this, never from `state`.
+- `paused`: true for a routine you paused, false otherwise (and for anything but a routine). The page offers Pause or Resume from this, never from `state`.
 - `switched_on` and `connected`: a watcher's switch and whether its source (Google or Stripe) is connected, else null. The page offers Turn off, Turn on or Connect from these.
 
 A timed ask that has fired and will not fire again leaves the list. A deleted routine leaves the list.
@@ -139,10 +139,10 @@ Everything here is in the core and the web page, so it works wherever the app ru
 
 - **Core:**
   - the list for each kind and each state, including `capped`, `paused`, a failed last run with its reason, and `nothing`;
-  - a card raised by a routine run is under that routine's `waiting`, and `needs_you` counts it;
+  - a card raised in a routine's own conversation is under that routine's `waiting`, and `needs_you` counts it (a routine's run itself can never raise a card);
   - `helpers.changed` is pushed when a run starts and ends, a card is raised and answered, a helper is paused and resumed, and coalesced under bursts;
   - a fired one-off ask leaves the list;
   - the routes refuse without the token or from another origin;
   - "Talk to it" for a watcher makes one conversation and reuses it.
 - **Web:** the groups and their order, the dot and its accessible name, the row status lines, the details and run history, pause and resume, Talk to it, the phone sheet, keyboard use and focus.
-- **Live**, on a throwaway install with a local model: a routine running then finishing, a timed ask firing, a watcher turned off and on, a card waiting on you and answered from the panel, at phone width and in light and dark.
+- **Live**, on a throwaway install with a local model: a routine running then finishing, a timed ask firing, a watcher turned off and on, a card waiting on you, opened from the panel and answered in its conversation, at phone width and in light and dark.

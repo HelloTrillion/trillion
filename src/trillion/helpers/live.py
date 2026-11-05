@@ -25,6 +25,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DELAY_S = 0.25
+# A build or a send that takes longer than this is given up, and tried at the next change.
+TIMEOUT_S = 10.0
 
 # The API body, and when the list next changes by itself (a card lapsing), if ever.
 Built = tuple[dict[str, Any], int | None]
@@ -39,7 +41,9 @@ class Notifier:
         clock: Callable[[], int],
         delay_s: float = DELAY_S,
         wanted: Callable[[], bool] = lambda: True,
+        timeout_s: float = TIMEOUT_S,
     ) -> None:
+        self._timeout_s = timeout_s
         self._build = build
         self._wanted = wanted
         self._send = send
@@ -72,13 +76,15 @@ class Notifier:
                 # Nobody to tell. The lapse timer, if set, stands: it only marks dirty.
                 continue
             try:
-                body, wake_ms = await self._build()
+                body, wake_ms = await asyncio.wait_for(self._build(), self._timeout_s)
             except Exception as e:
                 logger.warning("the helper list was not built: %s", type(e).__name__)
                 continue
             self._arm(wake_ms)
             try:
-                await self._send({"type": "helpers.changed", **body})
+                await asyncio.wait_for(
+                    self._send({"type": "helpers.changed", **body}), self._timeout_s
+                )
             except Exception as e:
                 logger.warning("the helper list was not sent: %s", type(e).__name__)
 

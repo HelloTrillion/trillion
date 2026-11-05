@@ -159,3 +159,26 @@ def test_outside_a_loop_a_change_does_nothing() -> None:
     w = World()
     Notifier(w.build, w.send, clock=clock).changed()
     assert w.builds == 0
+
+
+async def test_a_build_or_send_that_hangs_times_out_and_is_tried_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    w = World()
+    hang = [True]
+    build = w.build
+
+    async def slow() -> Built:
+        if hang[0]:
+            await asyncio.sleep(10)
+        return await build()
+
+    n = Notifier(slow, w.send, clock=clock, delay_s=DELAY, timeout_s=0.05)
+    with caplog.at_level(logging.WARNING):
+        n.changed()
+        await asyncio.sleep(0.2)
+    assert w.sent == [] and "TimeoutError" in caplog.text
+    hang[0] = False
+    n.changed()
+    await until(lambda: len(w.sent) == 1)
+    await n.stop()

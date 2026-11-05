@@ -502,6 +502,8 @@ class Runtime:
     _held_last: dict[str, bool] = field(default_factory=dict)
     # Held while the preference `helper_notes` is read, changed and saved.
     _helper_notes: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # And `helper_conversations` (`api/helpers.py`, `helpers/wiring.py`).
+    helper_talks: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -848,6 +850,11 @@ class Runtime:
         is still to be said there (a watcher's, at its first "Talk to it")."""
         raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
         note = raw.get(conversation_id) if isinstance(raw, dict) else None
+        if isinstance(raw, dict) and len(raw) > 1:
+            # Notes for conversations deleted since are forgotten as they are read.
+            for other in [k for k in raw if k != conversation_id]:
+                if not await self.conversations.exists(other, OWNER):
+                    await self.helper_note_said(other)
         return note if isinstance(note, str) else None
 
     async def helper_note_keep(self, conversation_id: str, note: str) -> None:
@@ -1216,6 +1223,11 @@ class Runtime:
         live = self.door.live() if self.door is not None else None
         return live.facts().host if live is not None else None
 
+    def connectors_changed(self) -> None:
+        """The MCP servers listed changed: her widget packs, and the helpers panel."""
+        self.retell_workspace()
+        self.helpers_changed()
+
     def retell_workspace(self) -> None:
         """Tell her the widget types the connectors listed now fill (widget packs, D2).
         Configured and turned on is enough: a server still starting, or down for a
@@ -1565,13 +1577,17 @@ async def open_runtime(
         registry,
         keychain,
         paths.home() / "mcp-logs",
-        changed=rt.retell_workspace,
+        changed=rt.connectors_changed,
         zone=rt.zone,
     )
+    # A server up or down changes what a watcher can read (Stripe's, for payments).
+    rt.mcp.moved = rt.helpers_changed
     rt.mcp_config = mcp_config
     rt.google = GoogleConnection(
         registry, keychain, google_config or paths.google_config_path(), env=env
     )
+    # A sign-in finished or an account removed: a watcher's Connect step follows.
+    rt.google.changed = rt.helpers_changed
     rt.slack = SlackConnection(registry, keychain, paths.slack_config_path())
     rt.channels = Channels(
         keychain,

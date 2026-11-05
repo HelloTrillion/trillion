@@ -41,6 +41,10 @@ from trillion.scheduler.when import WhenError, summary
 from trillion.spend.types import Work
 from trillion.spine.confirm import PendingAction, Status
 
+# What an approval waiting on the user says. Never the card's own summary: the list goes
+# to every page, and what the card says stays in the conversation it was raised in.
+APPROVAL = "Approve a change"
+
 # A routine's job line, from its ask: its first line, at most this long.
 JOB_MAX = 80
 
@@ -190,7 +194,7 @@ def _by_conversation(cards: Sequence[PendingAction]) -> dict[str, list[Waiting]]
     out: dict[str, list[Waiting]] = {}
     for a in cards:
         out.setdefault(a.session_id, []).append(
-            Waiting(type="approval", id=a.id, text=a.summary, at_ms=a.created_at)
+            Waiting(type="approval", id=a.id, text=APPROVAL, at_ms=a.created_at)
         )
     return out
 

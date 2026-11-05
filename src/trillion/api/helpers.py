@@ -179,7 +179,11 @@ def create_helpers_router(rt: Runtime) -> APIRouter:
             await rt.conversations.create(made, OWNER, now)
             async with _kept_or_dropped(made):
                 await rt.conversations.set_title(made, OWNER, TITLED.get(name, name), "user")
-                await rt.preferences.put(OWNER, CONVERSATIONS_PREF, {**mine, key: made}, now)
+                async with rt.helper_talks:
+                    # Read again under the lock, which a pruning read takes too.
+                    raw = await rt.preferences.get(OWNER, CONVERSATIONS_PREF)
+                    kept = dict(raw) if isinstance(raw, dict) else {}
+                    await rt.preferences.put(OWNER, CONVERSATIONS_PREF, {**kept, key: made}, now)
                 await rt.helper_note_keep(made, note_for(name))
         rt.helpers_changed()
         return made

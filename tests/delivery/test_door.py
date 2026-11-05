@@ -491,3 +491,15 @@ async def test_a_failed_helper_lookup_never_holds_the_notice(
     await d.added(n)
     assert [(x.id, x.helper_id) for x in page.got] == [(n.id, None)]
     assert "RuntimeError" in caplog.text
+
+
+def test_the_doors_watcher_keys_are_the_watchers_own() -> None:
+    """Each prefix names the watcher whose finds are keyed with it, in its own module."""
+    import inspect
+
+    from trillion.attention import mail, meetings, payments
+    from trillion.delivery import door as door_module
+
+    modules = {m.NAME: m for m in (mail, meetings, payments)}
+    for prefix, name in door_module._WATCHER_OF_KEY.items():
+        assert f'key=f"{prefix}:' in inspect.getsource(modules[name]), prefix
