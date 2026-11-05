@@ -659,9 +659,16 @@ async def test_past_the_warning_the_notice_says_so(rt: Runtime) -> None:
     await session.handle({"type": "turn.text", "text": "one"})
     await idle(session)
     assert rt.schedules is not None
-    held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
-    delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
-    found = [n.title for n in held] + [m["title"] for m in delivered]
+    found: list[str] = []
+    # Held, or on its way to the page: between the two it is in neither for a moment,
+    # so look again until it lands (a slow runner caught it in between).
+    for _ in range(100):
+        held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
+        delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
+        found = [n.title for n in held] + [m["title"] for m in delivered]
+        if found:
+            break
+        await asyncio.sleep(0.02)
     assert found == ["Anthropic is past your $20 warning ($23.10 so far)"]
 
 
