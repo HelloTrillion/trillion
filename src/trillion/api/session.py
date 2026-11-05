@@ -541,6 +541,8 @@ class BuiltInput:
     folder_note: str | None = None
     # The spend notes that rode with it (a soft cap passed, a switch ended): said once.
     spend_notes: tuple[str, ...] = ()
+    # The helper note that rode with it (a watcher's own conversation): said once.
+    helper_note: str | None = None
 
 
 # Where a page can say it runs, in its hello. Anything else is "other".
@@ -791,6 +793,8 @@ class Session:
         )
         rt.sessions.add(session)
         rt.by_conversation[session.id] = session
+        # Nothing is built while no page is open: this one's opening sets it going again.
+        rt.helpers_changed()
         try:
             await session._send("history", messages=shown)
             # The conversation's board as it was left, open or closed (D3).
@@ -3429,6 +3433,10 @@ class Session:
         await self._spend_tick()
         spend_notes = self._rt.spend.notes(self._in_use())
         notes = (*notes, *(ContextBlock(text=note) for _, note in spend_notes))
+        # What this conversation is about, when it is a helper's own: here only, once.
+        helper_note = await self._rt.helper_note(self.id)
+        if helper_note is not None:
+            notes = (*notes, ContextBlock(text=helper_note))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
         return BuiltInput(
             msg=Msg(role="user", blocks=blocks),
@@ -3437,6 +3445,7 @@ class Session:
             via=via,
             folder_note=folder_note,
             spend_notes=tuple(key for key, _ in spend_notes),
+            helper_note=helper_note,
         )
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
@@ -3458,6 +3467,13 @@ class Session:
                 await self._rt.spend.said(built.spend_notes)
             except Exception as e:
                 logger.warning("spend note not marked in session %s: %s", self.id, type(e).__name__)
+        if built.helper_note is not None:
+            try:
+                await self._rt.helper_note_said(self.id)
+            except Exception as e:
+                logger.warning(
+                    "helper note not marked in session %s: %s", self.id, type(e).__name__
+                )
         if kind == "user" and self._title_source is None:
             await self._show_first_words()
 
@@ -3636,6 +3652,9 @@ class Session:
                 quiet=n.quiet,
                 # The page's only: never spoken, never saved as her message.
                 detail=n.detail,
+                # Which helper it came from, named as the panel names it.
+                helper_id=n.helper_id,
+                helper_name=n.helper_name,
             )
         if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

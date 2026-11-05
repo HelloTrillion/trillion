@@ -332,3 +332,15 @@ async def test_a_listener_that_fails_never_stops_a_change(
     assert len(told) == 4  # stopping tells nothing
     assert "MCP change not told: RuntimeError" in caplog.text
     assert "listener broke" not in caplog.text
+
+
+async def test_a_server_coming_up_and_going_down_is_told(spine: Spine, tmp_path: Path) -> None:
+    moved: list[str] = []
+    servers = McpServers(spine.registry, MemoryStore(), tmp_path / "logs")
+    servers.moved = lambda: moved.append("x")
+    await servers.connect(parse_server("fixture", FIXTURE))
+    await servers.ready(name="fixture")
+    await _until(lambda: len(moved) == 1)
+    await servers.disconnect("fixture")
+    assert len(moved) == 2
+    await servers.stop()

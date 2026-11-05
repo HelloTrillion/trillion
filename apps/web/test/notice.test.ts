@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { linkHost, renderScheduled, type Scheduled } from '../src/notice';
+import { readyLine } from '../src/ready';
 import { INITIAL, httpsLink, reduce, type View } from '../src/view';
 
 const words = (text: string): HTMLElement[] => {
@@ -121,5 +122,76 @@ describe('a notice on the page', () => {
     expect(v.entries[0]).toMatchObject({ what: 'heads_up', text: null, link: null, quiet: 'in a meeting', detail: 'Planning at 10:00 am', spoken: false });
     const w = reduce(ready, { ...msg, link: 'https://meet.example.com/x' });
     expect(w.entries[0]).toMatchObject({ link: 'https://meet.example.com/x' });
+  });
+});
+
+describe('a notice names the helper it came from', () => {
+  const morning = { id: 'routine:aaaaaaaa', name: 'Morning brief' };
+
+  it('reads its helper from the core, as the panel names it', () => {
+    const v = reduce({ ...INITIAL, link: 'ready' } as View, {
+      type: 'notice',
+      code: 'schedule',
+      id: 'n9',
+      kind: 'ready',
+      title: 'Your Morning brief is ready',
+      text: 'Your Morning brief is ready.',
+      due_ms: 0,
+      conversation_id: 'c9',
+      helper_id: 'routine:aaaaaaaa',
+      helper_name: 'Morning brief',
+    });
+    const e = v.entries.at(-1) as Scheduled;
+    expect(e.helper).toEqual(morning);
+    const none = reduce({ ...INITIAL, link: 'ready' } as View, { type: 'notice', code: 'schedule', id: 'n8', kind: 'reminder', title: 'Call', text: 'Call.', due_ms: 0 });
+    expect((none.entries.at(-1) as Scheduled).helper ?? null).toBeNull();
+  });
+
+  it('leads a ready line with the helper’s name, which opens its details, and keeps Open', () => {
+    const shown: string[] = [];
+    const opened: string[] = [];
+    const line = readyLine('Your Morning brief is ready', 'c9', (id) => opened.push(id), morning, (id) => shown.push(id));
+    expect(line.textContent).toBe('Morning brief: readyOpen');
+    const name = line.querySelector('button.notice-from') as HTMLButtonElement;
+    expect(name.getAttribute('aria-label')).toBe('Morning brief, in Helpers');
+    name.click();
+    expect(shown).toEqual(['routine:aaaaaaaa']);
+    (line.querySelector('button.ready-open') as HTMLButtonElement).click();
+    expect(opened).toEqual(['c9']);
+  });
+
+  it('keeps a ready line in other words whole after the name', () => {
+    const line = readyLine('Your day is ready', 'c9', () => undefined, { id: 'routine:bbbbbbbb', name: 'Your day' }, () => undefined);
+    expect(line.textContent).toBe('Your day: Your day is readyOpen');
+  });
+
+  it('names the helper on a missed or failed line, and on a watcher’s', () => {
+    const shown: string[] = [];
+    const show = (id: string): number => shown.push(id);
+    const missed = renderScheduled(headsUp({ what: 'missed', title: 'Morning brief', text: null, link: null, detail: null, helper: morning }), words, undefined, show);
+    expect(missed.textContent).toBe('Morning brief: missed (due 9:55 am)');
+    const failed = renderScheduled(headsUp({ what: 'failed', title: 'Morning brief', text: null, link: null, detail: null, helper: morning }), words, undefined, show);
+    expect(failed.textContent).toBe("Morning brief: didn't finish (due 9:55 am)");
+    const watcher = renderScheduled(
+      headsUp({ title: 'Urgent email', text: null, link: null, detail: 'From Sam: the contract', helper: { id: 'watcher:email', name: 'Urgent email' } }),
+      words,
+      undefined,
+      show,
+    );
+    expect(watcher.textContent).toBe('Urgent emailFrom Sam: the contract');
+    (watcher.querySelector('button.notice-from') as HTMLButtonElement).click();
+    expect(shown).toEqual(['watcher:email']);
+  });
+
+  it('puts the name above her words', () => {
+    const node = renderScheduled(headsUp({ helper: { id: 'watcher:meetings', name: 'Meetings' } }), words, undefined, () => undefined);
+    expect(node.firstElementChild?.textContent).toBe('Meetings');
+    expect(node.querySelector('p')?.textContent).toBe('Your 10:00 with Sam starts in five minutes.');
+  });
+
+  it('is drawn as before without a helper', () => {
+    const node = renderScheduled(headsUp({ what: 'missed', title: 'Call', text: null, link: null, detail: null }), words);
+    expect(node.textContent).toBe('Missed: Call (due 9:55 am)');
+    expect(node.querySelector('.notice-from')).toBeNull();
   });
 });

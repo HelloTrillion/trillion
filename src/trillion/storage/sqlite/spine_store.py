@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -72,6 +72,8 @@ class SqliteSpineStore:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
         self._lock = asyncio.Lock()
+        # Told after a card is raised or moves on: the helpers panel's "needs you".
+        self.changed: Callable[[], None] | None = None
 
     @asynccontextmanager
     async def _tx(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -158,6 +160,8 @@ class SqliteSpineStore:
                 (a.id, a.owner_id, canonical_json(a.args)),
             )
             await self._decision(conn, a.owner_id, a.id, decision, a.created_at)
+        if self.changed is not None:
+            self.changed()
         return retired
 
     async def owner_known(self, owner_id: str) -> bool:
@@ -184,7 +188,7 @@ class SqliteSpineStore:
         outcome_detail: str | None = None,
     ) -> bool:
         async with self._tx() as conn:
-            return await self._set_status(
+            moved = await self._set_status(
                 conn,
                 pending_id,
                 expected,
@@ -194,6 +198,9 @@ class SqliteSpineStore:
                 effect_status=effect_status,
                 outcome_detail=outcome_detail,
             )
+        if moved and self.changed is not None:
+            self.changed()
+        return moved
 
     async def _set_status(
         self,

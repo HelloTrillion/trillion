@@ -83,6 +83,9 @@ class McpServers:
         # Told whenever the servers listed change (added, turned on or off, retuned,
         # removed), so what depends on which connectors there are can follow.
         self._changed = changed
+        # Told when a server comes up or goes down by itself (connected, failed,
+        # stopped): what its tools reach follows. None for no one.
+        self.moved: Callable[[], None] | None = None
         self._secrets = secrets
         self._logs = logs
         self.states: dict[str, ServerState] = {}
@@ -108,6 +111,14 @@ class McpServers:
             self._changed()
         except Exception as e:
             logger.warning("MCP change not told: %s", type(e).__name__)
+
+    def _moved(self) -> None:
+        if self.moved is None:
+            return
+        try:
+            self.moved()
+        except Exception as e:
+            logger.warning("MCP up or down not told: %s", type(e).__name__)
 
     def _launch(self, server: ServerConfig) -> ServerState:
         state = ServerState(config=server)
@@ -195,6 +206,7 @@ class McpServers:
                 self._register(state, offered)
                 state.status, state.problem, state.sign_in_url = "connected", "", ""
                 logger.info("MCP server %s connected: %d tools", server.name, len(state.tools))
+                self._moved()
                 await state.stop.wait()
         except MissingKey as e:
             state.status, state.problem = "failed", str(e)
@@ -216,6 +228,7 @@ class McpServers:
             state.sign_in_url = ""
             self._sessions.pop(server.name, None)
             self._unregister(state)
+            self._moved()
 
     async def _open(self, state: ServerState, stack: contextlib.AsyncExitStack) -> Any:
         from mcp import ClientSession

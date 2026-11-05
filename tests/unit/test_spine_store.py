@@ -82,3 +82,23 @@ async def test_a_transaction_cancelled_while_it_begins_is_never_left_open(tmp_pa
     assert await store.mark_delivered("p1", "local", "web", NOW) in (True, False)
     assert not conn.in_transaction
     await conn.close()
+
+
+async def test_a_card_raised_or_moved_on_is_told(tmp_path):
+    conn = await connect(tmp_path / "t.db")
+    await migrate(conn)
+    store = SqliteSpineStore(conn)
+    told: list[int] = []
+    store.changed = lambda: told.append(1)
+    by = DecisionIn(event="proposed", decided_by="s1", via="text")
+    await store.insert_pending(_pending(), by)
+    assert len(told) == 1
+    yes = DecisionIn(event="approved", decided_by="s1", via="text")
+    assert await store.transition("p1", Status.PROPOSED, Status.APPROVED, now_ms=NOW, decision=yes)
+    assert len(told) == 2
+    # Compare-and-set that moved nothing: nothing to tell.
+    assert not await store.transition(
+        "p1", Status.PROPOSED, Status.APPROVED, now_ms=NOW, decision=yes
+    )
+    assert len(told) == 2
+    await conn.close()

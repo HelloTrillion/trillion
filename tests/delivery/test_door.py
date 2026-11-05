@@ -370,3 +370,136 @@ async def test_with_a_page_open_a_tick_never_notifies(store: SqliteScheduleStore
     await add(store)
     await d.flush()
     assert shown.shown == [] and page.got == []  # a busy live page: the notice waits
+
+
+# ── Which helper a notice is from (the helpers panel spec) ──────────────
+
+
+async def test_a_notice_names_the_helper_it_came_from(store: SqliteScheduleStore) -> None:
+    """The chat names each helper as the panel does, and its name opens its details."""
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    await store.create(schedule(id="r0000001", kind="ask", title="Morning brief", target="own"))
+    await store.create(schedule(id="a0000001", kind="ask", title="Remind me at 4"))
+    ready = await written(
+        store,
+        kind="ready",
+        text="Your Morning brief is ready.",
+        title="Your Morning brief is ready",
+        source_id="r0000001",
+        due_ms=DUE,
+        now_ms=DUE,
+        conversation_id="c9",
+    )
+    ask = await written(
+        store, kind="ask", text="It's 4.", source_id="a0000001", due_ms=DUE, now_ms=DUE
+    )
+    reminder = await add(store)
+    email = await store.attention_notice(
+        "local", "email:m1", title="Urgent email", text=None, now_ms=DUE
+    )
+    meeting = await store.attention_notice(
+        "local", "meeting:e1:2026-10-24T16:00", title="Meetings", text=None, now_ms=DUE
+    )
+    paid = await store.attention_notice(
+        "local", "payment:o1:failed", title="Payments", text=None, now_ms=DUE
+    )
+    spend = await store.attention_notice(
+        "local", "spend:warned:anthropic:2026-10", title="x", text=None, now_ms=DUE
+    )
+    for n in (ready, ask, reminder, email, meeting, paid, spend):
+        await d.added(n)
+    got = {x.id: (x.helper_id, x.helper_name) for x in page.got}
+    assert got[ready.id] == ("routine:r0000001", "Morning brief")
+    assert got[ask.id] == ("ask:a0000001", "Remind me at 4")
+    # A reminder runs no model and is no helper; nor is a spend notice.
+    assert got[reminder.id] == (None, None)
+    assert got[spend.id] == (None, None)
+    assert got[email.id] == ("watcher:email", "Urgent email")
+    assert got[meeting.id] == ("watcher:meetings", "Meetings")
+    assert got[paid.id] == ("watcher:payments", "Payments")
+
+
+async def test_a_run_with_nothing_for_you_reaches_no_page(store: SqliteScheduleStore) -> None:
+    """AGT-6: a routine run that ends with nothing for you writes no notice, so the door
+    has nothing to hand any page; only its history shows it."""
+    page = FakePage("c1")
+    d, shown, _ = door(store, [page])
+    await store.create(schedule(id="r0000002", kind="ask", title="Morning brief", target="own"))
+    async with store._tx() as conn:
+        cur = await conn.execute(
+            "INSERT INTO task_runs (schedule_id, due_ms, status, claimed_by, claimed_ms,"
+            " started_ms, timeout_s, attempts, created_ms)"
+            " VALUES ('r0000002', ?, 'running', 'test', ?, ?, 10, 1, ?)",
+            (DUE, DUE, DUE, DUE),
+        )
+        run_id = cur.lastrowid
+    assert run_id is not None
+    await store.finish(run_id, "nothing", DUE, detail="nothing")
+    await d.flush()
+    assert page.got == [] and shown.shown == []
+    assert await store.held("local", DUE + 60_000) == []
+
+
+def test_the_doors_watcher_names_are_the_panels() -> None:
+    from trillion.attention.settings import TITLED, WATCHERS
+    from trillion.delivery import door as door_module
+
+    assert door_module._WATCHER_NAMES == dict(TITLED)
+    assert set(door_module._WATCHER_OF_KEY.values()) == set(WATCHERS)
+
+
+async def test_only_a_helper_still_listed_is_named(store: SqliteScheduleStore) -> None:
+    """A one-off ask that has fired, or a routine since removed, has left the panel: its
+    notice names no helper there is nothing to open for."""
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    await store.create(schedule(id="a0000002", kind="ask", title="Remind me at 4", status="done"))
+    await store.create(schedule(id="r0000003", kind="ask", title="Old", target="own"))
+    fired = await written(
+        store, kind="ask", text="It's 4.", source_id="a0000002", due_ms=DUE, now_ms=DUE
+    )
+    gone = await written(
+        store, kind="failed", text=None, source_id="r0000003", due_ms=DUE, now_ms=DUE
+    )
+    # Removed after its notice was written, before the page had it.
+    assert await store.cancel("local", "r0000003", DUE)
+    for n in (fired, gone):
+        await d.added(n)
+    assert [(x.helper_id, x.helper_name) for x in page.got] == [(None, None), (None, None)]
+
+
+async def test_a_failed_helper_lookup_never_holds_the_notice(
+    store: SqliteScheduleStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    n = await written(
+        store, kind="ask", text="It's 4.", source_id="a0000003", due_ms=DUE, now_ms=DUE
+    )
+    real = store.get
+    calls = 0
+
+    async def flaky(schedule_id: str) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # the due words read it first; the helper lookup second
+            raise RuntimeError("disk")
+        return await real(schedule_id)
+
+    monkeypatch.setattr(store, "get", flaky)
+    await d.added(n)
+    assert [(x.id, x.helper_id) for x in page.got] == [(n.id, None)]
+    assert "RuntimeError" in caplog.text
+
+
+def test_the_doors_watcher_keys_are_the_watchers_own() -> None:
+    """Each prefix names the watcher whose finds are keyed with it, in its own module."""
+    import inspect
+
+    from trillion.attention import mail, meetings, payments
+    from trillion.delivery import door as door_module
+
+    modules = {m.NAME: m for m in (mail, meetings, payments)}
+    for prefix, name in door_module._WATCHER_OF_KEY.items():
+        assert f'key=f"{prefix}:' in inspect.getsource(modules[name]), prefix

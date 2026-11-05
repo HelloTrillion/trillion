@@ -12,7 +12,7 @@ import contextlib
 import logging
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -66,6 +66,9 @@ class GoogleConnection:
         self._registered: list[str] = []
         # One-time tickets for Google's file picker page, by ticket: account and expiry.
         self._tickets: dict[str, tuple[str, float]] = {}
+        # Told when the accounts connected change (a sign-in finished, one removed):
+        # the helpers panel's Connect steps follow.
+        self.changed: Callable[[], None] | None = None
         self.refresh_tools()
 
     def client(self) -> Client | None:
@@ -89,6 +92,11 @@ class GoogleConnection:
                 tool = cls(wiring, free=cls.name() in self.saved.free, accounts=accounts)
                 self._registry.register(tool, module=MODULE)
                 self._registered.append(tool.definition.name)
+        if self.changed is not None:
+            try:
+                self.changed()
+            except Exception as e:
+                logger.warning("Google change not told: %s", type(e).__name__)
 
     def set_free(self, choices: Mapping[str, str]) -> None:
         """ "read" lets a tool run without asking; "ask" makes it ask. Only tools that

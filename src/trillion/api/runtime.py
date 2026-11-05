@@ -50,6 +50,8 @@ from trillion.delivery import interrupted
 from trillion.delivery.door import Door
 from trillion.files.rules import why_not
 from trillion.files.shares import EVERYONE, ShareError, Shares
+from trillion.helpers import wiring as helpers_wiring
+from trillion.helpers.live import Notifier
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
@@ -494,6 +496,14 @@ class Runtime:
     _usual_model: MeteredModel | None = None
     # Held while the preference `spend_caps` is read, changed and saved here.
     _writing_caps: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # The helpers panel's live updates (the helpers panel spec), and whether each kind
+    # of background work was held at a cap when it last asked, so a change is told.
+    helpers_live: Notifier | None = None
+    _held_last: dict[str, bool] = field(default_factory=dict)
+    # Held while the preference `helper_notes` is read, changed and saved.
+    _helper_notes: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # And `helper_conversations` (`api/helpers.py`, `helpers/wiring.py`).
+    helper_talks: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -650,6 +660,8 @@ class Runtime:
         for session in list(self.sessions):
             await session.settings_changed()
             await session.send("spend.switch", switches=banner)
+        # Background work may run on another model now, capped or not.
+        self.helpers_changed()
 
     def _usual(self, pid: str, s: Switch) -> str:
         """What a lapsed switch goes back to, in words."""
@@ -663,6 +675,8 @@ class Runtime:
         """A switch made for a month now over ends: she is back on the usual one. The
         desk tells `_spend_changed`, which picks the usual one again."""
         await self.spend.lapse(self._usual)
+        # A new month releases what a cap paused.
+        self.helpers_changed()
 
     def month_timer(self) -> None:
         """Wake at the next 1st, so the legs and the banner flip without waiting for a
@@ -750,6 +764,8 @@ class Runtime:
             found[provider_id] = caps_json(caps)
             await self.preferences.put(OWNER, spend_gate.PREF, found, self.clock())
             await self.gate.reload_caps()
+        # A raised cap releases what it paused.
+        self.helpers_changed()
 
     async def seed_caps(self, provider_ids: Iterable[str | None]) -> list[str]:
         """Give `default_for` to each of these providers that has no caps entry yet,
@@ -814,7 +830,48 @@ class Runtime:
         """Whether background work of this kind waits: her model is at its hard spend
         cap. Recorded as paused when it is (`SpendDesk.held`)."""
         usual = self.background_provider
-        return await self.spend.held(work, getattr(usual, "provider_id", None))
+        held = await self.spend.held(work, getattr(usual, "provider_id", None))
+        if self._held_last.get(work, False) != held:
+            # Paused or released at a cap: a helper of this kind says so.
+            self._held_last[work] = held
+            self.helpers_changed()
+        return held
+
+    # ── The helpers panel ──
+
+    def helpers_changed(self) -> None:
+        """Something a helper shows changed: every open page gets the list again,
+        coalesced (`helpers/live.py`). Safe to call from anywhere on the loop."""
+        if self.helpers_live is not None:
+            self.helpers_live.changed()
+
+    async def helper_note(self, conversation_id: str) -> str | None:
+        """The host note a helper's own conversation carries in its next turn, if one
+        is still to be said there (a watcher's, at its first "Talk to it")."""
+        raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
+        note = raw.get(conversation_id) if isinstance(raw, dict) else None
+        if isinstance(raw, dict) and len(raw) > 1:
+            # Notes for conversations deleted since are forgotten as they are read.
+            for other in [k for k in raw if k != conversation_id]:
+                if not await self.conversations.exists(other, OWNER):
+                    await self.helper_note_said(other)
+        return note if isinstance(note, str) else None
+
+    async def helper_note_keep(self, conversation_id: str, note: str) -> None:
+        async with self._helper_notes:
+            raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
+            kept = dict(raw) if isinstance(raw, dict) else {}
+            kept[conversation_id] = note
+            await self.preferences.put(OWNER, HELPER_NOTES_PREF, kept, self.clock())
+
+    async def helper_note_said(self, conversation_id: str) -> None:
+        """The note rode with a saved message: never again."""
+        async with self._helper_notes:
+            raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
+            if not isinstance(raw, dict) or conversation_id not in raw:
+                return
+            kept = {k: v for k, v in raw.items() if k != conversation_id}
+            await self.preferences.put(OWNER, HELPER_NOTES_PREF, kept, self.clock())
 
     async def background_work(self) -> tuple[str | None, frozenset[Work]]:
         """The provider background work runs on (the usual model's), and the kinds of
@@ -1166,6 +1223,11 @@ class Runtime:
         live = self.door.live() if self.door is not None else None
         return live.facts().host if live is not None else None
 
+    def connectors_changed(self) -> None:
+        """The MCP servers listed changed: her widget packs, and the helpers panel."""
+        self.retell_workspace()
+        self.helpers_changed()
+
     def retell_workspace(self) -> None:
         """Tell her the widget types the connectors listed now fill (widget packs, D2).
         Configured and turned on is enough: a server still starting, or down for a
@@ -1315,6 +1377,8 @@ class Runtime:
         await self.preferences.put(OWNER, ONBOARDING_PREF, "skipped", self.clock())
 
     async def close(self) -> None:
+        if self.helpers_live is not None:
+            await self.helpers_live.stop()
         if self._month_timer is not None:
             self._month_timer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1340,6 +1404,8 @@ class Runtime:
 
 
 MODEL_PREF = "model"
+# The host note each helper conversation's next turn carries, once (`api/helpers.py`).
+HELPER_NOTES_PREF = "helper_notes"
 # For trying compaction without a long conversation: a smaller budget, in tokens.
 COMPACT_AT_ENV = "TRILLION_COMPACT_AT"
 
@@ -1511,13 +1577,17 @@ async def open_runtime(
         registry,
         keychain,
         paths.home() / "mcp-logs",
-        changed=rt.retell_workspace,
+        changed=rt.connectors_changed,
         zone=rt.zone,
     )
+    # A server up or down changes what a watcher can read (Stripe's, for payments).
+    rt.mcp.moved = rt.helpers_changed
     rt.mcp_config = mcp_config
     rt.google = GoogleConnection(
         registry, keychain, google_config or paths.google_config_path(), env=env
     )
+    # A sign-in finished or an account removed: a watcher's Connect step follows.
+    rt.google.changed = rt.helpers_changed
     rt.slack = SlackConnection(registry, keychain, paths.slack_config_path())
     rt.channels = Channels(
         keychain,
@@ -1541,7 +1611,9 @@ async def open_runtime(
         skill_tool = registry.get(name)
         if isinstance(skill_tool, SkillOpen | SkillFile):
             skill_tool.bind(rt.skills)
-    schedules = SqliteScheduleStore(schedule_conn, cancelled=rt.routine_removed)
+    schedules = SqliteScheduleStore(
+        schedule_conn, cancelled=rt.routine_removed, changed=rt.helpers_changed
+    )
     rt.schedules = schedules
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
@@ -1585,6 +1657,7 @@ async def open_runtime(
         google=lambda: rt.google,
         registry=registry,
         held=rt.held,
+        changed=rt.helpers_changed,
     )
     meetings = Meetings(GoogleCalendar(lambda: rt.google), clock=lambda: rt.clock(), zone=rt.zone)
     rt.attention.add(meetings)
@@ -1685,5 +1758,13 @@ async def open_runtime(
     # A lapse picks again by itself; a switch still in force is picked here.
     if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
         await rt.use_switches()
+    # The helpers panel, live: a card raised or answered, and every change above.
+    store.changed = rt.helpers_changed
+    rt.helpers_live = Notifier(
+        lambda: helpers_wiring.built(rt),
+        lambda body: helpers_wiring.send_all(rt, body),
+        clock=lambda: rt.clock(),
+        wanted=lambda: bool(rt.sessions),
+    )
     rt.month_timer()
     return rt

@@ -32,7 +32,7 @@ from typing import Protocol
 
 from trillion.delivery import notify as system
 from trillion.scheduler import when
-from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, ScheduleStore
+from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, Schedule, ScheduleStore
 from trillion.spine.clock import Clock
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,18 @@ class Delivery:
     # What a watcher found, in the host's words, for the page only: never spoken, never
     # on the system notification, never saved as her message.
     detail: str | None = None
+    # The helper it came from, as the helpers panel names it ("routine:<id>", "Morning
+    # brief"), so the chat can say which and open its details. None for a reminder, a
+    # spend notice or any other that no helper sent.
+    helper_id: str | None = None
+    helper_name: str | None = None
+
+
+# A watcher's notice keys begin with what it found: which watcher that is.
+_WATCHER_OF_KEY = {"meeting": "meetings", "email": "email", "payment": "payments"}
+# How the panel names each watcher (`attention.settings.TITLED`, not imported: the door
+# sits below the watchers).
+_WATCHER_NAMES = {"meetings": "Meetings", "email": "Urgent email", "payments": "Payments"}
 
 
 class Quiet(Protocol):
@@ -241,6 +253,7 @@ class Door:
             marked: list[str] = []
             out: list[Delivery] = []
             zones: dict[str, str] = {}
+            schedules: dict[str, Schedule | None] = {}
             host = session.facts().host
             # A watcher's notices: shown and not spoken, the computer shows them too.
             watched: set[str] = set()
@@ -269,6 +282,7 @@ class Door:
                             quiet=held_by,
                             link=n.link,
                             detail=n.detail,
+                            **await self._helper(n, schedules),
                         )
                     )
             except BaseException:
@@ -334,6 +348,31 @@ class Door:
                 await self._notify(notice_id, held=False, silent=silent, host=host)
             except Exception as e:
                 logger.warning("notice %s was not notified: %s", notice_id, type(e).__name__)
+
+    async def _helper(
+        self, n: Notice, schedules: dict[str, Schedule | None]
+    ) -> dict[str, str | None]:
+        """The helper a notice came from, as the helpers panel names it: a watcher by its
+        find's key, a routine or timed ask by its schedule. Neither for any other."""
+        if n.source == "attention":
+            name = _WATCHER_OF_KEY.get(n.source_id.partition(":")[0])
+            if name is None:
+                return {}
+            return {"helper_id": f"watcher:{name}", "helper_name": _WATCHER_NAMES[name]}
+        if n.source_id not in schedules:
+            try:
+                schedules[n.source_id] = await self._store.get(n.source_id)
+            except Exception as e:
+                # Best effort: the notice goes without its helper's name, never held.
+                logger.warning("notice %s: its helper not read: %s", n.id, type(e).__name__)
+                schedules[n.source_id] = None
+        s = schedules[n.source_id]
+        # A reminder runs no model and is no helper. A one-off ask that has fired, or a
+        # routine since removed, has left the panel: there is nothing to open.
+        if s is None or s.kind != "ask" or s.status != "active":
+            return {}
+        kind = "routine" if s.target is not None else "ask"
+        return {"helper_id": f"{kind}:{s.id}", "helper_name": s.title}
 
     async def _due(self, n: Notice, now: int, zones: dict[str, str]) -> str:
         if n.source != "schedule":

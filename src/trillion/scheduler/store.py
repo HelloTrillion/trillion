@@ -251,6 +251,18 @@ class ScheduleStore(Protocol):
         """The latest finished run of each schedule."""
         ...
 
+    async def history(
+        self, owner_id: str, schedule_id: str, limit: int
+    ) -> list[tuple[Run, str | None]]:
+        """One schedule's finished runs, newest first, each with the conversation its
+        notice opens, if it left one."""
+        ...
+
+    async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]:
+        """The run under way now of each schedule that has one. A run past the
+        deadline `reclaim` uses is a dead process's, not under way, and left out."""
+        ...
+
     async def finish_with_notice(
         self,
         run_id: int,

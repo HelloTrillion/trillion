@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from trillion.attention.settings import WATCHERS
+from trillion.attention.settings import NAMED, WATCHERS
 from trillion.attention.store import AttentionStore
 from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean
 from trillion.memory.present import inert
@@ -58,8 +58,6 @@ _FULL = (
     f"the notes are full ({NOTES_MAX:,} characters): tell the user they can clear them in "
     "Settings, Speaking up"
 )
-# How the user names each watcher, for her read-back and the card.
-_NAMED = {"meetings": "meeting heads-ups", "email": "urgent email", "payments": "payments"}
 _SCHEMA: JSON = {
     "type": "object",
     "properties": {
@@ -77,7 +75,7 @@ def _refused(text: str, kind: str = "refused") -> ToolResult:
 
 def read_back(watcher: str, text: str) -> str:
     said = " ".join(text.split()).rstrip(" .")
-    return f"Noted for {_NAMED.get(watcher, watcher)}: {said}."
+    return f"Noted for {NAMED.get(watcher, watcher)}: {said}."
 
 
 class _NotesTool(BaseTool):
@@ -189,7 +187,7 @@ class SpeakUpWiden(_NotesTool):
 
     def describe(self, args: JSON) -> ActionSummary:
         text = inert(" ".join(str(args.get("text", "")).split()))
-        named = _NAMED.get(str(args.get("watcher", "")), "speaking up")
+        named = NAMED.get(str(args.get("watcher", "")), "speaking up")
         return ActionSummary(text=f"Speak up about {named}: {text}")
 
     def target(self, args: JSON) -> str:

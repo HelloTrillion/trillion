@@ -67,6 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
+import { bindButton, capNameOf, createHelpers, stepTarget } from './helpers';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
@@ -689,9 +690,10 @@ function renderEntry(e: Entry): HTMLElement {
       return el('p', 'host-line', e.text);
     case 'scheduled': {
       // A routine's: one line that opens what it built.
-      if (e.what === 'ready') return readyLine(e.title, e.conversationId, openReady);
+      // From a helper, its name leads the line and opens its details in the panel.
+      if (e.what === 'ready') return readyLine(e.title, e.conversationId, openReady, e.helper, showHelper);
       // Her line, or its title when she has none; Join, the detail and why she held it.
-      return renderScheduled(e, formatted);
+      return renderScheduled(e, formatted, undefined, showHelper);
     }
     case 'card': {
       if (approvals.onBoard(e.pendingId)) {
@@ -1547,6 +1549,7 @@ function connect(): void {
         },
       );
     }
+    helpers.handle(msg);
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
@@ -2106,6 +2109,69 @@ workspace.onClose((id, replaced) => {
     });
   }
 });
+
+// Her helpers, beside the chat (the helpers panel spec): one click opens the panel in
+// the workspace, one closes it. The button shows how many need you.
+const helpersBtn = $<HTMLButtonElement>('helpers-btn');
+const helpersDot = document.createElement('span');
+helpersDot.className = 'hp-badge';
+helpersDot.setAttribute('aria-hidden', 'true');
+helpersDot.hidden = true;
+helpersBtn.replaceChildren(icon('helpers', 18), helpersDot);
+const helpers = createHelpers({
+  api,
+  // The page's one polite region: what needs you, and what failed.
+  announce: (text) => {
+    announceEl.textContent = text;
+  },
+  open: (id) => openConversation(id),
+  // Straight to the connection it needs, as Home's Connect goes; else Connected tools.
+  openStep: (stepId) => {
+    workspace.close();
+    openSettings('connected');
+    const target = stepTarget(stepId);
+    if (target) void connected.start(target);
+  },
+  now: () => Date.now(),
+  phone: () => isPhone(innerWidth),
+  capName: () => capNameOf(usage?.providers),
+});
+bindButton(helpersBtn, helpersDot, helpers);
+function helpersShowing(): boolean {
+  return workspace.isOpen && workspace.showing === 'helpers';
+}
+helpersBtn.addEventListener('click', () => {
+  if (helpersShowing()) {
+    workspace.close();
+    return;
+  }
+  workspace.open('Helpers', helpers.element, 'helpers');
+  helpersBtn.setAttribute('aria-pressed', 'true');
+  helpersBtn.toggleAttribute('data-on', true);
+  void helpers.open().then(() => helpers.focus());
+});
+workspace.onClose((id) => {
+  if (id !== 'helpers') return;
+  helpers.closed();
+  helpersBtn.setAttribute('aria-pressed', 'false');
+  helpersBtn.toggleAttribute('data-on', false);
+});
+/** A helper's name in the chat: the panel opens at its details. */
+function showHelper(id: string): void {
+  if (!helpersShowing()) workspace.open('Helpers', helpers.element, 'helpers');
+  helpersBtn.setAttribute('aria-pressed', 'true');
+  helpersBtn.toggleAttribute('data-on', true);
+  void helpers.showHelper(id);
+}
+/** Open a conversation the way History does: the sidebar shows it, the panel gives way. */
+function openConversation(id: string): void {
+  workspace.close();
+  threads.close();
+  sidebar.setHidden(false);
+  if (isPhone(innerWidth)) sidebar.raise('full');
+  if (id !== view.conversationId) switchTo(id);
+  else focusInput();
+}
 
 // One click to the workspace and its board, and one to close it again.
 const workspaceBtn = $<HTMLButtonElement>('workspace-btn');

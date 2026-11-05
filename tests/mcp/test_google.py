@@ -857,3 +857,13 @@ async def test_the_picker_needs_its_key_and_a_ticket_works_once(
     assert google.describe()["files"] == {EMAIL: [{"id": "f1", "name": "Plan"}]}
     google.forget_file(EMAIL, "f1")
     assert google.describe()["files"] == {EMAIL: []}
+
+
+async def test_a_finished_sign_in_and_a_removal_are_told(google: GoogleConnection) -> None:
+    told: list[int] = []
+    google.changed = lambda: told.append(1)
+    await connect(google, "gmail")
+    assert told  # told once its tools are there, not when the browser came back
+    before = len(told)
+    await google.remove(EMAIL)
+    assert len(told) == before + 1

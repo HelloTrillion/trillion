@@ -31,6 +31,7 @@ from trillion.api.attention import create_attention_router
 from trillion.api.conversations import create_conversations_router
 from trillion.api.folders import create_folders_router
 from trillion.api.google import create_google_router
+from trillion.api.helpers import create_helpers_router
 from trillion.api.home import create_home_router
 from trillion.api.mcp import create_callback_router, create_mcp_router
 from trillion.api.persona import create_persona_router
@@ -213,6 +214,7 @@ def create_app(
     app.include_router(create_schedules_router(rt))
     app.include_router(create_routines_router(rt))
     app.include_router(create_attention_router(rt))
+    app.include_router(create_helpers_router(rt))
     app.include_router(create_home_router(rt))
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))

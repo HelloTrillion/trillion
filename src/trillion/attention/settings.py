@@ -28,11 +28,21 @@ from typing import Any
 
 PREF = "attention"
 WATCHERS = ("meetings", "email", "payments")
+# How the user names each watcher, for her read-back and the card.
+NAMED: Mapping[str, str] = MappingProxyType(
+    {"meetings": "meeting heads-ups", "email": "urgent email", "payments": "payments"}
+)
+# Each watcher's name as a helper on the panel.
+TITLED: Mapping[str, str] = MappingProxyType(
+    {"meetings": "Meetings", "email": "Urgent email", "payments": "Payments"}
+)
 # Meetings are on once Calendar is connected; email and payments send content out, so
 # they wait for the user (D2).
 _WATCHERS_ON: Mapping[str, bool] = MappingProxyType(
     {"meetings": True, "email": False, "payments": False}
 )
+# On from the start, waiting for its source: not connected is no step for the user.
+ON_UNTIL_CONNECTED = frozenset(name for name, on in _WATCHERS_ON.items() if on)
 # At least two minutes: the watcher reads every minute on a 15 s tick, so checks land
 # 60-75 s apart, and a one-minute window could fall between two of them.
 LEAD_MIN, LEAD_MAX = 2, 30

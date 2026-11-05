@@ -66,6 +66,8 @@ export type Entry =
       /** Why she held her voice ("quiet hours"); null when she didn't. */
       readonly quiet: string | null;
       readonly spoken: boolean;
+      /** The helper it came from, named as the Helpers panel names it; null when no helper sent it. */
+      readonly helper?: { readonly id: string; readonly name: string } | null;
     };
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
@@ -312,6 +314,8 @@ function scheduledOf(msg: ServerMsg): Entry | null {
     quiet: str(msg['quiet']) || null,
     // A core from before speaking up never said: then she spoke it.
     spoken: msg['spoken'] !== false,
+    // Only from a helper: a reminder, a spend notice or any other carries none.
+    ...(str(msg['helper_id']) && str(msg['helper_name']) ? { helper: { id: str(msg['helper_id']), name: str(msg['helper_name']) } } : {}),
   };
 }
 
