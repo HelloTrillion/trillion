@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from trillion.api.runtime import OWNER, Runtime
 from trillion.spend import gate as spend_gate
@@ -106,7 +107,12 @@ async def provider_row(
         "split": {"conversation": share("conversation"), "background": share("background")},
         "paused": list(await rt.spend.paused(provider_id)),
         "switched": (
-            {"to": switch.to, "label": switch.label, "until_ms": switch.until_ms}
+            {
+                "to": switch.to,
+                "label": switch.label,
+                "until_ms": switch.until_ms,
+                "line": rt.spend.line(provider_id),
+            }
             if switch is not None
             else None
         ),
@@ -157,5 +163,25 @@ def create_usage_router(rt: Runtime) -> APIRouter:
             "unpriced_tokens": sum(r["unpriced_tokens"] for r in rows),
             "providers": await provider_rows(rt, rows),
         }
+
+    return router
+
+
+def create_spend_router(rt: Runtime) -> APIRouter:
+    """What the page may do about a switch made at a cap (BRN-8). A card's own choice is
+    a tap on the page's socket, never an HTTP call (SPN-14); ending a switch spends
+    nothing more, so Settings and the banner may ask for it here, behind the session
+    token and origin check like every API call (SPN-11)."""
+    router = APIRouter(prefix="/api/spend")
+
+    @router.post("/switch/{provider_id}/end")
+    async def end_switch(provider_id: str) -> Any:
+        if rt.spend.switch(provider_id) is None:
+            return JSONResponse({"error": "no_switch"}, status_code=404)
+        if rt.gate.state(provider_id) == "capped":
+            # Going back would be refused at once: raise the cap first.
+            return JSONResponse({"error": "still_capped"}, status_code=409)
+        await rt.spend.end_switch(provider_id)
+        return {"switches": rt.spend.banner()}
 
     return router

@@ -50,7 +50,8 @@ export interface ProviderUsage {
   readonly state: SpendState;
   readonly split: { readonly conversation: number; readonly background: number };
   readonly paused: readonly string[];
-  readonly switched: { readonly to: string; readonly label: string; readonly until_ms: number } | null;
+  /** A switch made at the cap: `line` is the core's own words for it, in the user's timezone. */
+  readonly switched: { readonly to: string; readonly label: string; readonly until_ms: number; readonly line?: string | null } | null;
   readonly unestimated: { readonly units: number; readonly unit: Measure } | null;
   readonly estimate: string;
   readonly pricing_url: string | null;
@@ -138,26 +139,35 @@ const RANK: Readonly<Record<SpendState, number>> = { ok: 0, warned: 1, over_soft
 /** Where a provider stands against its caps, naming it and the cap; empty while below the warning. */
 export function spendNote(p: ProviderUsage): string {
   if (p.state === 'ok') return '';
-  if (p.state === 'capped') return `${p.name} has reached its ${capText(p.hard ?? 0, p.unit)} hard cap this month.`;
+  if (p.state === 'capped') return `${p.name} has hit its ${capText(p.hard ?? 0, p.unit)} stop for this month.`;
   const soft = capText(p.soft ?? 0, p.unit);
   const spent = amountText(p.spent, p.unit);
-  if (p.state === 'over_soft') return `${p.name} is over its ${soft} soft cap: ${spent} so far this month.`;
-  return `${p.name} is near its ${soft} soft cap: ${spent} so far this month.`;
+  if (p.state === 'over_soft') return `${p.name} is past your ${soft} warning (${spent} so far).`;
+  return `${p.name} is close to your ${soft} warning (${spent} so far).`;
+}
+
+/** A provider at a glance, for the pill's tooltip: "Anthropic: $16.40 so far. Warns at $20, stops at $50." */
+export function glance(p: ProviderUsage): string {
+  const parts = [p.soft === null ? '' : `Warns at ${capText(p.soft, p.unit)}`, p.hard === null ? '' : `stops at ${capText(p.hard, p.unit)}`].filter(Boolean);
+  const limits = parts.length ? ` ${parts.join(', ').replace(/^stops/, 'Stops')}.` : '';
+  return `${p.name}: ${amountText(p.spent, p.unit)} so far.${limits}`;
 }
 
 /**
- * The pill's colour, from the worst provider: amber near or over a soft cap, red at a
- * hard cap. `note` names each provider in that state and its cap, for the tooltip.
+ * The pill's colour, from the worst provider: amber near or past a warning, red at a
+ * stop. `note` says where each provider in that state stands, for its accessible name;
+ * `title` is the same at a glance, for its tooltip.
  */
-export function pillState(u: Usage): { state: PillState; note: string } {
+export function pillState(u: Usage): { state: PillState; note: string; title: string } {
   const providers = u.providers ?? [];
   const worst = providers.reduce((w, p) => Math.max(w, RANK[p.state] ?? 0), 0);
-  if (worst === 0) return { state: 'ok', note: '' };
-  const note = providers
-    .filter((p) => RANK[p.state] === worst)
-    .map(spendNote)
-    .join(' ');
-  return { state: worst === RANK.capped ? 'capped' : 'warned', note };
+  if (worst === 0) return { state: 'ok', note: '', title: '' };
+  const these = providers.filter((p) => RANK[p.state] === worst);
+  return {
+    state: worst === RANK.capped ? 'capped' : 'warned',
+    note: these.map(spendNote).join(' '),
+    title: these.map(glance).join(' '),
+  };
 }
 
 /** This month's usage, or null when it cannot be read: the pill hides rather than guess. */

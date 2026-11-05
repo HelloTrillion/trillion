@@ -10,7 +10,7 @@ import type { Host } from './panel';
 import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
 import type { Detail, Theme } from './prefs';
-import { type Prices, createProviderBlocks } from './spend';
+import { createProviderBlocks } from './spend';
 import { type Usage, breakdown, sentence } from './usage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
@@ -431,47 +431,31 @@ export function createUsageSettings(host: Host, load: () => Promise<Usage | null
     host,
     'usage',
     'API usage',
-    'What each provider costs this month, and the caps on it (BRN-7). At a soft cap you get a warning; at a hard cap nothing more is sent until you raise it or the month turns. A model without prices counts tokens until you give it one.',
+    'You pay each service directly. Trillion warns you at the first amount and stops using that service at the second, until you raise it or the month ends.',
   );
-  const blocks = createProviderBlocks(api, async () => {
-    await draw();
-  });
   const list = el('ul', 'settings-list');
   const total = el('p', 'settings-hint');
-  let prices: Prices = {};
-
-  async function readPrices(): Promise<Prices> {
-    try {
-      const r = await api('GET', '/api/settings/spend/prices');
-      if (!r.ok) return prices;
-      const body = (await r.json()) as { prices?: unknown };
-      return body.prices && typeof body.prices === 'object' ? (body.prices as Prices) : {};
-    } catch {
-      return prices;
-    }
-  }
-
-  async function draw(): Promise<void> {
-    const u = await load();
-    blocks.render(u?.providers ?? [], prices);
-    const rows = u ? breakdown(u) : [];
+  const byModel = el('details', 'spend-more');
+  byModel.append(el('summary', '', 'Details by model'), list, total);
+  function rows(u: Usage | null): void {
+    if (!u) return;
+    const found = breakdown(u);
     list.replaceChildren(
-      ...(rows.length
-        ? rows.map((r) => {
+      ...(found.length
+        ? found.map((r) => {
             const item = el('li', 'settings-path', r.name);
             item.append(el('br'), el('span', 'settings-hint', r.detail));
             return item;
           })
-        : [el('li', 'settings-empty', u ? 'Nothing yet this month.' : 'Usage could not be read right now.')]),
+        : [el('li', 'settings-empty', 'Nothing yet this month.')]),
     );
-    total.textContent = u ? sentence(u) : '';
+    total.textContent = sentence(u);
   }
-
-  finish(blocks.element, el('h3', '', 'By model'), list, total);
+  const blocks = createProviderBlocks(api, load, rows);
+  finish(blocks.element, byModel);
   return {
     async open() {
-      prices = await readPrices();
-      await draw();
+      await blocks.open();
       host.showModal();
     },
   };

@@ -310,7 +310,7 @@ export function createListeningSettings(dialog: Host, api: Api, microphones?: Mi
       // The core gave hearing its caps with the key; a change to them follows.
       const capsWrong = kind === OFF ? null : await spend.save(api);
       if (capsWrong) {
-        status.textContent = `Hearing is saved, but its caps are not: ${capsWrong}`;
+        status.textContent = `Hearing is saved, but its limits are not: ${capsWrong}`;
         return;
       }
       dialog.close();

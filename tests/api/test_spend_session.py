@@ -318,6 +318,26 @@ async def tap(
     return answers[0]
 
 
+async def test_the_card_names_its_provider(rt: Runtime) -> None:
+    _session, _page, card = await capped_card(rt)
+    assert card["name"] == "Anthropic"
+
+
+async def test_a_choice_that_fails_unexpectedly_is_refused_so_the_page_can_retry(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    session, page, card = await capped_card(rt)
+
+    async def broken(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("disk on fire 80.0")
+
+    monkeypatch.setattr(rt.spend, "choose", broken)
+    answer = await tap(session, page, card["id"], "raise", 80.0)
+    assert answer == {"type": "spend.refused", "id": card["id"], "code": "failed"}
+    # Logged by kind only: no amounts.
+    assert "80" not in caplog.text
+
+
 async def test_raise_writes_the_cap_and_she_can_go_on(rt: Runtime) -> None:
     session, page, card = await capped_card(rt)
     for low in (50.0, -1.0, 20_000.0):  # not above what is spent; nor past $10,000
@@ -440,6 +460,20 @@ async def test_switch_uses_the_model_until_the_1st_and_says_so(rt: Runtime) -> N
     assert switch["provider_id"] == "anthropic" and switch["until_ms"] == until
     assert switch["line"].startswith("Using gemma until ")
     assert page.all("model")[-1]["model"]["model"] == "gemma"
+
+
+async def test_a_switch_ended_early_puts_the_usual_model_back_and_tells_the_page(
+    rt: Runtime,
+) -> None:
+    session, page, card = await capped_card(rt)
+    await tap(session, page, card["id"], "switch:local/gemma")
+    assert rt.provider is not None and rt.provider.provider_id == "local"
+    await caps(rt, anthropic={"soft": 20, "hard": 100, "warn_pct": 80})
+    ended = await rt.spend.end_switch("anthropic")
+    assert ended is not None and ended.to == "local/gemma"
+    assert rt.provider is not None and rt.provider.provider_id == "anthropic"
+    assert page.all("spend.switch")[-1]["switches"] == []
+    assert await rt.spend.end_switch("anthropic") is None
 
 
 async def test_switches_are_followed_to_their_end_and_warn_where_she_is(rt: Runtime) -> None:

@@ -292,7 +292,7 @@ export function createSpeechSettings(dialog: Host, api: Api): SpeechSettings {
       // The core gave the voice its caps with the key; a change to them follows.
       const capsWrong = kind === OFF ? null : await spend.save(api);
       if (capsWrong) {
-        status.textContent = `The voice is saved, but its caps are not: ${capsWrong}`;
+        status.textContent = `The voice is saved, but its limits are not: ${capsWrong}`;
         return;
       }
       dialog.close();

@@ -206,6 +206,7 @@ class Card:
         return {
             "id": self.id,
             "provider_id": self.provider_id,
+            "name": friendly(self.provider_id),
             "leg": self.leg,
             "cap": self.cap,
             "unit": self.unit,
@@ -385,6 +386,24 @@ class SpendDesk:
             for pid, s in sorted(self._switches.items())
             if self.switch(pid) is not None
         ]
+
+    def line(self, provider_id: str | None) -> str | None:
+        """The banner's words for a provider's switch in force, in the user's timezone."""
+        s = self.switch(provider_id)
+        return using_line(s.label, s.until_ms, self._zone()) if s is not None else None
+
+    async def end_switch(self, provider_id: str) -> Switch | None:
+        """End a provider's switch now, at the user's word from Settings or the banner:
+        the usual one is picked again. None when there was none."""
+        s = self.switch(provider_id)
+        if s is None:
+            return None
+        del self._switches[provider_id]
+        await self._save_switches()
+        log.info("spend switch ended early: %s", provider_id)
+        if self.changed is not None:
+            await self.changed((), frozenset({s.leg}))
+        return s
 
     async def lapse(self, usual: Callable[[str, Switch], str]) -> bool:
         """End every switch made for another month, and keep a note for her to say she

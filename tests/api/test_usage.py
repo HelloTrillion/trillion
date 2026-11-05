@@ -197,6 +197,7 @@ from trillion.api.runtime import ListenSettings, SpeechSettings  # noqa: E402
 from trillion.brain.config import ModelSettings  # noqa: E402
 from trillion.spend import desk, prices  # noqa: E402
 from trillion.spend.gate import PREF as CAPS_PREF  # noqa: E402
+from trillion.spend.ledger import Row  # noqa: E402
 
 SONNET = ModelSettings(kind="anthropic", model="claude-sonnet-5-5")
 CAPS = {"soft": 20, "hard": 50, "warn_pct": 80}
@@ -430,6 +431,8 @@ def test_a_switch_is_shown_with_its_end(make: Any) -> None:
         "to": "local/gemma",
         "label": "gemma",
         "until_ms": until,
+        # The banner's own words, in the user's timezone.
+        "line": "Using gemma until Nov 1",
     }
     # What it was switched to is in use, so it is listed too.
     assert found["local"]["switched"] is None
@@ -475,3 +478,58 @@ def test_caps_in_tokens_count_priced_tokens_in_the_split_too(make: Any) -> None:
     row = providers(app)["custom:llm.example.com"]
     assert (row["spent"], row["unestimated"]) == (8000, None)
     assert row["split"] == {"conversation": 4000, "background": 4000}
+
+
+# ── Ending a switch early: POST /api/spend/switch/{provider_id}/end ─────
+
+
+def _switched(app: App) -> None:
+    in_chicago(app)
+    on_model(app, SONNET)
+    set_caps(app, anthropic=CAPS)
+    switch = desk.Switch(
+        leg="model",
+        to="local/gemma",
+        label="gemma",
+        month="2026-10",
+        until_ms=1793509200000,
+        settings=ModelSettings(
+            kind="local", model="gemma", base_url="http://localhost:11434/v1"
+        ).to_json(),
+    )
+    call(app, app.rt.preferences.put, OWNER, desk.SWITCH_PREF, {"anthropic": switch.to_json()}, NOW)
+    call(app, app.rt.spend.load)
+
+
+END = "/api/spend/switch/anthropic/end"
+
+
+def test_a_switch_ends_early_once_its_provider_has_budget_again(make: Any) -> None:
+    app = make()
+    _switched(app)
+    got = app.client.post(END, json={}, headers=app.auth)
+    assert got.status_code == 200
+    assert got.json() == {"switches": []}
+    assert app.rt.spend.switch("anthropic") is None
+    assert call(app, app.rt.preferences.get, OWNER, desk.SWITCH_PREF) == {}
+    # Nothing left to end.
+    assert app.client.post(END, json={}, headers=app.auth).status_code == 404
+
+
+def test_a_switch_is_not_ended_while_its_provider_is_still_capped(make: Any) -> None:
+    app = make()
+    _switched(app)
+    app.rt.ledger.add(Row("anthropic", "conversation", "tokens", 0, 50.0, NOW))
+    got = app.client.post(END, json={}, headers=app.auth)
+    assert got.status_code == 409
+    assert got.json() == {"error": "still_capped"}
+    assert app.rt.spend.switch("anthropic") is not None
+
+
+def test_ending_a_switch_needs_the_token_and_our_origin(make: Any) -> None:
+    app = make()
+    _switched(app)
+    assert app.client.post(END, json={}).status_code == 401
+    other = {**app.auth, "origin": "https://evil.example"}
+    assert app.client.post(END, json={}, headers=other).status_code == 403
+    assert app.rt.spend.switch("anthropic") is not None

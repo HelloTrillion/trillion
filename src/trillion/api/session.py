@@ -3823,6 +3823,10 @@ class Session:
             await rt.spend.choose(card_id, choice, amount, self.id, "tap", options)
         except spend.Refused as e:
             await self._send("spend.refused", id=card_id, code=e.code)
+        except Exception as e:
+            # The page waits on an answer: it hears this one failed, and may try again.
+            logger.warning("spend choice failed in session %s: %s", self.id, type(e).__name__)
+            await self._send("spend.refused", id=card_id, code="failed")
 
     async def _voice_capped(self, e: VoiceCapped) -> None:
         await self._spend_capped("voice", e.provider_id, self._capped_line("voice", e.provider_id))

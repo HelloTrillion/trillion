@@ -67,7 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { createSpendCards, speakCapped } from './spend';
+import { createSpendCards, createSwitchLines, speakCapped } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
@@ -154,13 +154,13 @@ const statusEl = $('status');
 const bannerEl = $('banner');
 // Under the banner: a switch made at a spend cap while it lasts, then any spend card,
 // one put off with "stop for now" kept there as a line to choose again from (BRN-8).
-const switchEl = document.createElement('p');
-switchEl.className = 'banner spend-switch';
-switchEl.setAttribute('role', 'status');
-switchEl.hidden = true;
+const switchEl = document.createElement('div');
+switchEl.className = 'spend';
 const spendEl = document.createElement('div');
 spendEl.className = 'spend';
 bannerEl.after(switchEl, spendEl);
+// Its api is read when a button is pressed, long after the page has set it up.
+const switchLines = createSwitchLines(switchEl, (method, path, body) => api(method, path, body));
 const transcriptEl = $('transcript');
 const form = $<HTMLFormElement>('ask');
 const input = $<HTMLTextAreaElement>('input');
@@ -611,8 +611,11 @@ function entries(): readonly Entry[] {
   return merged.entries;
 }
 
-function send(body: Record<string, unknown>): void {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(body));
+/** Write to the core on this page's socket. False when it is not open, so nothing went. */
+function send(body: Record<string, unknown>): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(body));
+  return true;
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────
@@ -829,9 +832,7 @@ function render(): void {
     (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model in Settings to get started.' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
-  const switches = ready ? view.switches.map((line) => (/[.!?]$/.test(line) ? line : `${line}.`)).join(' ') : '';
-  switchEl.hidden = !switches;
-  if (switchEl.textContent !== switches) switchEl.textContent = switches;
+  drawSwitches();
 
   // Introductions need no model: the app writes the names, not her.
   const canType = ready && (!noModel || introducing);
@@ -1097,16 +1098,26 @@ async function refreshUsage(): Promise<Usage | null> {
     const at = pillState(usage);
     usageBtn.classList.toggle('warned', at.state === 'warned');
     usageBtn.classList.toggle('capped', at.state === 'capped');
-    const words = at.note ? `${sentence(usage)} ${at.note}` : sentence(usage);
     usageBtn.textContent = pill(usage);
-    usageBtn.title = words;
-    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${words}`);
+    usageBtn.title = at.title || sentence(usage);
+    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${sentence(usage)}${at.note ? ` ${at.note}` : ''}`);
   }
+  drawSwitches();
   return usage;
 }
 const usageSettings = createUsageSettings(panel.host('usage'), refreshUsage, api);
 // A spend card's choice goes on this page's own socket, and only from a click (SPN-14).
-const spendCards = createSpendCards(spendEl, (body) => send(body));
+/** Each switch in force, with whether its usual provider is still at its cap. */
+function drawSwitches(): void {
+  switchLines.render(view.link === 'ready' ? view.switches : [], (pid) => {
+    const p = usage?.providers?.find((x) => x.provider_id === pid);
+    return { name: p?.name ?? 'the usual one', capped: p?.state === 'capped' };
+  });
+}
+const spendCards = createSpendCards(spendEl, (body) => send(body), undefined, (card, status) => {
+  // Raised on a provider that has a switch: the banner asks whether to go back now.
+  if (status === 'raised') switchLines.raised(card.provider_id);
+});
 const HER = 'Her';
 const YOU = 'You';
 const COMPUTER = 'This computer';

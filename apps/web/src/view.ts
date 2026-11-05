@@ -117,7 +117,7 @@ export interface View {
   readonly draft: string | null;
   readonly banner: string | null;
   /** While a spend cap has her on something else until the 1st: "Using Gemma until Dec 1". */
-  readonly switches: readonly string[];
+  readonly switches: readonly { readonly provider_id: string; readonly line: string }[];
   /** Her board for this conversation (the workspace's widgets), or null when she has made none. */
   readonly board: Board | null;
   /** Reads of this conversation still running in the background, as the core last counted them. */
@@ -481,10 +481,12 @@ function step(view: View, msg: ServerMsg): View {
     case 'spend.switch': {
       // Each switch made at a spend cap, as the core words it; an empty list clears them.
       const list = Array.isArray(msg['switches']) ? (msg['switches'] as unknown[]) : [];
-      const lines = list
-        .map((s) => (s && typeof s === 'object' ? str((s as Record<string, unknown>)['line']) : ''))
-        .filter((line) => line !== '');
-      return { ...view, switches: lines };
+      const switches = list.flatMap((s) => {
+        const o = s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
+        const line = str(o['line']);
+        return line ? [{ provider_id: str(o['provider_id']), line }] : [];
+      });
+      return { ...view, switches };
     }
     case 'jobs': {
       const count = msg['count'];

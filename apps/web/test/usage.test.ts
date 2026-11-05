@@ -153,19 +153,26 @@ describe('amounts in their unit', () => {
 
 describe('the pill at the caps', () => {
   it('is plain while every provider is below its warning', () => {
-    expect(pillState(withProviders([provider({})]))).toEqual({ state: 'ok', note: '' });
-    expect(pillState(month([priced], 1.2, 0))).toEqual({ state: 'ok', note: '' });
+    expect(pillState(withProviders([provider({})]))).toEqual({ state: 'ok', note: '', title: '' });
+    expect(pillState(month([priced], 1.2, 0))).toEqual({ state: 'ok', note: '', title: '' });
   });
 
-  it('is amber near the soft cap, and names the provider and cap', () => {
+  it('is amber close to the warning, and names the provider and its limits', () => {
     const s = pillState(withProviders([provider({ state: 'warned', spent: 16.4 })]));
     expect(s.state).toBe('warned');
-    expect(s.note).toBe('Anthropic is near its $20 soft cap: $16.40 so far this month.');
+    expect(s.note).toBe('Anthropic is close to your $20 warning ($16.40 so far).');
+    expect(s.title).toBe('Anthropic: $16.40 so far. Warns at $20, stops at $50.');
   });
 
-  it('is amber over the soft cap', () => {
-    const s = pillState(withProviders([provider({ state: 'over_soft', spent: 22 })]));
-    expect(s).toEqual({ state: 'warned', note: 'Anthropic is over its $20 soft cap: $22.00 so far this month.' });
+  it('is amber past the warning', () => {
+    const s = pillState(withProviders([provider({ state: 'over_soft', spent: 23.1 })]));
+    expect(s.state).toBe('warned');
+    expect(s.note).toBe('Anthropic is past your $20 warning ($23.10 so far).');
+  });
+
+  it('says a provider with no limits has none', () => {
+    const s = pillState(withProviders([provider({ state: 'warned', soft: 20, hard: null })]));
+    expect(s.title).toBe('Anthropic: $3.20 so far. Warns at $20.');
   });
 
   it('is red at a hard cap, the worst state across providers winning', () => {
@@ -175,7 +182,9 @@ describe('the pill at the caps', () => {
         provider({ provider_id: 'elevenlabs', leg: 'voice', name: 'ElevenLabs', state: 'capped', hard: 50 }),
       ]),
     );
-    expect(s).toEqual({ state: 'capped', note: 'ElevenLabs has reached its $50 hard cap this month.' });
+    expect(s.state).toBe('capped');
+    expect(s.note).toBe('ElevenLabs has hit its $50 stop for this month.');
+    expect(s.title).toBe('ElevenLabs: $3.20 so far. Warns at $20, stops at $50.');
   });
 });
 

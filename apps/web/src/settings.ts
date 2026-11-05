@@ -370,7 +370,7 @@ export function createSettings(dialog: Host, api: Api): Settings {
       // The core gave the provider its caps with the key; a change to them follows.
       const capsWrong = await spend.save(api);
       if (capsWrong) {
-        status.textContent = `The model is saved, but its caps are not: ${capsWrong}`;
+        status.textContent = `The model is saved, but its limits are not: ${capsWrong}`;
         return;
       }
       dialog.close();
