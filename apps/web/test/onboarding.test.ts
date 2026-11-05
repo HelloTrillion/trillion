@@ -151,6 +151,13 @@ describe('onboarding', () => {
     expect(texts(nowhere).some((t) => t.includes("you're Sam. Change"))).toBe(true);
   });
 
+  it('says a paid key comes with caps, set in the same step, and a local model costs nothing', () => {
+    const o = named(NOTHING);
+    expect(said(o)).toContain(
+      'A paid key comes with a monthly cap: a warning at $20 and a stop at $50, which you can change when you add it. A model on this computer costs nothing and has no cap.',
+    );
+  });
+
   it('names the free choice and the paid one at every rung', () => {
     let o = configured(named(NOTHING), { ...NOTHING, model: 'model-a' });
     expect(o.step).toBe('voice');

@@ -67,7 +67,8 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { type Usage, fetchUsage, pill, sentence } from './usage';
+import { createSpendCards, speakCapped } from './spend';
+import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
 import { createWorkspace } from './workspace';
 import { type Kit, createKit, isKit } from './kit';
@@ -151,6 +152,15 @@ function takeToken(): string | null {
 const canvas = $<HTMLCanvasElement>('galaxy');
 const statusEl = $('status');
 const bannerEl = $('banner');
+// Under the banner: a switch made at a spend cap while it lasts, then any spend card,
+// one put off with "stop for now" kept there as a line to choose again from (BRN-8).
+const switchEl = document.createElement('p');
+switchEl.className = 'banner spend-switch';
+switchEl.setAttribute('role', 'status');
+switchEl.hidden = true;
+const spendEl = document.createElement('div');
+spendEl.className = 'spend';
+bannerEl.after(switchEl, spendEl);
 const transcriptEl = $('transcript');
 const form = $<HTMLFormElement>('ask');
 const input = $<HTMLTextAreaElement>('input');
@@ -819,6 +829,9 @@ function render(): void {
     (noModel && !introducing ? 'Nobody is here to answer yet. Choose a model in Settings to get started.' : '');
   bannerEl.hidden = !banner;
   bannerEl.textContent = banner;
+  const switches = ready ? view.switches.map((line) => (/[.!?]$/.test(line) ? line : `${line}.`)).join(' ') : '';
+  switchEl.hidden = !switches;
+  if (switchEl.textContent !== switches) switchEl.textContent = switches;
 
   // Introductions need no model: the app writes the names, not her.
   const canType = ready && (!noModel || introducing);
@@ -1080,13 +1093,20 @@ async function refreshUsage(): Promise<Usage | null> {
   usage = await fetchUsage(api);
   usageBtn.hidden = usage === null;
   if (usage) {
+    // Amber near or over a soft cap, red at a hard one; the words name the provider and cap.
+    const at = pillState(usage);
+    usageBtn.classList.toggle('warned', at.state === 'warned');
+    usageBtn.classList.toggle('capped', at.state === 'capped');
+    const words = at.note ? `${sentence(usage)} ${at.note}` : sentence(usage);
     usageBtn.textContent = pill(usage);
-    usageBtn.title = sentence(usage);
-    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${sentence(usage)}`);
+    usageBtn.title = words;
+    usageBtn.setAttribute('aria-label', `${pill(usage)}. ${words}`);
   }
   return usage;
 }
-const usageSettings = createUsageSettings(panel.host('usage'), refreshUsage);
+const usageSettings = createUsageSettings(panel.host('usage'), refreshUsage, api);
+// A spend card's choice goes on this page's own socket, and only from a click (SPN-14).
+const spendCards = createSpendCards(spendEl, (body) => send(body));
 const HER = 'Her';
 const YOU = 'You';
 const COMPUTER = 'This computer';
@@ -1634,6 +1654,10 @@ function connect(): void {
     if (msg.type === 'mic.start' || msg.type === 'mic.stop' || stuck) cutIn = false;
     // Whether a turn was running before this message, for an error that ends Home's build.
     const busyBefore = view.busy;
+    if (msg.type === 'session' || msg.type.startsWith('spend.')) spendCards.handle(msg);
+    // At her voice's cap the app's line may be said in the computer's own voice.
+    speakCapped(msg, view.speech === null);
+    if (msg.type === 'spend.resolved' || (msg.type === 'error' && msg['code'] === 'capped')) void refreshUsage();
     apply(reduce(view, msg));
     // A routine finished somewhere else: its conversation is marked until opened.
     const built = unreadFor(msg, view);

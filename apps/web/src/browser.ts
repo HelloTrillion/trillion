@@ -10,6 +10,7 @@ import type { Host } from './panel';
 import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
 import type { Detail, Theme } from './prefs';
+import { type Prices, createProviderBlocks } from './spend';
 import { type Usage, breakdown, sentence } from './usage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
@@ -425,30 +426,52 @@ export function createBoardSettings(
 
 // ── API usage ────────────────────────────────────────────────────────────
 
-export function createUsageSettings(host: Host, load: () => Promise<Usage | null>): { open(): Promise<void> } {
+export function createUsageSettings(host: Host, load: () => Promise<Usage | null>, api: Api): { open(): Promise<void> } {
   const { finish } = section(
     host,
     'usage',
     'API usage',
-    'What the model providers report for this month so far. A model without prices counts tokens only. Voice services are not counted yet.',
+    'What each provider costs this month, and the caps on it (BRN-7). At a soft cap you get a warning; at a hard cap nothing more is sent until you raise it or the month turns. A model without prices counts tokens until you give it one.',
   );
+  const blocks = createProviderBlocks(api, async () => {
+    await draw();
+  });
   const list = el('ul', 'settings-list');
   const total = el('p', 'settings-hint');
-  finish(list, total);
+  let prices: Prices = {};
+
+  async function readPrices(): Promise<Prices> {
+    try {
+      const r = await api('GET', '/api/settings/spend/prices');
+      if (!r.ok) return prices;
+      const body = (await r.json()) as { prices?: unknown };
+      return body.prices && typeof body.prices === 'object' ? (body.prices as Prices) : {};
+    } catch {
+      return prices;
+    }
+  }
+
+  async function draw(): Promise<void> {
+    const u = await load();
+    blocks.render(u?.providers ?? [], prices);
+    const rows = u ? breakdown(u) : [];
+    list.replaceChildren(
+      ...(rows.length
+        ? rows.map((r) => {
+            const item = el('li', 'settings-path', r.name);
+            item.append(el('br'), el('span', 'settings-hint', r.detail));
+            return item;
+          })
+        : [el('li', 'settings-empty', u ? 'Nothing yet this month.' : 'Usage could not be read right now.')]),
+    );
+    total.textContent = u ? sentence(u) : '';
+  }
+
+  finish(blocks.element, el('h3', '', 'By model'), list, total);
   return {
     async open() {
-      const u = await load();
-      const rows = u ? breakdown(u) : [];
-      list.replaceChildren(
-        ...(rows.length
-          ? rows.map((r) => {
-              const item = el('li', 'settings-path', r.name);
-              item.append(el('br'), el('span', 'settings-hint', r.detail));
-              return item;
-            })
-          : [el('li', 'settings-empty', u ? 'Nothing yet this month.' : 'Usage could not be read right now.')]),
-      );
-      total.textContent = u ? sentence(u) : '';
+      prices = await readPrices();
+      await draw();
       host.showModal();
     },
   };

@@ -522,6 +522,17 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+/* Near or over a soft cap, and at a hard cap (BRN-7). The title names the provider. */
+.usage-pill.warned {
+  color: var(--color-amber);
+  border-color: var(--color-amber);
+}
+
+.usage-pill.capped {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
 /* A round button that holds one icon: Settings, the sidebar, New conversation. */
 .icon-btn {
   display: inline-grid;
@@ -1192,6 +1203,100 @@ body[data-sidebar='hidden'] .workspace {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-1);
+}
+
+/* ── Spend caps: the switch line, the card at a cap, and the caps in Settings ── */
+
+.spend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spend[hidden] {
+  display: none;
+}
+
+.spend-live {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.banner.spend-switch {
+  margin: 0;
+  border-color: var(--color-accent);
+}
+
+.spend-stopped {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-color: var(--color-danger);
+}
+
+.spend-card {
+  border-color: var(--color-danger);
+}
+
+.spend-card .card-title {
+  color: var(--color-danger);
+}
+
+.spend-line {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.spend-card .settings-row {
+  margin-bottom: 10px;
+}
+
+.spend-card .settings-row input {
+  flex: 1 1 120px;
+}
+
+.spend-card .card-actions {
+  flex-wrap: wrap;
+}
+
+.spend-step,
+.spend-caps,
+.spend-providers,
+.spend-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spend-provider {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.spend-provider h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.spend-provider p {
+  margin: 0;
+}
+
+.spend-provider a,
+.spend-step a {
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+.spend-provider > button {
+  align-self: flex-start;
+}
+
+.settings-warn.spend-capped {
+  border-color: var(--color-danger);
 }
 
 /* ── Ask bar ─────────────────────────────────────────────────────────── */

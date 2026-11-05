@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type Usage, type UsageRow, breakdown, dollars, fetchUsage, pill, sentence, tokens } from '../src/usage';
+import { type ProviderUsage, type Usage, type UsageRow, amountText, breakdown, capText, dollars, fetchUsage, pill, pillState, sentence, tokens } from '../src/usage';
 import type { Api } from '../src/settings';
 
 const row = (over: Partial<UsageRow>): UsageRow => ({
@@ -111,5 +111,81 @@ describe('fetching usage', () => {
   it('is the usage when the reply is valid', async () => {
     const valid = month([priced], 1.2, 0);
     expect(await fetchUsage(reply(valid))).toEqual(valid);
+  });
+});
+
+const provider = (over: Partial<ProviderUsage>): ProviderUsage => ({
+  provider_id: 'anthropic',
+  leg: 'model',
+  name: 'Anthropic',
+  model: 'claude-test',
+  spent: 3.2,
+  unit: 'dollars',
+  soft: 20,
+  hard: 50,
+  warn_pct: 80,
+  state: 'ok',
+  split: { conversation: 2.1, background: 1.1 },
+  paused: [],
+  switched: null,
+  unestimated: null,
+  estimate: 'Roughly $0.40 an hour of talk on Sonnet (about 40 short turns), plus routines.',
+  pricing_url: 'https://example.com/pricing',
+  ...over,
+});
+const withProviders = (providers: ProviderUsage[]): Usage => ({ ...month([priced], 1.2, 0), providers });
+
+describe('amounts in their unit', () => {
+  it('names a cap the way the core does', () => {
+    expect(capText(50, 'dollars')).toBe('$50');
+    expect(capText(12.5, 'dollars')).toBe('$12.50');
+    expect(capText(12_000_000, 'tokens')).toBe('12M tokens');
+    expect(capText(1_000_000, 'chars')).toBe('1M characters');
+    expect(capText(90_000, 'seconds')).toBe('1,500 minutes');
+  });
+
+  it('names an amount spent', () => {
+    expect(amountText(16.5, 'dollars')).toBe('$16.50');
+    expect(amountText(340_000, 'tokens')).toBe('340k tokens');
+    expect(amountText(60, 'seconds')).toBe('1 minute');
+  });
+});
+
+describe('the pill at the caps', () => {
+  it('is plain while every provider is below its warning', () => {
+    expect(pillState(withProviders([provider({})]))).toEqual({ state: 'ok', note: '' });
+    expect(pillState(month([priced], 1.2, 0))).toEqual({ state: 'ok', note: '' });
+  });
+
+  it('is amber near the soft cap, and names the provider and cap', () => {
+    const s = pillState(withProviders([provider({ state: 'warned', spent: 16.4 })]));
+    expect(s.state).toBe('warned');
+    expect(s.note).toBe('Anthropic is near its $20 soft cap: $16.40 so far this month.');
+  });
+
+  it('is amber over the soft cap', () => {
+    const s = pillState(withProviders([provider({ state: 'over_soft', spent: 22 })]));
+    expect(s).toEqual({ state: 'warned', note: 'Anthropic is over its $20 soft cap: $22.00 so far this month.' });
+  });
+
+  it('is red at a hard cap, the worst state across providers winning', () => {
+    const s = pillState(
+      withProviders([
+        provider({ state: 'warned' }),
+        provider({ provider_id: 'elevenlabs', leg: 'voice', name: 'ElevenLabs', state: 'capped', hard: 50 }),
+      ]),
+    );
+    expect(s).toEqual({ state: 'capped', note: 'ElevenLabs has reached its $50 hard cap this month.' });
+  });
+});
+
+describe('the breakdown in its own units', () => {
+  it('shows characters and minutes as what they are, never as tokens', () => {
+    const voice = row({ provider: 'elevenlabs', model: 'v3', unit: 'chars', input_tokens: 12_000, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0.6 });
+    const ears = row({ provider: 'deepgram', model: 'flux', unit: 'seconds', input_tokens: 600, output_tokens: 0, cache_read_tokens: 0, cost_usd: null, unpriced: 600, unpriced_turns: 2 });
+    expect(breakdown(month([voice, ears], 0.6, 0))).toEqual([
+      { name: 'elevenlabs · v3', detail: '$0.60 · 12k characters' },
+      { name: 'deepgram · flux', detail: 'No price · 10 minutes' },
+    ]);
   });
 });

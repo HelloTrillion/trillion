@@ -116,6 +116,8 @@ export interface View {
   /** Text for the message box, once: a refused message, never lost. The page clears it. */
   readonly draft: string | null;
   readonly banner: string | null;
+  /** While a spend cap has her on something else until the 1st: "Using Gemma until Dec 1". */
+  readonly switches: readonly string[];
   /** Her board for this conversation (the workspace's widgets), or null when she has made none. */
   readonly board: Board | null;
   /** Reads of this conversation still running in the background, as the core last counted them. */
@@ -142,6 +144,7 @@ export const INITIAL: View = {
   pending: null,
   draft: null,
   banner: null,
+  switches: [],
   board: null,
   jobs: 0,
 };
@@ -206,6 +209,7 @@ const ERRORS: Readonly<Record<string, string>> = {
   busy: 'Still answering the last message.',
   routine_building: "She's building this conversation's routine right now. Try again in a moment.",
   bad_message: 'That message could not be sent.',
+  capped: 'A spending cap was reached, so nothing more was sent.',
   internal: 'Something failed inside Trillion. The log has the details.',
   unknown_type: 'This page and Trillion may be different versions: Trillion did not understand what the page sent. Restart Trillion, then reload the page.',
 };
@@ -465,6 +469,8 @@ function step(view: View, msg: ServerMsg): View {
         held: [],
         pending: null,
         banner: null,
+        // A switch in force is sent again after this, for any conversation.
+        switches: [],
         // Another conversation: its own board follows, if it has one, and its own count of reads.
         board: null,
         jobs: 0,
@@ -472,6 +478,14 @@ function step(view: View, msg: ServerMsg): View {
     }
     case 'board':
       return { ...view, board: boardOf(msg['board']) };
+    case 'spend.switch': {
+      // Each switch made at a spend cap, as the core words it; an empty list clears them.
+      const list = Array.isArray(msg['switches']) ? (msg['switches'] as unknown[]) : [];
+      const lines = list
+        .map((s) => (s && typeof s === 'object' ? str((s as Record<string, unknown>)['line']) : ''))
+        .filter((line) => line !== '');
+      return { ...view, switches: lines };
+    }
     case 'jobs': {
       const count = msg['count'];
       return { ...view, jobs: typeof count === 'number' && count > 0 ? Math.floor(count) : 0 };
@@ -640,6 +654,12 @@ function step(view: View, msg: ServerMsg): View {
         // One leg down: she cannot hear right now, and typing still works (VOI-14).
         const why = LISTEN_ERRORS[str(msg['kind'])] ?? 'Listening failed.';
         return { ...view, mic: false, hearing: '', busy: false, banner: sentence || `${why} You can still type.` };
+      }
+      if (code === 'capped') {
+        // At a spend cap: the app's own line (BRN-8). The card follows as its own message.
+        const text = sentence || ERRORS['capped'] || '';
+        const ears = msg['leg'] === 'hearing' ? { mic: false, hearing: '' } : {};
+        return { ...view, ...ears, busy: false, banner: text };
       }
       if (code === 'speech') {
         // Her voice failed; the reply itself carries on as text (VOI-14).

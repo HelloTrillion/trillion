@@ -485,7 +485,7 @@ type Rung = (typeof LADDER)[number];
 
 const ASK: Readonly<Record<Rung, string>> = {
   model:
-    "Now the part where I get something to think with. Free: a model running on this computer through Ollama or LM Studio, and nothing leaves the machine. Paid: your own Anthropic or OpenAI key, and they bill you for what you use. Until one is chosen, everything I say is a script.",
+    "Now the part where I get something to think with. Free: a model running on this computer through Ollama or LM Studio, and nothing leaves the machine. Paid: your own Anthropic or OpenAI key, and they bill you for what you use. A paid key comes with a monthly cap: a warning at $20 and a stop at $50, which you can change when you add it. A model on this computer costs nothing and has no cap. Until one is chosen, everything I say is a script.",
   voice:
     "Next, a voice. Free: this computer's own, which works at once and sounds like a sat nav. Paid: ElevenLabs with your own key, which sounds like a person and is billed by them. Or I stay in text.",
   listening:
