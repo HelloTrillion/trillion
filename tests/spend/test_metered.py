@@ -15,6 +15,7 @@ from trillion.brain.types import (
     Pricing,
     ProviderError,
     SystemBlock,
+    TextBlock,
     TextDelta,
     ToolSchema,
     Usage,
@@ -109,6 +110,8 @@ class Model:
             for ev in self.events:
                 if self.gate is not None and isinstance(ev, Done):
                     await self.gate.wait()
+                if isinstance(ev, Broken):
+                    raise ProviderError("overloaded")
                 yield ev
         finally:
             self.closed += 1
@@ -139,8 +142,41 @@ async def meter_for(caps: Any = CAPS, user_prices: Any = None) -> tuple[Meter, S
     )
 
 
-async def ask(provider: Any) -> list[ModelEvent]:
-    return [ev async for ev in provider.stream(system=[], messages=[], tools=[], max_tokens=10)]
+async def ask(
+    provider: Any, *, system: Sequence[SystemBlock] = (), messages: Sequence[Msg] = ()
+) -> list[ModelEvent]:
+    return [
+        ev
+        async for ev in provider.stream(system=system, messages=messages, tools=[], max_tokens=10)
+    ]
+
+
+# 400 characters sent: an estimate of 100 tokens.
+PROMPT = [SystemBlock(text="s" * 200)]
+ASKED = Msg(role="user", blocks=(TextBlock(text="u" * 200),))
+PROMPT_TOKENS = 100
+
+
+class Broken:
+    """Where a stream fails partway."""
+
+
+class Reporting(Model):
+    """A model that says what it has used so far, as Anthropic's does once a reply
+    starts."""
+
+    reports_usage_so_far = True
+
+    def __init__(self, start: Usage, *events: Any) -> None:
+        super().__init__(*events)
+        self.start = start
+
+    async def stream(  # type: ignore[override]
+        self, *, on_usage: Any = None, **kw: Any
+    ) -> AsyncIterator[ModelEvent]:
+        on_usage(self.start)
+        async for ev in super().stream(**kw):
+            yield ev
 
 
 def over(ledger: Ledger, pid: str, dollars: float = 60.0) -> None:
@@ -272,17 +308,113 @@ async def test_a_task_cancelled_while_the_row_is_written_still_counts_it() -> No
     assert ledger.spent("anthropic").dollars > 0
 
 
-async def test_a_stream_cut_off_before_its_usage_records_nothing() -> None:
+async def test_a_stream_cut_off_before_its_usage_records_an_estimate() -> None:
+    """Barge-in, a dropped draft: what was sent and streamed was billed, so it is
+    counted at four characters a token."""
     meter, store, ledger, _ = await meter_for()
-    inner = Model()
+    inner = Model(TextDelta(text="x" * 400), Done(stop_reason="end", usage=USAGE))
     metered = meter.model(inner, "anthropic")
-    stream = metered.stream(system=[], messages=[], tools=[], max_tokens=10)
+    stream = metered.stream(system=PROMPT, messages=[ASKED], tools=[], max_tokens=10)
+    await anext(stream)
+    await stream.aclose()
+    (row,) = store.rows
+    assert row["usage"] == Usage(input_tokens=PROMPT_TOKENS, output_tokens=100)
+    assert row["cost_usd"] == prices.price("anthropic", "claude-opus-5-5", row["usage"])
+    assert ledger.spent("anthropic").dollars == pytest.approx(row["cost_usd"])
+    # The provider's own stream is closed too.
+    assert inner.closed == 1
+
+
+async def test_a_task_cancelled_before_done_records_once() -> None:
+    meter, store, ledger, _ = await meter_for()
+    inner = Model(TextDelta(text="x" * 40), Done(stop_reason="end", usage=USAGE))
+    inner.gate = asyncio.Event()
+    metered = meter.model(inner, "anthropic")
+
+    async def read() -> None:
+        async for _ in metered.stream(system=PROMPT, messages=[ASKED], tools=[], max_tokens=10):
+            pass
+
+    task = asyncio.create_task(read())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(5):
+        await asyncio.sleep(0)
+    (row,) = store.rows
+    assert row["usage"] == Usage(input_tokens=PROMPT_TOKENS, output_tokens=10)
+    assert ledger.spent("anthropic").dollars == pytest.approx(row["cost_usd"])
+
+
+async def test_usage_the_provider_reported_before_it_stopped_is_what_is_recorded() -> None:
+    """Anthropic says the prompt's tokens when the reply starts: a reply stopped
+    partway records those, and no fewer output tokens than were streamed."""
+    meter, store, _, _ = await meter_for()
+    start = Usage(input_tokens=5_000, cache_read_tokens=20_000, output_tokens=1)
+    inner = Reporting(start, TextDelta(text="x" * 80), Done(stop_reason="end", usage=USAGE))
+    metered = meter.model(inner, "anthropic")
+    stream = metered.stream(system=PROMPT, messages=[ASKED], tools=[], max_tokens=10)
+    await anext(stream)
+    await stream.aclose()
+    (row,) = store.rows
+    assert row["usage"] == Usage(input_tokens=5_000, cache_read_tokens=20_000, output_tokens=20)
+
+
+async def test_an_error_partway_records_what_was_used() -> None:
+    meter, store, _, _ = await meter_for()
+    inner = Model(TextDelta(text="x" * 40), Broken())
+    metered = meter.model(inner, "anthropic")
+    with pytest.raises(ProviderError):
+        await ask(metered, system=PROMPT, messages=[ASKED])
+    (row,) = store.rows
+    assert row["usage"] == Usage(input_tokens=PROMPT_TOKENS, output_tokens=10)
+
+
+async def test_an_error_before_anything_came_back_records_nothing() -> None:
+    meter, store, _, _ = await meter_for()
+    metered = meter.model(Model(Broken()), "anthropic")
+    with pytest.raises(ProviderError):
+        await ask(metered, system=PROMPT, messages=[ASKED])
+    assert store.rows == []
+
+
+async def test_a_server_that_sends_no_usage_is_counted_by_its_characters() -> None:
+    meter, store, ledger, _ = await meter_for()
+    pid = "custom:llm.example.com"
+    inner = Model(TextDelta(text="x" * 400), Done(stop_reason="end", usage=Usage()))
+    await ask(meter.model(inner, pid), system=PROMPT, messages=[ASKED])
+    (row,) = store.rows
+    assert row["usage"] == Usage(input_tokens=PROMPT_TOKENS, output_tokens=100)
+    assert row["cost_usd"] is None
+    assert ledger.spent(pid).units == PROMPT_TOKENS + 100
+
+
+async def test_a_local_model_with_no_usage_still_records_nothing() -> None:
+    meter, store, _, _ = await meter_for()
+    inner = Model(TextDelta(text="x" * 400), Done(stop_reason="end", usage=Usage()))
+    await ask(meter.model(inner, "local"), system=PROMPT, messages=[ASKED])
+    stream = meter.model(Model(TextDelta(text="x" * 400)), "local").stream(
+        system=PROMPT, messages=[ASKED], tools=[], max_tokens=10
+    )
     await anext(stream)
     await stream.aclose()
     assert store.rows == []
-    assert ledger.spent("anthropic").dollars == 0
-    # The provider's own stream is closed too.
-    assert inner.closed == 1
+
+
+async def test_a_stream_read_to_its_done_records_once_and_never_estimates() -> None:
+    meter, store, _, _ = await meter_for()
+    inner = Reporting(
+        Usage(input_tokens=7), TextDelta(text="x" * 400), Done(stop_reason="end", usage=USAGE)
+    )
+    metered = meter.model(inner, "anthropic")
+    stream = metered.stream(system=PROMPT, messages=[ASKED], tools=[], max_tokens=10)
+    async for ev in stream:
+        if isinstance(ev, Done):
+            break
+    await stream.aclose()
+    assert [r["usage"] for r in store.rows] == [USAGE]
 
 
 async def test_a_call_that_used_nothing_records_nothing() -> None:

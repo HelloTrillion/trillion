@@ -525,6 +525,16 @@ async def test_a_thousand_openrouter_calls_at_a_dollar_reach_the_cap() -> None:
         await gate.check_model(pid)
 
 
+async def test_openrouter_calls_without_a_reported_cost_still_reach_the_cap() -> None:
+    pid = "custom:openrouter.ai"
+    gate, ledger = await gate_for({pid: {"soft": 20, "hard": 50, "warn_pct": 80}})
+    spend(ledger, pid, cost=None, quantity=100_000_000)
+    assert gate.unestimated(pid) is None
+    assert gate.state(pid) == "capped"
+    with pytest.raises(ModelCapped):
+        await gate.check_model(pid)
+
+
 async def test_caps_in_tokens_count_priced_calls_too() -> None:
     """A provider priced after its caps were set in tokens still counts every token."""
     pid = "custom:llm.example.com"
@@ -534,3 +544,20 @@ async def test_caps_in_tokens_count_priced_calls_too() -> None:
     assert gate.counted(pid) == 2100
     assert gate.state(pid) == "capped"
     assert gate.unestimated(pid) is None
+
+
+async def test_a_new_timezone_in_another_month_never_fails_open_on_a_failed_reload() -> None:
+    # 20:00 on 31 October in New York is already November in Tokyo.
+    ny_evening = 1793491200000  # 2026-10-31T20:00 in New York (00:00 UTC on 1 Nov)
+    zone = ["America/New_York"]
+    rows = Failing()
+    ledger = Ledger(rows, Clock(ny_evening), lambda: zone[0])
+    await ledger.load()
+    gate = Gate(ledger, source(CAPS))
+    await gate.reload_caps()
+    ledger.add(Row("anthropic", "conversation", "tokens", 0, 50.0, ny_evening))
+    zone[0] = "Asia/Tokyo"
+    rows.broken = True
+    with pytest.raises(ModelCapped):
+        await gate.check_model("anthropic")
+    assert ledger.stale

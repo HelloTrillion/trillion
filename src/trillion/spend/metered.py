@@ -10,7 +10,11 @@ stopped: the check is made only before a call.
 
 **After a call** (a model stream's `Done`, a sentence's audio, a hearing stream
 closed) it records one usage row, priced on its own and never as part of a sum, with
-the caller and conversation of `caller.current()`, and the ledger counts it. A row
+the caller and conversation of `caller.current()`, and the ledger counts it. A model
+call that may cost and reports no usage, or stops before its `Done` (a barge-in, a
+dropped draft, an error partway), is still recorded once: with the usage its provider
+reported so far, else estimated at four characters a token of what was sent and
+streamed. A row
 that cannot be written is logged (its kind only, never an amount) and still counted,
 so the caps hold for the rest of this run.
 
@@ -21,25 +25,33 @@ counted for whoever started it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
+import json
 import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from typing import Any, Protocol
 
 from trillion.brain.types import (
+    ContextBlock,
     Done,
     ModelEvent,
     ModelProvider,
     Msg,
     Pricing,
     SystemBlock,
+    TextBlock,
+    TextDelta,
+    ToolResultBlock,
     ToolSchema,
+    ToolUse,
+    ToolUseBlock,
     Usage,
 )
 from trillion.spend import prices
 from trillion.spend.caller import Call, current
-from trillion.spend.gate import Gate
+from trillion.spend.gate import UNCAPPED, Gate
 from trillion.spend.ledger import Ledger, Row
 from trillion.spend.types import Unit
 from trillion.voice.types import (
@@ -313,6 +325,11 @@ class MeteredModel(_Wrapper):
         pricing = self.inner.pricing()
         return pricing.cost(usage) if pricing is not None else None
 
+    def _estimates(self) -> bool:
+        """Whether a call with no usage is estimated: one that may cost. A local model,
+        or one nothing says the cap of, records only what it reports, as before."""
+        return self.provider_id is not None and self.provider_id not in UNCAPPED
+
     async def stream(
         self,
         *,
@@ -325,31 +342,107 @@ class MeteredModel(_Wrapper):
         call = current()
         await self._meter.gate.check_model(self.provider_id)
         # `quick` is passed only when asked for: a provider with nothing to tune may
-        # not take it.
-        extra = {"quick": True} if quick else {}
+        # not take it. `on_usage` only to one that says it reports usage so far.
+        extra: dict[str, Any] = {"quick": True} if quick else {}
+        so_far: list[Usage] = []
+        if getattr(self.inner, "reports_usage_so_far", False):
+            extra["on_usage"] = so_far.append
         events = self.inner.stream(
             system=system, messages=messages, tools=tools, max_tokens=max_tokens, **extra
         )
+        # Every call is recorded once: at its `Done`, or when it stops without one.
+        recorded = False
+        streamed = 0
+        failed = False
+
+        def sent() -> int:
+            return _prompt_chars(system, messages, tools)
+
         try:
             async for ev in events:
-                if isinstance(ev, Done) and ev.usage != Usage():
-                    # Recorded before it is passed on: a reader that stops at `Done`
-                    # never loses the row.
-                    await self._meter.settle(
-                        self._meter.record(
-                            call,
-                            provider_id=self.provider_id,
-                            provider=self.inner.name,
-                            model=self.inner.model,
-                            usage=ev.usage,
-                            unit="tokens",
-                            quantity=_tokens(ev.usage),
-                            price=functools.partial(self._cost, ev.usage),
-                        )
-                    )
+                if isinstance(ev, TextDelta):
+                    streamed += len(ev.text)
+                elif isinstance(ev, ToolUse):
+                    streamed += len(ev.name) + len(json.dumps(dict(ev.args), default=str))
+                elif isinstance(ev, Done) and not recorded:
+                    recorded = True
+                    usage = ev.usage
+                    if usage == Usage() and self._estimates():
+                        # A server that sends no usage still bills what it was sent.
+                        usage = _estimate(sent(), streamed)
+                    if usage != Usage():
+                        # Recorded before it is passed on: a reader that stops at
+                        # `Done` never loses the row.
+                        await self._meter.settle(self._record(call, usage))
                 yield ev
+        except Exception:
+            failed = True
+            raise
         finally:
-            await _close(events)
+            try:
+                await _close(events)
+            finally:
+                # Stopped without a `Done` (a barge-in, a dropped draft, an error
+                # partway): what was used so far is counted, as the provider reported
+                # it, else estimated. An error before anything came back used nothing.
+                if not recorded and self._estimates() and (streamed or so_far or not failed):
+                    recorded = True
+                    usage = _stopped(so_far[-1] if so_far else None, sent(), streamed)
+                    if usage != Usage():
+                        await self._meter.settle(self._record(call, usage))
+
+    def _record(self, call: Call, usage: Usage) -> Coroutine[Any, Any, None]:
+        return self._meter.record(
+            call,
+            provider_id=self.provider_id,
+            provider=self.inner.name,
+            model=self.inner.model,
+            usage=usage,
+            unit="tokens",
+            quantity=_tokens(usage),
+            price=functools.partial(self._cost, usage),
+        )
+
+
+# Characters to a token, roughly, for a call whose usage is not known.
+_CHARS_PER_TOKEN = 4
+
+
+def _prompt_chars(
+    system: Sequence[SystemBlock], messages: Sequence[Msg], tools: Sequence[ToolSchema]
+) -> int:
+    """The characters of text a call sent: its system prompt, messages and tools."""
+    n = sum(len(s.text) for s in system)
+    for m in messages:
+        for b in m.blocks:
+            if isinstance(b, TextBlock | ContextBlock):
+                n += len(b.text)
+            elif isinstance(b, ToolResultBlock):
+                n += len(b.content)
+            elif isinstance(b, ToolUseBlock):
+                n += len(b.name) + len(json.dumps(dict(b.args), default=str))
+    for t in tools:
+        n += len(t.name) + len(t.description) + len(json.dumps(dict(t.input_schema), default=str))
+    return n
+
+
+def _estimate(sent: int, streamed: int) -> Usage:
+    """Usage at four characters a token, rounded up."""
+    return Usage(
+        input_tokens=math.ceil(sent / _CHARS_PER_TOKEN),
+        output_tokens=math.ceil(streamed / _CHARS_PER_TOKEN),
+    )
+
+
+def _stopped(reported: Usage | None, sent: int, streamed: int) -> Usage:
+    """A call that stopped without its `Done`: the usage its provider reported so far,
+    with no fewer output tokens than were streamed; else the estimate."""
+    guess = _estimate(sent, streamed)
+    if reported is None:
+        return guess
+    return dataclasses.replace(
+        reported, output_tokens=max(reported.output_tokens, guess.output_tokens)
+    )
 
 
 class MeteredVoice(_Wrapper):

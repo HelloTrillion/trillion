@@ -155,6 +155,30 @@ async def test_anthropic_request_and_stream() -> None:
     assert body["tools"][0]["name"] == "file_read"
 
 
+async def test_anthropic_says_the_usage_so_far_as_the_reply_goes() -> None:
+    """The prompt's tokens as soon as the reply starts, so a reply stopped before its
+    end can still be counted (BRN-7)."""
+    seen: list[Usage] = []
+    p = anthropic_provider(lambda r: stream_of(ANTHROPIC_STREAM))
+    assert p.reports_usage_so_far
+    stream = p.stream(
+        system=SYSTEM, messages=HISTORY, tools=TOOLS, max_tokens=64, on_usage=seen.append
+    )
+    first = await anext(stream)
+    assert first == TextDelta(text="On ")
+    assert seen == [
+        Usage(input_tokens=12, output_tokens=1, cache_read_tokens=100, cache_write_tokens=7)
+    ]
+    await stream.aclose()
+    seen.clear()
+    _ = [ev async for ev in p.stream(
+        system=SYSTEM, messages=HISTORY, tools=TOOLS, max_tokens=64, on_usage=seen.append
+    )]  # fmt: skip
+    assert seen[-1] == Usage(
+        input_tokens=12, output_tokens=9, cache_read_tokens=100, cache_write_tokens=7
+    )
+
+
 async def test_anthropic_replays_its_own_turn_unchanged() -> None:
     bodies: list[Any] = []
 

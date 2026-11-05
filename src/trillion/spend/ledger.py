@@ -18,6 +18,10 @@ from typing import Any, Protocol
 from trillion.spend.types import Caller, Unit
 from trillion.zones import month_start
 
+# The provider id migration 017 left on every OpenAI-compatible row from before spend
+# caps: which address it was cannot be told now, so it counts against no cap.
+BEFORE_CAPS = "openai-compatible"
+
 
 class UsageSource(Protocol):
     async def spend_since(
@@ -119,38 +123,49 @@ class Ledger:
         self._owner = owner_id
         self._loaded = False
         self._month: tuple[str, int] | None = None
+        # The timezone `_month` was found in.
+        self._month_zone: str | None = None
         self._tallies: dict[str | None, _Tally] = {}
         # While a load reads, the calls counted meanwhile, replayed once it has read.
         # None when no load is reading.
         self._held: list[Row] | None = None
-        # The timezone moved this month's start: only a reload counts from the new one.
+        # This month's start moved (a new month, or a new timezone): only a reload
+        # counts from the new one.
         self.stale = False
 
+    def _zone(self) -> str:
+        return self._tz() if callable(self._tz) else self._tz
+
     def _month_now(self) -> tuple[str, int]:
-        zone = self._tz() if callable(self._tz) else self._tz
-        return month_start(self._clock(), zone)
+        return month_start(self._clock(), self._zone())
 
     def _ready(self) -> None:
         if not self._loaded:
             raise RuntimeError("the spend ledger is not loaded yet")
 
     def _roll(self) -> None:
-        """Keep the month current. A new month starts at zero: every row in it is
-        counted by `add`. A new timezone in the same month moves the start, which
-        only a reload can count from, so it is marked `stale` and nothing counted
-        is dropped meanwhile."""
+        """Keep the month current. Whenever its start moves, only a reload can say what
+        counts from the new one, so it is marked `stale`.
+
+        Time passing into a new month, in the same timezone, starts at zero: nothing
+        before the new start can count, and every row after it is counted by `add`, so
+        zero is right even if the reload fails. A new timezone, which can move the
+        month either way, drops nothing: what was counted keeps answering until a
+        reload replaces it, so a reload that fails never lets a call through."""
         now = self._month_now()
+        zone = self._zone()
         if self._month is None or now == self._month:
+            self._month_zone = zone
             return
-        if now[0] != self._month[0]:
+        if zone == self._month_zone and now[1] > self._month[1]:
             self._tallies = {}
-        else:
-            self.stale = True
+        self.stale = True
         self._month = now
+        self._month_zone = zone
 
     def roll(self) -> None:
-        """Bring the month up to date without reading anything: a new month starts at
-        zero, and a moved start sets `stale`. Raises before the first load."""
+        """Bring the month up to date without reading anything: a moved start sets
+        `stale` (see `_roll`). Raises before the first load."""
         self._ready()
         self._roll()
 
@@ -164,7 +179,8 @@ class Ledger:
         first load finishes, `spent` refuses to answer."""
         if self._held is not None:
             raise RuntimeError("the spend ledger is already loading")
-        month = self._month_now()
+        zone = self._zone()
+        month = month_start(self._clock(), zone)
         cut = self._clock()
         self._held = []
         try:
@@ -181,6 +197,7 @@ class Ledger:
             tally.count(r["caller"], r["units"], None, r["unpriced"], 0)
         held, self._held = self._held, None
         self._month, self._tallies, self._loaded, self.stale = month, tallies, True, False
+        self._month_zone = zone
         for row in held:
             if row.at_ms > cut:
                 self._count(row)

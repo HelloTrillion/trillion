@@ -299,3 +299,51 @@ async def test_a_store_without_the_total_counts_its_unpriced_units() -> None:
     source.go.set()
     await ledger.load()
     assert ledger.spent("x").all_units == 30
+
+
+async def test_a_timezone_that_moves_the_month_never_wipes_what_was_spent(
+    store: SqliteConversationStore,
+) -> None:
+    # 20:00 on 31 October in New York is already 1 November in Tokyo.
+    ny = "America/New_York"
+    now = int(datetime(2026, 10, 31, 20, tzinfo=ZoneInfo(ny)).timestamp() * 1000)
+    await record(store, now - 10 * 60 * MINUTE, cost=49.0)
+    zone = {"now": ny}
+    ledger = Ledger(store, Clock(now), lambda: zone["now"])
+    await ledger.load()
+    assert ledger.spent("anthropic").dollars == 49.0
+    zone["now"] = "Asia/Tokyo"
+    # Another month by the new zone: only a reload can say what counts there, and
+    # nothing counted is dropped meanwhile.
+    assert ledger.spent("anthropic").dollars == 49.0
+    assert ledger.stale
+    zone["now"] = ny
+    assert ledger.spent("anthropic").dollars == 49.0
+    assert ledger.stale
+    await ledger.load()
+    assert not ledger.stale
+    assert ledger.spent("anthropic").dollars == 49.0
+
+
+async def test_a_reload_after_a_moved_month_counts_from_the_new_start(
+    store: SqliteConversationStore,
+) -> None:
+    ny = "America/New_York"
+    now = int(datetime(2026, 10, 31, 20, tzinfo=ZoneInfo(ny)).timestamp() * 1000)
+    await record(store, now - 10 * 60 * MINUTE, cost=49.0)
+    zone = {"now": ny}
+    ledger = Ledger(store, Clock(now), lambda: zone["now"])
+    await ledger.load()
+    zone["now"] = "Asia/Tokyo"
+    await ledger.load()
+    # November in Tokyo: October's $49 is last month there.
+    assert ledger.spent("anthropic").dollars == 0.0
+
+
+async def test_the_new_month_asks_for_a_reload_too(store: SqliteConversationStore) -> None:
+    clock = Clock(at(2026, 10, 31, 23, 58))
+    ledger = Ledger(store, clock, ZONE)
+    await ledger.load()
+    clock.now = NOV_1 + MINUTE
+    ledger.roll()
+    assert ledger.stale

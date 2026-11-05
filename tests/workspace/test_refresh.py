@@ -115,6 +115,8 @@ async def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterato
     rt = await open_runtime(persona=tmp_path, secrets=MemoryStore(), env={})
     clock = Clock()
     rt.clock = clock
+    # The ledger counts from the month the new clock is in, as a restart would.
+    await rt.ledger.load()
     filler = Filler()
     rt.provider = filler  # type: ignore[assignment]
     page = Page(rt)

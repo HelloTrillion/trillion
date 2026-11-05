@@ -239,6 +239,15 @@ def _fail(e: anthropic.APIError) -> ProviderError:
     return ProviderError("provider_error", type(e).__name__)
 
 
+def _usage(u: Any) -> Usage:
+    return Usage(
+        input_tokens=u.input_tokens or 0,
+        output_tokens=u.output_tokens or 0,
+        cache_read_tokens=u.cache_read_input_tokens or 0,
+        cache_write_tokens=u.cache_creation_input_tokens or 0,
+    )
+
+
 def _client(api_key: str, http_client: Any = None) -> AsyncAnthropic:
     # One retry: a person is waiting, and the loop reports a failure plainly.
     return AsyncAnthropic(api_key=api_key, max_retries=1, http_client=http_client)
@@ -246,6 +255,9 @@ def _client(api_key: str, http_client: Any = None) -> AsyncAnthropic:
 
 class AnthropicProvider:
     name = NAME
+    # `stream` takes `on_usage`, told the usage so far as the reply goes: the prompt's
+    # tokens when it starts, so a reply stopped before its end is still counted.
+    reports_usage_so_far = True
 
     def __init__(
         self,
@@ -285,6 +297,7 @@ class AnthropicProvider:
         tools: Sequence[ToolSchema],
         max_tokens: int,
         quick: bool = False,
+        on_usage: Callable[[Usage], None] | None = None,
     ) -> AsyncIterator[ModelEvent]:
         key = prefix_key(self.model, system, tools, messages[0] if messages else None)
         request: dict[str, Any] = {
@@ -308,6 +321,8 @@ class AnthropicProvider:
             client = _client(self._api_key(), self._http_client)
             async with client.messages.stream(**request) as stream:
                 async for event in stream:
+                    if on_usage is not None and event.type in ("message_start", "message_delta"):
+                        on_usage(_usage(stream.current_message_snapshot.usage))
                     if event.type == "text" and event.text:
                         yield TextDelta(text=event.text)
                 final = await stream.get_final_message()
@@ -327,15 +342,9 @@ class AnthropicProvider:
                     args=args if isinstance(args, dict) else {},
                     invalid=None if ok else "arguments were not a JSON object",
                 )
-        u = final.usage
         yield Done(
             stop_reason=_STOP.get(str(final.stop_reason), "other"),
-            usage=Usage(
-                input_tokens=u.input_tokens or 0,
-                output_tokens=u.output_tokens or 0,
-                cache_read_tokens=u.cache_read_input_tokens or 0,
-                cache_write_tokens=u.cache_creation_input_tokens or 0,
-            ),
+            usage=_usage(final.usage),
             raw=ProviderRaw(provider=NAME, prefix_key=key, content=tuple(content)),
             model=str(final.model or ""),
         )

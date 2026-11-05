@@ -16,6 +16,8 @@ from trillion.spend import prices
 from trillion.spend.prices import (
     TABLE,
     Rate,
+    ceiling_rate,
+    estimate,
     hearing_provider_id,
     parse_user_prices,
     price,
@@ -591,3 +593,31 @@ def test_each_provider_links_its_pricing_page() -> None:
     assert prices.pricing_url("custom:example.com") is None
     assert prices.pricing_url("local") is None
     assert prices.pricing_url(None) is None
+
+
+def test_a_call_openrouter_did_not_cost_is_estimated_at_the_dearest_table_rate() -> None:
+    dearest = max(
+        max(
+            r.input,
+            r.output,
+            r.cache_read,
+            r.cache_write,
+            *(
+                (
+                    r.long_prompt.input,
+                    r.long_prompt.output,
+                    r.long_prompt.cache_read,
+                    r.long_prompt.cache_write,
+                )
+                if r.long_prompt
+                else ()
+            ),
+        )
+        for r in TABLE.values()
+        if r.unit == "tokens"
+    )
+    assert prices.FALLBACK_TOKEN_RATE == dearest
+    assert ceiling_rate("custom:openrouter.ai", "tokens") == dearest
+    assert estimate("custom:openrouter.ai", "tokens", 1_000_000) == pytest.approx(dearest)
+    # Still unpriced on its own: the row says nothing priced it.
+    assert price("custom:openrouter.ai", "x/y", Usage(input_tokens=10)) is None

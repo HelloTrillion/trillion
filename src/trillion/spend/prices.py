@@ -30,6 +30,7 @@ from trillion.spend.types import Unit
 
 __all__ = [
     "ANY",
+    "FALLBACK_TOKEN_RATE",
     "REPORTS_COST",
     "TABLE",
     "Rate",
@@ -285,13 +286,28 @@ def ceiling_rate(provider_id: str, unit: Unit) -> float | None:
     (the highest of any model's rates, which is its output rate in practice), per
     thousand characters, or per minute. It prices a call nothing priced, such as a
     model newer than the table, so that call is never counted for less than it may
-    cost. None when the table has no rate in that unit for the provider."""
+    cost. A provider that reports each call's cost (`REPORTS_COST`) and has no table
+    rate falls back to `FALLBACK_TOKEN_RATE` for tokens. None when nothing gives a
+    rate in that unit for the provider."""
     rates = [
         _highest(r) if unit == "tokens" else r.per_unit
         for (pid, _model), r in TABLE.items()
         if pid == provider_id and r.unit == unit
     ]
-    return max(rates) if rates else None
+    if rates:
+        return max(rates)
+    if unit == "tokens" and provider_id in REPORTS_COST:
+        # A call it did not say the cost of (no `usage.cost`) is still counted.
+        return FALLBACK_TOKEN_RATE
+    return None
+
+
+# For a provider that reports each call's cost, a call it sent no cost for is priced
+# at the dearest token rate anywhere in the table, of any provider and any part
+# (input, output, cache, long prompt), per million tokens. Its models can be any
+# vendor's, so no lower rate is safe: the call is never counted for less than it
+# may cost, and it still counts toward a dollar cap.
+FALLBACK_TOKEN_RATE = max(_highest(r) for r in TABLE.values() if r.unit == "tokens")
 
 
 # The talk the estimates assume (TALK_INPUT and TALK_OUTPUT a turn) is about 20 input
