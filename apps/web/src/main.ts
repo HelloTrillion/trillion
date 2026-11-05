@@ -2119,9 +2119,6 @@ helpersDot.hidden = true;
 helpersBtn.replaceChildren(icon('helpers', 18), helpersDot);
 const helpers = createHelpers({
   api,
-  send: (body) => {
-    send(body);
-  },
   open: (id) => openConversation(id),
   // Google and Stripe are both connected from Connected tools.
   openStep: () => {

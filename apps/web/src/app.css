@@ -7660,9 +7660,22 @@ button.reminders-open {
   padding: 0 12px 12px;
 }
 
-.hp-step {
+.hp-step,
+.hp-row-note {
   margin: 0;
   font-size: 13px;
+}
+
+.hp-row-note {
+  color: var(--color-text-1);
+}
+
+.hp-row-note:empty {
+  display: none;
+}
+
+.hp-inline > .hp-open {
+  align-self: flex-start;
 }
 
 /* On a phone the workspace is the full-height sheet: the panel uses its whole width. */

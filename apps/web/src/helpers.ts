@@ -3,13 +3,13 @@
  * panel beside the chat. She heads it; her helpers sit under her by what they are
  * doing: Needs you, Working, Idle.
  *
- * The panel only displays. It starts no run. An approval waiting on you is the same card
- * as anywhere else, and a tap on it goes the usual way (SPN-14). Rows are kept by id and
+ * The panel only displays. It starts no run, and answers no card: an approval or a
+ * question waiting on you opens the conversation it was raised in, where the card waits,
+ * so the tap and what she is told of it belong there (SPN-14). Rows are kept by id and
  * updated in place on each `helpers.changed`, so focus and scroll survive a push. Every
  * piece of text is set with textContent, never parsed as markup.
  */
 
-import { createApprovalStrip, type Card, type Strip } from './approvals';
 import type { Api } from './settings';
 import type { ServerMsg } from './view';
 
@@ -164,8 +164,6 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
 
 export interface HelpersDeps {
   readonly api: Api;
-  /** Write to the core on this page's socket: an approval's tap goes this way. */
-  readonly send: (body: Record<string, unknown>) => void;
   /** Open a conversation, the way History opens one. */
   readonly open: (conversationId: string) => void;
   /** Open the Settings that do a step ("connect:email"). */
@@ -199,8 +197,7 @@ interface Row {
   readonly name: HTMLElement;
   readonly status: HTMLElement;
   readonly inline: HTMLElement;
-  strip: Strip | null;
-  steps: string;
+  waits: string;
   helper: Helper;
 }
 
@@ -292,60 +289,62 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     const inline = el('div', 'hp-inline');
     main.addEventListener('click', () => void showDetails(h.id));
     li.append(main, inline);
-    return { li, dot, name, status, inline, strip: null, steps: '', helper: h };
+    return { li, dot, name, status, inline, waits: '', helper: h };
   }
+
+  // What opens the conversation a card or a question waits in.
+  const OPEN_WORDS: Readonly<Record<'approval' | 'question', string>> = { approval: 'Open to approve', question: 'Open to reply' };
 
   function drawWaiting(r: Row): void {
     const h = r.helper;
-    const cards = h.waiting.filter((w) => w.type === 'approval');
-    if (cards.length && !r.strip) {
-      r.strip = createApprovalStrip({
-        onApprove: (id) => d.send({ type: 'confirm', pending_id: id }),
-        onDecline: (id) => d.send({ type: 'cancel', pending_id: id }),
-        onDismiss: () => undefined,
-      });
-      // The summary is the panel's one live region: the card says nothing by itself here.
-      r.strip.el.querySelector('[aria-live]')?.removeAttribute('aria-live');
-      r.strip.el.removeAttribute('role');
-      r.inline.prepend(r.strip.el);
-    }
-    if (r.strip) {
-      r.strip.draw(
-        cards.map((w) => ({
-          card: {
-            kind: 'card',
-            pendingId: w.id,
-            summary: '',
-            expiresAt: 0,
-            tapOnly: true,
-            status: 'waiting',
-            note: '',
-            toolLabel: w.text,
-            reason: null,
-          } satisfies Card,
-          mode: 'ask' as const,
-          askedAt: w.at_ms ?? d.now(),
-        })),
-      );
-      if (!cards.length) {
-        r.strip.dispose();
-        r.strip.el.remove();
-        r.strip = null;
-      }
-    }
+    const opens = [...new Set(h.waiting.map((w) => w.type).filter((t): t is 'approval' | 'question' => t !== 'step'))];
     const steps = h.waiting.filter((w) => w.type === 'step');
-    const key = steps.map((w) => `${w.id}|${w.text}`).join('\n');
-    if (key !== r.steps) {
-      r.steps = key;
-      for (const old of [...r.inline.querySelectorAll('.hp-step')]) old.remove();
-      for (const w of steps) {
-        const step = el('p', 'hp-step');
-        const go = el('button', 'quiet', 'Open Settings');
-        go.type = 'button';
-        go.addEventListener('click', () => d.openStep(w.id));
-        step.append(el('span', '', `${w.text}. `), go);
-        r.inline.append(step);
+    const key = [...opens, ...steps.map((w) => `${w.id}|${w.text}`)].join('\n');
+    if (key === r.waits) return;
+    r.waits = key;
+    const note = el('p', 'hp-row-note');
+    const parts: HTMLElement[] = opens.map((type) => {
+      const go = el('button', 'quiet hp-open', OPEN_WORDS[type]);
+      go.type = 'button';
+      go.addEventListener('click', () => {
+        go.disabled = true;
+        void talkTo(h.id, r.helper.conversation_id).then((wrong) => {
+          go.disabled = false;
+          note.textContent = wrong ?? '';
+        });
+      });
+      return go;
+    });
+    for (const w of steps) {
+      const step = el('p', 'hp-step');
+      const go = el('button', 'quiet', 'Open Settings');
+      go.type = 'button';
+      go.addEventListener('click', () => d.openStep(w.id));
+      step.append(el('span', '', `${w.text}. `), go);
+      parts.push(step);
+    }
+    r.inline.replaceChildren(...parts, ...(parts.length ? [note] : []));
+  }
+
+  /**
+   * Open a helper's conversation, the way History opens one: `known` when the list
+   * gives it, else the one the core picks (made if need be). What went wrong, or null.
+   */
+  async function talkTo(id: string, known: string | null): Promise<string | null> {
+    if (known) {
+      d.open(known);
+      return null;
+    }
+    try {
+      const r = await d.api('POST', `/api/helpers/${encodeURIComponent(id)}/conversation`, {});
+      const body = r.ok ? ((await r.json()) as { conversation_id?: unknown }) : null;
+      if (typeof body?.conversation_id === 'string') {
+        d.open(body.conversation_id);
+        return null;
       }
+      return r.status === 404 ? 'There is no conversation for it yet.' : NOT_DONE;
+    } catch {
+      return NOT_REACHED;
     }
   }
 
@@ -392,7 +391,6 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     }
     for (const [id, r] of rows) {
       if (seen.has(id)) continue;
-      r.strip?.dispose();
       r.li.remove();
       rows.delete(id);
     }
@@ -546,18 +544,10 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     if (!id) return;
     dNote.textContent = '';
     talk.disabled = true;
-    void (async () => {
-      try {
-        const r = await d.api('POST', `/api/helpers/${encodeURIComponent(id)}/conversation`, {});
-        const body = r.ok ? ((await r.json()) as { conversation_id?: unknown }) : null;
-        if (typeof body?.conversation_id === 'string') d.open(body.conversation_id);
-        else dNote.textContent = r.status === 404 ? 'There is no conversation for it yet.' : NOT_DONE;
-      } catch {
-        dNote.textContent = NOT_REACHED;
-      } finally {
-        talk.disabled = false;
-      }
-    })();
+    void talkTo(id, null).then((wrong) => {
+      talk.disabled = false;
+      dNote.textContent = wrong ?? '';
+    });
   });
 
   async function load(): Promise<void> {

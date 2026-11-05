@@ -84,7 +84,7 @@ A new module, `src/trillion/helpers/`, builds the list. It reads; it never write
 - Header: "Helpers". First row: "Trillion", with a one-line summary ("2 working, 1 needs you").
 - Groups, in order, each shown only when it has a helper: **Needs you**, **Working**, **Idle**. Paused and capped helpers sit in Idle, saying so.
 - A row: the state dot, the name, and one short status:
-  - needs you: what it is ("Approve a change", "A question for you"), with the card's buttons inline;
+  - needs you: what it is ("Approve a change", "A question for you"), with "Open to approve" or "Open to reply", which opens the conversation the card or question waits in. The panel never answers a card itself: a tap must come from the conversation it was raised in, and what she is told of it belongs there (SPN-14);
   - working: `doing` and the time since it started;
   - idle: the next run ("next 9:55"), "paused", or "paused: Anthropic is at its cap";
   - the last run's outcome when it failed ("failed at 7:00: couldn't reach the inbox").

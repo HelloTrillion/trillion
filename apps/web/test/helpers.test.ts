@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARRIVE_MS } from '../src/approvals';
 import {
   type Helper,
   type HelperList,
@@ -125,9 +124,6 @@ function panel(first: HelperList, more: Partial<Parameters<typeof createHelpers>
   const counts: number[] = [];
   const helpers = createHelpers({
     api,
-    send: (body) => {
-      sent.push(body);
-    },
     open: (id) => opened.push(id),
     openStep: (id) => steps.push(id),
     now: () => NOW,
@@ -221,21 +217,39 @@ describe('the Helpers panel', () => {
     expect(root.querySelector('[data-id="routine:dddddddd"]')).toBeNull();
   });
 
-  it('shows an approval card inline, and a tap goes the usual way', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-    const { helpers, root, sent } = panel(list([]));
-    helpers.update(list([helper({ state: 'needs_you', waiting: [approval('p9', 'Send a message')] })]));
+  it('sends an approval to the conversation it was raised in, where the card waits (SPN-14)', async () => {
+    const { helpers, root, sent, opened } = panel(list([]));
+    helpers.update(list([helper({ state: 'needs_you', conversation_id: 'c-5', waiting: [approval('p9', 'Send a message')] })]));
     const r = row(root, 'routine:aaaaaaaa');
     expect(r.textContent).toContain('Approve a change');
-    expect(r.querySelector('.ap-title')?.textContent).toBe('Send a message');
-    vi.advanceTimersByTime(ARRIVE_MS);
-    (r.querySelector('.ap-approve') as HTMLButtonElement).click();
-    expect(sent).toEqual([{ type: 'confirm', pending_id: 'p9' }]);
-    // The card says nothing of its own: the summary is the panel's only live region.
+    // No card and no Approve here: a tap must come from its own conversation.
+    expect(r.querySelector('.ap-card, .ap-approve')).toBeNull();
+    const open = [...r.querySelectorAll('button')].find((b) => b.textContent === 'Open to approve');
+    open?.click();
+    await flush();
+    expect(opened).toEqual(['c-5']);
+    expect(sent).toEqual([]);
     expect(r.querySelector('[aria-live]')).toBeNull();
-    // Answered, the core's next push takes it away.
+  });
+
+  it('asks the core for the conversation when the helper has none yet, and offers Open to reply for a question', async () => {
+    const calls: string[] = [];
+    const { helpers, root, opened } = panel(list([]), {
+      api: async (method, path) => {
+        calls.push(`${method} ${path}`);
+        return method === 'POST' ? json({ conversation_id: 'c-7' }) : json(list([]));
+      },
+    });
+    helpers.update(list([helper({ state: 'needs_you', waiting: [{ type: 'question', id: 'q1', text: 'Which one?', at_ms: null }] })]));
+    const r = row(root, 'routine:aaaaaaaa');
+    expect(r.textContent).toContain('A question for you');
+    [...r.querySelectorAll('button')].find((b) => b.textContent === 'Open to reply')?.click();
+    await flush();
+    expect(calls).toContain('POST /api/helpers/routine%3Aaaaaaaaa/conversation');
+    expect(opened).toEqual(['c-7']);
+    // Answered there, the next push takes the button away.
     helpers.update(list([helper()]));
-    expect(r.querySelector('.ap-card')).toBeNull();
+    expect(r.querySelector('.hp-open')).toBeNull();
   });
 
   it('offers a step with a button to the Settings that does it', async () => {
@@ -306,7 +320,6 @@ function details(first: HelperList, answers: Record<string, Answer> = {}) {
   const opened: string[] = [];
   const helpers = createHelpers({
     api,
-    send: () => undefined,
     open: (id) => opened.push(id),
     openStep: () => undefined,
     now: () => NOW,
