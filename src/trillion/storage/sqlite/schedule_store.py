@@ -497,6 +497,8 @@ class SqliteScheduleStore:
                 " detail = COALESCE(?, detail), result_notice = ? WHERE id = ?",
                 (status, now_ms, detail, n.id, run_id),
             )
+        # Only here: the early returns above wrote nothing, or ended a run of a schedule
+        # already cancelled, whose cancel was told. Neither needs a push.
         self._told()
         return n
 

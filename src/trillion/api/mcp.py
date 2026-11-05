@@ -240,6 +240,7 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
             return _fail(409, "file", str(e))
         logger.info("MCP server added: %s", name)
         await mcp.connect(config)
+        rt.helpers_changed()  # Stripe's tools are what the payments watcher reads
         return await settle(name)
 
     @router.patch("/servers/{name}")
@@ -322,6 +323,7 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
         with contextlib.suppress(SecretStoreError):
             rt.secrets.delete(sign_in_key(name))
         await mcp.connect(state.config)
+        rt.helpers_changed()  # Stripe's tools are what the payments watcher reads
         return await settle(name)
 
     @router.delete("/servers/{name}")
@@ -343,6 +345,7 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
             with contextlib.suppress(SecretStoreError):
                 rt.secrets.delete(key)
         logger.info("MCP server removed: %s", name)
+        rt.helpers_changed()  # Stripe's tools are what the payments watcher reads
         return {"removed": name}
 
     @router.get("/servers/{name}/log")

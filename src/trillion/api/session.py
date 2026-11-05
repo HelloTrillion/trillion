@@ -793,6 +793,8 @@ class Session:
         )
         rt.sessions.add(session)
         rt.by_conversation[session.id] = session
+        # Nothing is built while no page is open: this one's opening sets it going again.
+        rt.helpers_changed()
         try:
             await session._send("history", messages=shown)
             # The conversation's board as it was left, open or closed (D3).

@@ -50,6 +50,7 @@ from trillion.delivery import interrupted
 from trillion.delivery.door import Door
 from trillion.files.rules import why_not
 from trillion.files.shares import EVERYONE, ShareError, Shares
+from trillion.helpers import wiring as helpers_wiring
 from trillion.helpers.live import Notifier
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
@@ -499,6 +500,8 @@ class Runtime:
     # of background work was held at a cap when it last asked, so a change is told.
     helpers_live: Notifier | None = None
     _held_last: dict[str, bool] = field(default_factory=dict)
+    # Held while the preference `helper_notes` is read, changed and saved.
+    _helper_notes: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -848,18 +851,20 @@ class Runtime:
         return note if isinstance(note, str) else None
 
     async def helper_note_keep(self, conversation_id: str, note: str) -> None:
-        raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
-        kept = dict(raw) if isinstance(raw, dict) else {}
-        kept[conversation_id] = note
-        await self.preferences.put(OWNER, HELPER_NOTES_PREF, kept, self.clock())
+        async with self._helper_notes:
+            raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
+            kept = dict(raw) if isinstance(raw, dict) else {}
+            kept[conversation_id] = note
+            await self.preferences.put(OWNER, HELPER_NOTES_PREF, kept, self.clock())
 
     async def helper_note_said(self, conversation_id: str) -> None:
         """The note rode with a saved message: never again."""
-        raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
-        if not isinstance(raw, dict) or conversation_id not in raw:
-            return
-        kept = {k: v for k, v in raw.items() if k != conversation_id}
-        await self.preferences.put(OWNER, HELPER_NOTES_PREF, kept, self.clock())
+        async with self._helper_notes:
+            raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
+            if not isinstance(raw, dict) or conversation_id not in raw:
+                return
+            kept = {k: v for k, v in raw.items() if k != conversation_id}
+            await self.preferences.put(OWNER, HELPER_NOTES_PREF, kept, self.clock())
 
     async def background_work(self) -> tuple[str | None, frozenset[Work]]:
         """The provider background work runs on (the usual model's), and the kinds of
@@ -1738,13 +1743,12 @@ async def open_runtime(
     if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
         await rt.use_switches()
     # The helpers panel, live: a card raised or answered, and every change above.
-    from trillion.api import helpers as helpers_api  # the API layer imports this module
-
     store.changed = rt.helpers_changed
     rt.helpers_live = Notifier(
-        lambda: helpers_api.built(rt),
-        lambda body: helpers_api.send_all(rt, body),
+        lambda: helpers_wiring.built(rt),
+        lambda body: helpers_wiring.send_all(rt, body),
         clock=lambda: rt.clock(),
+        wanted=lambda: bool(rt.sessions),
     )
     rt.month_timer()
     return rt

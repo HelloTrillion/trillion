@@ -123,6 +123,7 @@ def create_google_router(rt: Runtime) -> APIRouter:
             rt.secrets.delete(config.CLIENT_KEY)
         except SecretStoreError:
             return _fail(500, "keychain_refused", "the keychain would not remove it")
+        rt.helpers_changed()  # a watcher on Google may need connecting now
         return google().describe()
 
     @router.post("/api/google/picker")
@@ -205,12 +206,14 @@ def create_google_router(rt: Runtime) -> APIRouter:
             await google().remove(body.email, body.service)
         except SecretStoreError:
             return _fail(500, "keychain_refused", "the keychain would not remove the sign-in")
+        rt.helpers_changed()  # a watcher on Google may need connecting now
         return google().describe()
 
     @router.get("/google/callback")
     async def callback(request: Request) -> HTMLResponse:
         params = {k: v for k, v in request.query_params.items() if isinstance(v, str)}
         found = rt.google.sign_ins.arrive(params) if rt.google is not None else None
+        rt.helpers_changed()  # signed in: a watcher's Connect step may clear
         if found is None:
             return _page(
                 "This sign-in has expired",

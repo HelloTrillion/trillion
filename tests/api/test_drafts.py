@@ -510,3 +510,21 @@ async def test_with_her_voice_off_a_spoken_turn_runs_at_the_model_default(
     await page.until("turn.complete")
     assert drafts() == ["used"] and provider.quick == [False]
     await session.close()
+
+
+async def test_a_dropped_draft_leaves_a_helper_note_for_the_real_turn(rt: Runtime) -> None:
+    stt, provider = judging(rt, say("Dropped."), say("The real answer."))
+    session, _ = await start(rt)
+    note = "This conversation is about the Meetings watcher (meetings)."
+    await rt.helper_note_keep(session.id, note)
+    stt.stream.say("stop telling me", final=False, turn="maybe")
+    await until(lambda: len(provider.calls) == 1)
+    stt.stream.say("stop telling me", final=False, turn="resumed")
+    await until(lambda: session._draft is None)
+    # Built into the draft, never saved: still to be said.
+    assert await rt.helper_note(session.id) == note
+    await finish(session, stt, "stop telling me about standups")
+    _, sent = provider.calls[1]
+    assert note in [b.text for b in sent[-1].blocks if isinstance(b, ContextBlock)]
+    assert await rt.helper_note(session.id) is None
+    await session.close()

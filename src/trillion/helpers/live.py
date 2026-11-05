@@ -8,6 +8,10 @@ its content) and tried again at the next change.
 
 A card lapses with no change anyone makes: each build says when the earliest open one
 expires, and a timer marks the list dirty then, so its dot clears on time.
+
+With no page open (`wanted` says no) nothing is built: a page reads the list fresh
+when it opens, and its opening marks the list dirty, so the lapse timer is set again
+from that build.
 """
 
 from __future__ import annotations
@@ -34,8 +38,10 @@ class Notifier:
         *,
         clock: Callable[[], int],
         delay_s: float = DELAY_S,
+        wanted: Callable[[], bool] = lambda: True,
     ) -> None:
         self._build = build
+        self._wanted = wanted
         self._send = send
         self._clock = clock
         self._delay_s = delay_s
@@ -62,6 +68,9 @@ class Notifier:
         while self._dirty and not self._stopped:
             await asyncio.sleep(self._delay_s)
             self._dirty = False
+            if not self._wanted():
+                # Nobody to tell. The lapse timer, if set, stands: it only marks dirty.
+                continue
             try:
                 body, wake_ms = await self._build()
             except Exception as e:

@@ -432,3 +432,139 @@ async def test_a_watcher_turned_on_or_checking_is_pushed(rt: Runtime) -> None:
     assert h["state"] == "needs_you"
     assert h["waiting"][0]["text"] == "Connect Google to use Urgent email"
     await session.close()
+
+
+# ── Review fixes: connect and disconnect, locks, cleanup, caps ──
+
+
+def counted(app: App) -> list[int]:
+    told: list[int] = []
+    app.rt.helpers_changed = lambda: told.append(1)  # type: ignore[method-assign]
+    return told
+
+
+def test_forgetting_the_google_client_is_pushed(make: Any) -> None:
+    app: App = make()
+    told = counted(app)
+    r = post(app, "/api/google/client/forget")
+    assert r.status_code == 200 and told == [1]
+
+
+def test_removing_a_connected_server_is_pushed(make: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from trillion.connectors.mcp.config import parse_server
+    from trillion.connectors.mcp.servers import ServerState
+
+    app: App = make()
+    mcp = app.rt.mcp
+    assert mcp is not None
+    mcp.states["stripe"] = ServerState(
+        config=parse_server("stripe", {"url": "https://stripe.example/mcp"}),
+        status="failed",
+        tools=[],
+    )
+
+    async def gone(name: str) -> None:
+        mcp.states.pop(name, None)
+
+    monkeypatch.setattr(mcp, "remove", gone)
+    told = counted(app)
+    json_body = {"content-type": "application/json"}
+    r = app.client.delete("/api/mcp/servers/stripe", headers={**app.auth, **json_body})
+    assert r.status_code == 200, r.text
+    assert told == [1]
+
+
+def test_a_routine_conversation_not_linked_is_not_left_behind(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app: App = make()
+    ready(app)
+    store = app.rt.schedules
+    assert store is not None
+    call(app, store.create, routine())
+
+    async def broken(schedule_id: str, conversation_id: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "set_conversation", broken)
+    with pytest.raises(OSError):
+        post(app, f"{PATH}/routine:{RID}/conversation")
+    live = app.rows("SELECT id FROM conversations WHERE kind = 'routine' AND deleted_at IS NULL")
+    assert live == []
+
+
+def test_a_watcher_conversation_not_remembered_is_not_left_behind(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app: App = make()
+    ready(app)
+
+    async def broken(conversation_id: str, note: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app.rt, "helper_note_keep", broken)
+    with pytest.raises(OSError):
+        post(app, f"{PATH}/watcher:email/conversation")
+    titled = app.rows(
+        "SELECT id FROM conversations WHERE title = 'Urgent email' AND deleted_at IS NULL"
+    )
+    assert titled == []
+
+
+async def endpoint(rt: Runtime) -> Any:
+    from trillion.api.helpers import create_helpers_router
+
+    router = create_helpers_router(rt)
+    (route,) = [r for r in router.routes if getattr(r, "path", "").endswith("/conversation")]
+    return route.endpoint  # type: ignore[attr-defined]
+
+
+async def test_two_taps_at_once_make_one_routine_conversation(rt: Runtime) -> None:
+    await rt.stop_background()
+    store = rt.schedules
+    assert store is not None
+    await store.create(routine())
+    talk = await endpoint(rt)
+    a, b = await asyncio.gather(talk(helper_id=f"routine:{RID}"), talk(helper_id=f"routine:{RID}"))
+    assert a == b
+
+
+async def test_notes_kept_and_said_at_once_all_hold(rt: Runtime) -> None:
+    await rt.helper_note_keep("c0", "zero")
+    await asyncio.gather(
+        rt.helper_note_keep("c1", "one"),
+        rt.helper_note_said("c0"),
+        rt.helper_note_keep("c2", "two"),
+    )
+    assert await rt.helper_note("c0") is None
+    assert (await rt.helper_note("c1"), await rt.helper_note("c2")) == ("one", "two")
+
+
+async def test_a_cap_pausing_and_releasing_work_is_pushed(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    told: list[int] = []
+    monkeypatch.setattr(rt, "helpers_changed", lambda: told.append(1))
+    capped = [False]
+
+    async def held(work: Any, provider_id: Any) -> bool:
+        return capped[0]
+
+    monkeypatch.setattr(rt.spend, "held", held)
+    assert not await rt.held("routines")
+    assert told == []
+    capped[0] = True
+    assert await rt.held("routines")
+    assert await rt.held("routines")  # still paused: told once
+    assert told == [1]
+    capped[0] = False
+    assert not await rt.held("routines")
+    assert told == [1, 1]
+
+
+async def test_a_page_opening_builds_the_list_for_it(rt: Runtime) -> None:
+    await rt.stop_background()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await pushed(page, 1)
+    await session.close()

@@ -90,18 +90,56 @@ async def test_a_failed_build_is_logged_by_kind_and_tried_at_the_next_change(
     await n.stop()
 
 
+async def until(ok: Any, limit_s: float = 2.0) -> None:
+    for _ in range(int(limit_s / 0.01)):
+        if ok():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("never happened")
+
+
 async def test_a_card_lapsing_wakes_it() -> None:
     w = World()
     w.wake_ms = clock() + 60
     n = Notifier(w.build, w.send, clock=clock, delay_s=DELAY)
     n.changed()
-    await settle()
-    assert len(w.sent) == 1
+    await until(lambda: len(w.sent) == 1)
     w.wake_ms = None
+    # Woken when the card lapses, with no change from anyone.
+    await until(lambda: len(w.sent) == 2)
+    # And not again: that build set no timer.
     await asyncio.sleep(0.15)
     assert len(w.sent) == 2
-    await asyncio.sleep(0.1)
-    assert len(w.sent) == 2
+    await n.stop()
+
+
+async def test_with_no_page_open_nothing_is_built() -> None:
+    w = World()
+    pages: list[str] = []
+    n = Notifier(w.build, w.send, clock=clock, delay_s=DELAY, wanted=lambda: bool(pages))
+    n.changed()
+    await settle()
+    assert (w.builds, w.sent) == (0, [])
+    pages.append("one")
+    n.changed()
+    await until(lambda: len(w.sent) == 1)
+    await n.stop()
+
+
+async def test_a_lapse_timer_set_before_the_last_page_closed_wakes_nothing_needlessly() -> None:
+    w = World()
+    pages = ["one"]
+    w.wake_ms = clock() + 80
+    n = Notifier(w.build, w.send, clock=clock, delay_s=DELAY, wanted=lambda: bool(pages))
+    n.changed()
+    await until(lambda: len(w.sent) == 1)
+    pages.clear()
+    await asyncio.sleep(0.2)
+    # The timer fired and marked it dirty, but with no page nothing was built.
+    assert w.builds == 1
+    pages.append("again")
+    n.changed()  # as a page opening does
+    await until(lambda: len(w.sent) == 2)
     await n.stop()
 
 
