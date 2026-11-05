@@ -614,6 +614,10 @@ async def test_status_says_what_each_watcher_is_doing(world: World) -> None:
         None,
     )
     assert (idle.name, idle.on, idle.next_check_ms) == ("payments", False, None)
+    # What the user set and whether its source is there, told apart: meetings are on by
+    # default, payments off; this fake's source is there only when it is on.
+    assert (before.switched_on, before.connected) == (True, True)
+    assert (idle.switched_on, idle.connected) == (False, False)
     world.clock.advance(1000)
     r.start()
     try:
@@ -645,3 +649,18 @@ async def test_status_gives_the_last_check_and_the_last_failure(world: World) ->
         "ConnectionError",
         NOW + 60_000,
     )
+
+
+async def test_status_asks_whether_the_source_is_there_as_if_switched_on(world: World) -> None:
+    @dataclass
+    class Needs(Watcher):
+        """On only when switched on in settings, as the real ones are."""
+
+        def enabled(self, settings: AttentionSettings) -> bool:
+            return settings.on(self.name) and self.on
+
+    r = await world.runner(Needs(name="email"), Needs(name="payments", on=False))
+    email, payments = await r.statuses()
+    # Email is off by default: not running, yet its source is there.
+    assert (email.on, email.switched_on, email.connected) == (False, False, True)
+    assert (payments.on, payments.switched_on, payments.connected) == (False, False, False)

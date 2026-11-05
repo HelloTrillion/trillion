@@ -11,23 +11,35 @@ working (a run or check under way), paused (the user paused a routine, or turned
 watcher off; a timed ask can't be paused, only cancelled), capped (its kind of work is
 paused at the background model's spend cap), idle.
 
+What waits on the user:
+- An approval: a card still proposed, raised in the helper's own conversation (its
+  session is that conversation). A run nobody watches can't raise a card at all (the
+  router refuses one to `via="schedule"` and `via="routine"`, D5), so a card on a
+  routine comes from someone talking to it there. A card from any other conversation
+  is on no helper.
+- A step: a watcher switched on whose source isn't connected, or is signed out.
+- A question has no producer yet: it comes with step two, helpers she hands work to
+  (AGT-1, AGT-2). Nor does a notice ask for a step today.
+
 Reasons are told in plain words, never a class name.
 
-The order: needs you, working by start, then the rest by next run, unknown last.
+The order: needs you by its oldest wait, working by start, then the rest by next run;
+unknown times last.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from typing import Protocol
 
 from trillion.attention.runner import WatcherStatus
 from trillion.attention.settings import TITLED
-from trillion.helpers.model import Helper, HelperState, LastRun, Outcome
+from trillion.helpers.model import Helper, HelperState, LastRun, Outcome, Waiting
 from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import WhenError, summary
 from trillion.spend.types import Work
+from trillion.spine.confirm import PendingAction, Status
 
 # A routine's job line, from its ask: its first line, at most this long.
 JOB_MAX = 80
@@ -44,6 +56,13 @@ _OUTCOMES: dict[RunStatus, Outcome] = {
     "failed": "failed",
     "missed": "failed",
     "interrupted": "failed",
+}
+
+# Why a run was skipped (the scheduler's run log words) in plain words; others as they are.
+_SKIPPED = {
+    "capped": "paused at the spend cap",
+    "paused": "paused",
+    "already built": "already done today",
 }
 
 # A blocked run waits to be tried again, so its helper stays idle; why, in plain words.
@@ -64,6 +83,14 @@ _ERROR_WORDS = {
     "TimeoutError": "timed out",
 }
 _ERROR_ELSE = "something went wrong"
+
+# The step a watcher switched on but not connected waits for, by what it reads.
+_CONNECT = {
+    "meetings": "Connect Google to use Meetings",
+    "email": "Connect Google to use Urgent email",
+    "payments": "Connect Stripe to use Payments",
+}
+_SIGN_IN = "Sign in to Google again"
 
 # What each watcher watches, and what it is doing while it checks.
 _WATCHER_JOB = {
@@ -108,20 +135,50 @@ class Sources(Protocol):
         cap (`SpendDesk.paused` for the background provider)."""
         ...
 
+    async def cards(self) -> Sequence[PendingAction]:
+        """Cards that may still wait on the user (the spine store's proposed ones).
+        Anyone else's, answered or lapsed are left out here."""
+        ...
+
 
 async def helpers(sources: Sources) -> list[Helper]:
     owner = sources.owner
     capped = set(await sources.capped())
     active = await sources.schedules.active(owner)
     last = await sources.schedules.last_results(owner)
-    now = await sources.schedules.running(owner, sources.now_ms())
-    found = [_scheduled(s, last.get(s.id), now.get(s.id), capped) for s in active]
-    found += [_watcher(w, capped) for w in await sources.watchers()]
+    now_ms = sources.now_ms()
+    now = await sources.schedules.running(owner, now_ms)
+    cards = _open_cards(await sources.cards(), owner, now_ms)
+    found = [_scheduled(s, last.get(s.id), now.get(s.id), capped, cards) for s in active]
+    found += [_watcher(w, capped, cards) for w in await sources.watchers()]
     return _ordered(h for h in found if h is not None)
 
 
+def _open_cards(
+    cards: Sequence[PendingAction], owner: str, now_ms: int
+) -> dict[str, list[Waiting]]:
+    """Cards still waiting for a yes or no, by the conversation they were raised in,
+    oldest first."""
+    out: dict[str, list[Waiting]] = {}
+    for a in sorted(cards, key=lambda a: a.created_at):
+        if a.owner_id != owner or a.status != Status.PROPOSED or a.expires_at <= now_ms:
+            continue
+        out.setdefault(a.session_id, []).append(
+            Waiting(type="approval", id=a.id, text=a.summary, at_ms=a.created_at)
+        )
+    return out
+
+
+def _in(cards: dict[str, list[Waiting]], conversation_id: str | None) -> list[Waiting]:
+    return list(cards.get(conversation_id, ())) if conversation_id is not None else []
+
+
 def _scheduled(
-    s: Schedule, last: Run | None, running: Run | None, capped: set[Work]
+    s: Schedule,
+    last: Run | None,
+    running: Run | None,
+    capped: set[Work],
+    cards: dict[str, list[Waiting]],
 ) -> Helper | None:
     if s.kind != "ask":
         return None
@@ -131,7 +188,15 @@ def _scheduled(
         since = running.started_ms if running.started_ms is not None else running.claimed_ms
     work: Work = "routines" if routine else "asks"
     paused = routine and s.paused_ms is not None
-    state = _state(working=running is not None, paused=paused, capped=work in capped)
+    # A routine built in today's day conversation has none of its own here.
+    conversation = s.conversation_id if routine else None
+    waiting = _in(cards, conversation)
+    state = _state(
+        waiting=bool(waiting),
+        working=running is not None,
+        paused=paused,
+        capped=work in capped,
+    )
     return Helper(
         id=f"{'routine' if routine else 'ask'}:{s.id}",
         kind="routine" if routine else "ask",
@@ -143,15 +208,20 @@ def _scheduled(
         last_run=_last_run(last),
         # A paused routine's due time stays put, but it won't run then.
         next_ms=None if paused else s.next_due_ms,
-        waiting=(),
-        # A routine built in today's day conversation has none of its own here.
-        conversation_id=s.conversation_id if routine else None,
+        waiting=tuple(waiting),
+        conversation_id=conversation,
     )
 
 
-def _watcher(w: WatcherStatus, capped: set[Work]) -> Helper:
+def _watcher(w: WatcherStatus, capped: set[Work], cards: dict[str, list[Waiting]]) -> Helper:
+    # Its own conversation comes with "Talk to it" (step three of the core).
+    conversation: str | None = None
+    waiting = _step(w) + _in(cards, conversation)
     state = _state(
-        working=w.checking_since_ms is not None, paused=not w.on, capped="watchers" in capped
+        waiting=bool(waiting),
+        working=w.checking_since_ms is not None,
+        paused=not w.switched_on,
+        capped="watchers" in capped,
     )
     return Helper(
         id=f"watcher:{w.name}",
@@ -163,13 +233,30 @@ def _watcher(w: WatcherStatus, capped: set[Work]) -> Helper:
         since_ms=w.checking_since_ms if state == "working" else None,
         last_run=_last_check(w),
         next_ms=w.next_check_ms if w.on else None,
-        waiting=(),
-        conversation_id=None,
+        waiting=tuple(waiting),
+        conversation_id=conversation,
     )
 
 
-def _state(*, working: bool, paused: bool, capped: bool) -> HelperState:
-    # Needs you outranks everything once waiting items are read (step two of the core).
+def _step(w: WatcherStatus) -> list[Waiting]:
+    """What only the user can do for a watcher they switched on: connect its source, or
+    sign in again. Switched off, it asks nothing."""
+    if not w.switched_on:
+        return []
+    step = f"connect:{w.name}"
+    if w.last_error == "signed_out":
+        at = w.last_error_ms if w.last_error_ms is not None else w.last_check_ms
+        return [Waiting(type="step", id=step, text=_SIGN_IN, at_ms=at)]
+    if not w.connected:
+        # When it was disconnected is not kept anywhere.
+        text = _CONNECT.get(w.name, f"Connect {TITLED.get(w.name, w.name)}")
+        return [Waiting(type="step", id=step, text=text, at_ms=None)]
+    return []
+
+
+def _state(*, waiting: bool, working: bool, paused: bool, capped: bool) -> HelperState:
+    if waiting:
+        return "needs_you"
     if working:
         return "working"
     if paused:
@@ -185,6 +272,8 @@ def _last_run(run: Run | None) -> LastRun | None:
     at = run.finished_ms or run.started_ms or run.claimed_ms or run.due_ms
     outcome = _OUTCOMES.get(run.status, "failed")
     reason = run.detail if outcome in ("failed", "skipped") else None
+    if run.status == "skipped" and run.detail is not None:
+        reason = _SKIPPED.get(run.detail, run.detail)
     if run.status == "blocked":
         reason = _BLOCKED.get(run.detail or "", _BLOCKED_ELSE)
     return LastRun(at_ms=at, outcome=outcome, reason=reason)
@@ -230,8 +319,8 @@ def _ordered(found: Iterable[Helper]) -> list[Helper]:
 
     def key(h: Helper) -> tuple[int, float]:
         if h.state == "needs_you":
-            # Oldest first, once what each waits on carries its time.
-            return (0, _NEVER if h.since_ms is None else h.since_ms)
+            known = [w.at_ms for w in h.waiting if w.at_ms is not None]
+            return (0, min(known) if known else _NEVER)
         if h.state == "working":
             return (1, _NEVER if h.since_ms is None else h.since_ms)
         return (2, _NEVER if h.next_ms is None else h.next_ms)

@@ -39,7 +39,7 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from trillion.attention import words
@@ -156,8 +156,11 @@ class WatcherStatus:
     """What a watcher is doing, for the helpers panel: read only."""
 
     name: str
-    # Switched on and its source connected.
+    # Switched on and its source connected: it runs.
     on: bool
+    # What the user set, and whether its source is there, apart.
+    switched_on: bool
+    connected: bool
     # When the check under way began, in this process; None when none is.
     checking_since_ms: int | None
     last_check_ms: int | None
@@ -233,13 +236,17 @@ class AttentionRunner:
         for w in self._watchers:
             try:
                 on = w.enabled(settings)
+                # Asked as if switched on, so what is left is whether its source is there.
+                connected = w.enabled(_switched_on(settings, w.name))
             except Exception:
-                on = False
+                on = connected = False
             state = await self._store.state(self._owner, w.name)
             out.append(
                 WatcherStatus(
                     name=w.name,
                     on=on,
+                    switched_on=settings.on(w.name),
+                    connected=connected,
                     checking_since_ms=self._checking.get(w.name),
                     last_check_ms=state.last_check_ms,
                     last_error=state.last_error,
@@ -467,6 +474,10 @@ def error_kind(e: BaseException) -> str:
     if isinstance(e, GoogleCallError):
         return e.kind
     return type(e).__name__
+
+
+def _switched_on(settings: AttentionSettings, name: str) -> AttentionSettings:
+    return replace(settings, watchers={**settings.watchers, name: True})
 
 
 def _all_stale(finds: Sequence[Find], now_ms: int) -> bool:

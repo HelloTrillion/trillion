@@ -32,9 +32,11 @@ class Waiting:
     type: WaitingType
     id: str
     text: str
+    # When it began waiting, when that is known: Needs you lists the oldest first.
+    at_ms: int | None
 
     def to_json(self) -> dict[str, Any]:
-        return {"type": self.type, "id": self.id, "text": self.text}
+        return {"type": self.type, "id": self.id, "text": self.text, "at_ms": self.at_ms}
 
 
 @dataclass(frozen=True, kw_only=True)

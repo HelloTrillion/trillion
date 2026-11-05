@@ -19,6 +19,7 @@ from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import Repeat
 from trillion.spend.types import Work
+from trillion.spine.confirm import PendingAction
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -76,6 +77,8 @@ def watcher(name: str = "meetings", **kw: Any) -> WatcherStatus:
     base = WatcherStatus(
         name=name,
         on=True,
+        switched_on=True,
+        connected=True,
         checking_since_ms=None,
         last_check_ms=None,
         last_error=None,
@@ -107,10 +110,14 @@ class Sources:
     schedules: Schedules = field(default_factory=Schedules)
     watching: list[WatcherStatus] = field(default_factory=list)
     paused_work: set[Work] = field(default_factory=set)
+    open_cards: list[PendingAction] = field(default_factory=list)
     owner: str = OWNER
 
     def now_ms(self) -> int:
         return NOW
+
+    async def cards(self) -> list[PendingAction]:
+        return list(self.open_cards)
 
     async def watchers(self) -> list[WatcherStatus]:
         return list(self.watching)
@@ -214,8 +221,10 @@ async def test_a_run_with_nothing_for_the_user_is_nothing() -> None:
     [
         ("delivered", None, "succeeded", None),
         ("late", None, "succeeded", None),
-        ("skipped", "capped", "skipped", "capped"),
+        ("skipped", "capped", "skipped", "paused at the spend cap"),
         ("skipped", "paused", "skipped", "paused"),
+        ("skipped", "already built", "skipped", "already done today"),
+        ("skipped", "something new", "skipped", "something new"),
         # Blocked: it waits to be tried again, so the helper itself is idle.
         ("blocked", "no model", "skipped", "no model set up"),
         ("blocked", BUSY_DETAIL, "skipped", "busy, will try again"),
@@ -254,7 +263,7 @@ async def test_a_watcher_in_every_state() -> None:
     checking = watcher("email", checking_since_ms=NOW - 3000)
     (h,) = await helpers(Sources(watching=[checking]))
     assert (h.state, h.doing, h.since_ms) == ("working", "Reading your inbox", NOW - 3000)
-    off = watcher("email", on=False, next_check_ms=None)
+    off = watcher("email", on=False, switched_on=False, next_check_ms=None)
     (h,) = await helpers(Sources(watching=[off]))
     assert (h.state, h.next_ms) == ("paused", None)
     (h,) = await helpers(Sources(watching=[watcher("payments")], paused_work={"watchers"}))
@@ -319,7 +328,7 @@ async def test_the_order_is_working_by_start_then_the_rest_by_next_run() -> None
         watching=[
             watcher("meetings", next_check_ms=NOW + 20_000),
             watcher("email", checking_since_ms=NOW - 5000),
-            watcher("payments", on=False, next_check_ms=None),
+            watcher("payments", on=False, switched_on=False, next_check_ms=None),
         ],
         paused_work=set(),
     )
@@ -346,7 +355,7 @@ async def test_to_json_is_the_apis_body() -> None:
         since_ms=None,
         last_run=LastRun(at_ms=5, outcome="failed", reason="no board"),
         next_ms=9,
-        waiting=(Waiting(type="approval", id="act1", text="Approve a change"),),
+        waiting=(Waiting(type="approval", id="act1", text="Approve a change", at_ms=3),),
         conversation_id="c1",
     )
     idle = dataclasses.replace(h, id="ask:a1", kind="ask", state="idle", waiting=(), last_run=None)
@@ -362,7 +371,9 @@ async def test_to_json_is_the_apis_body() -> None:
                 "since_ms": None,
                 "last_run": {"at_ms": 5, "outcome": "failed", "reason": "no board"},
                 "next_ms": 9,
-                "waiting": [{"type": "approval", "id": "act1", "text": "Approve a change"}],
+                "waiting": [
+                    {"type": "approval", "id": "act1", "text": "Approve a change", "at_ms": 3}
+                ],
                 "conversation_id": "c1",
             },
             {
@@ -399,6 +410,9 @@ class Real:
         return self.now
 
     async def watchers(self) -> list[WatcherStatus]:
+        return []
+
+    async def cards(self) -> list[PendingAction]:
         return []
 
     async def capped(self) -> Collection[Work]:
