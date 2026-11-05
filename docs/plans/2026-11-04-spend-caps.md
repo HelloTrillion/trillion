@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A monthly soft and hard cap per provider (models, voice, hearing), enforced by one spend gate that every paid call goes through, plus a rough cost shown wherever a key is entered. See [docs/specs/2026-11-04-spend-caps.md](../specs/2026-11-04-spend-caps.md). The spec is the source of truth for rules, numbers and wording.
+**Goal:** A monthly soft and hard cap per provider (models, voice, hearing), enforced by one spend gate that every paid call goes through, plus a rough cost shown wherever a key is entered. See [docs/specs/2026-11-04-spend-caps.md](../specs/2026-11-04-spend-caps.md). The spec is the source of truth for rules, numbers and wording, and holds the final decisions made during the build.
 
 **Architecture:**
 - A new package, `src/trillion/spend/` (prices, caller, ledger, gate, metered wrappers).

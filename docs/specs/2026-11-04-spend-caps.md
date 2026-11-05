@@ -13,14 +13,14 @@ This change puts every paid call behind one **spend gate** with a monthly soft c
 3. **Prices come from a built-in table, plus what you tell it.**
    - The table covers Anthropic (as today) and common OpenAI and DeepSeek models.
    - OpenRouter's own reported cost is used.
-   - A local model costs $0 and has no cap.
+   - A local provider (an address on this computer: `localhost` or a loopback address) costs $0 and has no cap.
    - Any other model asks for its price per million tokens in Settings. Until you give one, its caps count tokens instead of dollars, and Settings says so.
    - Voice and hearing rates are pay-as-you-go. You can override a rate if you're on a plan.
 4. **Every usage row says who spent it:** `conversation` (a live session: her replies, drafts, summaries of long chats, the day board she builds when you open it) or `background` (routines, timed asks, watchers, channel replies, titles).
 5. **Soft cap:** a warning and a mention, nothing stops. **Hard cap:** the gate refuses new calls. A call already running always finishes.
-6. **At the hard cap, your conversation finishes the reply in progress and then asks.** You get one line from the app, spoken if voice is on and shown in the banner. Then a card: raise the cap, switch to a cheaper option until the 1st, or stop for now. Nothing changes model or voice silently (BRN-8).
+6. **At the hard cap, your conversation finishes the reply in progress and then asks.** You get one line from the app, spoken if voice is on and shown in the banner. Then a card: raise the cap, switch to a cheaper option until the 1st, or not now. Nothing changes model or voice silently (BRN-8).
 7. **At the hard cap, background work pauses and says so.** It never moves to a weaker model that then writes what you read (BRN-11). This amends BRN-8, which said background work "degrades to a cheaper or local provider"; the PRD row is updated with this change.
-8. **Defaults:** per provider, per month, $20 soft (warning at 80%, $16) and $50 hard. New keys get them, pre-filled and editable in the same step as the key. Existing installs get them on upgrade, and are told once.
+8. **Defaults:** per provider, per month, $20 soft (warning at 80%, $16) and $50 hard for a provider with a price. A provider without one gets caps in its own unit (see [Caps and units](#caps-and-units)). New keys get them, pre-filled and editable in the same step as the key. Existing installs get them on upgrade, and are told once.
 
 ## What is counted
 
@@ -35,14 +35,23 @@ A cap belongs to a **provider id**:
 | Provider id | What | Unit |
 |---|---|---|
 | `anthropic` | model kind `anthropic` | dollars |
-| `openai` | model kind `openai` | dollars |
-| `custom:<host>` | model kind `custom`, by the host of its base URL (for example `custom:openrouter.ai`, `custom:api.deepseek.com`) | dollars when priced, otherwise tokens |
-| `local` | model kind `local` | never capped |
+| `openai` | model kind `openai`, and any base URL at `api.openai.com` however it was entered | dollars |
+| `custom:<host>` | model kind `custom`, by the host of its base URL (for example `custom:openrouter.ai`, `custom:api.deepseek.com`) | dollars when priced (OpenRouter always, from its own cost), otherwise tokens |
+| `local` | model kind `local`, and a custom address on this computer (`localhost`, loopback) | never capped |
 | `elevenlabs` | voice | dollars, from characters |
 | `deepgram` | hearing | dollars, from minutes |
 | `openai-voice:<host>` | an OpenAI-compatible speech server | dollars when priced, otherwise characters |
 
-The system voice and local Whisper run on the machine and are never capped.
+The system voice, local Whisper and a voice server on this computer run on the machine and are never capped.
+
+### Caps and units
+
+Every cap carries a unit: dollars, tokens, characters or seconds (shown as minutes).
+
+- **A dollar cap** counts priced dollars, plus usage nothing priced at the time (earlier in the month, or a model without a price). That usage is estimated at the user's own rate for the provider (input and output blended 20 to 1), or else at the provider's dearest table rate. So a price given mid-month counts the tokens used before it.
+- **A unit cap** counts every unit, priced or not.
+- **Defaults:** $20 and $50 for a provider with a price. For one without: 5M and 12M tokens, 400k and 1M characters, 600 and 1,500 minutes.
+- Giving a price to a provider still on its unit defaults moves it to the dollar defaults. Removing its last price moves default caps back to its unit. Caps the user chose are kept.
 
 ### Prices
 
@@ -83,7 +92,7 @@ Old rows get the provider id derived from their `provider` column and count as c
 
 A conversation that you chose to continue on a capped provider ("raise the cap") is not capped, by definition. Raising the cap changes the state.
 
-**After a call** (a model stream ending, a sentence synthesized, a hearing stream closed), the wrapper records one usage row with its provider id, caller, units and cost, and the ledger adds it.
+**After a call** (a model stream ending, a sentence synthesized, a hearing stream closed), the wrapper records one usage row per call (never a summed turn) with its provider id, caller, units and cost, and the ledger adds it.
 
 **A call already running finishes.** The check happens only before a call. Spend can pass the hard cap by at most what was in flight when it was crossed: one reply's model calls, the sentences already being spoken, or a few background calls running at once. It never goes further.
 
@@ -102,36 +111,42 @@ Notices go through the one door (SUR-9), once per provider per state per month.
 
 ### Capped: your conversation
 
-She can't phrase anything on a capped model, so the notice follows the [one leg down](2026-10-20-one-leg-down.md) path: a fixed, specific line from the app, spoken if voice is up and shown in the degraded banner (SUR-8). For example: "I've reached the $50 cap for Anthropic this month, so I've stopped before spending more." Then a **spend card** with the choices below. It is the app's card, not a pending action; a choice is a tap, because it is about money (SPN-14).
+She can't phrase anything on a capped model, so the notice follows the [one leg down](2026-10-20-one-leg-down.md) path: a fixed, specific line from the app, spoken if voice is up and shown in the degraded banner (SUR-8). For example: "I've reached the $50 cap for Anthropic this month, so I've stopped before spending more." Then a **spend card**, titled "You've hit your monthly cap", with the choices below. It is the app's card, not a pending action; a choice is a tap, because it is about money (SPN-14).
+
+- The page is calm: no error orb, and the header says "Stopped at your cap" until a raise, a switch or the next turn. On a phone the sheet opens for the card, as for an approval.
+- A choice goes over the conversation's own WebSocket as `{"type": "spend.choice", "id", "choice", "amount"?}`, taken under the same input guard as an approval's tap. The server supplies the session and "tap"; the page can't. The reply is `spend.resolved`, or `spend.refused` with a `code` (for example `target_capped`). One choice at a time: a double tap is answered once.
+- A raise defaults to the next $25 step ("Raise to $75"). It must be at least the hard cap, above the month's spend, and at most $10,000 (or 100 times the unit's default hard cap).
 
 | Capped | What happens | The card offers |
 |---|---|---|
-| Her model | The reply in progress finishes. The next turn is refused before anything is sent. | **Raise the cap** (a field on the card, prefilled with the next round step), **Use [model] until [Dec 1]** (only models already set up, on a provider with budget left, local first), **Stop for now** |
-| Her voice | The sentence in progress finishes; the rest of the reply is text. | **Raise the cap**, **Use the computer's voice until [Dec 1]**, **Text only** |
-| Hearing | Listening stops after the current turn. Typing still works. | **Raise the cap**, **Use local Whisper until [Dec 1]** (only if installed), **Type for now** |
+| Her model | The reply in progress finishes. The next turn is refused before anything is sent. | **Raise to $X** (a field on the card, prefilled with the next round step), **Use [model] until [Dec 1]** (only models already set up, on a provider with budget left, local first), **Not now** |
+| Her voice | The sentence in progress finishes; the rest of the reply is text. | **Raise to $X**, **Use the computer's voice until [Dec 1]**, **Text only** |
+| Hearing | Listening stops after the current turn. Typing still works. | **Raise to $X**, **Use local Whisper until [Dec 1]** (only if installed), **Type for now** |
 
-- **Switching** is recorded as a temporary preference that ends on the 1st. The banner says so while it lasts ("Using Gemma until Dec 1"), and Settings can end it early. On the 1st she goes back to the chosen model or voice, and says so once.
-- **Stop for now** leaves the card answerable from the banner, so it can be changed later without opening Settings.
+- **Switching** is recorded as a temporary preference that ends on the 1st. The banner says so while it lasts ("Using Gemma until Dec 1"). On the 1st she goes back to the chosen model or voice, and says so once.
+- **A switch covers the conversation only.** Background work stays paused on the usual provider until its cap is raised or the 1st.
+- **Switch back now**, in Settings and the banner, ends a switch early (`POST /api/spend/switch/{provider_id}/end`). It is refused while the usual provider is still capped, so it is offered only once it can work, and asked after a raise.
+- **Not now** leaves the card answerable from the banner, so it can be changed later without opening Settings. A reload shows a card put off.
 
 ### Capped: background work
 
 - Routines, timed asks, watchers, channel replies and titles on that provider are refused by the gate.
-- A routine or timed ask whose run is refused records the run as `skipped`, with the reason `capped`, in its run log. It is not retried that month.
-- A watcher keeps its place and checks again after the cap lifts, so nothing is lost; it just isn't read until then.
-- One notice says what paused and why ("Routines and the inbox watcher are paused: Anthropic is at its $50 cap"). Settings → Usage shows paused work under the provider.
+- A routine or timed ask refused before it ran records the run as `skipped`, with the reason `capped`, in its run log. One refused partway records `failed`: "stopped partway: its model reached the spend cap". Neither is retried that month.
+- A watcher keeps its place and reads on from it after the cap lifts. It still reads back no further than its own limit: the urgent mail watcher reads at most one day back, so older mail is not read.
+- One notice says what paused and why ("Routines and the inbox watcher are paused: Anthropic is at its $50 cap"). Settings → Usage and limits shows paused work under the provider.
 - It all resumes on the 1st, or as soon as the cap is raised.
 
-## Settings → Usage
+## Settings → Usage and limits
 
-Settings → Usage lists each provider that is set up, with:
+Settings → Usage and limits lists each provider that is set up, with:
 - a line saying **what it unlocks, roughly what it costs, and the free option** (ONB-9). The estimate comes from the price table and a stated assumption, and the assumption is shown. For example: "Anthropic: how she thinks. Roughly $0.40 an hour of talk on Sonnet (about 40 short turns), plus routines. Free option: a local model with Ollama."
 - the month so far, split into conversation and background;
-- **soft cap, hard cap, warning %**, editable (hard must be at least soft; either can be removed, which says plainly that nothing is capped);
+- **Warn me at** (the soft cap) and **Stop at** (the hard cap), editable, with the warning % under More options (hard must be at least soft; either can be removed, which says plainly that nothing is capped);
 - a link to the provider's pricing page;
 - for an unpriced model, a **price per million tokens** field; for a voice or hearing provider, a **rate override**;
 - any paused background work, and any temporary switch with its end date.
 
-The pill keeps its current text and gains the warned and capped colours. Its tooltip names the provider. Clicking it opens Settings → Usage as today.
+The pill keeps its current text and gains the warned and capped colours. Its tooltip names the provider. Clicking it opens Settings → Usage and limits as today.
 
 ## When a key is entered
 
@@ -148,10 +163,12 @@ On the first start with this change, every set-up provider without caps gets the
 
 ## API
 
-- `GET /api/usage` adds, per provider id: `spent`, `unit`, `soft`, `hard`, `warn_pct`, `state`, `split` (conversation and background), `paused` (background names) and `switched` (model or voice and end date).
-- `PUT /api/settings/spend/{provider_id}`: `{soft, hard, warn_pct}`, with `null` for no cap. Validated: hard ≥ soft, non-negative, warn_pct 1–100.
-- `PUT /api/settings/spend/prices`: user prices, per provider id and model.
-- `POST /api/spend/choice`: a spend card's choice (`raise` with an amount, `switch` with a target, `stop`). It is accepted only from the session that was shown the card, by a tap (SPN-14).
+- `GET /api/usage` adds `providers[]`, one per provider set up: `spent`, `unit`, `soft`, `hard`, `warn_pct`, `state`, `split` (conversation and background), `paused` (background names), `switched` (model or voice, end date and its line), unestimated units, a cost line on a stated assumption, and its pricing page.
+- `PUT /api/settings/spend/{provider_id}`: `{soft, hard, warn_pct}`, with `null` for no cap. Validated: hard at least soft, non-negative, warn_pct from 1 to 100.
+- `GET` and `PUT /api/settings/spend/prices`: user prices, per provider id and model.
+- `POST /api/spend/switch/{provider_id}/end`: Switch back now. Refused with 409 `still_capped` while the usual provider is at its cap.
+- The settings listings for models, voices and hearing carry each choice's cost line and caps.
+- A card's choice is not an HTTP call: it is `spend.choice` on the conversation's socket (see above).
 - All behind the session token and origin check (SPN-11).
 
 ## Platforms
@@ -182,13 +199,13 @@ On the first start with this change, every set-up provider without caps gets the
 - **Structural** (`tests/spend/test_structure.py`): every `ModelProvider`, TTS and STT the runtime hands out is metered, and no module calls a provider's `stream`, `synthesize` or `open` except through the wrappers.
 - **Session, with fake providers:**
   - at the hard cap the reply finishes, then the next turn is refused with the line and the card;
-  - raise, switch and stop each do what they say;
+  - raise, switch and not now each do what they say;
   - a switch is announced, shown in the banner, and ends on the 1st;
   - voice capped finishes the sentence and goes to text;
   - hearing capped stops after the turn;
   - the soft-cap mention happens once, in her words.
 - **Background:**
-  - a routine run at the cap is recorded `skipped`, reason `capped`;
+  - a routine refused at the cap is recorded `skipped`, reason `capped`, and one refused partway `failed`;
   - a watcher keeps its place;
   - one notice;
   - all resume when the cap is raised or the month turns.
