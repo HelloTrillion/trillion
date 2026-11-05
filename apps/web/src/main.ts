@@ -517,7 +517,7 @@ const mic = createMic({
   },
   device: savedMic,
   deviceName: savedMicName,
-  onDeviceFound: (id) => saveMic(id),
+  onDeviceFound: (id, name) => saveMic(id, name),
   onProblem: (problem) => {
     endHold();
     if (streamWatch) {

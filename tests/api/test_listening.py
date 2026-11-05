@@ -182,6 +182,7 @@ async def test_a_microphone_that_sends_nothing_at_all_is_noticed(
     rt: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(session_module, "NO_AUDIO_S", 0.05)
+    monkeypatch.setattr(session_module, "FIRST_AUDIO_S", 0.05)
     hearing(rt)
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
@@ -189,6 +190,26 @@ async def test_a_microphone_that_sends_nothing_at_all_is_noticed(
     await page.until("error")
     assert page.all("mic.stop")[-1]["reason"] == "inaudible"
     assert page.all("error")[-1]["kind"] == "inaudible" and session._listener is None
+    await session.close()
+
+
+async def test_a_microphone_still_waking_is_given_longer_for_its_first_audio(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A USB microphone sends nothing for a second or more while it wakes; the page
+    # holds those zeros back, so the first frame comes late (FIRST_AUDIO_S), and from
+    # then on a gap means the page stopped (NO_AUDIO_S).
+    monkeypatch.setattr(session_module, "NO_AUDIO_S", 0.05)
+    monkeypatch.setattr(session_module, "FIRST_AUDIO_S", 30.0)
+    hearing(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "listen.start"})
+    await asyncio.sleep(0.7)
+    assert session._listener is not None and page.all("mic.stop") == []
+    await speak(session, room(0.2))
+    await page.until("error")
+    assert page.all("mic.stop")[-1]["reason"] == "inaudible"
     await session.close()
 
 

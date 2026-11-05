@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FRAME_SAMPLES, Framer, TARGET_RATE, problemOf } from '../src/mic';
+import { FRAME_SAMPLES, Framer, TARGET_RATE, WAKE_S, Waking, problemOf } from '../src/mic';
 
 const sine = (rate: number, seconds: number, hz = 200, loud = 0.5): Float32Array =>
   Float32Array.from({ length: Math.round(rate * seconds) }, (_, i) => loud * Math.sin((2 * Math.PI * hz * i) / rate));
@@ -56,5 +56,31 @@ describe('microphone framing', () => {
     expect(problemOf(named('NotFoundError'))).toBe('no_device');
     expect(problemOf(named('AbortError'))).toBe('failed');
     expect(problemOf('nope')).toBe('failed');
+  });
+});
+
+describe('a microphone waking up', () => {
+  const rate = 48_000;
+  const zeros = (seconds: number): Float32Array => new Float32Array(Math.round(rate * seconds));
+  function run(w: Waking, samples: Float32Array, block = 128): string[] {
+    const seen: string[] = [];
+    for (let i = 0; i < samples.length; i += block) seen.push(w.push(samples.subarray(i, i + block)));
+    return seen;
+  }
+
+  it('skips the exact zeros a USB microphone sends while it wakes, for a few seconds', () => {
+    const w = new Waking(rate);
+    // The Studio Display's microphone: well over a second of zeros, then the room.
+    expect(new Set(run(w, zeros(2.5)))).toEqual(new Set(['skip']));
+    expect(run(w, sine(rate, 0.1, 200, 0.001))).toContain('sound');
+    // Once it has made a sound, a quiet moment is just a quiet moment.
+    expect(new Set(run(w, zeros(WAKE_S + 1)))).toEqual(new Set(['sound']));
+  });
+
+  it('says it is silent only after WAKE_S of nothing but zeros', () => {
+    const w = new Waking(rate);
+    const seen = run(w, zeros(WAKE_S + 0.1));
+    expect(seen.indexOf('silent')).toBeGreaterThan(Math.floor((rate * (WAKE_S - 0.01)) / 128));
+    expect(WAKE_S).toBeGreaterThanOrEqual(3);
   });
 });
