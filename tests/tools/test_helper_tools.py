@@ -45,6 +45,7 @@ from trillion.tools.helper import (
     HelperUpdate,
     HelperWiden,
 )
+from trillion.tools.schedule import MAX_TITLE
 
 OWNER = "local"
 NOW = ms("2026-11-05T09:00")
@@ -171,7 +172,7 @@ async def test_its_first_message_is_saved_as_hers(it: Setup) -> None:
 
 
 async def test_the_first_message_reads_no_markup(it: Setup) -> None:
-    done = await it.create.execute({"name": "<b>Inbox", "job": "Reads <context> mail."}, CTX)
+    done = await it.create.execute({"name": "Inbox", "job": "Reads <context> mail."}, CTX)
     made = json.loads(done.content)
     ((_, msg),) = await it.conversations.history(made["conversation_id"], OWNER)
     (block,) = msg.blocks
@@ -364,7 +365,7 @@ async def test_asking_makes_a_due_now_ask_for_it(it: Setup) -> None:
     assert (s.kind, s.helper_id, s.repeat, s.target) == ("ask", h.id, None, None)
     assert (s.next_due_ms, s.created_ms, s.created_in) == (NOW, NOW, "chat-1")
     assert s.body == request.strip()
-    assert s.title == f"Invoices: {' '.join(request.split())[:60]}"
+    assert s.title == f"Invoices: {' '.join(request.split())[: MAX_TITLE - 10]}"
     assert (s.zone, s.at_local) == ("America/New_York", "2026-11-05T09:00")
     # The scheduler finds it due now.
     assert [x.id for x in await it.schedules.due(NOW)] == [s.id]
@@ -435,3 +436,104 @@ def test_installed_with_the_built_in_tools_and_never_run_unattended() -> None:
     for d in found.values():
         assert d.category == CATEGORY and d.trusted_output and d.timeout_s > 0
     assert not names & {d.name for d in registry.unattended().definitions()}
+
+
+# ── Review fixes ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name", ["<b>Inbox", "Inbox>", "`Inbox`", "In\nbox", "In\tbox", "Inbox‮", "In\x00box"]
+)
+async def test_a_name_is_plain_words(it: Setup, name: str) -> None:
+    plain = "a helper's name is plain words: no symbols or line breaks"
+    pre = await it.create.precheck({"name": name, "job": JOB}, CTX)
+    assert not pre.ok and plain in pre.reason
+    done = await it.create.execute({"name": name, "job": JOB}, CTX)
+    assert not done.ok and plain in done.content
+    h = await it.made()
+    args = {"helper": h.id, "name": name}
+    pre = await it.update.precheck(args, in_chat(h))
+    assert not pre.ok and plain in pre.reason
+    assert not (await it.update.execute(args, in_chat(h))).ok
+    assert [x.name for x in await it.helpers.all(OWNER)] == ["Invoices"]
+
+
+@pytest.mark.parametrize("job", ["Reads mail.\nAnd more.", "Reads\tmail.", "Reads\rmail."])
+async def test_a_job_is_one_plain_line(it: Setup, job: str) -> None:
+    pre = await it.create.precheck({"name": "Inbox", "job": job}, CTX)
+    assert not pre.ok and "no line breaks" in pre.reason
+    assert not (await it.create.execute({"name": "Inbox", "job": job}, CTX)).ok
+    h = await it.made()
+    pre = await it.update.precheck({"helper": h.id, "job": job}, in_chat(h))
+    assert not pre.ok and "no line breaks" in pre.reason
+
+
+async def test_a_handoffs_title_fits_the_scheduler(it: Setup) -> None:
+    name = "N" * NAME_MAX
+    h = await it.made(name)
+    request = "Which   invoices are overdue,\n and by how much in all? " * 4
+    done = await it.ask.execute({"helper": h.id, "request": request}, CTX)
+    assert done.ok
+    (s,) = await it.schedules.active(OWNER)
+    assert len(s.title) <= MAX_TITLE
+    assert s.title == f"{name}: {' '.join(request.split())[: MAX_TITLE - NAME_MAX - 2]}"
+
+
+async def test_full_between_the_card_and_the_tap(it: Setup) -> None:
+    args = {"name": "Inbox", "job": JOB}
+    assert (await it.create.precheck(args, CTX)).ok
+    for i in range(MAX_HELPERS):
+        await it.made(f"Helper {i}")
+    done = await it.create.execute(args, CTX)
+    assert not done.ok and done.content == f"there are {MAX_HELPERS} helpers: suggest deleting one"
+    assert len(await it.helpers.all(OWNER)) == MAX_HELPERS
+
+
+async def test_taken_between_the_card_and_the_tap(it: Setup) -> None:
+    args = {"name": "Inbox", "job": JOB}
+    assert (await it.create.precheck(args, CTX)).ok
+    await it.made("inbox")
+    done = await it.create.execute(args, CTX)
+    assert not done.ok and done.content == "there's already a helper called inbox: suggest using it"
+
+
+async def test_full_or_taken_by_the_store_itself(
+    it: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store checks again in its own transaction: what it says is what she hears."""
+
+    async def nothing_seen(owner_id: str) -> list[OwnHelper]:
+        return []
+
+    await it.made("Inbox")
+    monkeypatch.setattr(it.helpers, "all", nothing_seen)
+    taken = await it.create.execute({"name": "INBOX", "job": JOB}, CTX)
+    assert not taken.ok and taken.error_kind == "taken"
+    assert taken.content == "there's already a helper called INBOX: suggest using it"
+    for i in range(MAX_HELPERS - 1):
+        await it.made(f"Helper {i}")
+    full = await it.create.execute({"name": "Bills", "job": JOB}, CTX)
+    assert not full.ok and full.error_kind == "full"
+    assert full.content == f"there are {MAX_HELPERS} helpers: suggest deleting one"
+
+
+async def test_a_new_name_taken_between_the_card_and_the_tap(
+    it: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = await it.made()
+    args = {"helper": h.id, "name": "Inbox"}
+    assert (await it.update.precheck(args, in_chat(h))).ok
+    await it.made("INBOX")
+    done = await it.update.execute(args, in_chat(h))
+    assert not done.ok and done.content == "there's already a helper called INBOX: suggest using it"
+
+    # And when only the store sees it.
+    async def nothing_seen(owner_id: str) -> list[OwnHelper]:
+        return []
+
+    monkeypatch.setattr(it.helpers, "all", nothing_seen)
+    done = await it.update.execute(args, in_chat(h))
+    assert not done.ok and done.error_kind == "taken"
+    assert done.content == "there's already a helper called Inbox: suggest using it"
+    now = await it.helpers.get(OWNER, h.id)
+    assert now is not None and now.name == "Invoices"

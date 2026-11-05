@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import unicodedata
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -42,7 +43,7 @@ from trillion.spine.contract import (
     ToolResult,
 )
 from trillion.tools.routine import narrows_routine
-from trillion.tools.schedule import MAX_ASK
+from trillion.tools.schedule import MAX_ASK, MAX_TITLE
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,11 @@ ASK, SUGGEST = "helper_ask", "helper_suggest"
 NAMES = (CREATE, UPDATE, NARROW, WIDEN, ASK, SUGGEST)
 # The offer she made, for the page to show (`{area, at_ms, name, job}`).
 OFFER_PREF = "helper_offer"
-# A handoff's title: the helper's name and the start of the request.
-TITLE_ASK = 60
+# A handoff's title: the helper's name and as much of the request as fits.
+TITLE_ASK = MAX_TITLE
+# A name is plain words: nothing that reads as markup or code.
+_NOT_IN_NAMES = frozenset("<>`")
+_PLAIN_NAME = "a helper's name is plain words: no symbols or line breaks"
 AREA_MAX = 64
 WORK: Work = "helpers"
 
@@ -127,7 +131,16 @@ def _refused(text: str, kind: str = "refused") -> ToolResult:
     return ToolResult(ok=False, content=text, effect="none", error_kind=kind)
 
 
-def _name_wrong(name: str) -> str | None:
+def _controls(raw: str) -> bool:
+    """Any control or format character, a line break or a tab among them."""
+    return any(unicodedata.category(c) in ("Cc", "Cf") for c in raw)
+
+
+def _name_wrong(value: Any) -> str | None:
+    raw = str(value or "")
+    if _controls(raw) or any(c in _NOT_IN_NAMES for c in raw):
+        return _PLAIN_NAME
+    name = _one_line(raw)
     if not name:
         return "the name is empty"
     if len(name) > NAME_MAX:
@@ -135,7 +148,11 @@ def _name_wrong(name: str) -> str | None:
     return None
 
 
-def _job_wrong(job: str) -> str | None:
+def _job_wrong(value: Any) -> str | None:
+    raw = str(value or "")
+    if _controls(raw):
+        return "a helper's job is one plain line: no line breaks"
+    job = _one_line(raw)
     if not job:
         return "the job is empty: say what it does"
     if len(job) > JOB_MAX:
@@ -166,7 +183,8 @@ class HelperTool(BaseTool):
         self._held: Callable[[Work], Awaitable[bool]] = _never_held
         self._offer_open: OfferOpen = _never_offered
         self._owner = ""
-        # Each helper's name, as its last check found it, for its card.
+        # Each helper's name, as its last check found it, for its card: `describe` has
+        # no store, so it relies on the router running the precheck first.
         self._names: dict[str, str] = {}
 
     def bind(
@@ -261,10 +279,10 @@ class HelperCreate(HelperTool):
         said = self._said(ctx)
         if said is not None:
             return said
-        name, job = _one_line(args.get("name")), _one_line(args.get("job"))
-        wrong = _name_wrong(name) or _job_wrong(job)
+        wrong = _name_wrong(args.get("name")) or _job_wrong(args.get("job"))
         if wrong is not None:
             return wrong
+        name = _one_line(args.get("name"))
         have = await store.all(ctx.owner_id)
         same = next((h for h in have if h.name.casefold() == name.casefold()), None)
         if same is not None:
@@ -343,9 +361,9 @@ class HelperUpdate(HelperTool):
         name, job = args.get("name"), args.get("job")
         if name is None and job is None:
             return "say the new name, the new job or both"
-        if name is not None and (wrong := _name_wrong(_one_line(name))) is not None:
+        if name is not None and (wrong := _name_wrong(name)) is not None:
             return wrong
-        if job is not None and (wrong := _job_wrong(_one_line(job))) is not None:
+        if job is not None and (wrong := _job_wrong(job)) is not None:
             return wrong
         h = await self._own(args, ctx)
         if isinstance(h, str):
@@ -510,6 +528,12 @@ class HelperWiden(_NotesTool):
         )
 
 
+def _title(name: str, request: str) -> str:
+    """A handoff's title, within the scheduler's limit: the name, then the request."""
+    room = max(TITLE_ASK - len(name) - 2, 1)
+    return f"{name}: {_one_line(request)[:room]}"
+
+
 class HelperAsk(HelperTool):
     definition = ToolDefinition(
         name=ASK,
@@ -582,7 +606,7 @@ class HelperAsk(HelperTool):
             id=secrets.token_hex(4),
             owner_id=ctx.owner_id,
             kind="ask",
-            title=f"{checked.name}: {_one_line(request)[:TITLE_ASK]}",
+            title=_title(checked.name, request),
             body=request,
             zone=zone,
             at_local=at_local,
@@ -639,7 +663,7 @@ class HelperSuggest(HelperTool):
             return _NOT_FOR_HELPERS
         if not await self._offer_open(ctx.session_id, str(args.get("area", ""))):
             return _NOT_OFFERED
-        return _name_wrong(_one_line(args.get("name"))) or _job_wrong(_one_line(args.get("job")))
+        return _name_wrong(args.get("name")) or _job_wrong(args.get("job"))
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         why = await self._why_not(args, ctx)
