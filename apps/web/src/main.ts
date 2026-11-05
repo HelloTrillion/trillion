@@ -67,7 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { buttonLabel, createHelpers } from './helpers';
+import { buttonLabel, createHelpers, stepTarget } from './helpers';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
@@ -2120,10 +2120,12 @@ helpersBtn.replaceChildren(icon('helpers', 18), helpersDot);
 const helpers = createHelpers({
   api,
   open: (id) => openConversation(id),
-  // Google and Stripe are both connected from Connected tools.
-  openStep: () => {
+  // Straight to the connection it needs, as Home's Connect goes; else Connected tools.
+  openStep: (stepId) => {
     workspace.close();
     openSettings('connected');
+    const target = stepTarget(stepId);
+    if (target) void connected.start(target);
   },
   now: () => Date.now(),
   phone: () => isPhone(innerWidth),

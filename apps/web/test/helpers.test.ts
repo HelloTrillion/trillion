@@ -8,6 +8,7 @@ import {
   elapsedText,
   groupOf,
   outcomeText,
+  stepTarget,
   statusLine,
   summaryLine,
   timeText,
@@ -500,5 +501,15 @@ describe('a helper’s details', () => {
     helpers.closed();
     await helpers.open();
     expect((root.querySelector('.hp-details') as HTMLElement).hidden).toBe(true);
+  });
+});
+
+describe('a step’s Settings', () => {
+  it('goes to the connection the watcher reads, as Home’s Connect does', () => {
+    expect(stepTarget('connect:email')).toBe('gmail');
+    expect(stepTarget('connect:meetings')).toBe('google-calendar');
+    expect(stepTarget('connect:payments')).toBe('stripe');
+    expect(stepTarget('connect:other')).toBeNull();
+    expect(stepTarget('something')).toBeNull();
   });
 });

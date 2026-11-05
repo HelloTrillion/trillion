@@ -144,6 +144,18 @@ export function outcomeText(run: LastRun): string {
   }
 }
 
+// What each watcher reads, as Connected tools' catalog names it.
+const STEP_TARGETS: Readonly<Record<string, string>> = {
+  'connect:email': 'gmail',
+  'connect:meetings': 'google-calendar',
+  'connect:payments': 'stripe',
+};
+
+/** The Connected tools entry a step opens at (connect or sign in again), or null for the section. */
+export function stepTarget(stepId: string): string | null {
+  return STEP_TARGETS[stepId] ?? null;
+}
+
 function parseList(raw: unknown): HelperList | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { helpers?: unknown; needs_you?: unknown };
