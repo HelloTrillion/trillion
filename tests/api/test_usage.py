@@ -96,6 +96,7 @@ def test_a_month_with_nothing_used_is_empty_not_zero(make: Any) -> None:
         "total_cost_usd": None,
         "unpriced_tokens": 0,
         "providers": [],
+        "uncounted_before_caps": False,
     }
 
 
@@ -240,8 +241,10 @@ def test_todays_fields_are_kept_and_nothing_set_up_lists_nothing(make: Any) -> N
         "total_cost_usd",
         "unpriced_tokens",
         "providers",
+        "uncounted_before_caps",
     }
     assert usage["providers"] == []
+    assert usage["uncounted_before_caps"] is False
 
 
 def test_a_priced_model_shows_its_caps_its_split_and_what_it_costs(make: Any) -> None:
@@ -284,6 +287,7 @@ def test_a_priced_model_shows_its_caps_its_split_and_what_it_costs(make: Any) ->
         "paused": [],
         "switched": None,
         "unestimated": None,
+        "estimated": False,
         "estimate": (
             f"Roughly ${hour:.2f} an hour of talk on Sonnet 5.5 (about 40 short turns), "
             "plus routines."
@@ -533,3 +537,51 @@ def test_ending_a_switch_needs_the_token_and_our_origin(make: Any) -> None:
     other = {**app.auth, "origin": "https://evil.example"}
     assert app.client.post(END, json={}, headers=other).status_code == 403
     assert app.rt.spend.switch("anthropic") is not None
+
+
+def test_dollars_that_include_an_estimate_say_so(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    gpt = ModelSettings(kind="openai", model="gpt-new")
+    on_model(app, gpt)
+    set_caps(app, openai=CAPS)
+    call(
+        app,
+        partial(
+            app.rt.conversations.record_usage,
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="openai",
+            model="gpt-new",
+            usage=Usage(input_tokens=3000, output_tokens=1000),
+            cost_usd=None,
+            now_ms=NOW - MINUTE,
+            provider_id="openai",
+        ),
+    )
+    recount(app)
+    row = providers(app)["openai"]
+    assert row["estimated"] is True and row["spent"] > 0
+
+
+def test_spend_from_before_caps_on_an_openai_compatible_model_is_said_to_be_uncounted(
+    make: Any,
+) -> None:
+    app = make()
+    in_chicago(app)
+    # As migration 017 left an old row: its provider class, and no address.
+    call(
+        app,
+        partial(
+            app.rt.conversations.record_usage,
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="openai-compatible",
+            model="m1",
+            usage=Usage(input_tokens=3000),
+            cost_usd=None,
+            now_ms=NOW - MINUTE,
+            provider_id="openai-compatible",
+        ),
+    )
+    assert read(app)["uncounted_before_caps"] is True

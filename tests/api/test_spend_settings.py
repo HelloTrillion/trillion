@@ -21,6 +21,7 @@ from trillion.api.runtime import (
     open_runtime,
 )
 from trillion.brain.config import ModelSettings
+from trillion.brain.types import Usage
 from trillion.secrets.store import MemoryStore
 from trillion.spend import prices
 from trillion.spend.desk import KNOWN_PREF
@@ -436,6 +437,48 @@ async def test_the_upgrade_gives_every_provider_in_use_the_defaults(where: Path)
         await rt.close()
 
 
+async def test_the_note_says_once_that_earlier_openai_compatible_use_is_not_counted(
+    where: Path,
+) -> None:
+    secrets = _secrets()
+    await _before_caps(
+        where,
+        secrets,
+        **{MODEL_PREF: ModelSettings(kind="anthropic", model="claude-sonnet-5-5").to_json()},
+    )
+    rt = await _open(where, secrets)
+    try:
+        ((_key, note),) = rt.spend.notes([])
+        assert "not counted" not in note
+    finally:
+        await rt.close()
+    # Again, on an install that used an OpenAI-compatible model earlier this month.
+    rt = await _open(where, secrets)
+    try:
+        await rt.conversations.record_usage(
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="openai-compatible",
+            model="m1",
+            usage=Usage(input_tokens=3000),
+            cost_usd=None,
+            now_ms=rt.clock() - 1000,
+            provider_id="openai-compatible",
+        )
+    finally:
+        await rt.close()
+    await _before_caps(where, secrets)
+    rt = await _open(where, secrets)
+    try:
+        ((_key, note),) = rt.spend.notes([])
+        assert (
+            "Use of OpenAI-compatible models earlier this month, before the limits were on, "
+            "is not counted toward them."
+        ) in note
+    finally:
+        await rt.close()
+
+
 async def test_the_upgrade_never_overwrites_caps_and_seeds_only_once(where: Path) -> None:
     secrets = _secrets()
     mine = {"soft": None, "hard": 5.0, "warn_pct": 50, "unit": "dollars"}
@@ -452,13 +495,41 @@ async def test_the_upgrade_never_overwrites_caps_and_seeds_only_once(where: Path
         # Already capped: kept as the user set it, and nothing new to tell.
         assert await rt.preferences.get(OWNER, CAPS_PREF) == {"anthropic": mine}
         assert [k for k, _ in rt.spend.notes([])] == []
-        # Removed later: the next start does not give them back.
-        await rt.preferences.put(OWNER, CAPS_PREF, {}, rt.clock())
+        # Removed later, as Settings removes them: the next start does not give them back.
+        await rt.write_caps("anthropic", Caps(None, None, 80))
     finally:
         await rt.close()
     rt = await _open(where, secrets)
     try:
-        assert await rt.preferences.get(OWNER, CAPS_PREF) == {}
+        assert await rt.preferences.get(OWNER, CAPS_PREF) == {
+            "anthropic": {"soft": None, "hard": None, "warn_pct": 80, "unit": "dollars"}
+        }
+        assert rt.gate.caps("anthropic") == Caps(None, None, 80)
+    finally:
+        await rt.close()
+
+
+async def test_a_model_set_by_the_environment_later_is_capped_on_its_next_start(
+    where: Path,
+) -> None:
+    rt = await _open(where, MemoryStore())
+    try:
+        assert await rt.preferences.get(OWNER, CAPS_PREF) is None
+    finally:
+        await rt.close()
+    rt = await open_runtime(
+        share_rules=lambda _p: None,
+        granted_roots=(),
+        persona=where,
+        secrets=MemoryStore(),
+        env={"TRILLION_ANTHROPIC_API_KEY": "test-key"},
+    )
+    try:
+        assert rt.source == "env"
+        assert await rt.preferences.get(OWNER, CAPS_PREF) == {"anthropic": DEFAULTS}
+        assert rt.gate.caps("anthropic") == Caps(20.0, 50.0, 80)
+        # The note is for the upgrade only: this install had nothing to upgrade.
+        assert rt.spend.notes([]) == []
     finally:
         await rt.close()
 
@@ -561,13 +632,28 @@ def test_prices_are_bounded(make: Any, body: Any, error: str) -> None:
     assert stored(app, PRICES_PREF) is None
 
 
-def test_a_free_voice_rate_or_unknown_model_may_be_zero(make: Any) -> None:
+def test_a_voice_on_a_plan_may_be_free(make: Any) -> None:
     app = make()
-    body = {
-        "elevenlabs": {"*": {"unit": "chars", "per_unit": 0}},
-        "custom:llm.example.com": {"m1": {"input": 0, "output": 0}},
-    }
+    body = {"elevenlabs": {"*": {"unit": "chars", "per_unit": 0}}}
     assert put(app, "/api/settings/spend/prices", body).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Would move its caps from tokens to dollars, then count nothing.
+        {"custom:llm.example.com": {"m1": {"input": 0, "output": 0}}},
+        {"openai-voice:tts.example.com": {"*": {"unit": "chars", "per_unit": 0}}},
+    ],
+)
+def test_a_free_price_that_would_count_nothing_is_refused(make: Any, body: Any) -> None:
+    app = make()
+    call(app, app.rt.seed_caps, list(body))
+    r = put(app, "/api/settings/spend/prices", body)
+    assert (r.status_code, r.json()["error"]) == (400, "zero_price")
+    assert stored(app, PRICES_PREF) is None
+    (pid,) = body
+    assert stored(app, CAPS_PREF)[pid]["unit"] != "dollars"
 
 
 def test_caps_are_bounded(make: Any) -> None:
@@ -722,3 +808,24 @@ def test_a_price_counts_tokens_used_before_it_toward_the_dollar_caps(make: Any) 
     ]
     assert row["unestimated"] is None
     assert row["spent"] == pytest.approx(4.0)
+
+
+# ── A card's switch never sends one host's key to another ────────────────
+
+
+def test_a_card_offers_only_the_custom_host_the_key_was_saved_for(make: Any, offers: list) -> None:
+    app = make()
+    for host, key in (("a.example.com", "key-for-a"), ("b.example.com", "key-for-b")):
+        body = {"kind": "custom", "model": "model-a", "base_url": f"https://{host}/v1"}
+        r = app.client.put("/api/settings/model", json=body | {"api_key": key}, headers=app.auth)
+        assert r.status_code == 200, r.json()
+    # Back on Anthropic: both custom hosts are known, one key slot holds B's key.
+    app.rt.secrets.set("anthropic/api_key", "test-key")
+    body = {"kind": "anthropic", "model": "model-a"}
+    assert app.client.put("/api/settings/model", json=body, headers=app.auth).status_code == 200
+    choices = call(app, app.rt.model_choices, "anthropic")
+    assert [pid for pid, _ in choices] == ["custom:b.example.com"]
+    # A key saved before the address was recorded fits only the custom model in use:
+    # with none in use, no custom model is offered.
+    call(app, app.rt.preferences.put, OWNER, "custom_key_for", None, 0)
+    assert call(app, app.rt.model_choices, "anthropic") == []

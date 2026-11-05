@@ -235,3 +235,20 @@ describe('the pill counts what the caps count', () => {
     expect(breakdown(at([provider({ spent: 21.45 })]))[0]?.detail).toBe('$7.19 · 43k in, 9k out, 12k unpriced');
   });
 });
+
+describe('dollars that include estimates', () => {
+  const rows = [row({ cost_usd: 7.19, unpriced_tokens: 12_000, unpriced_turns: 3 })];
+  const at = (providers: ProviderUsage[]): Usage => ({ ...month(rows, 7.19, 12_000), providers });
+
+  it('say so in the sentence the tooltip shows', () => {
+    expect(sentence(at([provider({ spent: 21.45, estimated: true })]))).toBe(
+      'API usage in October: $21.45. Includes estimates for calls without a price.',
+    );
+    expect(sentence(at([provider({ spent: 21.45, estimated: false })]))).toBe('API usage in October: $21.45.');
+  });
+
+  it('say so in the tooltip at a warning too', () => {
+    const s = pillState(at([provider({ state: 'warned', spent: 16.4, estimated: true })]));
+    expect(s.title).toBe('Anthropic: $16.40 so far. Warns at $20, stops at $50. Includes estimates for calls without a price.');
+  });
+});

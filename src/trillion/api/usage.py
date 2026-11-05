@@ -24,6 +24,7 @@ from trillion.spend import gate as spend_gate
 from trillion.spend import prices
 from trillion.spend.desk import Leg, friendly
 from trillion.spend.gate import UNCAPPED
+from trillion.spend.ledger import BEFORE_CAPS
 from trillion.spend.types import Caller
 from trillion.zones import month_start
 
@@ -76,6 +77,7 @@ async def provider_row(
             "paused": [],
             "switched": None,
             "unestimated": None,
+            "estimated": False,
             "estimate": prices.cost_line(None),
             "pricing_url": None,
         }
@@ -119,6 +121,11 @@ async def provider_row(
         "unestimated": (
             {"units": unestimated[0], "unit": unestimated[1]} if unestimated is not None else None
         ),
+        # Dollars that include an estimate for calls nothing priced.
+        "estimated": caps.unit == "dollars"
+        and bool(spent.units)
+        and spent.unit is not None
+        and prices.estimate(provider_id, spent.unit, spent.units, user) is not None,
         "estimate": prices.cost_line(provider_id, model, user),
         "pricing_url": prices.pricing_url(provider_id),
     }
@@ -162,6 +169,8 @@ def create_usage_router(rt: Runtime) -> APIRouter:
             "total_cost_usd": round(sum(priced), 6) if priced else None,
             "unpriced_tokens": sum(r["unpriced_tokens"] for r in rows),
             "providers": await provider_rows(rt, rows),
+            # OpenAI-compatible use from before spend caps, which no cap counts.
+            "uncounted_before_caps": any(r.get("provider_id") == BEFORE_CAPS for r in rows),
         }
 
     return router

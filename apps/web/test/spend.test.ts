@@ -369,6 +369,26 @@ async function openUsage(providers: ProviderUsage[] | (() => ProviderUsage[] | n
 
 const more = (b: HTMLElement): HTMLDetailsElement => b.querySelector('details') as HTMLDetailsElement;
 
+describe('Settings, Usage: what no cap counts', () => {
+  async function shown(before: boolean): Promise<string> {
+    const root = document.createElement('div');
+    document.body.append(root);
+    const { api } = fakeApi({ 'GET /api/settings/spend/prices': () => json({ prices: {} }) });
+    const load = async (): Promise<Usage> => ({ ...usageOf([provider()]), uncounted_before_caps: before });
+    await createUsageSettings(fakeHost(root), load, api).open();
+    await flush();
+    const text = root.textContent ?? '';
+    root.remove();
+    return text;
+  }
+
+  it('says once that OpenAI-compatible use from before the limits is not counted', async () => {
+    const line = 'Use of OpenAI-compatible models earlier this month, before the limits were on, is not counted toward them.';
+    expect(await shown(true)).toContain(line);
+    expect(await shown(false)).not.toContain(line);
+  });
+});
+
 describe('Settings, Usage: one block per service', () => {
   it('opens on the plain explanation, with no requirement ids', async () => {
     const { root } = await openUsage([provider()]);

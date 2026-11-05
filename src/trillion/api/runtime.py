@@ -28,8 +28,11 @@ from trillion.brain import compact
 from trillion.brain.config import (
     NEEDS_KEY,
     OPENAI_BASE_URL,
+    ConfigError,
     ModelSettings,
     Source,
+    endpoint,
+    keyless,
     resolve,
     secret_name,
 )
@@ -67,7 +70,7 @@ from trillion.spend import metered, prices
 from trillion.spend.caller import as_caller
 from trillion.spend.desk import KNOWN_PREF, Leg, SpendDesk, Switch, caps_on_note
 from trillion.spend.gate import UNCAPPED, Caps, Gate, default_for
-from trillion.spend.ledger import Ledger
+from trillion.spend.ledger import BEFORE_CAPS, Ledger
 from trillion.spend.metered import Meter, MeteredHearing, MeteredModel, MeteredVoice, PriceBook
 from trillion.spend.types import Work
 from trillion.spine.audit import audit_key
@@ -279,8 +282,12 @@ def metered_listening(
     return meter.hearing(stt, prices.hearing_provider_id(settings.kind))
 
 
-# Set once caps have been given to every provider set up at the upgrade (BRN-7).
+# Set after the first start with spend caps: the one-time note that caps are on is
+# given only then (BRN-7). Caps themselves are given on every start.
 SPEND_SEEDED_PREF = "spend_seeded"
+# The provider id of the custom address the custom key was saved for. Every custom
+# address shares one key slot, so a card offers a custom model only on that address.
+CUSTOM_KEY_FOR_PREF = "custom_key_for"
 
 
 def caps_json(caps: Caps) -> dict[str, Any]:
@@ -598,9 +605,34 @@ class Runtime:
             # Only one whose key is still there: a removed key is not set up any more.
             if settings.kind in NEEDS_KEY and not self.secrets.get(secret_name(settings.kind)):
                 continue
+            if settings.kind == "custom" and not await self._custom_key_fits(pid, settings):
+                continue
             out.append((pid, settings))
         out.sort(key=lambda found: (found[0] != "local", found[0], found[1].model))
         return out
+
+    async def _custom_key_fits(self, pid: str, settings: ModelSettings) -> bool:
+        """Whether a known custom model may be switched to without sending the one
+        custom key to an address it was not saved for: there is no key, the address
+        is never sent one, or the key was saved for this address (else, for a key saved
+        before that was recorded, the custom model chosen now is on it)."""
+        if not self.secrets.get(secret_name("custom")):
+            return True
+        try:
+            url = endpoint("custom", settings.base_url)
+        except ConfigError:
+            return False
+        if url is not None and keyless(url):
+            return True
+        saved_for = await self.preferences.get(OWNER, CUSTOM_KEY_FOR_PREF)
+        if isinstance(saved_for, str):
+            return saved_for == pid
+        chosen = self.settings
+        return (
+            chosen is not None
+            and chosen.kind == "custom"
+            and model_provider_id(chosen, "settings", self.env) == pid
+        )
 
     async def whisper_ready(self) -> str | None:
         return await whisper_choice()
@@ -740,21 +772,29 @@ class Runtime:
             await self.gate.reload_caps()
             return added
 
-    async def _seed_caps_once(self) -> None:
-        """On the first start with spend caps: every provider in use (the model, what a
-        switch put in its place, the voice and hearing) gets the defaults, and her next
-        turn carries one note saying so (PER-11). A model known from before is given
-        them when it is chosen again or switched to. The caps are saved first: a note
-        that fails to keep never leaves a provider uncapped."""
-        if await self.preferences.get(OWNER, SPEND_SEEDED_PREF):
-            return
+    async def _seed_caps_in_use(self) -> None:
+        """On every start: each provider in use (the model, what a switch put in its
+        place, the voice and hearing) with no caps entry gets the defaults, so a model
+        set by the environment after the first start is capped too. An entry already
+        there, even one whose caps the user removed (null), is never touched.
+
+        On the first start with spend caps only, her next turn carries one note saying
+        so (PER-11). A model known from before is given them when it is chosen again or
+        switched to. The caps are saved first: a note that fails to keep never leaves a
+        provider uncapped."""
         in_use = await self.spend_set_up(in_use=True)
         added = await self.seed_caps([pid for _leg, pid, _m in in_use])
+        if await self.preferences.get(OWNER, SPEND_SEEDED_PREF):
+            return
         await self.preferences.put(OWNER, SPEND_SEEDED_PREF, True, self.clock())
         if not added:
             return
         try:
-            note = caps_on_note([(pid, default_for(pid)) for pid in added])
+            before = self.ledger.spent(BEFORE_CAPS)
+            note = caps_on_note(
+                [(pid, default_for(pid)) for pid in added],
+                uncounted=bool(before.all_units or before.dollars),
+            )
             await self.spend.tell_once("caps_on", note)
         except Exception as e:
             logger.warning("the note that caps are on was not kept: %s", type(e).__name__)
@@ -1639,8 +1679,9 @@ async def open_runtime(
     desk.background = rt.background_work
     await rt._seed_known()
     await rt._remember_model(settings)
-    # After the ledger and the caps are read: the defaults, once, for what is set up.
-    await rt._seed_caps_once()
+    # After the ledger and the caps are read: the defaults for what is in use and has
+    # none, on every start.
+    await rt._seed_caps_in_use()
     # A lapse picks again by itself; a switch still in force is picked here.
     if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
         await rt.use_switches()

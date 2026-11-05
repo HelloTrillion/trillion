@@ -52,7 +52,7 @@ from trillion.zones import next_month_start
 
 NY = "America/New_York"
 DAY = 86_400_000
-PAUSED = "Routines, watchers and channel replies are paused: Anthropic is at its $50 cap"
+PAUSED = "Routines and the board are paused: Anthropic is at its $50 cap"
 RAISED = {"soft": 20, "hard": 100, "warn_pct": 80}
 
 
@@ -169,9 +169,11 @@ async def test_a_timed_ask_at_the_cap_is_skipped_and_leaves_no_conversation(
         "SELECT COUNT(*) FROM conversations WHERE kind = 'scheduled'"
     ) as cur:
         assert (await cur.fetchone())[0] == 0  # type: ignore[index]
-    # Two kinds paused, one notice.
+    # Two kinds paused, one notice naming what is set up.
     assert await rt.spend.paused("anthropic") == ["routines", "asks", "titles", "board"]
-    assert [n[2] for n in await paused_notices(rt)] == [PAUSED]
+    assert [n[2] for n in await paused_notices(rt)] == [
+        "Routines, timed asks and the board are paused: Anthropic is at its $50 cap"
+    ]
 
 
 async def test_one_refused_mid_way_is_skipped_too_never_failed(rt: Runtime) -> None:
@@ -725,3 +727,17 @@ async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> N
             assert await cur.fetchall() == []
     finally:
         await conn.close()
+
+
+def test_the_paused_notice_names_only_what_is_set_up() -> None:
+    from trillion.spend.desk import paused_title
+
+    assert paused_title("Anthropic", "$50", {"watchers", "channels", "titles"}) == (
+        "Watchers and channel replies are paused: Anthropic is at its $50 cap"
+    )
+    assert paused_title("OpenAI", "$50", {"board", "titles"}) == (
+        "The board is paused: OpenAI is at its $50 cap"
+    )
+    assert paused_title("OpenAI", "$50", {"titles"}) == (
+        "Background work is paused: OpenAI is at its $50 cap"
+    )

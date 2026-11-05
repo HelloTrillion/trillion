@@ -11,7 +11,7 @@ import type { Api } from './settings';
 import { MAC, shortcut } from './platform';
 import type { Detail, Theme } from './prefs';
 import { createProviderBlocks } from './spend';
-import { type Usage, breakdown, sentence } from './usage';
+import { type Usage, UNCOUNTED_BEFORE_CAPS, breakdown, sentence } from './usage';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -437,8 +437,11 @@ export function createUsageSettings(host: Host, load: () => Promise<Usage | null
   const total = el('p', 'settings-hint');
   const byModel = el('details', 'spend-more');
   byModel.append(el('summary', '', 'Details by model'), list, total);
+  // Shown only on an install whose upgrade month had use no cap counts.
+  const before = el('div');
   function rows(u: Usage | null): void {
     if (!u) return;
+    before.replaceChildren(...(u.uncounted_before_caps ? [el('p', 'settings-hint', UNCOUNTED_BEFORE_CAPS)] : []));
     const found = breakdown(u);
     list.replaceChildren(
       ...(found.length
@@ -452,7 +455,7 @@ export function createUsageSettings(host: Host, load: () => Promise<Usage | null
     total.textContent = sentence(u);
   }
   const blocks = createProviderBlocks(api, load, rows);
-  finish(blocks.element, byModel);
+  finish(blocks.element, before, byModel);
   return {
     async open() {
       await blocks.open();

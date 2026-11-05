@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 
 from trillion.api.runtime import (
+    CUSTOM_KEY_FOR_PREF,
     LISTEN_PREF,
     MODEL_PREF,
     OWNER,
@@ -270,8 +271,11 @@ def _check_prices(raw: dict[str, Any]) -> str | None:
             parts = (kept.input, kept.output, kept.cache_read, kept.cache_write, kept.per_unit)
             if any(v > _MOST_RATE for v in parts):
                 return "bad_price"
-            if unit == "tokens" and not any(parts) and prices.can_price(pid):
-                # Free would stop the table's rate, or the reported cost, counting.
+            if not any(parts) and (unit == "tokens" or not prices.can_price(pid)):
+                # Free counts nothing: over the table's rate or the reported cost, or
+                # in place of caps in tokens or characters, which it would move to
+                # dollars. A model that is free runs on this computer, uncapped. Only
+                # a voice or hearing rate the table has may be zero, for a plan.
                 return "zero_price"
     return "too_many" if count > _MOST_PRICES else None
 
@@ -344,6 +348,10 @@ def create_router(rt: Runtime) -> APIRouter:
             kind=body.kind, model=body.model, base_url=base_url, max_output=chosen["max_output"]
         )
         await rt.preferences.put(OWNER, MODEL_PREF, settings.to_json(), rt.clock())
+        if body.kind == "custom" and body.api_key:
+            # Which address the one custom key is for: a card offers no other (BRN-8).
+            key_for = model_provider_id(settings, "settings", rt.env)
+            await rt.preferences.put(OWNER, CUSTOM_KEY_FOR_PREF, key_for, rt.clock())
         await rt.use_model(settings)
         # A provider with no caps yet starts with the defaults (BRN-7).
         await rt.seed_caps([model_provider_id(settings, "settings", rt.env)])

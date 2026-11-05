@@ -276,9 +276,18 @@ def back_note(label: str, usual: str) -> str:
     )
 
 
-def caps_on_note(caps: Sequence[tuple[str, Caps]]) -> str:
+# Said once, with the note, on an install that used an OpenAI-compatible model earlier
+# in the month it upgraded: those rows name no address, so no cap counts them.
+UNCOUNTED_BEFORE_CAPS = (
+    "Use of OpenAI-compatible models earlier this month, before the limits were on, is "
+    "not counted toward them."
+)
+
+
+def caps_on_note(caps: Sequence[tuple[str, Caps]], *, uncounted: bool = False) -> str:
     """The one-time note at the upgrade: caps are on, what they are, where to change
-    them. `caps` is (provider id, caps) for each provider given them."""
+    them. `caps` is (provider id, caps) for each provider given them. `uncounted`: this
+    month has OpenAI-compatible use from before caps, which none of them counts."""
     parts = []
     for pid, c in caps:
         warn = (
@@ -290,7 +299,8 @@ def caps_on_note(caps: Sequence[tuple[str, Caps]]) -> str:
         parts.append(f"{friendly(pid)}: {warn} and {stop} a month")
     return (
         "[host] Spending limits are now on, so a runaway routine or a long day can't run "
-        f"up the user's bill unnoticed. {'; '.join(parts)}. At the warning nothing stops; "
+        f"up the user's bill unnoticed. {'; '.join(parts)}. "
+        f"{UNCOUNTED_BEFORE_CAPS + ' ' if uncounted else ''}At the warning nothing stops; "
         "at the stop you stop before spending more and they choose what happens. They can "
         "change or remove these in Settings, under Usage and limits. Tell them once, "
         "briefly, in your own words, and carry on with what they asked."
@@ -303,14 +313,33 @@ def warning_title(name: str, spent: str, soft: str, *, past: bool = False) -> st
     return f"{name} is {where} your {soft} warning ({spent} so far)"
 
 
-def paused_title(name: str, cap: str) -> str:
-    """The one notice that background work paused: every kind of it runs on her model,
-    so all of it waits, whichever was refused first."""
-    return f"Routines, watchers and channel replies are paused: {name} is at its {cap} cap"
-
-
 # The kinds of background work, in the order `paused` lists them.
 WORK: tuple[Work, ...] = ("routines", "asks", "watchers", "channels", "titles", "board")
+
+# Each kind as the paused notice names it. Titles are left out: they are always set
+# up, and nobody thinks of them as work of hers.
+_PAUSED_WORDS: Mapping[Work, str] = {
+    "routines": "routines",
+    "asks": "timed asks",
+    "watchers": "watchers",
+    "channels": "channel replies",
+    "board": "the board",
+}
+
+
+def paused_title(name: str, cap: str, kinds: Iterable[Work]) -> str:
+    """The one notice that background work paused: every kind of it runs on her model,
+    so all of it set up waits, whichever was refused first. `kinds` is what is set up:
+    "Routines and the board are paused: Anthropic is at its $50 cap"."""
+    found = set(kinds)
+    words = [_PAUSED_WORDS[w] for w in WORK if w in found and w in _PAUSED_WORDS]
+    if not words:
+        what = "Background work is"
+    else:
+        listed = words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+        verb = "is" if words == ["the board"] else "are"
+        what = f"{listed[0].upper()}{listed[1:]} {verb}"
+    return f"{what} paused: {name} is at its {cap} cap"
 
 
 # ── The desk ─────────────────────────────────────────────────────────────
@@ -777,11 +806,24 @@ class SpendDesk:
         try:
             await self._save_told()
             caps = self._gate.caps(provider_id)
-            title = paused_title(friendly(provider_id), cap_words(float(caps.hard or 0), caps.unit))
+            kinds = {work} | set(await self._set_up())
+            title = paused_title(
+                friendly(provider_id), cap_words(float(caps.hard or 0), caps.unit), kinds
+            )
             if self.notify is not None:
                 await self.notify(f"spend:paused:{provider_id}:{month}", title)
         except Exception as e:
             log.warning("spend pause notice not given: %s", type(e).__name__)
+
+    async def _set_up(self) -> frozenset[Work]:
+        """The kinds of background work set up now, or none when that cannot be read."""
+        if self.background is None:
+            return frozenset()
+        try:
+            return (await self.background())[1]
+        except Exception as e:
+            log.warning("background work not read: %s", type(e).__name__)
+            return frozenset()
 
     async def paused(self, provider_id: str) -> list[Work]:
         """The kinds of background work paused now at this provider's hard cap: those

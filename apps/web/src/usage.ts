@@ -53,6 +53,8 @@ export interface ProviderUsage {
   /** A switch made at the cap: `line` is the core's own words for it, in the user's timezone. */
   readonly switched: { readonly to: string; readonly label: string; readonly until_ms: number; readonly line?: string | null } | null;
   readonly unestimated: { readonly units: number; readonly unit: Measure } | null;
+  /** `spent` includes an estimate for calls nothing priced. */
+  readonly estimated?: boolean;
   readonly estimate: string;
   readonly pricing_url: string | null;
 }
@@ -64,6 +66,23 @@ export interface Usage {
   readonly total_cost_usd: number | null;
   readonly unpriced_tokens: number;
   readonly providers?: readonly ProviderUsage[];
+  /** This month has OpenAI-compatible use from before spend caps, which no cap counts. */
+  readonly uncounted_before_caps?: boolean;
+}
+
+/** Said with any dollar figure that includes an estimate. */
+export const ESTIMATES = 'Includes estimates for calls without a price.';
+/** Said once in Settings on an install whose upgrade month had uncounted use. */
+export const UNCOUNTED_BEFORE_CAPS =
+  'Use of OpenAI-compatible models earlier this month, before the limits were on, is not counted toward them.';
+
+/** Whether the month's dollars include an estimate for calls without a price. */
+function hasEstimates(u: Usage): boolean {
+  return (u.providers ?? []).some((p) => p.provider_id !== null && p.provider_id !== 'local' && p.unit === 'dollars' && p.estimated === true);
+}
+
+function withEstimates(u: Usage, text: string): string {
+  return text && hasEstimates(u) ? `${text} ${ESTIMATES}` : text;
 }
 
 export function tokens(n: number): string {
@@ -134,8 +153,8 @@ export function sentence(u: Usage): string {
   if (!u.rows.length) return `No API use yet in ${when}.`;
   const { dollars: total, loose } = totals(u);
   if (total === null) return `API usage in ${when}: ${tokens(loose)} tokens, from models without prices.`;
-  if (!loose) return `API usage in ${when}: ${dollars(total)}.`;
-  return `API usage in ${when}: ${dollars(total)}, plus ${tokens(loose)} tokens from models without prices.`;
+  if (!loose) return withEstimates(u, `API usage in ${when}: ${dollars(total)}.`);
+  return withEstimates(u, `API usage in ${when}: ${dollars(total)}, plus ${tokens(loose)} tokens from models without prices.`);
 }
 
 function rowDetail(r: UsageRow): string {
@@ -188,7 +207,7 @@ export function pillState(u: Usage): { state: PillState; note: string; title: st
   return {
     state: worst === RANK.capped ? 'capped' : 'warned',
     note: these.map(spendNote).join(' '),
-    title: these.map(glance).join(' '),
+    title: withEstimates(u, these.map(glance).join(' ')),
   };
 }
 
