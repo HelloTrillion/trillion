@@ -10,7 +10,17 @@ from typing import Any
 
 import pytest
 
-from tests.helpers.test_build import NOW, OWNER, Schedules, Sources, ask, one, routine, watcher
+from tests.helpers.test_build import (
+    NOW,
+    OWNER,
+    Schedules,
+    Sources,
+    ask,
+    one,
+    routine,
+    run,
+    watcher,
+)
 from trillion.helpers.build import helpers
 from trillion.helpers.model import Waiting, to_json
 from trillion.spine.confirm import PendingAction, Status
@@ -69,6 +79,10 @@ async def test_needs_you_outranks_working_paused_and_capped() -> None:
     src.open_cards = [card()]
     (h,) = await helpers(src)
     assert h.state == "needs_you"
+    busy = Sources(Schedules([routine()], now={"r1": run("r1", "running")}))
+    busy.open_cards = [card()]
+    (h,) = await helpers(busy)
+    assert (h.state, h.doing, h.since_ms) == ("needs_you", None, None)
 
 
 @pytest.mark.parametrize(
@@ -109,6 +123,8 @@ async def test_a_card_from_the_main_conversation_lands_on_no_helper() -> None:
         ("payments", False, None, "Connect Stripe to use Payments"),
         ("meetings", True, "signed_out", "Sign in to Google again"),
         ("email", False, "signed_out", "Sign in to Google again"),
+        # Stripe has no Google sign-in: signed out means nothing there.
+        ("payments", False, "signed_out", "Connect Stripe to use Payments"),
     ],
 )
 async def test_a_watcher_on_but_not_connected_needs_a_step(
@@ -124,9 +140,9 @@ async def test_a_watcher_on_but_not_connected_needs_a_step(
     )
     (h,) = await helpers(Sources(watching=[w]))
     assert h.state == "needs_you"
-    assert h.waiting == (
-        Waiting(type="step", id=f"connect:{name}", text=text, at_ms=NOW - 5000 if error else None),
-    )
+    signed_out = error == "signed_out" and name != "payments"
+    at = NOW - 5000 if signed_out else None
+    assert h.waiting == (Waiting(type="step", id=f"connect:{name}", text=text, at_ms=at),)
 
 
 async def test_a_watcher_switched_off_is_paused_however_it_is_connected() -> None:
@@ -140,8 +156,8 @@ async def test_needs_you_comes_first_oldest_first() -> None:
         Schedules([routine(), routine(id="r2", conversation_id="conv-r2")]),
         watching=[
             watcher("meetings", checking_since_ms=NOW - 1000),
-            watcher("email", connected=False, on=False),
-            watcher("payments", last_error="signed_out", last_error_ms=NOW - 30_000),
+            watcher("email", last_error="signed_out", last_error_ms=NOW - 30_000),
+            watcher("payments", connected=False, on=False),
         ],
     )
     src.open_cards = [
@@ -152,9 +168,9 @@ async def test_needs_you_comes_first_oldest_first() -> None:
     # When a step began is not always known: those come after the ones that are.
     assert [h.id for h in found] == [
         "routine:r2",
-        "watcher:payments",
-        "routine:r1",
         "watcher:email",
+        "routine:r1",
+        "watcher:payments",
         "watcher:meetings",
     ]
 
@@ -197,3 +213,19 @@ async def test_answering_the_card_clears_it(spine: Spine) -> None:
     src.open_cards = list(await spine.cards())
     (h,) = await helpers(src)
     assert (h.state, h.waiting) == ("idle", ())
+
+
+async def test_meetings_with_heads_ups_off_still_hold_her_voice() -> None:
+    # Heads-ups off, the meeting hold on: it still reads the calendar, so it runs.
+    holding = watcher("meetings", switched_on=False, on=True)
+    (h,) = await helpers(Sources(watching=[holding]))
+    assert (h.state, h.job, h.waiting) == ("idle", "Only holds her voice during meetings", ())
+    assert h.next_ms == NOW + 60_000
+    (h,) = await helpers(
+        Sources(watching=[dataclasses.replace(holding, checking_since_ms=NOW - 1000)])
+    )
+    assert h.state == "working"
+    # The hold off too: it doesn't run at all.
+    off = dataclasses.replace(holding, on=False, next_check_ms=None)
+    (h,) = await helpers(Sources(watching=[off]))
+    assert (h.state, h.job) == ("paused", "Tells you before a meeting starts")

@@ -91,6 +91,10 @@ _CONNECT = {
     "payments": "Connect Stripe to use Payments",
 }
 _SIGN_IN = "Sign in to Google again"
+# The watchers that read through a Google sign-in.
+_GOOGLE = frozenset({"meetings", "email"})
+# Meetings with heads-ups off still read the calendar, for the meeting hold.
+_HOLD_ONLY = "Only holds her voice during meetings"
 
 # What each watcher watches, and what it is doing while it checks.
 _WATCHER_JOB = {
@@ -217,17 +221,19 @@ def _watcher(w: WatcherStatus, capped: set[Work], cards: dict[str, list[Waiting]
     # Its own conversation comes with "Talk to it" (step three of the core).
     conversation: str | None = None
     waiting = _step(w) + _in(cards, conversation)
+    # It follows whether it runs at all: meetings with heads-ups off still hold her
+    # voice during a meeting, so they are not paused.
     state = _state(
         waiting=bool(waiting),
         working=w.checking_since_ms is not None,
-        paused=not w.switched_on,
+        paused=not w.on,
         capped="watchers" in capped,
     )
     return Helper(
         id=f"watcher:{w.name}",
         kind="watcher",
         name=TITLED.get(w.name, w.name),
-        job=_WATCHER_JOB.get(w.name, ""),
+        job=_HOLD_ONLY if w.on and not w.switched_on else _WATCHER_JOB.get(w.name, ""),
         state=state,
         doing=_WATCHER_DOING.get(w.name, "Checking") if state == "working" else None,
         since_ms=w.checking_since_ms if state == "working" else None,
@@ -240,11 +246,12 @@ def _watcher(w: WatcherStatus, capped: set[Work], cards: dict[str, list[Waiting]
 
 def _step(w: WatcherStatus) -> list[Waiting]:
     """What only the user can do for a watcher they switched on: connect its source, or
-    sign in again. Switched off, it asks nothing."""
+    sign in again. Switched off, it asks nothing. Nothing clears it but the watcher's
+    own state: once reconnected, the next check that succeeds clears its last error."""
     if not w.switched_on:
         return []
     step = f"connect:{w.name}"
-    if w.last_error == "signed_out":
+    if w.last_error == "signed_out" and w.name in _GOOGLE:
         at = w.last_error_ms if w.last_error_ms is not None else w.last_check_ms
         return [Waiting(type="step", id=step, text=_SIGN_IN, at_ms=at)]
     if not w.connected:

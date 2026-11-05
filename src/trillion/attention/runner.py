@@ -236,10 +236,13 @@ class AttentionRunner:
         for w in self._watchers:
             try:
                 on = w.enabled(settings)
+            except Exception:
+                on = False
+            try:
                 # Asked as if switched on, so what is left is whether its source is there.
                 connected = w.enabled(_switched_on(settings, w.name))
             except Exception:
-                on = connected = False
+                connected = False
             state = await self._store.state(self._owner, w.name)
             out.append(
                 WatcherStatus(

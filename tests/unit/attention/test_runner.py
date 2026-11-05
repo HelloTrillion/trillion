@@ -664,3 +664,18 @@ async def test_status_asks_whether_the_source_is_there_as_if_switched_on(world: 
     # Email is off by default: not running, yet its source is there.
     assert (email.on, email.switched_on, email.connected) == (False, False, True)
     assert (payments.on, payments.switched_on, payments.connected) == (False, False, False)
+
+
+async def test_status_reads_each_probe_on_its_own(world: World) -> None:
+    @dataclass
+    class Half(Watcher):
+        """Its own settings break it; switched on, its source is there."""
+
+        def enabled(self, settings: AttentionSettings) -> bool:
+            if not settings.on(self.name):
+                raise RuntimeError("cannot tell")
+            return True
+
+    r = await world.runner(Half(name="email"))
+    (email,) = await r.statuses()
+    assert (email.on, email.connected) == (False, True)
