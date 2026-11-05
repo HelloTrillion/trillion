@@ -120,7 +120,7 @@ SHIPPED = {
     "018_attention_deferred.sql": (
         "521447edaea29b579b5dde70a3e573e2826531ea653abce865e80318f1d98d8d"
     ),
-    "019_helpers.sql": ("18a4cd696fdc50d98912e1e453bebdfeff84b3c22b5b6314409e5cb7dff1100a"),
+    "019_helpers.sql": ("d721fd68956e5f0489f7366f174dc9a6608541f3b755486ebd0f8316d3c3affa"),
 }
 
 

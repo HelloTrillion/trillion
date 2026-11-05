@@ -270,7 +270,61 @@ async def test_delete_cancels_its_schedules_and_keeps_its_chat(stores: Stores) -
     assert isinstance(await stores.helpers.create(OWNER, "Invoices", JOB, NOW), OwnHelper)
 
 
-async def test_set_kind(stores: Stores) -> None:
-    await stores.conversations.create("c1", OWNER, NOW)
-    await stores.conversations.set_kind("c1", "helper")
-    assert await stores.conversations.kind_of("c1", OWNER) == ("helper", None)
+async def test_a_name_is_taken_in_any_case_beyond_ascii(stores: Stores) -> None:
+    await made(stores, "Émile")
+    assert await stores.helpers.create(OWNER, "ÉMILE", JOB, NOW) == "taken"
+    other = await made(stores, "Straße")
+    assert await stores.helpers.update(OWNER, other.id, name="émile") == "taken"
+    assert await stores.helpers.create(OWNER, "STRASSE", JOB, NOW) == "taken"
+
+
+async def test_every_write_tells(stores: Stores) -> None:
+    h = await made(stores)
+    writes = [
+        stores.helpers.update(OWNER, h.id, job="Sends bills."),
+        stores.helpers.add_note(OWNER, h.id, "Leave out refunds."),
+        stores.helpers.pause(OWNER, h.id, NOW),
+        stores.helpers.resume(OWNER, h.id),
+    ]
+    for write in writes:
+        stores.told.clear()
+        assert await write
+        assert stores.told == ["changed"]
+
+
+async def test_a_running_handoff_survives_a_pause(stores: Stores) -> None:
+    h = await made(stores)
+    await stores.schedules.create(handoff(h.id))
+    assert await stores.schedules.enqueue("h1", NOW, None, 60.0, NOW)
+    assert await stores.schedules.claim("w1", NOW, NOW) is not None
+    assert await pause_helper(stores.helpers, stores.schedules, OWNER, h.id, NOW)
+    assert [x.status for x in await runs(stores.schedules, "h1")] == ["running"]
+    s = await stores.schedules.get("h1")
+    assert s is not None and s.status == "done"
+
+
+async def test_pausing_again_finishes_a_pause_that_stopped_halfway(stores: Stores) -> None:
+    h = await made(stores)
+    await stores.schedules.create(its_routine(h.id))
+    await stores.schedules.create(handoff(h.id))
+    # The helper was marked paused, then the process stopped before its schedules.
+    assert await stores.helpers.pause(OWNER, h.id, NOW)
+    assert not await pause_helper(stores.helpers, stores.schedules, OWNER, h.id, NOW + 5)
+    r = await stores.schedules.get("r1")
+    assert r is not None and r.paused_ms == NOW
+    a = await stores.schedules.get("h1")
+    assert a is not None and a.status == "cancelled"
+
+
+async def test_resume_leaves_a_routine_paused_before_the_helper(stores: Stores) -> None:
+    h = await made(stores)
+    await stores.schedules.create(its_routine(h.id))
+    await stores.schedules.create(its_routine(h.id, id="r2", title="Overdue on Friday"))
+    assert await stores.schedules.pause(OWNER, "r2", NOW - 1)
+    assert await pause_helper(stores.helpers, stores.schedules, OWNER, h.id, NOW)
+    later = ms("2026-11-25T12:00")
+    assert await resume_helper(stores.helpers, stores.schedules, runner, OWNER, h.id, later)
+    r1 = await stores.schedules.get("r1")
+    assert r1 is not None and r1.paused_ms is None
+    r2 = await stores.schedules.get("r2")
+    assert r2 is not None and r2.paused_ms == NOW - 1

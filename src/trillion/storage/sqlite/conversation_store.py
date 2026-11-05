@@ -134,12 +134,6 @@ class SqliteConversationStore:
             (conversation_id, owner_id, now_ms, kind),
         )
 
-    async def set_kind(self, conversation_id: str, kind: ConversationKind) -> None:
-        """What a conversation is from now on: a deleted helper's chat stays as a chat."""
-        await self._conn.execute(
-            "UPDATE conversations SET kind = ? WHERE id = ?", (kind, conversation_id)
-        )
-
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
         """Whether a page may open it: a chat of this owner's that was not deleted."""
         async with self._conn.execute(

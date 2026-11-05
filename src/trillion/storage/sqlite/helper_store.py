@@ -33,11 +33,16 @@ def _helper(r: aiosqlite.Row) -> OwnHelper:
     )
 
 
+def name_key(name: str) -> str:
+    """What makes two names the same: case set aside in any script, not only ASCII."""
+    return name.casefold()
+
+
 async def _taken(conn: aiosqlite.Connection, owner_id: str, name: str, but: str = "") -> bool:
     async with conn.execute(
-        "SELECT 1 FROM helpers WHERE owner_id = ? AND lower(name) = lower(?) AND id != ?"
+        "SELECT 1 FROM helpers WHERE owner_id = ? AND name_key = ? AND id != ?"
         " AND deleted_at IS NULL",
-        (owner_id, name, but),
+        (owner_id, name_key(name), but),
     ) as cur:
         return await cur.fetchone() is not None
 
@@ -117,9 +122,9 @@ class SqliteHelperStore:
                 (helper.conversation_id, owner_id, now_ms, tidy_title(name)),
             )
             await conn.execute(
-                "INSERT INTO helpers (id, owner_id, name, job, notes, conversation_id,"
-                " paused_ms, created_at) VALUES (?, ?, ?, ?, '', ?, NULL, ?)",
-                (helper.id, owner_id, name, job, helper.conversation_id, now_ms),
+                "INSERT INTO helpers (id, owner_id, name, name_key, job, notes, conversation_id,"
+                " paused_ms, created_at) VALUES (?, ?, ?, ?, ?, '', ?, NULL, ?)",
+                (helper.id, owner_id, name, name_key(name), job, helper.conversation_id, now_ms),
             )
         self._told()
         return helper
@@ -153,7 +158,10 @@ class SqliteHelperStore:
             if name is not None:
                 if await _taken(conn, owner_id, name, but=helper_id):
                     return "taken"
-                await conn.execute("UPDATE helpers SET name = ? WHERE id = ?", (name, helper_id))
+                await conn.execute(
+                    "UPDATE helpers SET name = ?, name_key = ? WHERE id = ?",
+                    (name, name_key(name), helper_id),
+                )
                 await conn.execute(
                     "UPDATE conversations SET title = ?, title_source = 'user'"
                     " WHERE id = (SELECT conversation_id FROM helpers WHERE id = ?)",

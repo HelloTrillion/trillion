@@ -11,10 +11,20 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from trillion.helpers.store import JOB_MAX, NAME_MAX, NOTES_MAX
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 
-TABLES = ("conversations", "messages", "schedules", "task_runs", "notices", "boards")
+TABLES = (
+    "conversations",
+    "messages",
+    "compactions",
+    "turn_timings",
+    "schedules",
+    "task_runs",
+    "notices",
+    "boards",
+)
 
 
 def _up_to(version: str, into: Path) -> Path:
@@ -46,6 +56,11 @@ async def test_019_keeps_every_row_of_a_018_database(tmp_path: Path) -> None:
             " VALUES ('c3', 'local', 3, 'routine', 'Invoices', 9);"
             "INSERT INTO messages (owner_id, conversation_id, role, kind, blocks_json,"
             " created_at) VALUES ('local', 'c1', 'user', 'user', '[]', 4);"
+            "INSERT INTO compactions (owner_id, conversation_id, upto_message_id, summary,"
+            " created_at) VALUES ('local', 'c1', 1, 'Talked about invoices.', 6);"
+            "INSERT INTO turn_timings (owner_id, conversation_id, turn, via, first_in_session,"
+            " provider, model, stop, tools, calls_json, created_at)"
+            " VALUES ('local', 'c1', 1, 'text', 1, 'p', 'm', 'end', 0, '[]', 7);"
             "INSERT INTO schedules (id, owner_id, kind, title, body, zone, at_local, repeat,"
             " next_due_ms, status, created_ms, created_in, target, conversation_id, notes)"
             " VALUES ('s1', 'local', 'ask', 'Invoices', 'Check', 'UTC', '2026-11-05T09:00',"
@@ -79,16 +94,46 @@ async def test_019_keeps_every_row_of_a_018_database(tmp_path: Path) -> None:
                 " VALUES ('c5', 'local', 5, 'other')"
             )
         await conn.execute(
-            "INSERT INTO helpers (id, owner_id, name, job, conversation_id, created_at)"
-            " VALUES ('h1', 'local', 'Invoices', 'Chases invoices.', 'c4', 4)"
+            "INSERT INTO helpers (id, owner_id, name, name_key, job, conversation_id,"
+            " created_at) VALUES ('h1', 'local', 'Invoices', 'invoices', 'Chases.', 'c4', 4)"
         )
-        with pytest.raises(sqlite3.IntegrityError):  # unique per owner, in any case
+        with pytest.raises(sqlite3.IntegrityError):  # one name per owner, by its key
             await conn.execute(
-                "INSERT INTO helpers (id, owner_id, name, job, conversation_id, created_at)"
-                " VALUES ('h2', 'local', 'INVOICES', 'Again.', 'c4', 4)"
+                "INSERT INTO helpers (id, owner_id, name, name_key, job, conversation_id,"
+                " created_at) VALUES ('h2', 'local', 'INVOICES', 'invoices', 'Again.', 'c4', 4)"
             )
         await conn.execute("UPDATE schedules SET helper_id = 'h1' WHERE id = 's1'")
         with pytest.raises(sqlite3.IntegrityError):  # a helper that is not there
             await conn.execute("UPDATE schedules SET helper_id = 'nope' WHERE id = 's1'")
+    finally:
+        await conn.close()
+
+
+async def test_019_limits_match_the_store(tmp_path: Path) -> None:
+    conn = await connect(tmp_path / "t.db")
+    try:
+        await migrate(conn)
+        await conn.execute(
+            "INSERT INTO conversations (id, owner_id, created_at, kind)"
+            " VALUES ('c1', 'local', 1, 'helper')"
+        )
+        n = iter(range(100))
+
+        async def add(name: str, job: str, notes: str = "") -> None:
+            i = next(n)
+            await conn.execute(
+                "INSERT INTO helpers (id, owner_id, name, name_key, job, notes,"
+                " conversation_id, created_at) VALUES (?, 'local', ?, ?, ?, ?, 'c1', 1)",
+                (f"h{i}", name, f"k{i}", job, notes),
+            )
+
+        await add("n" * NAME_MAX, "j" * JOB_MAX, "x" * NOTES_MAX)
+        for name, job, notes in (
+            ("n" * (NAME_MAX + 1), "j", ""),
+            ("n", "j" * (JOB_MAX + 1), ""),
+            ("n", "j", "x" * (NOTES_MAX + 1)),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+                await add(name, job, notes)
     finally:
         await conn.close()

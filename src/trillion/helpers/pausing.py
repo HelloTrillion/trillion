@@ -21,17 +21,22 @@ async def pause_helper(
     helpers: HelperStore, schedules: ScheduleStore, owner_id: str, helper_id: str, now_ms: int
 ) -> bool:
     """Pause a helper: each of its routines paused, and each handoff not yet run
-    cancelled. False, and nothing changed, if it was already paused or is not there."""
-    if not await helpers.pause(owner_id, helper_id, now_ms):
+    cancelled. True if this call paused the helper itself; False if it already was
+    paused or is not there. Its schedules are seen to either way while it is paused,
+    so a retry finishes a pause that stopped halfway."""
+    paused = await helpers.pause(owner_id, helper_id, now_ms)
+    helper = await helpers.get(owner_id, helper_id)
+    if helper is None or helper.paused_ms is None:
         return False
     running = await schedules.running(owner_id, now_ms)
     for s in await schedules.for_helper(owner_id, helper_id):
         if s.target is not None:
-            await schedules.pause(owner_id, s.id, now_ms)
+            if s.paused_ms is None:
+                await schedules.pause(owner_id, s.id, helper.paused_ms)
         elif s.id not in running:
             # A handoff already running finishes; one still waiting never starts.
             await schedules.cancel(owner_id, s.id, now_ms)
-    return True
+    return paused
 
 
 async def resume_helper(
@@ -42,11 +47,14 @@ async def resume_helper(
     helper_id: str,
     now_ms: int,
 ) -> bool:
-    """Resume a helper and its routines, each from its next due time after now: what it
-    was paused through is never run late. False if it was not paused."""
-    if not await helpers.resume(owner_id, helper_id):
+    """Resume a helper and the routines its pause paused, each from its next due time
+    after now: what it was paused through is never run late. A routine paused on its
+    own before the helper stays paused. False if the helper was not paused."""
+    helper = await helpers.get(owner_id, helper_id)
+    if helper is None or helper.paused_ms is None:
         return False
     for s in await schedules.for_helper(owner_id, helper_id):
-        if s.target is not None and s.paused_ms is not None:
+        if s.target is not None and s.paused_ms is not None and s.paused_ms >= helper.paused_ms:
             await runner.resume(schedules, owner_id, s.id, now_ms)
-    return True
+    # Cleared last, so a resume that stops halfway is finished by trying again.
+    return await helpers.resume(owner_id, helper_id)

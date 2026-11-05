@@ -36,7 +36,8 @@ CREATE INDEX conversations_by_recent
 CREATE UNIQUE INDEX conversations_one_day ON conversations (owner_id, day)
     WHERE kind = 'day' AND deleted_at IS NULL;
 
--- A helper's name is unique per owner whatever its case, among those not deleted.
+-- A helper's name is unique per owner whatever its case, among those not deleted:
+-- `name_key` is the name casefolded by the store, since SQLite's lower() knows only ASCII.
 -- `notes` grows a line at a time, as a routine's do. Paused while `paused_ms` is set.
 -- Deleted only softly (SPN-9): `deleted_at` hides it, and its schedules keep pointing
 -- at it for their runs' history.
@@ -44,6 +45,7 @@ CREATE TABLE helpers (
     id               TEXT PRIMARY KEY,
     owner_id         TEXT NOT NULL REFERENCES owners(id),
     name             TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
+    name_key         TEXT NOT NULL,
     job              TEXT NOT NULL CHECK (length(job) BETWEEN 1 AND 200),
     notes            TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 1000),
     conversation_id  TEXT NOT NULL REFERENCES conversations(id),
@@ -51,7 +53,7 @@ CREATE TABLE helpers (
     created_at       INTEGER NOT NULL,
     deleted_at       INTEGER
 );
-CREATE UNIQUE INDEX helpers_by_name ON helpers (owner_id, lower(name))
+CREATE UNIQUE INDEX helpers_by_name ON helpers (owner_id, name_key)
     WHERE deleted_at IS NULL;
 
 -- A routine or timed ask that belongs to a helper; NULL for any other.
