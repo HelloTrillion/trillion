@@ -96,6 +96,8 @@ from trillion.tools.folders import BROWSE as FOLDERS_BROWSE
 from trillion.tools.folders import SHARE as FOLDER_SHARE
 from trillion.tools.folders import UNSHARE as FOLDER_UNSHARE
 from trillion.tools.folders import FoldersBrowse, FolderShare, FolderUnshare, Look
+from trillion.tools.helper import NAMES as HELPER_TOOLS
+from trillion.tools.helper import HelperTool
 from trillion.tools.home import ARRANGE as HOME_ARRANGE
 from trillion.tools.home import HomeArrange
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
@@ -1624,7 +1626,7 @@ async def open_runtime(
         schedule_conn, cancelled=rt.routine_removed, changed=rt.helpers_changed
     )
     rt.schedules = schedules
-    rt.helpers = SqliteHelperStore(
+    rt.helpers = helpers = SqliteHelperStore(
         helper_conn, changed=rt.helpers_changed, cancelled=rt.routine_removed
     )
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
@@ -1700,6 +1702,19 @@ async def open_runtime(
         notes_tool = registry.get(name)
         if isinstance(notes_tool, RoutineNarrow | RoutineWiden):
             notes_tool.bind(schedules, rt.conversation_is, OWNER)
+    for name in HELPER_TOOLS:
+        helper_tool = registry.get(name)
+        if isinstance(helper_tool, HelperTool):
+            helper_tool.bind(
+                helpers,
+                schedules,
+                clock=lambda: rt.clock(),
+                owner=OWNER,
+                conversations=rt.conversations,
+                preferences=rt.preferences,
+                zone=rt.zone,
+                held=rt.held,
+            )
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):

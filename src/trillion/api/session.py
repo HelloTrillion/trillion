@@ -84,6 +84,7 @@ from trillion.spine.router import Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.tools.folders import View, host_note, open_place
+from trillion.tools.helper import CATEGORY as HELPER_CATEGORY
 from trillion.tools.quiet import asks
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
@@ -963,7 +964,10 @@ class Session:
 
     def _offers(self, d: ToolDefinition) -> bool:
         """Whether a page's turn here is offered this tool: never a routine's own,
-        unless this conversation is where it belongs (`tools/routine.py`)."""
+        unless this conversation is where it belongs (`tools/routine.py`). The helper
+        tools are offered nowhere yet."""
+        if d.category == HELPER_CATEGORY:
+            return False  # Task 4 decides where
         return d.category != ROUTINE_CATEGORY or d.name in self._routine_tools
 
     async def _read_routines(self) -> None:
