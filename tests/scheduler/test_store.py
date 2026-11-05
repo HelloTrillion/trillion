@@ -274,8 +274,12 @@ async def test_running_names_each_schedule_with_a_run_under_way(
         await store.enqueue(sid, DUE, None, 120.0, DUE)
     first = await store.claim("w1", DUE + 7, 0)
     assert first is not None
-    assert {k: (r.id, r.started_ms) for k, r in (await store.running("local")).items()} == {
-        first.schedule_id: (first.id, DUE + 7)
-    }
+    assert {
+        k: (r.id, r.started_ms) for k, r in (await store.running("local", DUE + 9)).items()
+    } == {first.schedule_id: (first.id, DUE + 7)}
+    # Past the deadline `reclaim` uses, it is a dead process's run, not one under way.
+    dead = DUE + 7 + 120_000 + RECLAIM_GRACE_MS
+    assert list(await store.running("local", dead - 1)) == [first.schedule_id]
+    assert await store.running("local", dead) == {}
     await store.finish(first.id, "delivered", DUE + 9)
-    assert await store.running("local") == {}
+    assert await store.running("local", DUE + 9) == {}

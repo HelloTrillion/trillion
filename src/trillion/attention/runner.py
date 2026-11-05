@@ -165,7 +165,7 @@ class WatcherStatus:
     last_error: str | None
     # When that went wrong, if it was in this process.
     last_error_ms: int | None
-    # Its next check: the next tick once due. None while it is off.
+    # Its next check: the next tick once due. None while it is off or nothing runs it.
     next_check_ms: int | None
 
 
@@ -244,7 +244,9 @@ class AttentionRunner:
                     last_check_ms=state.last_check_ms,
                     last_error=state.last_error,
                     last_error_ms=self._failed_ms.get(w.name) if state.last_error else None,
-                    next_check_ms=max(self._next.get(w.name, now), now) if on else None,
+                    next_check_ms=(
+                        max(self._next.get(w.name, now), now) if on and self.running else None
+                    ),
                 )
             )
         return out

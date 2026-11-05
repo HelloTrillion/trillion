@@ -374,11 +374,12 @@ class SqliteScheduleStore:
         ) as cur:
             return {str(r["schedule_id"]): _run(r) for r in await cur.fetchall()}
 
-    async def running(self, owner_id: str) -> dict[str, Run]:
+    async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]:
         async with self._conn.execute(
             "SELECT r.* FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
-            " WHERE s.owner_id = ? AND r.status = 'running' ORDER BY r.id",
-            (owner_id,),
+            " WHERE s.owner_id = ? AND r.status = 'running'"
+            " AND r.claimed_ms + CAST(r.timeout_s * 1000 AS INTEGER) + ? > ? ORDER BY r.id",
+            (owner_id, RECLAIM_GRACE_MS, now_ms),
         ) as cur:
             return {str(r["schedule_id"]): _run(r) for r in await cur.fetchall()}
 

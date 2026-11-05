@@ -15,6 +15,7 @@ from tests.scheduler.conftest import NY, ms, schedule
 from trillion.attention.runner import WatcherStatus
 from trillion.helpers.build import helpers
 from trillion.helpers.model import Helper, LastRun, Waiting, to_json
+from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import Repeat
 from trillion.spend.types import Work
@@ -96,7 +97,8 @@ class Schedules:
     async def last_results(self, owner_id: str) -> dict[str, Run]:
         return dict(self.last)
 
-    async def running(self, owner_id: str) -> dict[str, Run]:
+    async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]:
+        assert now_ms == NOW
         return dict(self.now)
 
 
@@ -106,6 +108,9 @@ class Sources:
     watching: list[WatcherStatus] = field(default_factory=list)
     paused_work: set[Work] = field(default_factory=set)
     owner: str = OWNER
+
+    def now_ms(self) -> int:
+        return NOW
 
     async def watchers(self) -> list[WatcherStatus]:
         return list(self.watching)
@@ -143,9 +148,9 @@ async def test_a_routine_running_now_is_working_since_its_start() -> None:
     assert (h.state, h.doing, h.since_ms) == ("working", "Monday revenue", NOW - 12_000)
 
 
-async def test_a_paused_routine_is_paused() -> None:
+async def test_a_paused_routine_is_paused_with_no_next_run() -> None:
     (h,) = await helpers(Sources(Schedules([routine(paused_ms=NOW - 1)])))
-    assert h.state == "paused"
+    assert (h.state, h.next_ms) == ("paused", None)
 
 
 async def test_a_routine_at_the_spend_cap_is_capped_unless_the_user_paused_it() -> None:
@@ -177,8 +182,6 @@ async def test_a_timed_ask_in_every_state() -> None:
     working = Sources(Schedules([ask()], now={"a1": run("a1", "running")}))
     (h,) = await helpers(working)
     assert (h.state, h.doing, h.since_ms) == ("working", "Remind me at 4", NOW - 3_600_000)
-    (h,) = await helpers(Sources(Schedules([ask(paused_ms=NOW)])))
-    assert h.state == "paused"
     (h,) = await helpers(Sources(Schedules([ask()]), paused_work={"asks"}))
     assert h.state == "capped"
 
@@ -213,7 +216,9 @@ async def test_a_run_with_nothing_for_the_user_is_nothing() -> None:
         ("late", None, "succeeded", None),
         ("skipped", "capped", "skipped", "capped"),
         ("skipped", "paused", "skipped", "paused"),
-        ("blocked", "no model", "skipped", "no model"),
+        # Blocked: it waits to be tried again, so the helper itself is idle.
+        ("blocked", "no model", "skipped", "no model set up"),
+        ("blocked", BUSY_DETAIL, "skipped", "busy, will try again"),
         ("missed", "more than an hour late", "failed", "more than an hour late"),
         ("interrupted", "interrupted", "failed", "interrupted"),
         ("failed", None, "failed", None),
@@ -226,6 +231,7 @@ async def test_each_run_status_has_its_outcome(
     (h,) = await helpers(Sources(Schedules([ask()], last={"a1": last})))
     assert h.last_run is not None
     assert (h.last_run.outcome, h.last_run.reason) == (outcome, reason)
+    assert h.state == "idle"
 
 
 async def test_a_plain_reminder_is_not_a_helper() -> None:
@@ -236,7 +242,7 @@ async def test_each_watcher_by_its_name_and_job() -> None:
     src = Sources(watching=[watcher("meetings"), watcher("email"), watcher("payments")])
     found = await helpers(src)
     assert [(h.id, h.kind, h.name) for h in found] == [
-        ("watcher:meetings", "watcher", "Meeting heads-ups"),
+        ("watcher:meetings", "watcher", "Meetings"),
         ("watcher:email", "watcher", "Urgent email"),
         ("watcher:payments", "watcher", "Payments"),
     ]
@@ -256,6 +262,9 @@ async def test_a_watcher_in_every_state() -> None:
     # Turned off outranks the cap: it would not run either way.
     (h,) = await helpers(Sources(watching=[off], paused_work={"watchers"}))
     assert h.state == "paused"
+    # A check already under way when the cap came is still working.
+    (h,) = await helpers(Sources(watching=[checking], paused_work={"watchers"}))
+    assert h.state == "working"
 
 
 async def test_a_watchers_last_check_or_its_failure() -> None:
@@ -266,14 +275,34 @@ async def test_a_watchers_last_check_or_its_failure() -> None:
         "email", last_check_ms=NOW - 600_000, last_error="signed_out", last_error_ms=NOW - 5000
     )
     (h,) = await helpers(Sources(watching=[bad]))
-    assert h.last_run == LastRun(at_ms=NOW - 5000, outcome="failed", reason="signed_out")
+    assert h.last_run == LastRun(at_ms=NOW - 5000, outcome="failed", reason="signed out of Google")
     # A failure from before a restart: its time is not known, so the last check stands in.
     old = dataclasses.replace(bad, last_error_ms=None)
     (h,) = await helpers(Sources(watching=[old]))
-    assert h.last_run == LastRun(at_ms=NOW - 600_000, outcome="failed", reason="signed_out")
+    assert h.last_run == LastRun(
+        at_ms=NOW - 600_000, outcome="failed", reason="signed out of Google"
+    )
     never = watcher("payments", last_error="AsksFirst")
     (h,) = await helpers(Sources(watching=[never]))
     assert h.last_run is None
+
+
+@pytest.mark.parametrize(
+    ("name", "kind", "words"),
+    [
+        ("meetings", "unreachable", "couldn't reach the calendar"),
+        ("email", "ConnectionError", "couldn't reach the inbox"),
+        ("payments", "StripeError", "couldn't reach Stripe"),
+        ("email", "NotConnected", "Google isn't connected"),
+        ("payments", "AsksFirst", "Stripe is set to ask first"),
+        ("meetings", "TimeoutError", "timed out"),
+        ("email", "KeyError", "something went wrong"),
+    ],
+)
+async def test_a_watchers_failure_is_told_in_plain_words(name: str, kind: str, words: str) -> None:
+    bad = watcher(name, last_error=kind, last_error_ms=NOW)
+    (h,) = await helpers(Sources(watching=[bad]))
+    assert h.last_run == LastRun(at_ms=NOW, outcome="failed", reason=words)
 
 
 async def test_the_order_is_working_by_start_then_the_rest_by_next_run() -> None:
@@ -320,7 +349,7 @@ async def test_to_json_is_the_apis_body() -> None:
         waiting=(Waiting(type="approval", id="act1", text="Approve a change"),),
         conversation_id="c1",
     )
-    idle = dataclasses.replace(h, id="ask:a1", state="idle", waiting=(), last_run=None)
+    idle = dataclasses.replace(h, id="ask:a1", kind="ask", state="idle", waiting=(), last_run=None)
     assert to_json([h, idle]) == {
         "helpers": [
             {
@@ -338,7 +367,7 @@ async def test_to_json_is_the_apis_body() -> None:
             },
             {
                 "id": "ask:a1",
-                "kind": "routine",
+                "kind": "ask",
                 "name": "Monday revenue",
                 "job": "Pull revenue",
                 "state": "idle",
@@ -360,10 +389,14 @@ class Real:
 
     store: SqliteScheduleStore
     owner: str = OWNER
+    now: int = NOW
 
     @property
     def schedules(self) -> SqliteScheduleStore:
         return self.store
+
+    def now_ms(self) -> int:
+        return self.now
 
     async def watchers(self) -> list[WatcherStatus]:
         return []
@@ -389,6 +422,7 @@ async def test_a_one_off_ask_leaves_the_list_once_it_has_fired(real: Real) -> No
     await real.store.enqueue("a1", due, None, 120.0, due)
     started = await real.store.claim("w1", due + 5, 0)
     assert started is not None
+    real.now = due + 6
     (h,) = await helpers(real)
     assert (h.state, h.since_ms, h.next_ms) == ("working", due + 5, None)
     await real.store.finish(started.id, "delivered", due + 10)

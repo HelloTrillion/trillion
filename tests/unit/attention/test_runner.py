@@ -606,26 +606,28 @@ async def test_status_says_what_each_watcher_is_doing(world: World) -> None:
     hanging, off = Watcher(hang=True), Watcher(name="payments", on=False)
     r = await world.runner(hanging, off)
     (before, idle) = await r.statuses()
-    # Never checked in this process: its next check is the next tick.
+    # Not running: no check is coming.
     assert (before.name, before.on, before.checking_since_ms, before.next_check_ms) == (
         "meetings",
         True,
         None,
-        NOW,
+        None,
     )
     assert (idle.name, idle.on, idle.next_check_ms) == ("payments", False, None)
     world.clock.advance(1000)
-    ticking = asyncio.ensure_future(r.tick())
-    while hanging.calls == 0:
-        await asyncio.sleep(0.01)
-    (checking, _) = await r.statuses()
-    assert checking.checking_since_ms == NOW + 1000
-    assert checking.next_check_ms == NOW + 1000 + 60_000
-    ticking.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await ticking
+    r.start()
+    try:
+        while hanging.calls == 0:
+            await asyncio.sleep(0.01)
+        (checking, idle) = await r.statuses()
+        assert checking.checking_since_ms == NOW + 1000
+        assert checking.next_check_ms == NOW + 1000 + 60_000
+        # Off: no next check, running or not.
+        assert idle.next_check_ms is None
+    finally:
+        await r.stop()
     (after, _) = await r.statuses()
-    assert after.checking_since_ms is None
+    assert (after.checking_since_ms, after.next_check_ms) == (None, None)
 
 
 async def test_status_gives_the_last_check_and_the_last_failure(world: World) -> None:

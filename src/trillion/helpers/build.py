@@ -7,8 +7,11 @@ reminder runs no model and is no helper. A one-off ask that has fired is not act
 so it is not listed.
 
 A helper's state, first that holds: needs you (something of it waits on the user),
-working (a run or check under way), paused (the user paused it, or turned a watcher
-off), capped (its kind of work is paused at the background model's spend cap), idle.
+working (a run or check under way), paused (the user paused a routine, or turned a
+watcher off; a timed ask can't be paused, only cancelled), capped (its kind of work is
+paused at the background model's spend cap), idle.
+
+Reasons are told in plain words, never a class name.
 
 The order: needs you, working by start, then the rest by next run, unknown last.
 """
@@ -19,8 +22,9 @@ from collections.abc import Collection, Iterable
 from typing import Protocol
 
 from trillion.attention.runner import WatcherStatus
-from trillion.attention.settings import NAMED
+from trillion.attention.settings import TITLED
 from trillion.helpers.model import Helper, HelperState, LastRun, Outcome
+from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import WhenError, summary
 from trillion.spend.types import Work
@@ -42,6 +46,25 @@ _OUTCOMES: dict[RunStatus, Outcome] = {
     "interrupted": "failed",
 }
 
+# A blocked run waits to be tried again, so its helper stays idle; why, in plain words.
+_BLOCKED = {"no model": "no model set up", BUSY_DETAIL: "busy, will try again"}
+_BLOCKED_ELSE = "waiting to try again"
+
+# What each watcher reads, for "couldn't reach ...".
+_WATCHER_SOURCE = {"meetings": "the calendar", "email": "the inbox", "payments": "Stripe"}
+# A watcher's failure kind (a Google call's kind, or a class name) in plain words.
+_UNREACHABLE = frozenset({"unreachable", "ConnectionError", "OSError", "StripeError", "server"})
+_ERROR_WORDS = {
+    "signed_out": "signed out of Google",
+    "not_allowed": "not given access to Google",
+    "api_off": "that Google API is switched off",
+    "busy": "Google is busy, will try again",
+    "NotConnected": "Google isn't connected",
+    "AsksFirst": "Stripe is set to ask first",
+    "TimeoutError": "timed out",
+}
+_ERROR_ELSE = "something went wrong"
+
 # What each watcher watches, and what it is doing while it checks.
 _WATCHER_JOB = {
     "meetings": "Tells you before a meeting starts",
@@ -62,7 +85,7 @@ class Schedules(Protocol):
 
     async def last_results(self, owner_id: str) -> dict[str, Run]: ...
 
-    async def running(self, owner_id: str) -> dict[str, Run]: ...
+    async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]: ...
 
 
 class Sources(Protocol):
@@ -73,6 +96,8 @@ class Sources(Protocol):
 
     @property
     def schedules(self) -> Schedules: ...
+
+    def now_ms(self) -> int: ...
 
     async def watchers(self) -> list[WatcherStatus]:
         """Each watcher's state (`AttentionRunner.statuses`)."""
@@ -89,7 +114,7 @@ async def helpers(sources: Sources) -> list[Helper]:
     capped = set(await sources.capped())
     active = await sources.schedules.active(owner)
     last = await sources.schedules.last_results(owner)
-    now = await sources.schedules.running(owner)
+    now = await sources.schedules.running(owner, sources.now_ms())
     found = [_scheduled(s, last.get(s.id), now.get(s.id), capped) for s in active]
     found += [_watcher(w, capped) for w in await sources.watchers()]
     return _ordered(h for h in found if h is not None)
@@ -105,9 +130,8 @@ def _scheduled(
     if running is not None:
         since = running.started_ms if running.started_ms is not None else running.claimed_ms
     work: Work = "routines" if routine else "asks"
-    state = _state(
-        working=running is not None, paused=s.paused_ms is not None, capped=work in capped
-    )
+    paused = routine and s.paused_ms is not None
+    state = _state(working=running is not None, paused=paused, capped=work in capped)
     return Helper(
         id=f"{'routine' if routine else 'ask'}:{s.id}",
         kind="routine" if routine else "ask",
@@ -117,7 +141,8 @@ def _scheduled(
         doing=s.title if state == "working" else None,
         since_ms=since if state == "working" else None,
         last_run=_last_run(last),
-        next_ms=s.next_due_ms,
+        # A paused routine's due time stays put, but it won't run then.
+        next_ms=None if paused else s.next_due_ms,
         waiting=(),
         # A routine built in today's day conversation has none of its own here.
         conversation_id=s.conversation_id if routine else None,
@@ -128,11 +153,10 @@ def _watcher(w: WatcherStatus, capped: set[Work]) -> Helper:
     state = _state(
         working=w.checking_since_ms is not None, paused=not w.on, capped="watchers" in capped
     )
-    named = NAMED.get(w.name, w.name)
     return Helper(
         id=f"watcher:{w.name}",
         kind="watcher",
-        name=named[:1].upper() + named[1:],
+        name=TITLED.get(w.name, w.name),
         job=_WATCHER_JOB.get(w.name, ""),
         state=state,
         doing=_WATCHER_DOING.get(w.name, "Checking") if state == "working" else None,
@@ -161,6 +185,8 @@ def _last_run(run: Run | None) -> LastRun | None:
     at = run.finished_ms or run.started_ms or run.claimed_ms or run.due_ms
     outcome = _OUTCOMES.get(run.status, "failed")
     reason = run.detail if outcome in ("failed", "skipped") else None
+    if run.status == "blocked":
+        reason = _BLOCKED.get(run.detail or "", _BLOCKED_ELSE)
     return LastRun(at_ms=at, outcome=outcome, reason=reason)
 
 
@@ -169,10 +195,16 @@ def _last_check(w: WatcherStatus) -> LastRun | None:
         at = w.last_error_ms if w.last_error_ms is not None else w.last_check_ms
         if at is None:
             return None
-        return LastRun(at_ms=at, outcome="failed", reason=w.last_error)
+        return LastRun(at_ms=at, outcome="failed", reason=_error_words(w.name, w.last_error))
     if w.last_check_ms is None:
         return None
     return LastRun(at_ms=w.last_check_ms, outcome="succeeded", reason=None)
+
+
+def _error_words(watcher: str, kind: str) -> str:
+    if kind in _UNREACHABLE:
+        return f"couldn't reach {_WATCHER_SOURCE.get(watcher, 'its source')}"
+    return _ERROR_WORDS.get(kind, _ERROR_ELSE)
 
 
 def _first_line(text: str) -> str:
