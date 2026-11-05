@@ -576,6 +576,10 @@ class Router:
                 ctx, start, meta, h, "meta", "resolve", _refused(Refusal.NOT_FOUND)
             )
 
+        if ctx.helper_id is not None and a.tool in HELPER_NEVER:
+            # A backstop: her card is never settled from a helper's chat or run.
+            response = _refused(Refusal.NOT_FOR_HELPERS, _NOT_FOR_HELPERS)
+            return await self._audit_resolution(a, ctx, start, response)
         a = await self._expire_if_due(a, start, ctx)
         verdict = decide(a, decision, ctx, start)
         if isinstance(verdict, Rejection):
@@ -778,6 +782,9 @@ class Router:
         return await self._audit_resolution(a, ctx, start, response, decision="represent")
 
     async def _represent(self, a: PendingAction, ctx: ToolContext, now: int) -> RouterResponse:
+        if ctx.helper_id is not None and a.tool in HELPER_NEVER:
+            # Her card, raised again in a helper's chat, would be a helper dispatching.
+            return _refused(Refusal.NOT_FOR_HELPERS, _NOT_FOR_HELPERS)
         if a.session_id != ctx.session_id and not await self._proved_not_sent(a):
             return _refused(Refusal.WRONG_SESSION)
         a = await self._expire_if_due(a, now, ctx)

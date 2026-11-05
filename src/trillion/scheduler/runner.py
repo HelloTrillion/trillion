@@ -381,7 +381,7 @@ class Scheduler:
         if now - run.due_ms > ASK_WINDOW_MS:
             await self._notice(run, s, "missed", None, "missed", "more than an hour late")
             return
-        kind: Work = "helpers" if s.helper_id else "routines" if s.target else "asks"
+        kind: Work = "helpers" if s.helper_id is not None else "routines" if s.target else "asks"
         if self._held is not None and await self._held(kind):
             await self._capped(run, s)
             return

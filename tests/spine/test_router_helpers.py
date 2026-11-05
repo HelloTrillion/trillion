@@ -4,6 +4,7 @@ were offered (the your helpers spec)."""
 
 from __future__ import annotations
 
+import importlib
 import inspect
 from typing import get_args
 
@@ -25,7 +26,7 @@ from trillion.spine.contract import (
 )
 from trillion.spine.deny_floor import DenyPolicy
 from trillion.spine.registry import ToolRegistry
-from trillion.spine.router import HELPER_NEVER, Router
+from trillion.spine.router import EXPIRY_MS, HELPER_NEVER, Router
 
 VIAS: tuple[Via, ...] = get_args(Via)
 HELPER = "h1"
@@ -34,12 +35,12 @@ HELPER = "h1"
 class Counted(BaseTool):
     """A stand-in under a helper tool's name, counting the calls that reach its code."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, risk: Risk = Risk.READ) -> None:
         self.definition = ToolDefinition(
             name=name,
             description=f"{name} (test).",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-            risk=Risk.READ,
+            risk=risk,
             category="helper",
             timeout_s=5.0,
         )
@@ -120,8 +121,10 @@ async def test_other_tools_still_run_in_a_helpers_chat(spine: Spine) -> None:
 def test_the_names_are_the_tools_own() -> None:
     """The spine keeps the names so it needs nothing from the tools; they must match."""
     try:
-        from trillion.tools import helper
-    except ImportError:
+        helper = importlib.import_module("trillion.tools.helper")
+    except ModuleNotFoundError as e:
+        if e.name != "trillion.tools.helper":
+            raise
         pytest.skip("until Task 3 adds the helper tools")
     names = set()
     for _, cls in inspect.getmembers(helper, inspect.isclass):
@@ -130,3 +133,32 @@ def test_the_names_are_the_tools_own() -> None:
             names.add(d.name)
             assert d.category == "helper", d.name
     assert names >= HELPER_NEVER
+
+
+async def _her_card(spine: Spine) -> tuple[Router, Counted, str]:
+    """A card for helper_create, proposed in her own chat."""
+    reg = ToolRegistry()
+    tool = Counted("helper_create", Risk.IRREVERSIBLE)
+    reg.register(tool)
+    router = Router(reg, spine.store, policy=DenyPolicy.default(), clock=spine.clock)
+    r = await router.execute(ToolCall(name="helper_create", args={}), spine.ctx(via="text"))
+    assert r.status == "confirmation_required" and r.pending_id is not None
+    return router, tool, r.pending_id
+
+
+async def test_a_helper_cannot_confirm_her_card(spine: Spine) -> None:
+    router, tool, pid = await _her_card(spine)
+    r = await router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap", helper_id=HELPER))
+    assert r.status == "refused" and r.reason is Refusal.NOT_FOR_HELPERS
+    assert tool.calls == 0
+    a = await spine.store.get_pending(pid)
+    assert a is not None and a.status is Status.PROPOSED
+
+
+async def test_a_helper_cannot_raise_her_card_again(spine: Spine) -> None:
+    router, tool, pid = await _her_card(spine)
+    spine.clock.advance(EXPIRY_MS + 1)
+    r = await router.represent(pid, spine.ctx(turn=2, via="text", helper_id=HELPER))
+    assert r.status == "refused" and r.reason is Refusal.NOT_FOR_HELPERS
+    assert await spine.store.list_represented_from(pid) == []
+    assert tool.calls == 0
