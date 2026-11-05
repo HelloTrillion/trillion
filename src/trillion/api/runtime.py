@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,8 +65,8 @@ from trillion.skills.library import Entry, Library
 from trillion.spend import gate as spend_gate
 from trillion.spend import metered, prices
 from trillion.spend.caller import as_caller
-from trillion.spend.desk import KNOWN_PREF, SpendDesk, Switch
-from trillion.spend.gate import Gate
+from trillion.spend.desk import KNOWN_PREF, Leg, SpendDesk, Switch, caps_on_note
+from trillion.spend.gate import UNCAPPED, Caps, Gate, default_for
 from trillion.spend.ledger import Ledger
 from trillion.spend.metered import Meter, MeteredHearing, MeteredModel, MeteredVoice, PriceBook
 from trillion.spend.types import Work
@@ -279,6 +279,15 @@ def metered_listening(
     return meter.hearing(stt, prices.hearing_provider_id(settings.kind))
 
 
+# Set once caps have been given to every provider set up at the upgrade (BRN-7).
+SPEND_SEEDED_PREF = "spend_seeded"
+
+
+def caps_json(caps: Caps) -> dict[str, Any]:
+    """Caps as the preference `spend_caps` keeps them."""
+    return {"soft": caps.soft, "hard": caps.hard, "warn_pct": caps.warn_pct, "unit": caps.unit}
+
+
 def _voice_pid(speech: SpeechSettings | None) -> str | None:
     return prices.voice_provider_id(speech.kind, speech.base_url) if speech else None
 
@@ -476,6 +485,8 @@ class Runtime:
     # The usual model, as chosen, while a switch puts another in `provider`: what
     # background work runs on (`background_provider`).
     _usual_model: MeteredModel | None = None
+    # Held while the preference `spend_caps` is read, changed and saved here.
+    _writing_caps: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -648,6 +659,101 @@ class Runtime:
         if self.secrets.get(secret_name("anthropic")):
             known["anthropic"] = ModelSettings(kind="anthropic", model=DEFAULT_MODEL).to_json()
         await self.preferences.put(OWNER, KNOWN_PREF, known, self.clock())
+
+    # ── Caps: what is set up, and the defaults it starts with (BRN-7) ──
+
+    async def spend_set_up(self) -> list[tuple[Leg, str | None, str | None]]:
+        """Every provider set up now, as (leg, provider id, model): the model in use
+        and what a switch put in its place, the voice and hearing, then each model
+        known. A provider id of None runs on this computer, or has an address that does
+        not pass the check. The model is None where it is not known."""
+        out: list[tuple[Leg, str | None, str | None]] = []
+        if self.source in ("settings", "env"):
+            usual = model_provider_id(self.settings, self.source, self.env)
+            if self.source == "settings" and self.settings is not None:
+                model: str | None = self.settings.model
+            else:
+                model = getattr(self._usual_model or self.provider, "model", None)
+            out.append(("model", usual, model))
+            switched = self._model_switch(usual)
+            if switched is not None:
+                out.append(
+                    ("model", model_provider_id(switched, "settings", self.env), switched.model)
+                )
+        if self.speech is not None:
+            out.append(("voice", _voice_pid(self.speech), None))
+        if self.listening is not None:
+            out.append(("hearing", _hearing_pid(self.listening), None))
+        raw = await self.preferences.get(OWNER, KNOWN_PREF)
+        for pid, value in sorted(raw.items()) if isinstance(raw, dict) else ():
+            settings = ModelSettings.from_json(value)
+            if settings is not None and model_provider_id(settings, "settings", self.env) == pid:
+                out.append(("model", pid, settings.model))
+        return out
+
+    async def _caps_now(self) -> dict[str, Any] | None:
+        """The preference `spend_caps` to change, or None when it is malformed."""
+        raw = await self.preferences.get(OWNER, spend_gate.PREF)
+        if raw is None:
+            return {}
+        return dict(raw) if isinstance(raw, dict) else None
+
+    async def write_caps(self, provider_id: str, caps: Caps) -> None:
+        """Save one provider's caps, then have the gate read them. A malformed
+        preference holds every provider to its defaults (the gate), so those are
+        written for each one set up rather than lost."""
+        async with self._writing_caps:
+            found = await self._caps_now()
+            if found is None:
+                found = {
+                    pid: caps_json(default_for(pid))
+                    for _leg, pid, _model in await self.spend_set_up()
+                    if pid is not None and pid not in UNCAPPED
+                }
+            found[provider_id] = caps_json(caps)
+            await self.preferences.put(OWNER, spend_gate.PREF, found, self.clock())
+            await self.gate.reload_caps()
+
+    async def seed_caps(
+        self,
+        provider_ids: Iterable[str | None],
+        before: Callable[[list[str]], Any] | None = None,
+    ) -> list[str]:
+        """Give `default_for` to each of these providers that has no caps entry yet,
+        never touching one that has. Returns those given them. `before`, awaited with
+        them, runs before they are saved. A malformed preference is left alone: the gate
+        already holds every provider to its defaults."""
+        async with self._writing_caps:
+            found = await self._caps_now()
+            if found is None:
+                return []
+            added = [
+                pid
+                for pid in dict.fromkeys(provider_ids)
+                if pid is not None and pid not in UNCAPPED and pid not in found
+            ]
+            if not added:
+                return []
+            if before is not None:
+                await before(added)
+            for pid in added:
+                found[pid] = caps_json(default_for(pid))
+            await self.preferences.put(OWNER, spend_gate.PREF, found, self.clock())
+            await self.gate.reload_caps()
+            return added
+
+    async def _seed_caps_once(self) -> None:
+        """On the first start with spend caps: every provider set up gets the defaults,
+        and her next turn carries one note saying so (PER-11)."""
+        if await self.preferences.get(OWNER, SPEND_SEEDED_PREF):
+            return
+
+        async def tell(added: list[str]) -> None:
+            note = caps_on_note([(pid, default_for(pid)) for pid in added])
+            await self.spend.tell_once("caps_on", note)
+
+        await self.seed_caps([pid for _leg, pid, _m in await self.spend_set_up()], tell)
+        await self.preferences.put(OWNER, SPEND_SEEDED_PREF, True, self.clock())
 
     async def _spend_changed(self, cards: Any, legs: frozenset[str]) -> None:
         """A card was answered: its pages hear so, and a switch takes effect now."""
@@ -1524,6 +1630,8 @@ async def open_runtime(
     desk.background = rt.background_work
     await rt._seed_known()
     await rt._remember_model(settings)
+    # After the ledger and the caps are read: the defaults, once, for what is set up.
+    await rt._seed_caps_once()
     # A lapse picks again by itself; a switch still in force is picked here.
     if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
         await rt.use_switches()

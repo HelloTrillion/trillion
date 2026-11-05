@@ -22,7 +22,8 @@ usual one (PER-11), once.
 **Once a month.** The preference `spend_told` records, per provider and month, that
 the warning notice was given (`warned`), that the soft cap was mentioned
 (`over_soft`) and that background work was said to be paused (`paused`), and holds
-the lapse notes still to be said (`back`).
+the lapse notes still to be said (`back`) and any other note to be said once
+(`once`, by name: the caps put on at the upgrade).
 
 **Paused work.** At a hard cap, background work on that provider is refused (the
 spend caps spec, decision 7): it never moves to another model, a switch included.
@@ -47,7 +48,7 @@ from datetime import datetime
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from trillion.spend.gate import DEFAULT_CHARS, DEFAULT_SECONDS, DEFAULT_TOKENS, PREF, Gate
+from trillion.spend.gate import DEFAULT_CHARS, DEFAULT_SECONDS, DEFAULT_TOKENS, PREF, Caps, Gate
 from trillion.spend.types import Work
 from trillion.zones import month_start, next_month_start
 
@@ -267,6 +268,23 @@ def back_note(label: str, usual: str) -> str:
     return (
         f"[host] The switch to {label} ended with the new month: you are back on {usual}. "
         "Say so once, briefly, in your own words."
+    )
+
+
+def caps_on_note(caps: Sequence[tuple[str, Caps]]) -> str:
+    """The one-time note at the upgrade: caps are on, what they are, where to change
+    them. `caps` is (provider id, caps) for each provider given them."""
+    parts = []
+    for pid, c in caps:
+        soft = f"a {cap_words(c.soft, c.unit)} soft cap" if c.soft is not None else "no soft cap"
+        hard = f"a {cap_words(c.hard, c.unit)} hard cap" if c.hard is not None else "no hard cap"
+        parts.append(f"{friendly(pid)}: {soft} (a warning at {c.warn_pct}%) and {hard} a month")
+    return (
+        "[host] Spending caps are now on, so a runaway routine or a long day can't run up "
+        f"the user's bill unnoticed. {'; '.join(parts)}. At the soft cap nothing stops; "
+        "at the hard cap you stop before spending more and they choose what happens. They "
+        "can change or remove these in Settings, under Usage. Tell them once, briefly, in "
+        "your own words, and carry on with what they asked."
     )
 
 
@@ -602,7 +620,8 @@ class SpendDesk:
 
     def notes(self, provider_ids: Iterable[str | None]) -> list[tuple[str, str]]:
         """The host notes her next turn carries, as (key, text): a soft cap passed this
-        month and not yet mentioned, and a switch that lapsed. Marked said by `said`."""
+        month and not yet mentioned, a switch that lapsed, and each note kept by
+        `tell_once`. Marked said by `said`."""
         month = self.month()
         out: list[tuple[str, str]] = []
         seen: set[str] = set()
@@ -622,7 +641,18 @@ class SpendDesk:
         for pid, note in sorted(self._told_in("back").items()):
             if isinstance(note, str):
                 out.append((f"back:{pid}", note))
+        for name, note in sorted(self._told_in("once").items()):
+            if isinstance(note, str):
+                out.append((f"once:{name}", note))
         return out
+
+    async def tell_once(self, name: str, note: str) -> None:
+        """Keep a host note for her next turn, in any conversation, said once (PER-11).
+        A note already kept under `name` is replaced."""
+        once = dict(self._told_in("once"))
+        once[name] = note
+        self._told = {**self._told, "once": once}
+        await self._save_told()
 
     async def said(self, keys: Iterable[str]) -> None:
         """The notes under `keys` rode with a saved message: never again."""
@@ -632,13 +662,16 @@ class SpendDesk:
         month = self.month()
         mentioned = dict(self._told_in("over_soft"))
         back = dict(self._told_in("back"))
+        once = dict(self._told_in("once"))
         for key in keys:
             what, _, pid = key.partition(":")
             if what == "over_soft":
                 mentioned[pid] = month
             elif what == "back":
                 back.pop(pid, None)
-        self._told = {**self._told, "over_soft": mentioned, "back": back}
+            elif what == "once":
+                once.pop(pid, None)
+        self._told = {**self._told, "over_soft": mentioned, "back": back, "once": once}
         await self._save_told()
 
     async def warn(self, provider_ids: Iterable[str | None]) -> None:

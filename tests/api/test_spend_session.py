@@ -85,6 +85,9 @@ async def _open(tmp_path: Path, secrets: MemoryStore) -> Runtime:
 async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Runtime]:
     monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
     runtime = await _open(tmp_path, _secrets())
+    # Its keys make it an install from before caps: the one-time note that caps are on
+    # is tested in test_spend_settings, and is taken as said here.
+    await runtime.spend.said(["once:caps_on"])
     yield runtime
     await runtime.close()
 

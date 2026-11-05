@@ -35,12 +35,17 @@ __all__ = [
     "Unit",
     "UserPrices",
     "ceiling_rate",
+    "cost_line",
     "estimate",
     "hearing_provider_id",
+    "hourly",
+    "model_words",
     "parse_user_prices",
     "price",
+    "pricing_url",
     "provider_id",
     "rate_for",
+    "unit_of",
     "voice_provider_id",
 ]
 
@@ -294,6 +299,141 @@ def estimate(provider_id: str, unit: Unit, quantity: float) -> float | None:
         return None
     per = {"tokens": 1_000_000, "chars": 1_000, "seconds": 60}[unit]
     return quantity / per * rate
+
+
+# ── What a provider roughly costs (ONB-9, ONB-10) ────────────────────────
+
+# The stated assumption every estimate is made on, and says: an hour of talk is 40
+# short turns of 3,000 tokens sent and 150 back; an hour of her voice is 40 sentences
+# of 80 characters; an hour of listening is 60 minutes of audio. Routines come on top.
+TALK_TURNS = 40
+TURN_INPUT = 3_000
+TURN_OUTPUT = 150
+VOICE_SENTENCES = 40
+SENTENCE_CHARS = 80
+HEARING_MINUTES = 60
+
+FREE = "Runs on this computer: no cost, no cap."
+
+# Pricing pages the table has no entry to take a source from.
+_PRICING_PAGES = {"custom:openrouter.ai": "https://openrouter.ai/models"}
+_OPENROUTER = "custom:openrouter.ai"
+
+
+def unit_of(provider_id: str) -> Unit:
+    """What a provider id is paid by: tokens for a model, characters for a voice,
+    seconds for hearing."""
+    if provider_id.startswith(("elevenlabs", "openai-voice:")):
+        return "chars"
+    if provider_id.startswith("deepgram"):
+        return "seconds"
+    return "tokens"
+
+
+def _in(rate: Rate | None, unit: Unit) -> Rate | None:
+    return rate if rate is not None and rate.unit == unit else None
+
+
+def _hour_rate(provider_id: str, model: str | None, user_prices: UserPrices | None) -> Rate | None:
+    unit = unit_of(provider_id)
+    mine = _in(rate_for(user_prices, provider_id, model or ANY), unit)
+    if mine is not None:
+        return mine
+    if model is not None and (built_in := _in(rate_for(TABLE, provider_id, model), unit)):
+        return built_in
+    if unit != "tokens" and (ceiling := ceiling_rate(provider_id, unit)) is not None:
+        # A voice or a recognizer is priced alike across its models: with none named,
+        # or one newer than the table, the dearest rate stands in, never a lower one.
+        return Rate(unit=unit, per_unit=ceiling)
+    return None
+
+
+def hourly(
+    provider_id: str | None, model: str | None, user_prices: UserPrices | None = None
+) -> float | None:
+    """US dollars for an hour of use on the stated assumption, or None when nothing
+    prices it. A model is priced only by its own rate: a guess could be far off."""
+    if provider_id is None or provider_id == "local":
+        return 0.0
+    rate = _hour_rate(provider_id, model, user_prices)
+    if rate is None:
+        return None
+    if rate.unit == "chars":
+        return VOICE_SENTENCES * SENTENCE_CHARS / 1_000 * rate.per_unit
+    if rate.unit == "seconds":
+        return HEARING_MINUTES * rate.per_unit
+    return TALK_TURNS * (TURN_INPUT * rate.input + TURN_OUTPUT * rate.output) / 1_000_000
+
+
+_CLAUDE = re.compile(r"^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$")
+
+
+def model_words(model: str) -> str:
+    """A model as people say it: "claude-sonnet-5-5" is "Sonnet 5.5". Others as named."""
+    found = _CLAUDE.match(model)
+    if found is None:
+        return model
+    family, major, minor = found.groups()
+    return f"{family.title()} {major}" + (f".{minor}" if minor else "")
+
+
+def _about(amount: float) -> str:
+    return "Less than $0.01" if amount < 0.005 else f"Roughly ${amount:,.2f}"
+
+
+_TOKENS = (
+    f"about {TALK_TURNS} short turns an hour send {TALK_TURNS * TURN_INPUT:,} tokens "
+    f"and get {TALK_TURNS * TURN_OUTPUT:,} back, plus routines"
+)
+
+
+def cost_line(
+    provider_id: str | None, model: str | None = None, user_prices: UserPrices | None = None
+) -> str:
+    """One line saying roughly what a provider costs, and the assumption it is made on:
+    "Roughly $0.30 an hour of talk on Sonnet 5.5 (about 40 short turns), plus
+    routines." Free, and saying so, on this computer."""
+    amount = hourly(provider_id, model, user_prices)
+    if provider_id is None or provider_id == "local":
+        return FREE
+    unit = unit_of(provider_id)
+    if amount is not None:
+        if unit == "chars":
+            what = f"of speaking (about {VOICE_SENTENCES} sentences of {SENTENCE_CHARS} characters)"
+        elif unit == "seconds":
+            what = f"of listening ({HEARING_MINUTES} minutes of audio)"
+        else:
+            name = model_words(model) if model else "this model"
+            what = f"of talk on {name} (about {TALK_TURNS} short turns), plus routines"
+        return f"{_about(amount)} an hour {what}."
+    if unit == "chars":
+        chars = VOICE_SENTENCES * SENTENCE_CHARS
+        return (
+            f"No price is known for this voice yet: about {VOICE_SENTENCES} sentences an "
+            f"hour come to {chars:,} characters. Add its rate to see dollars."
+        )
+    if unit == "seconds":
+        return (
+            f"No price is known for this yet: an hour of listening is {HEARING_MINUTES} "
+            "minutes of audio. Add its rate per minute to see dollars."
+        )
+    if provider_id == _OPENROUTER:
+        return f"OpenRouter reports what each call costs, so it depends on the model: {_TOKENS}."
+    if model is None:
+        return f"Depends on the model: {_TOKENS}."
+    return (
+        f"No price is known for {model_words(model)} yet: {_TOKENS}. "
+        "Add its price per million tokens to see dollars."
+    )
+
+
+def pricing_url(provider_id: str | None) -> str | None:
+    """The provider's own pricing page, or None when there is none to point at."""
+    if provider_id is None:
+        return None
+    if provider_id in _PRICING_PAGES:
+        return _PRICING_PAGES[provider_id]
+    return next((r.source for (pid, _m), r in TABLE.items() if pid == provider_id), None)
 
 
 # ── User prices ──────────────────────────────────────────────────────────

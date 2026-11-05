@@ -471,3 +471,123 @@ def test_an_estimate_prices_units_at_the_ceiling() -> None:
     assert prices.estimate("elevenlabs", "chars", 10_000) == pytest.approx(0.4)
     assert prices.estimate("deepgram", "seconds", 600) == pytest.approx(0.078)
     assert prices.estimate("custom:example.com", "tokens", 1000) is None
+
+
+# ── What a provider roughly costs, before and after a key (ONB-9, ONB-10) ──
+
+
+def _talk_hour(rate: Rate) -> float:
+    turns, given, back = prices.TALK_TURNS, prices.TURN_INPUT, prices.TURN_OUTPUT
+    return turns * (given * rate.input + back * rate.output) / 1_000_000
+
+
+def test_the_assumption_is_the_one_the_spec_states() -> None:
+    assert (prices.TALK_TURNS, prices.TURN_INPUT, prices.TURN_OUTPUT) == (40, 3_000, 150)
+    assert (prices.VOICE_SENTENCES, prices.SENTENCE_CHARS) == (40, 80)
+    assert prices.HEARING_MINUTES == 60
+
+
+def test_an_hour_of_talk_is_priced_from_the_table() -> None:
+    sonnet = TABLE[("anthropic", "claude-sonnet-5-5")]
+    assert prices.hourly("anthropic", "claude-sonnet-5-5") == pytest.approx(_talk_hour(sonnet))
+    gpt = TABLE[("openai", "gpt-6-sol")]
+    assert prices.hourly("openai", "gpt-6-sol") == pytest.approx(_talk_hour(gpt))
+    # A dated Anthropic id prices like its alias.
+    assert prices.hourly("anthropic", "claude-sonnet-5-5-20261001") == pytest.approx(
+        _talk_hour(sonnet)
+    )
+
+
+def test_an_hour_of_voice_and_hearing_is_priced_from_the_table() -> None:
+    chars = prices.VOICE_SENTENCES * prices.SENTENCE_CHARS
+    assert prices.hourly("elevenlabs", None) == pytest.approx(chars / 1_000 * 0.04)
+    assert prices.hourly("elevenlabs", "eleven_flash_v2_5") == pytest.approx(chars / 1_000 * 0.04)
+    assert prices.hourly("deepgram", "flux-general-en") == pytest.approx(60 * 0.0077)
+    # With no model named, hearing is estimated at the dearest rate.
+    assert prices.hourly("deepgram", None) == pytest.approx(60 * 0.0078)
+
+
+def test_a_user_price_wins_for_the_estimate() -> None:
+    mine = parse_user_prices({"anthropic": {"claude-sonnet-5-5": {"input": 1, "output": 1}}})
+    assert prices.hourly("anthropic", "claude-sonnet-5-5", mine) == pytest.approx(
+        40 * 3_150 / 1_000_000
+    )
+    plan = parse_user_prices({"elevenlabs": {"*": {"unit": "chars", "per_unit": 0.01}}})
+    assert prices.hourly("elevenlabs", None, plan) == pytest.approx(3.2 * 0.01)
+
+
+def test_nothing_known_is_no_estimate_never_a_guess() -> None:
+    assert prices.hourly("anthropic", "claude-unreleased-9") is None
+    assert prices.hourly("anthropic", None) is None
+    assert prices.hourly("custom:example.com", "m") is None
+    assert prices.hourly("openai-voice:speech.example.com", None) is None
+
+
+def test_the_line_says_the_amount_and_the_assumption() -> None:
+    sonnet = _talk_hour(TABLE[("anthropic", "claude-sonnet-5-5")])
+    assert prices.cost_line("anthropic", "claude-sonnet-5-5") == (
+        f"Roughly ${sonnet:.2f} an hour of talk on Sonnet 5.5 (about 40 short turns), "
+        "plus routines."
+    )
+    assert prices.cost_line("elevenlabs") == (
+        "Roughly $0.13 an hour of speaking (about 40 sentences of 80 characters)."
+    )
+    assert prices.cost_line("deepgram", "flux-general-en") == (
+        "Roughly $0.46 an hour of listening (60 minutes of audio)."
+    )
+
+
+def test_a_tiny_amount_is_less_than_a_cent_never_zero() -> None:
+    mine = parse_user_prices({"openai": {"gpt-x": {"input": 0.001, "output": 0.001}}})
+    assert prices.cost_line("openai", "gpt-x", mine) == (
+        "Less than $0.01 an hour of talk on gpt-x (about 40 short turns), plus routines."
+    )
+
+
+def test_on_this_computer_is_free_and_says_so() -> None:
+    free = "Runs on this computer: no cost, no cap."
+    assert prices.cost_line("local", "gemma") == free
+    assert prices.cost_line(None) == free
+
+
+def test_an_unpriced_model_says_what_it_uses_and_asks_for_a_price() -> None:
+    assert prices.cost_line("custom:example.com", "m1") == (
+        "No price is known for m1 yet: about 40 short turns an hour send 120,000 tokens "
+        "and get 6,000 back, plus routines. Add its price per million tokens to see dollars."
+    )
+    assert prices.cost_line("custom:openrouter.ai", "some/model") == (
+        "OpenRouter reports what each call costs, so it depends on the model: about 40 "
+        "short turns an hour send 120,000 tokens and get 6,000 back, plus routines."
+    )
+    assert prices.cost_line("openai", None) == (
+        "Depends on the model: about 40 short turns an hour send 120,000 tokens and get "
+        "6,000 back, plus routines."
+    )
+
+
+def test_an_unpriced_voice_or_hearing_says_what_it_uses() -> None:
+    assert prices.cost_line("openai-voice:speech.example.com") == (
+        "No price is known for this voice yet: about 40 sentences an hour come to 3,200 "
+        "characters. Add its rate to see dollars."
+    )
+
+
+def test_model_names_read_as_people_say_them() -> None:
+    assert prices.model_words("claude-sonnet-5-5") == "Sonnet 5.5"
+    assert prices.model_words("claude-opus-4-5-20251101") == "Opus 4.5"
+    assert prices.model_words("claude-fable-5") == "Fable 5"
+    assert prices.model_words("gpt-6-sol") == "gpt-6-sol"
+
+
+def test_each_provider_links_its_pricing_page() -> None:
+    assert prices.pricing_url("anthropic") == "https://www.anthropic.com/pricing#api"
+    assert prices.pricing_url("openai") == "https://developers.openai.com/api/docs/pricing"
+    assert prices.pricing_url("custom:api.deepseek.com") == (
+        "https://api-docs.deepseek.com/quick_start/pricing"
+    )
+    assert prices.pricing_url("custom:openrouter.ai") == "https://openrouter.ai/models"
+    assert prices.pricing_url("elevenlabs") == "https://elevenlabs.io/pricing/api"
+    assert prices.pricing_url("deepgram") == "https://deepgram.com/pricing"
+    assert prices.pricing_url("custom:example.com") is None
+    assert prices.pricing_url("local") is None
+    assert prices.pricing_url(None) is None

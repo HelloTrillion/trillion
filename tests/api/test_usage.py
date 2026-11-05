@@ -95,6 +95,7 @@ def test_a_month_with_nothing_used_is_empty_not_zero(make: Any) -> None:
         "rows": [],
         "total_cost_usd": None,
         "unpriced_tokens": 0,
+        "providers": [],
     }
 
 
@@ -187,3 +188,262 @@ def test_unpriced_characters_are_never_shown_as_tokens(make: Any) -> None:
     assert usage["unpriced_tokens"] == 500
     voice = next(r for r in usage["rows"] if r["unit"] == "chars")
     assert (voice["unpriced_tokens"], voice["unpriced"]) == (0, 1200)
+
+
+# ── Caps and costs per provider (BRN-7, ONB-9) ───────────────────────────
+
+
+from trillion.api.runtime import ListenSettings, SpeechSettings  # noqa: E402
+from trillion.brain.config import ModelSettings  # noqa: E402
+from trillion.spend import desk, prices  # noqa: E402
+from trillion.spend.gate import PREF as CAPS_PREF  # noqa: E402
+
+SONNET = ModelSettings(kind="anthropic", model="claude-sonnet-5-5")
+CAPS = {"soft": 20, "hard": 50, "warn_pct": 80}
+
+
+def call(app: App, fn: Any, *args: Any) -> Any:
+    portal = app.client.portal
+    assert portal is not None
+    return portal.call(fn, *args)
+
+
+def set_caps(app: App, **per: Any) -> None:
+    call(app, app.rt.preferences.put, OWNER, CAPS_PREF, per, NOW)
+    call(app, app.rt.gate.reload_caps)
+
+
+def recount(app: App) -> None:
+    """The ledger reads the rows again, as it does at startup."""
+    call(app, app.rt.ledger.load)
+
+
+def on_model(app: App, settings: ModelSettings) -> None:
+    app.rt.settings = settings
+    app.rt.source = "settings"
+    app.rt.provider = app.provider  # metered against what is chosen now
+
+
+def providers(app: App) -> dict[str | None, Any]:
+    return {(p["provider_id"] or p["leg"]): p for p in read(app)["providers"]}
+
+
+def test_todays_fields_are_kept_and_nothing_set_up_lists_nothing(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    usage = read(app)
+    assert set(usage) == {
+        "month",
+        "since_ms",
+        "rows",
+        "total_cost_usd",
+        "unpriced_tokens",
+        "providers",
+    }
+    assert usage["providers"] == []
+
+
+def test_a_priced_model_shows_its_caps_its_split_and_what_it_costs(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    on_model(app, SONNET)
+    set_caps(app, anthropic=CAPS)
+    spend(app, NOW - MINUTE, model="claude-sonnet-5-5", cost=10.0)
+    call(
+        app,
+        partial(
+            app.rt.conversations.record_usage,
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="anthropic",
+            model="claude-sonnet-5-5",
+            usage=Usage(input_tokens=10),
+            cost_usd=7.0,
+            now_ms=NOW - MINUTE,
+            provider_id="anthropic",
+            caller="background",
+        ),
+    )
+    recount(app)
+    (row,) = read(app)["providers"]
+    hour = prices.hourly("anthropic", "claude-sonnet-5-5")
+    assert hour is not None
+    assert row == {
+        "provider_id": "anthropic",
+        "leg": "model",
+        "name": "Anthropic",
+        "model": "claude-sonnet-5-5",
+        "spent": 17.0,
+        "unit": "dollars",
+        "soft": 20.0,
+        "hard": 50.0,
+        "warn_pct": 80,
+        "state": "warned",
+        "split": {"conversation": 10.0, "background": 7.0},
+        "paused": [],
+        "switched": None,
+        "unestimated": None,
+        "estimate": (
+            f"Roughly ${hour:.2f} an hour of talk on Sonnet 5.5 (about 40 short turns), "
+            "plus routines."
+        ),
+        "pricing_url": "https://www.anthropic.com/pricing#api",
+    }
+
+
+def test_unpriced_units_nothing_can_estimate_are_reported(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    custom = ModelSettings(kind="custom", model="m1", base_url="https://llm.example.com/v1")
+    on_model(app, custom)
+    set_caps(app, **{"custom:llm.example.com": CAPS})
+    call(
+        app,
+        partial(
+            app.rt.conversations.record_usage,
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="custom",
+            model="m1",
+            usage=Usage(input_tokens=3000, output_tokens=1000),
+            cost_usd=None,
+            now_ms=NOW - MINUTE,
+            provider_id="custom:llm.example.com",
+        ),
+    )
+    recount(app)
+    row = providers(app)["custom:llm.example.com"]
+    assert row["unestimated"] == {"units": 4000, "unit": "tokens"}
+    assert row["spent"] == 0.0 and row["state"] == "ok"
+    assert row["split"] == {"conversation": 0.0, "background": 0.0}
+    assert row["estimate"].startswith("No price is known for m1 yet")
+    assert row["pricing_url"] is None
+
+
+def test_caps_counted_in_tokens_show_tokens_spent(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    custom = ModelSettings(kind="custom", model="m1", base_url="https://llm.example.com/v1")
+    on_model(app, custom)
+    set_caps(app, **{"custom:llm.example.com": {"soft": 5000, "hard": 9000, "unit": "tokens"}})
+    call(
+        app,
+        partial(
+            app.rt.conversations.record_usage,
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="custom",
+            model="m1",
+            usage=Usage(input_tokens=3000, output_tokens=1000),
+            cost_usd=None,
+            now_ms=NOW - MINUTE,
+            provider_id="custom:llm.example.com",
+            caller="background",
+        ),
+    )
+    recount(app)
+    row = providers(app)["custom:llm.example.com"]
+    assert (row["spent"], row["unit"], row["unestimated"]) == (4000, "tokens", None)
+    assert row["split"] == {"conversation": 0, "background": 4000}
+
+
+def test_a_local_model_and_the_computers_voice_cost_nothing_and_have_no_cap(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    on_model(app, ModelSettings(kind="local", model="gemma", base_url="http://localhost:11434/v1"))
+    app.rt.speech = SpeechSettings(kind="system")
+    app.rt.listening = ListenSettings(kind="whisper", choice="base.en")
+    found = providers(app)
+    free = "Runs on this computer: no cost, no cap."
+    assert set(found) == {"local", "voice", "hearing"}
+    for row in found.values():
+        assert row["estimate"] == free
+        assert (row["soft"], row["hard"], row["state"]) == (None, None, "ok")
+        assert row["pricing_url"] is None
+    assert found["local"]["name"] == "A local model"
+    assert found["voice"]["provider_id"] is None
+
+
+def test_voice_and_hearing_are_listed_with_their_own_costs(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    app.rt.speech = SpeechSettings(kind="elevenlabs", voice="v1")
+    app.rt.listening = ListenSettings(kind="deepgram", choice="en")
+    set_caps(app, elevenlabs=CAPS)
+    found = providers(app)
+    assert [p["provider_id"] for p in read(app)["providers"]] == ["elevenlabs", "deepgram"]
+    assert found["elevenlabs"]["leg"] == "voice"
+    assert found["elevenlabs"]["estimate"] == prices.cost_line("elevenlabs")
+    assert found["elevenlabs"]["pricing_url"] == "https://elevenlabs.io/pricing/api"
+    # No caps saved for it: none, said plainly by nulls.
+    assert (found["deepgram"]["soft"], found["deepgram"]["hard"]) == (None, None)
+    assert found["deepgram"]["leg"] == "hearing"
+
+
+def test_providers_with_caps_or_spend_this_month_are_listed_too(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    on_model(app, SONNET)
+    set_caps(app, anthropic=CAPS, openai=CAPS)
+    call(
+        app,
+        partial(
+            app.rt.conversations.record_usage,
+            owner_id=OWNER,
+            conversation_id=None,
+            provider="openai",
+            model="gpt-6-sol",
+            usage=Usage(input_tokens=10),
+            cost_usd=1.0,
+            now_ms=NOW - MINUTE,
+            provider_id="custom:api.deepseek.com",
+        ),
+    )
+    recount(app)
+    ids = [p["provider_id"] for p in read(app)["providers"]]
+    # The one in use first, then the rest by id.
+    assert ids == ["anthropic", "custom:api.deepseek.com", "openai"]
+    deepseek = providers(app)["custom:api.deepseek.com"]
+    assert deepseek["name"] == "DeepSeek" and deepseek["model"] == "gpt-6-sol"
+
+
+def test_a_switch_is_shown_with_its_end(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    on_model(app, SONNET)
+    set_caps(app, anthropic=CAPS)
+    until = 1793509200000
+    switch = desk.Switch(
+        leg="model",
+        to="local/gemma",
+        label="gemma",
+        month="2026-10",
+        until_ms=until,
+        settings=ModelSettings(
+            kind="local", model="gemma", base_url="http://localhost:11434/v1"
+        ).to_json(),
+    )
+    call(app, app.rt.preferences.put, OWNER, desk.SWITCH_PREF, {"anthropic": switch.to_json()}, NOW)
+    call(app, app.rt.spend.load)
+    found = providers(app)
+    assert found["anthropic"]["switched"] == {
+        "to": "local/gemma",
+        "label": "gemma",
+        "until_ms": until,
+    }
+    # What it was switched to is in use, so it is listed too.
+    assert found["local"]["switched"] is None
+
+
+def test_background_work_paused_at_the_hard_cap_is_listed_by_kind(make: Any) -> None:
+    app = make()
+    in_chicago(app)
+    on_model(app, SONNET)
+    set_caps(app, anthropic=CAPS)
+    spend(app, NOW - MINUTE, model="claude-sonnet-5-5", cost=50.0)
+    recount(app)
+    row = providers(app)["anthropic"]
+    assert row["state"] == "capped"
+    assert row["paused"] == ["titles", "board"]
+    app.rt.widgets_fresh = False
+    assert providers(app)["anthropic"]["paused"] == ["titles"]

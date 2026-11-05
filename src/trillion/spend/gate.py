@@ -324,3 +324,9 @@ class Gate:
             except Exception as e:
                 log.warning("paused work not recorded: %s", type(e).__name__)
         raise error(provider_id, call.caller, caps.hard, caps.unit)
+
+    def saved(self, provider_id: str) -> Caps | None:
+        """This provider's own entry in the preference, or None when it has none."""
+        if self._caps is None:
+            raise RuntimeError("the spend caps are not loaded yet")
+        return self._caps.get(provider_id)
