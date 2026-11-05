@@ -57,6 +57,12 @@ class Helper:
     waiting: tuple[Waiting, ...]
     # The conversation "Talk to it" opens, when one exists yet.
     conversation_id: str | None
+    # What the page acts on, said outright rather than read from `state`: a routine
+    # the user paused (Resume, not Pause); a watcher switched on, and its source
+    # connected (Turn on, or Connect). None where they don't apply.
+    paused: bool = False
+    switched_on: bool | None = None
+    connected: bool | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -71,6 +77,9 @@ class Helper:
             "next_ms": self.next_ms,
             "waiting": [w.to_json() for w in self.waiting],
             "conversation_id": self.conversation_id,
+            "paused": self.paused,
+            "switched_on": self.switched_on,
+            "connected": self.connected,
         }
 
 

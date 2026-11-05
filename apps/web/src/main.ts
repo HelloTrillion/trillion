@@ -67,7 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { buttonLabel, createHelpers, stepTarget } from './helpers';
+import { bindButton, capNameOf, createHelpers, stepTarget } from './helpers';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
@@ -2120,6 +2120,10 @@ helpersDot.hidden = true;
 helpersBtn.replaceChildren(icon('helpers', 18), helpersDot);
 const helpers = createHelpers({
   api,
+  // The page's one polite region: what needs you, and what failed.
+  announce: (text) => {
+    announceEl.textContent = text;
+  },
   open: (id) => openConversation(id),
   // Straight to the connection it needs, as Home's Connect goes; else Connected tools.
   openStep: (stepId) => {
@@ -2130,15 +2134,9 @@ const helpers = createHelpers({
   },
   now: () => Date.now(),
   phone: () => isPhone(innerWidth),
-  capName: () => usage?.providers?.find((p) => p.leg === 'model' && p.state === 'capped')?.name ?? null,
+  capName: () => capNameOf(usage?.providers),
 });
-helpers.onCount((n) => {
-  const label = buttonLabel(n);
-  helpersBtn.setAttribute('aria-label', label);
-  helpersBtn.title = label;
-  helpersDot.hidden = n <= 0;
-  helpersDot.textContent = n > 0 ? String(n) : '';
-});
+bindButton(helpersBtn, helpersDot, helpers);
 function helpersShowing(): boolean {
   return workspace.isOpen && workspace.showing === 'helpers';
 }

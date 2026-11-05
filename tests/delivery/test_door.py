@@ -447,3 +447,47 @@ def test_the_doors_watcher_names_are_the_panels() -> None:
 
     assert door_module._WATCHER_NAMES == dict(TITLED)
     assert set(door_module._WATCHER_OF_KEY.values()) == set(WATCHERS)
+
+
+async def test_only_a_helper_still_listed_is_named(store: SqliteScheduleStore) -> None:
+    """A one-off ask that has fired, or a routine since removed, has left the panel: its
+    notice names no helper there is nothing to open for."""
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    await store.create(schedule(id="a0000002", kind="ask", title="Remind me at 4", status="done"))
+    await store.create(schedule(id="r0000003", kind="ask", title="Old", target="own"))
+    fired = await written(
+        store, kind="ask", text="It's 4.", source_id="a0000002", due_ms=DUE, now_ms=DUE
+    )
+    gone = await written(
+        store, kind="failed", text=None, source_id="r0000003", due_ms=DUE, now_ms=DUE
+    )
+    # Removed after its notice was written, before the page had it.
+    assert await store.cancel("local", "r0000003", DUE)
+    for n in (fired, gone):
+        await d.added(n)
+    assert [(x.helper_id, x.helper_name) for x in page.got] == [(None, None), (None, None)]
+
+
+async def test_a_failed_helper_lookup_never_holds_the_notice(
+    store: SqliteScheduleStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    page = FakePage("c1")
+    d, _, _ = door(store, [page])
+    n = await written(
+        store, kind="ask", text="It's 4.", source_id="a0000003", due_ms=DUE, now_ms=DUE
+    )
+    real = store.get
+    calls = 0
+
+    async def flaky(schedule_id: str) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # the due words read it first; the helper lookup second
+            raise RuntimeError("disk")
+        return await real(schedule_id)
+
+    monkeypatch.setattr(store, "get", flaky)
+    await d.added(n)
+    assert [(x.id, x.helper_id) for x in page.got] == [(n.id, None)]
+    assert "RuntimeError" in caplog.text

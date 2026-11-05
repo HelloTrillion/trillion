@@ -229,13 +229,15 @@ def _scheduled(
         name=s.title,
         job=_first_line(s.body) if routine else _when(s),
         state=state,
-        doing=s.title if state == "working" else None,
+        # The row already names it: what it is doing is working.
+        doing="Working" if state == "working" else None,
         since_ms=since if state == "working" else None,
         last_run=last_run_of(last),
         # A paused routine's due time stays put, but it won't run then.
         next_ms=None if paused else s.next_due_ms,
         waiting=tuple(waiting),
         conversation_id=conversation,
+        paused=paused,
     )
 
 
@@ -267,6 +269,8 @@ def _watcher(
         next_ms=w.next_check_ms if w.on else None,
         waiting=tuple(waiting),
         conversation_id=conversation,
+        switched_on=w.switched_on,
+        connected=w.connected,
     )
 
 

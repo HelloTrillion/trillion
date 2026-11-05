@@ -360,10 +360,16 @@ class Door:
                 return {}
             return {"helper_id": f"watcher:{name}", "helper_name": _WATCHER_NAMES[name]}
         if n.source_id not in schedules:
-            schedules[n.source_id] = await self._store.get(n.source_id)
+            try:
+                schedules[n.source_id] = await self._store.get(n.source_id)
+            except Exception as e:
+                # Best effort: the notice goes without its helper's name, never held.
+                logger.warning("notice %s: its helper not read: %s", n.id, type(e).__name__)
+                schedules[n.source_id] = None
         s = schedules[n.source_id]
-        # A reminder runs no model and is no helper.
-        if s is None or s.kind != "ask":
+        # A reminder runs no model and is no helper. A one-off ask that has fired, or a
+        # routine since removed, has left the panel: there is nothing to open.
+        if s is None or s.kind != "ask" or s.status != "active":
             return {}
         kind = "routine" if s.target is not None else "ask"
         return {"helper_id": f"{kind}:{s.id}", "helper_name": s.title}

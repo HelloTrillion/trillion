@@ -156,7 +156,8 @@ async def test_an_idle_routine_names_its_job_and_next_run() -> None:
 async def test_a_routine_running_now_is_working_since_its_start() -> None:
     src = Sources(Schedules([routine()], now={"r1": run("r1", "running", started_ms=NOW - 12_000)}))
     (h,) = await helpers(src)
-    assert (h.state, h.doing, h.since_ms) == ("working", "Monday revenue", NOW - 12_000)
+    # "Working", not its own name again: the row already says that.
+    assert (h.state, h.doing, h.since_ms) == ("working", "Working", NOW - 12_000)
 
 
 async def test_a_paused_routine_is_paused_with_no_next_run() -> None:
@@ -192,7 +193,7 @@ async def test_a_timed_ask_says_when_it_fires() -> None:
 async def test_a_timed_ask_in_every_state() -> None:
     working = Sources(Schedules([ask()], now={"a1": run("a1", "running")}))
     (h,) = await helpers(working)
-    assert (h.state, h.doing, h.since_ms) == ("working", "Remind me at 4", NOW - 3_600_000)
+    assert (h.state, h.doing, h.since_ms) == ("working", "Working", NOW - 3_600_000)
     (h,) = await helpers(Sources(Schedules([ask()]), paused_work={"asks"}))
     assert h.state == "capped"
 
@@ -379,6 +380,9 @@ async def test_to_json_is_the_apis_body() -> None:
                     {"type": "approval", "id": "act1", "text": "Approve a change", "at_ms": 3}
                 ],
                 "conversation_id": "c1",
+                "paused": False,
+                "switched_on": None,
+                "connected": None,
             },
             {
                 "id": "ask:a1",
@@ -392,6 +396,9 @@ async def test_to_json_is_the_apis_body() -> None:
                 "next_ms": 9,
                 "waiting": [],
                 "conversation_id": "c1",
+                "paused": False,
+                "switched_on": None,
+                "connected": None,
             },
         ],
         "needs_you": 1,
@@ -461,3 +468,29 @@ async def test_a_routine_that_came_to_nothing_reads_as_nothing(real: Real) -> No
     (h,) = await helpers(real)
     assert h.last_run == LastRun(at_ms=due + 10, outcome="nothing", reason=None)
     assert (h.state, h.next_ms) == ("idle", ms("2026-11-16T07:00", NY))
+
+
+# ── What the page acts on, said outright (review B1, B2) ────────────────
+
+
+async def test_a_routine_says_whether_the_user_paused_it() -> None:
+    src = Sources(Schedules([routine(), routine(id="r2", paused_ms=NOW)]), paused_work={"routines"})
+    found = await helpers(src)
+    # Capped is not paused: Pause, not Resume, is what the user can do.
+    assert (one(found, "routine:r1").state, one(found, "routine:r1").paused) == ("capped", False)
+    assert one(found, "routine:r2").paused is True
+    assert one(found, "routine:r1").switched_on is None
+    assert one(found, "routine:r1").connected is None
+
+
+async def test_a_watcher_says_whether_it_is_switched_on_and_connected() -> None:
+    meetings = watcher("meetings", on=False, connected=False, next_check_ms=None)
+    off = watcher("payments", on=False, switched_on=False, next_check_ms=None)
+    found = await helpers(Sources(watching=[meetings, off, watcher("email")]))
+    m = one(found, "watcher:meetings")
+    # Switched on, waiting for Calendar: not running, but not turned off either.
+    assert (m.state, m.switched_on, m.connected, m.paused) == ("paused", True, False, False)
+    p = one(found, "watcher:payments")
+    assert (p.switched_on, p.connected) == (False, True)
+    e = one(found, "watcher:email")
+    assert (e.state, e.switched_on, e.connected) == ("idle", True, True)

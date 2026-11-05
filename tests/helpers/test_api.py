@@ -124,6 +124,9 @@ def test_the_list_holds_routines_asks_and_watchers(make: Any) -> None:
         "next_ms",
         "waiting",
         "conversation_id",
+        "paused",
+        "switched_on",
+        "connected",
     }
 
 

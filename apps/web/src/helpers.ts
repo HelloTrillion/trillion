@@ -42,6 +42,11 @@ export interface Helper {
   readonly next_ms: number | null;
   readonly waiting: readonly Waiting[];
   readonly conversation_id: string | null;
+  /** A routine the user paused: Resume, not Pause. A capped one is not paused. */
+  readonly paused?: boolean;
+  /** A watcher switched on, and its source connected; null for any other kind. */
+  readonly switched_on?: boolean | null;
+  readonly connected?: boolean | null;
 }
 
 export interface HelperList {
@@ -105,12 +110,20 @@ export function statusLine(h: Helper, now: number, capName: string | null = null
     return h.since_ms === null ? doing : `${doing} · ${elapsedText(now - h.since_ms)}`;
   }
   if (h.state === 'capped') return `paused: ${capName ?? 'her model'} is at its cap`;
-  if (h.state === 'paused') return 'paused';
+  if (h.state === 'paused') {
+    if (h.kind !== 'watcher') return 'paused';
+    // Switched on and waiting for its source is not the same as turned off.
+    const source = SOURCES[h.id.slice('watcher:'.length)];
+    return h.switched_on !== false && h.connected === false && source ? `off: ${source} isn't connected` : 'off';
+  }
   const last = h.last_run;
   if (last?.outcome === 'failed') return `failed at ${timeText(last.at_ms, now)}${last.reason ? `: ${last.reason}` : ''}`;
   if (h.next_ms !== null) return `next ${timeText(h.next_ms, now)}`;
   return h.job;
 }
+
+// What each watcher reads through, to say what it waits for.
+const SOURCES: Readonly<Record<string, string>> = { meetings: 'Google', email: 'Google', payments: 'Stripe' };
 
 /** Her line at the top: "2 working, 1 needs you", or "All quiet". */
 export function summaryLine(l: HelperList): string {
@@ -151,6 +164,28 @@ const STEP_TARGETS: Readonly<Record<string, string>> = {
   'connect:payments': 'stripe',
 };
 
+/**
+ * The provider background work waits on at its cap, from `/api/usage`'s providers, or
+ * null. The first model listed is the usual one, which background work always runs on.
+ */
+export function capNameOf(providers: readonly { readonly leg: string; readonly name: string; readonly state: string }[] | undefined): string | null {
+  const usual = providers?.find((p) => p.leg === 'model');
+  return usual?.state === 'capped' ? usual.name : null;
+}
+
+/** Keep the Helpers button's name, title and count with the list. */
+export function bindButton(button: HTMLElement, dot: HTMLElement, panel: Pick<HelpersPanel, 'needsYou' | 'onCount'>): void {
+  const draw = (n: number): void => {
+    const label = buttonLabel(n);
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    dot.hidden = n <= 0;
+    dot.textContent = n > 0 ? String(n) : '';
+  };
+  draw(panel.needsYou);
+  panel.onCount(draw);
+}
+
 /** The Connected tools entry a step opens at (connect or sign in again), or null for the section. */
 export function stepTarget(stepId: string): string | null {
   return STEP_TARGETS[stepId] ?? null;
@@ -176,6 +211,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
 
 export interface HelpersDeps {
   readonly api: Api;
+  /** Say something through the page's one polite region (`#announce`). */
+  readonly announce: (text: string) => void;
   /** Open a conversation, the way History opens one. */
   readonly open: (conversationId: string) => void;
   /** Open the Settings that do a step ("connect:email"). */
@@ -227,8 +264,8 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   const listView = el('div', 'hp-list');
   const her = el('div', 'hp-her');
   const herName = el('p', 'hp-her-name', 'Trillion');
+  // Not a live region: what changes is said through the page's own (`announce`).
   const summary = el('p', 'hp-summary', 'All quiet');
-  summary.setAttribute('aria-live', 'polite');
   her.append(herName, summary);
   const problem = el('p', 'hp-problem');
   problem.hidden = true;
@@ -285,6 +322,10 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   const rows = new Map<string, Row>();
   const listeners: ((n: number) => void)[] = [];
   let current: HelperList = { helpers: [], needs_you: 0 };
+  // Bumped by every list drawn: a read that a push overtook is thrown away.
+  let seq = 0;
+  // How many needed you when last said; null before the first list.
+  let saidNeeds: number | null = null;
   let ticking: ReturnType<typeof setInterval> | null = null;
   let isOpen = false;
 
@@ -316,7 +357,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     const key = [...opens, ...steps.map((w) => `${w.id}|${w.text}`)].join('\n');
     if (key === r.waits) return;
     r.waits = key;
-    const note = el('p', 'hp-row-note');
+    const rowNote = el('p', 'hp-row-note');
     const parts: HTMLElement[] = opens.map((type) => {
       const go = el('button', 'quiet hp-open', OPEN_WORDS[type]);
       go.type = 'button';
@@ -324,7 +365,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
         go.disabled = true;
         void talkTo(h.id, r.helper.conversation_id).then((wrong) => {
           go.disabled = false;
-          note.textContent = wrong ?? '';
+          note(rowNote, wrong ?? '');
         });
       });
       return go;
@@ -337,7 +378,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
       step.append(el('span', '', `${w.text}. `), go);
       parts.push(step);
     }
-    r.inline.replaceChildren(...parts, ...(parts.length ? [note] : []));
+    r.inline.replaceChildren(...parts, ...(parts.length ? [rowNote] : []));
   }
 
   /**
@@ -386,7 +427,19 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     }
   }
 
+  /** A line in the panel, said through the page too when it is a failure. */
+  function note(where: HTMLElement, text: string): void {
+    where.textContent = text;
+    if (text) d.announce(text);
+  }
+
+  function needsWords(n: number): string {
+    if (n <= 0) return 'No helper needs you now';
+    return n === 1 ? '1 helper needs you' : `${n} helpers need you`;
+  }
+
   function update(next: HelperList): void {
+    seq += 1;
     current = next;
     problem.hidden = true;
     element.classList.toggle('hp-phone', d.phone());
@@ -408,7 +461,10 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
       r.li.remove();
       rows.delete(id);
     }
-    // In place: a row already where it belongs is never moved, so focus stays on it.
+    // In place: a row already where it belongs is never moved. One that moves takes its
+    // focus with it.
+    const active = document.activeElement;
+    const focused = active instanceof HTMLElement && listView.contains(active) ? active : null;
     for (const [g, { section, ul }] of groupEls) {
       const want = order.get(g) ?? [];
       want.forEach((li, i) => {
@@ -418,14 +474,23 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
       for (const extra of [...ul.children].slice(want.length)) extra.remove();
       section.hidden = want.length === 0;
     }
+    if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
     empty.hidden = next.helpers.length > 0;
     const words = summaryLine(next);
     if (summary.textContent !== words) summary.textContent = words;
+    // Said when it changes, never on the first quiet list.
+    if (next.needs_you !== saidNeeds && (saidNeeds !== null || next.needs_you > 0)) d.announce(needsWords(next.needs_you));
+    saidNeeds = next.needs_you;
     for (const l of listeners) l(next.needs_you);
     if (showing !== null) {
-      // Its helper left the list (a fired ask, a removed routine): back to the list.
+      // Its helper left the list (a fired ask, a removed routine): back to the list,
+      // with focus there if it was on the details.
       if (rows.has(showing)) drawDetails();
-      else back(false);
+      else {
+        const had = detailsView.contains(document.activeElement);
+        back(false);
+        if (had) listView.focus();
+      }
     }
     clock();
   }
@@ -441,15 +506,28 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     if (dName.textContent !== h.name) dName.textContent = h.name;
     dJob.textContent = h.job;
     const status = statusLine(h, now, d.capName());
-    dStatus.textContent = status === h.job ? '' : status;
+    const when = h.next_ms === null ? '' : timeText(h.next_ms, now);
+    // The next run is said once, below, not also as the status.
+    dStatus.textContent = status === h.job || (when && status === `next ${when}`) ? '' : status;
     dStatus.hidden = !dStatus.textContent;
-    const next = h.next_ms === null ? '' : `${h.kind === 'watcher' ? 'Next check' : 'Next run'}: ${timeText(h.next_ms, now)}`;
+    const next = when ? `${h.kind === 'watcher' ? 'Next check' : 'Next run'}: ${when}` : '';
     dNext.textContent = next;
     dNext.hidden = !next;
-    // A timed ask can't be paused, only cancelled; a watcher is turned off and on.
-    const words =
-      h.kind === 'ask' ? 'Cancel' : h.kind === 'watcher' ? (h.state === 'paused' ? 'Turn on' : 'Turn off') : h.state === 'paused' ? 'Resume' : 'Pause';
+    const words = toggleWords(h);
     if (toggle.textContent !== words) toggle.textContent = words;
+  }
+
+  /**
+   * What can be done with it, from what the core says outright: a timed ask can't be
+   * paused, only cancelled; a routine is paused or resumed; a watcher is turned on or
+   * off, or, switched on and waiting for its source, connected.
+   */
+  function toggleWords(h: Helper): 'Cancel' | 'Pause' | 'Resume' | 'Turn on' | 'Turn off' | 'Connect' {
+    if (h.kind === 'ask') return 'Cancel';
+    if (h.kind === 'routine') return (h.paused ?? h.state === 'paused') ? 'Resume' : 'Pause';
+    const on = h.switched_on ?? h.state !== 'paused';
+    if (!on) return 'Turn on';
+    return h.connected === false ? 'Connect' : 'Turn off';
   }
 
   function drawRuns(runs: readonly Run[] | null): void {
@@ -467,7 +545,8 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
         return li;
       }),
     );
-    runsNote.textContent = runs === null ? "Couldn't read its runs." : runs.length ? '' : 'No runs yet.';
+    if (runs === null) note(runsNote, "Couldn't read its runs.");
+    else runsNote.textContent = runs.length ? '' : 'No runs yet.';
     runsNote.hidden = !runsNote.textContent;
   }
 
@@ -512,9 +591,9 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     toggle.disabled = true;
     try {
       const r = await d.api(method, path, body);
-      if (!r.ok) dNote.textContent = NOT_DONE;
+      if (!r.ok) note(dNote, NOT_DONE);
     } catch {
-      dNote.textContent = NOT_REACHED;
+      note(dNote, NOT_REACHED);
     } finally {
       toggle.disabled = false;
     }
@@ -536,12 +615,15 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
       confirmNo.focus();
       return;
     }
+    const words = toggleWords(h);
     if (h.kind === 'watcher') {
       const name = h.id.slice('watcher:'.length);
-      void act('PUT', '/api/attention/settings', { watchers: { [name]: h.state === 'paused' } });
+      // Waiting for its source: connecting it is what turns it on.
+      if (words === 'Connect') d.openStep(`connect:${name}`);
+      else void act('PUT', '/api/attention/settings', { watchers: { [name]: words === 'Turn on' } });
       return;
     }
-    const what = h.state === 'paused' ? 'resume' : 'pause';
+    const what = words === 'Resume' ? 'resume' : 'pause';
     void act('POST', `/api/routines/${encodeURIComponent(scheduleOf(h.id))}/${what}`, {});
   });
   confirmNo.addEventListener('click', () => {
@@ -560,14 +642,17 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     talk.disabled = true;
     void talkTo(id, null).then((wrong) => {
       talk.disabled = false;
-      dNote.textContent = wrong ?? '';
+      note(dNote, wrong ?? '');
     });
   });
 
   async function load(): Promise<void> {
+    const asked = seq;
     try {
       const r = await d.api('GET', '/api/helpers');
       const found = r.ok ? parseList(await r.json()) : null;
+      // A push came while it was read: that list is the newer one.
+      if (seq !== asked) return;
       if (found) {
         update(found);
         return;
@@ -575,9 +660,15 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     } catch {
       // Said below.
     }
-    problem.textContent = NO_LIST;
+    if (seq !== asked) return;
+    note(problem, NO_LIST);
     problem.hidden = false;
   }
+
+  // A window that crosses to phone width while open takes the sheet's layout.
+  addEventListener('resize', () => {
+    if (isOpen) element.classList.toggle('hp-phone', d.phone());
+  });
 
   return {
     element,

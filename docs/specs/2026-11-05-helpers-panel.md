@@ -105,7 +105,9 @@ Only the four moments appear, each through the one door as today:
 1. **A result for you:** the existing ready line with Open.
 2. **A question:** a line from the helper, with a Reply that opens its conversation.
 3. **An approval:** the same card as today.
-4. **A step you must do:** a line saying what and where, with Open.
+4. **A step you must do:** a line saying what and where, with Open. For now a step shows only in the panel (its row, with Open Settings) and on the Helpers button's dot; no line reaches the chat yet.
+
+Each line from a helper leads with its name, as the panel says it, and a tap on the name opens its details. The name rides on the notice (`helper_id`, `helper_name`), only while that helper is still listed (a one-off ask that has fired, or a removed routine, gets none). It is live only: a line drawn again from history after a reload shows no name.
 
 A run with nothing for you shows only in its history (AGT-6). Quiet hours, a meeting under way, the microphone in use and Focus still hold delivery (AGT-5, VOI-17).
 

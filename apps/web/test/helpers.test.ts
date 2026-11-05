@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type Helper,
   type HelperList,
+  bindButton,
   buttonLabel,
+  capNameOf,
   createHelpers,
   elapsedText,
   groupOf,
@@ -38,6 +40,9 @@ const helper = (over: Partial<Helper> = {}): Helper => ({
   next_ms: at(9, 55),
   waiting: [],
   conversation_id: null,
+  paused: false,
+  switched_on: null,
+  connected: null,
   ...over,
 });
 
@@ -76,7 +81,11 @@ describe('the words', () => {
 
   it('gives each row one short status line, as the spec words it', () => {
     expect(statusLine(helper(), NOW)).toBe('next 9:55');
-    expect(statusLine(helper({ state: 'paused' }), NOW)).toBe('paused');
+    expect(statusLine(helper({ state: 'paused', paused: true }), NOW)).toBe('paused');
+    const w = { kind: 'watcher' as const, state: 'paused' as const, next_ms: null };
+    expect(statusLine(helper({ ...w, id: 'watcher:payments', switched_on: false, connected: true }), NOW)).toBe('off');
+    expect(statusLine(helper({ ...w, id: 'watcher:meetings', switched_on: true, connected: false }), NOW)).toBe("off: Google isn't connected");
+    expect(statusLine(helper({ ...w, id: 'watcher:payments', switched_on: true, connected: false }), NOW)).toBe("off: Stripe isn't connected");
     expect(statusLine(helper({ state: 'capped' }), NOW, 'Anthropic')).toBe('paused: Anthropic is at its cap');
     expect(statusLine(helper({ state: 'capped' }), NOW, null)).toBe('paused: her model is at its cap');
     expect(statusLine(helper({ last_run: { at_ms: at(7, 0), outcome: 'failed', reason: "couldn't reach the inbox" } }), NOW)).toBe(
@@ -123,8 +132,10 @@ function panel(first: HelperList, more: Partial<Parameters<typeof createHelpers>
   const opened: string[] = [];
   const steps: string[] = [];
   const counts: number[] = [];
+  const said: string[] = [];
   const helpers = createHelpers({
     api,
+    announce: (text) => said.push(text),
     open: (id) => opened.push(id),
     openStep: (id) => steps.push(id),
     now: () => NOW,
@@ -134,7 +145,7 @@ function panel(first: HelperList, more: Partial<Parameters<typeof createHelpers>
   });
   helpers.onCount((n) => counts.push(n));
   document.body.append(helpers.element);
-  return { helpers, calls, sent, opened, steps, counts, root: helpers.element };
+  return { helpers, calls, sent, opened, steps, counts, said, root: helpers.element };
 }
 
 const groups = (root: HTMLElement): string[] => [...root.querySelectorAll('.hp-group')].filter((g) => !(g as HTMLElement).hidden).map((g) => g.querySelector('h3')?.textContent ?? '');
@@ -155,7 +166,7 @@ describe('the Helpers panel', () => {
         helper({ id: 'ask:bbbbbbbb', kind: 'ask', name: 'Remind me at 4', state: 'needs_you', waiting: [approval()] }),
         helper({ id: 'routine:cccccccc', name: 'Weekly review', state: 'working', doing: 'Writing the review', since_ms: NOW - 12_000 }),
         helper({ id: 'routine:aaaaaaaa' }),
-        helper({ id: 'watcher:payments', kind: 'watcher', name: 'Payments', state: 'paused' }),
+        helper({ id: 'watcher:payments', kind: 'watcher', name: 'Payments', state: 'paused', switched_on: false, connected: true }),
       ]),
     );
     await helpers.open();
@@ -165,10 +176,10 @@ describe('the Helpers panel', () => {
     expect(groups(root)).toEqual(['Needs you', 'Working', 'Idle']);
     expect(rowNames(root, 'Idle')).toEqual(['Morning brief', 'Payments']);
     expect(row(root, 'routine:cccccccc').textContent).toContain('Writing the review · 0:12');
-    expect(row(root, 'watcher:payments').textContent).toContain('paused');
-    // Groups are lists under headings; only the summary is a live region.
+    expect(row(root, 'watcher:payments').textContent).toContain('off');
+    // Groups are lists under headings; nothing in the panel is a live region (the page's one speaks).
     expect(root.querySelectorAll('.hp-group ul').length).toBe(3);
-    expect([...root.querySelectorAll('[aria-live]')].map((n) => n.className)).toEqual(['hp-summary']);
+    expect(root.querySelectorAll('[aria-live]').length).toBe(0);
   });
 
   it('shows only the groups that have a helper, and says when there is none', async () => {
@@ -319,10 +330,13 @@ function details(first: HelperList, answers: Record<string, Answer> = {}) {
     return json({ error: 'not_found' }, 404);
   };
   const opened: string[] = [];
+  const steps: string[] = [];
+  const said: string[] = [];
   const helpers = createHelpers({
     api,
+    announce: (text) => said.push(text),
     open: (id) => opened.push(id),
-    openStep: () => undefined,
+    openStep: (id) => steps.push(id),
     now: () => NOW,
     phone: () => false,
     capName: () => null,
@@ -334,7 +348,7 @@ function details(first: HelperList, answers: Record<string, Answer> = {}) {
     await flush();
     return helpers.element.querySelector('.hp-details') as HTMLElement;
   };
-  return { helpers, calls, opened, show, root: helpers.element };
+  return { helpers, calls, opened, steps, said, show, root: helpers.element };
 }
 
 const press = (root: ParentNode, text: string): void => {
@@ -398,7 +412,7 @@ describe('a helper’s details', () => {
     press(d, 'Pause');
     await flush();
     expect(calls).toContainEqual({ method: 'POST', path: '/api/routines/aaaaaaaa/pause', body: {} });
-    helpers.update(list([helper({ state: 'paused' })]));
+    helpers.update(list([helper({ state: 'paused', paused: true, next_ms: null })]));
     expect(d.textContent).toContain('paused');
     press(d, 'Resume');
     await flush();
@@ -406,14 +420,14 @@ describe('a helper’s details', () => {
   });
 
   it('turns a watcher off and on through its settings', async () => {
-    const watcher = helper({ id: 'watcher:payments', kind: 'watcher', name: 'Payments', job: 'Watches your payments' });
+    const watcher = helper({ id: 'watcher:payments', kind: 'watcher', name: 'Payments', job: 'Watches your payments', switched_on: true, connected: true });
     const { show, calls, helpers } = details(list([watcher]), { 'PUT /api/attention/settings': () => json({}) });
     const d = await show('watcher:payments');
     expect(d.textContent).toContain('Next check: 9:55');
     press(d, 'Turn off');
     await flush();
     expect(calls).toContainEqual({ method: 'PUT', path: '/api/attention/settings', body: { watchers: { payments: false } } });
-    helpers.update(list([{ ...watcher, state: 'paused' }]));
+    helpers.update(list([{ ...watcher, state: 'paused', switched_on: false }]));
     press(d, 'Turn on');
     await flush();
     expect(calls).toContainEqual({ method: 'PUT', path: '/api/attention/settings', body: { watchers: { payments: true } } });
@@ -525,5 +539,140 @@ describe('opening a helper from the chat', () => {
     await helpers.showHelper('ask:ffffffff');
     expect(d.hidden).toBe(true);
     expect((root.querySelector('.hp-list') as HTMLElement).hidden).toBe(false);
+  });
+});
+
+describe('review fixes', () => {
+  it('shows the next run once in the details', async () => {
+    const { show } = details(list([helper()]));
+    const d = await show('routine:aaaaaaaa');
+    expect(d.textContent?.match(/9:55/g)).toHaveLength(1);
+    expect(d.textContent).toContain('Next run: 9:55');
+  });
+
+  it('offers Connect, not Turn on, for a watcher switched on but not connected, to the step’s Settings', async () => {
+    const meetings = helper({ id: 'watcher:meetings', kind: 'watcher', name: 'Meetings', state: 'paused', next_ms: null, switched_on: true, connected: false });
+    const { show, steps, calls } = details(list([meetings]));
+    const d = await show('watcher:meetings');
+    expect(d.textContent).toContain("off: Google isn't connected");
+    expect(hasButton(d, 'Turn on')).toBe(false);
+    press(d, 'Connect');
+    expect(steps).toEqual(['connect:meetings']);
+    expect(calls.filter((c) => c.method === 'PUT')).toEqual([]);
+  });
+
+  it('decides Pause or Resume from the paused flag, not the state: capped is not paused', async () => {
+    const { show } = details(list([helper({ state: 'capped', paused: false })]));
+    const d = await show('routine:aaaaaaaa');
+    expect(hasButton(d, 'Pause')).toBe(true);
+  });
+
+  it('keeps focus on a row that moves to another group or place', async () => {
+    const { helpers, root } = panel(list([helper(), helper({ id: 'routine:dddddddd', name: 'Evening wrap' })]));
+    await helpers.open();
+    const button = row(root, 'routine:dddddddd').querySelector('.hp-main') as HTMLButtonElement;
+    button.focus();
+    helpers.update(list([helper({ id: 'routine:dddddddd', name: 'Evening wrap', state: 'working', doing: 'Working', since_ms: NOW }), helper()]));
+    expect(rowNames(root, 'Working')).toEqual(['Evening wrap']);
+    expect(document.activeElement).toBe(button);
+    helpers.update(list([helper({ id: 'routine:dddddddd', name: 'Evening wrap', next_ms: at(8, 0) }), helper()]));
+    expect(rowNames(root, 'Idle')).toEqual(['Evening wrap', 'Morning brief']);
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('puts focus on the list when the helper shown leaves it', async () => {
+    const { show, helpers, root } = details(list([helper()]));
+    await show('routine:aaaaaaaa');
+    helpers.update(list([]));
+    expect(document.activeElement).toBe(root.querySelector('.hp-list'));
+  });
+
+  it('says through the page when how many need you changes, and when something fails', async () => {
+    const { helpers, said } = panel(list([]));
+    helpers.update(list([]));
+    helpers.update(list([helper({ state: 'needs_you', waiting: [approval()] })]));
+    helpers.update(list([helper({ state: 'needs_you', waiting: [approval()] })]));
+    helpers.update(list([]));
+    expect(said).toEqual(['1 helper needs you', 'No helper needs you now']);
+    const failing = panel(list([]), { api: async () => json({}, 500) });
+    await failing.helpers.open();
+    expect(failing.said).toEqual(["Couldn't read her helpers. Try again in a moment."]);
+  });
+
+  it('ignores a read that a push overtook', async () => {
+    let answer: (r: Response) => void = () => undefined;
+    const { helpers, root } = panel(list([]), {
+      api: () => new Promise<Response>((r) => {
+        answer = r;
+      }),
+    });
+    const opening = helpers.open();
+    helpers.update(list([helper({ name: 'Fresh' })]));
+    answer(json(list([helper({ name: 'Stale' })])));
+    await opening;
+    expect(root.querySelector('.hp-name')?.textContent).toBe('Fresh');
+  });
+
+  it('follows the window between phone and desk while open', async () => {
+    let phone = false;
+    const { helpers, root } = panel(list([]), { phone: () => phone });
+    await helpers.open();
+    expect(root.classList.contains('hp-phone')).toBe(false);
+    phone = true;
+    window.dispatchEvent(new Event('resize'));
+    expect(root.classList.contains('hp-phone')).toBe(true);
+    helpers.closed();
+    phone = false;
+    window.dispatchEvent(new Event('resize'));
+    expect(root.classList.contains('hp-phone')).toBe(true);
+  });
+
+  it('sets every name, job, reason and step only as text', async () => {
+    const bad = '<img src=x onerror=alert(1)>';
+    const { helpers, root } = panel(list([]));
+    helpers.update(
+      list([
+        helper({ name: bad, job: bad, next_ms: null }),
+        helper({ id: 'routine:eeeeeeee', name: 'x', last_run: { at_ms: at(7, 0), outcome: 'failed', reason: bad } }),
+        helper({ id: 'watcher:email', kind: 'watcher', name: 'y', state: 'needs_you', waiting: [{ type: 'step', id: 'connect:email', text: bad, at_ms: null }] }),
+      ]),
+    );
+    expect(root.querySelector('img')).toBeNull();
+    expect(root.textContent).toContain(bad);
+  });
+
+  it('stops its clock once no helper is working', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { helpers } = panel(list([helper({ state: 'working', doing: 'Working', since_ms: NOW })]));
+    await helpers.open();
+    expect(vi.getTimerCount()).toBe(1);
+    helpers.update(list([helper()]));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('wires the button: its name, title and count follow the list', () => {
+    const { helpers } = panel(list([]));
+    const button = document.createElement('button');
+    const dot = document.createElement('span');
+    bindButton(button, dot, helpers);
+    expect(button.getAttribute('aria-label')).toBe('Helpers');
+    expect(dot.hidden).toBe(true);
+    helpers.update(list([helper({ state: 'needs_you', waiting: [approval()] })]));
+    expect(button.getAttribute('aria-label')).toBe('Helpers, 1 needs you');
+    expect(button.title).toBe('Helpers, 1 needs you');
+    expect([dot.hidden, dot.textContent]).toEqual([false, '1']);
+    helpers.update(list([]));
+    expect([dot.hidden, dot.textContent]).toEqual([true, '']);
+  });
+
+  it('names the background model at its cap when the page knows it', () => {
+    expect(capNameOf([
+      { leg: 'voice', name: 'ElevenLabs', state: 'capped' },
+      { leg: 'model', name: 'Anthropic', state: 'capped' },
+      { leg: 'model', name: 'A local model', state: 'ok' },
+    ])).toBe('Anthropic');
+    // The first model listed is the usual one, which background work runs on.
+    expect(capNameOf([{ leg: 'model', name: 'Anthropic', state: 'ok' }, { leg: 'model', name: 'OpenAI', state: 'capped' }])).toBeNull();
+    expect(capNameOf(undefined)).toBeNull();
   });
 });
