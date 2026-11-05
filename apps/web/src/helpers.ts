@@ -194,6 +194,8 @@ export interface HelpersPanel {
   closed(): void;
   /** Put focus in the panel: on its first helper, else on the list itself. */
   focus(): void;
+  /** Read the list and show one helper's details (a tap on its name in the chat); the list when it is gone. */
+  showHelper(id: string): Promise<void>;
   /** A list from the core (`helpers.changed`, or a read). */
   update(list: HelperList): void;
   /** A message from the core: `helpers.changed` is drawn, others are ignored. */
@@ -593,6 +595,16 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     },
     focus() {
       (listView.querySelector<HTMLButtonElement>('.hp-main') ?? listView).focus();
+    },
+    async showHelper(id) {
+      isOpen = true;
+      await load();
+      clock();
+      if (rows.has(id)) await showDetails(id);
+      else {
+        if (showing !== null) back(false);
+        listView.focus();
+      }
     },
     update,
     handle(msg) {

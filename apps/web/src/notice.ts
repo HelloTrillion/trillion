@@ -42,6 +42,26 @@ export function linkHost(link: string): string {
   }
 }
 
+/** A helper, as the Helpers panel names it. */
+export interface From {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** The helper's name, at the head of a line from it: a tap opens its details in the panel. */
+export function fromTag(from: From, show: (id: string) => void): HTMLButtonElement {
+  const b = el('button', 'notice-from', from.name);
+  b.type = 'button';
+  b.setAttribute('aria-label', `${from.name}, in Helpers`);
+  b.addEventListener('click', () => show(from.id));
+  return b;
+}
+
+/** A missed or failed line, after its helper's name. */
+function quietAfterName(e: Pick<Scheduled, 'what' | 'due'>): string {
+  return `${e.what === 'missed' ? 'missed' : "didn't finish"} (${dueLabel(e.due)})`;
+}
+
 export function heldText(reason: string): string {
   return `Held: ${reason}`;
 }
@@ -66,18 +86,34 @@ export function extras(e: Pick<Scheduled, 'link' | 'detail' | 'quiet'>, open: Op
   return out;
 }
 
-/** A reminder, timed ask or heads-up (a routine's ready line is drawn by `readyLine`). */
-export function renderScheduled(e: Scheduled, words: (text: string) => HTMLElement[], open: Opener = OPENER): HTMLElement {
+/**
+ * A reminder, timed ask or heads-up (a routine's ready line is drawn by `readyLine`).
+ * One from a helper leads with its name, which opens its details (`show`).
+ */
+export function renderScheduled(
+  e: Scheduled,
+  words: (text: string) => HTMLElement[],
+  open: Opener = OPENER,
+  show?: (helperId: string) => void,
+): HTMLElement {
   const more = extras(e, open);
+  const from = e.helper && show ? fromTag(e.helper, show) : null;
+  const quiet = e.what === 'missed' || e.what === 'failed';
   if (e.text === null) {
     // No words of hers: missed or failed says so, anything else is shown by its title.
-    const line = el('p', 'notice scheduled-quiet', e.what === 'missed' || e.what === 'failed' ? quietLine(e) : e.title);
+    const line = el('p', 'notice scheduled-quiet');
+    if (from) {
+      // The name says who; what is left says what, and the title is not said twice.
+      const rest = quiet ? quietAfterName(e) : e.title === from.textContent ? '' : e.title;
+      line.append(from, ...(rest ? [`: ${rest}`] : []));
+    } else line.textContent = quiet ? quietLine(e) : e.title;
     if (!more.length) return line;
     const box = el('div', 'notice-block');
     box.append(line, ...more);
     return box;
   }
   const box = el('div', 'msg assistant');
+  if (from) box.append(from);
   box.append(...words(e.text));
   // Late: when it was due, so "now" in her words is not taken for now.
   if (e.late) box.append(el('span', 'mark', dueLabel(e.due)));

@@ -513,3 +513,17 @@ describe('a step’s Settings', () => {
     expect(stepTarget('something')).toBeNull();
   });
 });
+
+describe('opening a helper from the chat', () => {
+  it('opens the panel at that helper’s details, or on the list when it is gone', async () => {
+    const { helpers, root } = details(list([helper()]));
+    await helpers.showHelper('routine:aaaaaaaa');
+    await flush();
+    const d = root.querySelector('.hp-details') as HTMLElement;
+    expect(d.hidden).toBe(false);
+    expect(d.querySelector('h3')?.textContent).toBe('Morning brief');
+    await helpers.showHelper('ask:ffffffff');
+    expect(d.hidden).toBe(true);
+    expect((root.querySelector('.hp-list') as HTMLElement).hidden).toBe(false);
+  });
+});

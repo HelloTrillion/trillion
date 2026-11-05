@@ -7767,3 +7767,29 @@ button.reminders-open {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* A helper's name at the head of a line from it: a tap opens its details in Helpers. */
+.notice-from {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--color-border);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.notice-from:hover {
+  text-decoration-color: currentColor;
+}
+
+.msg > .notice-from {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 12px;
+  color: var(--color-text-1);
+}

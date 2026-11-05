@@ -3652,6 +3652,9 @@ class Session:
                 quiet=n.quiet,
                 # The page's only: never spoken, never saved as her message.
                 detail=n.detail,
+                # Which helper it came from, named as the panel names it.
+                helper_id=n.helper_id,
+                helper_name=n.helper_name,
             )
         if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

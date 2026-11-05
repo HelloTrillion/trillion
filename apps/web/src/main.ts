@@ -690,9 +690,10 @@ function renderEntry(e: Entry): HTMLElement {
       return el('p', 'host-line', e.text);
     case 'scheduled': {
       // A routine's: one line that opens what it built.
-      if (e.what === 'ready') return readyLine(e.title, e.conversationId, openReady);
+      // From a helper, its name leads the line and opens its details in the panel.
+      if (e.what === 'ready') return readyLine(e.title, e.conversationId, openReady, e.helper, showHelper);
       // Her line, or its title when she has none; Join, the detail and why she held it.
-      return renderScheduled(e, formatted);
+      return renderScheduled(e, formatted, undefined, showHelper);
     }
     case 'card': {
       if (approvals.onBoard(e.pendingId)) {
@@ -2157,6 +2158,13 @@ workspace.onClose((id) => {
   helpersBtn.setAttribute('aria-pressed', 'false');
   helpersBtn.toggleAttribute('data-on', false);
 });
+/** A helper's name in the chat: the panel opens at its details. */
+function showHelper(id: string): void {
+  if (!helpersShowing()) workspace.open('Helpers', helpers.element, 'helpers');
+  helpersBtn.setAttribute('aria-pressed', 'true');
+  helpersBtn.toggleAttribute('data-on', true);
+  void helpers.showHelper(id);
+}
 /** Open a conversation the way History does: the sidebar shows it, the panel gives way. */
 function openConversation(id: string): void {
   workspace.close();
