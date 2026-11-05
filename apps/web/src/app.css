@@ -7487,3 +7487,186 @@ button.reminders-open {
     transform: none;
   }
 }
+
+/* ── Helpers: her routines, timed asks and watchers, beside the chat ──────── */
+
+#helpers-btn {
+  position: relative;
+}
+
+/* How many need you, on the button's corner. */
+.hp-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-amber);
+  color: var(--color-bg-0);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.hp-badge[hidden] {
+  display: none;
+}
+
+.hp {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 16px 24px calc(var(--dock-inset, 24px) + var(--dock-size, 96px));
+  box-sizing: border-box;
+}
+
+.hp-list,
+.hp-details {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.hp-list:focus,
+.hp-details:focus {
+  outline: none;
+}
+
+.hp [hidden] {
+  display: none;
+}
+
+.hp-her {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+}
+
+.hp-her-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.hp-summary,
+.hp-empty,
+.hp-problem {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+
+.hp-group h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-1);
+}
+
+.hp-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hp-row {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+}
+
+.hp-row[data-state='needs_you'] {
+  border-color: var(--color-amber);
+}
+
+.hp-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.hp-main:hover {
+  background: var(--color-bg-2);
+}
+
+.hp-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-2);
+}
+
+.hp-dot[data-state='needs_you'] {
+  background: var(--color-amber);
+}
+
+.hp-dot[data-state='working'] {
+  background: var(--color-accent);
+}
+
+.hp-dot[data-state='paused'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--color-text-2);
+}
+
+.hp-dot[data-state='capped'] {
+  background: var(--color-danger);
+}
+
+.hp-words {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hp-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hp-status {
+  font-size: 13px;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+
+.hp-inline:empty {
+  display: none;
+}
+
+.hp-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.hp-step {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* On a phone the workspace is the full-height sheet: the panel uses its whole width. */
+.hp.hp-phone {
+  padding-left: 16px;
+  padding-right: 16px;
+}

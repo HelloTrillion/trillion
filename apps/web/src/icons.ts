@@ -41,6 +41,7 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   stop: ['M7.5 7.5h9v9h-9z'],
   check: ['M5.5 12.5l4 4l9-9'],
   // Four tiles: the workspace and its widgets.
+  helpers: ['M9 11a3.5 3.5 0 1 0 0-7a3.5 3.5 0 0 0 0 7z', 'M2.5 20a6.5 6.5 0 0 1 13 0', 'M16 4.5a3.5 3.5 0 0 1 0 6.5', 'M18 14.2a6.5 6.5 0 0 1 3.5 5.8'],
   workspace: ['M4 4.5h7v7H4z', 'M13 4.5h7v4h-7z', 'M13 10.5h7v9h-7z', 'M4 13.5h7v6H4z'],
   // A small sun: today, and the day conversations.
   day: [
