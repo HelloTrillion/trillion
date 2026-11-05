@@ -263,3 +263,19 @@ async def test_a_claim_can_take_only_reminders(store: SqliteScheduleStore) -> No
     assert await store.claim("w1", DUE, 0, "reminder") is None
     ask = await store.claim("w1", DUE, 0)
     assert ask is not None and ask.schedule_id == "ask00001"
+
+
+async def test_running_names_each_schedule_with_a_run_under_way(
+    store: SqliteScheduleStore,
+) -> None:
+    await store.create(schedule(kind="ask"))
+    await store.create(schedule(id="e5f6a7b8", kind="ask"))
+    for sid in ("a1b2c3d4", "e5f6a7b8"):
+        await store.enqueue(sid, DUE, None, 120.0, DUE)
+    first = await store.claim("w1", DUE + 7, 0)
+    assert first is not None
+    assert {k: (r.id, r.started_ms) for k, r in (await store.running("local")).items()} == {
+        first.schedule_id: (first.id, DUE + 7)
+    }
+    await store.finish(first.id, "delivered", DUE + 9)
+    assert await store.running("local") == {}

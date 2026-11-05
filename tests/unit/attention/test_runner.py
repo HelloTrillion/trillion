@@ -600,3 +600,46 @@ async def test_a_check_from_before_a_reset_writes_nothing(world: World) -> None:
     after = store.generation(OWNER, "email")
     assert await store.checked(OWNER, "email", NOW, cursor="x", generation=after)
     assert (await store.state(OWNER, "email")).cursor == "x"
+
+
+async def test_status_says_what_each_watcher_is_doing(world: World) -> None:
+    hanging, off = Watcher(hang=True), Watcher(name="payments", on=False)
+    r = await world.runner(hanging, off)
+    (before, idle) = await r.statuses()
+    # Never checked in this process: its next check is the next tick.
+    assert (before.name, before.on, before.checking_since_ms, before.next_check_ms) == (
+        "meetings",
+        True,
+        None,
+        NOW,
+    )
+    assert (idle.name, idle.on, idle.next_check_ms) == ("payments", False, None)
+    world.clock.advance(1000)
+    ticking = asyncio.ensure_future(r.tick())
+    while hanging.calls == 0:
+        await asyncio.sleep(0.01)
+    (checking, _) = await r.statuses()
+    assert checking.checking_since_ms == NOW + 1000
+    assert checking.next_check_ms == NOW + 1000 + 60_000
+    ticking.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await ticking
+    (after, _) = await r.statuses()
+    assert after.checking_since_ms is None
+
+
+async def test_status_gives_the_last_check_and_the_last_failure(world: World) -> None:
+    w = Watcher()
+    r = await world.runner(w)
+    await r.tick()
+    (ok,) = await r.statuses()
+    assert (ok.last_check_ms, ok.last_error, ok.last_error_ms) == (NOW, None, None)
+    w.boom = True
+    world.clock.advance(60_000)
+    await r.tick()
+    (bad,) = await r.statuses()
+    assert (bad.last_check_ms, bad.last_error, bad.last_error_ms) == (
+        NOW,
+        "ConnectionError",
+        NOW + 60_000,
+    )

@@ -28,6 +28,10 @@ from typing import Any
 
 PREF = "attention"
 WATCHERS = ("meetings", "email", "payments")
+# How the user names each watcher: her read-back, the card, and the helpers panel.
+NAMED: Mapping[str, str] = MappingProxyType(
+    {"meetings": "meeting heads-ups", "email": "urgent email", "payments": "payments"}
+)
 # Meetings are on once Calendar is connected; email and payments send content out, so
 # they wait for the user (D2).
 _WATCHERS_ON: Mapping[str, bool] = MappingProxyType(

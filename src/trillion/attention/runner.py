@@ -151,6 +151,24 @@ class DoorLike(Protocol):
     async def added(self, notice: Notice) -> None: ...
 
 
+@dataclass(frozen=True, kw_only=True)
+class WatcherStatus:
+    """What a watcher is doing, for the helpers panel: read only."""
+
+    name: str
+    # Switched on and its source connected.
+    on: bool
+    # When the check under way began, in this process; None when none is.
+    checking_since_ms: int | None
+    last_check_ms: int | None
+    # The kind of what last went wrong, never its message; None once a check succeeds.
+    last_error: str | None
+    # When that went wrong, if it was in this process.
+    last_error_ms: int | None
+    # Its next check: the next tick once due. None while it is off.
+    next_check_ms: int | None
+
+
 class AttentionRunner:
     def __init__(
         self,
@@ -188,6 +206,9 @@ class AttentionRunner:
         self._watchers: list[Watcher] = []
         # When each watcher is next due, in this process: the first tick runs them all.
         self._next: dict[str, int] = {}
+        # Each check under way, from when it began; each failure, from when it happened.
+        self._checking: dict[str, int] = {}
+        self._failed_ms: dict[str, int] = {}
         self._task: asyncio.Task[None] | None = None
         self._ticking = asyncio.Lock()
 
@@ -203,6 +224,30 @@ class AttentionRunner:
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    async def statuses(self) -> list[WatcherStatus]:
+        """Each watcher's state, in the order they were added. Reads only."""
+        settings = self._settings()
+        now = self._clock()
+        out: list[WatcherStatus] = []
+        for w in self._watchers:
+            try:
+                on = w.enabled(settings)
+            except Exception:
+                on = False
+            state = await self._store.state(self._owner, w.name)
+            out.append(
+                WatcherStatus(
+                    name=w.name,
+                    on=on,
+                    checking_since_ms=self._checking.get(w.name),
+                    last_check_ms=state.last_check_ms,
+                    last_error=state.last_error,
+                    last_error_ms=self._failed_ms.get(w.name) if state.last_error else None,
+                    next_check_ms=max(self._next.get(w.name, now), now) if on else None,
+                )
+            )
+        return out
 
     def start(self) -> None:
         if not self.running:
@@ -267,12 +312,15 @@ class AttentionRunner:
             await self._run(w, settings, self._clock())
         except Exception as e:
             logger.error("attention %s failed: %s", w.name, type(e).__name__)
+        finally:
+            self._checking.pop(w.name, None)
 
     async def _run(self, w: Watcher, settings: AttentionSettings, now: int) -> None:
         if self._held is not None and await self._held("watchers"):
             # Not begun: its place stays, so it reads the same again once the cap lifts.
             logger.info("attention %s: paused at the spend cap", w.name)
             return
+        self._checking[w.name] = now
         # Taken first: a reset after this (turned off and on) outranks this check.
         generation = self._store.generation(self._owner, w.name)
         state = await self._store.state(self._owner, w.name)
@@ -293,7 +341,7 @@ class AttentionRunner:
         except Exception as e:
             # The kind only: a message could carry an email subject or an invite title.
             logger.warning("attention %s check failed: %s", w.name, error_kind(e))
-            await self._store.failed(self._owner, w.name, error_kind(e))
+            await self._failed(w.name, error_kind(e))
             return
         by_key = {f.key: f for f in finds}
         new = await self._store.claim(
@@ -348,7 +396,7 @@ class AttentionRunner:
         except Exception as e:
             # Its finds stay claimed: never told twice (D5), shown in Settings as lost.
             logger.warning("attention %s telling failed: %s", w.name, error_kind(e))
-            await self._store.failed(self._owner, w.name, error_kind(e))
+            await self._failed(w.name, error_kind(e))
             return
         if notice is None:
             return
@@ -357,6 +405,10 @@ class AttentionRunner:
         except Exception as e:
             # Written and recorded: the door's next flush hands it over.
             logger.warning("attention %s: door failed: %s", w.name, type(e).__name__)
+
+    async def _failed(self, name: str, kind: str) -> None:
+        self._failed_ms[name] = self._clock()
+        await self._store.failed(self._owner, name, kind)
 
     async def _tell(self, w: Watcher, ctx: WatchContext, finds: list[Find]) -> Notice | None:
         # A watcher's judging and wording are work nobody is waiting on, in no

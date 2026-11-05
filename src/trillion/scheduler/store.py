@@ -251,6 +251,10 @@ class ScheduleStore(Protocol):
         """The latest finished run of each schedule."""
         ...
 
+    async def running(self, owner_id: str) -> dict[str, Run]:
+        """The run under way now of each schedule that has one."""
+        ...
+
     async def finish_with_notice(
         self,
         run_id: int,
