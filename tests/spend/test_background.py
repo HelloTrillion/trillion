@@ -507,7 +507,7 @@ async def test_a_deferred_find_is_claimed_again_and_never_deleted(tmp_path: Path
         old = SqliteAttentionStore(conn)
         assert await old.claim("local", "email", ["k0"], NOW) == ["k0"]
         await old.told("local", ["k0"], "n0")
-        assert await migrate(conn) == ["018_attention_deferred"]
+        assert await migrate(conn) == ["018_attention_deferred", "019_helpers"]
         store = SqliteAttentionStore(conn)
         assert [(f.key, f.status) for f in await store.recent("local", NOW)] == [("k0", "told")]
 
@@ -710,7 +710,7 @@ async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> N
         sql = "SELECT rowid, * FROM attention_finds ORDER BY rowid"
         async with conn.execute(sql) as cur:
             rows = [tuple(r) for r in await cur.fetchall()]
-        assert await migrate(conn) == ["018_attention_deferred"]
+        assert await migrate(conn) == ["018_attention_deferred", "019_helpers"]
         async with conn.execute(sql) as cur:
             assert [tuple(r) for r in await cur.fetchall()] == rows
         async with conn.execute(

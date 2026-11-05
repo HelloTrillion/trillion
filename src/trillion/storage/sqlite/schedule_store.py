@@ -54,6 +54,7 @@ def _schedule(r: aiosqlite.Row) -> Schedule:
         notes=str(r["notes"]),
         paused_ms=_int(r["paused_ms"]),
         failures=int(r["failures"]),
+        helper_id=str(r["helper_id"]) if r["helper_id"] is not None else None,
     )
 
 
@@ -101,6 +102,28 @@ def _notice(r: aiosqlite.Row) -> Notice:
     )
 
 
+async def cancel_helper_schedules(
+    conn: aiosqlite.Connection, owner_id: str, helper_id: str, now_ms: int
+) -> tuple[list[str], list[str]]:
+    """Cancel every schedule of a helper's, and its runs not yet started, inside the
+    caller's transaction: the ids cancelled, and those of them that were routines."""
+    async with conn.execute(
+        "UPDATE schedules SET status = 'cancelled', next_due_ms = NULL"
+        " WHERE owner_id = ? AND helper_id = ? AND status IN ('active', 'done')"
+        " RETURNING id, target",
+        (owner_id, helper_id),
+    ) as cur:
+        rows = await cur.fetchall()
+    gone = [str(r["id"]) for r in rows]
+    for schedule_id in gone:
+        await conn.execute(
+            "UPDATE task_runs SET status = 'cancelled', finished_ms = ?,"
+            " detail = 'cancelled' WHERE schedule_id = ? AND status IN ('queued', 'blocked')",
+            (now_ms, schedule_id),
+        )
+    return gone, [str(r["id"]) for r in rows if r["target"] is not None]
+
+
 class SqliteScheduleStore:
     def __init__(
         self,
@@ -145,8 +168,8 @@ class SqliteScheduleStore:
             await conn.execute(
                 "INSERT INTO schedules (id, owner_id, kind, title, body, zone, at_local,"
                 " repeat, next_due_ms, status, created_ms, created_in, target, conversation_id,"
-                " notes, paused_ms, failures)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " notes, paused_ms, failures, helper_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s.id,
                     s.owner_id,
@@ -165,6 +188,7 @@ class SqliteScheduleStore:
                     s.notes,
                     s.paused_ms,
                     s.failures,
+                    s.helper_id,
                 ),
             )
         self._told()
@@ -183,6 +207,16 @@ class SqliteScheduleStore:
             " r.schedule_id = s.id AND r.status IN ('queued', 'running', 'blocked'))))"
             " ORDER BY next_due_ms IS NULL, next_due_ms, created_ms",
             (owner_id,),
+        ) as cur:
+            return [_schedule(r) for r in await cur.fetchall()]
+
+    async def for_helper(self, owner_id: str, helper_id: str) -> list[Schedule]:
+        async with self._conn.execute(
+            "SELECT * FROM schedules s WHERE owner_id = ? AND helper_id = ? AND (status = 'active'"
+            " OR (status = 'done' AND EXISTS (SELECT 1 FROM task_runs r WHERE"
+            " r.schedule_id = s.id AND r.status IN ('queued', 'running', 'blocked'))))"
+            " ORDER BY created_ms, id",
+            (owner_id, helper_id),
         ) as cur:
             return [_schedule(r) for r in await cur.fetchall()]
 
@@ -240,6 +274,15 @@ class SqliteScheduleStore:
         self._told(gone)
         if routine and self._cancelled is not None:
             await self._cancelled(schedule_id)
+        return gone
+
+    async def cancel_for_helper(self, owner_id: str, helper_id: str, now_ms: int) -> list[str]:
+        async with self._tx() as conn:
+            gone, routines = await cancel_helper_schedules(conn, owner_id, helper_id, now_ms)
+        self._told(bool(gone))
+        if self._cancelled is not None:
+            for schedule_id in routines:
+                await self._cancelled(schedule_id)
         return gone
 
     async def pause(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:

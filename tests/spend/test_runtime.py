@@ -177,4 +177,4 @@ def test_a_failed_close_never_hides_the_failure_or_skips_a_connection(
             await open_runtime(secrets=MemoryStore(), env={}, persona=home)
 
     asyncio.run(attempt())
-    assert len(closed) == 4
+    assert len(closed) == 5

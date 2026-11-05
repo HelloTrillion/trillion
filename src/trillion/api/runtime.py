@@ -85,6 +85,7 @@ from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.attention_store import SqliteAttentionStore
 from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
+from trillion.storage.sqlite.helper_store import SqliteHelperStore
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
@@ -417,6 +418,8 @@ class Runtime:
     # what they leave (SUR-9), and the loop that runs them. Started with the server.
     schedules: SqliteScheduleStore | None = None
     door: Door | None = None
+    # The helpers the user made (the your helpers spec), on a connection of their own.
+    helpers: SqliteHelperStore | None = None
     # Her board per conversation: apply a change, save it, tell every page on it.
     boards: Boards | None = None
     scheduler: Scheduler | None = None
@@ -1460,6 +1463,8 @@ async def open_runtime(
     schedule_conn = await connect(path)
     # And so do the watchers' finds.
     attention_conn = await connect(path)
+    # And the helpers the user made.
+    helper_conn = await connect(path)
     registry = ToolRegistry.discover()
     store = SqliteSpineStore(spine_conn)
     router = Router(
@@ -1548,7 +1553,7 @@ async def open_runtime(
         token=token,
         token_from_app=token_from_app,
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
-        _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
+        _connections=[spine_conn, chat_conn, schedule_conn, attention_conn, helper_conn],
     )
     # Before anything that can reach a provider is started: the gate never fails open.
     try:
@@ -1615,6 +1620,9 @@ async def open_runtime(
         schedule_conn, cancelled=rt.routine_removed, changed=rt.helpers_changed
     )
     rt.schedules = schedules
+    rt.helpers = SqliteHelperStore(
+        helper_conn, changed=rt.helpers_changed, cancelled=rt.routine_removed
+    )
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
     rt.jobs = Jobs(clock=lambda: rt.clock(), changed=rt.send_jobs)

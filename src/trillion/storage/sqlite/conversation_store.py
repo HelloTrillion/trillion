@@ -30,7 +30,8 @@ USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
 # A day is a page's too: the one conversation per date where she builds the user's day.
 # A routine is a page's as well: one routine's own, where each of its runs puts its board.
-ConversationKind = Literal["chat", "scheduled", "day", "routine"]
+# A helper's is one helper's own chat, titled with its name.
+ConversationKind = Literal["chat", "scheduled", "day", "routine", "helper"]
 # The kinds a page opens, lists, renames and deletes.
 _PAGE_KINDS = "kind IN ('chat', 'day', 'routine')"
 TitleSource = Literal["words", "model", "user"]
@@ -131,6 +132,12 @@ class SqliteConversationStore:
         await self._conn.execute(
             "INSERT INTO conversations (id, owner_id, created_at, kind) VALUES (?, ?, ?, ?)",
             (conversation_id, owner_id, now_ms, kind),
+        )
+
+    async def set_kind(self, conversation_id: str, kind: ConversationKind) -> None:
+        """What a conversation is from now on: a deleted helper's chat stays as a chat."""
+        await self._conn.execute(
+            "UPDATE conversations SET kind = ? WHERE id = ?", (kind, conversation_id)
         )
 
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
