@@ -482,6 +482,10 @@ function step(view: View, msg: ServerMsg): View {
     }
     case 'board':
       return { ...view, board: boardOf(msg['board']) };
+    case 'spend.card':
+      // A card standing for this conversation (after a reload too): the core sends one only
+      // while its provider is still at the cap.
+      return msg['status'] === 'open' || msg['status'] === 'stopped' ? { ...view, capped: true } : view;
     case 'spend.resolved':
       // Raised or switched: she can go on, so the calm "stopped" status goes.
       return msg['status'] === 'raised' || msg['status'] === 'switched' ? { ...view, capped: false } : view;

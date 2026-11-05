@@ -89,7 +89,9 @@ const A_MONTH: Readonly<Record<Unit, string>> = {
 export function toField(n: number | null, unit: Unit): string {
   if (n === null) return '';
   const shown = unit === 'seconds' ? n / 60 : n;
-  return shown.toLocaleString('en', { maximumFractionDigits: 2 });
+  // Money is "6" or "6.50", never "6.5".
+  const cents = unit === 'dollars' && !Number.isInteger(shown) ? 2 : 0;
+  return shown.toLocaleString('en', { minimumFractionDigits: cents, maximumFractionDigits: 2 });
 }
 
 /** A field's text as the core's amount, commas and spaces allowed: null when empty, undefined when it is not one. */

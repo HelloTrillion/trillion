@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createUsageSettings } from '../src/browser';
 import { createListeningSettings } from '../src/listening';
@@ -91,7 +93,10 @@ afterEach(() => {
 describe('numbers in fields', () => {
   it('are grouped, and read back with commas or spaces', () => {
     expect(toField(5_000_000, 'tokens')).toBe('5,000,000');
-    expect(toField(12.5, 'dollars')).toBe('12.5');
+    // Money with two decimals when not whole, and whole dollars plain.
+    expect(toField(12.5, 'dollars')).toBe('12.50');
+    expect(toField(6, 'dollars')).toBe('6');
+    expect(toField(1500.5, 'dollars')).toBe('1,500.50');
     expect(fromField('5,000,000', 'tokens')).toBe(5_000_000);
     expect(fromField('5 000 000', 'tokens')).toBe(5_000_000);
     expect(fromField('$1,500.50', 'dollars')).toBe(1500.5);
@@ -880,6 +885,22 @@ describe('the banner at a cap', () => {
     // Raised: the stop is over.
     v = update(v, { type: 'spend.resolved', id: 'c1', status: 'raised' });
     expect(statusText(v)).toBe('Ready');
+  });
+
+  it('is still stopped after a reload, while a card for this conversation stands', () => {
+    for (const status of ['open', 'stopped']) {
+      let v = update({ ...INITIAL, link: 'ready' }, { type: 'session', id: 'c' });
+      v = update(v, card({ status }));
+      v = update(v, { type: 'state', orb: 'idle' });
+      expect(statusText(v)).toBe('Stopped at your cap');
+    }
+  });
+
+  it('keeps nothing under the docked orb in a section whose only button is hidden', () => {
+    const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8');
+    // The scroller gives up its padding only where a visible Save row keeps the hole clear.
+    expect(css).toContain('.workspace .panel-body:has(.settings-actions:has(> :not(.settings-close))) {');
+    expect(css).not.toContain('.workspace .panel-body:has(.settings-actions) {');
   });
 
   it('brings the card into view on a phone, as an approval card is', () => {

@@ -198,3 +198,40 @@ describe('the breakdown in its own units', () => {
     ]);
   });
 });
+
+describe('the pill counts what the caps count', () => {
+  // The rows price $7.19, but the caps also count earlier tokens at the user's price.
+  const rows = [row({ cost_usd: 7.19, unpriced_tokens: 12_000, unpriced_turns: 3 })];
+  const at = (providers: ProviderUsage[]): Usage => ({ ...month(rows, 7.19, 12_000), providers });
+
+  it('shows the dollars the caps count, and no unpriced tokens that are counted', () => {
+    const u = at([provider({ spent: 21.45 })]);
+    expect(pill(u)).toBe('$21.45');
+    expect(sentence(u)).toBe('API usage in October: $21.45.');
+  });
+
+  it('mentions only tokens that are really uncounted', () => {
+    const u = at([provider({ spent: 21.45, unestimated: { units: 12_000, unit: 'tokens' } })]);
+    expect(pill(u)).toBe('$21.45 · 12k unpriced');
+    expect(sentence(u)).toBe('API usage in October: $21.45, plus 12k tokens from models without prices.');
+  });
+
+  it('adds every dollar provider, and counts a provider capped in tokens as unpriced', () => {
+    const u = at([
+      provider({ spent: 20 }),
+      provider({ provider_id: 'elevenlabs', leg: 'voice', name: 'ElevenLabs', spent: 1.45 }),
+      provider({ provider_id: 'custom:x', name: 'x', unit: 'tokens', spent: 340_000 }),
+      provider({ provider_id: null, name: 'Your model', spent: 0, soft: null, hard: null }),
+    ]);
+    expect(pill(u)).toBe('$21.45 · 340k unpriced');
+  });
+
+  it('shows tokens alone when nothing is counted in dollars', () => {
+    const u = at([provider({ provider_id: 'custom:x', name: 'x', unit: 'tokens', spent: 340_000 })]);
+    expect(pill(u)).toBe('340k tokens');
+  });
+
+  it('keeps the old fields for the details by model', () => {
+    expect(breakdown(at([provider({ spent: 21.45 })]))[0]?.detail).toBe('$7.19 · 43k in, 9k out, 12k unpriced');
+  });
+});

@@ -101,19 +101,41 @@ function monthName(month: string): string {
   return new Date(Date.UTC(year ?? 1970, (m ?? 1) - 1, 1)).toLocaleString('en', { month: 'long', timeZone: 'UTC' });
 }
 
+/**
+ * The month's total as the caps count it: each dollar-capped provider's `spent`
+ * (priced calls, plus earlier units at the user's price or the table's ceiling), and the
+ * tokens nothing counts in dollars: those `unestimated`, and those of a provider capped
+ * in tokens. Without `providers` (an older core), the rows' own sums.
+ */
+function totals(u: Usage): { dollars: number | null; loose: number } {
+  if (!u.providers) return { dollars: u.total_cost_usd, loose: u.unpriced_tokens };
+  let dollars: number | null = null;
+  let loose = 0;
+  for (const p of u.providers) {
+    if (p.provider_id === null || p.provider_id === 'local') continue;
+    if (p.unit === 'dollars') dollars = (dollars ?? 0) + p.spent;
+    else if (p.unit === 'tokens') loose += p.spent;
+    if (p.unestimated?.unit === 'tokens') loose += p.unestimated.units;
+  }
+  // Float sums drift; a micro-dollar is plenty.
+  return { dollars: dollars === null ? null : Math.round(dollars * 1e6) / 1e6, loose };
+}
+
 export function pill(u: Usage): string {
   if (!u.rows.length) return 'No API use yet';
-  if (u.total_cost_usd === null) return `${tokens(u.unpriced_tokens)} tokens`;
-  if (!u.unpriced_tokens) return dollars(u.total_cost_usd);
-  return `${dollars(u.total_cost_usd)} · ${tokens(u.unpriced_tokens)} unpriced`;
+  const { dollars: total, loose } = totals(u);
+  if (total === null) return `${tokens(loose)} tokens`;
+  if (!loose) return dollars(total);
+  return `${dollars(total)} · ${tokens(loose)} unpriced`;
 }
 
 export function sentence(u: Usage): string {
   const when = monthName(u.month);
   if (!u.rows.length) return `No API use yet in ${when}.`;
-  if (u.total_cost_usd === null) return `API usage in ${when}: ${tokens(u.unpriced_tokens)} tokens, from models without prices.`;
-  if (!u.unpriced_tokens) return `API usage in ${when}: ${dollars(u.total_cost_usd)}.`;
-  return `API usage in ${when}: ${dollars(u.total_cost_usd)}, plus ${tokens(u.unpriced_tokens)} tokens from models without prices.`;
+  const { dollars: total, loose } = totals(u);
+  if (total === null) return `API usage in ${when}: ${tokens(loose)} tokens, from models without prices.`;
+  if (!loose) return `API usage in ${when}: ${dollars(total)}.`;
+  return `API usage in ${when}: ${dollars(total)}, plus ${tokens(loose)} tokens from models without prices.`;
 }
 
 function rowDetail(r: UsageRow): string {

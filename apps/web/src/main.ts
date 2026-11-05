@@ -1104,6 +1104,8 @@ async function refreshUsage(): Promise<Usage | null> {
     usageBtn.title = at.title || sentence(usage);
     usageBtn.setAttribute('aria-label', `${pill(usage)}. ${sentence(usage)}${at.note ? ` ${at.note}` : ''}`);
   }
+  // Raised in Settings, not on the card: nothing is capped now, so the calm stop is over.
+  if (usage?.providers && view.capped && !usage.providers.some((p) => p.state === 'capped')) apply({ ...view, capped: false });
   drawSwitches();
   return usage;
 }
