@@ -23,24 +23,26 @@ This is step one. Step two (AGT-1, AGT-2) adds new helpers that you or she creat
 |---|---|---|---|
 | Routine | a schedule of kind routine | its title | what it does, from its ask, one line |
 | Timed ask | a schedule of kind ask (AGT-9) | what it will say, e.g. "Remind me at 4" | when it fires |
-| Watcher | `meetings`, `urgent_email`, `payments` | "Meetings", "Urgent email", "Payments" | what it watches, one line |
+| Watcher | `meetings`, `email`, `payments` | "Meetings", "Urgent email", "Payments" | what it watches, one line |
 
 Each helper has:
 
-- `id`: `routine:<schedule_id>`, `ask:<schedule_id>` or `watcher:<name>`.
+- `id`: `routine:<schedule_id>`, `ask:<schedule_id>`, or `watcher:meetings`, `watcher:email` or `watcher:payments`.
 - `kind`, `name`, `job`.
 - `state`:
   - `needs_you`: a card, question or step from this helper is waiting on you;
   - `working`: a run is in progress;
   - `idle`: neither;
-  - `paused`: you paused it (a routine or ask) or turned it off (a watcher);
+  - `paused`: you paused it (a routine) or turned it off (a watcher). A timed ask can't be paused, only cancelled;
   - `capped`: paused because its model is at its spend cap (`rt.spend.paused`).
-- `doing`: a short line while working ("Reading your inbox", or the routine's title), else null.
+- `doing`: a short line while working, else null. A watcher says what it reads ("Reading your inbox"); a routine or timed ask says "Working", since the row already names it.
 - `since_ms`: when the current run started (for "working, 0:12").
 - `last_run`: `{at_ms, outcome: "succeeded" | "skipped" | "failed" | "nothing", reason}` or null. `nothing` is a run that had nothing for you (AGT-6).
 - `next_ms`: its next scheduled time, or null (watchers: the next check).
 - `waiting`: what needs you, `[{type: "approval" | "question" | "step", id, text}]`, empty when nothing does.
 - `conversation_id`: the conversation "Talk to it" opens, or null if none exists yet.
+- `paused`: a routine you paused, else null. The page offers Pause or Resume from this, never from `state`.
+- `switched_on` and `connected`: a watcher's switch and whether its source (Google or Stripe) is connected, else null. The page offers Turn off, Turn on or Connect from these.
 
 A timed ask that has fired and will not fire again leaves the list. A deleted routine leaves the list.
 
@@ -50,26 +52,35 @@ A new module, `src/trillion/helpers/`, builds the list. It reads; it never write
 
 - **Routines and timed asks:** from the scheduler store (schedules, `task_runs` outcomes and reasons, next due).
 - **Watchers:** from the watcher settings (on or off), the runner's current check and last check, and their recent finds.
-- **Waiting on you:** from the approval cards and notices already pending, matched to the helper that raised them. A card raised by a routine run belongs to that routine.
+- **Waiting on you:**
+  - an approval: a card still proposed in the helper's own conversation. A routine or timed-ask run can never raise a card (the router refuses carded tools to unattended runs), so a card lands on a helper only when it was raised while you talked to it there. A card from any other conversation is on no helper;
+  - a step: a watcher switched on whose source isn't connected, or is signed out of Google. Meetings is on by default once Calendar is connected, so Meetings on but not connected asks nothing. Urgent email or Payments on but not connected asks "Connect Google to use Urgent email" or "Connect Stripe to use Payments";
+  - a question: nothing raises one yet. It comes with step two.
 - **Capped:** from the spend desk's paused kinds.
 
 ### Live updates
 
 - `GET /api/helpers` returns `{helpers: [...], needs_you: n}`.
 - The core pushes `helpers.changed` with the same body to every open page when anything in the list changes: a run starts or ends, a card is raised or answered, a helper is paused or resumed, a watcher is turned on or off, a cap pauses or releases background work.
-- Changes are coalesced: at most one push every 250 ms.
+- Changes are coalesced: one push at most every 250 ms, however many changes came in.
+- With no page open nothing is built or sent. A page opening marks the list changed, so it gets a push.
+- A card can lapse with no change anyone makes, so each build sets a timer for the earliest open card's expiry, and the push then clears its dot.
 
 ### Runs and actions
 
-- `GET /api/helpers/{id}/runs` returns the last 10 runs: `{at_ms, outcome, reason, conversation_id}`.
-- Pause and resume use what exists: `POST /api/routines/{schedule_id}/pause|resume` for routines and asks, and `PUT /api/attention/settings` for a watcher's on or off.
+- `GET /api/helpers/{id}/runs` returns the last 10 runs, newest first: `{at_ms, outcome, reason, conversation_id}`. A watcher keeps no history of its checks, so its runs are its last 10 finds: one told is `succeeded`, one judged not worth saying is `nothing`, and one claimed but never told is `failed`.
+- `POST /api/helpers/{id}/conversation` returns `{conversation_id}`, the one "Talk to it" opens.
+- The actions use what exists:
+  - a routine: `POST /api/routines/{schedule_id}/pause|resume`;
+  - a timed ask: it can't be paused, so it offers Cancel, which the panel confirms, then `DELETE /api/schedules/{schedule_id}`;
+  - a watcher: `PUT /api/attention/settings` to turn it off or on. One switched on whose source isn't connected offers Connect, which opens that connection in Connected tools.
 - Every route sits behind the same token, origin and JSON checks as the rest of the API.
 
 ### Talk to it
 
 - **A routine** opens its own conversation, or today's day conversation if it builds there.
 - **A timed ask** opens the conversation it reports to.
-- **A watcher** opens a conversation of its own, made on the first "Talk to it" and remembered in the preference `helper_conversations` (`{"watcher:<name>": conversation_id}`). It starts with a host note saying the conversation is about that watcher, so what you say there edits what it watches, through the speaking-up tools that already exist (`speak_up_narrow` and `speak_up_widen`, with widening asking on a card).
+- **A watcher** opens a conversation of its own, made on the first "Talk to it" and remembered in the preference `helper_conversations` (`{"watcher:<name>": conversation_id}`). Its first turn carries one host note saying the conversation is about that watcher. The note is kept per conversation (the preference `helper_notes`), so it reaches that conversation only. What you say there edits what it watches, through the speaking-up tools that already exist (`speak_up_narrow` and `speak_up_widen`, with widening asking on a card).
 
 ## The page
 
@@ -81,12 +92,14 @@ A new module, `src/trillion/helpers/`, builds the list. It reads; it never write
 
 ### The panel
 
-- Header: "Helpers". First row: "Trillion", with a one-line summary ("2 working, 1 needs you").
+- Header: "Helpers". First row: "Trillion", with a one-line summary ("2 working, 1 needs you", or "All quiet").
 - Groups, in order, each shown only when it has a helper: **Needs you**, **Working**, **Idle**. Paused and capped helpers sit in Idle, saying so.
 - A row: the state dot, the name, and one short status:
   - needs you: what it is ("Approve a change", "A question for you"), with "Open to approve" or "Open to reply", which opens the conversation the card or question waits in. The panel never answers a card itself: a tap must come from the conversation it was raised in, and what she is told of it belongs there (SPN-14);
+  - a step: what to do ("Connect Google to use Urgent email"), with Open Settings, which opens that connection in Connected tools and starts it;
   - working: `doing` and the time since it started;
   - idle: the next run ("next 9:55"), "paused", or "paused: Anthropic is at its cap";
+  - a watcher: "off" when switched off, or "off: Google isn't connected" (or Stripe) when switched on but its source isn't connected;
   - the last run's outcome when it failed ("failed at 7:00: couldn't reach the inbox").
 - The order within a group: Needs you by oldest first, Working by start, Idle by next run.
 
@@ -95,7 +108,7 @@ A new module, `src/trillion/helpers/`, builds the list. It reads; it never write
 - The name and job line.
 - The last 10 runs, each with its time, outcome and reason, and Open when it has a conversation.
 - The next run.
-- **Pause** or **Resume** (for a watcher: **Turn off** or **Turn on**).
+- **Pause** or **Resume** for a routine. **Cancel** for a timed ask, after a second button that confirms it. For a watcher: **Turn off** or **Turn on**, or **Connect** when it is switched on but its source isn't connected.
 - **Talk to it**.
 
 ### In the main conversation
@@ -107,7 +120,7 @@ Only the four moments appear, each through the one door as today:
 3. **An approval:** the same card as today.
 4. **A step you must do:** a line saying what and where, with Open. For now a step shows only in the panel (its row, with Open Settings) and on the Helpers button's dot; no line reaches the chat yet.
 
-Each line from a helper leads with its name, as the panel says it, and a tap on the name opens its details. The name rides on the notice (`helper_id`, `helper_name`), only while that helper is still listed (a one-off ask that has fired, or a removed routine, gets none). It is live only: a line drawn again from history after a reload shows no name.
+Each line from a helper leads with its name, as the panel says it, and a tap on the name opens its details. The name rides on the notice (`helper_id`, `helper_name`), only while that helper is still listed (a one-off ask that has fired, or a removed routine, gets none). It is live only: a line drawn again from history after a reload shows no name. A step never reaches the chat: it shows only in the panel and on the Helpers button's dot.
 
 A run with nothing for you shows only in its history (AGT-6). Quiet hours, a meeting under way, the microphone in use and Focus still hold delivery (AGT-5, VOI-17).
 
