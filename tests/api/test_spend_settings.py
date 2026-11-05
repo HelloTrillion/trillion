@@ -655,3 +655,46 @@ async def test_what_a_switch_puts_in_use_gets_the_defaults(rt: Runtime) -> None:
     await rt._spend_changed([], frozenset({"model"}))
     caps = await rt.preferences.get(OWNER, CAPS_PREF)
     assert caps["custom:api.deepseek.com"] == DEFAULTS
+
+
+# ── A removed price puts caps back on units, never left counting nothing ──
+
+
+def test_removing_the_last_price_puts_default_caps_back_on_units(make: Any) -> None:
+    app = make()
+    pid = "custom:llm.example.com"
+    call(app, app.rt.seed_caps, [pid])
+    put(app, "/api/settings/spend/prices", {pid: {"m1": {"input": 1, "output": 2}}})
+    assert stored(app, CAPS_PREF)[pid] == DEFAULTS
+    assert put(app, "/api/settings/spend/prices", {}).status_code == 200
+    assert stored(app, CAPS_PREF)[pid] == TOKENS
+    assert app.rt.gate.caps(pid).unit == "tokens"
+
+
+def test_removing_a_price_keeps_chosen_dollar_caps_and_reports_what_is_uncounted(
+    make: Any,
+) -> None:
+    app = make()
+    pid = "custom:llm.example.com"
+    known(app, pid)
+    put(app, "/api/settings/spend/prices", {pid: {"m1": {"input": 1, "output": 2}}})
+    assert (
+        put(
+            app, f"/api/settings/spend/{pid}", {"soft": 7, "hard": 9, "unit": "dollars"}
+        ).status_code
+        == 200
+    )
+    put(app, "/api/settings/spend/prices", {})
+    caps = stored(app, CAPS_PREF)[pid]
+    assert (caps["soft"], caps["hard"], caps["unit"]) == (7.0, 9.0, "dollars")
+    app.rt.ledger.add(Row(pid, "conversation", "tokens", 500, None, app.rt.clock()))
+    # Counted toward nothing, and said so, so Settings can ask for a price again.
+    assert app.rt.gate.unestimated(pid) == (501, "tokens")
+
+
+def test_a_provider_still_priced_another_way_keeps_dollars(make: Any) -> None:
+    app = make()
+    call(app, app.rt.seed_caps, ["openai"])
+    put(app, "/api/settings/spend/prices", {"openai": {"gpt-x": {"input": 1, "output": 2}}})
+    put(app, "/api/settings/spend/prices", {})
+    assert stored(app, CAPS_PREF)["openai"] == DEFAULTS

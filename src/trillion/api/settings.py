@@ -644,6 +644,7 @@ def create_router(rt: Runtime) -> APIRouter:
         A rate it would not use is refused, never quietly dropped."""
         if (code := _check_prices(body)) is not None:
             return _fail(400, code)
+        before = await rt.preferences.get(OWNER, metered.PREF)
         await rt.preferences.put(OWNER, metered.PREF, body, rt.clock())
         await rt.meter.prices.reload()
         # A provider now priced, whose caps are still the ones in its own unit that it
@@ -652,6 +653,15 @@ def create_router(rt: Runtime) -> APIRouter:
         for pid in body:
             if body[pid] and rt.gate.saved(pid) == unit_default(pid):
                 await rt.write_caps(pid, DEFAULT)
+        # One that lost its last price, and nothing else prices, would count nothing in
+        # dollars: its default caps go back to its own unit. Dollar caps the user chose
+        # are kept, and `unestimated` reports what they no longer count.
+        rates = rt.meter.prices.rates()
+        for pid in before if isinstance(before, dict) else ():
+            if not isinstance(pid, str) or _capped_id(pid) is not None or body.get(pid):
+                continue
+            if not prices.can_price(pid, rates) and rt.gate.saved(pid) == DEFAULT:
+                await rt.write_caps(pid, unit_default(pid))
         logger.info("spend prices saved")
         return {"prices": body}
 
