@@ -732,6 +732,10 @@ async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> N
 def test_the_paused_notice_names_only_what_is_set_up() -> None:
     from trillion.spend.desk import paused_title
 
+    assert paused_title("Anthropic", "$50", {"routines", "helpers", "titles"}) == (
+        "Routines and helpers are paused: Anthropic is at its $50 cap"
+    )
+
     assert paused_title("Anthropic", "$50", {"watchers", "channels", "titles"}) == (
         "Watchers and channel replies are paused: Anthropic is at its $50 cap"
     )
@@ -741,3 +745,24 @@ def test_the_paused_notice_names_only_what_is_set_up() -> None:
     assert paused_title("OpenAI", "$50", {"titles"}) == (
         "Background work is paused: OpenAI is at its $50 cap"
     )
+
+
+async def test_a_helpers_work_pauses_at_the_cap_like_routines(rt: Runtime) -> None:
+    """A helper's asks and routines are background work of their own kind: "helpers"."""
+    assert rt.schedules is not None and rt.scheduler is not None and rt.helpers is not None
+    quiet(rt)
+    now = ms("2026-11-10T09:00")
+    at(rt, now)
+    made = await rt.helpers.create(OWNER, "Ledger", "Watches the books.", now)
+    assert not isinstance(made, str)
+    provider = ScriptedProvider(say("never"))
+    await capped(rt, provider)
+    await rt.schedules.create(daily(id="d4e5f6a7", next_due_ms=now, helper_id=made.id))
+    assert await rt.spend.paused("anthropic") == ["helpers", "titles", "board"]
+
+    await rt.scheduler.tick()
+    assert provider.calls == []
+    assert await runs(rt) == [("skipped", "capped")]
+    assert [n[2] for n in await paused_notices(rt)] == [
+        "Helpers and the board are paused: Anthropic is at its $50 cap"
+    ]

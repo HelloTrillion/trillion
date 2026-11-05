@@ -884,7 +884,11 @@ class Runtime:
             kinds.add("board")
         if self.schedules is not None:
             for s in await self.schedules.active(OWNER):
-                if s.kind == "ask" and s.paused_ms is None:
+                if s.kind != "ask" or s.paused_ms is not None:
+                    continue
+                if s.helper_id is not None:
+                    kinds.add("helpers")  # a helper's asks and routines alike
+                else:
                     kinds.add("routines" if s.target is not None else "asks")
         if self.attention is not None:
             for w in self.attention.watchers:

@@ -58,6 +58,8 @@ class Refusal(StrEnum):
     UNKNOWN_OWNER = "unknown_owner"
     # A timed ask running unattended: nobody is there to see a card or answer one (D5).
     UNATTENDED = "unattended"
+    # A helper's chat or run: only she makes helpers or hands them work (AGT-2).
+    NOT_FOR_HELPERS = "not_for_helpers"
     # A tap on a widget's ask: she wrote its words, maybe from a page she read.
     ASK = "ask"
 

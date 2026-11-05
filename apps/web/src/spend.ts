@@ -323,6 +323,7 @@ const FREE_INSTEAD: Readonly<Record<Leg, string>> = {
 
 const WORK_WORDS: Readonly<Record<string, string>> = {
   routines: 'routines',
+  helpers: 'helpers',
   asks: 'timed asks',
   watchers: 'watchers',
   channels: 'channel replies',
