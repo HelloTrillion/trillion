@@ -116,14 +116,17 @@ def create_helpers_router(rt: Runtime) -> APIRouter:
         return s if (s.target is not None) == (kind == "routine") else None
 
     def made() -> HelperStore:
-        if rt.helpers is None:
+        if rt.helpers is None:  # pragma: no cover - `own_of` found one first
             raise RuntimeError("helpers are not set up")
         return rt.helpers
 
     async def own_of(helper_id: str) -> OwnHelper | None:
-        """The user's own helper this id names, if it is one."""
+        """The user's own helper this id names, if it is one. None too while helpers
+        are not set up: there is none to find."""
         kind, _, hid = helper_id.partition(":")
-        return await made().get(OWNER, hid) if kind == "own" else None
+        if kind != "own" or rt.helpers is None:
+            return None
+        return await rt.helpers.get(OWNER, hid)
 
     async def listing() -> dict[str, Any]:
         found, _ = await snapshot(RuntimeSources(rt))

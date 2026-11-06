@@ -301,10 +301,9 @@ def _own(
         capped="helpers" in capped,
     )
     known = [t for t in starts if t is not None]
+    # Its next run is its routines' soonest: a handoff waiting to run is no "next".
     upcoming = [
-        s.next_due_ms
-        for s in schedules
-        if s.status == "active" and s.paused_ms is None and s.next_due_ms is not None
+        s.next_due_ms for s in routines if s.paused_ms is None and s.next_due_ms is not None
     ]
     return Helper(
         id=f"own:{h.id}",

@@ -440,15 +440,20 @@ class SqliteScheduleStore:
             return {str(r["schedule_id"]): _run(r) for r in await cur.fetchall()}
 
     async def helper_last_results(self, owner_id: str) -> dict[str, Run]:
-        """The latest finished run of any of each helper's schedules, by helper id:
-        handoffs long done count too."""
+        """The newest finished run of any of each helper's schedules, by helper id, ranked
+        as `helper_history` lists them, so it is that list's first. Handoffs long done
+        count too; a helper deleted has none."""
         async with self._conn.execute(
-            "SELECT r.*, s.helper_id AS helper FROM task_runs r"
-            " JOIN schedules s ON s.id = r.schedule_id"
-            " JOIN (SELECT MAX(x.id) AS id FROM task_runs x JOIN schedules y"
-            " ON y.id = x.schedule_id WHERE y.owner_id = ? AND y.helper_id IS NOT NULL"
-            " AND x.status NOT IN ('queued', 'running') GROUP BY y.helper_id) last"
-            " ON last.id = r.id",
+            "SELECT * FROM (SELECT r.*, s.helper_id AS helper, ROW_NUMBER() OVER"
+            " (PARTITION BY s.helper_id ORDER BY"
+            " COALESCE(r.finished_ms, r.claimed_ms, r.due_ms) DESC, r.id DESC) AS nth"
+            " FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
+            " JOIN helpers h ON h.id = s.helper_id AND h.deleted_at IS NULL"
+            " WHERE s.owner_id = ?"
+            " AND r.status NOT IN ('queued', 'running')"
+            # Not a run a pause or delete cancelled before it started: no news.
+            " AND NOT (r.status = 'cancelled' AND r.started_ms IS NULL)"
+            ") WHERE nth = 1",
             (owner_id,),
         ) as cur:
             return {str(r["helper"]): _run(r) for r in await cur.fetchall()}
@@ -461,7 +466,10 @@ class SqliteScheduleStore:
             "SELECT r.*, n.conversation_id AS opens FROM task_runs r"
             " JOIN schedules s ON s.id = r.schedule_id"
             " LEFT JOIN notices n ON n.id = r.result_notice"
-            " WHERE s.owner_id = ? AND s.helper_id = ? AND r.status NOT IN ('queued', 'running')"
+            " WHERE s.owner_id = ? AND s.helper_id = ?"
+            " AND r.status NOT IN ('queued', 'running')"
+            # Not a run a pause or delete cancelled before it started: no news.
+            " AND NOT (r.status = 'cancelled' AND r.started_ms IS NULL)"
             " ORDER BY COALESCE(r.finished_ms, r.claimed_ms, r.due_ms) DESC, r.id DESC LIMIT ?",
             (owner_id, helper_id, limit),
         ) as cur:

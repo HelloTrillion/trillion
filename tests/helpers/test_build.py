@@ -15,6 +15,7 @@ from tests.scheduler.conftest import NY, ms, schedule
 from trillion.attention.runner import WatcherStatus
 from trillion.helpers.build import helpers
 from trillion.helpers.model import Helper, LastRun, RoutineLine, Waiting, to_json
+from trillion.helpers.pausing import pause_helper
 from trillion.helpers.store import OwnHelper
 from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
@@ -636,9 +637,11 @@ async def test_its_routines_sit_under_it_and_are_not_listed_twice() -> None:
     assert h.last_run == LastRun(
         at_ms=NOW - 3_500_000, outcome="failed", reason="timed out after 300 s"
     )
-    # A paused helper has no next run, though its routines keep their times.
+    # A paused helper has no next run, and its routines show none either.
     src.mine = [mine(paused_ms=NOW)]
-    assert one(await helpers(src), "own:h1").next_ms is None
+    paused = one(await helpers(src), "own:h1")
+    assert paused.next_ms is None
+    assert [r.next_ms for r in paused.routines] == [None, None]
 
 
 async def test_a_handoff_in_progress_shows_its_helper_working_and_no_row_of_its_own() -> None:
@@ -655,6 +658,16 @@ async def test_a_handoff_in_progress_shows_its_helper_working_and_no_row_of_its_
     # A handoff of a helper since deleted is no row at all.
     src.mine = []
     assert await helpers(src) == []
+
+
+async def test_a_waiting_handoff_is_not_its_helpers_next_run() -> None:
+    later = ms("2026-11-09T07:00")
+    src = Sources(Schedules([handoff(), its_routine(next_due_ms=later)]), mine=[mine()])
+    (h,) = await helpers(src)
+    assert h.next_ms == later
+    src.schedules.schedules = [handoff()]
+    (h,) = await helpers(src)
+    assert h.next_ms is None
 
 
 async def test_your_helpers_take_their_place_in_the_order() -> None:
@@ -689,3 +702,41 @@ async def test_the_real_store_keeps_a_helpers_last_run_across_its_schedules(real
     # Finished handoffs are gone from the scheduler's active list, yet still its last run.
     assert h.last_run == LastRun(at_ms=due + 1010, outcome="succeeded", reason=None)
     assert [r.id for r in h.routines] == ["hr1"] and h.next_ms == due + 86_400_000
+
+
+async def test_a_helpers_last_run_is_its_runs_first_even_after_a_long_handoff(
+    real: Real,
+) -> None:
+    made = await real.made.create(OWNER, "Invoices", "Chases overdue invoices", NOW)
+    assert isinstance(made, OwnHelper)
+    due = ms("2026-11-05T16:00", NY)
+    await real.store.create(handoff(helper_id=made.id, next_due_ms=due))
+    await real.store.create(its_routine(helper_id=made.id, next_due_ms=due + 1000))
+    # The handoff starts first and finishes last, after a routine run in between.
+    await real.store.enqueue("x1", due, None, 600.0, due)
+    long = await real.store.claim("w1", due, 0)
+    await real.store.enqueue("hr1", due + 1000, due + 86_400_000, 300.0, due + 1000)
+    short = await real.store.claim("w2", due + 1000, 0)
+    assert long is not None and short is not None and short.id > long.id
+    await real.store.finish(short.id, "nothing", due + 2000, detail="nothing")
+    await real.store.finish(long.id, "delivered", due + 9000)
+    real.now = due + 10_000
+    (h,) = await helpers(real)
+    assert h.last_run == LastRun(at_ms=due + 9000, outcome="succeeded", reason=None)
+    (first, _), *_ = await real.store.helper_history(OWNER, made.id, 10)
+    assert first.id == long.id
+    # A helper deleted has no last run kept for it.
+    await real.made.delete(OWNER, made.id, due + 11_000)
+    assert await real.store.helper_last_results(OWNER) == {}
+
+
+async def test_a_handoff_a_pause_cancelled_is_no_run(real: Real) -> None:
+    made = await real.made.create(OWNER, "Invoices", "Chases overdue invoices", NOW)
+    assert isinstance(made, OwnHelper)
+    await real.store.create(handoff(helper_id=made.id, next_due_ms=NOW))
+    await real.store.enqueue("x1", NOW, None, 120.0, NOW)
+    assert await pause_helper(real.made, real.store, OWNER, made.id, NOW + 1)
+    assert await real.store.helper_history(OWNER, made.id, 10) == []
+    assert await real.store.helper_last_results(OWNER) == {}
+    (h,) = await helpers(real)
+    assert (h.state, h.last_run) == ("paused", None)

@@ -794,3 +794,17 @@ async def test_your_helper_changing_is_pushed(rt: Runtime) -> None:
     seen = await pushed(page, 6)
     assert not any(x["id"] == f"own:{h.id}" for x in seen[-1]["helpers"])
     await session.close()
+
+
+def test_your_helpers_routes_are_not_found_while_helpers_are_not_set_up(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    app.rt.helpers = None
+    own = f"{PATH}/own:{h.id}"
+    assert post(app, f"{own}/pause").status_code == 404
+    assert post(app, f"{own}/resume").status_code == 404
+    assert post(app, f"{own}/conversation").status_code == 404
+    assert app.client.get(f"{own}/runs", headers=app.auth).status_code == 404
+    assert delete(app, own).status_code == 404
+    assert app.client.get(PATH, headers=app.auth).status_code == 200
