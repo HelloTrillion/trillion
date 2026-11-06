@@ -7793,3 +7793,357 @@ button.reminders-open {
   font-size: 12px;
   color: var(--color-text-1);
 }
+
+/* ── Your helpers: their pictures, the picker, making one, and her offer ─── */
+
+/* A helper's colours: mid tones a white icon reads on, in both themes, from the palette
+   where it has one. */
+:root {
+  --helper-blue: rgb(59 108 212);
+  --helper-green: color-mix(in srgb, var(--color-accent) 62%, black);
+  --helper-amber: color-mix(in srgb, var(--color-amber) 66%, black);
+  --helper-rose: color-mix(in srgb, var(--mind-agents) 68%, black);
+  --helper-violet: color-mix(in srgb, var(--mind-memory) 72%, black);
+  --helper-teal: color-mix(in srgb, var(--mind-working) 55%, black);
+  --helper-orange: rgb(200 92 32);
+  --helper-slate: rgb(88 96 112);
+  --helper-ink: var(--color-ink-on-dark);
+}
+:root[data-theme='light'] {
+  --helper-blue: rgb(44 92 196);
+  --helper-green: var(--color-accent);
+  --helper-amber: var(--color-amber);
+  --helper-rose: color-mix(in srgb, var(--mind-agents) 62%, black);
+  --helper-violet: color-mix(in srgb, var(--mind-memory) 66%, black);
+  --helper-teal: color-mix(in srgb, var(--mind-working) 50%, black);
+  --helper-orange: rgb(186 82 24);
+  --helper-slate: rgb(78 86 102);
+  --helper-ink: var(--color-ink-on-dark);
+}
+
+.look[data-color='blue'],
+.look-icon[data-color='blue'],
+.look-color[data-color='blue'] {
+  --look: var(--helper-blue);
+}
+.look[data-color='green'],
+.look-icon[data-color='green'],
+.look-color[data-color='green'] {
+  --look: var(--helper-green);
+}
+.look[data-color='amber'],
+.look-icon[data-color='amber'],
+.look-color[data-color='amber'] {
+  --look: var(--helper-amber);
+}
+.look[data-color='rose'],
+.look-icon[data-color='rose'],
+.look-color[data-color='rose'] {
+  --look: var(--helper-rose);
+}
+.look[data-color='violet'],
+.look-icon[data-color='violet'],
+.look-color[data-color='violet'] {
+  --look: var(--helper-violet);
+}
+.look[data-color='teal'],
+.look-icon[data-color='teal'],
+.look-color[data-color='teal'] {
+  --look: var(--helper-teal);
+}
+.look[data-color='orange'],
+.look-icon[data-color='orange'],
+.look-color[data-color='orange'] {
+  --look: var(--helper-orange);
+}
+.look[data-color='slate'],
+.look-icon[data-color='slate'],
+.look-color[data-color='slate'] {
+  --look: var(--helper-slate);
+}
+
+/* The round picture: its icon in white on its colour. */
+.look {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--look, var(--helper-slate));
+  color: var(--helper-ink);
+}
+.look[data-size='18'] {
+  width: 18px;
+  height: 18px;
+}
+.look[data-size='28'] {
+  width: 28px;
+  height: 28px;
+}
+.look[data-size='44'] {
+  width: 44px;
+  height: 44px;
+}
+
+/* A row's picture, with the state dot as a small badge on its edge. */
+.hp-pic {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.hp-pic .hp-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  box-shadow: 0 0 0 2px var(--color-bg-1);
+}
+.hp-pic .hp-dot[data-state='paused'] {
+  background: var(--color-bg-1);
+  box-shadow:
+    inset 0 0 0 1.5px var(--color-text-2),
+    0 0 0 2px var(--color-bg-1);
+}
+.hp-main:hover .hp-pic .hp-dot {
+  box-shadow: 0 0 0 2px var(--color-bg-2);
+}
+
+/* + New helper: one quiet button, then one field. */
+.hp-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 -6px -8px;
+  padding: 7px 10px;
+  color: var(--color-text-0);
+  font-weight: 600;
+}
+.hp-new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -8px;
+}
+.hp-new label {
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+.hp-new-row {
+  display: flex;
+  gap: 8px;
+}
+.hp-new input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+  color: var(--color-text-0);
+  font: inherit;
+  font-size: 14px;
+}
+.hp-new input:focus-visible {
+  border-color: var(--color-accent);
+}
+.hp-new .approve {
+  flex-shrink: 0;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+
+/* A helper of the user's, in its details: its picture beside its name. */
+.hp-d-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.hp-d-head .hp-d-name {
+  margin: 0;
+}
+.hp-d-picwrap {
+  position: relative;
+}
+.hp-d-pic {
+  padding: 0;
+  border: 0;
+  transition: box-shadow var(--motion-fast);
+}
+.hp-d-pic:hover:not(:disabled),
+.hp-d-pic[aria-expanded='true'] {
+  box-shadow:
+    0 0 0 2px var(--color-bg-0),
+    0 0 0 4px var(--look);
+}
+.hp-d-knows {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.hp-routines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hp-routine {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+.hp-routine-when {
+  color: var(--color-text-1);
+}
+
+/* The picker: a small popover under the picture. It fits a phone's width. */
+.look-picker {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.3);
+}
+.look-icons {
+  display: grid;
+  grid-template-columns: repeat(6, 36px);
+  gap: 4px;
+}
+.look-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-0);
+}
+.look-icon:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--color-bg-2);
+}
+.look-icon[aria-pressed='true'],
+.look-icon[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--look);
+  color: var(--helper-ink);
+}
+.look-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.look-color {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--look);
+}
+.look-color[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 2px var(--color-bg-1),
+    0 0 0 4px var(--look);
+}
+.look-done {
+  align-self: flex-end;
+}
+.hp-phone .look-icons {
+  grid-template-columns: repeat(6, 40px);
+}
+.hp-phone .look-icon {
+  width: 40px;
+  height: 40px;
+}
+
+/* A helper's picture before its name on its lines in her conversation. */
+.notice-from .look {
+  margin-right: 6px;
+  vertical-align: -4px;
+}
+
+/* A new helper's picture beside its card's words. */
+.card-look {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.card-look .card-summary {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The top of a helper's own chat: its picture and name. The thread list, open, takes
+   the conversation's place, its head too. */
+.helper-head-slot {
+  flex-shrink: 0;
+}
+.helper-head-slot[hidden],
+.side-body:has(.threads:not([hidden])) .helper-head-slot {
+  display: none;
+}
+.helper-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 4px;
+}
+.helper-head-words {
+  min-width: 0;
+}
+.helper-head-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.helper-head-job {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+
+/* Her offer of a helper: one line, Create and No thanks. */
+.offer-line {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.offer-words {
+  margin: 0;
+  color: var(--color-text-0);
+}
+.offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.offer-line .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}

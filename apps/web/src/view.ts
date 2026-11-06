@@ -3,6 +3,8 @@
  * No DOM and no socket here, so every transition can be tested.
  */
 
+import { type Look, lookOf } from './look';
+
 /** What the core saves for a reply cut off before a word of it was heard (VOI-9). */
 const INTERRUPTED_MARK = '[interrupted]';
 
@@ -41,8 +43,23 @@ export type Entry =
       readonly toolLabel: string;
       /** Why it needs the user, from the action's risk; null when the core did not say. */
       readonly reason: Reason | null;
+      /** A new helper's picture, on its create card; absent on any other. */
+      readonly look?: Look | null;
     }
   | { readonly kind: 'notice'; readonly text: string }
+  /**
+   * Her offer of a helper (the your helpers spec, Suggestions): Create or No thanks, then
+   * what came of it. This page's only: never saved, never drawn again from history.
+   */
+  | {
+      readonly kind: 'offer';
+      readonly area: string;
+      readonly name: string;
+      readonly job: string;
+      readonly status: OfferStatus;
+      /** Why it could not be made, in plain words; empty otherwise. */
+      readonly note: string;
+    }
   /** A line the app wrote ("Building your day"): never the user's words, never hers. */
   /** A routine's ready line, kept as the app's, carries the conversation it opens. */
   | { readonly kind: 'host'; readonly text: string; readonly conversationId?: string }
@@ -67,8 +84,10 @@ export type Entry =
       readonly quiet: string | null;
       readonly spoken: boolean;
       /** The helper it came from, named as the Helpers panel names it; null when no helper sent it. */
-      readonly helper?: { readonly id: string; readonly name: string } | null;
+      readonly helper?: { readonly id: string; readonly name: string; readonly look?: Look } | null;
     };
+
+export type OfferStatus = 'open' | 'creating' | 'made' | 'declined' | 'failed';
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
 
@@ -315,7 +334,16 @@ function scheduledOf(msg: ServerMsg): Entry | null {
     // A core from before speaking up never said: then she spoke it.
     spoken: msg['spoken'] !== false,
     // Only from a helper: a reminder, a spend notice or any other carries none.
-    ...(str(msg['helper_id']) && str(msg['helper_name']) ? { helper: { id: str(msg['helper_id']), name: str(msg['helper_name']) } } : {}),
+    // One of the user's own carries its picture too.
+    ...(str(msg['helper_id']) && str(msg['helper_name'])
+      ? {
+          helper: {
+            id: str(msg['helper_id']),
+            name: str(msg['helper_name']),
+            ...(str(msg['helper_icon']) ? { look: lookOf(msg['helper_icon'], msg['helper_color']) } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -445,6 +473,57 @@ function unsent(entries: readonly Entry[], text: string): Entry[] {
     if (e?.kind === 'user' && e.text === text) return [...entries.slice(0, i), ...entries.slice(i + 1)];
   }
   return entries.slice();
+}
+
+function lookIn(raw: unknown): Look | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { icon?: unknown; color?: unknown };
+  return lookOf(r.icon, r.color);
+}
+
+type OfferEntry = Extract<Entry, { kind: 'offer' }>;
+
+/** Why an offer's Create made nothing, in a few plain words. */
+export function offerFailed(reason: string, name: string): string {
+  switch (reason) {
+    case 'full':
+      return 'You have 20 helpers, the most there can be. Delete one to make room.';
+    case 'taken':
+      return `There is already a helper called ${name}.`;
+    case 'stale':
+      return 'That offer has run out. Ask her again if you still want one.';
+    case 'invalid':
+      return "That name or job didn't work. Ask her to make it.";
+    default:
+      return "That didn't work. Try again in a moment.";
+  }
+}
+
+function lastOffer(entries: readonly Entry[], match: (e: OfferEntry) => boolean): number {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind === 'offer' && match(e)) return i;
+  }
+  return -1;
+}
+
+/** The offer whose Create was tapped, settled: made, or why not. Any other is left alone. */
+function settleOffer(view: View, next: (e: OfferEntry) => OfferEntry): View {
+  const at = lastOffer(view.entries, (e) => e.status === 'creating');
+  if (at < 0) return view;
+  const entries = view.entries.slice();
+  entries[at] = next(entries[at] as OfferEntry);
+  return { ...view, entries };
+}
+
+/** The user tapped Create or No thanks on the offer for `area`: No thanks is said at once. */
+export function offerChosen(view: View, area: string, choice: 'create' | 'decline'): View {
+  const at = lastOffer(view.entries, (e) => e.area === area && e.status === 'open');
+  if (at < 0) return view;
+  const entries = view.entries.slice();
+  const e = entries[at] as OfferEntry;
+  entries[at] = { ...e, status: choice === 'create' ? 'creating' : 'declined' };
+  return { ...view, entries };
 }
 
 export function reduce(view: View, msg: ServerMsg): View {
@@ -609,10 +688,23 @@ function step(view: View, msg: ServerMsg): View {
             note: '',
             toolLabel: labelOf(msg['tool_label'], msg['tool']),
             reason: REASONS.find((r) => r === msg['reason']) ?? null,
+            ...(lookIn(msg['look']) ? { look: lookIn(msg['look']) } : {}),
           },
         ],
       };
     }
+    case 'helper.offer': {
+      const name = str(msg['name']);
+      const job = str(msg['job']);
+      if (!name || !job) return view;
+      const entry: Entry = { kind: 'offer', area: str(msg['area']), name, job, status: 'open', note: '' };
+      // Like a notice, it never lands inside a reply that is still under way.
+      return view.replyOpen || view.busy ? { ...view, held: [...view.held, entry] } : { ...view, entries: [...view.entries, entry] };
+    }
+    case 'helper.offer.failed':
+      return settleOffer(view, (e) => ({ ...e, status: 'failed', note: offerFailed(str(msg['reason']), e.name) }));
+    case 'helper.created':
+      return settleOffer(view, (e) => ({ ...e, status: 'made' }));
     case 'confirm.resolved': {
       const outcome = cardOutcome(str(msg['status']), str(msg['reason']), str(msg['detail']));
       return {

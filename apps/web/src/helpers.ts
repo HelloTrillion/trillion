@@ -10,10 +10,13 @@
  * piece of text is set with textContent, never parsed as markup.
  */
 
+import { icon } from './icons';
+import { type Look, type Picker, createPicker, drawPicture, lookOf, pictureLabel } from './look';
 import type { Api } from './settings';
 import type { ServerMsg } from './view';
 
-export type HelperKind = 'routine' | 'ask' | 'watcher';
+/** `own`: a helper the user made (the your helpers spec). */
+export type HelperKind = 'routine' | 'ask' | 'watcher' | 'own';
 export type HelperState = 'needs_you' | 'working' | 'idle' | 'paused' | 'capped';
 export type Outcome = 'succeeded' | 'skipped' | 'failed' | 'nothing';
 
@@ -47,6 +50,20 @@ export interface Helper {
   /** A watcher switched on, and its source connected; null for any other kind. */
   readonly switched_on?: boolean | null;
   readonly connected?: boolean | null;
+  /** One of the user's own: what it has learned, its routines, and its picture. */
+  readonly notes?: string | null;
+  readonly routines?: readonly RoutineLine[];
+  readonly icon?: string | null;
+  readonly color?: string | null;
+}
+
+/** One of a helper's own routines, listed under it. */
+export interface RoutineLine {
+  readonly id: string;
+  readonly name: string;
+  /** Null while it, or its helper, is paused. */
+  readonly next_ms: number | null;
+  readonly paused: boolean;
 }
 
 export interface HelperList {
@@ -118,6 +135,8 @@ export function statusLine(h: Helper, now: number, capName: string | null = null
   }
   const last = h.last_run;
   if (last?.outcome === 'failed') return `failed at ${timeText(last.at_ms, now)}${last.reason ? `: ${last.reason}` : ''}`;
+  // One of the user's own says what it is for; its routines' next runs are in its details.
+  if (h.kind === 'own') return h.job;
   if (h.next_ms !== null) return `next ${timeText(h.next_ms, now)}`;
   return h.job;
 }
@@ -191,6 +210,43 @@ export function stepTarget(stepId: string): string | null {
   return STEP_TARGETS[stepId] ?? null;
 }
 
+/** The panel's id for a helper the core names by its own id alone. */
+const ownId = (id: string): string => (id.startsWith('own:') ? id : `own:${id}`);
+
+/** A new helper, from `helper.created`: the panel's helper and the chat to open. */
+export function createdOf(msg: ServerMsg): { helperId: string; conversationId: string } | null {
+  if (msg.type !== 'helper.created') return null;
+  const id = msg['helper_id'];
+  const conversation = msg['conversation_id'];
+  if (typeof id !== 'string' || !id || typeof conversation !== 'string' || !conversation) return null;
+  return { helperId: ownId(id), conversationId: conversation };
+}
+
+/**
+ * Its first hello (the your helpers spec): asked once per page load per helper, when the
+ * page opens its chat. The core decides whether it is the first time ever. One that did
+ * not go (the socket was not open) is asked again next time.
+ */
+export function helloOnce(send: (body: Record<string, unknown>) => boolean): (helperId: string) => void {
+  const asked = new Set<string>();
+  return (helperId) => {
+    if (asked.has(helperId)) return;
+    if (send({ type: 'helper.hello' })) asked.add(helperId);
+  };
+}
+
+/**
+ * Where + New helper asks her: the conversation last open that is not a helper's own
+ * chat, or null for a new one.
+ */
+export function askTarget(visited: readonly string[], helperChats: ReadonlySet<string>): string | null {
+  for (let i = visited.length - 1; i >= 0; i--) {
+    const id = visited[i];
+    if (id !== undefined && !helperChats.has(id)) return id;
+  }
+  return null;
+}
+
 function parseList(raw: unknown): HelperList | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { helpers?: unknown; needs_you?: unknown };
@@ -221,6 +277,8 @@ export interface HelpersDeps {
   readonly phone: () => boolean;
   /** The provider at its cap that background work waits on, when there is one. */
   readonly capName: () => string | null;
+  /** + New helper: ask her for one in these words. Without it, there is no button. */
+  readonly newHelper?: (text: string) => void;
 }
 
 export interface HelpersPanel {
@@ -240,11 +298,16 @@ export interface HelpersPanel {
   readonly needsYou: number;
   /** Told how many need you, on every update. */
   onCount(listener: (needsYou: number) => void): void;
+  /** The user's own helper whose chat this conversation is, from the last list. */
+  ownFor(conversationId: string | null): Helper | null;
 }
 
 interface Row {
   readonly li: HTMLLIElement;
   readonly dot: HTMLElement;
+  /** One of the user's own: its picture, which the dot sits on. */
+  readonly pic: HTMLElement | null;
+  look: string;
   readonly name: HTMLElement;
   readonly status: HTMLElement;
   readonly inline: HTMLElement;
@@ -271,7 +334,28 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   problem.hidden = true;
   const empty = el('p', 'hp-empty', 'No helpers yet. Routines, timed asks and watchers show up here.');
   empty.hidden = true;
-  listView.append(her, problem, empty);
+  // + New helper: one field, and her card does the rest.
+  const addBtn = el('button', 'quiet hp-add');
+  addBtn.type = 'button';
+  addBtn.append(icon('plus', 16), 'New helper');
+  addBtn.setAttribute('aria-expanded', 'false');
+  const addForm = el('form', 'hp-new');
+  addForm.hidden = true;
+  addBtn.setAttribute('aria-controls', (addForm.id = 'hp-new'));
+  const addField = el('input');
+  addField.id = 'hp-new-text';
+  addField.type = 'text';
+  addField.maxLength = 300;
+  addField.autocomplete = 'off';
+  const addLabel = el('label', '', 'What should it do?');
+  addLabel.htmlFor = addField.id;
+  const addSend = el('button', 'approve', 'Ask Trillion');
+  addSend.type = 'submit';
+  const addRow = el('div', 'hp-new-row');
+  addRow.append(addField, addSend);
+  addForm.append(addLabel, addRow);
+  addBtn.hidden = !d.newHelper;
+  listView.append(her, addBtn, addForm, problem, empty);
   const groupEls = new Map<Group, { section: HTMLElement; ul: HTMLUListElement }>();
   for (const [g, title] of GROUPS) {
     const section = el('section', 'hp-group');
@@ -293,7 +377,17 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   detailsView.hidden = true;
   const backBtn = el('button', 'quiet hp-back', 'Back to helpers');
   backBtn.type = 'button';
+  // One of the user's own: its picture, which opens the picker.
+  const dHead = el('div', 'hp-d-head');
+  const dPicWrap = el('div', 'hp-d-picwrap');
+  const dPic = el('button', 'hp-d-pic');
+  dPic.type = 'button';
+  dPic.setAttribute('aria-haspopup', 'dialog');
+  dPic.setAttribute('aria-expanded', 'false');
+  dPic.title = 'Change its picture';
+  dPicWrap.append(dPic);
   const dName = el('h3', 'hp-d-name');
+  dHead.append(dPicWrap, dName);
   const dJob = el('p', 'hp-d-job');
   const dStatus = el('p', 'hp-d-status');
   const dNext = el('p', 'hp-d-next');
@@ -302,22 +396,37 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   toggle.type = 'button';
   const talk = el('button', 'approve', 'Talk to it');
   talk.type = 'button';
-  dActions.append(toggle, talk);
+  const del = el('button', 'hp-delete', 'Delete');
+  del.type = 'button';
+  dActions.append(toggle, talk, del);
   const confirm = el('div', 'hp-d-confirm');
+  const confirmText = el('p');
   const confirmYes = el('button', '', 'Cancel it');
   confirmYes.type = 'button';
   const confirmNo = el('button', 'quiet', 'Keep it');
   confirmNo.type = 'button';
-  confirm.append(el('p', '', "Cancel this timed ask? It won't happen."), confirmYes, confirmNo);
+  confirm.append(confirmText, confirmYes, confirmNo);
   confirm.hidden = true;
+  // What the confirm asks: to cancel a timed ask, or to delete one of the user's own.
+  let confirming: 'cancel' | 'delete' = 'cancel';
   const dNote = el('p', 'hp-d-note');
+  // One of the user's own: what it knows, and its routines.
+  const dOwn = el('div', 'hp-d-own');
+  const dKnows = el('p', 'hp-d-knows');
+  const dRoutines = el('ul', 'hp-routines');
+  const dNoRoutines = el('p', 'hp-d-note', 'No routines yet.');
+  dOwn.append(el('h4', '', 'What it knows'), dKnows, el('h4', '', 'Its routines'), dRoutines, dNoRoutines);
   const runsHead = el('h4', '', 'Recent runs');
   const runsList = el('ul', 'hp-runs');
   const runsNote = el('p', 'hp-d-note');
-  detailsView.append(backBtn, dName, dJob, dStatus, dNext, dActions, confirm, dNote, runsHead, runsList, runsNote);
+  detailsView.append(backBtn, dHead, dJob, dStatus, dNext, dActions, confirm, dNote, dOwn, runsHead, runsList, runsNote);
   element.append(detailsView);
   // The helper whose details are shown, or null on the list.
   let showing: string | null = null;
+  // The picker, while open, and a tapped picture the core has not yet answered for.
+  let picker: Picker | null = null;
+  let tapped: { readonly id: string; readonly look: Look; readonly n: number } | null = null;
+  let taps = 0;
 
   const rows = new Map<string, Row>();
   const listeners: ((n: number) => void)[] = [];
@@ -340,11 +449,19 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     const name = el('span', 'hp-name');
     const status = el('span', 'hp-status');
     words.append(name, status);
-    main.append(dot, words);
+    let pic: HTMLElement | null = null;
+    if (h.kind === 'own') {
+      // Its picture, with the state dot on its edge.
+      const wrap = el('span', 'hp-pic');
+      pic = el('span');
+      pic.setAttribute('role', 'img');
+      wrap.append(pic, dot);
+      main.append(wrap, words);
+    } else main.append(dot, words);
     const inline = el('div', 'hp-inline');
     main.addEventListener('click', () => void showDetails(h.id));
     li.append(main, inline);
-    return { li, dot, name, status, inline, waits: '', helper: h };
+    return { li, dot, pic, look: '', name, status, inline, waits: '', helper: h };
   }
 
   // What opens the conversation a card or a question waits in.
@@ -408,6 +525,15 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     r.li.dataset['state'] = h.state;
     r.dot.dataset['state'] = h.state;
     if (r.name.textContent !== h.name) r.name.textContent = h.name;
+    if (r.pic) {
+      const look = lookOf(h.icon, h.color);
+      const label = pictureLabel(h.name, look);
+      if (r.look !== label) {
+        r.look = label;
+        drawPicture(r.pic, look, 28);
+        r.pic.setAttribute('aria-label', label);
+      }
+    }
     const status = statusLine(h, d.now(), d.capName());
     if (r.status.textContent !== status) r.status.textContent = status;
     drawWaiting(r);
@@ -499,18 +625,46 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     return id === null ? null : (rows.get(id)?.helper ?? null);
   }
 
+  /** The picture its details show: one just tapped, until the core answers. */
+  function shownLook(h: Helper): Look {
+    return tapped?.id === h.id ? tapped.look : lookOf(h.icon, h.color);
+  }
+
   function drawDetails(): void {
     const h = helperOf(showing);
     if (!h) return;
     const now = d.now();
+    const mine = h.kind === 'own';
     if (dName.textContent !== h.name) dName.textContent = h.name;
+    dPicWrap.hidden = !mine;
+    dOwn.hidden = !mine;
+    del.hidden = !mine;
+    if (mine) {
+      const look = shownLook(h);
+      drawPicture(dPic, look, 44);
+      dPic.setAttribute('aria-label', pictureLabel(h.name, look));
+      if (picker && !tapped) picker.set(look);
+      dKnows.textContent = h.notes?.trim() || 'Nothing yet. Tell it in its chat.';
+      const routines = h.routines ?? [];
+      dRoutines.replaceChildren(
+        ...routines.map((r) => {
+          const li = el('li', 'hp-routine');
+          const when = r.paused || r.next_ms === null ? 'paused' : `next ${timeText(r.next_ms, now)}`;
+          li.append(el('span', 'hp-routine-name', r.name), el('span', 'hp-routine-when', when));
+          return li;
+        }),
+      );
+      dRoutines.hidden = routines.length === 0;
+      dNoRoutines.hidden = routines.length > 0;
+    } else closePicker(false);
     dJob.textContent = h.job;
     const status = statusLine(h, now, d.capName());
     const when = h.next_ms === null ? '' : timeText(h.next_ms, now);
     // The next run is said once, below, not also as the status.
     dStatus.textContent = status === h.job || (when && status === `next ${when}`) ? '' : status;
     dStatus.hidden = !dStatus.textContent;
-    const next = when ? `${h.kind === 'watcher' ? 'Next check' : 'Next run'}: ${when}` : '';
+    // One of the user's own lists its routines' next runs instead.
+    const next = when && !mine ? `${h.kind === 'watcher' ? 'Next check' : 'Next run'}: ${when}` : '';
     dNext.textContent = next;
     dNext.hidden = !next;
     const words = toggleWords(h);
@@ -524,6 +678,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
    */
   function toggleWords(h: Helper): 'Cancel' | 'Pause' | 'Resume' | 'Turn on' | 'Turn off' | 'Connect' {
     if (h.kind === 'ask') return 'Cancel';
+    if (h.kind === 'own') return h.paused ? 'Resume' : 'Pause';
     if (h.kind === 'routine') return (h.paused ?? h.state === 'paused') ? 'Resume' : 'Pause';
     const on = h.switched_on ?? h.state !== 'paused';
     if (!on) return 'Turn on';
@@ -564,6 +719,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
 
   async function showDetails(id: string): Promise<void> {
     if (!rows.has(id)) return;
+    closePicker(false);
     showing = id;
     dNote.textContent = '';
     confirm.hidden = true;
@@ -579,25 +735,127 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   /** Back to the list, with focus on the helper's row when `focus`. */
   function back(focus = true): void {
     const was = showing;
+    closePicker(false);
     showing = null;
     detailsView.hidden = true;
     listView.hidden = false;
     if (focus) (was ? rows.get(was)?.li.querySelector<HTMLButtonElement>('.hp-main') : null)?.focus();
   }
 
-  /** One of the existing routes; the push that follows redraws the panel. */
-  async function act(method: 'POST' | 'PUT' | 'DELETE', path: string, body: unknown): Promise<void> {
+  /**
+   * One of the existing routes; the push that follows redraws the panel. A route that
+   * answers with the list (a helper of the user's) is drawn at once. True when it went.
+   */
+  async function act(method: 'POST' | 'PUT' | 'DELETE', path: string, body: unknown): Promise<boolean> {
     dNote.textContent = '';
-    toggle.disabled = true;
+    toggle.disabled = del.disabled = true;
     try {
       const r = await d.api(method, path, body);
-      if (!r.ok) note(dNote, NOT_DONE);
+      if (!r.ok) {
+        note(dNote, NOT_DONE);
+        return false;
+      }
+      const found = parseList(await r.json().catch(() => null));
+      if (found) update(found);
+      return true;
     } catch {
       note(dNote, NOT_REACHED);
+      return false;
     } finally {
-      toggle.disabled = false;
+      toggle.disabled = del.disabled = false;
     }
   }
+
+  const ownPath = (id: string, what = ''): string => `/api/helpers/${encodeURIComponent(id)}${what}`;
+
+  // ── The picker ──
+  function onOutside(ev: Event): void {
+    if (ev.target instanceof Node && !dPicWrap.contains(ev.target)) closePicker(false);
+  }
+
+  /** Close the picker: focus back on the picture when `focus`. */
+  function closePicker(focus = true): void {
+    if (!picker) return;
+    picker.element.remove();
+    picker = null;
+    dPic.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside, true);
+    if (focus) dPic.focus();
+  }
+
+  function openPicker(h: Helper): void {
+    const id = h.id;
+    picker = createPicker({
+      name: h.name,
+      look: shownLook(h),
+      onPick: (look) => {
+        const n = (taps += 1);
+        tapped = { id, look, n };
+        drawDetails();
+        void act('PUT', ownPath(id, '/look'), { icon: look.icon, color: look.color }).then((went) => {
+          // Only the last tap's answer settles it: an earlier one is overtaken.
+          if (tapped?.n !== n) return;
+          tapped = null;
+          if (!went) {
+            // Not saved: the picture saved before shows again.
+            const saved = helperOf(id);
+            if (saved && showing === id) {
+              picker?.set(lookOf(saved.icon, saved.color));
+              const words = dNote.textContent;
+              drawDetails();
+              dNote.textContent = words;
+            }
+          }
+        });
+      },
+      onClose: () => closePicker(),
+    });
+    dPicWrap.append(picker.element);
+    dPic.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onOutside, true);
+    picker.focus();
+  }
+
+  dPic.addEventListener('click', () => {
+    const h = helperOf(showing);
+    if (!h || h.kind !== 'own') return;
+    if (picker) closePicker();
+    else openPicker(h);
+  });
+
+  // ── + New helper ──
+  function closeAdd(focus: boolean): void {
+    addForm.hidden = true;
+    addBtn.setAttribute('aria-expanded', 'false');
+    if (focus) addBtn.focus();
+  }
+  addBtn.addEventListener('click', () => {
+    if (!addForm.hidden) {
+      closeAdd(true);
+      return;
+    }
+    addForm.hidden = false;
+    addBtn.setAttribute('aria-expanded', 'true');
+    addField.focus();
+  });
+  addForm.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const text = addField.value.trim();
+    if (!text) {
+      addField.focus();
+      return;
+    }
+    addField.value = '';
+    closeAdd(false);
+    d.newHelper?.(text);
+  });
+  // Escape in the field closes it, and no further: the panel stays open.
+  addForm.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeAdd(true);
+  });
 
   backBtn.addEventListener('click', () => back());
   // Escape in the details goes back to the list, and no further: the panel stays open.
@@ -611,11 +869,14 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     const h = helperOf(showing);
     if (!h) return;
     if (h.kind === 'ask') {
-      confirm.hidden = false;
-      confirmNo.focus();
+      askConfirm('cancel', h);
       return;
     }
     const words = toggleWords(h);
+    if (h.kind === 'own') {
+      void act('POST', ownPath(h.id, words === 'Resume' ? '/resume' : '/pause'), {});
+      return;
+    }
     if (h.kind === 'watcher') {
       const name = h.id.slice('watcher:'.length);
       // Waiting for its source: connecting it is what turns it on.
@@ -626,21 +887,38 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     const what = words === 'Resume' ? 'resume' : 'pause';
     void act('POST', `/api/routines/${encodeURIComponent(scheduleOf(h.id))}/${what}`, {});
   });
+  /** The second, plain button: to cancel a timed ask, or delete a helper of the user's. */
+  function askConfirm(what: 'cancel' | 'delete', h: Helper): void {
+    confirming = what;
+    confirmText.textContent =
+      what === 'delete' ? `Delete ${h.name}? Its routines stop. Its chat stays in History.` : "Cancel this timed ask? It won't happen.";
+    confirmYes.textContent = what === 'delete' ? 'Delete it' : 'Cancel it';
+    confirm.hidden = false;
+    confirmNo.focus();
+  }
+  del.addEventListener('click', () => {
+    const h = helperOf(showing);
+    if (h?.kind === 'own') askConfirm('delete', h);
+  });
   confirmNo.addEventListener('click', () => {
     confirm.hidden = true;
-    toggle.focus();
+    (confirming === 'delete' ? del : toggle).focus();
   });
   confirmYes.addEventListener('click', () => {
     const h = helperOf(showing);
     confirm.hidden = true;
-    if (h) void act('DELETE', `/api/schedules/${encodeURIComponent(scheduleOf(h.id))}`, {});
+    if (!h) return;
+    if (confirming === 'delete') void act('DELETE', ownPath(h.id), {});
+    else void act('DELETE', `/api/schedules/${encodeURIComponent(scheduleOf(h.id))}`, {});
   });
   talk.addEventListener('click', () => {
     const id = showing;
     if (!id) return;
     dNote.textContent = '';
     talk.disabled = true;
-    void talkTo(id, null).then((wrong) => {
+    // One of the user's own has its chat already.
+    const h = helperOf(id);
+    void talkTo(id, h?.kind === 'own' ? h.conversation_id : null).then((wrong) => {
       talk.disabled = false;
       note(dNote, wrong ?? '');
     });
@@ -708,6 +986,10 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     },
     onCount(listener) {
       listeners.push(listener);
+    },
+    ownFor(conversationId) {
+      if (!conversationId) return null;
+      return current.helpers.find((h) => h.kind === 'own' && h.conversation_id === conversationId) ?? null;
     },
   };
 }

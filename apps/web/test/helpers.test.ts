@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   type Helper,
   type HelperList,
+  askTarget,
   bindButton,
   buttonLabel,
   capNameOf,
@@ -15,6 +18,7 @@ import {
   summaryLine,
   timeText,
 } from '../src/helpers';
+import { COLORS, ICONS, createPicker, lookOf, picture, pictureLabel } from '../src/look';
 import type { Api } from '../src/settings';
 
 const json = (body: unknown, status = 200): Response =>
@@ -674,5 +678,301 @@ describe('review fixes', () => {
     // The first model listed is the usual one, which background work runs on.
     expect(capNameOf([{ leg: 'model', name: 'Anthropic', state: 'ok' }, { leg: 'model', name: 'OpenAI', state: 'capped' }])).toBeNull();
     expect(capNameOf(undefined)).toBeNull();
+  });
+});
+
+// ── Your helpers: their pictures, details, and making one ────────────────
+
+const OWN = `own:${'a'.repeat(32)}`;
+const OWN_PATH = encodeURIComponent(OWN);
+const own = (over: Partial<Helper> = {}): Helper =>
+  helper({
+    id: OWN,
+    kind: 'own',
+    name: 'Invoices',
+    job: 'Keeps track of who owes you',
+    next_ms: at(9, 0, 9),
+    conversation_id: 'c-inv',
+    notes: 'Watch the Stripe account.',
+    routines: [{ id: 'r1', name: 'Check what is overdue', next_ms: at(9, 0, 9), paused: false }],
+    icon: 'receipt',
+    color: 'green',
+    ...over,
+  });
+
+const key = (target: Element, k: string): void => {
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+};
+
+describe('a picture', () => {
+  it('has the core’s 24 icons and 8 colours', () => {
+    expect(ICONS).toHaveLength(24);
+    expect(new Set(ICONS).size).toBe(24);
+    expect(COLORS).toEqual(['blue', 'green', 'amber', 'rose', 'violet', 'teal', 'orange', 'slate']);
+    const core = readFileSync(resolve(__dirname, '../../../src/trillion/helpers/look.py'), 'utf8');
+    for (const id of ICONS) expect(core).toContain(`"${id}"`);
+  });
+
+  it('is never blank: anything off the lists is a spark in slate', () => {
+    expect(lookOf('receipt', 'green')).toEqual({ icon: 'receipt', color: 'green' });
+    expect(lookOf('dragon', 7)).toEqual({ icon: 'spark', color: 'slate' });
+  });
+
+  it('draws round, in its colour, with a name a screen reader says', () => {
+    const p = picture({ icon: 'receipt', color: 'green' }, 28, 'Invoices');
+    expect(p.dataset['color']).toBe('green');
+    expect(p.dataset['size']).toBe('28');
+    expect(p.querySelectorAll('svg path').length).toBeGreaterThan(0);
+    expect(p.getAttribute('role')).toBe('img');
+    expect(p.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pictureLabel('Invoices', { icon: 'receipt', color: 'green' })).toBe('Invoices picture: receipt, green');
+    expect(picture({ icon: 'spark', color: 'blue' }, 18).getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('has colour tokens for light and dark, and the picker fits a phone', () => {
+    const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8');
+    for (const c of COLORS) {
+      expect(css).toContain(`--helper-${c}:`);
+      expect(css).toContain(`[data-color='${c}']`);
+    }
+    expect(css).toMatch(/:root\[data-theme='light'\][^{]*\{[^}]*--helper-green:/);
+    expect(css).toMatch(/\.look-picker\s*\{[^}]*max-width:\s*calc\(100vw - 32px\)/);
+  });
+});
+
+describe('the picker', () => {
+  function open() {
+    const picks: unknown[] = [];
+    const close = vi.fn();
+    const p = createPicker({ name: 'Invoices', look: { icon: 'receipt', color: 'green' }, onPick: (l) => picks.push(l), onClose: close });
+    document.body.append(p.element);
+    return { p, picks, close, root: p.element };
+  }
+  const iconBtn = (root: HTMLElement, id: string): HTMLButtonElement => root.querySelector(`.look-icon[data-icon="${id}"]`) as HTMLButtonElement;
+  const colorBtn = (root: HTMLElement, id: string): HTMLButtonElement => root.querySelector(`.look-color[data-color="${id}"]`) as HTMLButtonElement;
+
+  it('labels 24 icons and 8 colours, marks the chosen ones, and has one tab stop each', () => {
+    const { root } = open();
+    expect(root.getAttribute('aria-label')).toBe('Picture for Invoices');
+    const icons = [...root.querySelectorAll<HTMLButtonElement>('.look-icon')];
+    expect(icons.map((b) => b.getAttribute('aria-label'))).toEqual([...ICONS]);
+    expect(root.querySelectorAll('.look-color')).toHaveLength(8);
+    expect(iconBtn(root, 'receipt').getAttribute('aria-pressed')).toBe('true');
+    expect(colorBtn(root, 'green').getAttribute('aria-pressed')).toBe('true');
+    expect(icons.filter((b) => b.tabIndex === 0)).toEqual([iconBtn(root, 'receipt')]);
+  });
+
+  it('saves a tap at once, and shows it chosen', () => {
+    const { root, picks } = open();
+    iconBtn(root, 'envelope').click();
+    colorBtn(root, 'blue').click();
+    expect(picks).toEqual([
+      { icon: 'envelope', color: 'green' },
+      { icon: 'envelope', color: 'blue' },
+    ]);
+    expect(iconBtn(root, 'envelope').getAttribute('aria-pressed')).toBe('true');
+    expect(colorBtn(root, 'blue').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('moves by arrow keys across and down the grid, and along the colours, and closes on Escape', () => {
+    const { p, root, close } = open();
+    p.focus();
+    expect(document.activeElement).toBe(iconBtn(root, 'receipt'));
+    key(document.activeElement as Element, 'ArrowRight');
+    expect(document.activeElement).toBe(iconBtn(root, 'envelope'));
+    key(document.activeElement as Element, 'ArrowDown');
+    expect(document.activeElement).toBe(iconBtn(root, 'chat'));
+    key(document.activeElement as Element, 'End');
+    expect(document.activeElement).toBe(iconBtn(root, 'spark'));
+    colorBtn(root, 'green').focus();
+    key(document.activeElement as Element, 'ArrowRight');
+    expect(document.activeElement).toBe(colorBtn(root, 'amber'));
+    key(document.activeElement as Element, 'Escape');
+    expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('your helpers in the panel', () => {
+  it('shows a row with its picture, the state dot on its edge, and its job when idle', async () => {
+    const { helpers, root } = panel(list([own()]));
+    await helpers.open();
+    const r = row(root, OWN);
+    const pic = r.querySelector('.look') as HTMLElement;
+    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pic.dataset['size']).toBe('28');
+    expect(r.querySelector('.hp-pic .hp-dot')).not.toBeNull();
+    expect(r.querySelector('.hp-status')?.textContent).toBe('Keeps track of who owes you');
+    helpers.update(list([own({ state: 'working', doing: 'Reading invoices', since_ms: NOW - 5_000 })]));
+    expect(r.querySelector('.hp-status')?.textContent).toBe('Reading invoices · 0:05');
+    helpers.update(list([own({ icon: 'envelope', color: 'blue' })]));
+    expect(r.querySelector('.look')?.getAttribute('aria-label')).toBe('Invoices picture: envelope, blue');
+  });
+
+  it('finds the helper whose chat a conversation is', async () => {
+    const { helpers } = panel(list([own(), helper()]));
+    await helpers.open();
+    expect(helpers.ownFor('c-inv')?.name).toBe('Invoices');
+    expect(helpers.ownFor('c-other')).toBeNull();
+    expect(helpers.ownFor(null)).toBeNull();
+  });
+
+  it('shows its details: the picture, job, what it knows, its routines with next runs, and its runs', async () => {
+    const { show, calls } = details(list([own()]), {
+      [`GET /api/helpers/${OWN_PATH}/runs`]: () => json({ runs: [{ at_ms: at(8, 0), outcome: 'succeeded', reason: null, conversation_id: 'c-inv' }] }),
+    });
+    const d = await show(OWN);
+    expect(calls.some((c) => c.path === `/api/helpers/${OWN_PATH}/runs`)).toBe(true);
+    const pic = d.querySelector('.hp-d-pic') as HTMLButtonElement;
+    expect((d.querySelector('.hp-d-picwrap') as HTMLElement).hidden).toBe(false);
+    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pic.dataset['size']).toBe('44');
+    expect(d.textContent).toContain('Keeps track of who owes you');
+    expect(d.textContent).toContain('What it knows');
+    expect(d.textContent).toContain('Watch the Stripe account.');
+    const routines = [...d.querySelectorAll('.hp-routine')].map((r) => r.textContent);
+    expect(routines).toHaveLength(1);
+    expect(routines[0]).toContain('Check what is overdue');
+    expect(routines[0]).toMatch(/next [A-Z][a-z]{2} 9:00/);
+    expect(d.textContent).toContain('Done');
+    expect(hasButton(d, 'Talk to it')).toBe(true);
+    expect(hasButton(d, 'Pause')).toBe(true);
+    expect(hasButton(d, 'Delete')).toBe(true);
+  });
+
+  it('says when it knows nothing yet and has no routines, and shows none of this for her own helpers', async () => {
+    const { show, helpers } = details(list([own({ notes: '', routines: [] }), helper()]));
+    let d = await show(OWN);
+    expect(d.textContent).toContain('Nothing yet. Tell it in its chat.');
+    expect(d.textContent).toContain('No routines yet.');
+    await helpers.showHelper('routine:aaaaaaaa');
+    await flush();
+    d = helpers.element.querySelector('.hp-details') as HTMLElement;
+    expect((d.querySelector('.hp-d-picwrap') as HTMLElement).hidden).toBe(true);
+    expect((d.querySelector('.hp-d-own') as HTMLElement).hidden).toBe(true);
+    expect(hasButton(d, 'Delete')).toBe(false);
+  });
+
+  it('opens its own chat with Talk to it, without asking the core', async () => {
+    const { show, calls, opened } = details(list([own()]));
+    const d = await show(OWN);
+    press(d, 'Talk to it');
+    await flush();
+    expect(opened).toEqual(['c-inv']);
+    expect(calls.some((c) => c.path.endsWith('/conversation'))).toBe(false);
+  });
+
+  it('pauses and resumes by its own routes, and draws the list they answer with', async () => {
+    const paused = own({ state: 'paused', paused: true, next_ms: null });
+    const { show, calls } = details(list([own()]), {
+      [`POST /api/helpers/${OWN_PATH}/pause`]: () => json(list([paused])),
+      [`POST /api/helpers/${OWN_PATH}/resume`]: () => json(list([own()])),
+    });
+    const d = await show(OWN);
+    press(d, 'Pause');
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: `/api/helpers/${OWN_PATH}/pause`, body: {} });
+    expect(hasButton(d, 'Resume')).toBe(true);
+    press(d, 'Resume');
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: `/api/helpers/${OWN_PATH}/resume`, body: {} });
+    expect(hasButton(d, 'Pause')).toBe(true);
+  });
+
+  it('deletes only after a second, plain button, in the spec’s words', async () => {
+    const { show, calls, root } = details(list([own()]), { [`DELETE /api/helpers/${OWN_PATH}`]: () => json(list([])) });
+    const d = await show(OWN);
+    press(d, 'Delete');
+    expect(d.textContent).toContain('Delete Invoices? Its routines stop. Its chat stays in History.');
+    expect(document.activeElement?.textContent).toBe('Keep it');
+    press(d, 'Keep it');
+    expect(hasButton(d, 'Delete it')).toBe(false);
+    expect(document.activeElement?.textContent).toBe('Delete');
+    expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+    press(d, 'Delete');
+    press(d, 'Delete it');
+    await flush();
+    expect(calls).toContainEqual({ method: 'DELETE', path: `/api/helpers/${OWN_PATH}`, body: {} });
+    expect(d.hidden).toBe(true);
+    expect((root.querySelector('.hp-list') as HTMLElement).hidden).toBe(false);
+  });
+
+  it('changes its picture from the details: one tap saves it, Escape closes and focus goes back', async () => {
+    const { show, calls, helpers } = details(list([own()]), {
+      [`PUT /api/helpers/${OWN_PATH}/look`]: () => json(list([own({ icon: 'envelope' })])),
+    });
+    const d = await show(OWN);
+    const pic = d.querySelector('.hp-d-pic') as HTMLButtonElement;
+    expect(pic.getAttribute('aria-expanded')).toBe('false');
+    pic.click();
+    const picker = d.querySelector('.look-picker') as HTMLElement;
+    expect(picker).not.toBeNull();
+    expect(pic.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(picker.querySelector('.look-icon[data-icon="receipt"]'));
+    (picker.querySelector('.look-icon[data-icon="envelope"]') as HTMLButtonElement).click();
+    // At once, before the core answers.
+    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: envelope, green');
+    await flush();
+    expect(calls).toContainEqual({ method: 'PUT', path: `/api/helpers/${OWN_PATH}/look`, body: { icon: 'envelope', color: 'green' } });
+    expect(row(helpers.element, OWN).querySelector('.look')?.getAttribute('aria-label')).toBe('Invoices picture: envelope, green');
+    key(document.activeElement as Element, 'Escape');
+    expect(d.querySelector('.look-picker')).toBeNull();
+    expect(document.activeElement).toBe(pic);
+    // Escape in the picker closed it, and went no further: the details stay.
+    expect(d.hidden).toBe(false);
+  });
+
+  it('says so, and shows the saved picture again, when a new one does not save', async () => {
+    const { show } = details(list([own()]), { [`PUT /api/helpers/${OWN_PATH}/look`]: () => json({ error: 'bad_request' }, 400) });
+    const d = await show(OWN);
+    const pic = d.querySelector('.hp-d-pic') as HTMLButtonElement;
+    pic.click();
+    (d.querySelector('.look-color[data-color="rose"]') as HTMLButtonElement).click();
+    await flush();
+    expect(d.textContent).toContain("That didn't work. It may have just finished or been removed.");
+    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+  });
+});
+
+describe('making a helper from the panel', () => {
+  it('opens one field at the top, sends the sentence with Ask Trillion, and keeps nothing empty', async () => {
+    const asked: string[] = [];
+    const { helpers, root } = panel(list([own()]), { newHelper: (text) => asked.push(text) });
+    await helpers.open();
+    const add = [...root.querySelectorAll('button')].find((b) => b.textContent === 'New helper') as HTMLButtonElement;
+    expect(add).toBeTruthy();
+    // At the top, under her.
+    expect(add.compareDocumentPosition(root.querySelector('.hp-group') as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(add.getAttribute('aria-expanded')).toBe('false');
+    add.click();
+    expect(add.getAttribute('aria-expanded')).toBe('true');
+    const field = root.querySelector('.hp-new input') as HTMLInputElement;
+    expect(document.activeElement).toBe(field);
+    expect(root.querySelector(`label[for="${field.id}"]`)?.textContent).toBe('What should it do?');
+    press(root, 'Ask Trillion');
+    expect(asked).toEqual([]);
+    field.value = '  Chase my unpaid invoices  ';
+    press(root, 'Ask Trillion');
+    expect(asked).toEqual(['Chase my unpaid invoices']);
+    expect(field.value).toBe('');
+  });
+
+  it('closes the field on Escape, with focus back on the button, and the panel stays open', async () => {
+    const { helpers, root } = panel(list([]), { newHelper: () => undefined });
+    await helpers.open();
+    press(root, 'New helper');
+    const field = root.querySelector('.hp-new input') as HTMLInputElement;
+    const page = vi.fn();
+    window.addEventListener('keydown', page);
+    key(field, 'Escape');
+    window.removeEventListener('keydown', page);
+    expect(page).not.toHaveBeenCalled();
+    expect((root.querySelector('.hp-new') as HTMLElement).hidden).toBe(true);
+    expect(document.activeElement?.textContent).toBe('New helper');
+  });
+
+  it('asks in her last chat, never a helper’s: a new conversation when there is none', () => {
+    expect(askTarget(['c-1', 'c-2', 'c-inv'], new Set(['c-inv']))).toBe('c-2');
+    expect(askTarget(['c-inv'], new Set(['c-inv']))).toBeNull();
+    expect(askTarget([], new Set())).toBeNull();
   });
 });
