@@ -72,6 +72,17 @@ async def say_and_wait(session: Session, page: Page, text: str, count: int) -> N
     await idle(session)
 
 
+async def asked_for_notes(provider: Summarizing, times: int = 1) -> None:
+    """The background summary has been asked for `times` times. It starts only after
+    the turn's own wrap-up, which goes on after the session comes to rest, so a slow
+    machine must not be checked before it."""
+    for _ in range(400):
+        if provider.log.count("summary") >= times:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("the summary was never asked for")
+
+
 async def settled(session: Session) -> None:
     """The background summary, if one is being written, is done."""
     for _ in range(400):
@@ -93,6 +104,7 @@ async def test_a_long_history_is_summarized_after_her_reply_not_before(rt: Runti
     rt.compact_at = compact.estimate(session._history) + 20
     rt.compact_keep = 1
     await say_and_wait(session, page, FILLER, 2)
+    await asked_for_notes(provider)
     await settled(session)
 
     # Her reply was asked for first, on the whole history; the notes only after it.
@@ -123,6 +135,7 @@ async def test_a_turn_while_the_summary_is_written_is_not_held(rt: Runtime) -> N
     rt.compact_at = compact.estimate(session._history) + 20
     rt.compact_keep = 1
     await say_and_wait(session, page, FILLER, 2)
+    await asked_for_notes(provider)
     assert provider.log[-1] == "summary"  # being written, and held
 
     # The user carries on: her turn goes ahead on the whole history.
@@ -167,6 +180,7 @@ async def test_closing_lets_go_of_a_summary_being_written(rt: Runtime) -> None:
     await say_and_wait(session, page, FILLER, 1)
     rt.compact_at, rt.compact_keep = compact.estimate(session._history) + 20, 1
     await say_and_wait(session, page, FILLER, 2)
+    await asked_for_notes(provider)
     task = session._compacting
     assert task is not None and not task.done()
     await session.close()
@@ -180,6 +194,7 @@ async def past_the_point(session: Session, page: Page, rt: Runtime, provider: Su
     await say_and_wait(session, page, FILLER, 1)
     rt.compact_at, rt.compact_keep = compact.estimate(session._history) + 20, 1
     await say_and_wait(session, page, FILLER, 2)
+    await asked_for_notes(provider)
 
 
 async def test_a_summary_written_during_a_turn_waits_for_that_turn_to_end(rt: Runtime) -> None:
@@ -244,6 +259,7 @@ async def test_a_summary_that_fails_is_not_asked_for_again_every_turn(rt: Runtim
     assert provider.log.count("summary") == 1 and not page.all("notice")
     # Grown well past where it failed: tried again.
     await say_and_wait(session, page, FILLER * 2, 4)
+    await asked_for_notes(provider, 2)
     await settled(session)
     assert provider.log.count("summary") == 2
     assert "Answer 0." in sent_text(provider, 3)  # nothing was dropped
