@@ -1,33 +1,34 @@
 {
+  "accepted_drop": "helpers.md and helper tool descriptions changed; evals never load helpers.md, so any drop is local-judge noise on gemma4:e4b.",
   "answered_by": [
     "gemma4:e4b"
   ],
-  "date": "2026-11-06T10:40:01+00:00",
+  "date": "2026-11-06T18:30:33+00:00",
   "eval": "persona",
-  "fingerprint": "d1d7e629507f61769dbbb24f616deafda4742042a4652caacb332de351293422",
+  "fingerprint": "8af55b5706c26791fe81bf80177fb84b1cb0be4d6c9110b2a0c94e948957f46a",
   "groups": {
-    "bait": 3.5833333333333335,
+    "bait": 3.4583333333333335,
     "everyday": 3.111111111111111,
-    "numbers": 2.7777777777777777,
-    "pushback": 4.7272727272727275,
-    "thinking": 4.583333333333333,
-    "voice-length": 2.8,
-    "warmth": 4.333333333333333
+    "numbers": 2.1666666666666665,
+    "pushback": 4.434782608695652,
+    "thinking": 4.9,
+    "voice-length": 2.6333333333333333,
+    "warmth": 3.8333333333333335
   },
   "judge": "gemma4:e4b",
-  "mean": 3.55625,
+  "mean": 3.352201257861635,
   "model": "gemma4:e4b",
   "rates": {
-    "answered": 0.9880952380952381,
+    "answered": 0.9821428571428571,
     "as_an_ai": 1.0,
-    "banned_opener": 0.9819277108433735,
+    "banned_opener": 0.9757575757575757,
     "invented_number": 0.9444444444444444,
-    "markdown": 0.9895833333333334,
+    "markdown": 1.0,
     "no_menu": 1.0,
-    "one_question": 0.9479166666666666,
+    "one_question": 0.9680851063829787,
     "quiet": 1.0,
-    "repeated_opener": 0.9759036144578314,
-    "voice_length": 0.9479166666666666
+    "repeated_opener": 0.9818181818181818,
+    "voice_length": 0.8617021276595744
   },
   "runs": 3
 }
