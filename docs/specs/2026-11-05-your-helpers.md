@@ -4,16 +4,17 @@
 
 The helpers panel shows her background work as helpers. This is step two. You make helpers of your own, each a specialist with one job and a chat of its own. Trillion stays your one contact. She makes them, hands them work, and offers one when a need keeps coming back.
 
-Setup is almost nothing. One sentence is enough: "I want a helper for my invoices." She drafts its name and job, you tap Create, and its chat opens. Everything after that, it learns from what you tell it.
+Setup is almost nothing. One sentence is enough: "I want a helper for my invoices." She drafts it at once, from your words and what she knows of you: its name, job and notes, the connections it would use, and what it will ask you first. The draft is one card pinned above the message box; keep talking and she updates that same card. You tap Create, and its chat opens. Everything after that, it learns from what you tell it.
 
 ## Decisions
 
 1. **Two ways in, one path.** Ask her, or tap **+** in the sidebar's rail (or **+ New helper** in the Helpers panel) and type one sentence. The button sends that sentence to her, so both ways end on the same card.
 2. **It uses everything she can.** It has the same tools, connections and shared folders, under the same rules: anything that changes something still asks on a card (SPN-14). Per-helper permissions are out of scope.
 3. **She hands work off.** When you ask her something that is a helper's job, she says "Asking Invoices", the helper works in its own chat in the background, and the answer comes back to her conversation as one line with Open.
-4. **She suggests once.** When the same kind of need comes up on 3 different days within 14 days, and no helper covers it, she offers one in a single line with Create. A no is kept, and she never offers that one again.
+4. **She suggests once.** When the same kind of need comes up on 3 different days within 14 days, and no helper covers it, she offers one in a single line with Create. A no is kept, and she never offers that one again. Your own request always wins: no offer comes on a turn where you ask for a helper, or while her draft of one waits.
 5. **Only she dispatches (AGT-2).** A helper can't create helpers, hand work on, or change another helper. That avoids the bot-to-bot noise Grok Bot users complain about.
 6. **A whole helper pauses.** Pause stops its handoffs and its routines together. Grok Bot can't pause a whole bot.
+7. **She drafts, then you talk.** On a request she drafts in the same turn, with her best guess, and never questions you first: what the helper must know, it asks in its own chat. Anything you add updates the one card; nothing is lost by talking on.
 
 ## What a helper is
 
@@ -21,6 +22,7 @@ Migration `019_helpers.sql` adds:
 
 - `helpers`: `id`, `owner_id`, `name` (at most 40 characters, unique per owner, case-insensitive), `job` (one line, at most 200), `notes` (what it has learned from you, at most 1,000; AGT-7), `conversation_id`, `paused_ms`, `created_at`.
 - `schedules.helper_id` (nullable): a routine or timed ask that belongs to a helper.
+- Migration `020_helper_draft.sql` adds `helpers.connectors` and `helpers.asks`, JSON arrays of text (default `[]`): the Connected tools entries its card suggested, by catalog id, and the questions it asks first (at most 4 and 3).
 - conversation kind `'helper'`: a helper's own chat, titled with its name and never renamed by naming.
 
 At most 20 helpers. At the limit, she says so and suggests one to delete.
@@ -31,9 +33,15 @@ At most 20 helpers. At the limit, she says so and suggests one to delete.
 
 ## Creating one
 
-- **Asking.** She calls `helper_create {name, job}`, a carded tool. The card reads: "New helper: **Invoices**. Keeps track of who owes you and chases late payments." with **Create** and **Not now**.
-- **The + button.** The **+** at the foot of the rail, and **+ New helper** in the Helpers panel, open the same one field: "What should it do?" Submitting sends "New helper: {text}" to her as your message in the main conversation, the same as typing it. She drafts the name and job and raises the same card.
-- **On Create:** the helper and its chat are made. Its chat opens (the rail shows its picture, selected; no panel opens), and the helper's first message is one line saying what it'll do and asking anything it must know: "I'll keep an eye on unpaid invoices. Which account should I watch?"
+- **Asking.** She calls `helper_create {name, job, notes?, connectors?, asks?, icon?, color?}`, a carded tool, in the same turn you ask, with her best guess. She never asks clarifying questions first.
+  - `notes`: what it should know, from your words and what she knows of you (platforms, goals, audience, tone, cadence, limits), plain sentences on one line, cut at 1,000 characters.
+  - `connectors`: up to 4 Connected tools its job would use, by the featured catalog's ids (`connectors/mcp/catalog.py`); the tool's description lists them with their titles. An id not in the catalog is dropped, never refused. When the job needs something the catalog lacks, she says so in one line and names the closest entries or a custom connection in Settings, Connected tools.
+  - `asks`: up to 3 short questions (each at most 160 characters) it asks you first, in its own chat, instead of her asking in hers.
+  - She ends her reply with a short invitation ("Anything to add? Tell me and I'll update the card.") and never says it is made before Create.
+- **One live draft.** The card is pinned above the message box of that conversation, not on the board: its orb, name, job, notes (three lines, with More), suggested connections as chips (one not set up opens Settings at it) and the questions it will ask, with **Create** and **Not now**. They are the card's Approve and Decline, sent as every card's are: no new way to approve. In the conversation, a line ("New helper: Socials", View) goes to it. It works at phone width.
+- **Talking updates it.** While it waits, a new `helper_create` in that conversation replaces it: every draft's card has the same target (`helper:draft`), so the router retires the waiting one as superseded in the same transaction that saves the new one, as it does for any card with the same target. There is never more than one, and the old one can't be approved. The page puts the new draft where the old one was, and what changed glows for a moment.
+- **The + button.** The **+** at the foot of the rail, and **+ New helper** in the Helpers panel, open the same one field: "What should it do?" Submitting sends "New helper: {text}" to her as your message in the main conversation, the same as typing it. She drafts it and raises the same card.
+- **On Create:** the helper and its chat are made, with the draft's notes, connections and questions. The pinned card goes, its chat opens (the rail shows its picture, selected; no panel opens), and the helper's first message is one line saying what it'll do and asking anything it must know: "I'll keep an eye on unpaid invoices. Which account should I watch?"
 - She is told not to make one when an existing helper's job already covers it. She suggests using that helper instead.
 - Never from a run nobody is watching (no card can be raised there).
 
@@ -51,7 +59,8 @@ Your helpers live in a slim rail of round pictures down the left edge of the sid
 
 - Open it from its picture in the rail, the Helpers panel (**Talk to it**), or a line in her conversation (**Open**). It is a normal conversation: type, read, approve its cards.
 - **Feedback edits its notes (AGT-7):** `helper_narrow` applies at once with the same allowlist as routines (`narrows_routine()`), and `helper_widen` asks on a card. Both are offered only in its own chat.
-- **Changing its name or job:** say so in its chat. `helper_update {name?, job?}` asks on a card.
+- **Changing its name, job, notes, connections or questions:** say so in its chat. `helper_update {name?, job?, notes?, connectors?, asks?}` asks on a card; each one given replaces what it had.
+- **Its connections:** the chat's head and its details show the connections its card suggested that are not set up yet, as chips. A tap opens Settings, Connected tools, at that entry (`connect:<catalog id>`).
 - **Its own routines:** "every Monday, check what's overdue" in its chat makes a routine with `helper_id` set, by the usual `ask_schedule` card. It runs in the helper's chat, with its overlay.
 - In voice, you talk to her and she hands off. A helper's chat has no separate voice.
 
@@ -69,6 +78,8 @@ Your helpers live in a slim rail of round pictures down the left edge of the sid
 ## Suggestions
 
 - **A need** is an area of work: the tools a turn used, mapped to areas by tool name (email, calendar, files, payments, Slack, web, or one MCP server, found from the server that registered the tool). It is counted from the tool audit that already records every call: only calls that ran, only in your own conversations with her (not a helper's, not a run), once per area per local day. The check runs at most once a day per conversation.
+- **Your request wins.** No host note rides with a turn whose words ask for a helper (they start "New helper:", or plainly ask to make, set up or want a helper, agent, assistant or bot: `needs.asks_for_helper`), or while a `helper_create` card waits in that conversation. A turn wrongly taken for one only goes without an offer.
+- The offer line says "Suggested by {her name}" above its words, so it is never taken for your own request.
 - When an area reaches 3 days within 14, no helper's job covers it, and it isn't declined, her next turn gets a host note: offer a helper for it, once, in one sentence, after answering. She offers with `helper_suggest {area, name, job}`. It shows as a line with **Create** and **No thanks**. After a tap the line reads "Making {name}." until the helper is made, then "Made {name}.", or "Okay." for No thanks, or a short reason if it couldn't be made. Only the newest offer can be answered.
 - **Create** raises nothing more: your tap is the approval. The helper is made as above. **No thanks** keeps the area in the preference `helper_declined`, and she never offers it again. Neither happens on its own: no tap, no helper.
 - At most one offer a day, and the note to offer at most once a day even if she doesn't.
@@ -88,7 +99,7 @@ Every helper's picture is a small orb built exactly as hers is (lit from the top
 
 A new helper doesn't wait to be told what to do. When its chat first opens after Create, it takes one turn of its own:
 
-- It says, in one or two sentences, what it will do first and anything it needs to know.
+- It says, in one or two sentences, what it will do first and anything it needs to know. When its card had questions, its host note gives them (made inert) and it asks those. When its card suggested connections that are not set up yet, the note names them and it says so in one line.
 - If a regular check suits its job, it offers one through the usual `ask_schedule` card, as one of its own routines: "Want me to check for overdue invoices every Monday at 9?" One tap starts it. Nothing starts without the tap.
 - The turn runs as a host turn in its chat, with its overlay, once per helper (`hello_ms` is set when it has run). If the model can't be reached, the fixed first line stands: "Hi, I'm {name}. {job} Tell me anything I should know to start."
 
@@ -106,7 +117,7 @@ The Helpers panel lists your helpers under her with the others:
 
 - Every tool call goes through the router as today. A helper's run is unattended, so it gets only what runs without a card (D5).
 - What a run reads counts as outside (MEM-5), and its reply is saved as read, not as your words.
-- A helper's job, name and notes come from you, through her, on a card or by the narrowing allowlist. A job she drafted from something she read becomes the helper's instructions in its chat once you tap Create, so the card is where you check it. Outside content can't write them: after reading outside content in a turn, `helper_create`, `helper_update` and `helper_widen` are refused, as `routine_widen` is.
+- A helper's job, name and notes come from you, through her, on a card or by the narrowing allowlist. A job she drafted from something she read becomes the helper's instructions in its chat once you tap Create, so the card is where you check it. Outside content can't write them: after reading outside content in a turn, `helper_create`, `helper_update` and `helper_widen` are refused, as `routine_widen` is. The same holds for a draft's notes, connections and questions: they come only with a card made before any outside read, so nothing she read can draft them.
 - Handoff runs are background work for the spend gate (`Work` gains `"helpers"`). At a cap they pause like routines.
 
 ## PRD changes
@@ -124,6 +135,8 @@ AGT-1 and AGT-2 describe a manifest (accent colour, avatar, model, tool allowlis
 
 - **Core:**
   - create on a card, the limit of 20, unique names, never from an unattended run or a helper;
+  - the draft: notes, connections and questions kept, unknown connections dropped, each cut to its limit, nothing drafted after an outside read; a new draft in the same conversation supersedes the waiting one, which can't then be approved; migration 020 on a database at 019;
+  - no offer on "New helper:", a plain ask for one, or while a draft waits; the hello note carries the questions and the connections not set up;
   - the overlay in its chat and its runs;
   - narrow and widen, and update on a card;
   - its routines run with its overlay;
@@ -136,5 +149,5 @@ AGT-1 and AGT-2 describe a manifest (accent colour, avatar, model, tool allowlis
   - the routes refuse without the token;
   - the picture: kept from the card, picked from the job when missing or wrong, the same each time, changed by `PUT .../look`, only names from the lists;
   - the first hello runs once, offers a routine on a card, and falls back to the fixed line when the model fails.
-- **Web:** the picture on the row, the details, the chat and the ready line; the picker saves a tap; + New helper sends the sentence, the create card, the new chat opens, the panel rows and details, pause, resume, delete with its confirmation, the suggestion line, phone width, light and dark.
+- **Web:** the pinned draft (its parts, More, Create and Not now as approve and decline, updated in place with what changed marked), a connection chip opening Settings at its entry, "Suggested by" on an offer, the picture on the row, the details, the chat and the ready line; the picker saves a tap; + New helper sends the sentence, the create card, the new chat opens, the panel rows and details, pause, resume, delete with its confirmation, the suggestion line, phone width, light and dark.
 - **Live** on a throwaway install with a local model: make a helper by asking and by the button, talk to it, correct it, hand it work and see the ready line, pause it, see an offer after a repeated need, delete it.
