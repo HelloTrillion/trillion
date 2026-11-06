@@ -250,7 +250,7 @@ const MIC_PROBLEMS: Readonly<Record<MicProblem, string>> = {
   no_device: 'No microphone was found.',
   unsupported: 'This browser cannot capture a microphone here.',
   failed: 'The microphone could not be opened.',
-  silent: 'Your microphone is sending silence. Choose another in Settings, under Hearing, or check its input and gain.',
+  silent: 'Your microphone isn’t sending any sound. Check it in Settings, under Hearing.',
 };
 
 // Her tool for saying nothing (VOI-7): a silence she chose, never drawn as a tool.

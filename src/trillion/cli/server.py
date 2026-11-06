@@ -16,6 +16,8 @@ made on purpose, later, still stops it at once.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import signal
 import threading
 import time
@@ -51,14 +53,29 @@ class Server(uvicorn.Server):
 def stop_when_closed(stream: BinaryIO, server: Any) -> threading.Thread:
     """Stop the server when `stream` ends. The desktop app holds the other end of the
     server's input and never writes: when the app goes, even by a force quit, the
-    input closes and the server stops the way Ctrl+C stops it."""
+    input closes and the server stops the way Ctrl+C stops it.
+
+    It reads its own copy of the file descriptor, straight from the OS: a thread still
+    waiting in `stream.read` when Python exits holds the stream's lock, and closing
+    stdin at exit then aborts the process (a crash report on every quit)."""
+    try:
+        fd: int | None = os.dup(stream.fileno())
+    except (OSError, ValueError):
+        fd = None  # a stand-in input with no descriptor (a test harness): read it as is
+
+    def read() -> bytes:
+        return os.read(fd, 4096) if fd is not None else stream.read(4096)
 
     def wait() -> None:
         try:
-            while stream.read(4096):
+            while read():
                 pass
         except (OSError, ValueError):
             pass
+        finally:
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
         server.should_exit = True
 
     thread = threading.Thread(target=wait, name="desktop-lifeline", daemon=True)

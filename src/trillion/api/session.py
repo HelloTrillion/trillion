@@ -109,6 +109,9 @@ MAX_TEXT = 32_000
 BARGE_WAIT_S = 3.0
 # A microphone that sends nothing at all for this long is treated as not working.
 NO_AUDIO_S = 3.0
+# Before the first frame: a USB microphone sends only zeros for a second or more while
+# it wakes, which the page holds back, and says plainly itself after 4 s (WAKE_S).
+FIRST_AUDIO_S = 6.0
 # One frame of audio from the page is small; anything much larger is not audio.
 MAX_AUDIO_FRAME = 64_000
 # While the user talks over her, what they said is weighed at least this often.
@@ -2087,7 +2090,8 @@ class Session:
         loop = asyncio.get_running_loop()
         while self._listener is listener:
             await asyncio.sleep(0.5)
-            if self._listener is listener and loop.time() - self._last_audio > NO_AUDIO_S:
+            limit = NO_AUDIO_S if listener.frames else FIRST_AUDIO_S
+            if self._listener is listener and loop.time() - self._last_audio > limit:
                 self._watchdog = None
                 await self._conclude("inaudible")
                 return

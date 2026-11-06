@@ -69,4 +69,12 @@ describe('the chosen microphone, when its id changes between launches', () => {
     pick.dispatchEvent(new Event('change'));
     expect(choose).toHaveBeenCalledWith('b', 'Scarlett Solo 4th Gen');
   });
+
+  it('learns the name of a choice saved without one, once Settings can see names', async () => {
+    devices([input('teams', 'Microsoft Teams Audio'), input('sd', 'Studio Display Microphone')]);
+    const choose = vi.fn();
+    const mics = createMicrophones(() => 'sd', choose, undefined, () => null);
+    await mics.refresh();
+    expect(choose).toHaveBeenCalledWith('sd', 'Studio Display Microphone');
+  });
 });

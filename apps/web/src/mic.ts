@@ -19,8 +19,9 @@
  * An audio interface (a Focusrite Scarlett, say) is one device with several inputs,
  * and the microphone may be on any of them; an empty input is pure digital silence.
  * So every channel is read, and the loudest is the voice. A microphone can also be
- * chosen here, apart from the computer's own default input. And a second of exact
- * silence, which no real microphone produces, is said plainly at once.
+ * chosen here, apart from the computer's own default input. A USB microphone (the
+ * Studio Display's, say) sends exact zeros for a second or more while it wakes; those
+ * are skipped, and only a few seconds of nothing else is said plainly as silence.
  */
 
 export const TARGET_RATE = 16_000;
@@ -66,6 +67,32 @@ export class Framer {
       }
     }
     return out;
+  }
+}
+
+/** Exact zeros for this long, and nothing else: no real microphone, however quiet the
+ * room. Shorter would catch a microphone still waking up. */
+export const WAKE_S = 4;
+
+/**
+ * Watches the first moments of a microphone. Exact zeros while it wakes are skipped
+ * (not sent, so the core's clock starts with real audio). The first sample that isn't
+ * zero means it is on, for good; WAKE_S of only zeros means it is sending silence.
+ */
+export class Waking {
+  private seen = 0;
+  private on = false;
+
+  constructor(private readonly rate: number) {}
+
+  push(block: Float32Array): 'skip' | 'sound' | 'silent' {
+    if (this.on) return 'sound';
+    if (block.some((v) => v !== 0)) {
+      this.on = true;
+      return 'sound';
+    }
+    this.seen += block.length;
+    return this.seen >= this.rate * WAKE_S ? 'silent' : 'skip';
   }
 }
 
@@ -142,8 +169,9 @@ export interface MicHooks {
   device?(): string | null;
   /** The chosen microphone's name, to find it when its id has changed. */
   deviceName?(): string | null;
-  /** The chosen microphone was found by name under a new id: remember the id. */
-  onDeviceFound?(id: string): void;
+  /** The chosen microphone opened, or was found by name under a new id: remember its id
+   * and, when the browser gives one, its name. */
+  onDeviceFound?(id: string, name: string | null): void;
   /** The microphone could not be opened, or was lost while open. */
   onProblem(problem: MicProblem): void;
   /** Lets the Galaxy listen to the user's voice. Returns a function that detaches. */
@@ -186,9 +214,6 @@ export function createMic(hooks: MicHooks): Mic {
     // The context is kept: made again outside a click, Safari would leave it paused.
   }
 
-  /** Exact silence for this long: no real microphone, however quiet the room. */
-  const SILENT_S = 1.2;
-
   async function start(): Promise<void> {
     if (stream || !navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === 'undefined') {
       if (!stream) hooks.onProblem('unsupported');
@@ -226,7 +251,6 @@ export function createMic(hooks: MicHooks): Mic {
           for (const track of got.getTracks()) track.stop();
           got = found;
           device = 'chosen, found by name';
-          hooks.onDeviceFound?.(again);
         } catch {
           // Keep the default.
         }
@@ -237,6 +261,11 @@ export function createMic(hooks: MicHooks): Mic {
       return;
     }
     stream = got;
+    if (device.startsWith('chosen')) {
+      const track = got.getAudioTracks()[0];
+      const id = track?.getSettings().deviceId;
+      if (id) hooks.onDeviceFound?.(id, track?.label.trim() || null);
+    }
     loaded ??= ctx.audioWorklet.addModule(new URL('mic-worklet.js', document.baseURI).href);
     await loaded;
     if (mine !== run) return;
@@ -246,8 +275,7 @@ export function createMic(hooks: MicHooks): Mic {
     const mute = ctx.createGain();
     mute.gain.value = 0;
     const framer = new Framer(ctx.sampleRate);
-    let seen = 0;
-    let sound = false;
+    const waking = new Waking(ctx.sampleRate);
     let channels = 1;
     const report = (silent = false): void => {
       if (mine !== run) return;
@@ -266,15 +294,13 @@ export function createMic(hooks: MicHooks): Mic {
       if (mine !== run) return;
       channels = ev.data.length;
       const block = loudest(ev.data);
-      if (!sound) {
-        sound = block.some((v) => v !== 0);
-        seen += block.length;
-        if (!sound && seen >= ctx.sampleRate * SILENT_S) {
-          report(true);
-          stop();
-          hooks.onProblem('silent');
-          return;
-        }
+      const now = waking.push(block);
+      if (now === 'skip') return;
+      if (now === 'silent') {
+        report(true);
+        stop();
+        hooks.onProblem('silent');
+        return;
       }
       for (const frame of framer.push(block)) hooks.onFrame(frame);
     };

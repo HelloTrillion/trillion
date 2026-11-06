@@ -129,6 +129,11 @@ export function createMicrophones(
         choose(chosen, name);
       }
     }
+    const known = chosen ? named.get(chosen) : undefined;
+    if (known && !name) {
+      // Chosen before names could be seen: kept by name too, for when its id changes.
+      choose(chosen, known);
+    }
     const options = [el('option', '', 'Your computer’s default input')];
     (options[0] as HTMLOptionElement).value = DEFAULT;
     inputs.forEach((d, i) => {
