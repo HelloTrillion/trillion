@@ -509,6 +509,8 @@ class Runtime:
     _helper_notes: asyncio.Lock = field(default_factory=asyncio.Lock)
     # And `helper_conversations` (`api/helpers.py`, `helpers/wiring.py`).
     helper_talks: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # And `helper_offer` and `helper_declined`, so one offer is answered once.
+    helper_offers: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -861,6 +863,11 @@ class Runtime:
                 if not await self.conversations.exists(other, OWNER):
                     await self.helper_note_said(other)
         return note if isinstance(note, str) else None
+
+    async def helper_offer_open(self, conversation_id: str, area: str) -> bool:
+        """Whether this conversation's turn now was told to offer a helper for `area`."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and bool(session.offering(area))
 
     async def helper_note_keep(self, conversation_id: str, note: str) -> None:
         async with self._helper_notes:
@@ -1718,6 +1725,7 @@ async def open_runtime(
                 preferences=rt.preferences,
                 zone=rt.zone,
                 held=rt.held,
+                offer_open=rt.helper_offer_open,
             )
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)

@@ -59,6 +59,7 @@ from trillion.brain.types import (
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
 from trillion.delivery import door as delivery
 from trillion.delivery.door import Delivery, Facts, NotFree, free
+from trillion.helpers import needs
 from trillion.helpers.store import OwnHelper
 from trillion.memory import present
 from trillion.persona import day
@@ -90,9 +91,14 @@ from trillion.tools.folders import View, host_note, open_place
 from trillion.tools.helper import ASK as HELPER_ASK
 from trillion.tools.helper import CATEGORY as HELPER_CATEGORY
 from trillion.tools.helper import CREATE as HELPER_CREATE
+from trillion.tools.helper import DECLINED_PREF as HELPER_DECLINED
 from trillion.tools.helper import NARROW as HELPER_NARROW
+from trillion.tools.helper import OFFER_PREF as HELPER_OFFER
+from trillion.tools.helper import SUGGEST as HELPER_SUGGEST
 from trillion.tools.helper import UPDATE as HELPER_UPDATE
 from trillion.tools.helper import WIDEN as HELPER_WIDEN
+from trillion.tools.helper import make as make_helper
+from trillion.tools.helper import plain as plain_helper
 from trillion.tools.quiet import asks
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
@@ -565,10 +571,22 @@ class BuiltInput:
     spend_notes: tuple[str, ...] = ()
     # The helper note that rode with it (a watcher's own conversation): said once.
     helper_note: str | None = None
+    # The area its host note said to offer a helper for, if one did.
+    offer: str | None = None
 
 
 # Where a page can say it runs, in its hello. Anything else is "other".
 HOSTS = frozenset({"desktop", "chrome", "edge", "firefox", "safari", "other"})
+
+
+def offer_note(area: str) -> str:
+    """The host note that has her offer a helper for an area, after answering."""
+    said = needs.label(area)
+    note = (
+        f"After answering, offer the user a helper for {said} with helper_suggest, once, "
+        "in one sentence."
+    )
+    return note if said == area else f'{note} Its area is "{area}".'
 
 
 def page_host(raw: object) -> str:
@@ -750,6 +768,9 @@ class Session:
         self._helpers: list[tuple[str, str, str]] = []
         # The last look failed: no helper tool is offered until one works.
         self._helpers_unread = False
+        # (turn, area): the user's turn whose host note said to offer a helper for an
+        # area. helper_suggest is offered then only, and only once.
+        self._offering: tuple[int, str] | None = None
         # Background reads that ended here, waiting for a pause to be brought in, and
         # whether a saved one still waits for her (the background reads spec).
         self._finished: list[_Finished] = []
@@ -1000,8 +1021,103 @@ class Session:
             return frozenset()
         if self._helper is not None:
             return frozenset({HELPER_UPDATE, HELPER_NARROW, HELPER_WIDEN})
-        # helper_suggest waits for a host note that says to offer one.
+        if self._offering is not None and self._offering[0] == self._turn:
+            # Its host note said to offer one, this turn.
+            return frozenset({HELPER_CREATE, HELPER_ASK, HELPER_SUGGEST})
         return frozenset({HELPER_CREATE, HELPER_ASK})
+
+    def offering(self, area: str) -> bool:
+        """Whether this turn was told to offer a helper for `area` and has not yet."""
+        return (
+            self._helper is None
+            and not self._helpers_unread
+            and self._offering == (self._turn, area)
+        )
+
+    async def _offer_due(self) -> str | None:
+        """The area to offer a helper for on this turn, if any. Never in the way of
+        the turn: anything unexpected means no offer, logged by its kind only."""
+        rt = self._rt
+        if rt.helpers is None or self._helper is not None or self._helpers_unread:
+            return None
+        if self.kind not in needs.COUNTED_KINDS:
+            return None
+        try:
+            now = rt.clock()
+            raw = await rt.preferences.get(OWNER, HELPER_OFFER)
+            at = raw.get("at_ms") if isinstance(raw, dict) else None
+            last = at if isinstance(at, int) else None
+            if last is not None and now - last < needs.ONCE_MS:
+                # Offered today: the audit need not be read.
+                return None
+            calls = await rt.spine_store.recent_tools(OWNER, needs.since(now))
+            kinds: dict[str, str] = {}
+            for sid in {sid for tool, sid, _ in calls if needs.area_of(tool) is not None}:
+                found = await rt.conversations.kind_of(sid, OWNER)
+                if found is not None:
+                    kinds[sid] = found[0]
+            areas = needs.repeated(calls, kinds, rt.zone() or "", now)
+            if not areas:
+                return None
+            said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
+            declined = (
+                [a for a in said_no if isinstance(a, str)] if isinstance(said_no, list) else []
+            )
+            return needs.to_offer(areas, await rt.helpers.all(OWNER), declined, last, now)
+        except Exception as e:
+            logger.warning(
+                "helper offer not looked at in session %s: %s", self.id, type(e).__name__
+            )
+            return None
+
+    async def _offered(self) -> None:
+        """helper_suggest kept its offer: the page shows it, with Create and No thanks."""
+        self._offering = None
+        raw = await self._rt.preferences.get(OWNER, HELPER_OFFER)
+        if isinstance(raw, dict) and raw.get("name") and raw.get("job"):
+            await self._send("helper.offer", area=raw["area"], name=raw["name"], job=raw["job"])
+
+    async def _on_helper_offer(self, area: object, choice: object) -> None:
+        """The page's Create or No thanks, taken only for the offer still open. Create
+        is the user's own tap, so it makes the helper as a card's approval would."""
+        if not isinstance(area, str) or choice not in ("create", "decline"):
+            await self._error("bad_message")
+            return
+        rt = self._rt
+        store = rt.helpers
+        if store is None:
+            return
+        async with rt.helper_offers:
+            raw = await rt.preferences.get(OWNER, HELPER_OFFER)
+            if not (
+                isinstance(raw, dict)
+                and raw.get("area") == area
+                and isinstance(raw.get("name"), str)
+                and isinstance(raw.get("job"), str)
+            ):
+                # Answered already, never made, or for another area.
+                logger.info("helper offer answer not taken in session %s", self.id)
+                return
+            now = rt.clock()
+            # Answered either way: kept only for the once-a-day rule.
+            await rt.preferences.put(
+                OWNER, HELPER_OFFER, {"area": area, "at_ms": raw.get("at_ms", now)}, now
+            )
+            if choice == "decline":
+                said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
+                declined = list(said_no) if isinstance(said_no, list) else []
+                if area not in declined:
+                    await rt.preferences.put(OWNER, HELPER_DECLINED, [*declined, area], now)
+                return
+            name, job = " ".join(raw["name"].split()), " ".join(raw["job"].split())
+            if plain_helper(name, job) is not None:
+                return
+            made = await make_helper(store, rt.conversations, OWNER, name, job, now)
+        if isinstance(made, str):
+            await self._send("helper.offer.failed", reason=made)
+            return
+        logger.info("helper %s made from an offer in %s", made.id, self.id)
+        await self._send("helper.created", helper_id=made.id, conversation_id=made.conversation_id)
 
     async def _read_place(self) -> None:
         """What this conversation is now: which routine tools it is offered (a routine
@@ -1326,6 +1442,8 @@ class Session:
                 await self._error("bad_message")
             elif self._rt.refresher is not None:
                 self._rt.refresher.now(self.id, widget_id)
+        elif kind == "helper.offer":
+            await self._on_helper_offer(msg.get("area"), msg.get("choice"))
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
@@ -2664,6 +2782,8 @@ class Session:
                     self._remember_read(turn, ev.name, ev.args)
                     # Confirmed by her `confirm_pending_action` on the user's yes.
                     await self._helper_made(r)
+                    if ev.name == HELPER_SUGGEST:
+                        await self._offered()
                 await self._send(
                     "tool.end",
                     call_id=ev.call_id,
@@ -3522,6 +3642,10 @@ class Session:
         helper_note = await self._rt.helper_note(self.id)
         if helper_note is not None:
             notes = (*notes, ContextBlock(text=helper_note))
+        # A need that keeps coming back, on the user's own turn: offer a helper, once.
+        offer = await self._offer_due() if kind == "user" and via != "ask" else None
+        if offer is not None:
+            notes = (*notes, ContextBlock(text=offer_note(offer)))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
         return BuiltInput(
             msg=Msg(role="user", blocks=blocks),
@@ -3531,6 +3655,7 @@ class Session:
             folder_note=folder_note,
             spend_notes=tuple(key for key, _ in spend_notes),
             helper_note=helper_note,
+            offer=offer,
         )
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
@@ -3552,6 +3677,9 @@ class Session:
                 await self._rt.spend.said(built.spend_notes)
             except Exception as e:
                 logger.warning("spend note not marked in session %s: %s", self.id, type(e).__name__)
+        if kind == "user":
+            # Only this turn may offer, and only for what its note said.
+            self._offering = (self._turn, built.offer) if built.offer is not None else None
         if built.helper_note is not None:
             try:
                 await self._rt.helper_note_said(self.id)

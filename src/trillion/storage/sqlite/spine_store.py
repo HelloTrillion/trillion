@@ -32,6 +32,8 @@ _SELECT_PENDING = (
     + ", x.args_json AS full_args_json, x.cleared_at AS args_cleared_at"
     " FROM pending_actions p LEFT JOIN pending_action_args x ON x.pending_id = p.id"
 )
+# An audited call the router let through: it ran, or it raised a card.
+_ALLOWED = frozenset({"executed", "proposed"})
 
 
 def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
@@ -416,6 +418,25 @@ class SqliteSpineStore:
                 )
                 for r in await cur.fetchall()
             ]
+
+    async def recent_tools(self, owner_id: str, since_ms: int) -> list[tuple[str, str, int]]:
+        """(tool, session id, at) of the owner's calls since a moment that the router let
+        through, to run or to a card. Newest first.
+
+        The audit has no index on its time, and needs none: rows are appended as calls
+        happen, so it is read back from the newest and stops at the first one older."""
+        found: list[tuple[str, str, int]] = []
+        async with self._conn.execute(
+            "SELECT owner_id, tool, decision, session_id, at FROM tool_audit ORDER BY id DESC"
+        ) as cur:
+            while rows := await cur.fetchmany(256):
+                for r in rows:
+                    at = int(r["at"])
+                    if at < since_ms:
+                        return found
+                    if r["owner_id"] == owner_id and r["decision"] in _ALLOWED:
+                        found.append((str(r["tool"]), str(r["session_id"]), at))
+        return found
 
     async def list_audit(self) -> list[AuditRecord]:
         async with self._conn.execute(

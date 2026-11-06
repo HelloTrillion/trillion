@@ -54,6 +54,8 @@ ASK, SUGGEST = "helper_ask", "helper_suggest"
 NAMES = (CREATE, UPDATE, NARROW, WIDEN, ASK, SUGGEST)
 # The offer she made, for the page to show (`{area, at_ms, name, job}`).
 OFFER_PREF = "helper_offer"
+# The areas the user said no to: never offered again.
+DECLINED_PREF = "helper_declined"
 # A handoff's title: the helper's name and as much of the request as fits.
 TITLE_ASK = MAX_TITLE
 # A name is plain words: nothing that reads as markup or code.
@@ -158,6 +160,31 @@ def _job_wrong(value: Any) -> str | None:
     if len(job) > JOB_MAX:
         return f"the job is too long: keep it to {JOB_MAX} characters, one sentence"
     return None
+
+
+def plain(name: Any, job: Any) -> str | None:
+    """Why a name and job can't be a helper's, if they can't: the same check a card's
+    and an offer's get."""
+    return _name_wrong(name) or _job_wrong(job)
+
+
+async def make(
+    store: HelperStore,
+    conversations: Conversations | None,
+    owner_id: str,
+    name: str,
+    job: str,
+    now_ms: int,
+) -> OwnHelper | Literal["full", "taken"]:
+    """Make a helper, and save its first line to its chat as hers: on a card's tap or
+    an offer's."""
+    made = await store.create(owner_id, name, job, now_ms)
+    if isinstance(made, str):
+        return made
+    if conversations is not None:
+        hello = Msg(role="assistant", blocks=(TextBlock(text=first_line(name, job)),))
+        await conversations.append(made.conversation_id, owner_id, "assistant", hello, now_ms)
+    return made
 
 
 def _taken(name: str) -> str:
@@ -279,7 +306,7 @@ class HelperCreate(HelperTool):
         said = self._said(ctx)
         if said is not None:
             return said
-        wrong = _name_wrong(args.get("name")) or _job_wrong(args.get("job"))
+        wrong = plain(args.get("name"), args.get("job"))
         if wrong is not None:
             return wrong
         name = _one_line(args.get("name"))
@@ -302,17 +329,11 @@ class HelperCreate(HelperTool):
         if why is not None or store is None:
             return _refused(why or _UNAVAILABLE)
         name, job = _one_line(args["name"]), _one_line(args["job"])
-        now = self._clock()
-        made = await store.create(ctx.owner_id, name, job, now)
+        made = await make(store, self._conversations, ctx.owner_id, name, job, self._clock())
         if made == "full":
             return _refused(_FULL, "full")
         if made == "taken":
             return _refused(_taken(name), "taken")
-        if self._conversations is not None:
-            hello = Msg(role="assistant", blocks=(TextBlock(text=first_line(name, job)),))
-            await self._conversations.append(
-                made.conversation_id, ctx.owner_id, "assistant", hello, now
-            )
         logger.info("helper %s made in %s", made.id, ctx.session_id)
         return ToolResult(
             ok=True,
@@ -663,7 +684,7 @@ class HelperSuggest(HelperTool):
             return _NOT_FOR_HELPERS
         if not await self._offer_open(ctx.session_id, str(args.get("area", ""))):
             return _NOT_OFFERED
-        return _name_wrong(args.get("name")) or _job_wrong(args.get("job"))
+        return plain(args.get("name"), args.get("job"))
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         why = await self._why_not(args, ctx)

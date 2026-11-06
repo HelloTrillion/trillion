@@ -137,7 +137,7 @@ async def test_her_chat_lists_the_helpers_not_paused_and_may_hand_off(rt: Runtim
     assert "one of Trillion's helpers" not in context
     offered = set(provider.offered[0])
     assert {CREATE, ASK} <= offered
-    # Not yet: Task 6 decides when she offers one.
+    # Only on a turn whose host note says to offer one (test_helper_offer.py).
     assert SUGGEST not in offered
     assert not OWN & offered
     await session.close()
