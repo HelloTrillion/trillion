@@ -67,8 +67,9 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { type Helper, askTarget, bindButton, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
+import { type Helper, askTarget, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
 import { lookOf, picture } from './look';
+import { createRail } from './rail';
 import { chatHead, offerLine } from './offer';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
@@ -826,6 +827,10 @@ function render(): void {
   statusEl.textContent = statusText(view);
   newBtn.hidden = !ready || view.entries.length === 0;
   agentNameEl.textContent = view.agentName;
+  if (chatHeadOn) {
+    rail.name(view.agentName);
+    rail.select(view.conversationId);
+  }
   threadTitleEl.textContent = view.title ?? 'New conversation';
   const introducing = ready && active(ob);
   settingsBtn.hidden = !ready || introducing;
@@ -2142,14 +2147,8 @@ workspace.onClose((id, replaced) => {
   }
 });
 
-// Her helpers, beside the chat (the helpers panel spec): one click opens the panel in
-// the workspace, one closes it. The button shows how many need you.
-const helpersBtn = $<HTMLButtonElement>('helpers-btn');
-const helpersDot = document.createElement('span');
-helpersDot.className = 'hp-badge';
-helpersDot.setAttribute('aria-hidden', 'true');
-helpersDot.hidden = true;
-helpersBtn.replaceChildren(icon('helpers', 18), helpersDot);
+// Her helpers (the helpers panel spec): the panel opens in the workspace, from the
+// rail's menus and from a helper's name in the chat.
 const helpers = createHelpers({
   api,
   // The page's one polite region: what needs you, and what failed.
@@ -2169,34 +2168,60 @@ const helpers = createHelpers({
   capName: () => capNameOf(usage?.providers),
   newHelper: (text) => askForHelper(text),
 });
-bindButton(helpersBtn, helpersDot, helpers);
+// The rail (the your helpers spec): her picture, one per helper of the user's, and +.
+const rail = createRail($('rail'), {
+  api,
+  announce: (text) => {
+    announceEl.textContent = text;
+  },
+  open: (id) => openConversation(id),
+  her: () => backToHer(),
+  newHelper: (text) => askForHelper(text),
+  details: (id) => showHelper(id),
+  panel: () => showHelpers(),
+  update: (list) => helpers.update(list),
+  now: () => Date.now(),
+  capName: () => capNameOf(usage?.providers),
+});
 // A helper's chat may only now be known for one: its head is drawn, and its hello asked.
-helpers.onCount(() => render());
+helpers.onCount(() => {
+  rail.update(helpers.list);
+  render();
+});
 function helpersShowing(): boolean {
   return workspace.isOpen && workspace.showing === 'helpers';
 }
-helpersBtn.addEventListener('click', () => {
-  if (helpersShowing()) {
-    workspace.close();
-    return;
-  }
-  workspace.open('Helpers', helpers.element, 'helpers');
-  helpersBtn.setAttribute('aria-pressed', 'true');
-  helpersBtn.toggleAttribute('data-on', true);
+/** Her picture's menu: the panel, with her routines, timed asks and watchers. */
+function showHelpers(): void {
+  if (!helpersShowing()) workspace.open('Helpers', helpers.element, 'helpers');
   void helpers.open().then(() => helpers.focus());
-});
+}
 workspace.onClose((id) => {
-  if (id !== 'helpers') return;
-  helpers.closed();
-  helpersBtn.setAttribute('aria-pressed', 'false');
-  helpersBtn.toggleAttribute('data-on', false);
+  if (id === 'helpers') helpers.closed();
 });
-/** A helper's name in the chat: the panel opens at its details. */
+/** A helper's name in the chat, or Details in its menu: the panel opens at its details. */
 function showHelper(id: string): void {
   if (!helpersShowing()) workspace.open('Helpers', helpers.element, 'helpers');
-  helpersBtn.setAttribute('aria-pressed', 'true');
-  helpersBtn.toggleAttribute('data-on', true);
   void helpers.showHelper(id);
+}
+/** Her picture: back to her last conversation that is not a helper's, or a new one. */
+function backToHer(): void {
+  const here = view.conversationId;
+  if (here !== null && helpers.ownFor(here) === null) {
+    openConversation(here);
+    return;
+  }
+  if (here === null) {
+    // Already hers, not yet begun: only the sidebar comes forward.
+    workspace.close();
+    threads.close();
+    sidebar.setHidden(false);
+    if (isPhone(innerWidth)) sidebar.raise('full');
+    focusInput();
+    return;
+  }
+  const helperChats = new Set(visited.filter((id) => helpers.ownFor(id) !== null));
+  openConversation(askTarget(visited, helperChats));
 }
 /** The top of a helper's own chat: its picture and name. Its hello is asked once it is open. */
 const chatHeadEl = document.createElement('div');

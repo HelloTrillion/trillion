@@ -8,7 +8,7 @@ Setup is almost nothing. One sentence is enough: "I want a helper for my invoice
 
 ## Decisions
 
-1. **Two ways in, one path.** Ask her, or tap **+ New helper** in the Helpers panel and type one sentence. The button sends that sentence to her, so both ways end on the same card.
+1. **Two ways in, one path.** Ask her, or tap **+** in the sidebar's rail (or **+ New helper** in the Helpers panel) and type one sentence. The button sends that sentence to her, so both ways end on the same card.
 2. **It uses everything she can.** It has the same tools, connections and shared folders, under the same rules: anything that changes something still asks on a card (SPN-14). Per-helper permissions are out of scope.
 3. **She hands work off.** When you ask her something that is a helper's job, she says "Asking Invoices", the helper works in its own chat in the background, and the answer comes back to her conversation as one line with Open.
 4. **She suggests once.** When the same kind of need comes up on 3 different days within 14 days, and no helper covers it, she offers one in a single line with Create. A no is kept, and she never offers that one again.
@@ -32,14 +32,24 @@ At most 20 helpers. At the limit, she says so and suggests one to delete.
 ## Creating one
 
 - **Asking.** She calls `helper_create {name, job}`, a carded tool. The card reads: "New helper: **Invoices**. Keeps track of who owes you and chases late payments." with **Create** and **Not now**.
-- **The + button.** In the Helpers panel, **+ New helper** opens one field: "What should it do?" Submitting sends "New helper: {text}" to her as your message in the main conversation, the same as typing it. She drafts the name and job and raises the same card.
+- **The + button.** The **+** at the foot of the rail, and **+ New helper** in the Helpers panel, open the same one field: "What should it do?" Submitting sends "New helper: {text}" to her as your message in the main conversation, the same as typing it. She drafts the name and job and raises the same card.
 - **On Create:** the helper and its chat are made. The panel opens its chat, and the helper's first message is one line saying what it'll do and asking anything it must know: "I'll keep an eye on unpaid invoices. Which account should I watch?"
 - She is told not to make one when an existing helper's job already covers it. She suggests using that helper instead.
 - Never from a run nobody is watching (no card can be raised there).
 
+## The rail
+
+Your helpers live in a slim rail of round pictures down the left edge of the sidebar, about 50px wide, beside the header and chat: pictures only, so the chat keeps its room (modelled on Grok Bot's sidebar). It replaces the Helpers button.
+
+- **Top to bottom:** her own picture (a small orb, named with her name), one picture per helper of yours in the order the list gives, then a dashed **+** ("New helper"). It scrolls on its own when there are many.
+- **A tap** opens that helper's chat; her picture goes back to her last conversation that is not a helper's, or a new one. The picture whose chat is showing is ringed in the accent, with `aria-current="page"`.
+- **Its state:** a dot while it is working (accent) or needs you (amber, larger); a paused one is dimmed. Its name, and its state when not at rest, is on hover and in its accessible name: "Inbox Monitor, needs you".
+- **Its menu** (right-click, long press, Shift+F10 or the menu key; Escape closes it): **Change picture** (the picker), **Pause** or **Resume**, **Details** (the panel, at it), **Delete** (the panel's same confirm). Her picture's menu has one item, **Routines and watchers**, which opens the panel.
+- **On a phone** the rail is a strip across the top of the sheet, so the chat keeps the sheet's full width. It hides with the sidebar.
+
 ## Talking to it
 
-- Open it from the Helpers panel (**Talk to it**), or from a line in her conversation (**Open**). It is a normal conversation: type, read, approve its cards.
+- Open it from its picture in the rail, the Helpers panel (**Talk to it**), or a line in her conversation (**Open**). It is a normal conversation: type, read, approve its cards.
 - **Feedback edits its notes (AGT-7):** `helper_narrow` applies at once with the same allowlist as routines (`narrows_routine()`), and `helper_widen` asks on a card. Both are offered only in its own chat.
 - **Changing its name or job:** say so in its chat. `helper_update {name?, job?}` asks on a card.
 - **Its own routines:** "every Monday, check what's overdue" in its chat makes a routine with `helper_id` set, by the usual `ask_schedule` card. It runs in the helper's chat, with its overlay.

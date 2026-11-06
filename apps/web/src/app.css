@@ -7490,32 +7490,6 @@ button.reminders-open {
 
 /* ── Helpers: her routines, timed asks and watchers, beside the chat ──────── */
 
-#helpers-btn {
-  position: relative;
-}
-
-/* How many need you, on the button's corner. */
-.hp-badge {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: var(--radius-full);
-  background: var(--color-amber);
-  color: var(--color-bg-0);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 15px;
-  text-align: center;
-  box-sizing: border-box;
-}
-
-.hp-badge[hidden] {
-  display: none;
-}
-
 .hp {
   max-width: 680px;
   margin: 0 auto;
@@ -7768,7 +7742,7 @@ button.reminders-open {
   overflow-wrap: anywhere;
 }
 
-/* A helper's name at the head of a line from it: a tap opens its details in Helpers. */
+/* A helper's name at the head of a line from it: a tap opens its details in the panel. */
 .notice-from {
   display: inline;
   padding: 0;
@@ -8146,4 +8120,191 @@ button.reminders-open {
   border-color: var(--color-accent);
   color: var(--color-bg-0);
   font-weight: 600;
+}
+
+/* ── The rail: her picture, the user's helpers, and +, down the sidebar's left edge ── */
+
+:root {
+  --rail-w: 50px;
+}
+
+.sidebar {
+  padding-left: calc(12px + var(--rail-w));
+}
+
+.rail {
+  position: absolute;
+  top: 12px;
+  bottom: 14px;
+  left: 0;
+  width: var(--rail-w);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-right: 1px solid var(--color-border);
+  overflow: hidden auto;
+  scrollbar-width: none;
+}
+
+.rail-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Each picture is a 34px round button: room to tap, and for its ring. */
+.rail-pic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.rail-pic:hover:not(:disabled) {
+  background: var(--color-bg-2);
+}
+
+/* The chat showing is ringed in the accent. */
+.rail-pic[aria-current='page'] {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+/* Paused, or waiting at a cap: dimmed. */
+.rail-pic[data-state='paused'] .look,
+.rail-pic[data-state='capped'] .look {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+
+/* Her: a small orb, lit from the top left. */
+.rail-orb {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--color-ink-on-dark) 0,
+    var(--color-accent) 45%,
+    color-mix(in srgb, var(--color-accent) 35%, var(--color-bg-0)) 100%
+  );
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+/* Working is the accent; needs you is amber, and larger. Otherwise no dot. */
+.rail-dot {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  display: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--color-bg-1);
+}
+.rail-dot[data-state='working'] {
+  display: block;
+  background: var(--color-accent);
+}
+.rail-dot[data-state='needs_you'] {
+  display: block;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  background: var(--color-amber);
+}
+
+/* +: a dashed circle the size of a picture. */
+.rail-add {
+  color: var(--color-text-1);
+  outline: 1.5px dashed var(--color-text-2);
+  outline-offset: -4px;
+}
+.rail-add:hover:not(:disabled) {
+  color: var(--color-text-0);
+}
+.rail-add:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Its menu and popovers sit on the page beside the picture that opened them. */
+.rail-pop {
+  position: fixed;
+  z-index: 30;
+}
+.rail-pop .look-picker {
+  position: static;
+}
+.rail-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-2);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
+}
+.rail-menu-item {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  font-size: 14px;
+}
+.rail-menu-item:hover:not(:disabled),
+.rail-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-text-0) 8%, transparent);
+}
+.rail-confirm,
+.rail-pop:has(> .hp-new) {
+  width: 280px;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-1);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.3);
+}
+.rail-confirm p {
+  margin: 0 0 10px;
+}
+.rail-confirm-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* A phone: the sheet keeps its full width, and the rail is a strip across its top. */
+@media (max-width: 767px) {
+  .sidebar {
+    padding-left: 12px;
+  }
+  .rail {
+    position: static;
+    flex-direction: row;
+    flex-shrink: 0;
+    width: auto;
+    height: 42px;
+    padding: 0 4px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    overflow: auto hidden;
+  }
+  .rail-list {
+    flex-direction: row;
+  }
 }

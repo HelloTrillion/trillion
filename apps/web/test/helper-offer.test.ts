@@ -133,7 +133,7 @@ describe('pictures in the chat', () => {
     const pic = line.querySelector('.notice-from .look') as HTMLElement;
     expect(pic.dataset['size']).toBe('18');
     expect(pic.getAttribute('aria-hidden')).toBe('true');
-    expect(line.querySelector('.notice-from')?.getAttribute('aria-label')).toBe('Invoices, in Helpers');
+    expect(line.querySelector('.notice-from')?.getAttribute('aria-label')).toBe('Invoices, open its details');
     // A routine's line has no picture.
     expect(fromTag({ id: 'routine:a', name: 'Morning brief' }, () => undefined).querySelector('.look')).toBeNull();
     const asked = renderScheduled({ ...e, what: 'ask', text: 'Done' }, (t) => [Object.assign(document.createElement('p'), { textContent: t })], undefined, () => undefined);

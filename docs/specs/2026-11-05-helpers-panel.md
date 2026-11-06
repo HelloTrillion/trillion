@@ -11,10 +11,10 @@ This is step one. Step two (AGT-1, AGT-2) adds new helpers that you or she creat
 ## Decisions
 
 1. **A live view over what already exists.** The core builds the helper list from the scheduler, the watcher settings and the cards and notices waiting on you. It stores no second copy of any helper's state.
-2. **A panel beside the chat.** A Helpers button sits next to Workspace and History. On a phone the panel is a full-height sheet.
+2. **A panel beside the chat.** It opens from the sidebar's rail of pictures (her picture's menu, or a helper's Details), once a Helpers button beside Workspace and History. On a phone the panel is a full-height sheet.
 3. **Grouped under her, by state.** "Trillion" heads the panel. Under her: **Needs you**, **Working**, **Idle**. Never a flat list of everything.
 4. **Tap for details, then talk to it.** A helper's details show its job, recent runs, next run, and pause or resume. "Talk to it" opens its conversation. She stays the default contact.
-5. **The main conversation shows only four moments:** a result for you, a question, an approval, or a step you must do yourself. Everything else stays in the panel. The Helpers button shows a dot while anything needs you.
+5. **The main conversation shows only four moments:** a result for you, a question, an approval, or a step you must do yourself. Everything else stays in the panel. Her picture in the rail shows a dot while anything needs you.
 6. **The panel only displays.** It cannot start a run. Approvals still need your tap on the card (SPN-14). Everything that reaches you still goes through the one door (SUR-9).
 
 ## What a helper is
@@ -84,11 +84,9 @@ A new module, `src/trillion/helpers/`, builds the list. It reads; it never write
 
 ## The page
 
-### The Helpers button
+### The rail (replaces the Helpers button)
 
-- It sits beside Workspace and History in the header.
-- While anything needs you it shows a dot and the count (`needs_you`). Its accessible name says it: "Helpers, 1 needs you".
-- The dot clears when nothing needs you.
+The Helpers button in the header is gone. Helpers live in a slim rail of round pictures down the sidebar's left edge (see [your helpers](2026-11-05-your-helpers.md), The rail). Her own picture heads it; its menu (right-click, long press or Shift+F10) has **Routines and watchers**, which opens this panel. While a routine, timed ask or watcher needs you, her picture shows an amber dot, and its accessible name says it: "Trillion, 1 needs you in Routines and watchers". A helper's name in the chat still opens the panel at its details.
 
 ### The panel
 
@@ -118,9 +116,9 @@ Only the four moments appear, each through the one door as today:
 1. **A result for you:** the existing ready line with Open.
 2. **A question:** a line from the helper, with a Reply that opens its conversation.
 3. **An approval:** the same card as today.
-4. **A step you must do:** a line saying what and where, with Open. For now a step shows only in the panel (its row, with Open Settings) and on the Helpers button's dot; no line reaches the chat yet.
+4. **A step you must do:** a line saying what and where, with Open. For now a step shows only in the panel (its row, with Open Settings) and on her picture's dot in the rail; no line reaches the chat yet.
 
-Each line from a helper leads with its name, as the panel says it, and a tap on the name opens its details. The name rides on the notice (`helper_id`, `helper_name`), only while that helper is still listed (a one-off ask that has fired, or a removed routine, gets none). It is live only: a line drawn again from history after a reload shows no name. A step never reaches the chat: it shows only in the panel and on the Helpers button's dot.
+Each line from a helper leads with its name, as the panel says it, and a tap on the name opens its details. The name rides on the notice (`helper_id`, `helper_name`), only while that helper is still listed (a one-off ask that has fired, or a removed routine, gets none). It is live only: a line drawn again from history after a reload shows no name. A step never reaches the chat: it shows only in the panel and on her picture's dot in the rail.
 
 A run with nothing for you shows only in its history (AGT-6). Quiet hours, a meeting under way, the microphone in use and Focus still hold delivery (AGT-5, VOI-17).
 

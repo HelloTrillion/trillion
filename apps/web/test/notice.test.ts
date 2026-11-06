@@ -153,7 +153,7 @@ describe('a notice names the helper it came from', () => {
     const line = readyLine('Your Morning brief is ready', 'c9', (id) => opened.push(id), morning, (id) => shown.push(id));
     expect(line.textContent).toBe('Morning brief: readyOpen');
     const name = line.querySelector('button.notice-from') as HTMLButtonElement;
-    expect(name.getAttribute('aria-label')).toBe('Morning brief, in Helpers');
+    expect(name.getAttribute('aria-label')).toBe('Morning brief, open its details');
     name.click();
     expect(shown).toEqual(['routine:aaaaaaaa']);
     (line.querySelector('button.ready-open') as HTMLButtonElement).click();

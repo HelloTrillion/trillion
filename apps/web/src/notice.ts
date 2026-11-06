@@ -57,7 +57,7 @@ export function fromTag(from: From, show: (id: string) => void): HTMLButtonEleme
   b.type = 'button';
   // The name already says who: the picture is decoration beside it.
   if (from.look) b.prepend(picture(from.look, 18));
-  b.setAttribute('aria-label', `${from.name}, in Helpers`);
+  b.setAttribute('aria-label', `${from.name}, open its details`);
   b.addEventListener('click', () => show(from.id));
   return b;
 }

@@ -6,8 +6,6 @@ import {
   type Helper,
   type HelperList,
   askTarget,
-  bindButton,
-  buttonLabel,
   capNameOf,
   createHelpers,
   elapsedText,
@@ -114,12 +112,6 @@ describe('the words', () => {
       summaryLine(list([helper({ state: 'working' }), helper({ state: 'working' }), helper({ state: 'needs_you', waiting: [approval()] })])),
     ).toBe('2 working, 1 needs you');
     expect(summaryLine(list([helper({ state: 'needs_you' }), helper({ state: 'needs_you' })]))).toBe('2 need you');
-  });
-
-  it('names the button with what needs you', () => {
-    expect(buttonLabel(0)).toBe('Helpers');
-    expect(buttonLabel(1)).toBe('Helpers, 1 needs you');
-    expect(buttonLabel(3)).toBe('Helpers, 3 need you');
   });
 });
 
@@ -654,21 +646,6 @@ describe('review fixes', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('wires the button: its name, title and count follow the list', () => {
-    const { helpers } = panel(list([]));
-    const button = document.createElement('button');
-    const dot = document.createElement('span');
-    bindButton(button, dot, helpers);
-    expect(button.getAttribute('aria-label')).toBe('Helpers');
-    expect(dot.hidden).toBe(true);
-    helpers.update(list([helper({ state: 'needs_you', waiting: [approval()] })]));
-    expect(button.getAttribute('aria-label')).toBe('Helpers, 1 needs you');
-    expect(button.title).toBe('Helpers, 1 needs you');
-    expect([dot.hidden, dot.textContent]).toEqual([false, '1']);
-    helpers.update(list([]));
-    expect([dot.hidden, dot.textContent]).toEqual([true, '']);
-  });
-
   it('names the background model at its cap when the page knows it', () => {
     expect(capNameOf([
       { leg: 'voice', name: 'ElevenLabs', state: 'capped' },
@@ -999,7 +976,7 @@ describe('the panel at every width', () => {
     expect(widths).toContainEqual(['max', PHONE_MAX - 1]);
     expect(widths).toContainEqual(['min', PHONE_MAX]);
     // Nothing hides it but its own [hidden], and a phone's Folders panel over its body.
-    const hides = [...css.matchAll(/([^{}]*)\{[^}]*display:\s*none/g)].map((m) => m[1]!.trim()).filter((sel) => /\.workspace(?![-\w])|\.hp(?![-\w])|#helpers-btn/.test(sel));
+    const hides = [...css.matchAll(/([^{}]*)\{[^}]*display:\s*none/g)].map((m) => m[1]!.trim()).filter((sel) => /\.workspace(?![-\w])|\.hp(?![-\w])/.test(sel));
     for (const sel of hides) expect(sel).toMatch(/\[hidden\]|has-folders|settings-close|settings-actions/);
   });
 });

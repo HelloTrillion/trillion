@@ -152,12 +152,6 @@ export function summaryLine(l: HelperList): string {
   return parts.length ? parts.join(', ') : 'All quiet';
 }
 
-/** The Helpers button's accessible name. */
-export function buttonLabel(needsYou: number): string {
-  if (needsYou <= 0) return 'Helpers';
-  return `Helpers, ${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`;
-}
-
 export interface Run extends LastRun {
   readonly conversation_id: string | null;
 }
@@ -190,19 +184,6 @@ const STEP_TARGETS: Readonly<Record<string, string>> = {
 export function capNameOf(providers: readonly { readonly leg: string; readonly name: string; readonly state: string }[] | undefined): string | null {
   const usual = providers?.find((p) => p.leg === 'model');
   return usual?.state === 'capped' ? usual.name : null;
-}
-
-/** Keep the Helpers button's name, title and count with the list. */
-export function bindButton(button: HTMLElement, dot: HTMLElement, panel: Pick<HelpersPanel, 'needsYou' | 'onCount'>): void {
-  const draw = (n: number): void => {
-    const label = buttonLabel(n);
-    button.setAttribute('aria-label', label);
-    button.title = label;
-    dot.hidden = n <= 0;
-    dot.textContent = n > 0 ? String(n) : '';
-  };
-  draw(panel.needsYou);
-  panel.onCount(draw);
 }
 
 /** The Connected tools entry a step opens at (connect or sign in again), or null for the section. */
@@ -335,7 +316,7 @@ export function askTarget(visited: readonly string[], helperChats: ReadonlySet<s
   return null;
 }
 
-function parseList(raw: unknown): HelperList | null {
+export function parseList(raw: unknown): HelperList | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { helpers?: unknown; needs_you?: unknown };
   if (!Array.isArray(r.helpers)) return null;
@@ -344,7 +325,6 @@ function parseList(raw: unknown): HelperList | null {
   return { helpers, needs_you: needs };
 }
 
-// ── The panel ────────────────────────────────────────────────────────────
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -352,6 +332,100 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
   if (text !== undefined) node.textContent = text;
   return node;
 }
+
+// ── Shared with the rail ─────────────────────────────────────────────────
+
+const NOT_DONE = "That didn't work. It may have just finished or been removed.";
+const NOT_REACHED = "Trillion didn't answer. Is it still running?";
+
+/** A helper's own route: `/api/helpers/own%3Aab12/look`. */
+export const ownPath = (id: string, what = ''): string => `/api/helpers/${encodeURIComponent(id)}${what}`;
+
+/** Its delete's confirm, the same wherever it is asked. */
+export function deleteQuestion(name: string): string {
+  return `Delete ${name}? Its routines stop. Its chat stays in History.`;
+}
+
+/** Pause or Resume, for one of the user's own. */
+export const ownToggleWords = (h: Pick<Helper, 'paused'>): 'Pause' | 'Resume' => (h.paused ? 'Resume' : 'Pause');
+
+export type Acted = { readonly ok: true; readonly list: HelperList | null } | { readonly ok: false; readonly wrong: string };
+
+/**
+ * One of the existing routes. A route that answers with the list (a helper of the user's)
+ * gives it back to draw at once; the push that follows draws it anyway.
+ */
+export async function helperAction(api: Api, method: 'POST' | 'PUT' | 'DELETE', path: string, body: unknown): Promise<Acted> {
+  try {
+    const r = await api(method, path, body);
+    if (!r.ok) return { ok: false, wrong: NOT_DONE };
+    return { ok: true, list: parseList(await r.json().catch(() => null)) };
+  } catch {
+    return { ok: false, wrong: NOT_REACHED };
+  }
+}
+
+/**
+ * Open a helper's conversation, the way History opens one: `known` when the list gives
+ * it, else the one the core picks (made if need be). What went wrong, or null.
+ */
+export async function openHelperChat(api: Api, open: (conversationId: string) => void, id: string, known: string | null): Promise<string | null> {
+  if (known) {
+    open(known);
+    return null;
+  }
+  try {
+    const r = await api('POST', ownPath(id, '/conversation'), {});
+    const body = r.ok ? ((await r.json()) as { conversation_id?: unknown }) : null;
+    if (typeof body?.conversation_id === 'string') {
+      open(body.conversation_id);
+      return null;
+    }
+    return r.status === 404 ? 'There is no conversation for it yet.' : NOT_DONE;
+  } catch {
+    return NOT_REACHED;
+  }
+}
+
+/**
+ * + New helper's one field: "What should it do?", then Ask Trillion. `send` gets the
+ * words; Escape in it calls `cancel`, and goes no further.
+ */
+export function newHelperForm(idBase: string, send: (text: string) => void, cancel: () => void): { form: HTMLFormElement; field: HTMLInputElement } {
+  const form = el('form', 'hp-new');
+  form.id = idBase;
+  const field = el('input');
+  field.id = `${idBase}-text`;
+  field.type = 'text';
+  field.maxLength = 300;
+  field.autocomplete = 'off';
+  const label = el('label', '', 'What should it do?');
+  label.htmlFor = field.id;
+  const go = el('button', 'approve', 'Ask Trillion');
+  go.type = 'submit';
+  const row = el('div', 'hp-new-row');
+  row.append(field, go);
+  form.append(label, row);
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const text = field.value.trim();
+    if (!text) {
+      field.focus();
+      return;
+    }
+    field.value = '';
+    send(text);
+  });
+  form.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    cancel();
+  });
+  return { form, field };
+}
+
+// ── The panel ────────────────────────────────────────────────────────────
 
 export interface HelpersDeps {
   readonly api: Api;
@@ -384,6 +458,8 @@ export interface HelpersPanel {
   /** A message from the core: `helpers.changed` is drawn, others are ignored. */
   handle(msg: ServerMsg): void;
   readonly needsYou: number;
+  /** The last list drawn. */
+  readonly list: HelperList;
   /** Told how many need you, on every update. */
   onCount(listener: (needsYou: number) => void): void;
   /** The user's own helper whose chat this conversation is, from the last list. */
@@ -404,8 +480,6 @@ interface Row {
 }
 
 const NO_LIST = "Couldn't read her helpers. Try again in a moment.";
-const NOT_DONE = "That didn't work. It may have just finished or been removed.";
-const NOT_REACHED = "Trillion didn't answer. Is it still running?";
 
 /** The schedule id in a routine's or a timed ask's helper id. */
 const scheduleOf = (id: string): string => id.slice(id.indexOf(':') + 1);
@@ -427,21 +501,16 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   addBtn.type = 'button';
   addBtn.append(icon('plus', 16), 'New helper');
   addBtn.setAttribute('aria-expanded', 'false');
-  const addForm = el('form', 'hp-new');
+  const { form: addForm, field: addField } = newHelperForm(
+    'hp-new',
+    (text) => {
+      closeAdd(false);
+      d.newHelper?.(text);
+    },
+    () => closeAdd(true),
+  );
   addForm.hidden = true;
-  addBtn.setAttribute('aria-controls', (addForm.id = 'hp-new'));
-  const addField = el('input');
-  addField.id = 'hp-new-text';
-  addField.type = 'text';
-  addField.maxLength = 300;
-  addField.autocomplete = 'off';
-  const addLabel = el('label', '', 'What should it do?');
-  addLabel.htmlFor = addField.id;
-  const addSend = el('button', 'approve', 'Ask Trillion');
-  addSend.type = 'submit';
-  const addRow = el('div', 'hp-new-row');
-  addRow.append(addField, addSend);
-  addForm.append(addLabel, addRow);
+  addBtn.setAttribute('aria-controls', addForm.id);
   addBtn.hidden = !d.newHelper;
   listView.append(her, addBtn, addForm, problem, empty);
   const groupEls = new Map<Group, { section: HTMLElement; ul: HTMLUListElement }>();
@@ -586,27 +655,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     r.inline.replaceChildren(...parts, ...(parts.length ? [rowNote] : []));
   }
 
-  /**
-   * Open a helper's conversation, the way History opens one: `known` when the list
-   * gives it, else the one the core picks (made if need be). What went wrong, or null.
-   */
-  async function talkTo(id: string, known: string | null): Promise<string | null> {
-    if (known) {
-      d.open(known);
-      return null;
-    }
-    try {
-      const r = await d.api('POST', `/api/helpers/${encodeURIComponent(id)}/conversation`, {});
-      const body = r.ok ? ((await r.json()) as { conversation_id?: unknown }) : null;
-      if (typeof body?.conversation_id === 'string') {
-        d.open(body.conversation_id);
-        return null;
-      }
-      return r.status === 404 ? 'There is no conversation for it yet.' : NOT_DONE;
-    } catch {
-      return NOT_REACHED;
-    }
-  }
+  const talkTo = (id: string, known: string | null): Promise<string | null> => openHelperChat(d.api, d.open, id, known);
 
   function drawRow(r: Row): void {
     const h = r.helper;
@@ -766,7 +815,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
    */
   function toggleWords(h: Helper): 'Cancel' | 'Pause' | 'Resume' | 'Turn on' | 'Turn off' | 'Connect' {
     if (h.kind === 'ask') return 'Cancel';
-    if (h.kind === 'own') return h.paused ? 'Resume' : 'Pause';
+    if (h.kind === 'own') return ownToggleWords(h);
     if (h.kind === 'routine') return (h.paused ?? h.state === 'paused') ? 'Resume' : 'Pause';
     const on = h.switched_on ?? h.state !== 'paused';
     if (!on) return 'Turn on';
@@ -837,24 +886,15 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   async function act(method: 'POST' | 'PUT' | 'DELETE', path: string, body: unknown): Promise<boolean> {
     dNote.textContent = '';
     toggle.disabled = del.disabled = true;
-    try {
-      const r = await d.api(method, path, body);
-      if (!r.ok) {
-        note(dNote, NOT_DONE);
-        return false;
-      }
-      const found = parseList(await r.json().catch(() => null));
-      if (found) update(found);
-      return true;
-    } catch {
-      note(dNote, NOT_REACHED);
+    const done = await helperAction(d.api, method, path, body);
+    toggle.disabled = del.disabled = false;
+    if (!done.ok) {
+      note(dNote, done.wrong);
       return false;
-    } finally {
-      toggle.disabled = del.disabled = false;
     }
+    if (done.list) update(done.list);
+    return true;
   }
-
-  const ownPath = (id: string, what = ''): string => `/api/helpers/${encodeURIComponent(id)}${what}`;
 
   // ── The picker ──
   function onOutside(ev: Event): void {
@@ -926,24 +966,6 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     addBtn.setAttribute('aria-expanded', 'true');
     addField.focus();
   });
-  addForm.addEventListener('submit', (ev) => {
-    ev.preventDefault();
-    const text = addField.value.trim();
-    if (!text) {
-      addField.focus();
-      return;
-    }
-    addField.value = '';
-    closeAdd(false);
-    d.newHelper?.(text);
-  });
-  // Escape in the field closes it, and no further: the panel stays open.
-  addForm.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'Escape') return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    closeAdd(true);
-  });
 
   backBtn.addEventListener('click', () => back());
   // Escape in the details goes back to the list, and no further: the panel stays open.
@@ -979,7 +1001,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   function askConfirm(what: 'cancel' | 'delete', h: Helper): void {
     confirming = what;
     confirmText.textContent =
-      what === 'delete' ? `Delete ${h.name}? Its routines stop. Its chat stays in History.` : "Cancel this timed ask? It won't happen.";
+      what === 'delete' ? deleteQuestion(h.name) : "Cancel this timed ask? It won't happen.";
     confirmYes.textContent = what === 'delete' ? 'Delete it' : 'Cancel it';
     confirm.hidden = false;
     confirmNo.focus();
@@ -1073,6 +1095,9 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     },
     get needsYou() {
       return current.needs_you;
+    },
+    get list() {
+      return current;
     },
     onCount(listener) {
       listeners.push(listener);
