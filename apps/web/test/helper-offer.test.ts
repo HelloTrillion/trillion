@@ -278,3 +278,17 @@ describe('a helper’s chat', () => {
     expect(messagePlaceholder('Nova', false, null)).toBe('Say hello to Nova');
   });
 });
+
+describe('a helper’s line in her conversation', () => {
+  it('says its name once', async () => {
+    const { afterName } = await import('../src/ready');
+    expect(afterName('Inbox Monitor: The helper found 3 emails.', 'Inbox Monitor')).toBe(': The helper found 3 emails');
+    expect(afterName('Inbox Monitor needs you: connect Gmail.', 'Inbox Monitor')).toBe(' needs you: connect Gmail');
+    expect(afterName('Your Morning brief is ready', 'Morning brief')).toBe(': ready');
+    expect(afterName('Checked the inbox.', 'Inbox Monitor')).toBe(': Checked the inbox');
+    const line = readyLine('Inbox Monitor: 3 are overdue.', 'c1', () => undefined, { id: 'own:x', name: 'Inbox Monitor' }, () => undefined);
+    expect(line.querySelector('span')?.textContent).toBe('Inbox Monitor: 3 are overdue');
+    const needs = readyLine('Inbox Monitor needs you: connect Gmail.', 'c1', () => undefined, { id: 'own:x', name: 'Inbox Monitor' }, () => undefined);
+    expect(needs.querySelector('span')?.textContent).toBe('Inbox Monitor needs you: connect Gmail');
+  });
+});

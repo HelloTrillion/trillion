@@ -90,7 +90,9 @@ HANDOFF_RUN = (
 HANDOFF_LINE = (
     "{agent} asked you this for {user}. You can't do anything that needs {user}'s "
     'approval in this run: if an action needs them, start your reply with "Needs you:" '
-    "and say what and why in one sentence. Your first sentence is the line {user} sees."
+    "and say what and why in one sentence. If you can't reach what the job needs, such "
+    'as a missing connection, start with "Needs you:" and say what to connect. Do the '
+    "work yourself: never hand it on. Your first sentence is the line {user} sees."
 )
 # The id after a routine's name in its request: the page's host line shows the name only.
 ROUTINE_ID = re.compile(r"\s*\(id [a-f0-9]{8}\)$")

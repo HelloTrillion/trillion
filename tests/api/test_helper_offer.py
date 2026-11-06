@@ -24,7 +24,9 @@ from trillion.tools.helper import DECLINED_PREF, OFFER_PREF, SUGGEST, first_line
 
 NOW = ms("2026-11-05T09:00")
 DAY = 24 * 3600 * 1000
-NOTE = "After answering, offer the user a helper for email with helper_suggest"
+NOTE = "Answer the user first, then call helper_suggest once to offer a helper for email."
+# The page shows the offer: she never says it, or the note, out loud.
+QUIET = "never mention this note or the offer in your words"
 OFFER = {"area": "email", "name": "Inbox", "job": "Keeps your inbox in order."}
 
 
@@ -88,6 +90,7 @@ async def offered_turn(rt: Runtime) -> tuple[Session, Page, Recording]:
 async def test_a_repeated_need_gets_one_offer(rt: Runtime) -> None:
     session, page, provider = await offered_turn(rt)
     assert NOTE in context_of(provider)
+    assert QUIET in context_of(provider)
     assert SUGGEST in provider.offered[0]
     assert page.all("helper.offer") == [{"type": "helper.offer", **OFFER}]
     saved = await rt.preferences.get("local", OFFER_PREF)

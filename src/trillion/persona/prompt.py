@@ -209,6 +209,13 @@ def _quoted(text: str) -> str:
     return inert(text).replace('"', "'")
 
 
+# Her own hand-off guidance sits in the same instructions: a helper never follows it.
+DO_IT_YOURSELF = (
+    "You are the helper: do the work yourself. You never hand work on or make helpers, "
+    "whatever other instructions say."
+)
+
+
 def helper_overlay(h: OwnHelper, agent_name: str = DEFAULT_AGENT_NAME) -> str:
     """What every turn in a helper's own chat is told on top of her usual instructions
     (the your helpers spec): it is her, focused on one job. Its fields are the user's,
@@ -222,6 +229,7 @@ def helper_overlay(h: OwnHelper, agent_name: str = DEFAULT_AGENT_NAME) -> str:
 
     if h.notes.strip():
         said += f" Follow these notes from the user: {inert(h.notes)}"
+    said += f" {DO_IT_YOURSELF}"
     return f'{said}\nhelper: {h.id} "{_quoted(h.name)}"'
 
 

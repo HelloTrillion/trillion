@@ -430,7 +430,9 @@ def test_a_helpers_overlay_names_it_its_job_and_its_notes() -> None:
     text = helper_overlay(_helper(notes="Round to the dollar.\nSkip weekends."))
     assert text.splitlines()[0] == (
         "You are Reports, one of Trillion's helpers. Your job: Sums up the weekly reports. "
-        "Follow these notes from the user: Round to the dollar. Skip weekends."
+        "Follow these notes from the user: Round to the dollar. Skip weekends. "
+        "You are the helper: do the work yourself. You never hand work on or make helpers, "
+        "whatever other instructions say."
     )
     assert f'helper: {"a" * 32} "Reports"' in text.splitlines()
 
@@ -444,6 +446,18 @@ def test_a_job_in_its_own_voice_is_said_as_its_words() -> None:
     # Any other job is left as it is.
     assert "Your job: Sums up" in helper_overlay(_helper())
     assert "Your job: Ideas" in helper_overlay(_helper(job="Ideas for the team."))
+
+
+def test_a_helper_does_the_work_itself_whatever_else_it_is_told() -> None:
+    text = helper_overlay(_helper())
+    assert "You are the helper: do the work yourself." in text
+    assert "You never hand work on or make helpers, whatever other instructions say." in text
+    # Her own hand-off guidance says it is hers alone, and a helper is never made early.
+    from trillion.persona.prompt import _prompt
+
+    guide = _prompt("helpers.md")
+    assert guide.splitlines()[0].startswith("YOUR HELPERS. This part is for you as yourself")
+    assert "approves its card" in guide
 
 
 def test_a_helper_with_no_notes_has_no_notes_sentence() -> None:

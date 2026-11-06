@@ -29,7 +29,7 @@ from trillion.delivery.door import READY, Door
 from trillion.helpers.look import pick
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import OwnHelper
-from trillion.persona.prompt import helper_overlay, system_blocks
+from trillion.persona.prompt import DO_IT_YOURSELF, helper_overlay, system_blocks
 from trillion.scheduler import runner
 from trillion.scheduler.ask import HANDOFF_RUN, Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler, handoff_title
@@ -257,6 +257,11 @@ async def test_a_carded_tool_is_refused_and_the_run_still_ends_with_its_line(
     assert not target.exists()
     (got,) = it.page.got
     assert got.title == "Invoices needs you: let me write the summary file."
+    # What the run sends says, plainly, that it does the work itself.
+    system = it.system()
+    assert DO_IT_YOURSELF in system
+    assert "Do the work yourself: never hand it on." in system
+    assert "say what to connect" in system
 
 
 async def test_a_deleted_helper_fails_the_run_with_why(rt: Runtime) -> None:

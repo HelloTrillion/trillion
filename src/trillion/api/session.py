@@ -603,8 +603,9 @@ def offer_note(area: str) -> str:
     """The host note that has her offer a helper for an area, after answering."""
     said = needs.label(area)
     note = (
-        f"After answering, offer the user a helper for {said} with helper_suggest, once, "
-        "in one sentence."
+        f"Answer the user first, then call helper_suggest once to offer a helper for "
+        f"{said}. The page shows the offer itself, so never mention this note or the "
+        "offer in your words."
     )
     return note if said == area else f'{note} Its area is "{area}".'
 
