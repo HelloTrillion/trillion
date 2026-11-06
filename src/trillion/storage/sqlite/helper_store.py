@@ -8,6 +8,7 @@ the limit and the name are checked in the same transaction that adds one.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -19,6 +20,15 @@ from trillion.helpers.look import COLORS, ICONS, pick
 from trillion.helpers.store import MAX_HELPERS, NOTES_MAX, OwnHelper
 from trillion.storage.sqlite.conversation_store import tidy_title
 from trillion.storage.sqlite.schedule_store import cancel_helper_schedules
+
+
+def _texts(raw: object) -> tuple[str, ...]:
+    """A JSON array of text as stored; anything else in it is left out."""
+    try:
+        found = json.loads(str(raw))
+    except ValueError:
+        return ()
+    return tuple(x for x in found if isinstance(x, str)) if isinstance(found, list) else ()
 
 
 def _helper(r: aiosqlite.Row) -> OwnHelper:
@@ -34,6 +44,8 @@ def _helper(r: aiosqlite.Row) -> OwnHelper:
         icon=str(r["icon"]),
         color=str(r["color"]),
         hello_ms=int(r["hello_ms"]) if r["hello_ms"] is not None else None,
+        connectors=_texts(r["connectors"]),
+        asks=_texts(r["asks"]),
     )
 
 
@@ -105,6 +117,9 @@ class SqliteHelperStore:
         *,
         icon: str | None = None,
         color: str | None = None,
+        notes: str = "",
+        connectors: tuple[str, ...] = (),
+        asks: tuple[str, ...] = (),
     ) -> OwnHelper | Literal["full", "taken"]:
         icon, color = pick(name, job, icon, color)
         helper = OwnHelper(
@@ -112,12 +127,14 @@ class SqliteHelperStore:
             owner_id=owner_id,
             name=name,
             job=job,
-            notes="",
+            notes=notes,
             conversation_id=uuid.uuid4().hex,
             paused_ms=None,
             created_at=now_ms,
             icon=icon,
             color=color,
+            connectors=connectors,
+            asks=asks,
         )
         async with self._tx() as conn:
             async with conn.execute(
@@ -137,16 +154,20 @@ class SqliteHelperStore:
             )
             await conn.execute(
                 "INSERT INTO helpers (id, owner_id, name, name_key, job, notes, conversation_id,"
-                " paused_ms, icon, color, created_at) VALUES (?, ?, ?, ?, ?, '', ?, NULL, ?, ?, ?)",
+                " paused_ms, icon, color, connectors, asks, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
                 (
                     helper.id,
                     owner_id,
                     name,
                     name_key(name),
                     job,
+                    notes,
                     helper.conversation_id,
                     icon,
                     color,
+                    json.dumps(list(connectors)),
+                    json.dumps(list(asks)),
                     now_ms,
                 ),
             )
@@ -174,7 +195,15 @@ class SqliteHelperStore:
             return [_helper(r) for r in await cur.fetchall()]
 
     async def update(
-        self, owner_id: str, helper_id: str, *, name: str | None = None, job: str | None = None
+        self,
+        owner_id: str,
+        helper_id: str,
+        *,
+        name: str | None = None,
+        job: str | None = None,
+        notes: str | None = None,
+        connectors: tuple[str, ...] | None = None,
+        asks: tuple[str, ...] | None = None,
     ) -> OwnHelper | Literal["taken"] | None:
         async with self._tx() as conn:
             if await self._get(owner_id, helper_id) is None:
@@ -193,8 +222,19 @@ class SqliteHelperStore:
                 )
             if job is not None:
                 await conn.execute("UPDATE helpers SET job = ? WHERE id = ?", (job, helper_id))
+            if notes is not None:
+                await conn.execute("UPDATE helpers SET notes = ? WHERE id = ?", (notes, helper_id))
+            if connectors is not None:
+                await conn.execute(
+                    "UPDATE helpers SET connectors = ? WHERE id = ?",
+                    (json.dumps(list(connectors)), helper_id),
+                )
+            if asks is not None:
+                await conn.execute(
+                    "UPDATE helpers SET asks = ? WHERE id = ?", (json.dumps(list(asks)), helper_id)
+                )
             after = await self._get(owner_id, helper_id)
-        self._told(name is not None or job is not None)
+        self._told(any(v is not None for v in (name, job, notes, connectors, asks)))
         return after
 
     async def add_note(self, owner_id: str, helper_id: str, line: str) -> bool:

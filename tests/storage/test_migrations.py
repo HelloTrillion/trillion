@@ -69,7 +69,7 @@ async def test_019_keeps_every_row_of_a_018_database(tmp_path: Path) -> None:
             " VALUES ('s1', 10, 'delivered', 60, 10);"
         )
         before = {t: await _rows(conn, t) for t in TABLES}
-        assert await migrate(conn) == ["019_helpers"]
+        assert await migrate(conn) == ["019_helpers", "020_helper_draft"]
         for t in TABLES:
             after = await _rows(conn, t)
             if t == "schedules":
@@ -135,5 +135,30 @@ async def test_019_limits_match_the_store(tmp_path: Path) -> None:
         ):
             with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
                 await add(name, job, notes)
+    finally:
+        await conn.close()
+
+
+async def test_020_adds_the_draft_to_a_019_database(tmp_path: Path) -> None:
+    """Migration 020 on a database already at 019: its helpers kept, with an empty draft."""
+    conn = await connect(tmp_path / "t.db")
+    try:
+        old = _up_to("019", tmp_path / "old")
+        assert (await migrate(conn, old))[-1] == "019_helpers"
+        await conn.executescript(
+            "INSERT INTO conversations (id, owner_id, created_at, kind)"
+            " VALUES ('c1', 'local', 1, 'helper');"
+            "INSERT INTO helpers (id, owner_id, name, name_key, job, notes, conversation_id,"
+            " created_at) VALUES ('h1', 'local', 'Invoices', 'invoices', 'Chases.',"
+            " 'Leave out refunds.', 'c1', 1);"
+        )
+        before = await _rows(conn, "helpers")
+        assert await migrate(conn) == ["020_helper_draft"]
+        after = await _rows(conn, "helpers")
+        assert [r[:-2] for r in after] == before
+        assert [r[-2:] for r in after] == [("[]", "[]")]
+        await conn.execute("UPDATE helpers SET connectors = '[\"canva\"]', asks = '[]'")
+        with pytest.raises(sqlite3.IntegrityError):  # an array, nothing else
+            await conn.execute("UPDATE helpers SET asks = 'not json'")
     finally:
         await conn.close()

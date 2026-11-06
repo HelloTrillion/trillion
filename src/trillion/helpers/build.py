@@ -43,6 +43,7 @@ from trillion.attention.runner import WatcherStatus
 from trillion.attention.settings import ON_UNTIL_CONNECTED, TITLED
 from trillion.helpers.look import pick
 from trillion.helpers.model import (
+    Connection,
     Helper,
     HelperState,
     LastRun,
@@ -50,7 +51,7 @@ from trillion.helpers.model import (
     RoutineLine,
     Waiting,
 )
-from trillion.helpers.store import OwnHelper
+from trillion.helpers.store import CONNECTOR_TITLES, OwnHelper
 from trillion.scheduler.runner import BUSY_DETAIL, NEEDS_YOU_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import WhenError, summary
@@ -180,6 +181,10 @@ class Sources(Protocol):
         """When the user last wrote in a conversation, if ever."""
         ...
 
+    def connected_catalog(self) -> frozenset[str]:
+        """The Connected tools entries set up now, by catalog id."""
+        ...
+
 
 async def helpers(sources: Sources) -> list[Helper]:
     return (await snapshot(sources))[0]
@@ -206,11 +211,13 @@ async def snapshot(sources: Sources) -> tuple[list[Helper], int | None]:
         if s.helper_id is None
     ]
     by_helper = await sources.schedules.helper_last_results(owner)
-    for h in await sources.own():
+    own = await sources.own()
+    have = sources.connected_catalog() if any(h.connectors for h in own) else frozenset()
+    for h in own:
         ran = by_helper.get(h.id)
         asks = await _asks(sources, h, ran)
         mine = [s for s in theirs if s.helper_id == h.id]
-        found.append(_own(h, mine, ran, now, capped, cards, asks))
+        found.append(_own(h, mine, ran, now, capped, cards, asks, have))
     found += [
         _watcher(w, capped, cards, talks.get(f"watcher:{w.name}")) for w in await sources.watchers()
     ]
@@ -305,6 +312,7 @@ def _own(
     capped: set[Work],
     cards: dict[str, list[Waiting]],
     asks: list[Waiting],
+    have: frozenset[str] = frozenset(),
 ) -> Helper:
     paused = h.paused_ms is not None
     starts = [
@@ -345,6 +353,12 @@ def _own(
         notes=h.notes,
         icon=icon,
         color=color,
+        connections=tuple(
+            Connection(id=c, title=CONNECTOR_TITLES[c], connected=c in have)
+            for c in h.connectors
+            if c in CONNECTOR_TITLES
+        ),
+        asks=h.asks,
         routines=tuple(
             RoutineLine(
                 id=s.id,

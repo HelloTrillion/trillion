@@ -1,7 +1,10 @@
 """The helper tools (the your helpers spec, AGT-1, AGT-2, AGT-7).
 
 `helper_create` makes a helper on a card, and saves its first line to its chat as
-hers. `helper_update` changes its name or job on a card, `helper_narrow` and
+hers. Its card is a draft: one more `helper_create` in the same conversation replaces
+the card still waiting (the router retires an open card for the same target, and every
+draft's target is the same), so there is only ever one. `helper_update` changes its
+name, job, notes, connections or first questions on a card, `helper_narrow` and
 `helper_widen` teach it from the user's feedback as routines are taught
 (`tools/routine.py`): a narrowing stands at once, anything else is a card. These three
 work only in the helper's own chat. `helper_ask` hands it work: a timed ask due now,
@@ -29,7 +32,18 @@ from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean
 from trillion.brain.types import Msg, TextBlock
 from trillion.helpers.look import COLORS, ICONS, pick
 from trillion.helpers.needs import label
-from trillion.helpers.store import JOB_MAX, MAX_HELPERS, NAME_MAX, NOTES_MAX, HelperStore, OwnHelper
+from trillion.helpers.store import (
+    ASK_MAX,
+    ASKS_MAX,
+    CONNECTOR_TITLES,
+    CONNECTORS_MAX,
+    JOB_MAX,
+    MAX_HELPERS,
+    NAME_MAX,
+    NOTES_MAX,
+    HelperStore,
+    OwnHelper,
+)
 from trillion.memory.present import inert
 from trillion.scheduler.store import Schedule, ScheduleStore
 from trillion.scheduler.when import WhenError, zone_of
@@ -68,6 +82,11 @@ _NOT_IN_NAMES = frozenset("<>`")
 _PLAIN_NAME = "a helper's name is plain words: no symbols or line breaks"
 AREA_MAX = 64
 WORK: Work = "helpers"
+# Every draft's card has this target: a new one retires the one still waiting.
+DRAFT_TARGET = "helper:draft"
+# What a schema lets through, kept a little above what is kept: the rest is cut, not
+# refused, so a long draft still makes a card.
+_LOOSE = 4
 
 # Nobody is there to have said it (a run), the words may come from a page she read
 # (a tapped ask), or from somewhere other than the app (a channel).
@@ -115,6 +134,34 @@ _COLOR: dict[str, Any] = {
     "enum": list(COLORS),
     "description": "Its picture's colour.",
 }
+_NOTES: dict[str, Any] = {
+    "type": "string",
+    "maxLength": NOTES_MAX * _LOOSE,
+    "description": (
+        "What it should know to do the job well, in plain sentences, from the user's words "
+        "and what you know of them: platforms, goals, audience, tone, cadence, limits. "
+        f"At most {NOTES_MAX} characters."
+    ),
+}
+_CONNECTORS: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string", "maxLength": 64},
+    "maxItems": CONNECTORS_MAX * _LOOSE,
+    "description": (
+        f"Up to {CONNECTORS_MAX} Connected tools its job would use, by id, from these only: "
+        + ", ".join(f"{k} ({v})" for k, v in CONNECTOR_TITLES.items())
+        + ". Leave it empty when none fits."
+    ),
+}
+_ASKS: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string", "maxLength": ASK_MAX * _LOOSE},
+    "maxItems": ASKS_MAX * _LOOSE,
+    "description": (
+        f"Up to {ASKS_MAX} short questions it asks the user first, in its own chat, for "
+        "what your guess could not know."
+    ),
+}
 _NOTES_SCHEMA: JSON = {
     "type": "object",
     "properties": {
@@ -142,6 +189,58 @@ class Conversations(Protocol):
 
 class Preferences(Protocol):
     async def put(self, owner_id: str, key: str, value: Any, now_ms: int) -> None: ...
+
+
+def _flat(value: Any) -> str:
+    """Text on one line: control and format characters, line breaks among them, become
+    spaces."""
+    raw = "".join(" " if unicodedata.category(c) in ("Cc", "Cf") else c for c in str(value))
+    return _one_line(raw)
+
+
+def _cut(text: str, limit: int) -> str:
+    """At most `limit` characters, cut at a word where one is near."""
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 1]
+    space = head.rfind(" ")
+    if space > limit // 2:
+        head = head[:space]
+    return head.rstrip(" ,;:") + "\u2026"
+
+
+def draft_notes(raw: Any) -> str:
+    """A draft's notes, on one line and within `NOTES_MAX`."""
+    return _cut(_flat(raw), NOTES_MAX) if isinstance(raw, str) else ""
+
+
+def draft_connectors(raw: Any) -> tuple[str, ...]:
+    """The catalog ids among those given, once each, at most `CONNECTORS_MAX`. One not in
+    the catalog is left out, never refused."""
+    if not isinstance(raw, list):
+        return ()
+    found = [_one_line(x).lower() for x in raw if isinstance(x, str)]
+    return tuple(dict.fromkeys(x for x in found if x in CONNECTOR_TITLES))[:CONNECTORS_MAX]
+
+
+def draft_asks(raw: Any) -> tuple[str, ...]:
+    """A draft's first questions: each on one line within `ASK_MAX`, at most `ASKS_MAX`."""
+    if not isinstance(raw, list):
+        return ()
+    found = (_cut(_flat(x), ASK_MAX) for x in raw if isinstance(x, str))
+    return tuple(dict.fromkeys(x for x in found if x))[:ASKS_MAX]
+
+
+def card_draft(args: JSON) -> dict[str, Any]:
+    """What a create card shows beyond its summary: exactly what its tap makes, from the
+    same approved arguments."""
+    return {
+        "name": _one_line(args.get("name")),
+        "job": _one_line(args.get("job")),
+        "notes": draft_notes(args.get("notes")),
+        "connectors": list(draft_connectors(args.get("connectors"))),
+        "asks": list(draft_asks(args.get("asks"))),
+    }
 
 
 def first_line(name: str, job: str) -> str:
@@ -211,10 +310,23 @@ async def make(
     *,
     icon: str | None = None,
     color: str | None = None,
+    notes: str = "",
+    connectors: tuple[str, ...] = (),
+    asks: tuple[str, ...] = (),
 ) -> OwnHelper | Literal["full", "taken"]:
     """Make a helper, and save its first line to its chat as hers: on a card's tap or
     an offer's. Its picture is the one given, else picked from the job and name."""
-    made = await store.create(owner_id, name, job, now_ms, icon=icon, color=color)
+    made = await store.create(
+        owner_id,
+        name,
+        job,
+        now_ms,
+        icon=icon,
+        color=color,
+        notes=notes,
+        connectors=connectors,
+        asks=asks,
+    )
     if isinstance(made, str):
         return made
     if conversations is not None:
@@ -321,15 +433,26 @@ class HelperCreate(HelperTool):
     definition = ToolDefinition(
         name=CREATE,
         description=(
-            "Make a helper: a specialist with one job and a chat of its own, when the user "
-            "asks for one. Draft a short `name`, and the `job` as one full sentence in its "
-            "own voice starting with 'I', from what they said, and pick an `icon` and "
-            "`color` for its picture that fit the job. Not "
-            "when a helper's job already covers it: suggest using that one. " + ASKS_BY_CARD
+            "Make a helper: a specialist with one job and a chat of its own. Call it in the "
+            "same turn the user asks for one, with your best guess: never ask them questions "
+            "first. Draft a short `name`, the `job` as one full sentence in its own voice "
+            "starting with 'I', its `notes`, the `connectors` its job would use, and up to "
+            f"{ASKS_MAX} `asks` it puts to them first in its own chat; pick an `icon` and "
+            "`color` that fit the job. Called again in this conversation, the new draft "
+            "replaces the card still waiting: use that when they add or change something. "
+            "Not when a helper's job already covers it: suggest using that one. " + ASKS_BY_CARD
         ),
         input_schema={
             "type": "object",
-            "properties": {"name": _NAME, "job": _JOB, "icon": _ICON, "color": _COLOR},
+            "properties": {
+                "name": _NAME,
+                "job": _JOB,
+                "notes": _NOTES,
+                "connectors": _CONNECTORS,
+                "asks": _ASKS,
+                "icon": _ICON,
+                "color": _COLOR,
+            },
             "required": ["name", "job"],
             "additionalProperties": False,
         },
@@ -346,7 +469,8 @@ class HelperCreate(HelperTool):
         return ActionSummary(text=f"New helper: {name}. {job}")
 
     def target(self, args: JSON) -> str:
-        return f"helper:{_one_line(args.get('name')).casefold()}"
+        # One draft per conversation: a new one retires the card still waiting.
+        return DRAFT_TARGET
 
     async def _why_not(self, args: JSON, ctx: ToolContext) -> str | None:
         store = self._store(ctx)
@@ -390,6 +514,9 @@ class HelperCreate(HelperTool):
             self._clock(),
             icon=look["icon"],
             color=look["color"],
+            notes=draft_notes(args.get("notes")),
+            connectors=draft_connectors(args.get("connectors")),
+            asks=draft_asks(args.get("asks")),
         )
         if made == "full":
             return _refused(_FULL, "full")
@@ -407,12 +534,21 @@ class HelperUpdate(HelperTool):
     definition = ToolDefinition(
         name=UPDATE,
         description=(
-            "In a helper's own chat, when the user wants its name or job changed: the new "
-            "`name`, `job` or both. `helper` is the id in your context. " + ASKS_BY_CARD
+            "In a helper's own chat, when the user wants its name, job, notes, connections or "
+            "first questions changed: give only what changes, and each one given replaces "
+            "what it had (`notes` in full, as they should read now). `helper` is the id in "
+            "your context. " + ASKS_BY_CARD
         ),
         input_schema={
             "type": "object",
-            "properties": {"helper": _ID, "name": _NAME, "job": _JOB},
+            "properties": {
+                "helper": _ID,
+                "name": _NAME,
+                "job": _JOB,
+                "notes": _NOTES,
+                "connectors": _CONNECTORS,
+                "asks": _ASKS,
+            },
             "required": ["helper"],
             "additionalProperties": False,
         },
@@ -431,6 +567,13 @@ class HelperUpdate(HelperTool):
             parts.append(f"name to {_one_line(args['name'])}")
         if args.get("job") is not None:
             parts.append(f"job to {_one_line(args['job'])}")
+        if args.get("notes") is not None:
+            parts.append(f"notes to {draft_notes(args['notes']) or '(none)'}")
+        if args.get("connectors") is not None:
+            titles = [CONNECTOR_TITLES[c] for c in draft_connectors(args["connectors"])]
+            parts.append(f"connections to {', '.join(titles) or '(none)'}")
+        if args.get("asks") is not None:
+            parts.append(f"first questions to {' '.join(draft_asks(args['asks'])) or '(none)'}")
         return ActionSummary(text=f"Change {old}: {', '.join(parts)}")
 
     def target(self, args: JSON) -> str:
@@ -441,8 +584,8 @@ class HelperUpdate(HelperTool):
         if said is not None:
             return said
         name, job = args.get("name"), args.get("job")
-        if name is None and job is None:
-            return "say the new name, the new job or both"
+        if all(args.get(k) is None for k in ("name", "job", "notes", "connectors", "asks")):
+            return "say what changes: its name, job, notes, connections or first questions"
         if name is not None and (wrong := _name_wrong(name)) is not None:
             return wrong
         if job is not None and (wrong := _job_wrong(job)) is not None:
@@ -471,7 +614,17 @@ class HelperUpdate(HelperTool):
             return _refused(checked if isinstance(checked, str) else _UNAVAILABLE)
         name = _one_line(args["name"]) if args.get("name") is not None else None
         job = _one_line(args["job"]) if args.get("job") is not None else None
-        done = await store.update(ctx.owner_id, checked.id, name=name, job=job)
+        done = await store.update(
+            ctx.owner_id,
+            checked.id,
+            name=name,
+            job=job,
+            notes=draft_notes(args["notes"]) if args.get("notes") is not None else None,
+            connectors=draft_connectors(args["connectors"])
+            if args.get("connectors") is not None
+            else None,
+            asks=draft_asks(args["asks"]) if args.get("asks") is not None else None,
+        )
         if done == "taken":
             return _refused(_taken(name or ""), "taken")
         if done is None:

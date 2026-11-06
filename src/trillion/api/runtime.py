@@ -1267,6 +1267,24 @@ class Runtime:
         # Only once all four took it: a failed redefine is tried again next time.
         self._told = types
 
+    def connected_catalog(self) -> frozenset[str]:
+        """The Connected tools entries set up now, by catalog id: Google's services and
+        Slack built in, and each MCP server added from the catalog and turned on. What a
+        helper's suggested connections are checked against."""
+        saved = self.google.saved if self.google is not None else None
+        found: set[str] = set()
+        if saved and saved.with_service("gmail"):
+            found.add("gmail")
+        if saved and saved.with_service("calendar"):
+            found.add("google-calendar")
+        if saved and saved.with_service("drive"):
+            found.add("google-drive")
+        if self.slack is not None and self.slack.token():
+            found.add("slack")
+        states = self.mcp.states.values() if self.mcp is not None else []
+        found.update(s.config.catalog for s in states if s.config.catalog and not s.config.disabled)
+        return frozenset(found)
+
     def day_setup(self) -> SetUp:
         """What the day board may read without asking (persona/day.py). A source set up
         whose read tools still ask first is listed apart and never read: building the

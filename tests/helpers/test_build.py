@@ -15,7 +15,7 @@ from tests.scheduler.conftest import NY, ms, schedule
 from trillion.attention.runner import WatcherStatus
 from trillion.helpers.build import helpers
 from trillion.helpers.look import pick
-from trillion.helpers.model import Helper, LastRun, RoutineLine, Waiting, to_json
+from trillion.helpers.model import Connection, Helper, LastRun, RoutineLine, Waiting, to_json
 from trillion.helpers.pausing import pause_helper
 from trillion.helpers.store import OwnHelper
 from trillion.scheduler.runner import BUSY_DETAIL, NEEDS_YOU_DETAIL
@@ -124,10 +124,15 @@ class Sources:
     mine: list[OwnHelper] = field(default_factory=list)
     # When the user last wrote in each conversation.
     said: dict[str, int] = field(default_factory=dict)
+    # The Connected tools entries set up now.
+    have: frozenset[str] = frozenset()
     owner: str = OWNER
 
     def now_ms(self) -> int:
         return NOW
+
+    def connected_catalog(self) -> frozenset[str]:
+        return self.have
 
     async def last_said(self, conversation_id: str) -> int | None:
         return self.said.get(conversation_id)
@@ -405,6 +410,8 @@ async def test_to_json_is_the_apis_body() -> None:
                 "routines": [],
                 "icon": None,
                 "color": None,
+                "connections": [],
+                "asks": [],
             },
             {
                 "id": "ask:a1",
@@ -425,6 +432,8 @@ async def test_to_json_is_the_apis_body() -> None:
                 "routines": [],
                 "icon": None,
                 "color": None,
+                "connections": [],
+                "asks": [],
             },
         ],
         "needs_you": 1,
@@ -464,6 +473,9 @@ class Real:
 
     async def last_said(self, conversation_id: str) -> int | None:
         return None
+
+    def connected_catalog(self) -> frozenset[str]:
+        return frozenset()
 
 
 @pytest.fixture
@@ -786,3 +798,18 @@ async def test_a_handoff_a_pause_cancelled_is_no_run(real: Real) -> None:
 async def test_a_stored_picture_not_on_the_lists_never_reaches_the_page() -> None:
     (h,) = await helpers(Sources(mine=[mine(icon="<b>", color="neon")]))
     assert (h.icon, h.color) == pick("Invoices", "Chases overdue invoices")
+
+
+async def test_your_helper_lists_its_cards_connections_and_questions() -> None:
+    drafted = mine(connectors=("stripe", "gone", "gmail"), asks=("Which account?",))
+    (h,) = await helpers(Sources(mine=[drafted], have=frozenset({"gmail"})))
+    # One no longer in the catalog is left out; each says whether it is set up now.
+    assert h.connections == (
+        Connection(id="stripe", title="Stripe", connected=False),
+        Connection(id="gmail", title="Gmail", connected=True),
+    )
+    assert h.asks == ("Which account?",)
+    assert h.to_json()["connections"] == [
+        {"id": "stripe", "title": "Stripe", "connected": False},
+        {"id": "gmail", "title": "Gmail", "connected": True},
+    ]

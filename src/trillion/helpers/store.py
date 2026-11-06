@@ -10,14 +10,33 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from trillion.connectors.mcp.catalog import ENTRIES
 from trillion.scheduler.store import NOTES_MAX
 
 # At most this many helpers, and a name and a job at most this long.
 MAX_HELPERS = 20
 NAME_MAX = 40
 JOB_MAX = 200
+# What a card may draft beyond that: at most this many connections, and this many
+# questions it asks first, each at most this long.
+CONNECTORS_MAX = 4
+ASKS_MAX = 3
+ASK_MAX = 160
+# The Connected tools entries a helper may suggest, by catalog id, with their titles.
+CONNECTOR_TITLES: dict[str, str] = {e.id: e.title for e in ENTRIES}
 
-__all__ = ["JOB_MAX", "MAX_HELPERS", "NAME_MAX", "NOTES_MAX", "HelperStore", "OwnHelper"]
+__all__ = [
+    "ASKS_MAX",
+    "ASK_MAX",
+    "CONNECTORS_MAX",
+    "CONNECTOR_TITLES",
+    "JOB_MAX",
+    "MAX_HELPERS",
+    "NAME_MAX",
+    "NOTES_MAX",
+    "HelperStore",
+    "OwnHelper",
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -39,6 +58,9 @@ class OwnHelper:
     color: str = "blue"
     # When its first hello ran; None until it has.
     hello_ms: int | None = None
+    # Connected tools entries its job would use (catalog ids), and what it asks first.
+    connectors: tuple[str, ...] = ()
+    asks: tuple[str, ...] = ()
 
 
 class HelperStore(Protocol):
@@ -51,10 +73,14 @@ class HelperStore(Protocol):
         *,
         icon: str | None = None,
         color: str | None = None,
+        notes: str = "",
+        connectors: tuple[str, ...] = (),
+        asks: tuple[str, ...] = (),
     ) -> OwnHelper | Literal["full", "taken"]:
         """Make a helper and its 'helper' conversation, titled with its name, together.
         "full" at `MAX_HELPERS`, "taken" when the name is, in any case. Its picture is
-        `look.pick`'s: the icon and colour given when they are on the lists."""
+        `look.pick`'s: the icon and colour given when they are on the lists. The rest
+        is what its card drafted, already checked and within its limits."""
         ...
 
     async def get(self, owner_id: str, helper_id: str) -> OwnHelper | None: ...
@@ -68,10 +94,19 @@ class HelperStore(Protocol):
         ...
 
     async def update(
-        self, owner_id: str, helper_id: str, *, name: str | None = None, job: str | None = None
+        self,
+        owner_id: str,
+        helper_id: str,
+        *,
+        name: str | None = None,
+        job: str | None = None,
+        notes: str | None = None,
+        connectors: tuple[str, ...] | None = None,
+        asks: tuple[str, ...] | None = None,
     ) -> OwnHelper | Literal["taken"] | None:
-        """A new name, job or both. A new name renames its conversation too. "taken"
-        when another helper has the name; None for no such helper."""
+        """A new name, job, notes, connections or questions: each one given replaces
+        what it had. A new name renames its conversation too. "taken" when another
+        helper has the name; None for no such helper."""
         ...
 
     async def add_note(self, owner_id: str, helper_id: str, line: str) -> bool:

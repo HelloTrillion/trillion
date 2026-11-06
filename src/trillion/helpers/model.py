@@ -56,6 +56,19 @@ class RoutineLine:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Connection:
+    """A Connected tools entry a helper of the user's would use, by its catalog id."""
+
+    id: str
+    title: str
+    # Set up now: the page offers to connect only one that is not.
+    connected: bool
+
+    def to_json(self) -> dict[str, Any]:
+        return {"id": self.id, "title": self.title, "connected": self.connected}
+
+
+@dataclass(frozen=True, kw_only=True)
 class Helper:
     # `routine:<schedule_id>`, `ask:<schedule_id>`, `watcher:<name>` or `own:<id>`.
     id: str
@@ -86,6 +99,10 @@ class Helper:
     # A helper of the user's: its picture (`helpers/look.py`). None for any other kind.
     icon: str | None = None
     color: str | None = None
+    # A helper of the user's: the connections its card suggested, and what it asks
+    # first. Empty for any other kind.
+    connections: tuple[Connection, ...] = ()
+    asks: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -107,6 +124,8 @@ class Helper:
             "routines": [r.to_json() for r in self.routines],
             "icon": self.icon,
             "color": self.color,
+            "connections": [c.to_json() for c in self.connections],
+            "asks": list(self.asks),
         }
 
 

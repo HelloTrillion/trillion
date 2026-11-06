@@ -101,6 +101,8 @@ NOT_DECISIONS: dict[str, str] = {
             "icon",
             "color",
             "hello_ms",
+            "connectors",
+            "asks",
             "deleted_at",
         )
     },

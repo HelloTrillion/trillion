@@ -53,6 +53,25 @@ COVER_WORDS: dict[str, tuple[str, ...]] = {
 
 _LABELS = {"slack": "Slack"}
 
+# What the rail's + box and the Helpers panel send ahead of the user's words.
+NEW_HELPER = "new helper:"
+# A plain ask for one: a verb of making or wanting, then within a few words a helper,
+# an agent, an assistant or a bot. Loose on purpose: a turn wrongly taken for one only
+# goes without an offer.
+_ASKS_FOR = re.compile(
+    r"\b(?:make|create|set\s*up|build|add|spin\s+up|start|want|need|get)\b"
+    r"(?:\W+\w+){0,5}?\W+(?:helper|agent|assistant|bot)s?\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_helper(text: str) -> bool:
+    """Whether the user's words ask for a helper: then her answer is that helper, and no
+    offer of another rides with it (your request wins over a suggestion)."""
+    said = " ".join(text.split())
+    return said.casefold().startswith(NEW_HELPER) or _ASKS_FOR.search(said) is not None
+
+
 # (tool, conversation id, at) as the audit keeps them.
 Call = tuple[str, str, int]
 # An MCP tool's area, from its server: None for one no server is known for.

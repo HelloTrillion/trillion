@@ -51,6 +51,7 @@ async def test_the_migration_upgrades_a_database_holding_old_rows(tmp_path: Path
         "017_usage_spend",
         "018_attention_deferred",
         "019_helpers",
+        "020_helper_draft",
     ]
     store = SqliteConversationStore(conn)
     assert await _columns(store) == [

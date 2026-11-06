@@ -60,7 +60,7 @@ from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
 from trillion.delivery import door as delivery
 from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.helpers import needs
-from trillion.helpers.store import OwnHelper
+from trillion.helpers.store import CONNECTOR_TITLES, OwnHelper
 from trillion.memory import present
 from trillion.persona import day
 from trillion.persona.prompt import (
@@ -98,6 +98,7 @@ from trillion.tools.helper import OFFER_PREF as HELPER_OFFER
 from trillion.tools.helper import SUGGEST as HELPER_SUGGEST
 from trillion.tools.helper import UPDATE as HELPER_UPDATE
 from trillion.tools.helper import WIDEN as HELPER_WIDEN
+from trillion.tools.helper import card_draft as helper_draft
 from trillion.tools.helper import card_look as helper_look
 from trillion.tools.helper import make as make_helper
 from trillion.tools.helper import plain as plain_helper
@@ -225,6 +226,29 @@ HELPER_HELLO = (
     "it goes to them on a card. Never say it is set up: say it starts once they tap "
     "Approve."
 )
+
+
+def helper_hello(h: OwnHelper, connected: frozenset[str] = frozenset()) -> str:
+    """`HELPER_HELLO`, with what its approved card drafted: the questions it asks first,
+    and the connections it suggested that are not connected yet. Their words are the
+    card's, made inert; the rest is the app's."""
+    note = HELPER_HELLO
+    if h.asks:
+        said = " ".join(f'"{present.inert(a)}"' for a in h.asks)
+        note += (
+            " The card the user approved has these questions to ask first: ask them now, "
+            f"in your own words, instead of asking what you need to know: {said}"
+        )
+    missing = [
+        CONNECTOR_TITLES[c] for c in h.connectors if c in CONNECTOR_TITLES and c not in connected
+    ]
+    if missing:
+        note += (
+            " These connections would help and are not connected yet: "
+            f"{', '.join(missing)}. Say so in one line: they can connect them from the "
+            "chips above, or in Settings, Connected tools."
+        )
+    return note
 
 
 # A routine's card: not a one-off timed ask. And where an own routine's card says it lands.
@@ -1662,14 +1686,15 @@ class Session:
                 return
             if not first or not fresh:
                 return
+            note = helper_hello(h, rt.connected_catalog())
             if self._task is not None:
                 # Never taken over a turn: it is that turn's loop that says it next.
-                self._queued.append(HELPER_HELLO)
+                self._queued.append(note)
                 return
             await self._stop_listening()
             self._via = "text"
             self._arrived = self._starting("greet")
-            self._queued.append(HELPER_HELLO)
+            self._queued.append(note)
             self._begin()
 
     async def _on_day_build(self, *, spoken: bool = False) -> None:
@@ -3725,9 +3750,8 @@ class Session:
         of the text, saying what the text is. `turn` is the user message this input
         belongs to, when it is not yet counted (an early draft)."""
         via = via or self._via
-        pending = [
-            PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
-        ]
+        open_actions = await self._open_actions()
+        pending = [PendingNote(pending_id=a.id, summary=a.summary) for a in open_actions]
         spoken = kind == "user" and via == "voice"
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
@@ -3771,7 +3795,14 @@ class Session:
         if helper_note is not None:
             notes = (*notes, ContextBlock(text=helper_note))
         # A need that keeps coming back, on the user's own turn: offer a helper, once.
-        offer = await self._offer_due() if kind == "user" and via != "ask" else None
+        # Never while they ask for one, or a helper's card of theirs waits here: their
+        # request wins over a suggestion.
+        drafting = any(a.tool == HELPER_CREATE for a in open_actions)
+        offer = (
+            await self._offer_due()
+            if kind == "user" and via != "ask" and not drafting and not needs.asks_for_helper(text)
+            else None
+        )
         if offer is not None:
             notes = (*notes, ContextBlock(text=offer_note(offer)))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
@@ -3882,9 +3913,25 @@ class Session:
             expires_at=a.expires_at,
             # Spend and anything unrecoverable can only be approved here, by a tap (SPN-14).
             tap_only=a.risk is Risk.SPEND or not a.recoverable,
-            # A new helper's picture, from the approved arguments its tap makes it from.
-            **({"look": helper_look(a.args)} if a.tool == HELPER_CREATE else {}),
+            # A new helper's picture and draft, from the approved arguments its tap makes
+            # it from. The page pins it above the message box, one per conversation.
+            **(
+                {"look": helper_look(a.args), "draft": self._card_draft(a.args)}
+                if a.tool == HELPER_CREATE
+                else {}
+            ),
         )
+
+    def _card_draft(self, args: dict[str, Any]) -> dict[str, Any]:
+        """A create card's draft, its suggested connections said with their titles and
+        whether each is connected now."""
+        draft = helper_draft(args)
+        have = self._rt.connected_catalog()
+        draft["connectors"] = [
+            {"id": c, "title": CONNECTOR_TITLES[c], "connected": c in have}
+            for c in draft["connectors"]
+        ]
+        return draft
 
     async def _routine_lands(self, session_id: str, summary: str) -> str:
         """A routine set in a helper's chat runs there: its card says so by its name."""

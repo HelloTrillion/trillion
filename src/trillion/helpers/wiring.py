@@ -62,6 +62,9 @@ class RuntimeSources:
     async def last_said(self, conversation_id: str) -> int | None:
         return await self.rt.conversations.last_said(conversation_id, self.owner)
 
+    def connected_catalog(self) -> frozenset[str]:
+        return self.rt.connected_catalog()
+
 
 async def talks(rt: Runtime) -> dict[str, str]:
     """Each helper's own conversation, by helper id. One deleted since is forgotten

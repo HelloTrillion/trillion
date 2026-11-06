@@ -136,6 +136,8 @@ def test_the_list_holds_routines_asks_and_watchers(make: Any) -> None:
         "routines",
         "icon",
         "color",
+        "connections",
+        "asks",
     }
     assert (rows["watcher:email"]["icon"], rows["watcher:email"]["color"]) == (None, None)
 
