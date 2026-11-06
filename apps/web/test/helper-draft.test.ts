@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARRIVE_MS, CHANGED_MS, type DraftCard, NOTES_CLAMP, changedParts, createDraftPin } from '../src/draft';
+import { ARRIVE_MS, CHANGED_MS, type DraftCard, changedParts, createDraftPin } from '../src/draft';
 import { chatHead } from '../src/offer';
 import { INITIAL, type View, draftIn, pinnedDraft, reduce } from '../src/view';
 
@@ -89,23 +89,26 @@ describe('the pinned draft', () => {
     expect(el.querySelector('.draft-name')?.textContent).toBe('Socials');
     expect(el.querySelector('.draft-job')?.textContent).toBe('I help you grow your channels.');
     expect(el.querySelector('.draft-notes-text')?.textContent).toBe('Posts go out on weekdays.');
-    // Short notes need no More.
-    expect(el.querySelector('.draft-more')).toBeNull();
+    // Its notes and questions fold away, so Create stays in sight.
+    expect((el.querySelector('.draft-details') as HTMLElement).hidden).toBe(true);
     const chips = [...el.querySelectorAll('.draft-chip')];
     expect(chips.map((c) => c.textContent)).toEqual(['Connect Canva', 'Zapier']);
     expect([...el.querySelectorAll('.draft-asks-list li')].map((l) => l.textContent)).toEqual(['Which channels matter most?']);
   });
 
-  it('clamps long notes, with More and Less', () => {
+  it('folds its notes and questions behind Details, beside Create', () => {
     const { pin } = setup();
-    pin.draw(pinned(feed([card('p1', { ...DRAFT, notes: 'word '.repeat(NOTES_CLAMP) })])));
-    const text = pin.el.querySelector('.draft-notes-text') as HTMLElement;
-    const more = pin.el.querySelector('.draft-more') as HTMLButtonElement;
-    expect(text.hasAttribute('data-clamped')).toBe(true);
+    pin.draw(pinned(feed([card('p1')])));
+    const details = pin.el.querySelector('.draft-details') as HTMLElement;
+    const more = pin.el.querySelector('.draft-actions .draft-more') as HTMLButtonElement;
+    expect(more.textContent).toBe('Details');
     more.click();
-    expect(text.hasAttribute('data-clamped')).toBe(false);
-    expect(more.textContent).toBe('Less');
+    expect(details.hidden).toBe(false);
+    expect(more.textContent).toBe('Hide details');
     expect(more.getAttribute('aria-expanded')).toBe('true');
+    // With nothing to fold, no Details.
+    pin.draw(pinned(feed([card('p2', { ...DRAFT, notes: '', asks: [] })])));
+    expect(pin.el.querySelector('.draft-more')).toBeNull();
   });
 
   it('Create and Not now send its approve and decline, once they are ready', () => {
@@ -144,8 +147,10 @@ describe('the pinned draft', () => {
     expect(pin.el).toBe(root);
     expect(root.querySelector('.draft-notes-text')?.textContent).toBe('Posts at nine.');
     expect(root.querySelector('.draft-asks')).toBeNull();
-    const changed = [...root.querySelectorAll('[data-changed]')].map((n) => (n as HTMLElement).dataset['part']);
+    const changed = [...root.querySelectorAll('[data-part][data-changed]')].map((n) => (n as HTMLElement).dataset['part']);
     expect(changed).toEqual(['notes']);
+    // Folded away, the change shows on Details.
+    expect(root.querySelector('.draft-more')?.hasAttribute('data-changed')).toBe(true);
     expect(root.querySelector('.draft-name')?.hasAttribute('data-changed')).toBe(false);
     vi.advanceTimersByTime(CHANGED_MS);
     expect(root.querySelectorAll('[data-changed]')).toHaveLength(0);

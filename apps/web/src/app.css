@@ -8306,8 +8306,8 @@ button.reminders-open {
 .draft-pin {
   flex-shrink: 0;
   margin: 0 0 8px;
-  padding: 12px 14px;
-  max-height: min(45vh, 420px);
+  padding: 10px 12px;
+  max-height: min(40vh, 320px);
   overflow: auto;
   border-radius: var(--radius-lg);
   background: var(--color-bg-1);
@@ -8323,8 +8323,26 @@ button.reminders-open {
 }
 .draft-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 10px;
+}
+.draft-head .look {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.draft-job {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.draft-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draft-details[hidden] {
+  display: none;
 }
 .draft-words {
   min-width: 0;
@@ -8358,14 +8376,8 @@ button.reminders-open {
 .draft-notes-text {
   color: var(--color-text-1);
 }
-.draft-notes-text[data-clamped] {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
 .draft-more {
-  padding: 0;
+  padding: 2px 4px;
   border: 0;
   background: transparent;
   color: var(--color-accent);
@@ -8408,6 +8420,12 @@ button.draft-chip:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  /* With its details open, Create stays in sight at the bottom. */
+  position: sticky;
+  bottom: -10px;
+  margin: 0 -12px -10px;
+  padding: 8px 12px 10px;
+  background: var(--color-bg-1);
 }
 .draft-actions .approve {
   background: var(--color-accent);
@@ -8424,7 +8442,8 @@ button.draft-chip:hover {
   border-radius: var(--radius-sm);
   transition: background-color 0.6s ease;
 }
-.draft-body [data-changed] {
+.draft-body [data-changed],
+.draft-more[data-changed] {
   background: color-mix(in srgb, var(--color-amber) 18%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {

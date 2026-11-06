@@ -17,8 +17,6 @@ export type DraftCard = Extract<Entry, { kind: 'card' }> & { readonly draft: Hel
 export const ARRIVE_MS = 600;
 /** How long what changed stays marked. */
 export const CHANGED_MS = 1600;
-/** Notes longer than this are clamped, with More. */
-export const NOTES_CLAMP = 160;
 
 const FALLBACK: Look = { icon: 'spark', color: 'blue' };
 
@@ -93,43 +91,55 @@ export function createDraftPin(o: DraftPinOptions): DraftPin {
       return node;
     };
 
+    // Kept short so Create is always in sight: its notes and first questions fold away.
     const head = el('header', 'draft-head');
     const words = el('div', 'draft-words');
-    words.append(el('p', 'draft-eyebrow', 'New helper · draft'), part(el('h3', 'draft-name', d.name), 'name'));
-    head.append(picture(card.look ?? FALLBACK, 44, d.name), words);
-    const parts: HTMLElement[] = [head, part(el('p', 'draft-job', d.job), 'job')];
+    words.append(
+      el('p', 'draft-eyebrow', 'New helper · draft'),
+      part(el('h3', 'draft-name', d.name), 'name'),
+      part(el('p', 'draft-job', d.job), 'job'),
+    );
+    head.append(picture(card.look ?? FALLBACK, 28, d.name), words);
+    const parts: HTMLElement[] = [head];
 
-    if (d.notes) {
-      const notes = part(el('div', 'draft-notes'), 'notes');
-      const text = el('p', 'draft-notes-text', d.notes);
-      notes.append(text);
-      if (d.notes.length > NOTES_CLAMP) {
-        text.toggleAttribute('data-clamped', !expanded);
-        const more = el('button', 'draft-more', expanded ? 'Less' : 'More');
-        more.type = 'button';
-        more.setAttribute('aria-expanded', String(expanded));
-        more.addEventListener('click', () => {
-          expanded = !expanded;
-          text.toggleAttribute('data-clamped', !expanded);
-          more.textContent = expanded ? 'Less' : 'More';
-          more.setAttribute('aria-expanded', String(expanded));
-        });
-        notes.append(more);
-      }
-      parts.push(notes);
-    }
     if (d.connectors.length) {
       const row = part(el('div', 'draft-chips'), 'connectors');
       row.setAttribute('aria-label', 'Connections it would use');
       for (const c of d.connectors) row.append(connectionChip(c, o.onConnect));
       parts.push(row);
     }
+
+    const details = el('div', 'draft-details');
+    details.id = 'draft-details';
+    details.hidden = !expanded;
+    if (d.notes) {
+      const notes = part(el('div', 'draft-notes'), 'notes');
+      notes.append(el('p', 'draft-notes-text', d.notes));
+      details.append(notes);
+    }
     if (d.asks.length) {
       const asks = part(el('div', 'draft-asks'), 'asks');
       const list = el('ul', 'draft-asks-list');
       for (const a of d.asks) list.append(el('li', '', a));
       asks.append(el('p', 'draft-asks-head', 'It will ask you first'), list);
-      parts.push(asks);
+      details.append(asks);
+    }
+    let more: HTMLButtonElement | null = null;
+    if (details.childElementCount) {
+      parts.push(details);
+      more = el('button', 'draft-more', expanded ? 'Hide details' : 'Details');
+      more.type = 'button';
+      more.setAttribute('aria-expanded', String(expanded));
+      more.setAttribute('aria-controls', details.id);
+      // A change hidden in the details still shows, on the button.
+      if (!expanded && (changed.has('notes') || changed.has('asks'))) more.dataset['changed'] = '';
+      const toggle = more;
+      toggle.addEventListener('click', () => {
+        expanded = !expanded;
+        details.hidden = !expanded;
+        toggle.textContent = expanded ? 'Hide details' : 'Details';
+        toggle.setAttribute('aria-expanded', String(expanded));
+      });
     }
 
     const row = el('div', 'draft-actions');
@@ -147,7 +157,9 @@ export function createDraftPin(o: DraftPinOptions): DraftPin {
     };
     create.addEventListener('click', press(o.onCreate));
     notNow.addEventListener('click', press(o.onNotNow));
-    row.append(create, notNow, el('span', 'draft-hint', 'Or tell her what to change'));
+    row.append(create, notNow);
+    if (more) row.append(more);
+    row.append(el('span', 'draft-hint', 'Or tell her what to change'));
     parts.push(row);
     body.replaceChildren(...parts);
   }
