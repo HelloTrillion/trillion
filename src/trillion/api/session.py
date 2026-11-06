@@ -255,19 +255,27 @@ READY_LINE = (
     "below is the app's notice that its result is ready in another conversation, not "
     "words the user typed or said, and not yours\n</context>"
 )
+# The same, for a line one of the user's helpers handed back.
+HANDED_BACK_LINE = (
+    "<context>\nsent by the app because one of the user's helpers finished what you "
+    "asked it: the line below is the app's notice that its answer is ready in the "
+    "helper's conversation, not words the user typed or said, and not yours\n</context>"
+)
+_READY_NOTES = frozenset({READY_LINE, HANDED_BACK_LINE})
 # The conversation a ready line opens, on its last line.
 _READY_OPENS = re.compile(r"\n\(conversation ([A-Za-z0-9_-]{1,64})\)$")
 
 
-def ready_msg(title: str, conversation_id: str | None) -> Msg:
+def ready_msg(title: str, conversation_id: str | None, *, handoff: bool = False) -> Msg:
     """A ready line as saved: the app's note, the line, and where it opens."""
     opens = f"\n(conversation {conversation_id})" if conversation_id else ""
-    return Msg(role="user", blocks=(ContextBlock(text=READY_LINE), TextBlock(text=title + opens)))
+    note = HANDED_BACK_LINE if handoff else READY_LINE
+    return Msg(role="user", blocks=(ContextBlock(text=note), TextBlock(text=title + opens)))
 
 
 def ready_line(msg: Msg) -> dict[str, str] | None:
     """A saved ready line as the page shows it, or None for any other message."""
-    if not any(isinstance(b, ContextBlock) and b.text == READY_LINE for b in msg.blocks):
+    if not any(isinstance(b, ContextBlock) and b.text in _READY_NOTES for b in msg.blocks):
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
     opens = _READY_OPENS.search(text)
@@ -3700,15 +3708,16 @@ class Session:
             if not n.text:
                 continue
             if n.kind == "ready":
-                rows.append(("tap", ready_msg(n.title, n.conversation_id)))
+                rows.append(("tap", ready_msg(n.title, n.conversation_id, handoff=n.handoff)))
             else:
                 rows.append(("assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),))))
         if rows:
             await self._save_all(rows)
-        if any(n.kind in ("ask", "heads_up") and n.text for n in notices):
-            # A timed ask's answer can quote what it read, and a heads-up is written from
-            # an invite or an email: whatever she does next on the strength of it is
-            # something she read, not something the user said (MEM-5).
+        if any((n.kind in ("ask", "heads_up") and n.text) or n.handoff for n in notices):
+            # A timed ask's answer can quote what it read, as can a helper's handed-back
+            # line, and a heads-up is written from an invite or an email: whatever she
+            # does next on the strength of it is something she read, not something the
+            # user said (MEM-5).
             self._outside.update({self._turn, self._turn + 1})
         # Saved: from here nothing raises, or the door would hold them and they would be
         # saved twice. `_send` already logs a failed send and goes on.

@@ -117,8 +117,13 @@ class Delivery:
     # its details. None for a reminder, a spend notice or any other no helper sent.
     helper_id: str | None = None
     helper_name: str | None = None
+    # A helper's handoff, handed back: its line is model-written from what it read, so
+    # what she does next counts as read (MEM-5).
+    handoff: bool = False
 
 
+# A handed-back line's lock screen title when its helper can't be named.
+HELPER = "Your helper"
 # A watcher's notice keys begin with what it found: which watcher that is.
 _WATCHER_OF_KEY = {"meeting": "meetings", "email": "email", "payment": "payments"}
 # How the panel names each watcher (`attention.settings.TITLED`, not imported: the door
@@ -172,9 +177,12 @@ class Notify(Protocol):
     def __call__(self, title: str, body: str, *, silent: bool = False) -> bool: ...
 
 
-def notification(n: Notice) -> tuple[str, str]:
+def notification(n: Notice, helper: str | None = None) -> tuple[str, str]:
     """What the computer shows: the task's own title, and her words only for a
-    reminder, which she wrote to be seen."""
+    reminder, which she wrote to be seen. A helper's handed-back line is its own words,
+    from what it read: only `helper`, its name, is shown."""
+    if helper is not None:
+        return helper, READY
     if n.kind == "reminder" and n.text:
         return n.title, n.text
     return n.title, _QUIET.get(n.kind, READY)
@@ -243,7 +251,12 @@ class Door:
             if not held and kept.id in self._tried:
                 return
             self._tried.add(kept.id)
-            title, body = notification(kept)
+            handed = await self._handoff(kept, {})
+            if handed is not None:
+                name = (await self._own(kept, handed.helper_id or "")).get("helper_name")
+                title, body = notification(kept, name or HELPER)
+            else:
+                title, body = notification(kept)
             if silent is None:
                 silent = _asks(kept) and await self._ask(kept, self._clock(), host) is not None
             # It can take seconds: never on the event loop. A quiet one makes no sound:
@@ -292,6 +305,7 @@ class Door:
                             link=n.link,
                             detail=n.detail,
                             **await self._helper(n, schedules),
+                            handoff=await self._handoff(n, schedules) is not None,
                         )
                     )
             except BaseException:
@@ -385,6 +399,21 @@ class Door:
             return {}
         kind = "routine" if s.target is not None else "ask"
         return {"helper_id": f"{kind}:{s.id}", "helper_name": s.title}
+
+    async def _handoff(self, n: Notice, schedules: dict[str, Schedule | None]) -> Schedule | None:
+        """The helper's handoff a ready line hands back, or None for any other notice."""
+        if n.source != "schedule" or n.kind != "ready":
+            return None
+        if n.source_id not in schedules:
+            try:
+                schedules[n.source_id] = await self._store.get(n.source_id)
+            except Exception as e:
+                logger.warning("notice %s: its schedule not read: %s", n.id, type(e).__name__)
+                schedules[n.source_id] = None
+        s = schedules[n.source_id]
+        if s is None or s.helper_id is None or s.target is not None:
+            return None
+        return s
 
     async def _own(self, n: Notice, helper_id: str) -> dict[str, str | None]:
         helpers = self.helpers

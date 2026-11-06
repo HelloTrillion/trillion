@@ -17,8 +17,15 @@ from tests.scheduler.conftest import FakeClock, ms, schedule
 from tests.scheduler.test_ask import Recording
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import routine_run
-from trillion.brain.types import ContextBlock, ModelEvent, TextBlock, ToolResultBlock, ToolSchema
-from trillion.delivery.door import Door
+from trillion.brain.types import (
+    ContextBlock,
+    ModelEvent,
+    ProviderError,
+    TextBlock,
+    ToolResultBlock,
+    ToolSchema,
+)
+from trillion.delivery.door import READY, Door
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import OwnHelper
 from trillion.persona.prompt import helper_overlay, system_blocks
@@ -68,7 +75,9 @@ async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[R
 
 
 class Rig:
-    def __init__(self, rt: Runtime, provider: Seen, *, capped: bool = False) -> None:
+    def __init__(
+        self, rt: Runtime, provider: Seen, *, capped: bool = False, page: bool = True
+    ) -> None:
         assert rt.schedules is not None and rt.helpers is not None
         self.rt, self.provider, self.capped = rt, provider, capped
         self.schedules, self.helpers = rt.schedules, rt.helpers
@@ -90,9 +99,9 @@ class Rig:
             helpers=lambda: rt.helpers,
         )
         self.page = FakePage("chat-1")
-        self.door = Door(
-            self.schedules, [self.page], clock=self.clock, owner=OWNER, notify=FakeNotify()
-        )
+        self.notify = FakeNotify()
+        pages = [self.page] if page else []
+        self.door = Door(self.schedules, pages, clock=self.clock, owner=OWNER, notify=self.notify)
         self.door.helpers = rt.helpers
 
         async def held(work: Work) -> bool:
@@ -168,6 +177,8 @@ async def test_a_handoff_runs_in_its_chat_and_a_ready_line_names_it(rt: Runtime)
     assert (got.kind, got.title, got.text) == ("ready", title, title)
     assert got.conversation_id == h.conversation_id
     assert (got.helper_id, got.helper_name) == (f"own:{h.id}", "Invoices")
+    # Model-written from what it read: whatever she does next counts as read.
+    assert got.handoff
     assert await it.runs() == [("delivered", None)]
     s = await it.schedules.get(sid)
     assert s is not None and s.status == "done"
@@ -250,6 +261,23 @@ async def test_a_deleted_helper_fails_the_run_with_why(rt: Runtime) -> None:
     assert got.kind == "failed" and (got.helper_id, got.helper_name) == (None, None)
 
 
+async def test_a_lock_screen_shows_its_name_never_its_words(rt: Runtime) -> None:
+    it = Rig(rt, Seen(say("3 invoices are overdue, $4,200 in all.")), page=False)
+    h = await it.made()
+    await it.ask(h)
+    await it.scheduler.tick()
+    assert it.notify.shown == [("Invoices", READY)]
+
+
+async def test_a_model_failure_is_one_failed_notice_and_no_ready_line(rt: Runtime) -> None:
+    it = Rig(rt, Seen(ProviderError("rate_limited")))
+    h = await it.made()
+    await it.ask(h)
+    await it.scheduler.tick()
+    assert await it.runs() == [("failed", "the model failed: rate_limited")]
+    assert [got.kind for got in it.page.got] == ["failed"]
+
+
 async def test_a_capped_helper_is_not_run(rt: Runtime) -> None:
     it = Rig(rt, Seen(say("never")))
     h = await it.made()
@@ -278,6 +306,7 @@ async def test_its_routine_runs_in_its_chat_with_its_overlay(rt: Runtime) -> Non
     assert it.provider.work == ["helpers"]
     (got,) = it.page.got
     assert (got.kind, got.title) == ("ready", "Your Overdue check is ready")
+    assert not got.handoff
     assert got.conversation_id == h.conversation_id
     assert (got.helper_id, got.helper_name) == (f"own:{h.id}", "Invoices")
 
