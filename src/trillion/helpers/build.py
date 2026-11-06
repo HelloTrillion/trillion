@@ -22,8 +22,11 @@ What waits on the user:
   routine comes from someone talking to it there. A card from any other conversation
   is on no helper.
 - A step: a watcher switched on whose source isn't connected, or is signed out.
-- A question has no producer yet: it comes with step two, helpers she hands work to
-  (AGT-1, AGT-2). Nor does a notice ask for a step today.
+- A question: a helper of yours whose newest finished run is a handoff that ended
+  "{name} needs you: ...", until the user writes in its chat after it finished. The
+  page opens its chat to reply ("Open to reply"), where any card is raised once they
+  say go. A newer run of that helper's supersedes it. Nor does a notice ask for a step
+  today.
 
 Reasons are told in plain words, never a class name.
 
@@ -48,7 +51,7 @@ from trillion.helpers.model import (
     Waiting,
 )
 from trillion.helpers.store import OwnHelper
-from trillion.scheduler.runner import BUSY_DETAIL
+from trillion.scheduler.runner import BUSY_DETAIL, NEEDS_YOU_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import WhenError, summary
 from trillion.spend.types import Work
@@ -173,6 +176,10 @@ class Sources(Protocol):
         """The helpers the user made (`HelperStore.all`)."""
         ...
 
+    async def last_said(self, conversation_id: str) -> int | None:
+        """When the user last wrote in a conversation, if ever."""
+        ...
+
 
 async def helpers(sources: Sources) -> list[Helper]:
     return (await snapshot(sources))[0]
@@ -193,20 +200,33 @@ async def snapshot(sources: Sources) -> tuple[list[Helper], int | None]:
     talks = await sources.conversations()
     # A helper's schedules are its own, never rows: one whose helper is gone has none.
     theirs = [s for s in active if s.helper_id is not None]
-    found = [
+    found: list[Helper | None] = [
         _scheduled(s, last.get(s.id), now.get(s.id), capped, cards)
         for s in active
         if s.helper_id is None
     ]
     by_helper = await sources.schedules.helper_last_results(owner)
-    found += [
-        _own(h, [s for s in theirs if s.helper_id == h.id], by_helper.get(h.id), now, capped, cards)
-        for h in await sources.own()
-    ]
+    for h in await sources.own():
+        ran = by_helper.get(h.id)
+        asks = await _asks(sources, h, ran)
+        mine = [s for s in theirs if s.helper_id == h.id]
+        found.append(_own(h, mine, ran, now, capped, cards, asks))
     found += [
         _watcher(w, capped, cards, talks.get(f"watcher:{w.name}")) for w in await sources.watchers()
     ]
     return _ordered(h for h in found if h is not None), wake
+
+
+async def _asks(sources: Sources, h: OwnHelper, ran: Run | None) -> list[Waiting]:
+    """What a handoff that ended needing the user still asks of them: nothing once they
+    have written in the helper's chat since it finished."""
+    if ran is None or ran.detail != NEEDS_YOU_DETAIL or ran.finished_ms is None:
+        return []
+    said = await sources.last_said(h.conversation_id)
+    if said is not None and said >= ran.finished_ms:
+        return []
+    text = f"{h.name} needs you"
+    return [Waiting(type="question", id=f"handoff:{ran.id}", text=text, at_ms=ran.finished_ms)]
 
 
 def _still_open(cards: Sequence[PendingAction], owner: str, now_ms: int) -> list[PendingAction]:
@@ -284,6 +304,7 @@ def _own(
     running: dict[str, Run],
     capped: set[Work],
     cards: dict[str, list[Waiting]],
+    asks: list[Waiting],
 ) -> Helper:
     paused = h.paused_ms is not None
     starts = [
@@ -294,7 +315,7 @@ def _own(
     routines = [s for s in schedules if s.target is not None and s.status == "active"]
     # Its chat, and any chat of its routines' own.
     talks = dict.fromkeys([h.conversation_id, *(s.conversation_id for s in routines)])
-    waiting = [w for c in talks for w in _in(cards, c)]
+    waiting = [*asks, *(w for c in talks for w in _in(cards, c))]
     state = _state(
         waiting=bool(waiting),
         working=bool(starts),

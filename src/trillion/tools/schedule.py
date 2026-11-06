@@ -16,6 +16,7 @@ import secrets
 from collections.abc import Callable
 from typing import Any, Literal
 
+from trillion.helpers.store import HelperStore, OwnHelper
 from trillion.scheduler.store import Kind, Schedule, ScheduleStore, Target
 from trillion.scheduler.when import (
     Repeat,
@@ -87,6 +88,7 @@ _CANCEL_FROM_READING = (
     " Reminders, or ask you again"
 )
 _NO_SUCH_ROUTINE = 'routine must be "day" or "own", or left out'
+_HELPER_GONE = "that helper was deleted: tell the user its routine wasn't set"
 
 
 def _routine(args: JSON) -> Target | Literal[False] | None:
@@ -115,6 +117,7 @@ class _ScheduleTool(BaseTool):
         self._zone: Callable[[], str | None] = lambda: None
         self._clock: Callable[[], int] = lambda: 0
         self._owner = ""
+        self._helpers: HelperStore | None = None
 
     def bind(
         self,
@@ -123,9 +126,22 @@ class _ScheduleTool(BaseTool):
         zone: Callable[[], str | None],
         clock: Callable[[], int],
         owner: str,
+        helpers: HelperStore | None = None,
     ) -> None:
-        """Called once at startup with the running process's store, zone and clock."""
+        """Called once at startup with the running process's store, zone and clock, and
+        its helpers, whose own routines are set up in their chats."""
         self._store, self._zone, self._clock, self._owner = store, zone, clock, owner
+        self._helpers = helpers
+
+    async def _helper(self, ctx: ToolContext, target: Target | None) -> OwnHelper | bool | None:
+        """The helper an own routine set here is for: None for no helper's, False for
+        one deleted since (its chat had a turn in flight)."""
+        if target != "own" or ctx.helper_id is None:
+            return None
+        if self._helpers is None:
+            return False
+        h = await self._helpers.get(ctx.owner_id, ctx.helper_id)
+        return h if h is not None else False
 
     def _for(self, ctx: ToolContext) -> ScheduleStore | None:
         return self._store if ctx.owner_id == self._owner else None
@@ -167,8 +183,13 @@ class _ScheduleTool(BaseTool):
             zone, repeat, first = self._plan(args, body_key, limit)
         except WhenError as e:
             return _refused(str(e))
+        owner = await self._helper(ctx, target)
+        if owner is False:
+            return _refused(_HELPER_GONE, "not_found")
         # An own routine set in a helper's chat is the helper's: it runs there, as it.
-        helper = ctx.helper_id if target == "own" else None
+        # Set while the helper is paused, it is paused with it, at its pause's time, so
+        # it waits for the helper's resume.
+        helper = owner.id if isinstance(owner, OwnHelper) else None
         s = Schedule(
             id=_new_id(),
             owner_id=ctx.owner_id,
@@ -185,6 +206,7 @@ class _ScheduleTool(BaseTool):
             target=target,
             conversation_id=ctx.session_id if helper is not None else None,
             helper_id=helper,
+            paused_ms=owner.paused_ms if isinstance(owner, OwnHelper) else None,
         )
         await store.create(s)
         what = "reminder" if kind == "reminder" else "timed ask"
@@ -296,8 +318,11 @@ class AskSchedule(_ScheduleTool):
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if self._for(ctx) is None:
             return Precondition.failed("timed asks are not available")
-        if _routine(args) is False:
+        target = _routine(args)
+        if target is False:
             return Precondition.failed(_NO_SUCH_ROUTINE)
+        if await self._helper(ctx, target) is False:
+            return Precondition.failed(_HELPER_GONE)
         try:
             self._plan(args, "ask", MAX_ASK)
         except WhenError as e:

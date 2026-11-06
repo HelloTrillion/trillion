@@ -17,7 +17,9 @@ from tests.scheduler.test_ask import Recording
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import HELPER_HELLO, Session
 from trillion.brain.types import ContextBlock, ProviderError, TextBlock
+from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import OwnHelper
+from trillion.scheduler import runner
 from trillion.scheduler.when import Repeat
 from trillion.secrets.store import MemoryStore
 from trillion.spine.contract import ToolContext
@@ -333,3 +335,53 @@ async def test_a_reminder_or_timed_ask_in_a_helpers_chat_is_not_the_helpers(
     made_here = await rt.schedules.active("local")
     assert len(made_here) == 2
     assert all(s.helper_id is None and s.conversation_id is None for s in made_here)
+
+
+def in_its_chat(h: OwnHelper) -> ToolContext:
+    return ToolContext(
+        owner_id="local",
+        session_id=h.conversation_id,
+        turn=1,
+        call_id="t1",
+        via="tap",
+        helper_id=h.id,
+    )
+
+
+OWN_ROUTINE = {
+    "when": "2026-11-09T09:00",
+    "title": "Overdue check",
+    "ask": "Check what's overdue.",
+    "routine": "own",
+    "repeat": {"every": "day"},
+}
+
+
+async def test_a_routine_for_a_helper_deleted_since_is_refused(rt: Runtime) -> None:
+    # Deleted while its chat had a turn in flight: a late card makes no stray routine.
+    h = await made(rt)
+    assert rt.helpers is not None and rt.schedules is not None
+    assert await rt.helpers.delete("local", h.id, NOW)
+    ask = rt.registry.get("ask_schedule")
+    assert ask is not None
+    checked = await ask.precheck(OWN_ROUTINE, in_its_chat(h))
+    assert not checked.ok and "that helper was deleted" in checked.reason
+    done = await ask.execute(OWN_ROUTINE, in_its_chat(h))
+    assert not done.ok and "that helper was deleted" in done.content
+    assert await rt.schedules.active("local") == []
+
+
+async def test_a_routine_set_in_a_paused_helpers_chat_waits_for_its_resume(
+    rt: Runtime,
+) -> None:
+    h = await made(rt)
+    assert rt.helpers is not None and rt.schedules is not None
+    assert await pause_helper(rt.helpers, rt.schedules, "local", h.id, NOW)
+    ask = rt.registry.get("ask_schedule")
+    assert ask is not None
+    assert (await ask.execute(OWN_ROUTINE, in_its_chat(h))).ok
+    (s,) = await rt.schedules.active("local")
+    assert (s.helper_id, s.paused_ms) == (h.id, NOW)
+    assert await resume_helper(rt.helpers, rt.schedules, runner, "local", h.id, NOW + 1000)
+    got = await rt.schedules.get(s.id)
+    assert got is not None and got.paused_ms is None

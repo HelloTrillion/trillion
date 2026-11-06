@@ -116,6 +116,9 @@ DAY_FAILED = "Your day couldn't be built"
 HANDOFF_TITLE_MAX = 140
 # How a handoff's reply says an action needs the user (its overlay tells it to).
 NEEDS_YOU = re.compile(r"^needs you:\s*", re.IGNORECASE)
+# A handoff run's detail when it ended needing the user: the panel lists its helper
+# under Needs you until the user writes in its chat (`helpers/build.py`).
+NEEDS_YOU_DETAIL = "needs_you"
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 
 
@@ -148,6 +151,11 @@ class Routines(Protocol):
         ...
 
     async def build(self, s: Schedule, conversation_id: str) -> Built: ...
+
+
+def needs_you(said: str) -> bool:
+    """Whether a handoff's reply says an action needs the user."""
+    return NEEDS_YOU.match(" ".join(said.split())) is not None
 
 
 def handoff_title(name: str, said: str) -> str:
@@ -516,7 +524,10 @@ class Scheduler:
         title = handoff_title(built.helper or s.title, built.said)
         text = title if title.endswith((".", "!", "?", "\u2026")) else f"{title}."
         status: RunStatus = "late" if late else "delivered"
-        await self._notice(run, s, "ready", text, status, title=title, conversation_id=target)
+        needs = NEEDS_YOU_DETAIL if needs_you(built.said) else None
+        await self._notice(
+            run, s, "ready", text, status, needs, title=title, conversation_id=target
+        )
 
     async def _notice(
         self,

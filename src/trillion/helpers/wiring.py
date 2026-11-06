@@ -59,6 +59,9 @@ class RuntimeSources:
         made = self.rt.helpers
         return await made.all(self.owner) if made is not None else []
 
+    async def last_said(self, conversation_id: str) -> int | None:
+        return await self.rt.conversations.last_said(conversation_id, self.owner)
+
 
 async def talks(rt: Runtime) -> dict[str, str]:
     """Each helper's own conversation, by helper id. One deleted since is forgotten

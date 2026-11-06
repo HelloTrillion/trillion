@@ -860,3 +860,25 @@ def test_your_helpers_routes_are_not_found_while_helpers_are_not_set_up(make: An
     assert delete(app, own).status_code == 404
     assert put(app, f"{own}/look", {"icon": "leaf", "color": "rose"}).status_code == 404
     assert app.client.get(PATH, headers=app.auth).status_code == 200
+
+
+async def test_writing_in_a_helpers_chat_is_pushed(rt: Runtime) -> None:
+    # A handoff that needed the user is answered once they write there.
+    await rt.stop_background()
+    assert rt.helpers is not None
+    h = await rt.helpers.create(OWNER, "Invoices", "I chase overdue invoices.", rt.clock())
+    assert not isinstance(h, str)
+    rt.provider = ScriptedProvider(say("On it."))
+    session = await Session.start(rt, Page(rt).send, h.conversation_id)
+    told: list[int] = []
+    rt.helpers_changed = lambda: told.append(1)  # type: ignore[method-assign]
+
+    async def no_month_turned() -> None:
+        # Its own push on every turn is not what this is about.
+        return None
+
+    rt.spend_tick = no_month_turned  # type: ignore[method-assign]
+    await session.handle({"type": "turn.text", "text": "Go ahead."})
+    await idle(session)
+    assert told
+    await session.close()

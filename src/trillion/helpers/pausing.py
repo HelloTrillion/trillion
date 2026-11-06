@@ -48,13 +48,15 @@ async def resume_helper(
     now_ms: int,
 ) -> bool:
     """Resume a helper and the routines its pause paused, each from its next due time
-    after now: what it was paused through is never run late. A routine paused on its
-    own before the helper stays paused. False if the helper was not paused."""
+    after now: what it was paused through is never run late. Only routines paused at
+    the helper's own pause time are its pause's (`pause_helper` and a routine set up in
+    its chat while paused use exactly that time): one the user paused on its own, before
+    or after, stays paused. False if the helper was not paused."""
     helper = await helpers.get(owner_id, helper_id)
     if helper is None or helper.paused_ms is None:
         return False
     for s in await schedules.for_helper(owner_id, helper_id):
-        if s.target is not None and s.paused_ms is not None and s.paused_ms >= helper.paused_ms:
+        if s.target is not None and s.paused_ms == helper.paused_ms:
             await runner.resume(schedules, owner_id, s.id, now_ms)
     # Cleared last, so a resume that stops halfway is finished by trying again.
     return await helpers.resume(owner_id, helper_id)

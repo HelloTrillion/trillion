@@ -257,6 +257,11 @@ class SqliteHelperStore:
         return done
 
     async def delete(self, owner_id: str, helper_id: str, now_ms: int) -> bool:
+        """Its schedules are cancelled here, in this store's own transaction, so the
+        helper goes and its routines stop together. The schedule store's `changed` hook
+        never hears of it: the panel's push comes from this store's own `changed`, which
+        the app wires to the same `helpers_changed`, and `cancelled` is told each routine
+        as the schedule store would tell it."""
         async with self._tx() as conn:
             helper = await self._get(owner_id, helper_id)
             if helper is None:

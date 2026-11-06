@@ -18,7 +18,7 @@ from trillion.helpers.look import pick
 from trillion.helpers.model import Helper, LastRun, RoutineLine, Waiting, to_json
 from trillion.helpers.pausing import pause_helper
 from trillion.helpers.store import OwnHelper
-from trillion.scheduler.runner import BUSY_DETAIL
+from trillion.scheduler.runner import BUSY_DETAIL, NEEDS_YOU_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import Repeat
 from trillion.spend.types import Work
@@ -122,10 +122,15 @@ class Sources:
     open_cards: list[PendingAction] = field(default_factory=list)
     talks: dict[str, str] = field(default_factory=dict)
     mine: list[OwnHelper] = field(default_factory=list)
+    # When the user last wrote in each conversation.
+    said: dict[str, int] = field(default_factory=dict)
     owner: str = OWNER
 
     def now_ms(self) -> int:
         return NOW
+
+    async def last_said(self, conversation_id: str) -> int | None:
+        return self.said.get(conversation_id)
 
     async def own(self) -> list[OwnHelper]:
         return list(self.mine)
@@ -457,6 +462,9 @@ class Real:
     async def own(self) -> list[OwnHelper]:
         return await self.made.all(self.owner)
 
+    async def last_said(self, conversation_id: str) -> int | None:
+        return None
+
 
 @pytest.fixture
 async def real(tmp_path: Path) -> AsyncIterator[Real]:
@@ -668,6 +676,29 @@ async def test_a_handoff_in_progress_shows_its_helper_working_and_no_row_of_its_
     # A handoff of a helper since deleted is no row at all.
     src.mine = []
     assert await helpers(src) == []
+
+
+async def test_a_handoff_that_ended_needing_you_waits_until_you_write_in_its_chat() -> None:
+    done = run("x1", "delivered", detail=NEEDS_YOU_DETAIL)
+    src = Sources(Schedules([], by_helper={"h1": done}), mine=[mine()])
+    (h,) = await helpers(src)
+    assert h.state == "needs_you"
+    # A question: the page opens its chat to reply, where any card is raised.
+    assert h.waiting == (
+        Waiting(type="question", id="handoff:1", text="Invoices needs you", at_ms=done.finished_ms),
+    )
+    assert h.last_run == LastRun(at_ms=NOW - 3_500_000, outcome="succeeded", reason=None)
+    # Written in before it finished: still waiting.
+    src.said = {"conv-h1": NOW - 3_600_000}
+    assert (await helpers(src))[0].state == "needs_you"
+    # Written in since: answered.
+    src.said = {"conv-h1": NOW - 3_400_000}
+    (h,) = await helpers(src)
+    assert (h.state, h.waiting) == ("idle", ())
+    # A handoff that ended any other way asks nothing.
+    src.said = {}
+    src.schedules.by_helper = {"h1": run("x1", "delivered")}
+    assert (await helpers(src))[0].state == "idle"
 
 
 async def test_a_waiting_handoff_is_not_its_helpers_next_run() -> None:

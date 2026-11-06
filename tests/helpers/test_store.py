@@ -331,6 +331,23 @@ async def test_resume_leaves_a_routine_paused_before_the_helper(stores: Stores) 
     assert r2 is not None and r2.paused_ms == NOW - 1
 
 
+async def test_resume_leaves_a_routine_paused_on_its_own_while_the_helper_was(
+    stores: Stores,
+) -> None:
+    h = await made(stores)
+    await stores.schedules.create(its_routine(h.id))
+    assert await pause_helper(stores.helpers, stores.schedules, OWNER, h.id, NOW)
+    # Made active while the helper was paused, then paused by the user on its own.
+    await stores.schedules.create(its_routine(h.id, id="r2", title="Overdue on Friday"))
+    assert await stores.schedules.pause(OWNER, "r2", NOW + 5)
+    later = ms("2026-11-25T12:00")
+    assert await resume_helper(stores.helpers, stores.schedules, runner, OWNER, h.id, later)
+    r1 = await stores.schedules.get("r1")
+    assert r1 is not None and r1.paused_ms is None
+    r2 = await stores.schedules.get("r2")
+    assert r2 is not None and r2.paused_ms == NOW + 5
+
+
 async def test_a_new_helper_has_a_picture_and_its_look_changes(stores: Stores) -> None:
     h = await made(stores)
     # Picked from the job and the name when none is given: never blank.

@@ -308,6 +308,17 @@ class SqliteConversationStore:
             (tidy_title(words, WORDS_TITLE_MAX), conversation_id, owner_id),
         )
 
+    async def last_said(self, conversation_id: str, owner_id: str) -> int | None:
+        """When the user last wrote in a conversation: their own words, never a tap's
+        note or a run's request. None if they never have."""
+        async with self._conn.execute(
+            "SELECT MAX(created_at) FROM messages"
+            " WHERE conversation_id = ? AND owner_id = ? AND kind = 'user'",
+            (conversation_id, owner_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
+
     async def title_of(
         self, conversation_id: str, owner_id: str
     ) -> tuple[str | None, TitleSource | None]:

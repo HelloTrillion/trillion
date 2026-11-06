@@ -1713,7 +1713,13 @@ async def open_runtime(
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
-            schedule_tool.bind(schedules, zone=rt.zone, clock=lambda: rt.clock(), owner=OWNER)
+            schedule_tool.bind(
+                schedules,
+                zone=rt.zone,
+                clock=lambda: rt.clock(),
+                owner=OWNER,
+                helpers=helpers,
+            )
     for name in (NARROW, WIDEN):
         notes_tool = registry.get(name)
         if isinstance(notes_tool, RoutineNarrow | RoutineWiden):

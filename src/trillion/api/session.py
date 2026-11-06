@@ -3808,6 +3808,9 @@ class Session:
         if kind == "user":
             # Only this turn may offer, and only for what its note said.
             self._offering = None
+            if self._helper is not None:
+                # Written in a helper's chat: a handoff that needed the user is answered.
+                self._rt.helpers_changed()
             if built.offer is not None:
                 await self._noted(built.offer)
         if built.helper_note is not None:

@@ -20,6 +20,7 @@ from trillion.api.session import routine_run
 from trillion.brain.types import (
     ContextBlock,
     ModelEvent,
+    Msg,
     ProviderError,
     TextBlock,
     ToolResultBlock,
@@ -29,10 +30,11 @@ from trillion.delivery.door import READY, Door
 from trillion.helpers.look import pick
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import OwnHelper
+from trillion.helpers.wiring import built
 from trillion.persona.prompt import DO_IT_YOURSELF, helper_overlay, system_blocks
 from trillion.scheduler import runner
 from trillion.scheduler.ask import HANDOFF_RUN, Asker, RoutineDeps
-from trillion.scheduler.runner import Scheduler, handoff_title
+from trillion.scheduler.runner import NEEDS_YOU_DETAIL, Scheduler, handoff_title
 from trillion.scheduler.when import Repeat
 from trillion.secrets.store import MemoryStore
 from trillion.spend.caller import current
@@ -139,6 +141,12 @@ def texts(msg: Any) -> list[str]:
     return [b.text for b in msg.blocks if isinstance(b, TextBlock)]
 
 
+async def its_row(rt: Runtime, h: OwnHelper) -> dict[str, Any]:
+    """The helper's row in the panel, as the page gets it."""
+    (row,) = [x for x in (await built(rt))[0]["helpers"] if x["id"] == f"own:{h.id}"]
+    return dict(row)
+
+
 def routine_of(h: OwnHelper, **kw: Any) -> Any:
     base: dict[str, Any] = {
         "id": "r0000001",
@@ -225,6 +233,40 @@ async def test_needs_you_reads_as_it_needs_you(rt: Runtime) -> None:
     (got,) = it.page.got
     assert got.title == "Invoices needs you: approve sending 3 reminders."
     assert got.conversation_id == h.conversation_id
+
+
+async def test_needs_you_shows_in_the_panel_until_the_user_writes_in_its_chat(
+    rt: Runtime,
+) -> None:
+    it = Rig(rt, Seen(say("Needs you: approve sending 3 reminders.")))
+    h = await it.made()
+    await it.ask(h)
+    await it.scheduler.tick()
+    assert await it.runs() == [("delivered", NEEDS_YOU_DETAIL)]
+    found = await its_row(rt, h)
+    assert found["state"] == "needs_you"
+    assert [(w["type"], w["text"]) for w in found["waiting"]] == [
+        ("question", "Invoices needs you")
+    ]
+    # The user answers in its chat: it no longer waits on them.
+    it.clock.advance(60_000)
+    await rt.conversations.append(
+        h.conversation_id,
+        OWNER,
+        "user",
+        Msg(role="user", blocks=(TextBlock(text="Go."),)),
+        it.clock(),
+    )
+    found = await its_row(rt, h)
+    assert (found["state"], found["waiting"]) == ("idle", [])
+
+
+async def test_a_plain_answer_is_no_needs_you(rt: Runtime) -> None:
+    it = Rig(rt, Seen(say("3 invoices are overdue.")))
+    h = await it.made()
+    await it.ask(h)
+    await it.scheduler.tick()
+    assert (await its_row(rt, h))["state"] == "idle"
 
 
 async def test_a_carded_tool_is_refused_and_the_run_still_ends_with_its_line(
