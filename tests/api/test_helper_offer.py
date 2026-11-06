@@ -261,3 +261,179 @@ async def test_a_create_that_cannot_be_made_says_why(rt: Runtime, why: str) -> N
     assert not page.all("helper.created")
     assert await rt.preferences.get("local", DECLINED_PREF) is None
     await session.close()
+
+
+def counting(rt: Runtime, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Counts the audit reads from here on."""
+    reads: list[int] = []
+    real = rt.spine_store.recent_tools
+
+    async def recent_tools(owner_id: str, since_ms: int) -> list[tuple[str, str, int]]:
+        reads.append(since_ms)
+        return await real(owner_id, since_ms)
+
+    monkeypatch.setattr(rt.spine_store, "recent_tools", recent_tools)
+    return reads
+
+
+async def test_the_audit_is_read_once_a_day_per_chat(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cid = await chat(rt)
+    await used(rt, cid, days=2)
+    reads = counting(rt, monkeypatch)
+    provider = Recording(say("One."), say("Two."), say("Three."))
+    rt.provider = provider
+    session = await Session.start(rt, Page(rt).send, cid)
+    for text in ("one", "two"):
+        await session.handle({"type": "turn.text", "text": text})
+        await idle(session)
+    assert len(reads) == 1
+    # The next day, it is looked at again.
+    assert isinstance(rt.clock, FakeClock)
+    rt.clock.now = NOW + DAY
+    await session.handle({"type": "turn.text", "text": "three"})
+    await idle(session)
+    assert len(reads) == 2
+    await session.close()
+
+
+async def test_the_note_comes_once_a_day_even_with_no_offer(rt: Runtime) -> None:
+    cid = await chat(rt)
+    await used(rt, cid)
+    # She answers but never offers.
+    provider = Recording(say("One."), say("Two."), say("Three."))
+    rt.provider = provider
+    session = await Session.start(rt, Page(rt).send, cid)
+    await session.handle({"type": "turn.text", "text": "one"})
+    await idle(session)
+    assert NOTE in context_of(provider, 0)
+    await session.handle({"type": "turn.text", "text": "two"})
+    await idle(session)
+    assert "helper_suggest" not in context_of(provider, 1)
+    await session.close()
+    # Nor in another chat that day.
+    other = await chat(rt, "d" * 32)
+    session = await Session.start(rt, Page(rt).send, other)
+    await session.handle({"type": "turn.text", "text": "three"})
+    await idle(session)
+    assert "helper_suggest" not in context_of(provider, 2)
+    await session.close()
+
+
+async def test_two_offers_in_one_reply_make_one(rt: Runtime) -> None:
+    cid = await chat(rt)
+    await used(rt, cid)
+    second = {**OFFER, "name": "Mailroom"}
+    both = [*use(SUGGEST, OFFER, "c1")[:-1], *use(SUGGEST, second, "c2")]
+    provider = Recording(both, say("Done."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    await session.handle({"type": "turn.text", "text": "anything new?"})
+    await page.until("helper.offer")
+    await idle(session)
+    # Reads may run side by side: whichever took the offer is the one made.
+    (shown,) = page.all("helper.offer")
+    assert shown["name"] in ("Inbox", "Mailroom")
+    saved = await rt.preferences.get("local", OFFER_PREF)
+    assert saved == {**OFFER, "name": shown["name"], "at_ms": NOW}
+    await session.close()
+
+
+@pytest.mark.parametrize("when", ["wrong_area", "after_the_turn", "second_time"])
+async def test_helper_suggest_is_refused_but_on_its_turn_for_its_area(
+    rt: Runtime, when: str
+) -> None:
+    cid = await chat(rt)
+    await used(rt, cid)
+    if when == "wrong_area":
+        script = [use(SUGGEST, {**OFFER, "area": "web"}, "c1"), say("Done.")]
+    elif when == "after_the_turn":
+        script = [say("Done."), use(SUGGEST, OFFER, "c1"), say("Done.")]
+    else:
+        script = [use(SUGGEST, OFFER, "c1"), use(SUGGEST, {**OFFER, "name": "Other"}, "c2")]
+        script.append(say("Done."))
+    provider = Recording(*script)
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    await session.handle({"type": "turn.text", "text": "anything new?"})
+    await idle(session)
+    if when == "after_the_turn":
+        await session.handle({"type": "turn.text", "text": "and now?"})
+        await idle(session)
+    saved = await rt.preferences.get("local", OFFER_PREF)
+    if when == "second_time":
+        assert page.all("helper.offer") == [{"type": "helper.offer", **OFFER}]
+        assert saved == {**OFFER, "at_ms": NOW}
+    else:
+        assert not page.all("helper.offer")
+        assert saved is None
+    await session.close()
+
+
+async def test_an_offer_answered_a_day_late_is_stale(rt: Runtime) -> None:
+    session, page, _ = await offered_turn(rt)
+    assert isinstance(rt.clock, FakeClock)
+    rt.clock.now = NOW + DAY + 1
+    await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
+    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": "stale"}]
+    assert rt.helpers is not None
+    assert await rt.helpers.all("local") == []
+    await session.close()
+
+
+async def test_an_offer_that_is_not_plain_is_not_made(rt: Runtime) -> None:
+    page = Page(rt)
+    session = await Session.start(rt, page.send, await chat(rt))
+    bad = {**OFFER, "name": "<b>Inbox</b>", "at_ms": NOW}
+    await rt.preferences.put("local", OFFER_PREF, bad, NOW)
+    await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
+    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": "invalid"}]
+    assert rt.helpers is not None
+    assert await rt.helpers.all("local") == []
+    await session.close()
+
+
+async def test_a_store_that_fails_on_an_answer_is_told(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, page, _ = await offered_turn(rt)
+
+    async def broken(*_a: Any) -> Any:
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(rt.preferences, "get", broken)
+    await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
+    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": "error"}]
+    await session.close()
+
+
+async def test_a_store_that_fails_after_the_offer_leaves_the_turn_alone(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cid = await chat(rt)
+    await used(rt, cid)
+    real = rt.preferences.get
+    gets = 0
+
+    async def flaky(owner_id: str, key: str) -> Any:
+        nonlocal gets
+        if key == OFFER_PREF:
+            gets += 1
+            # Read fine before the turn, then the read that shows the offer fails.
+            if gets > 1:
+                raise RuntimeError("disk")
+        return await real(owner_id, key)
+
+    monkeypatch.setattr(rt.preferences, "get", flaky)
+    provider = Recording(use(SUGGEST, OFFER, "c1"), say("Done."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    await session.handle({"type": "turn.text", "text": "anything new?"})
+    await idle(session)
+    assert not page.all("helper.offer")
+    assert [m["text"] for m in page.all("reply.delta")] == ["Done."]
+    await session.close()

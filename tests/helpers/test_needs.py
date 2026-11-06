@@ -10,9 +10,13 @@ from pathlib import Path
 import pytest
 
 from tests.scheduler.conftest import NY, ms
+from trillion.connectors.mcp.config import ServerConfig
+from trillion.connectors.mcp.servers import McpServers, ServerState, ToolInfo
 from trillion.helpers import needs
 from trillion.helpers.needs import area_of, label, repeated, to_offer
+from trillion.secrets.store import MemoryStore
 from trillion.spine.audit import AuditRecord
+from trillion.spine.registry import ToolRegistry
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
@@ -37,11 +41,8 @@ class Named:
         ("drive_search", "files"),
         ("file_read", "files"),
         ("stripe_revenue", "payments"),
-        ("mcp_stripe_stripe_api_read", "payments"),
-        ("mcp_stripe_list_available_accounts_or_orgs", "payments"),
         ("slack_read", "slack"),
         ("web_fetch", "web"),
-        ("mcp_github_list_issues", "mcp:github"),
         ("memory_write", None),
         ("workspace_show", None),
         ("rule_keep", None),
@@ -50,17 +51,63 @@ class Named:
         ("helper_ask", None),
         ("stay_quiet", None),
         ("describe_self", None),
-        ("mcp_", None),
+        # An MCP tool's area comes from its server, and none is known here.
+        ("mcp_github_list_issues", None),
     ],
 )
 def test_an_area_comes_from_the_tool_name(tool: str, area: str | None) -> None:
     assert area_of(tool) == area
 
 
+def servers(*listed: tuple[str, str]) -> McpServers:
+    """MCP servers listed but not connected: the names they would give their tools."""
+    found = McpServers(ToolRegistry(), MemoryStore(), Path("logs"))
+    for name, catalog in listed:
+        config = ServerConfig(name=name, transport="http", url="https://x.test", catalog=catalog)
+        found.states[name] = ServerState(config=config, status="disabled")
+    return found
+
+
+def mcp_areas(found: McpServers) -> needs.McpAreas:
+    def area(tool: str) -> str | None:
+        server = found.server_of(tool)
+        return needs.server_area(server.name, server.catalog) if server is not None else None
+
+    return area
+
+
+@pytest.mark.parametrize(
+    ("tool", "area"),
+    [
+        ("mcp_google_drive_search", "mcp:google-drive"),
+        ("mcp_google_list", "mcp:google"),
+        ("mcp_my_server_read", "mcp:my_server"),
+        ("mcp_my_other", None),
+        ("mcp_pay_stripe_api_read", "payments"),
+        ("mcp_unknown_tool", None),
+        ("gmail_search", "email"),
+    ],
+)
+def test_an_mcp_tools_area_is_its_servers(tool: str, area: str | None) -> None:
+    found = servers(("google-drive", ""), ("google", ""), ("my_server", ""), ("pay", "stripe"))
+    assert area_of(tool, mcp_areas(found)) == area
+
+
+def test_a_connected_servers_own_tools_name_it() -> None:
+    found = servers(("a", ""), ("a_b", ""))
+    # "mcp_a_b_x" could be either: the server that registered it says which.
+    found.states["a"].tools.append(
+        ToolInfo(name="mcp_a_b_x", remote="b_x", description="", risk="read", read_only_hint=True)
+    )
+    assert area_of("mcp_a_b_x", mcp_areas(found)) == "mcp:a"
+    assert area_of("mcp_a_b_y", mcp_areas(found)) == "mcp:a_b"
+
+
 def test_an_area_reads_as_words() -> None:
     assert label("email") == "email"
     assert label("slack") == "Slack"
     assert label("mcp:github") == "github"
+    assert label("mcp:google-drive") == "google-drive"
 
 
 def at(local: str) -> int:
@@ -142,6 +189,8 @@ def test_an_mcp_area_is_covered_by_its_server_name() -> None:
     gh = Named("GitHub", "Triages new issues.")
     assert to_offer(["mcp:github"], [gh], [], None, NOW) is None
     assert to_offer(["mcp:linear"], [gh], [], None, NOW) == "mcp:linear"
+    drive = Named("Docs", "Tidies my Google Drive.")
+    assert to_offer(["mcp:google-drive"], [drive], [], None, NOW) is None
 
 
 def test_at_most_one_offer_a_day() -> None:
@@ -174,7 +223,8 @@ async def test_recent_tools_are_the_allowed_calls_since(tmp_path: Path) -> None:
 
     await store.append_audit(row(1, "gmail_search", "executed", NOW - 20 * DAY))
     await store.append_audit(row(2, "gmail_search", "executed", NOW - DAY))
-    await store.append_audit(row(3, "gmail_send", "proposed", NOW - 1000))
+    await store.append_audit(row(3, "gmail_send", "executed", NOW - 1000))
+    await store.append_audit(row(6, "gmail_draft", "proposed", NOW - 900))
     await store.append_audit(row(4, "slack_read", "refused", NOW - 500))
     await store.append_audit(row(5, "web_fetch", "executed", NOW))
     got = await store.recent_tools("local", NOW - 14 * DAY)

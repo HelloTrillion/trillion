@@ -93,6 +93,7 @@ from trillion.tools.helper import CATEGORY as HELPER_CATEGORY
 from trillion.tools.helper import CREATE as HELPER_CREATE
 from trillion.tools.helper import DECLINED_PREF as HELPER_DECLINED
 from trillion.tools.helper import NARROW as HELPER_NARROW
+from trillion.tools.helper import NOTED_PREF as HELPER_NOTED
 from trillion.tools.helper import OFFER_PREF as HELPER_OFFER
 from trillion.tools.helper import SUGGEST as HELPER_SUGGEST
 from trillion.tools.helper import UPDATE as HELPER_UPDATE
@@ -771,6 +772,8 @@ class Session:
         # (turn, area): the user's turn whose host note said to offer a helper for an
         # area. helper_suggest is offered then only, and only once.
         self._offering: tuple[int, str] | None = None
+        # (local date, area): what the last look for an offer found, looked at once a day.
+        self._offer_looked: tuple[str, str | None] | None = None
         # Background reads that ended here, waiting for a pause to be brought in, and
         # whether a saved one still waits for her (the background reads spec).
         self._finished: list[_Finished] = []
@@ -1034,6 +1037,19 @@ class Session:
             and self._offering == (self._turn, area)
         )
 
+    def claim_offer(self, area: str) -> bool:
+        """`offering`, and from now on not: one helper_suggest takes the turn's offer,
+        so two calls in one reply make one offer."""
+        if not self.offering(area):
+            return False
+        self._offering = None
+        return True
+
+    def _mcp_area(self, tool: str) -> str | None:
+        servers = self._rt.mcp
+        server = servers.server_of(tool) if servers is not None else None
+        return needs.server_area(server.name, server.catalog) if server is not None else None
+
     async def _offer_due(self) -> str | None:
         """The area to offer a helper for on this turn, if any. Never in the way of
         the turn: anything unexpected means no offer, logged by its kind only."""
@@ -1044,36 +1060,65 @@ class Session:
             return None
         try:
             now = rt.clock()
-            raw = await rt.preferences.get(OWNER, HELPER_OFFER)
-            at = raw.get("at_ms") if isinstance(raw, dict) else None
-            last = at if isinstance(at, int) else None
-            if last is not None and now - last < needs.ONCE_MS:
-                # Offered today: the audit need not be read.
-                return None
-            calls = await rt.spine_store.recent_tools(OWNER, needs.since(now))
-            kinds: dict[str, str] = {}
-            for sid in {sid for tool, sid, _ in calls if needs.area_of(tool) is not None}:
-                found = await rt.conversations.kind_of(sid, OWNER)
-                if found is not None:
-                    kinds[sid] = found[0]
-            areas = needs.repeated(calls, kinds, rt.zone() or "", now)
-            if not areas:
-                return None
-            said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
-            declined = (
-                [a for a in said_no if isinstance(a, str)] if isinstance(said_no, list) else []
-            )
-            return needs.to_offer(areas, await rt.helpers.all(OWNER), declined, last, now)
+            today = day.today(now, rt.zone()).isoformat()
+            if self._offer_looked is not None and self._offer_looked[0] == today:
+                # Looked at once a day here: a draft and its turn get the same answer.
+                return self._offer_looked[1]
+            area = await self._offer_now(now)
+            self._offer_looked = (today, area)
+            return area
         except Exception as e:
             logger.warning(
                 "helper offer not looked at in session %s: %s", self.id, type(e).__name__
             )
             return None
 
+    async def _offer_now(self, now: int) -> str | None:
+        rt = self._rt
+        if rt.helpers is None:
+            return None
+        raw = await rt.preferences.get(OWNER, HELPER_OFFER)
+        at = raw.get("at_ms") if isinstance(raw, dict) else None
+        noted = await rt.preferences.get(OWNER, HELPER_NOTED)
+        times = [t for t in (at, noted) if isinstance(t, int)]
+        last = max(times) if times else None
+        if last is not None and now - last < needs.ONCE_MS:
+            # Offered, or told to offer, in the last day: the audit need not be read.
+            return None
+        calls = await rt.spine_store.recent_tools(OWNER, needs.since(now))
+        ids = {sid for tool, sid, _ in calls if needs.area_of(tool, self._mcp_area) is not None}
+        kinds: dict[str, str] = {}
+        for sid in ids:
+            found = await rt.conversations.kind_of(sid, OWNER)
+            if found is not None:
+                kinds[sid] = found[0]
+        areas = needs.repeated(calls, kinds, rt.zone() or "", now, self._mcp_area)
+        if not areas:
+            return None
+        said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
+        declined = [a for a in said_no if isinstance(a, str)] if isinstance(said_no, list) else []
+        return needs.to_offer(areas, await rt.helpers.all(OWNER), declined, last, now)
+
+    async def _noted(self, area: str) -> None:
+        """The host note rode with a saved message: not again for a day, here or in any
+        other conversation, whether or not she offers."""
+        rt = self._rt
+        self._offering = (self._turn, area)
+        if self._offer_looked is not None:
+            self._offer_looked = (self._offer_looked[0], None)
+        try:
+            await rt.preferences.put(OWNER, HELPER_NOTED, rt.clock(), rt.clock())
+        except Exception as e:
+            logger.warning("helper offer not marked in session %s: %s", self.id, type(e).__name__)
+
     async def _offered(self) -> None:
         """helper_suggest kept its offer: the page shows it, with Create and No thanks."""
         self._offering = None
-        raw = await self._rt.preferences.get(OWNER, HELPER_OFFER)
+        try:
+            raw = await self._rt.preferences.get(OWNER, HELPER_OFFER)
+        except Exception as e:
+            logger.warning("helper offer not shown in session %s: %s", self.id, type(e).__name__)
+            return
         if isinstance(raw, dict) and raw.get("name") and raw.get("job"):
             await self._send("helper.offer", area=raw["area"], name=raw["name"], job=raw["job"])
 
@@ -1083,41 +1128,54 @@ class Session:
         if not isinstance(area, str) or choice not in ("create", "decline"):
             await self._error("bad_message")
             return
+        try:
+            failed = await self._answer_offer(area, choice)
+        except Exception as e:
+            # A store that fails never closes the page's socket: it is told, and may try again.
+            logger.warning("helper offer not answered in session %s: %s", self.id, type(e).__name__)
+            failed = "error"
+        if failed is not None:
+            await self._send("helper.offer.failed", reason=failed)
+
+    async def _answer_offer(self, area: str, choice: str) -> str | None:
+        """Take the answer: why it failed, if it did in a way the page should show."""
         rt = self._rt
         store = rt.helpers
         if store is None:
-            return
+            return None
         async with rt.helper_offers:
             raw = await rt.preferences.get(OWNER, HELPER_OFFER)
+            at = raw.get("at_ms") if isinstance(raw, dict) else None
             if not (
                 isinstance(raw, dict)
                 and raw.get("area") == area
                 and isinstance(raw.get("name"), str)
                 and isinstance(raw.get("job"), str)
+                and isinstance(at, int)
             ):
                 # Answered already, never made, or for another area.
                 logger.info("helper offer answer not taken in session %s", self.id)
-                return
+                return None
             now = rt.clock()
+            if now - at > needs.ONCE_MS:
+                return "stale"
             # Answered either way: kept only for the once-a-day rule.
-            await rt.preferences.put(
-                OWNER, HELPER_OFFER, {"area": area, "at_ms": raw.get("at_ms", now)}, now
-            )
+            await rt.preferences.put(OWNER, HELPER_OFFER, {"area": area, "at_ms": at}, now)
             if choice == "decline":
                 said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
                 declined = list(said_no) if isinstance(said_no, list) else []
                 if area not in declined:
                     await rt.preferences.put(OWNER, HELPER_DECLINED, [*declined, area], now)
-                return
+                return None
             name, job = " ".join(raw["name"].split()), " ".join(raw["job"].split())
             if plain_helper(name, job) is not None:
-                return
+                return "invalid"
             made = await make_helper(store, rt.conversations, OWNER, name, job, now)
         if isinstance(made, str):
-            await self._send("helper.offer.failed", reason=made)
-            return
+            return made
         logger.info("helper %s made from an offer in %s", made.id, self.id)
         await self._send("helper.created", helper_id=made.id, conversation_id=made.conversation_id)
+        return None
 
     async def _read_place(self) -> None:
         """What this conversation is now: which routine tools it is offered (a routine
@@ -3679,7 +3737,9 @@ class Session:
                 logger.warning("spend note not marked in session %s: %s", self.id, type(e).__name__)
         if kind == "user":
             # Only this turn may offer, and only for what its note said.
-            self._offering = (self._turn, built.offer) if built.offer is not None else None
+            self._offering = None
+            if built.offer is not None:
+                await self._noted(built.offer)
         if built.helper_note is not None:
             try:
                 await self._rt.helper_note_said(self.id)

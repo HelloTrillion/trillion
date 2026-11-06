@@ -80,6 +80,13 @@ class Setup:
         async def offer_open(session_id: str, area: str) -> bool:
             return (session_id, area) in self.offered
 
+        def offer_claim(session_id: str, area: str) -> bool:
+            # Taken once, as a session's turn is.
+            if (session_id, area) not in self.offered:
+                return False
+            self.offered.discard((session_id, area))
+            return True
+
         for tool in self.tools:
             tool.bind(
                 helpers,
@@ -91,6 +98,7 @@ class Setup:
                 zone=lambda: "America/New_York",
                 held=held,
                 offer_open=offer_open,
+                offer_claim=offer_claim,
             )
 
     @property
@@ -422,6 +430,10 @@ async def test_an_open_offer_is_kept_for_the_page(it: Setup) -> None:
     done = await it.router.execute(call(SUGGEST, OFFER), CTX)
     assert done.status == "succeeded"
     assert done.content == "offered: say nothing more about it"
+    assert await it.preferences.get(OWNER, OFFER_PREF) == {**OFFER, "at_ms": NOW}
+    # Taken: a second call finds no offer open.
+    again = await it.router.execute(call(SUGGEST, {**OFFER, "name": "Other"}), CTX)
+    assert again.status == "refused"
     assert await it.preferences.get(OWNER, OFFER_PREF) == {**OFFER, "at_ms": NOW}
 
 

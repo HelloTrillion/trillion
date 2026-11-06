@@ -12,7 +12,7 @@ asks this.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -24,18 +24,22 @@ ONCE_MS = 24 * 3600 * 1000
 # Only your own chats with her count: a helper's chat and every run do not.
 COUNTED_KINDS = frozenset({"chat", "day"})
 
-# A tool's area by the start of its name; Stripe's server before the generic rule.
+# A built-in tool's area by the start of its name. An MCP server's tools are found
+# from the server itself (`McpServers.server_of`), never from their names.
 AREAS: tuple[tuple[str, str], ...] = (
     ("gmail_", "email"),
     ("calendar_", "calendar"),
     ("drive_", "files"),
     ("file_", "files"),
     ("stripe_", "payments"),
-    ("mcp_stripe_", "payments"),
     ("slack_", "slack"),
     ("web_", "web"),
 )
 MCP = "mcp_"
+# A connected MCP server's area: Stripe's from the catalogue is payments, any other
+# server is its own, by its configured name.
+MCP_AREA = "mcp:"
+STRIPE_CATALOG = "stripe"
 
 # The words a helper's name or job uses when it already looks after an area.
 COVER_WORDS: dict[str, tuple[str, ...]] = {
@@ -51,6 +55,8 @@ _LABELS = {"slack": "Slack"}
 
 # (tool, conversation id, at) as the audit keeps them.
 Call = tuple[str, str, int]
+# An MCP tool's area, from its server: None for one no server is known for.
+McpAreas = Callable[[str], str | None]
 
 
 class Named(Protocol):
@@ -61,21 +67,30 @@ class Named(Protocol):
     def job(self) -> str: ...
 
 
-def area_of(tool: str) -> str | None:
-    """The area a tool's work is in, or None for her own tools."""
+def server_area(server: str, catalog: str) -> str:
+    """The area an MCP server's tools are in."""
+    return "payments" if catalog == STRIPE_CATALOG else f"{MCP_AREA}{server}"
+
+
+def _no_servers(tool: str) -> str | None:
+    return None
+
+
+def area_of(tool: str, mcp: McpAreas = _no_servers) -> str | None:
+    """The area a tool's work is in, or None for her own tools and for an MCP tool
+    whose server is not known."""
+    if tool.startswith(MCP):
+        return mcp(tool)
     for prefix, area in AREAS:
         if tool.startswith(prefix):
             return area
-    if tool.startswith(MCP):
-        server = tool[len(MCP) :].split("_", 1)[0]
-        return f"mcp:{server}" if server else None
     return None
 
 
 def label(area: str) -> str:
     """An area as the user reads it: an MCP server by its name."""
-    if area.startswith("mcp:"):
-        return area[len("mcp:") :]
+    if area.startswith(MCP_AREA):
+        return area[len(MCP_AREA) :]
     return _LABELS.get(area, area)
 
 
@@ -89,7 +104,13 @@ def _day(at_ms: int, tz: ZoneInfo | None) -> date:
     return datetime.fromtimestamp(at_ms / 1000, tz).date()
 
 
-def repeated(calls: Iterable[Call], kinds: Mapping[str, str], zone: str, now_ms: int) -> list[str]:
+def repeated(
+    calls: Iterable[Call],
+    kinds: Mapping[str, str],
+    zone: str,
+    now_ms: int,
+    mcp: McpAreas = _no_servers,
+) -> list[str]:
     """The areas used on at least `DAYS_NEEDED` local days of the last `WINDOW_DAYS`,
     in conversations whose kind is counted. Most days first, then by name."""
     # No zone: this machine's local time, as `zones.month_start` reads it.
@@ -98,7 +119,7 @@ def repeated(calls: Iterable[Call], kinds: Mapping[str, str], zone: str, now_ms:
     first = today - timedelta(days=WINDOW_DAYS - 1)
     days: dict[str, set[date]] = {}
     for tool, session_id, at in calls:
-        area = area_of(tool)
+        area = area_of(tool, mcp)
         if area is None or kinds.get(session_id) not in COUNTED_KINDS:
             continue
         d = _day(at, tz)
@@ -109,8 +130,10 @@ def repeated(calls: Iterable[Call], kinds: Mapping[str, str], zone: str, now_ms:
 
 
 def _words(area: str) -> tuple[str, ...]:
-    if area.startswith("mcp:"):
-        return (label(area),)
+    if area.startswith(MCP_AREA):
+        name = label(area)
+        # "google-drive" is covered by "google drive" too.
+        return tuple(sorted({name, re.sub(r"[-_.]+", " ", name)}))
     return COVER_WORDS.get(area, (area,))
 
 

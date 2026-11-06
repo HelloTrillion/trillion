@@ -32,8 +32,8 @@ _SELECT_PENDING = (
     + ", x.args_json AS full_args_json, x.cleared_at AS args_cleared_at"
     " FROM pending_actions p LEFT JOIN pending_action_args x ON x.pending_id = p.id"
 )
-# An audited call the router let through: it ran, or it raised a card.
-_ALLOWED = frozenset({"executed", "proposed"})
+# An audited call that ran: a card the user turned down is no use of anything.
+_ALLOWED = frozenset({"executed"})
 
 
 def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
@@ -421,7 +421,7 @@ class SqliteSpineStore:
 
     async def recent_tools(self, owner_id: str, since_ms: int) -> list[tuple[str, str, int]]:
         """(tool, session id, at) of the owner's calls since a moment that the router let
-        through, to run or to a card. Newest first.
+        through and ran. Newest first.
 
         The audit has no index on its time, and needs none: rows are appended as calls
         happen, so it is read back from the newest and stops at the first one older."""

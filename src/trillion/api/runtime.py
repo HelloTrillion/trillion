@@ -869,6 +869,11 @@ class Runtime:
         session = self.by_conversation.get(conversation_id)
         return session is not None and bool(session.offering(area))
 
+    def helper_offer_claim(self, conversation_id: str, area: str) -> bool:
+        """`helper_offer_open`, taking the offer: only one helper_suggest makes it."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and bool(session.claim_offer(area))
+
     async def helper_note_keep(self, conversation_id: str, note: str) -> None:
         async with self._helper_notes:
             raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
@@ -1726,6 +1731,8 @@ async def open_runtime(
                 zone=rt.zone,
                 held=rt.held,
                 offer_open=rt.helper_offer_open,
+                offer_claim=rt.helper_offer_claim,
+                offer_lock=rt.helper_offers,
             )
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)

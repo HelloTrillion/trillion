@@ -15,6 +15,7 @@ Nobody's run gets any of them: the category is never unattended (`UNATTENDED_NEV
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -56,6 +57,8 @@ NAMES = (CREATE, UPDATE, NARROW, WIDEN, ASK, SUGGEST)
 OFFER_PREF = "helper_offer"
 # The areas the user said no to: never offered again.
 DECLINED_PREF = "helper_declined"
+# When her host note last said to offer one: at most once a day, offered or not.
+NOTED_PREF = "helper_offer_noted"
 # A handoff's title: the helper's name and as much of the request as fits.
 TITLE_ASK = MAX_TITLE
 # A name is plain words: nothing that reads as markup or code.
@@ -103,6 +106,7 @@ _NOTES_SCHEMA: JSON = {
 }
 
 OfferOpen = Callable[[str, str], Awaitable[bool]]
+OfferClaim = Callable[[str, str], bool]
 
 
 class Conversations(Protocol):
@@ -199,6 +203,10 @@ async def _never_offered(session_id: str, area: str) -> bool:
     return False
 
 
+def _never_claimed(session_id: str, area: str) -> bool:
+    return False
+
+
 class HelperTool(BaseTool):
     def __init__(self) -> None:
         self._helpers: HelperStore | None = None
@@ -209,6 +217,8 @@ class HelperTool(BaseTool):
         self._zone: Callable[[], str | None] = lambda: None
         self._held: Callable[[Work], Awaitable[bool]] = _never_held
         self._offer_open: OfferOpen = _never_offered
+        self._offer_claim: OfferClaim = _never_claimed
+        self._offer_lock = asyncio.Lock()
         self._owner = ""
         # Each helper's name, as its last check found it, for its card: `describe` has
         # no store, so it relies on the router running the precheck first.
@@ -226,10 +236,14 @@ class HelperTool(BaseTool):
         zone: Callable[[], str | None] | None = None,
         held: Callable[[Work], Awaitable[bool]] | None = None,
         offer_open: OfferOpen | None = None,
+        offer_claim: OfferClaim | None = None,
+        offer_lock: asyncio.Lock | None = None,
     ) -> None:
         """Called once at startup with the running process's stores and clock; `held`
         says when background work waits at a spend cap, `offer_open` when a helper is
-        being offered for an area in a conversation."""
+        being offered for an area in a conversation, `offer_claim` the same and takes it,
+        so it is offered once. `offer_lock` is held while the offer is saved, as the
+        page's answer holds it."""
         self._helpers, self._schedules = helpers, schedules
         self._clock, self._owner = clock, owner
         self._conversations, self._preferences = conversations, preferences
@@ -239,6 +253,10 @@ class HelperTool(BaseTool):
             self._held = held
         if offer_open is not None:
             self._offer_open = offer_open
+        if offer_claim is not None:
+            self._offer_claim = offer_claim
+        if offer_lock is not None:
+            self._offer_lock = offer_lock
 
     def _store(self, ctx: ToolContext) -> HelperStore | None:
         return self._helpers if ctx.owner_id == self._owner else None
@@ -695,12 +713,18 @@ class HelperSuggest(HelperTool):
         prefs = self._preferences
         if why is not None or prefs is None:
             return _refused(why or _UNAVAILABLE)
-        now = self._clock()
-        offer = {
-            "area": str(args["area"]),
-            "at_ms": now,
-            "name": _one_line(args["name"]),
-            "job": _one_line(args["job"]),
-        }
-        await prefs.put(ctx.owner_id, OFFER_PREF, offer, now)
+        area = str(args["area"])
+        async with self._offer_lock:
+            # Taken here, with nothing awaited between the look and the taking: a second
+            # call in the same reply finds it gone.
+            if not self._offer_claim(ctx.session_id, area):
+                return _refused(_NOT_OFFERED)
+            now = self._clock()
+            offer = {
+                "area": area,
+                "at_ms": now,
+                "name": _one_line(args["name"]),
+                "job": _one_line(args["job"]),
+            }
+            await prefs.put(ctx.owner_id, OFFER_PREF, offer, now)
         return ToolResult(ok=True, content="offered: say nothing more about it", effect="confirmed")
