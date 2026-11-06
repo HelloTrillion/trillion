@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from trillion.delivery import notify as system
+from trillion.helpers.look import pick
+from trillion.helpers.store import OwnHelper
 from trillion.scheduler import when
 from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, Schedule, ScheduleStore
 from trillion.spine.clock import Clock
@@ -112,17 +114,31 @@ class Delivery:
     # on the system notification, never saved as her message.
     detail: str | None = None
     # The helper it came from, as the helpers panel names it ("routine:<id>", "Morning
-    # brief"), so the chat can say which and open its details. None for a reminder, a
-    # spend notice or any other that no helper sent.
+    # brief", or "own:<id>" for one the user made), so the chat can say which and open
+    # its details. None for a reminder, a spend notice or any other no helper sent.
     helper_id: str | None = None
     helper_name: str | None = None
+    # A helper of the user's: its picture, for its line. None for any other.
+    helper_icon: str | None = None
+    helper_color: str | None = None
+    # A helper's handoff, handed back: its line is model-written from what it read, so
+    # what she does next counts as read (MEM-5).
+    handoff: bool = False
 
 
+# A handed-back line's lock screen title when its helper can't be named.
+HELPER = "Your helper"
 # A watcher's notice keys begin with what it found: which watcher that is.
 _WATCHER_OF_KEY = {"meeting": "meetings", "email": "email", "payment": "payments"}
 # How the panel names each watcher (`attention.settings.TITLED`, not imported: the door
 # sits below the watchers).
 _WATCHER_NAMES = {"meetings": "Meetings", "email": "Urgent email", "payments": "Payments"}
+
+
+class Helpers(Protocol):
+    """All the door needs of the user's helpers: one, while it is listed."""
+
+    async def get(self, owner_id: str, helper_id: str) -> OwnHelper | None: ...
 
 
 class Quiet(Protocol):
@@ -165,9 +181,12 @@ class Notify(Protocol):
     def __call__(self, title: str, body: str, *, silent: bool = False) -> bool: ...
 
 
-def notification(n: Notice) -> tuple[str, str]:
+def notification(n: Notice, helper: str | None = None) -> tuple[str, str]:
     """What the computer shows: the task's own title, and her words only for a
-    reminder, which she wrote to be seen."""
+    reminder, which she wrote to be seen. A helper's handed-back line is its own words,
+    from what it read: only `helper`, its name, is shown."""
+    if helper is not None:
+        return helper, READY
     if n.kind == "reminder" and n.text:
         return n.title, n.text
     return n.title, _QUIET.get(n.kind, READY)
@@ -192,6 +211,8 @@ class Door:
         self.notify = notify
         # Public so the runtime can put the real one in place once it is built.
         self.quiet: Quiet = quiet or NeverQuiet()
+        # Public so the runtime can put the helpers in place once they are open.
+        self.helpers: Helpers | None = None
         self._lock = asyncio.Lock()
         self._notifying = asyncio.Lock()
         # Notices whose notification was tried in this process, shown or not.
@@ -234,7 +255,12 @@ class Door:
             if not held and kept.id in self._tried:
                 return
             self._tried.add(kept.id)
-            title, body = notification(kept)
+            handed = await self._handoff(kept, {})
+            if handed is not None:
+                name = (await self._own(kept, handed.helper_id or "")).get("helper_name")
+                title, body = notification(kept, name or HELPER)
+            else:
+                title, body = notification(kept)
             if silent is None:
                 silent = _asks(kept) and await self._ask(kept, self._clock(), host) is not None
             # It can take seconds: never on the event loop. A quiet one makes no sound:
@@ -283,6 +309,7 @@ class Door:
                             link=n.link,
                             detail=n.detail,
                             **await self._helper(n, schedules),
+                            handoff=await self._handoff(n, schedules) is not None,
                         )
                     )
             except BaseException:
@@ -367,12 +394,48 @@ class Door:
                 logger.warning("notice %s: its helper not read: %s", n.id, type(e).__name__)
                 schedules[n.source_id] = None
         s = schedules[n.source_id]
+        if s is not None and s.helper_id is not None:
+            # One the user made, by its handoff or its routine, named while it is listed.
+            return await self._own(n, s.helper_id)
         # A reminder runs no model and is no helper. A one-off ask that has fired, or a
         # routine since removed, has left the panel: there is nothing to open.
         if s is None or s.kind != "ask" or s.status != "active":
             return {}
         kind = "routine" if s.target is not None else "ask"
         return {"helper_id": f"{kind}:{s.id}", "helper_name": s.title}
+
+    async def _handoff(self, n: Notice, schedules: dict[str, Schedule | None]) -> Schedule | None:
+        """The helper's handoff a ready line hands back, or None for any other notice."""
+        if n.source != "schedule" or n.kind != "ready":
+            return None
+        if n.source_id not in schedules:
+            try:
+                schedules[n.source_id] = await self._store.get(n.source_id)
+            except Exception as e:
+                logger.warning("notice %s: its schedule not read: %s", n.id, type(e).__name__)
+                schedules[n.source_id] = None
+        s = schedules[n.source_id]
+        if s is None or s.helper_id is None or s.target is not None:
+            return None
+        return s
+
+    async def _own(self, n: Notice, helper_id: str) -> dict[str, str | None]:
+        helpers = self.helpers
+        try:
+            h = await helpers.get(self._owner, helper_id) if helpers is not None else None
+        except Exception as e:
+            logger.warning("notice %s: its helper not read: %s", n.id, type(e).__name__)
+            return {}
+        if h is None:
+            return {}
+        # Checked against the lists again: only names the page can draw reach it.
+        icon, color = pick(h.name, h.job, h.icon, h.color)
+        return {
+            "helper_id": f"own:{h.id}",
+            "helper_name": h.name,
+            "helper_icon": icon,
+            "helper_color": color,
+        }
 
     async def _due(self, n: Notice, now: int, zones: dict[str, str]) -> str:
         if n.source != "schedule":

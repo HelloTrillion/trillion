@@ -96,6 +96,10 @@ _REFRESH_READS_ONLY = "a refresh only reads"
 # needs nothing from the tools (tests check the names still match).
 REFRESH_NEVER = frozenset({"web_fetch", "describe_self"})
 REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
+# Only she dispatches (AGT-2): never in a helper's chat or run, whatever the via.
+# Named here so the spine needs nothing from the tools (tests check the names match).
+HELPER_NEVER = frozenset({"helper_create", "helper_ask", "helper_suggest"})
+_NOT_FOR_HELPERS = "only Trillion makes helpers or hands them work"
 # OPS-1: a check that can't reach the provider is tried again for this long after the
 # action was proposed, then the action is `unknown`.
 CHECK_FOR_MS = 24 * 60 * 60 * 1000
@@ -390,6 +394,10 @@ class Router:
             return resolved
 
         tool = self._get(call.name)
+        if ctx.helper_id is not None and call.name in HELPER_NEVER:
+            # Before any of the tool's code runs, whether or not it was offered.
+            risk = tool.definition.risk.value if tool is not None else "unknown"
+            return await audited(risk, _refused(Refusal.NOT_FOR_HELPERS, _NOT_FOR_HELPERS))
         if tool is None:
             return await audited("unknown", _refused(Refusal.UNKNOWN_TOOL))
         risk = tool.definition.risk.value
@@ -568,6 +576,10 @@ class Router:
                 ctx, start, meta, h, "meta", "resolve", _refused(Refusal.NOT_FOUND)
             )
 
+        if ctx.helper_id is not None and a.tool in HELPER_NEVER:
+            # A backstop: her card is never settled from a helper's chat or run.
+            response = _refused(Refusal.NOT_FOR_HELPERS, _NOT_FOR_HELPERS)
+            return await self._audit_resolution(a, ctx, start, response)
         a = await self._expire_if_due(a, start, ctx)
         verdict = decide(a, decision, ctx, start)
         if isinstance(verdict, Rejection):
@@ -770,6 +782,9 @@ class Router:
         return await self._audit_resolution(a, ctx, start, response, decision="represent")
 
     async def _represent(self, a: PendingAction, ctx: ToolContext, now: int) -> RouterResponse:
+        if ctx.helper_id is not None and a.tool in HELPER_NEVER:
+            # Her card, raised again in a helper's chat, would be a helper dispatching.
+            return _refused(Refusal.NOT_FOR_HELPERS, _NOT_FOR_HELPERS)
         if a.session_id != ctx.session_id and not await self._proved_not_sent(a):
             return _refused(Refusal.WRONG_SESSION)
         a = await self._expire_if_due(a, now, ctx)

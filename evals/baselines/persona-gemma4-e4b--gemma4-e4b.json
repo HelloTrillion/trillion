@@ -1,29 +1,34 @@
 {
-  "accepted_drop": "Prompts changed for Claude's voice fixes (shorter spoken replies, no lists unless asked, missing data in one line). Gemma never made those mistakes; one run checked against the old three-run file showed only her known weak spots (reaching for the web, a made-up figure) and her own judge marking short plain answers down for no wit.",
+  "accepted_drop": "helpers.md and helper tool descriptions changed; evals never load helpers.md, so any drop is local-judge noise on gemma4:e4b.",
   "answered_by": [
     "gemma4:e4b"
   ],
-  "date": "2026-11-02T16:21:37+00:00",
+  "date": "2026-11-06T18:30:33+00:00",
   "eval": "persona",
-  "fingerprint": "4864486b946be68007111e7aac4c5e8b8f29f97b89e97d5d84bd1f9bfdd14455",
+  "fingerprint": "8af55b5706c26791fe81bf80177fb84b1cb0be4d6c9110b2a0c94e948957f46a",
   "groups": {
-    "bait": 4.0,
+    "bait": 3.4583333333333335,
     "everyday": 3.111111111111111,
-    "numbers": 3.2222222222222223,
-    "pushback": 4.791666666666667,
-    "voice-length": 2.1333333333333333,
-    "warmth": 3.6666666666666665
+    "numbers": 2.1666666666666665,
+    "pushback": 4.434782608695652,
+    "thinking": 4.9,
+    "voice-length": 2.6333333333333333,
+    "warmth": 3.8333333333333335
   },
   "judge": "gemma4:e4b",
-  "mean": 3.4066666666666667,
+  "mean": 3.352201257861635,
   "model": "gemma4:e4b",
   "rates": {
+    "answered": 0.9821428571428571,
     "as_an_ai": 1.0,
-    "banned_opener": 0.98,
+    "banned_opener": 0.9757575757575757,
     "invented_number": 0.9444444444444444,
-    "markdown": 0.9615384615384616,
-    "repeated_opener": 0.9933333333333333,
-    "voice_length": 0.8589743589743589
+    "markdown": 1.0,
+    "no_menu": 1.0,
+    "one_question": 0.9680851063829787,
+    "quiet": 1.0,
+    "repeated_opener": 0.9818181818181818,
+    "voice_length": 0.8617021276595744
   },
   "runs": 3
 }

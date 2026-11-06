@@ -8,6 +8,7 @@
  */
 
 import { inApp, openExternal } from './desktop';
+import { type Look, picture } from './look';
 import { dueLabel, quietLine, type Entry } from './view';
 
 export type Scheduled = Extract<Entry, { kind: 'scheduled' }>;
@@ -46,13 +47,17 @@ export function linkHost(link: string): string {
 export interface From {
   readonly id: string;
   readonly name: string;
+  /** One of the user's own helpers: its picture, before its name. */
+  readonly look?: Look;
 }
 
 /** The helper's name, at the head of a line from it: a tap opens its details in the panel. */
 export function fromTag(from: From, show: (id: string) => void): HTMLButtonElement {
   const b = el('button', 'notice-from', from.name);
   b.type = 'button';
-  b.setAttribute('aria-label', `${from.name}, in Helpers`);
+  // The name already says who: the picture is decoration beside it.
+  if (from.look) b.prepend(picture(from.look, 18));
+  b.setAttribute('aria-label', `${from.name}, open its details`);
   b.addEventListener('click', () => show(from.id));
   return b;
 }

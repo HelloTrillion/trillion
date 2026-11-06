@@ -12,6 +12,7 @@ from trillion.attention.runner import WatcherStatus
 from trillion.helpers.build import snapshot
 from trillion.helpers.live import Built
 from trillion.helpers.model import to_json
+from trillion.helpers.store import OwnHelper
 from trillion.spend.types import Work
 from trillion.spine.confirm import PendingAction, Status
 
@@ -53,6 +54,16 @@ class RuntimeSources:
 
     async def conversations(self) -> Mapping[str, str]:
         return await talks(self.rt)
+
+    async def own(self) -> Sequence[OwnHelper]:
+        made = self.rt.helpers
+        return await made.all(self.owner) if made is not None else []
+
+    async def last_said(self, conversation_id: str) -> int | None:
+        return await self.rt.conversations.last_said(conversation_id, self.owner)
+
+    def connected_catalog(self) -> frozenset[str]:
+        return self.rt.connected_catalog()
 
 
 async def talks(rt: Runtime) -> dict[str, str]:

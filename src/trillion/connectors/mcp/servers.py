@@ -120,6 +120,22 @@ class McpServers:
         except Exception as e:
             logger.warning("MCP up or down not told: %s", type(e).__name__)
 
+    def server_of(self, tool: str) -> ServerConfig | None:
+        """The listed server a tool name belongs to: the one that registered it, else
+        (for a server not connected now) the listed one whose names it begins with,
+        the longest first. None for a name no listed server could have made."""
+        for state in self.states.values():
+            if any(t.name == tool for t in state.tools) or tool in state.companions:
+                return state.config
+        found: ServerConfig | None = None
+        for state in self.states.values():
+            prefix = tool_name(state.config.name, "", set()) + "_"
+            if tool.startswith(prefix) and (
+                found is None or len(state.config.name) > len(found.name)
+            ):
+                found = state.config
+        return found
+
     def _launch(self, server: ServerConfig) -> ServerState:
         state = ServerState(config=server)
         self.states[server.name] = state

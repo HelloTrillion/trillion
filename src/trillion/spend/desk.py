@@ -314,12 +314,13 @@ def warning_title(name: str, spent: str, soft: str, *, past: bool = False) -> st
 
 
 # The kinds of background work, in the order `paused` lists them.
-WORK: tuple[Work, ...] = ("routines", "asks", "watchers", "channels", "titles", "board")
+WORK: tuple[Work, ...] = ("routines", "helpers", "asks", "watchers", "channels", "titles", "board")
 
 # Each kind as the paused notice names it. Titles are left out: they are always set
 # up, and nobody thinks of them as work of hers.
 _PAUSED_WORDS: Mapping[Work, str] = {
     "routines": "routines",
+    "helpers": "helpers",
     "asks": "timed asks",
     "watchers": "watchers",
     "channels": "channel replies",

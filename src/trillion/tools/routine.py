@@ -198,8 +198,9 @@ def narrows_routine(text: str) -> bool:
 
 def belongs(s: Schedule, kind: str, conversation_id: str, *, today: bool) -> bool:
     """Whether this conversation is where a routine is changed: an 'own' routine's
-    conversation, or today's day conversation for a day routine."""
-    if s.target is None or s.status != "active":
+    conversation, or today's day conversation for a day routine. Never a helper's
+    routine: what the user says in its chat goes to the helper's notes."""
+    if s.target is None or s.status != "active" or s.helper_id is not None:
         return False
     if s.target == "own":
         return s.conversation_id == conversation_id

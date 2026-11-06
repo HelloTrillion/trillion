@@ -69,6 +69,8 @@ class Schedule:
     paused_ms: int | None = None
     # Failed runs in a row.
     failures: int = 0
+    # The helper it belongs to: a handoff or one of its routines. None for any other.
+    helper_id: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -188,6 +190,10 @@ class ScheduleStore(Protocol):
         """What is coming up: active schedules, and finished ones with a run still to go."""
         ...
 
+    async def for_helper(self, owner_id: str, helper_id: str) -> list[Schedule]:
+        """A helper's schedules still to come, as `active` counts them, oldest first."""
+        ...
+
     async def due(self, now_ms: int) -> list[Schedule]: ...
 
     async def enqueue(
@@ -198,6 +204,10 @@ class ScheduleStore(Protocol):
         ...
 
     async def cancel(self, owner_id: str, schedule_id: str, now_ms: int) -> bool: ...
+
+    async def cancel_for_helper(self, owner_id: str, helper_id: str, now_ms: int) -> list[str]:
+        """Cancel every schedule of a helper's, with its runs not yet started: the ids."""
+        ...
 
     async def pause(self, owner_id: str, schedule_id: str, now_ms: int) -> bool:
         """Pause an active routine. Its due time stays where it was."""

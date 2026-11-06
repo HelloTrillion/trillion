@@ -30,9 +30,13 @@ USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A chat is one a page opens. A scheduled one is where a timed ask ran: kept, never opened.
 # A day is a page's too: the one conversation per date where she builds the user's day.
 # A routine is a page's as well: one routine's own, where each of its runs puts its board.
-ConversationKind = Literal["chat", "scheduled", "day", "routine"]
-# The kinds a page opens, lists, renames and deletes.
-_PAGE_KINDS = "kind IN ('chat', 'day', 'routine')"
+# A helper's is one helper's own chat, titled with its name.
+ConversationKind = Literal["chat", "scheduled", "day", "routine", "helper"]
+# The kinds a page opens and lists.
+_PAGE_KINDS = "kind IN ('chat', 'day', 'routine', 'helper')"
+# The kinds a page renames, deletes and restores. Not a helper's: its title is the
+# helper's name, and it goes with the helper (`helpers/store.py`).
+_PAGE_CHANGES = "kind IN ('chat', 'day', 'routine')"
 TitleSource = Literal["words", "model", "user"]
 TITLE_MAX = 80
 WORDS_TITLE_MAX = 60
@@ -304,6 +308,17 @@ class SqliteConversationStore:
             (tidy_title(words, WORDS_TITLE_MAX), conversation_id, owner_id),
         )
 
+    async def last_said(self, conversation_id: str, owner_id: str) -> int | None:
+        """When the user last wrote in a conversation: their own words, never a tap's
+        note or a run's request. None if they never have."""
+        async with self._conn.execute(
+            "SELECT MAX(created_at) FROM messages"
+            " WHERE conversation_id = ? AND owner_id = ? AND kind = 'user'",
+            (conversation_id, owner_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
+
     async def title_of(
         self, conversation_id: str, owner_id: str
     ) -> tuple[str | None, TitleSource | None]:
@@ -326,7 +341,7 @@ class SqliteConversationStore:
         guard = " AND (title_source IS NULL OR title_source != 'user')" if source == "model" else ""
         cur = await self._conn.execute(
             "UPDATE conversations SET title = ?, title_source = ?"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NULL" + guard,
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_CHANGES} AND deleted_at IS NULL" + guard,
             (clean, source, conversation_id, owner_id),
         )
         return cur.rowcount == 1
@@ -379,7 +394,7 @@ class SqliteConversationStore:
         """Soft delete (SPN-9): hidden from the list and from resuming, kept on disk."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = ?"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NULL",
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_CHANGES} AND deleted_at IS NULL",
             (now_ms, conversation_id, owner_id),
         )
         return cur.rowcount == 1
@@ -389,7 +404,7 @@ class SqliteConversationStore:
         and for a day whose date has a fresh day conversation since)."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = NULL"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NOT NULL"
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_CHANGES} AND deleted_at IS NOT NULL"
             " AND NOT (kind = 'day' AND EXISTS (SELECT 1 FROM conversations o"
             " WHERE o.owner_id = conversations.owner_id AND o.kind = 'day'"
             " AND o.day = conversations.day AND o.deleted_at IS NULL))",

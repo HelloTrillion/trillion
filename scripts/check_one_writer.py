@@ -87,6 +87,25 @@ NOT_DECISIONS: dict[str, str] = {
     "schedules.failures": "a routine's failed runs in a row: a count, it approves nothing",
     "schedules.conversation_id": "where a routine's board goes: it approves nothing",
     "schedules.notes": "what a routine looks at, from the user's feedback: it approves nothing",
+    "schedules.helper_id": "which helper a schedule is for (your helpers): it approves nothing",
+    "conversations.kind": "what a conversation is for: a deleted helper's chat is a plain chat",
+    **{
+        f"helpers.{c}": "a helper the user made and its state (the your helpers spec): it"
+        " approves nothing"
+        for c in (
+            "name",
+            "name_key",
+            "job",
+            "notes",
+            "paused_ms",
+            "icon",
+            "color",
+            "hello_ms",
+            "connectors",
+            "asks",
+            "deleted_at",
+        )
+    },
     **{
         f"task_runs.{c}": "a scheduled run's progress (AGT-4): it approves nothing"
         for c in (

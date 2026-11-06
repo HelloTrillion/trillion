@@ -85,6 +85,7 @@ from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.attention_store import SqliteAttentionStore
 from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
+from trillion.storage.sqlite.helper_store import SqliteHelperStore
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
@@ -95,6 +96,8 @@ from trillion.tools.folders import BROWSE as FOLDERS_BROWSE
 from trillion.tools.folders import SHARE as FOLDER_SHARE
 from trillion.tools.folders import UNSHARE as FOLDER_UNSHARE
 from trillion.tools.folders import FoldersBrowse, FolderShare, FolderUnshare, Look
+from trillion.tools.helper import NAMES as HELPER_TOOLS
+from trillion.tools.helper import HelperTool
 from trillion.tools.home import ARRANGE as HOME_ARRANGE
 from trillion.tools.home import HomeArrange
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
@@ -417,6 +420,8 @@ class Runtime:
     # what they leave (SUR-9), and the loop that runs them. Started with the server.
     schedules: SqliteScheduleStore | None = None
     door: Door | None = None
+    # The helpers the user made (the your helpers spec), on a connection of their own.
+    helpers: SqliteHelperStore | None = None
     # Her board per conversation: apply a change, save it, tell every page on it.
     boards: Boards | None = None
     scheduler: Scheduler | None = None
@@ -504,6 +509,8 @@ class Runtime:
     _helper_notes: asyncio.Lock = field(default_factory=asyncio.Lock)
     # And `helper_conversations` (`api/helpers.py`, `helpers/wiring.py`).
     helper_talks: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # And `helper_offer` and `helper_declined`, so one offer is answered once.
+    helper_offers: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The model, voice and hearing are only ever held metered. open_runtime and
@@ -857,6 +864,16 @@ class Runtime:
                     await self.helper_note_said(other)
         return note if isinstance(note, str) else None
 
+    async def helper_offer_open(self, conversation_id: str, area: str) -> bool:
+        """Whether this conversation's turn now was told to offer a helper for `area`."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and bool(session.offering(area))
+
+    def helper_offer_claim(self, conversation_id: str, area: str) -> bool:
+        """`helper_offer_open`, taking the offer: only one helper_suggest makes it."""
+        session = self.by_conversation.get(conversation_id)
+        return session is not None and bool(session.claim_offer(area))
+
     async def helper_note_keep(self, conversation_id: str, note: str) -> None:
         async with self._helper_notes:
             raw = await self.preferences.get(OWNER, HELPER_NOTES_PREF)
@@ -881,7 +898,11 @@ class Runtime:
             kinds.add("board")
         if self.schedules is not None:
             for s in await self.schedules.active(OWNER):
-                if s.kind == "ask" and s.paused_ms is None:
+                if s.kind != "ask" or s.paused_ms is not None:
+                    continue
+                if s.helper_id is not None:
+                    kinds.add("helpers")  # a helper's asks and routines alike
+                else:
                     kinds.add("routines" if s.target is not None else "asks")
         if self.attention is not None:
             for w in self.attention.watchers:
@@ -1107,6 +1128,8 @@ class Runtime:
             self.shared(scope),
             [(r.id, r.text) for r in self.rules.all()],
             skills=self.skill_lines(),
+            # Her instructions for the user's helpers, only where helpers can be made.
+            helpers=self.helpers is not None,
         )
 
     def start_background(self) -> None:
@@ -1243,6 +1266,24 @@ class Runtime:
                 self.registry.redefine(name, definition)
         # Only once all four took it: a failed redefine is tried again next time.
         self._told = types
+
+    def connected_catalog(self) -> frozenset[str]:
+        """The Connected tools entries set up now, by catalog id: Google's services and
+        Slack built in, and each MCP server added from the catalog and turned on. What a
+        helper's suggested connections are checked against."""
+        saved = self.google.saved if self.google is not None else None
+        found: set[str] = set()
+        if saved and saved.with_service("gmail"):
+            found.add("gmail")
+        if saved and saved.with_service("calendar"):
+            found.add("google-calendar")
+        if saved and saved.with_service("drive"):
+            found.add("google-drive")
+        if self.slack is not None and self.slack.token():
+            found.add("slack")
+        states = self.mcp.states.values() if self.mcp is not None else []
+        found.update(s.config.catalog for s in states if s.config.catalog and not s.config.disabled)
+        return frozenset(found)
 
     def day_setup(self) -> SetUp:
         """What the day board may read without asking (persona/day.py). A source set up
@@ -1460,6 +1501,8 @@ async def open_runtime(
     schedule_conn = await connect(path)
     # And so do the watchers' finds.
     attention_conn = await connect(path)
+    # And the helpers the user made.
+    helper_conn = await connect(path)
     registry = ToolRegistry.discover()
     store = SqliteSpineStore(spine_conn)
     router = Router(
@@ -1548,7 +1591,7 @@ async def open_runtime(
         token=token,
         token_from_app=token_from_app,
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
-        _connections=[spine_conn, chat_conn, schedule_conn, attention_conn],
+        _connections=[spine_conn, chat_conn, schedule_conn, attention_conn, helper_conn],
     )
     # Before anything that can reach a provider is started: the gate never fails open.
     try:
@@ -1615,8 +1658,12 @@ async def open_runtime(
         schedule_conn, cancelled=rt.routine_removed, changed=rt.helpers_changed
     )
     rt.schedules = schedules
+    rt.helpers = helpers = SqliteHelperStore(
+        helper_conn, changed=rt.helpers_changed, cancelled=rt.routine_removed
+    )
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
+    rt.door.helpers = helpers
     rt.jobs = Jobs(clock=lambda: rt.clock(), changed=rt.send_jobs)
     asker = Asker(
         provider=lambda: rt.background_provider,
@@ -1629,6 +1676,7 @@ async def open_runtime(
         zone=rt.zone,
         clock=lambda: rt.clock(),
         owner=OWNER,
+        helpers=lambda: rt.helpers,
         routines=RoutineDeps(
             # Made below; a routine runs only once the scheduler ticks, after this returns.
             boards=lambda: rt.boards,
@@ -1683,11 +1731,33 @@ async def open_runtime(
     for name in (REMINDER, ASK, LIST, CANCEL):
         schedule_tool = registry.get(name)
         if isinstance(schedule_tool, ReminderSet | AskSchedule | ScheduleList | ScheduleCancel):
-            schedule_tool.bind(schedules, zone=rt.zone, clock=lambda: rt.clock(), owner=OWNER)
+            schedule_tool.bind(
+                schedules,
+                zone=rt.zone,
+                clock=lambda: rt.clock(),
+                owner=OWNER,
+                helpers=helpers,
+            )
     for name in (NARROW, WIDEN):
         notes_tool = registry.get(name)
         if isinstance(notes_tool, RoutineNarrow | RoutineWiden):
             notes_tool.bind(schedules, rt.conversation_is, OWNER)
+    for name in HELPER_TOOLS:
+        helper_tool = registry.get(name)
+        if isinstance(helper_tool, HelperTool):
+            helper_tool.bind(
+                helpers,
+                schedules,
+                clock=lambda: rt.clock(),
+                owner=OWNER,
+                conversations=rt.conversations,
+                preferences=rt.preferences,
+                zone=rt.zone,
+                held=rt.held,
+                offer_open=rt.helper_offer_open,
+                offer_claim=rt.helper_offer_claim,
+                offer_lock=rt.helper_offers,
+            )
     rt.mcp.start(mcp_load(mcp_config or paths.mcp_config_path()))
     record = registry.get(RECORD)
     if isinstance(record, DecisionRecord):

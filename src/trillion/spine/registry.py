@@ -25,7 +25,10 @@ _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
 # A routine's own tools change a routine, or end its run: never a plain timed ask's.
 # What she speaks up about is the user's to change, never a run's.
 # Staying quiet ends a turn someone is listening to: a run nobody watches has none.
-UNATTENDED_NEVER = frozenset({"schedule", "workspace", "rules", "routine", "attention", "quiet"})
+# Only she makes helpers or hands them work, and only for someone there (AGT-2).
+UNATTENDED_NEVER = frozenset(
+    {"schedule", "workspace", "rules", "routine", "attention", "quiet", "helper"}
+)
 # What a routine's run gets besides (the routines spec, D5): the board tools, on its own
 # conversation only (the router checks which), and the way to say it has nothing.
 # Named here so the spine needs nothing from the tools (tests check the names still match).

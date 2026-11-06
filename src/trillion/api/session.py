@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import re
 import uuid
@@ -58,6 +59,8 @@ from trillion.brain.types import (
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
 from trillion.delivery import door as delivery
 from trillion.delivery.door import Delivery, Facts, NotFree, free
+from trillion.helpers import needs
+from trillion.helpers.store import CONNECTOR_TITLES, OwnHelper
 from trillion.memory import present
 from trillion.persona import day
 from trillion.persona.prompt import (
@@ -67,9 +70,10 @@ from trillion.persona.prompt import (
     compaction,
     degraded,
     greeting,
+    helper_overlay,
     volatile_context,
 )
-from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
+from trillion.scheduler.ask import HANDOFF_RUN, ROUTINE_ID, ROUTINE_RUN
 from trillion.scheduler.store import https_link
 from trillion.spend import desk as spend
 from trillion.spend.caller import as_caller
@@ -84,11 +88,27 @@ from trillion.spine.router import Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.tools.folders import View, host_note, open_place
+from trillion.tools.helper import ASK as HELPER_ASK
+from trillion.tools.helper import CATEGORY as HELPER_CATEGORY
+from trillion.tools.helper import CREATE as HELPER_CREATE
+from trillion.tools.helper import DECLINED_PREF as HELPER_DECLINED
+from trillion.tools.helper import NARROW as HELPER_NARROW
+from trillion.tools.helper import NOTED_PREF as HELPER_NOTED
+from trillion.tools.helper import OFFER_PREF as HELPER_OFFER
+from trillion.tools.helper import SUGGEST as HELPER_SUGGEST
+from trillion.tools.helper import UPDATE as HELPER_UPDATE
+from trillion.tools.helper import WIDEN as HELPER_WIDEN
+from trillion.tools.helper import card_draft as helper_draft
+from trillion.tools.helper import card_look as helper_look
+from trillion.tools.helper import make as make_helper
+from trillion.tools.helper import plain as plain_helper
 from trillion.tools.quiet import asks
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
 from trillion.tools.routine import mine as routine_here
 from trillion.tools.routine import named as routine_named
+from trillion.tools.schedule import ASK as ASK_SCHEDULE
+from trillion.tools.schedule import OWN_LANDS as ROUTINE_OWN_LANDS
 from trillion.tools.web import FETCH
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
@@ -197,6 +217,45 @@ class Overlap:
     word_at: float = 0.0
 
 
+# What a new helper is told for its first hello (the your helpers spec, Its first
+# hello): the app's words, never the page's, in its own chat with its overlay.
+HELPER_HELLO = (
+    "[host] This is your first message to the user. In one or two sentences say what "
+    "you'll do first and anything you need to know. If a regular check suits your job, "
+    'offer one with ask_schedule as your routine (routine "own"), at a sensible time: '
+    "it goes to them on a card. Never say it is set up: say it starts once they tap "
+    "Approve."
+)
+
+
+def helper_hello(h: OwnHelper, connected: frozenset[str] = frozenset()) -> str:
+    """`HELPER_HELLO`, with what its approved card drafted: the questions it asks first,
+    and the connections it suggested that are not connected yet. Their words are the
+    card's, made inert; the rest is the app's."""
+    note = HELPER_HELLO
+    if h.asks:
+        said = " ".join(f'"{present.inert(a)}"' for a in h.asks)
+        note += (
+            " The card the user approved has these questions to ask first: ask them now, "
+            f"in your own words, instead of asking what you need to know: {said}"
+        )
+    missing = [
+        CONNECTOR_TITLES[c] for c in h.connectors if c in CONNECTOR_TITLES and c not in connected
+    ]
+    if missing:
+        note += (
+            " These connections would help and are not connected yet: "
+            f"{', '.join(missing)}. Say so in one line: they can connect them from the "
+            "chips above, or in Settings, Connected tools."
+        )
+    return note
+
+
+# A routine's card: not a one-off timed ask. And where an own routine's card says it lands.
+ROUTINE_LABEL = "Set up a routine"
+OWN_LANDS = f", {ROUTINE_OWN_LANDS})"
+
+
 # Saved with a message sent by tapping a widget's ask, ahead of its words. It tells her
 # later turns that the words are her own ask, and it is how a resumed session knows not
 # to count an address in them as one the user gave (the web rule, widget design D5).
@@ -228,9 +287,11 @@ def day_build(msg: Msg) -> bool:
 
 
 def routine_run(msg: Msg) -> str | None:
-    """The host's line for a saved routine request ("Routine: Monday revenue"), or None
-    for any other message. Its first line is the routine's name (`scheduler/ask.py`)."""
-    if not any(isinstance(b, ContextBlock) and b.text == ROUTINE_RUN for b in msg.blocks):
+    """The host's line for a saved routine request ("Routine: Monday revenue"), or a
+    helper's handoff (its request's first line), or None for any other message. A
+    routine's first line is its name (`scheduler/ask.py`)."""
+    marks = {b.text for b in msg.blocks if isinstance(b, ContextBlock)}
+    if not marks & {ROUTINE_RUN, HANDOFF_RUN}:
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
     return ROUTINE_ID.sub("", text.split("\n", 1)[0].strip()) or "Routine"
@@ -244,19 +305,27 @@ READY_LINE = (
     "below is the app's notice that its result is ready in another conversation, not "
     "words the user typed or said, and not yours\n</context>"
 )
+# The same, for a line one of the user's helpers handed back.
+HANDED_BACK_LINE = (
+    "<context>\nsent by the app because one of the user's helpers finished what you "
+    "asked it: the line below is the app's notice that its answer is ready in the "
+    "helper's conversation, not words the user typed or said, and not yours\n</context>"
+)
+_READY_NOTES = frozenset({READY_LINE, HANDED_BACK_LINE})
 # The conversation a ready line opens, on its last line.
 _READY_OPENS = re.compile(r"\n\(conversation ([A-Za-z0-9_-]{1,64})\)$")
 
 
-def ready_msg(title: str, conversation_id: str | None) -> Msg:
+def ready_msg(title: str, conversation_id: str | None, *, handoff: bool = False) -> Msg:
     """A ready line as saved: the app's note, the line, and where it opens."""
     opens = f"\n(conversation {conversation_id})" if conversation_id else ""
-    return Msg(role="user", blocks=(ContextBlock(text=READY_LINE), TextBlock(text=title + opens)))
+    note = HANDED_BACK_LINE if handoff else READY_LINE
+    return Msg(role="user", blocks=(ContextBlock(text=note), TextBlock(text=title + opens)))
 
 
 def ready_line(msg: Msg) -> dict[str, str] | None:
     """A saved ready line as the page shows it, or None for any other message."""
-    if not any(isinstance(b, ContextBlock) and b.text == READY_LINE for b in msg.blocks):
+    if not any(isinstance(b, ContextBlock) and b.text in _READY_NOTES for b in msg.blocks):
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
     opens = _READY_OPENS.search(text)
@@ -546,10 +615,23 @@ class BuiltInput:
     spend_notes: tuple[str, ...] = ()
     # The helper note that rode with it (a watcher's own conversation): said once.
     helper_note: str | None = None
+    # The area its host note said to offer a helper for, if one did.
+    offer: str | None = None
 
 
 # Where a page can say it runs, in its hello. Anything else is "other".
 HOSTS = frozenset({"desktop", "chrome", "edge", "firefox", "safari", "other"})
+
+
+def offer_note(area: str) -> str:
+    """The host note that has her offer a helper for an area, after answering."""
+    said = needs.label(area)
+    note = (
+        f"Answer the user first, then call helper_suggest once to offer a helper for "
+        f"{said}. The page shows the offer itself, so never mention this note or the "
+        "offer in your words."
+    )
+    return note if said == area else f'{note} Its area is "{area}".'
 
 
 def page_host(raw: object) -> str:
@@ -725,6 +807,17 @@ class Session:
         # A dropped reload, tried once more when the page is free (`catch_up`).
         self._retry: asyncio.Task[None] | None = None
         self._routine = ""
+        # The helper whose own chat this is, if it is one, and in any other the helpers
+        # not paused, as (id, name, job): read again with the routines.
+        self._helper: OwnHelper | None = None
+        self._helpers: list[tuple[str, str, str]] = []
+        # The last look failed: no helper tool is offered until one works.
+        self._helpers_unread = False
+        # (turn, area): the user's turn whose host note said to offer a helper for an
+        # area. helper_suggest is offered then only, and only once.
+        self._offering: tuple[int, str] | None = None
+        # (local date, area): what the last look for an offer found, looked at once a day.
+        self._offer_looked: tuple[str, str | None] | None = None
         # Background reads that ended here, waiting for a pause to be brought in, and
         # whether a saved one still waits for her (the background reads spec).
         self._finished: list[_Finished] = []
@@ -963,12 +1056,181 @@ class Session:
 
     def _offers(self, d: ToolDefinition) -> bool:
         """Whether a page's turn here is offered this tool: never a routine's own,
-        unless this conversation is where it belongs (`tools/routine.py`)."""
+        unless this conversation is where it belongs (`tools/routine.py`). In a
+        helper's own chat, only the tools that change it; anywhere else, making and
+        asking one (AGT-2)."""
+        if d.category == HELPER_CATEGORY:
+            return d.name in self._helper_tools()
         return d.category != ROUTINE_CATEGORY or d.name in self._routine_tools
 
-    async def _read_routines(self) -> None:
-        """Which routine tools this conversation is offered now: a routine set up, or
-        today's day turned over, since the last turn changes it."""
+    def _helper_tools(self) -> frozenset[str]:
+        if self._rt.helpers is None or self._helpers_unread:
+            return frozenset()
+        if self._helper is not None:
+            return frozenset({HELPER_UPDATE, HELPER_NARROW, HELPER_WIDEN})
+        if self._offering is not None and self._offering[0] == self._turn:
+            # Its host note said to offer one, this turn.
+            return frozenset({HELPER_CREATE, HELPER_ASK, HELPER_SUGGEST})
+        return frozenset({HELPER_CREATE, HELPER_ASK})
+
+    def offering(self, area: str) -> bool:
+        """Whether this turn was told to offer a helper for `area` and has not yet."""
+        return (
+            self._helper is None
+            and not self._helpers_unread
+            and self._offering == (self._turn, area)
+        )
+
+    def claim_offer(self, area: str) -> bool:
+        """`offering`, and from now on not: one helper_suggest takes the turn's offer,
+        so two calls in one reply make one offer."""
+        if not self.offering(area):
+            return False
+        self._offering = None
+        return True
+
+    def _mcp_area(self, tool: str) -> str | None:
+        servers = self._rt.mcp
+        server = servers.server_of(tool) if servers is not None else None
+        return needs.server_area(server.name, server.catalog) if server is not None else None
+
+    async def _offer_due(self) -> str | None:
+        """The area to offer a helper for on this turn, if any. Never in the way of
+        the turn: anything unexpected means no offer, logged by its kind only."""
+        rt = self._rt
+        if rt.helpers is None or self._helper is not None or self._helpers_unread:
+            return None
+        if self.kind not in needs.COUNTED_KINDS:
+            return None
+        try:
+            now = rt.clock()
+            today = day.today(now, rt.zone()).isoformat()
+            if self._offer_looked is not None and self._offer_looked[0] == today:
+                # Looked at once a day here: a draft and its turn get the same answer.
+                return self._offer_looked[1]
+            area = await self._offer_now(now)
+            self._offer_looked = (today, area)
+            return area
+        except Exception as e:
+            logger.warning(
+                "helper offer not looked at in session %s: %s", self.id, type(e).__name__
+            )
+            return None
+
+    async def _offer_now(self, now: int) -> str | None:
+        rt = self._rt
+        if rt.helpers is None:
+            return None
+        raw = await rt.preferences.get(OWNER, HELPER_OFFER)
+        at = raw.get("at_ms") if isinstance(raw, dict) else None
+        noted = await rt.preferences.get(OWNER, HELPER_NOTED)
+        times = [t for t in (at, noted) if isinstance(t, int)]
+        last = max(times) if times else None
+        if last is not None and now - last < needs.ONCE_MS:
+            # Offered, or told to offer, in the last day: the audit need not be read.
+            return None
+        calls = await rt.spine_store.recent_tools(OWNER, needs.since(now))
+        ids = {sid for tool, sid, _ in calls if needs.area_of(tool, self._mcp_area) is not None}
+        kinds: dict[str, str] = {}
+        for sid in ids:
+            found = await rt.conversations.kind_of(sid, OWNER)
+            if found is not None:
+                kinds[sid] = found[0]
+        areas = needs.repeated(calls, kinds, rt.zone() or "", now, self._mcp_area)
+        if not areas:
+            return None
+        said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
+        declined = [a for a in said_no if isinstance(a, str)] if isinstance(said_no, list) else []
+        return needs.to_offer(areas, await rt.helpers.all(OWNER), declined, last, now)
+
+    async def _noted(self, area: str) -> None:
+        """The host note rode with a saved message: not again for a day, here or in any
+        other conversation, whether or not she offers."""
+        rt = self._rt
+        self._offering = (self._turn, area)
+        if self._offer_looked is not None:
+            self._offer_looked = (self._offer_looked[0], None)
+        try:
+            await rt.preferences.put(OWNER, HELPER_NOTED, rt.clock(), rt.clock())
+        except Exception as e:
+            logger.warning("helper offer not marked in session %s: %s", self.id, type(e).__name__)
+
+    async def _offered(self) -> None:
+        """helper_suggest kept its offer: the page shows it, with Create and No thanks."""
+        self._offering = None
+        try:
+            raw = await self._rt.preferences.get(OWNER, HELPER_OFFER)
+        except Exception as e:
+            logger.warning("helper offer not shown in session %s: %s", self.id, type(e).__name__)
+            return
+        if isinstance(raw, dict) and raw.get("name") and raw.get("job"):
+            await self._send("helper.offer", area=raw["area"], name=raw["name"], job=raw["job"])
+
+    async def _on_helper_offer(self, area: object, choice: object) -> None:
+        """The page's Create or No thanks, taken only for the offer still open. Create
+        is the user's own tap, so it makes the helper as a card's approval would."""
+        if not isinstance(area, str) or choice not in ("create", "decline"):
+            await self._error("bad_message")
+            return
+        try:
+            failed = await self._answer_offer(area, choice)
+        except Exception as e:
+            # A store that fails never closes the page's socket: it is told, and may try again.
+            logger.warning("helper offer not answered in session %s: %s", self.id, type(e).__name__)
+            failed = "error"
+        if failed is not None:
+            # With its area, so the page settles that offer's line and no other.
+            await self._send("helper.offer.failed", area=area, reason=failed)
+
+    async def _answer_offer(self, area: str, choice: str) -> str | None:
+        """Take the answer: why it failed, if it did in a way the page should show."""
+        rt = self._rt
+        store = rt.helpers
+        if store is None:
+            return None
+        async with rt.helper_offers:
+            raw = await rt.preferences.get(OWNER, HELPER_OFFER)
+            at = raw.get("at_ms") if isinstance(raw, dict) else None
+            if not (
+                isinstance(raw, dict)
+                and raw.get("area") == area
+                and isinstance(raw.get("name"), str)
+                and isinstance(raw.get("job"), str)
+                and isinstance(at, int)
+            ):
+                # Answered already, never made, or for another area: the page is told,
+                # so its line never waits for an answer that will not come.
+                logger.info("helper offer answer not taken in session %s", self.id)
+                return "stale"
+            now = rt.clock()
+            if now - at > needs.ONCE_MS:
+                return "stale"
+            # Answered either way: kept only for the once-a-day rule.
+            await rt.preferences.put(OWNER, HELPER_OFFER, {"area": area, "at_ms": at}, now)
+            if choice == "decline":
+                said_no = await rt.preferences.get(OWNER, HELPER_DECLINED)
+                declined = list(said_no) if isinstance(said_no, list) else []
+                if area not in declined:
+                    await rt.preferences.put(OWNER, HELPER_DECLINED, [*declined, area], now)
+                return None
+            name, job = " ".join(raw["name"].split()), " ".join(raw["job"].split())
+            if plain_helper(name, job) is not None:
+                return "invalid"
+            made = await make_helper(store, rt.conversations, OWNER, name, job, now)
+        if isinstance(made, str):
+            return made
+        logger.info("helper %s made from an offer in %s", made.id, self.id)
+        # With its area: the page settles that offer's line on it, and no other.
+        await self._send(
+            "helper.created", helper_id=made.id, conversation_id=made.conversation_id, area=area
+        )
+        return None
+
+    async def _read_place(self) -> None:
+        """What this conversation is now: which routine tools it is offered (a routine
+        set up, or today's day turned over, since the last turn changes it), and whose
+        helper's chat it is, or which helpers she can hand work to."""
+        await self._read_helpers()
         rt = self._rt
         try:
             routines = await rt.schedules.active(OWNER) if rt.schedules is not None else []
@@ -980,6 +1242,37 @@ class Session:
         self._routine_tools = routine_tools(self.kind, self.id, routines, today=today)
         found = routine_here(self.kind, self.id, routines, today=today)
         self._routine = routine_named(found) if found is not None else ""
+
+    async def _read_helpers(self) -> None:
+        store = self._rt.helpers
+        if store is None:
+            self._helper, self._helpers = None, []
+            return
+        try:
+            self._helper = await store.by_conversation(OWNER, self.id)
+            mine = await store.all(OWNER) if self._helper is None else []
+        except Exception as e:
+            # Offered none: a chat is never taken for hers, or a helper's, by mistake.
+            # Her calls keep the helper last read, so a helper's chat stays its own.
+            logger.warning("helpers not read in session %s: %s", self.id, type(e).__name__)
+            self._helpers_unread, self._helpers = True, []
+            return
+        self._helpers_unread = False
+        self._helpers = [(h.id, h.name, h.job) for h in mine if h.paused_ms is None]
+        if self._helper is None and self.kind == "helper":
+            # Its helper was deleted: the chat stays, as a plain one (the store's kind too).
+            self.kind = "chat"
+
+    async def _helper_made(self, r: RouterResponse) -> None:
+        """A confirmed create card: the page opens the new helper's chat."""
+        if r.tool != HELPER_CREATE or r.status != "succeeded":
+            return
+        try:
+            made = json.loads(r.content)
+            helper_id, conversation_id = made["helper_id"], made["conversation_id"]
+        except (ValueError, TypeError, KeyError):
+            return
+        await self._send("helper.created", helper_id=helper_id, conversation_id=conversation_id)
 
     def _model(self) -> dict[str, str] | None:
         p = self._rt.provider
@@ -1194,6 +1487,8 @@ class Session:
             await self._on_greet()
         elif kind == "day.build":
             await self._on_day_build(spoken=msg.get("spoken") is True)
+        elif kind == "helper.hello":
+            await self._on_helper_hello()
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
         elif kind == "mic.opened":
@@ -1256,6 +1551,8 @@ class Session:
                 await self._error("bad_message")
             elif self._rt.refresher is not None:
                 self._rt.refresher.now(self.id, widget_id)
+        elif kind == "helper.offer":
+            await self._on_helper_offer(msg.get("area"), msg.get("choice"))
         elif kind == "confirm.shown":
             pid = msg.get("pending_id")
             if isinstance(pid, str) and pid:
@@ -1357,6 +1654,47 @@ class Session:
             self._via = "text"
             self._arrived = self._starting("greet")
             self._queued.append(greeting(rt.identity))
+            self._begin()
+
+    async def _on_helper_hello(self) -> None:
+        """A helper's chat opened: the first time ever, it says hello in its own words
+        and may offer a routine on a card. The page only asks; the note is the app's.
+        Marked before the turn runs, so a hello that fails is never tried again and
+        its fixed first line stands."""
+        rt = self._rt
+        store = rt.helpers
+        if store is None or rt.provider is None or self.kind != "helper":
+            return
+        async with self._taking_input():
+            if await self._routine_building():
+                return
+            await self._read_place()
+            h = self._helper
+            # Paused: not spent, so it says hello once resumed. A turn running: not
+            # spent either, so it is never used up without one.
+            if h is None or h.paused_ms is not None or self._task is not None:
+                return
+            # Anything beyond its fixed first line: it is already talking, so the hello
+            # is spent with no turn.
+            fresh = self._kinds in ([], ["assistant"])
+            try:
+                first = await store.said_hello(OWNER, h.id, rt.clock())
+            except Exception as e:
+                logger.warning(
+                    "helper hello not marked in session %s: %s", self.id, type(e).__name__
+                )
+                return
+            if not first or not fresh:
+                return
+            note = helper_hello(h, rt.connected_catalog())
+            if self._task is not None:
+                # Never taken over a turn: it is that turn's loop that says it next.
+                self._queued.append(note)
+                return
+            await self._stop_listening()
+            self._via = "text"
+            self._arrived = self._starting("greet")
+            self._queued.append(note)
             self._begin()
 
     async def _on_day_build(self, *, spoken: bool = False) -> None:
@@ -2312,6 +2650,8 @@ class Session:
         if await self._routine_building():
             # The card stays: tapped again once the routine is done, it is answered.
             return
+        # Whose chat this is, read now: a tap can come before any turn here.
+        await self._read_place()
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
@@ -2332,8 +2672,12 @@ class Session:
             reason=response.reason.value if response.reason is not None else None,
             detail=response.detail or None,
         )
+        await self._helper_made(response)
         action = "Approve" if decision == "confirm" else "Decline"
-        note = f"[host] The user tapped {action} on the card for {pending_id}. Result: "
+        note = (
+            f"[host] The user tapped {action} on the card for {pending_id}. Say what came "
+            "of it in one short sentence, and don't repeat what you said before. Result: "
+        )
         self._queued.append(note + response.to_model())
         if self._task is None:
             self._begin()
@@ -2589,6 +2933,10 @@ class Session:
                     self._outside.add(turn)
                 if r.status == "succeeded":
                     self._remember_read(turn, ev.name, ev.args)
+                    # Confirmed by her `confirm_pending_action` on the user's yes.
+                    await self._helper_made(r)
+                    if ev.name == HELPER_SUGGEST:
+                        await self._offered()
                 await self._send(
                     "tool.end",
                     call_id=ev.call_id,
@@ -2608,7 +2956,7 @@ class Session:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
             system = await asyncio.to_thread(rt.system)
-            await self._read_routines()
+            await self._read_place()
             if using is not None and list(using.system) != system:
                 # A rule or skill changed while the draft ran: it sent an old prompt.
                 trace.draft = "dropped"
@@ -3208,6 +3556,8 @@ class Session:
             read_outside=at in self._outside,
             host_turn=host_turn,
             asked=asked,
+            # In a helper's own chat, every call and tap is the helper's (AGT-2).
+            helper_id=self._helper.id if self._helper is not None else None,
         )
 
     def _asked(self) -> bool:
@@ -3400,14 +3750,13 @@ class Session:
         of the text, saying what the text is. `turn` is the user message this input
         belongs to, when it is not yet counted (an early draft)."""
         via = via or self._via
-        pending = [
-            PendingNote(pending_id=a.id, summary=a.summary) for a in await self._open_actions()
-        ]
+        open_actions = await self._open_actions()
+        pending = [PendingNote(pending_id=a.id, summary=a.summary) for a in open_actions]
         spoken = kind == "user" and via == "voice"
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
         recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
-        await self._read_routines()
+        await self._read_place()
         now = self._rt.clock()
         jobs = [
             JobNote(tool=j.tool, job_id=j.id, seconds=max(0, (now - j.started_ms) // 1000))
@@ -3426,6 +3775,10 @@ class Session:
             turn=self._turn if turn is None else turn,
             # "Your last line" is asked about the user's own words, never a host note.
             who=self._rt.identity if kind == "user" else None,
+            helper=helper_overlay(self._helper, self._rt.identity.agent_name)
+            if self._helper is not None
+            else "",
+            helpers=self._helpers,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:
@@ -3441,6 +3794,17 @@ class Session:
         helper_note = await self._rt.helper_note(self.id)
         if helper_note is not None:
             notes = (*notes, ContextBlock(text=helper_note))
+        # A need that keeps coming back, on the user's own turn: offer a helper, once.
+        # Never while they ask for one, or a helper's card of theirs waits here: their
+        # request wins over a suggestion.
+        drafting = any(a.tool == HELPER_CREATE for a in open_actions)
+        offer = (
+            await self._offer_due()
+            if kind == "user" and via != "ask" and not drafting and not needs.asks_for_helper(text)
+            else None
+        )
+        if offer is not None:
+            notes = (*notes, ContextBlock(text=offer_note(offer)))
         blocks = (ContextBlock(text=context), *notes, TextBlock(text=text))
         return BuiltInput(
             msg=Msg(role="user", blocks=blocks),
@@ -3450,6 +3814,7 @@ class Session:
             folder_note=folder_note,
             spend_notes=tuple(key for key, _ in spend_notes),
             helper_note=helper_note,
+            offer=offer,
         )
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
@@ -3471,6 +3836,14 @@ class Session:
                 await self._rt.spend.said(built.spend_notes)
             except Exception as e:
                 logger.warning("spend note not marked in session %s: %s", self.id, type(e).__name__)
+        if kind == "user":
+            # Only this turn may offer, and only for what its note said.
+            self._offering = None
+            if self._helper is not None:
+                # Written in a helper's chat: a handoff that needed the user is answered.
+                self._rt.helpers_changed()
+            if built.offer is not None:
+                await self._noted(built.offer)
         if built.helper_note is not None:
             try:
                 await self._rt.helper_note_said(self.id)
@@ -3522,20 +3895,63 @@ class Session:
         if a is None or a.owner_id != OWNER:
             return
         reg = self._rt.registry
+        label = labels.tool_label(a.tool, labels.connected(reg.definition(a.tool), reg.get(a.tool)))
+        summary = a.summary
+        # A new helper's colour passes over those its others have, as its tap does.
+        taken = (
+            {h.color for h in await self._rt.helpers.all(OWNER)}
+            if a.tool == HELPER_CREATE and self._rt.helpers is not None
+            else set()
+        )
+        if a.tool == ASK_SCHEDULE and a.args.get("routine") in ("day", "own"):
+            # A routine, not a one-off: said so, and where it lands.
+            label = ROUTINE_LABEL
+            if a.args.get("routine") == "own":
+                summary = await self._routine_lands(a.session_id, summary)
         await self._send(
             "confirm.request",
             pending_id=a.id,
             tool=a.tool,
             # A friendly name and the reason it needs the user, both from the host.
-            tool_label=labels.tool_label(
-                a.tool, labels.connected(reg.definition(a.tool), reg.get(a.tool))
-            ),
+            tool_label=label,
             reason=labels.reason(a.risk, a.recoverable),
-            summary=a.summary,
+            summary=summary,
             expires_at=a.expires_at,
             # Spend and anything unrecoverable can only be approved here, by a tap (SPN-14).
             tap_only=a.risk is Risk.SPEND or not a.recoverable,
+            # A new helper's picture and draft, from the approved arguments its tap makes
+            # it from. The page pins it above the message box, one per conversation.
+            **(
+                {"look": helper_look(a.args, taken), "draft": self._card_draft(a.args)}
+                if a.tool == HELPER_CREATE
+                else {}
+            ),
         )
+
+    def _card_draft(self, args: dict[str, Any]) -> dict[str, Any]:
+        """A create card's draft, its suggested connections said with their titles and
+        whether each is connected now."""
+        draft = helper_draft(args)
+        have = self._rt.connected_catalog()
+        draft["connectors"] = [
+            {"id": c, "title": CONNECTOR_TITLES[c], "connected": c in have}
+            for c in draft["connectors"]
+        ]
+        return draft
+
+    async def _routine_lands(self, session_id: str, summary: str) -> str:
+        """A routine set in a helper's chat runs there: its card says so by its name."""
+        store = self._rt.helpers
+        if store is None or not summary.endswith(OWN_LANDS):
+            return summary
+        try:
+            h = await store.by_conversation(OWNER, session_id)
+        except Exception as e:
+            logger.warning("card %s: its helper not read: %s", session_id, type(e).__name__)
+            return summary
+        if h is None:
+            return summary
+        return summary[: -len(OWN_LANDS)] + f", in {present.inert(h.name)}'s chat)"
 
     async def _state(self, orb: str, *, notice: bool = False) -> None:
         if orb != self._orb or notice != self._orb_notice:
@@ -3627,15 +4043,16 @@ class Session:
             if not n.text:
                 continue
             if n.kind == "ready":
-                rows.append(("tap", ready_msg(n.title, n.conversation_id)))
+                rows.append(("tap", ready_msg(n.title, n.conversation_id, handoff=n.handoff)))
             else:
                 rows.append(("assistant", Msg(role="assistant", blocks=(TextBlock(text=n.text),))))
         if rows:
             await self._save_all(rows)
-        if any(n.kind in ("ask", "heads_up") and n.text for n in notices):
-            # A timed ask's answer can quote what it read, and a heads-up is written from
-            # an invite or an email: whatever she does next on the strength of it is
-            # something she read, not something the user said (MEM-5).
+        if any((n.kind in ("ask", "heads_up") and n.text) or n.handoff for n in notices):
+            # A timed ask's answer can quote what it read, as can a helper's handed-back
+            # line, and a heads-up is written from an invite or an email: whatever she
+            # does next on the strength of it is something she read, not something the
+            # user said (MEM-5).
             self._outside.update({self._turn, self._turn + 1})
         # Saved: from here nothing raises, or the door would hold them and they would be
         # saved twice. `_send` already logs a failed send and goes on.
@@ -3659,6 +4076,8 @@ class Session:
                 # Which helper it came from, named as the panel names it.
                 helper_id=n.helper_id,
                 helper_name=n.helper_name,
+                helper_icon=n.helper_icon,
+                helper_color=n.helper_color,
             )
         if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

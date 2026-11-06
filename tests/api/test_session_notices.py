@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -360,6 +361,50 @@ async def test_after_a_timed_asks_answer_the_next_turn_counts_as_read(
     assert rt.schedules is not None
     assert bool(await rt.schedules.active("local")) is kept
     await session.close()
+
+
+@pytest.mark.parametrize(("helper", "kept"), [(True, False), (False, True)])
+async def test_after_a_helpers_line_the_next_turn_counts_as_read(
+    rt: Runtime, helper: bool, kept: bool
+) -> None:
+    """A helper's handed-back line is written from what it read (MEM-5); a routine's
+    ready line is the app's own."""
+    assert rt.schedules is not None and rt.door is not None and rt.helpers is not None
+    h = await rt.helpers.create("local", "Invoices", "Chases late payments.", DUE)
+    assert not isinstance(h, str)
+    handoff = schedule(id="h0000001", kind="ask", title="Invoices: overdue?", next_due_ms=None)
+    routine = schedule(id="h0000001", kind="ask", title="Overdue", target="own", next_due_ms=None)
+    await rt.schedules.create(dataclasses.replace(handoff, helper_id=h.id) if helper else routine)
+    args = {"when": "2030-01-07T10:00", "say": "Pay the bill.", "title": "Bill"}
+    rt.provider = Gated(use("reminder_set", args), say("Done."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    line = "Invoices: an email says to remind them to pay."
+    n = await written(
+        rt.schedules,
+        kind="ready",
+        text=line,
+        title=line,
+        source_id="h0000001",
+        due_ms=DUE,
+        now_ms=rt.clock(),
+        conversation_id=h.conversation_id,
+    )
+    await rt.door.added(n)
+    await session.handle({"type": "turn.text", "text": "ok"})
+    await idle(session)
+    assert any(s.title == "Bill" for s in await rt.schedules.active("local")) is kept
+    await session.close()
+    # A reload still draws it as a ready line that opens the helper's chat.
+    again = Page(rt)
+    reopened = await Session.start(rt, again.send, session.id)
+    (shown,) = again.all("history")
+    assert shown["messages"][0] == {
+        "role": "host",
+        "text": line,
+        "conversation_id": h.conversation_id,
+    }
+    await reopened.close()
 
 
 async def test_stop_with_nothing_played_lets_a_held_notice_arrive(rt: Runtime) -> None:

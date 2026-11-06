@@ -67,7 +67,10 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { bindButton, capNameOf, createHelpers, stepTarget } from './helpers';
+import { type Helper, askTarget, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
+import { lookOf, picture } from './look';
+import { createRail } from './rail';
+import { chatHead, offerLine } from './offer';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
 import { type Usage, fetchUsage, pill, pillState, sentence } from './usage';
 import { createVoice } from './voice';
@@ -77,6 +80,7 @@ import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
 import { createHome, dayBoardStep, endsBuild, frameKeeps, herOpensHome, localDate, returnsToHome, shouldOpenHome } from './home';
 import { createApprovals, outcomeWords } from './approvals';
+import { type DraftCard, createDraftPin } from './draft';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
@@ -87,6 +91,8 @@ import {
   type View,
   expire,
   micFailed,
+  offerChosen,
+  pinnedDraft,
   reduce,
   sent,
   toolLabel,
@@ -164,6 +170,14 @@ bannerEl.after(switchEl, spendEl);
 const switchLines = createSwitchLines(switchEl, (method, path, body) => api(method, path, body));
 const transcriptEl = $('transcript');
 const form = $<HTMLFormElement>('ask');
+// Her draft of a new helper, pinned above the message box while it waits: Create and Not
+// now are its card's Approve and Decline, sent as every card's are.
+const draftPin = createDraftPin({
+  onCreate: (id) => send({ type: 'confirm', pending_id: id }),
+  onNotNow: (id) => send({ type: 'cancel', pending_id: id }),
+  onConnect: (catalogId) => openStep(`connect:${catalogId}`),
+});
+form.before(draftPin.el);
 const input = $<HTMLTextAreaElement>('input');
 const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
@@ -281,6 +295,16 @@ systemLight.addEventListener('change', () => {
 });
 
 let view: View = INITIAL;
+// The conversations opened on this page, the latest last; + New helper asks in one.
+let visited: string[] = [];
+// + New helper's words, asked from a helper's chat: sent once her conversation is open.
+const askQueue = createAskQueue({
+  ready: () => view.link === 'ready' && !view.busy,
+  send: (words) => sendTurn(words),
+  keep: (words) => keepDraft(words),
+});
+// Set once the helpers panel and the chat's head exist: a render before then draws no head.
+let chatHeadOn = false;
 // Voice barge-in (VOI-9). While she answers a spoken question, the microphone is open
 // and "watching". With hearing that judges turns, every frame goes to the core, which
 // tells her echo from the user by the words: it ducks her when they may be cutting in
@@ -680,10 +704,19 @@ function renderEntry(e: Entry): HTMLElement {
       return box;
     }
     case 'tool': {
-      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok));
+      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
     }
     case 'notice':
       return el('p', 'notice', e.text);
+    case 'offer':
+      // Her offer of a helper: the tap is the user's own, sent as it is.
+      return offerLine(
+        e,
+        (choice) => {
+          if (send({ type: 'helper.offer', area: e.area, choice })) apply(offerChosen(view, e.area, choice));
+        },
+        view.agentName,
+      );
     case 'host':
       // A ready line kept from an earlier visit: drawn again with its Open.
       if (e.conversationId) return readyLine(e.text, e.conversationId, openReady);
@@ -696,6 +729,15 @@ function renderEntry(e: Entry): HTMLElement {
       return renderScheduled(e, formatted, undefined, showHelper);
     }
     case 'card': {
+      if (e.draft) {
+        // A helper's draft is pinned above the message box: here, a line that goes to it.
+        if (e.status !== 'waiting') return el('p', 'chip ap-chip-done', `New helper ${e.draft.name}: ${outcomeWords(e.status, e.note)}`);
+        const chip = el('button', 'ap-chip');
+        chip.type = 'button';
+        chip.append(el('span', 'ap-chip-label', `New helper: ${e.draft.name}`), el('span', 'ap-chip-view', 'View'));
+        chip.addEventListener('click', () => draftPin.focus());
+        return chip;
+      }
       if (approvals.onBoard(e.pendingId)) {
         // Its full card is on the board: here, a line that jumps to it, then how it ended.
         if (e.status !== 'waiting') return el('p', 'chip ap-chip-done', `${e.toolLabel}: ${outcomeWords(e.status, e.note)}`);
@@ -709,7 +751,13 @@ function renderEntry(e: Entry): HTMLElement {
       const card = el('section', `card ${e.status}`);
       card.setAttribute('aria-label', example ? 'An example of an approval card' : 'Needs your approval');
       card.append(el('h2', 'card-title', example ? 'Example' : e.status === 'waiting' ? 'Needs your yes' : 'Request'));
-      card.append(el('p', 'card-summary', e.summary));
+      const summary = el('p', 'card-summary', e.summary);
+      if (e.look) {
+        // A new helper's picture beside its name and job, as its tap will make it.
+        const row = el('div', 'card-look');
+        row.append(picture(e.look, 28), summary);
+        card.append(row);
+      } else card.append(summary);
       if (e.status !== 'waiting') {
         card.append(el('p', 'card-note', e.note));
         return card;
@@ -784,6 +832,7 @@ function render(): void {
   }
   if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  draftPin.draw(view.link === 'ready' ? (pinnedDraft(view.entries) as DraftCard | null) : null);
 
   showCaptions();
 
@@ -802,6 +851,10 @@ function render(): void {
   statusEl.textContent = statusText(view);
   newBtn.hidden = !ready || view.entries.length === 0;
   agentNameEl.textContent = view.agentName;
+  if (chatHeadOn) {
+    rail.name(view.agentName);
+    rail.select(view.conversationId);
+  }
   threadTitleEl.textContent = view.title ?? 'New conversation';
   const introducing = ready && active(ob);
   settingsBtn.hidden = !ready || introducing;
@@ -846,9 +899,7 @@ function render(): void {
       ? placeholder(ob)
       : !canType
         ? ''
-        : view.entries.length
-          ? `Reply to ${view.agentName}`
-          : `Say hello to ${view.agentName}`;
+        : messagePlaceholder(view.agentName, view.entries.length > 0, ownHere()?.name ?? null);
   // Reads she sent off keep running while the user talks: a quiet count, never busy.
   const jobsText = ready ? backgroundLine(view.jobs) : '';
   jobsEl.hidden = !jobsText;
@@ -879,6 +930,7 @@ function render(): void {
   // The shares as Settings reads them, read again on each session and each change.
   footEl.textContent = ready ? footText(shares.last) : '';
   footEl.title = footEl.textContent;
+  drawChatHead();
 }
 
 function apply(next: View): void {
@@ -887,6 +939,9 @@ function apply(next: View): void {
   view = next;
   if (view.conversationId && view.conversationId !== before.conversationId) {
     store(CONVERSATION_KEY, view.conversationId);
+    // Where + New helper asks her: the last open that is not a helper's own chat.
+    const id = view.conversationId;
+    visited = [...visited.filter((v) => v !== id), id].slice(-50);
   }
   if (sidebar.hidden) {
     const line = announcement(before, view);
@@ -1352,6 +1407,8 @@ function openReady(id: string): void {
 
 /** Open another conversation, or (null) a fresh one: reconnect and the core resumes it. */
 function switchTo(id: string | null): void {
+  // Somewhere else now: an ask waiting for another conversation is dropped.
+  askQueue.drop();
   // Opened, so no longer unread.
   if (id) threads.markRead(id);
   // She stops first, so nothing of this conversation plays over the next one. Only a
@@ -1553,7 +1610,9 @@ function connect(): void {
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
-    if (msg.type === 'confirm.request' && approvals.request(String(msg['pending_id'] ?? '')) === 'conversation') {
+    // A helper's draft is pinned above the message box instead, never on the board.
+    const draft = msg.type === 'confirm.request' && Boolean(msg['draft']);
+    if (msg.type === 'confirm.request' && (draft || approvals.request(String(msg['pending_id'] ?? '')) === 'conversation')) {
       const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
       if (reveal.unhide) sidebar.setHidden(false);
       if (reveal.raise) sidebar.raise(reveal.raise);
@@ -1683,6 +1742,10 @@ function connect(): void {
     speakCapped(msg, view.speech === null);
     if (msg.type === 'spend.resolved' || (msg.type === 'error' && msg['code'] === 'capped')) void refreshUsage();
     apply(reduce(view, msg));
+    // + New helper, asked from a helper's chat: said in her conversation once it is open.
+    if (msg.type === 'history') askQueue.opened();
+    // A new helper (her card, or an offer's Create): its chat opens once she is done.
+    createdChat.handle(msg);
     // A routine finished somewhere else: its conversation is marked until opened.
     const built = unreadFor(msg, view);
     if (built) threads.markUnread(built);
@@ -2110,14 +2173,8 @@ workspace.onClose((id, replaced) => {
   }
 });
 
-// Her helpers, beside the chat (the helpers panel spec): one click opens the panel in
-// the workspace, one closes it. The button shows how many need you.
-const helpersBtn = $<HTMLButtonElement>('helpers-btn');
-const helpersDot = document.createElement('span');
-helpersDot.className = 'hp-badge';
-helpersDot.setAttribute('aria-hidden', 'true');
-helpersDot.hidden = true;
-helpersBtn.replaceChildren(icon('helpers', 18), helpersDot);
+// Her helpers (the helpers panel spec): the panel opens in the workspace, from the
+// rail's menus and from a helper's name in the chat.
 const helpers = createHelpers({
   api,
   // The page's one polite region: what needs you, and what failed.
@@ -2125,51 +2182,141 @@ const helpers = createHelpers({
     announceEl.textContent = text;
   },
   open: (id) => openConversation(id),
-  // Straight to the connection it needs, as Home's Connect goes; else Connected tools.
-  openStep: (stepId) => {
-    workspace.close();
-    openSettings('connected');
-    const target = stepTarget(stepId);
-    if (target) void connected.start(target);
-  },
+  openStep: (stepId) => openStep(stepId),
   now: () => Date.now(),
   phone: () => isPhone(innerWidth),
   capName: () => capNameOf(usage?.providers),
+  newHelper: (text) => askForHelper(text),
 });
-bindButton(helpersBtn, helpersDot, helpers);
+// The rail (the your helpers spec): her picture, one per helper of the user's, and +.
+const rail = createRail($('rail'), {
+  api,
+  announce: (text) => {
+    announceEl.textContent = text;
+  },
+  open: (id) => openConversation(id),
+  her: () => backToHer(),
+  newHelper: (text) => askForHelper(text),
+  details: (id) => showHelper(id),
+  panel: () => showHelpers(),
+  update: (list) => helpers.update(list),
+  now: () => Date.now(),
+  capName: () => capNameOf(usage?.providers),
+});
+// A helper's chat may only now be known for one: its head is drawn, and its hello asked.
+helpers.onCount(() => {
+  rail.update(helpers.list);
+  render();
+});
 function helpersShowing(): boolean {
   return workspace.isOpen && workspace.showing === 'helpers';
 }
-helpersBtn.addEventListener('click', () => {
-  if (helpersShowing()) {
-    workspace.close();
-    return;
-  }
-  workspace.open('Helpers', helpers.element, 'helpers');
-  helpersBtn.setAttribute('aria-pressed', 'true');
-  helpersBtn.toggleAttribute('data-on', true);
+/** Her picture's menu: the panel, with her routines, timed asks and watchers. */
+function showHelpers(): void {
+  if (!helpersShowing()) workspace.open('Helpers', helpers.element, 'helpers');
   void helpers.open().then(() => helpers.focus());
-});
+}
 workspace.onClose((id) => {
-  if (id !== 'helpers') return;
-  helpers.closed();
-  helpersBtn.setAttribute('aria-pressed', 'false');
-  helpersBtn.toggleAttribute('data-on', false);
+  if (id === 'helpers') helpers.closed();
 });
-/** A helper's name in the chat: the panel opens at its details. */
+/** A helper's name in the chat, or Details in its menu: the panel opens at its details. */
 function showHelper(id: string): void {
   if (!helpersShowing()) workspace.open('Helpers', helpers.element, 'helpers');
-  helpersBtn.setAttribute('aria-pressed', 'true');
-  helpersBtn.toggleAttribute('data-on', true);
   void helpers.showHelper(id);
 }
-/** Open a conversation the way History does: the sidebar shows it, the panel gives way. */
-function openConversation(id: string): void {
+/** Her picture: back to her last conversation that is not a helper's, or a new one. */
+function backToHer(): void {
+  const here = view.conversationId;
+  if (here !== null && helpers.ownFor(here) === null) {
+    openConversation(here);
+    return;
+  }
+  if (here === null) {
+    // Already hers, not yet begun: only the sidebar comes forward.
+    workspace.close();
+    threads.close();
+    sidebar.setHidden(false);
+    if (isPhone(innerWidth)) sidebar.raise('full');
+    focusInput();
+    return;
+  }
+  const helperChats = new Set(visited.filter((id) => helpers.ownFor(id) !== null));
+  openConversation(askTarget(visited, helperChats));
+}
+/** The top of a helper's own chat: its picture and name. Its hello is asked once it is open. */
+const chatHeadEl = document.createElement('div');
+chatHeadEl.className = 'helper-head-slot';
+chatHeadEl.hidden = true;
+transcriptEl.before(chatHeadEl);
+let chatHeadKey = '';
+const hello = helloOnce(send);
+chatHeadOn = true;
+drawChatHead();
+/** The user's own helper whose chat is open, once the panel exists to say. */
+function ownHere(): Helper | null {
+  return chatHeadOn && view.link === 'ready' ? helpers.ownFor(view.conversationId) : null;
+}
+function drawChatHead(): void {
+  if (!chatHeadOn) return;
+  const h = ownHere();
+  const look = h ? lookOf(h.icon, h.color) : null;
+  const conns = h?.connections ?? [];
+  const key = h && look ? [h.id, h.name, h.job, look.icon, look.color, ...conns.map((c) => `${c.id}:${c.connected}`)].join('|') : '';
+  if (key !== chatHeadKey) {
+    chatHeadKey = key;
+    chatHeadEl.replaceChildren(...(h && look ? [chatHead(h.name, look, h.job, conns, (id) => openStep(`connect:${id}`))] : []));
+    chatHeadEl.hidden = !key;
+  }
+  if (h) hello(h.id);
+}
+
+/**
+ * + New helper: the sentence goes to her as the user's message, in her conversation, the
+ * same as typing it, and the panel closes so her card is seen. From a helper's chat, her
+ * last conversation opens first (a new one when there is none).
+ */
+function askForHelper(text: string): void {
+  const words = `New helper: ${text}`;
+  const helperChats = new Set(visited.filter((id) => helpers.ownFor(id) !== null));
+  if (view.conversationId && helperChats.has(view.conversationId)) {
+    openConversation(askTarget(visited, helperChats));
+    askQueue.queue(words);
+    return;
+  }
   workspace.close();
   threads.close();
   sidebar.setHidden(false);
   if (isPhone(innerWidth)) sidebar.raise('full');
-  if (id !== view.conversationId) switchTo(id);
+  if (!sendTurn(words)) keepDraft(words);
+}
+
+/** Straight to the connection a step needs, as Home's Connect goes; else Connected tools. */
+function openStep(stepId: string): void {
+  workspace.close();
+  openSettings('connected');
+  const target = stepTarget(stepId);
+  if (target) void connected.start(target);
+}
+
+// A new helper's chat opens once she is idle, never cutting her off.
+const createdChat = createdOpener({
+  idle: () => !view.busy && !voice.active,
+  open: (id) => openConversation(id),
+});
+
+/** Words that could not go now wait in the message box, never lost. */
+function keepDraft(words: string): void {
+  input.value = words;
+  focusInput();
+}
+
+/** Open a conversation the way History does: the sidebar shows it, the panel gives way. */
+function openConversation(id: string | null): void {
+  workspace.close();
+  threads.close();
+  sidebar.setHidden(false);
+  if (isPhone(innerWidth)) sidebar.raise('full');
+  if (id === null || id !== view.conversationId) switchTo(id);
   else focusInput();
 }
 

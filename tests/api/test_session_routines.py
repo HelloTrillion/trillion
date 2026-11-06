@@ -31,6 +31,8 @@ from trillion.persona.prompt import system_blocks
 from trillion.scheduler.ask import ROUTINE_RUN, Asker, RoutineDeps, routine_request
 from trillion.scheduler.runner import Busy
 from trillion.secrets.store import MemoryStore
+from trillion.tools.helper import NAMES as HELPER_TOOLS
+from trillion.tools.helper import HelperTool
 
 DUE = ms("2026-10-26T08:00")
 NY = "America/New_York"
@@ -254,6 +256,24 @@ async def test_a_reload_that_raced_a_save_is_dropped(rt: Runtime) -> None:
 
 
 # ── Changing a routine where it belongs (AGT-7) ──────────────────────
+
+
+async def test_a_chat_is_offered_only_her_helper_tools(rt: Runtime) -> None:
+    """Registered and bound at startup. A chat is offered making and asking a helper,
+    never the tools that change one (only in its own chat) or the offer (a host note's;
+    `test_helper_chat.py` has the rest)."""
+    for name in HELPER_TOOLS:
+        tool = rt.registry.get(name)
+        assert isinstance(tool, HelperTool) and tool._helpers is rt.helpers, name
+    provider = Recording(say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "hello"})
+    await idle(session)
+    offered = set(HELPER_TOOLS) & set(provider.offered[0])
+    assert offered == {"helper_create", "helper_ask"}
+    await session.close()
 
 
 async def test_a_routines_own_conversation_is_offered_its_notes_tools(rt: Runtime) -> None:

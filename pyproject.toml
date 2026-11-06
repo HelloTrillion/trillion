@@ -87,6 +87,12 @@ routine_widen = "trillion.tools.routine:RoutineWiden"
 speak_up_narrow = "trillion.tools.speak_up:SpeakUpNarrow"
 speak_up_widen = "trillion.tools.speak_up:SpeakUpWiden"
 stay_quiet = "trillion.tools.quiet:StayQuiet"
+helper_create = "trillion.tools.helper:HelperCreate"
+helper_update = "trillion.tools.helper:HelperUpdate"
+helper_narrow = "trillion.tools.helper:HelperNarrow"
+helper_widen = "trillion.tools.helper:HelperWiden"
+helper_ask = "trillion.tools.helper:HelperAsk"
+helper_suggest = "trillion.tools.helper:HelperSuggest"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]

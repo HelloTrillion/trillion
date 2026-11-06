@@ -14,14 +14,19 @@ import pytest
 from tests.scheduler.conftest import NY, ms, schedule
 from trillion.attention.runner import WatcherStatus
 from trillion.helpers.build import helpers
-from trillion.helpers.model import Helper, LastRun, Waiting, to_json
-from trillion.scheduler.runner import BUSY_DETAIL
+from trillion.helpers.look import pick
+from trillion.helpers.model import Connection, Helper, LastRun, RoutineLine, Waiting, to_json
+from trillion.helpers.pausing import pause_helper
+from trillion.helpers.store import OwnHelper
+from trillion.scheduler.runner import BUSY_DETAIL, NEEDS_YOU_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import Repeat
 from trillion.spend.types import Work
-from trillion.spine.confirm import PendingAction
+from trillion.spine.confirm import PendingAction, Status
+from trillion.spine.contract import Risk
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
+from trillion.storage.sqlite.helper_store import SqliteHelperStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 
 NOW = ms("2026-11-05T08:00")
@@ -93,12 +98,16 @@ class Schedules:
     schedules: list[Schedule] = field(default_factory=list)
     last: dict[str, Run] = field(default_factory=dict)
     now: dict[str, Run] = field(default_factory=dict)
+    by_helper: dict[str, Run] = field(default_factory=dict)
 
     async def active(self, owner_id: str) -> list[Schedule]:
         return [s for s in self.schedules if s.owner_id == owner_id]
 
     async def last_results(self, owner_id: str) -> dict[str, Run]:
         return dict(self.last)
+
+    async def helper_last_results(self, owner_id: str) -> dict[str, Run]:
+        return dict(self.by_helper)
 
     async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]:
         assert now_ms == NOW
@@ -112,10 +121,24 @@ class Sources:
     paused_work: set[Work] = field(default_factory=set)
     open_cards: list[PendingAction] = field(default_factory=list)
     talks: dict[str, str] = field(default_factory=dict)
+    mine: list[OwnHelper] = field(default_factory=list)
+    # When the user last wrote in each conversation.
+    said: dict[str, int] = field(default_factory=dict)
+    # The Connected tools entries set up now.
+    have: frozenset[str] = frozenset()
     owner: str = OWNER
 
     def now_ms(self) -> int:
         return NOW
+
+    def connected_catalog(self) -> frozenset[str]:
+        return self.have
+
+    async def last_said(self, conversation_id: str) -> int | None:
+        return self.said.get(conversation_id)
+
+    async def own(self) -> list[OwnHelper]:
+        return list(self.mine)
 
     async def cards(self) -> list[PendingAction]:
         return list(self.open_cards)
@@ -383,6 +406,12 @@ async def test_to_json_is_the_apis_body() -> None:
                 "paused": False,
                 "switched_on": None,
                 "connected": None,
+                "notes": None,
+                "routines": [],
+                "icon": None,
+                "color": None,
+                "connections": [],
+                "asks": [],
             },
             {
                 "id": "ask:a1",
@@ -399,6 +428,12 @@ async def test_to_json_is_the_apis_body() -> None:
                 "paused": False,
                 "switched_on": None,
                 "connected": None,
+                "notes": None,
+                "routines": [],
+                "icon": None,
+                "color": None,
+                "connections": [],
+                "asks": [],
             },
         ],
         "needs_you": 1,
@@ -410,6 +445,7 @@ class Real:
     """The real scheduler store under the list, for what only it can show."""
 
     store: SqliteScheduleStore
+    made: SqliteHelperStore
     owner: str = OWNER
     now: int = NOW
 
@@ -432,13 +468,22 @@ class Real:
     async def capped(self) -> Collection[Work]:
         return ()
 
+    async def own(self) -> list[OwnHelper]:
+        return await self.made.all(self.owner)
+
+    async def last_said(self, conversation_id: str) -> int | None:
+        return None
+
+    def connected_catalog(self) -> frozenset[str]:
+        return frozenset()
+
 
 @pytest.fixture
 async def real(tmp_path: Path) -> AsyncIterator[Real]:
     conn = await connect(tmp_path / "t.db")
     try:
         await migrate(conn)
-        yield Real(SqliteScheduleStore(conn))
+        yield Real(SqliteScheduleStore(conn), SqliteHelperStore(conn))
     finally:
         await conn.close()
 
@@ -494,3 +539,277 @@ async def test_a_watcher_says_whether_it_is_switched_on_and_connected() -> None:
     assert (p.switched_on, p.connected) == (False, True)
     e = one(found, "watcher:email")
     assert (e.state, e.switched_on, e.connected) == ("idle", True, True)
+
+
+# ── Your helpers (the your helpers spec, Managing) ──────────────────────
+
+
+def mine(**kw: Any) -> OwnHelper:
+    base = OwnHelper(
+        id="h1",
+        owner_id=OWNER,
+        name="Invoices",
+        job="Chases overdue invoices",
+        notes="Leave out the March ones.",
+        conversation_id="conv-h1",
+        paused_ms=None,
+        created_at=NOW - 86_400_000,
+        icon="receipt",
+        color="teal",
+    )
+    return dataclasses.replace(base, **kw)
+
+
+def card_in(conversation_id: str, **kw: Any) -> PendingAction:
+    base = PendingAction(
+        id="p1",
+        owner_id=OWNER,
+        tool="file_create",
+        args={"path": "/x"},
+        args_hash="h",
+        summary="Create the sheet",
+        target="/x",
+        risk=Risk.IRREVERSIBLE,
+        recoverable=True,
+        session_id=conversation_id,
+        created_turn=1,
+        status=Status.PROPOSED,
+        created_at=NOW - 60_000,
+        expires_at=NOW + 600_000,
+        represented_from=None,
+    )
+    return dataclasses.replace(base, **kw)
+
+
+def handoff(**kw: Any) -> Schedule:
+    return ask(
+        **{"id": "x1", "title": "Invoices: who", "helper_id": "h1", "next_due_ms": NOW, **kw}
+    )
+
+
+def its_routine(**kw: Any) -> Schedule:
+    base = {"id": "hr1", "title": "Overdue check", "helper_id": "h1", "conversation_id": "conv-h1"}
+    return routine(**{**base, **kw})
+
+
+async def test_an_idle_helper_of_yours_names_its_job_notes_and_chat() -> None:
+    (h,) = await helpers(Sources(mine=[mine()]))
+    assert h == Helper(
+        id="own:h1",
+        kind="own",
+        name="Invoices",
+        job="Chases overdue invoices",
+        state="idle",
+        doing=None,
+        since_ms=None,
+        last_run=None,
+        next_ms=None,
+        waiting=(),
+        conversation_id="conv-h1",
+        notes="Leave out the March ones.",
+        icon="receipt",
+        color="teal",
+    )
+    assert h.to_json()["routines"] == [] and h.to_json()["notes"] == "Leave out the March ones."
+    assert (h.to_json()["icon"], h.to_json()["color"]) == ("receipt", "teal")
+
+
+async def test_a_helper_of_yours_in_every_state() -> None:
+    (h,) = await helpers(Sources(mine=[mine(paused_ms=NOW - 1)]))
+    assert (h.state, h.paused, h.switched_on, h.connected) == ("paused", True, None, None)
+    (h,) = await helpers(Sources(mine=[mine()], paused_work={"helpers"}))
+    assert (h.state, h.paused) == ("capped", False)
+    # Paused outranks the cap: it would not run either way.
+    (h,) = await helpers(Sources(mine=[mine(paused_ms=NOW)], paused_work={"helpers"}))
+    assert h.state == "paused"
+    working = Sources(
+        Schedules([its_routine()], now={"hr1": run("hr1", "running", started_ms=NOW - 9000)}),
+        mine=[mine()],
+        paused_work={"helpers"},
+    )
+    (h,) = await helpers(working)
+    assert (h.state, h.doing, h.since_ms) == ("working", "Working", NOW - 9000)
+    card = card_in("conv-h1", id="act1", created_at=NOW - 500)
+    (h,) = await helpers(Sources(mine=[mine()], open_cards=[card]))
+    assert h.state == "needs_you"
+    assert h.waiting == (
+        Waiting(type="approval", id="act1", text="Approve a change", at_ms=NOW - 500),
+    )
+
+
+async def test_its_routines_sit_under_it_and_are_not_listed_twice() -> None:
+    src = Sources(
+        Schedules(
+            [
+                its_routine(),
+                its_routine(id="hr2", title="Weekly sum", paused_ms=NOW - 5),
+                routine(),
+            ],
+            by_helper={"h1": run("hr1", "failed", detail="timed out after 300 s")},
+        ),
+        mine=[mine()],
+    )
+    found = await helpers(src)
+    assert sorted(h.id for h in found) == ["own:h1", "routine:r1"]
+    h = one(found, "own:h1")
+    assert h.routines == (
+        RoutineLine(id="hr1", name="Overdue check", next_ms=ms("2026-11-09T07:00"), paused=False),
+        RoutineLine(id="hr2", name="Weekly sum", next_ms=None, paused=True),
+    )
+    assert h.to_json()["routines"][1] == {
+        "id": "hr2",
+        "name": "Weekly sum",
+        "next_ms": None,
+        "paused": True,
+    }
+    # Its next run is its routines' soonest; its last run is its schedules' latest.
+    assert h.next_ms == ms("2026-11-09T07:00")
+    assert h.last_run == LastRun(
+        at_ms=NOW - 3_500_000, outcome="failed", reason="timed out after 300 s"
+    )
+    # A paused helper has no next run, and its routines show none either.
+    src.mine = [mine(paused_ms=NOW)]
+    paused = one(await helpers(src), "own:h1")
+    assert paused.next_ms is None
+    assert [r.next_ms for r in paused.routines] == [None, None]
+
+
+async def test_a_handoff_in_progress_shows_its_helper_working_and_no_row_of_its_own() -> None:
+    src = Sources(
+        Schedules([handoff()], now={"x1": run("x1", "running", started_ms=NOW - 2000)}),
+        mine=[mine()],
+    )
+    (h,) = await helpers(src)
+    assert (h.id, h.state, h.doing, h.since_ms) == ("own:h1", "working", "Working", NOW - 2000)
+    # Waiting to run, it is no row either, and its helper is not yet working.
+    src.schedules.now = {}
+    (h,) = await helpers(src)
+    assert (h.id, h.state, h.routines) == ("own:h1", "idle", ())
+    # A handoff of a helper since deleted is no row at all.
+    src.mine = []
+    assert await helpers(src) == []
+
+
+async def test_a_handoff_that_ended_needing_you_waits_until_you_write_in_its_chat() -> None:
+    done = run("x1", "delivered", detail=NEEDS_YOU_DETAIL)
+    src = Sources(Schedules([], by_helper={"h1": done}), mine=[mine()])
+    (h,) = await helpers(src)
+    assert h.state == "needs_you"
+    # A question: the page opens its chat to reply, where any card is raised.
+    assert h.waiting == (
+        Waiting(type="question", id="handoff:1", text="Invoices needs you", at_ms=done.finished_ms),
+    )
+    assert h.last_run == LastRun(at_ms=NOW - 3_500_000, outcome="succeeded", reason=None)
+    # Written in before it finished: still waiting.
+    src.said = {"conv-h1": NOW - 3_600_000}
+    assert (await helpers(src))[0].state == "needs_you"
+    # Written in since: answered.
+    src.said = {"conv-h1": NOW - 3_400_000}
+    (h,) = await helpers(src)
+    assert (h.state, h.waiting) == ("idle", ())
+    # A handoff that ended any other way asks nothing.
+    src.said = {}
+    src.schedules.by_helper = {"h1": run("x1", "delivered")}
+    assert (await helpers(src))[0].state == "idle"
+
+
+async def test_a_waiting_handoff_is_not_its_helpers_next_run() -> None:
+    later = ms("2026-11-09T07:00")
+    src = Sources(Schedules([handoff(), its_routine(next_due_ms=later)]), mine=[mine()])
+    (h,) = await helpers(src)
+    assert h.next_ms == later
+    src.schedules.schedules = [handoff()]
+    (h,) = await helpers(src)
+    assert h.next_ms is None
+
+
+async def test_your_helpers_take_their_place_in_the_order() -> None:
+    src = Sources(
+        Schedules(
+            [routine(id="r1", next_due_ms=NOW + 50_000), its_routine(next_due_ms=NOW + 10_000)],
+        ),
+        mine=[mine(), mine(id="h2", name="Travel", conversation_id="conv-h2")],
+        watching=[watcher("email", checking_since_ms=NOW - 5000)],
+    )
+    found = await helpers(src)
+    assert [h.id for h in found] == ["watcher:email", "own:h1", "routine:r1", "own:h2"]
+
+
+async def test_the_real_store_keeps_a_helpers_last_run_across_its_schedules(real: Real) -> None:
+    made = await real.made.create(OWNER, "Invoices", "Chases overdue invoices", NOW)
+    assert isinstance(made, OwnHelper)
+    due = ms("2026-11-05T16:00", NY)
+    await real.store.create(its_routine(helper_id=made.id, next_due_ms=due + 86_400_000))
+    for sid, at in (("x1", due), ("x2", due + 1000)):
+        await real.store.create(handoff(id=sid, helper_id=made.id, next_due_ms=at))
+        await real.store.enqueue(sid, at, None, 120.0, at)
+        started = await real.store.claim("w1", at + 5, 0)
+        assert started is not None
+        if sid == "x2":
+            real.now = at + 6
+            (h,) = await helpers(real)
+            assert (h.id, h.state, h.since_ms) == (f"own:{made.id}", "working", at + 5)
+        await real.store.finish(started.id, "delivered", at + 10)
+    real.now = due + 2000
+    (h,) = await helpers(real)
+    # Finished handoffs are gone from the scheduler's active list, yet still its last run.
+    assert h.last_run == LastRun(at_ms=due + 1010, outcome="succeeded", reason=None)
+    assert [r.id for r in h.routines] == ["hr1"] and h.next_ms == due + 86_400_000
+
+
+async def test_a_helpers_last_run_is_its_runs_first_even_after_a_long_handoff(
+    real: Real,
+) -> None:
+    made = await real.made.create(OWNER, "Invoices", "Chases overdue invoices", NOW)
+    assert isinstance(made, OwnHelper)
+    due = ms("2026-11-05T16:00", NY)
+    await real.store.create(handoff(helper_id=made.id, next_due_ms=due))
+    await real.store.create(its_routine(helper_id=made.id, next_due_ms=due + 1000))
+    # The handoff starts first and finishes last, after a routine run in between.
+    await real.store.enqueue("x1", due, None, 600.0, due)
+    long = await real.store.claim("w1", due, 0)
+    await real.store.enqueue("hr1", due + 1000, due + 86_400_000, 300.0, due + 1000)
+    short = await real.store.claim("w2", due + 1000, 0)
+    assert long is not None and short is not None and short.id > long.id
+    await real.store.finish(short.id, "nothing", due + 2000, detail="nothing")
+    await real.store.finish(long.id, "delivered", due + 9000)
+    real.now = due + 10_000
+    (h,) = await helpers(real)
+    assert h.last_run == LastRun(at_ms=due + 9000, outcome="succeeded", reason=None)
+    (first, _), *_ = await real.store.helper_history(OWNER, made.id, 10)
+    assert first.id == long.id
+    # A helper deleted has no last run kept for it.
+    await real.made.delete(OWNER, made.id, due + 11_000)
+    assert await real.store.helper_last_results(OWNER) == {}
+
+
+async def test_a_handoff_a_pause_cancelled_is_no_run(real: Real) -> None:
+    made = await real.made.create(OWNER, "Invoices", "Chases overdue invoices", NOW)
+    assert isinstance(made, OwnHelper)
+    await real.store.create(handoff(helper_id=made.id, next_due_ms=NOW))
+    await real.store.enqueue("x1", NOW, None, 120.0, NOW)
+    assert await pause_helper(real.made, real.store, OWNER, made.id, NOW + 1)
+    assert await real.store.helper_history(OWNER, made.id, 10) == []
+    assert await real.store.helper_last_results(OWNER) == {}
+    (h,) = await helpers(real)
+    assert (h.state, h.last_run) == ("paused", None)
+
+
+async def test_a_stored_picture_not_on_the_lists_never_reaches_the_page() -> None:
+    (h,) = await helpers(Sources(mine=[mine(icon="<b>", color="neon")]))
+    assert (h.icon, h.color) == pick("Invoices", "Chases overdue invoices")
+
+
+async def test_your_helper_lists_its_cards_connections_and_questions() -> None:
+    drafted = mine(connectors=("stripe", "gone", "gmail"), asks=("Which account?",))
+    (h,) = await helpers(Sources(mine=[drafted], have=frozenset({"gmail"})))
+    # One no longer in the catalog is left out; each says whether it is set up now.
+    assert h.connections == (
+        Connection(id="stripe", title="Stripe", connected=False),
+        Connection(id="gmail", title="Gmail", connected=True),
+    )
+    assert h.asks == ("Which account?",)
+    assert h.to_json()["connections"] == [
+        {"id": "stripe", "title": "Stripe", "connected": False},
+        {"id": "gmail", "title": "Gmail", "connected": True},
+    ]

@@ -72,6 +72,9 @@ class ToolContext:
     # A routine's run: the one conversation it may show a board on. Set by the host
     # that starts the run, never from anything the model says.
     routine_target: str | None = None
+    # A helper's chat or run: which helper.
+    # Set by the host for a helper's chat or run, never from anything the model says.
+    helper_id: str | None = None
     # The approved action this run carries out, set by the router on the confirmed path
     # and in every check of it. A tool puts it where the provider keeps it, so a check
     # after a crash can find what was sent (OPS-1). None on the direct path.

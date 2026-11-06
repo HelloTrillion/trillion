@@ -7490,32 +7490,6 @@ button.reminders-open {
 
 /* ── Helpers: her routines, timed asks and watchers, beside the chat ──────── */
 
-#helpers-btn {
-  position: relative;
-}
-
-/* How many need you, on the button's corner. */
-.hp-badge {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: var(--radius-full);
-  background: var(--color-amber);
-  color: var(--color-bg-0);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 15px;
-  text-align: center;
-  box-sizing: border-box;
-}
-
-.hp-badge[hidden] {
-  display: none;
-}
-
 .hp {
   max-width: 680px;
   margin: 0 auto;
@@ -7768,7 +7742,7 @@ button.reminders-open {
   overflow-wrap: anywhere;
 }
 
-/* A helper's name at the head of a line from it: a tap opens its details in Helpers. */
+/* A helper's name at the head of a line from it: a tap opens its details in the panel. */
 .notice-from {
   display: inline;
   padding: 0;
@@ -7791,5 +7765,700 @@ button.reminders-open {
   display: block;
   margin-bottom: 2px;
   font-size: 12px;
+  color: var(--color-text-1);
+}
+
+/* ── Your helpers: their pictures, the picker, making one, and her offer ─── */
+
+/* A helper's colours: each lights an orb like hers, so they are bright in the dark
+   theme and deeper in the light one, as her accent is; none is her own mint. */
+:root {
+  --helper-red: rgb(244 84 84);
+  --helper-orange: rgb(251 136 52);
+  --helper-amber: var(--color-amber);
+  --helper-lime: rgb(170 222 52);
+  --helper-green: rgb(72 200 92);
+  --helper-teal: rgb(40 188 232);
+  --helper-blue: rgb(84 140 255);
+  --helper-violet: var(--mind-memory);
+  --helper-fuchsia: rgb(222 92 236);
+  --helper-rose: var(--mind-agents);
+  --helper-slate: rgb(142 154 174);
+}
+:root[data-theme='light'] {
+  --helper-red: rgb(204 40 52);
+  --helper-orange: rgb(200 86 18);
+  --helper-amber: rgb(184 116 0);
+  --helper-lime: rgb(104 146 8);
+  --helper-green: rgb(28 138 52);
+  --helper-teal: rgb(6 122 160);
+  --helper-blue: rgb(38 98 222);
+  --helper-violet: rgb(114 72 214);
+  --helper-fuchsia: rgb(172 40 184);
+  --helper-rose: rgb(204 52 112);
+  --helper-slate: rgb(92 102 120);
+}
+
+.look[data-color='red'],
+.look-color[data-color='red'] {
+  --look: var(--helper-red);
+}
+.look[data-color='orange'],
+.look-color[data-color='orange'] {
+  --look: var(--helper-orange);
+}
+.look[data-color='amber'],
+.look-color[data-color='amber'] {
+  --look: var(--helper-amber);
+}
+.look[data-color='lime'],
+.look-color[data-color='lime'] {
+  --look: var(--helper-lime);
+}
+.look[data-color='green'],
+.look-color[data-color='green'] {
+  --look: var(--helper-green);
+}
+.look[data-color='teal'],
+.look-color[data-color='teal'] {
+  --look: var(--helper-teal);
+}
+.look[data-color='blue'],
+.look-color[data-color='blue'] {
+  --look: var(--helper-blue);
+}
+.look[data-color='violet'],
+.look-color[data-color='violet'] {
+  --look: var(--helper-violet);
+}
+.look[data-color='fuchsia'],
+.look-color[data-color='fuchsia'] {
+  --look: var(--helper-fuchsia);
+}
+.look[data-color='rose'],
+.look-color[data-color='rose'] {
+  --look: var(--helper-rose);
+}
+.look[data-color='slate'],
+.look-color[data-color='slate'] {
+  --look: var(--helper-slate);
+}
+
+/* The picture: an orb built as hers is (.rail-orb), lit from the top left, in its own
+   colour with a soft glow of it. */
+.look,
+.look-color {
+  display: inline-flex;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--color-ink-on-dark) 0,
+    var(--look, var(--helper-slate)) 45%,
+    color-mix(in srgb, var(--look, var(--helper-slate)) 35%, var(--color-bg-0)) 100%
+  );
+  box-shadow: 0 0 10px color-mix(in srgb, var(--look, var(--helper-slate)) 40%, transparent);
+}
+.look[data-size='18'] {
+  width: 18px;
+  height: 18px;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--look) 40%, transparent);
+}
+.look[data-size='28'] {
+  width: 28px;
+  height: 28px;
+}
+.look[data-size='44'] {
+  width: 44px;
+  height: 44px;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--look) 40%, transparent);
+}
+
+/* A row's picture, with the state dot as a small badge on its edge. */
+.hp-pic {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.hp-pic .hp-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  box-shadow: 0 0 0 2px var(--color-bg-1);
+}
+.hp-pic .hp-dot[data-state='paused'] {
+  background: var(--color-bg-1);
+  box-shadow:
+    inset 0 0 0 1.5px var(--color-text-2),
+    0 0 0 2px var(--color-bg-1);
+}
+.hp-main:hover .hp-pic .hp-dot {
+  box-shadow: 0 0 0 2px var(--color-bg-2);
+}
+
+/* + New helper: one quiet button, then one field. */
+.hp-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 -6px -8px;
+  padding: 7px 10px;
+  color: var(--color-text-0);
+  font-weight: 600;
+}
+.hp-new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -8px;
+}
+.hp-new label {
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+.hp-new-row {
+  display: flex;
+  gap: 8px;
+}
+.hp-new input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+  color: var(--color-text-0);
+  font: inherit;
+  font-size: 14px;
+}
+.hp-new input:focus-visible {
+  border-color: var(--color-accent);
+}
+.hp-new .approve {
+  flex-shrink: 0;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+
+/* A helper of the user's, in its details: its picture beside its name. */
+.hp-d-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.hp-d-head .hp-d-name {
+  margin: 0;
+}
+.hp-d-picwrap {
+  position: relative;
+}
+.hp-d-pic {
+  padding: 0;
+  border: 0;
+  transition: box-shadow var(--motion-fast);
+}
+.hp-d-pic:hover:not(:disabled),
+.hp-d-pic[aria-expanded='true'] {
+  box-shadow:
+    0 0 0 2px var(--color-bg-0),
+    0 0 0 4px var(--look);
+}
+.hp-d-knows {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.hp-routines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hp-routine {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+.hp-routine-when {
+  color: var(--color-text-1);
+}
+
+/* The picker: a small popover under the picture. It fits a phone's width. */
+.look-picker {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.3);
+}
+.look-colors {
+  display: grid;
+  grid-template-columns: repeat(6, 28px);
+  gap: 10px;
+  padding: 4px;
+}
+.look-color {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+}
+.look-color:hover:not(:disabled) {
+  transform: scale(1.1);
+}
+.look-color[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 2px var(--color-bg-1),
+    0 0 0 4px var(--look);
+}
+.look-done {
+  align-self: flex-end;
+}
+.hp-phone .look-colors {
+  grid-template-columns: repeat(6, 34px);
+}
+.hp-phone .look-color {
+  width: 34px;
+  height: 34px;
+}
+
+/* A helper's picture before its name on its lines in her conversation. */
+.notice-from .look {
+  margin-right: 6px;
+  vertical-align: -4px;
+}
+
+/* A new helper's picture beside its card's words. */
+.card-look {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.card-look .card-summary {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The top of a helper's own chat: its picture and name. The thread list, open, takes
+   the conversation's place, its head too. */
+.helper-head-slot {
+  flex-shrink: 0;
+}
+.helper-head-slot[hidden],
+.side-body:has(.threads:not([hidden])) .helper-head-slot {
+  display: none;
+}
+.helper-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 4px;
+}
+.helper-head-words {
+  min-width: 0;
+}
+.helper-head-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.helper-head-job {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+
+/* Her offer of a helper: one line, Create and No thanks. */
+.offer-line {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.offer-words {
+  margin: 0;
+  color: var(--color-text-0);
+}
+.offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.offer-line .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+
+/* ── The rail: her picture, the user's helpers, and +, down the sidebar's left edge ── */
+
+:root {
+  --rail-w: 50px;
+}
+
+.sidebar {
+  padding-left: calc(12px + var(--rail-w));
+}
+
+.rail {
+  position: absolute;
+  top: 12px;
+  bottom: 14px;
+  left: 0;
+  width: var(--rail-w);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-right: 1px solid var(--color-border);
+  overflow: hidden auto;
+  scrollbar-width: none;
+}
+
+.rail-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Each picture is a 34px round button: room to tap, and for its ring. */
+.rail-pic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.rail-pic:hover:not(:disabled) {
+  background: var(--color-bg-2);
+}
+
+/* The chat showing is ringed in the accent. */
+.rail-pic[aria-current='page'] {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+/* Paused, or waiting at a cap: dimmed. */
+.rail-pic[data-state='paused'] .look,
+.rail-pic[data-state='capped'] .look {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+
+/* Her: a small orb, lit from the top left. */
+.rail-orb {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--color-ink-on-dark) 0,
+    var(--color-accent) 45%,
+    color-mix(in srgb, var(--color-accent) 35%, var(--color-bg-0)) 100%
+  );
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+/* Working is the accent; needs you is amber, and larger. Otherwise no dot. */
+.rail-dot {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  display: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--color-bg-1);
+}
+.rail-dot[data-state='working'] {
+  display: block;
+  background: var(--color-accent);
+}
+.rail-dot[data-state='needs_you'] {
+  display: block;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  background: var(--color-amber);
+}
+
+/* +: a dashed circle the size of a picture. */
+.rail-add {
+  color: var(--color-text-1);
+  outline: 1.5px dashed var(--color-text-2);
+  outline-offset: -4px;
+}
+.rail-add:hover:not(:disabled) {
+  color: var(--color-text-0);
+}
+.rail-add:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Its menu and popovers sit on the page beside the picture that opened them. */
+.rail-pop {
+  position: fixed;
+  z-index: 30;
+}
+.rail-pop .look-picker {
+  position: static;
+}
+.rail-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-2);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
+}
+.rail-menu-item {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  font-size: 14px;
+}
+.rail-menu-item:hover:not(:disabled),
+.rail-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-text-0) 8%, transparent);
+}
+.rail-confirm,
+.rail-pop:has(> .hp-new) {
+  width: 280px;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-1);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.3);
+}
+.rail-confirm p {
+  margin: 0 0 10px;
+}
+.rail-confirm-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* A phone: the sheet keeps its full width, and the rail is a strip across its top. */
+@media (max-width: 767px) {
+  .sidebar {
+    padding-left: 12px;
+  }
+  .rail {
+    position: static;
+    flex-direction: row;
+    flex-shrink: 0;
+    width: auto;
+    height: 42px;
+    padding: 0 4px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    overflow: auto hidden;
+  }
+  .rail-list {
+    flex-direction: row;
+  }
+}
+
+/* ── Her draft of a new helper: pinned above the message box while it waits ── */
+
+.draft-pin {
+  flex-shrink: 0;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-1);
+  border: 1px solid var(--color-amber);
+}
+.draft-pin[hidden] {
+  display: none;
+}
+.draft-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draft-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.draft-head .look {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.draft-job {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.draft-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draft-details[hidden] {
+  display: none;
+}
+.draft-words {
+  min-width: 0;
+}
+.draft-eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-amber);
+}
+.draft-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.draft-job,
+.draft-notes-text {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.draft-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.draft-notes-text {
+  color: var(--color-text-1);
+}
+.draft-more {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 12px;
+}
+.draft-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.draft-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-2);
+  color: var(--color-text-0);
+  font-size: 12px;
+}
+button.draft-chip:hover {
+  border-color: var(--color-accent);
+}
+.draft-chip.connected {
+  color: var(--color-text-1);
+}
+.draft-asks-head {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.draft-asks-list {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  /* With its details open, Create stays in sight at the bottom. */
+  position: sticky;
+  bottom: -10px;
+  margin: 0 -12px -10px;
+  padding: 8px 12px 10px;
+  background: var(--color-bg-1);
+}
+.draft-actions .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.draft-hint {
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+/* What a new draft changed glows for a moment. */
+.draft-body [data-part] {
+  border-radius: var(--radius-sm);
+  transition: background-color 0.6s ease;
+}
+.draft-body [data-changed],
+.draft-more[data-changed] {
+  background: color-mix(in srgb, var(--color-amber) 18%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .draft-body [data-part] {
+    transition: none;
+  }
+}
+.helper-head-chips {
+  margin-top: 6px;
+}
+.offer-from {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--color-text-1);
 }

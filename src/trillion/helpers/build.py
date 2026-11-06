@@ -6,10 +6,14 @@ Routines and timed asks are schedules of kind ask, with a target or without. A p
 reminder runs no model and is no helper. A one-off ask that has fired is not active,
 so it is not listed.
 
+A helper the user made is a row of its own, `own:<id>`. Its schedules are no rows: its
+routines are listed under it, and a handoff only shows it working while it runs. Its
+last and next run come from those schedules.
+
 A helper's state, first that holds: needs you (something of it waits on the user),
-working (a run or check under way), paused (the user paused a routine, or turned a
-watcher off; a timed ask can't be paused, only cancelled), capped (its kind of work is
-paused at the background model's spend cap), idle.
+working (a run or check under way), paused (the user paused a routine or a helper of
+theirs, or turned a watcher off; a timed ask can't be paused, only cancelled), capped
+(its kind of work is paused at the background model's spend cap), idle.
 
 What waits on the user:
 - An approval: a card still proposed, raised in the helper's own conversation (its
@@ -18,8 +22,11 @@ What waits on the user:
   routine comes from someone talking to it there. A card from any other conversation
   is on no helper.
 - A step: a watcher switched on whose source isn't connected, or is signed out.
-- A question has no producer yet: it comes with step two, helpers she hands work to
-  (AGT-1, AGT-2). Nor does a notice ask for a step today.
+- A question: a helper of yours whose newest finished run is a handoff that ended
+  "{name} needs you: ...", until the user writes in its chat after it finished. The
+  page opens its chat to reply ("Open to reply"), where any card is raised once they
+  say go. A newer run of that helper's supersedes it. Nor does a notice ask for a step
+  today.
 
 Reasons are told in plain words, never a class name.
 
@@ -34,8 +41,18 @@ from typing import Protocol
 
 from trillion.attention.runner import WatcherStatus
 from trillion.attention.settings import ON_UNTIL_CONNECTED, TITLED
-from trillion.helpers.model import Helper, HelperState, LastRun, Outcome, Waiting
-from trillion.scheduler.runner import BUSY_DETAIL
+from trillion.helpers.look import pick
+from trillion.helpers.model import (
+    Connection,
+    Helper,
+    HelperState,
+    LastRun,
+    Outcome,
+    RoutineLine,
+    Waiting,
+)
+from trillion.helpers.store import CONNECTOR_TITLES, OwnHelper
+from trillion.scheduler.runner import BUSY_DETAIL, NEEDS_YOU_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import WhenError, summary
 from trillion.spend.types import Work
@@ -121,6 +138,10 @@ class Schedules(Protocol):
 
     async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]: ...
 
+    async def helper_last_results(self, owner_id: str) -> dict[str, Run]:
+        """The latest finished run of any schedule of each helper, by helper id."""
+        ...
+
 
 class Sources(Protocol):
     """Everything the list is built from, so tests can pass fakes."""
@@ -152,6 +173,18 @@ class Sources(Protocol):
         (the preference `helper_conversations`): a watcher's."""
         ...
 
+    async def own(self) -> Sequence[OwnHelper]:
+        """The helpers the user made (`HelperStore.all`)."""
+        ...
+
+    async def last_said(self, conversation_id: str) -> int | None:
+        """When the user last wrote in a conversation, if ever."""
+        ...
+
+    def connected_catalog(self) -> frozenset[str]:
+        """The Connected tools entries set up now, by catalog id."""
+        ...
+
 
 async def helpers(sources: Sources) -> list[Helper]:
     return (await snapshot(sources))[0]
@@ -170,11 +203,37 @@ async def snapshot(sources: Sources) -> tuple[list[Helper], int | None]:
     cards = _by_conversation(open_cards)
     wake = min((a.expires_at for a in open_cards), default=None)
     talks = await sources.conversations()
-    found = [_scheduled(s, last.get(s.id), now.get(s.id), capped, cards) for s in active]
+    # A helper's schedules are its own, never rows: one whose helper is gone has none.
+    theirs = [s for s in active if s.helper_id is not None]
+    found: list[Helper | None] = [
+        _scheduled(s, last.get(s.id), now.get(s.id), capped, cards)
+        for s in active
+        if s.helper_id is None
+    ]
+    by_helper = await sources.schedules.helper_last_results(owner)
+    own = await sources.own()
+    have = sources.connected_catalog() if any(h.connectors for h in own) else frozenset()
+    for h in own:
+        ran = by_helper.get(h.id)
+        asks = await _asks(sources, h, ran)
+        mine = [s for s in theirs if s.helper_id == h.id]
+        found.append(_own(h, mine, ran, now, capped, cards, asks, have))
     found += [
         _watcher(w, capped, cards, talks.get(f"watcher:{w.name}")) for w in await sources.watchers()
     ]
     return _ordered(h for h in found if h is not None), wake
+
+
+async def _asks(sources: Sources, h: OwnHelper, ran: Run | None) -> list[Waiting]:
+    """What a handoff that ended needing the user still asks of them: nothing once they
+    have written in the helper's chat since it finished."""
+    if ran is None or ran.detail != NEEDS_YOU_DETAIL or ran.finished_ms is None:
+        return []
+    said = await sources.last_said(h.conversation_id)
+    if said is not None and said >= ran.finished_ms:
+        return []
+    text = f"{h.name} needs you"
+    return [Waiting(type="question", id=f"handoff:{ran.id}", text=text, at_ms=ran.finished_ms)]
 
 
 def _still_open(cards: Sequence[PendingAction], owner: str, now_ms: int) -> list[PendingAction]:
@@ -242,6 +301,73 @@ def _scheduled(
         waiting=tuple(waiting),
         conversation_id=conversation,
         paused=paused,
+    )
+
+
+def _own(
+    h: OwnHelper,
+    schedules: list[Schedule],
+    last: Run | None,
+    running: dict[str, Run],
+    capped: set[Work],
+    cards: dict[str, list[Waiting]],
+    asks: list[Waiting],
+    have: frozenset[str] = frozenset(),
+) -> Helper:
+    paused = h.paused_ms is not None
+    starts = [
+        r.started_ms if r.started_ms is not None else r.claimed_ms
+        for s in schedules
+        if (r := running.get(s.id)) is not None
+    ]
+    routines = [s for s in schedules if s.target is not None and s.status == "active"]
+    # Its chat, and any chat of its routines' own.
+    talks = dict.fromkeys([h.conversation_id, *(s.conversation_id for s in routines)])
+    waiting = [*asks, *(w for c in talks for w in _in(cards, c))]
+    state = _state(
+        waiting=bool(waiting),
+        working=bool(starts),
+        paused=paused,
+        capped="helpers" in capped,
+    )
+    known = [t for t in starts if t is not None]
+    # Its next run is its routines' soonest: a handoff waiting to run is no "next".
+    upcoming = [
+        s.next_due_ms for s in routines if s.paused_ms is None and s.next_due_ms is not None
+    ]
+    # Checked against the lists again: only names the page can draw reach it.
+    icon, color = pick(h.name, h.job, h.icon, h.color)
+    return Helper(
+        id=f"own:{h.id}",
+        kind="own",
+        name=h.name,
+        job=h.job,
+        state=state,
+        doing="Working" if state == "working" else None,
+        since_ms=min(known) if state == "working" and known else None,
+        last_run=last_run_of(last),
+        next_ms=None if paused or not upcoming else min(upcoming),
+        waiting=tuple(waiting),
+        conversation_id=h.conversation_id,
+        paused=paused,
+        notes=h.notes,
+        icon=icon,
+        color=color,
+        connections=tuple(
+            Connection(id=c, title=CONNECTOR_TITLES[c], connected=c in have)
+            for c in h.connectors
+            if c in CONNECTOR_TITLES
+        ),
+        asks=h.asks,
+        routines=tuple(
+            RoutineLine(
+                id=s.id,
+                name=s.title,
+                next_ms=None if paused or s.paused_ms is not None else s.next_due_ms,
+                paused=s.paused_ms is not None,
+            )
+            for s in routines
+        ),
     )
 
 

@@ -4,6 +4,7 @@
  * what the host composed. Every piece of text is set with textContent, never parsed as HTML.
  */
 import { icon } from './icons';
+import { picture } from './look';
 import { clock } from './showcase';
 import { type CardStatus, type Entry, EXPIRED_NOTE, type Reason } from './view';
 
@@ -213,7 +214,13 @@ function askCard(it: StripItem, o: StripOptions): Drawn {
     };
   }
 
-  el.append(head, h('p', 'ap-summary', c.summary));
+  const summary = h('p', 'ap-summary', c.summary);
+  if (c.look) {
+    // A new helper's picture beside its name and job, as its tap will make it.
+    const row = h('div', 'card-look');
+    row.append(picture(c.look, 28), summary);
+    el.append(head, row);
+  } else el.append(head, summary);
   const reason = reasonWords(c.reason);
   if (reason) el.append(h('p', 'ap-reason', reason));
 

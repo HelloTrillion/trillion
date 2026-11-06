@@ -3,6 +3,8 @@
  * No DOM and no socket here, so every transition can be tested.
  */
 
+import { type Look, lookOf } from './look';
+
 /** What the core saves for a reply cut off before a word of it was heard (VOI-9). */
 const INTERRUPTED_MARK = '[interrupted]';
 
@@ -28,7 +30,8 @@ export type Entry =
   // `seen`: she chose to say nothing to it, as to a sign-off (VOI-7).
   | { readonly kind: 'user'; readonly text: string; readonly seen?: boolean }
   | { readonly kind: 'assistant'; readonly text: string; readonly interrupted: boolean }
-  | { readonly kind: 'tool'; readonly callId: string; readonly name: string; readonly outcome: string | null; readonly ok: boolean }
+  /** `label`: the host's friendly name for a carded tool, from its card, once the card has come. */
+  | { readonly kind: 'tool'; readonly callId: string; readonly name: string; readonly outcome: string | null; readonly ok: boolean; readonly label?: string }
   | {
       readonly kind: 'card';
       readonly pendingId: string;
@@ -41,8 +44,25 @@ export type Entry =
       readonly toolLabel: string;
       /** Why it needs the user, from the action's risk; null when the core did not say. */
       readonly reason: Reason | null;
+      /** A new helper's picture, on its create card; absent on any other. */
+      readonly look?: Look | null;
+      /** A new helper's draft, on its create card: pinned above the message box. */
+      readonly draft?: HelperDraft;
     }
   | { readonly kind: 'notice'; readonly text: string }
+  /**
+   * Her offer of a helper (the your helpers spec, Suggestions): Create or No thanks, then
+   * what came of it. This page's only: never saved, never drawn again from history.
+   */
+  | {
+      readonly kind: 'offer';
+      readonly area: string;
+      readonly name: string;
+      readonly job: string;
+      readonly status: OfferStatus;
+      /** Why it could not be made, in plain words; empty otherwise. */
+      readonly note: string;
+    }
   /** A line the app wrote ("Building your day"): never the user's words, never hers. */
   /** A routine's ready line, kept as the app's, carries the conversation it opens. */
   | { readonly kind: 'host'; readonly text: string; readonly conversationId?: string }
@@ -67,8 +87,27 @@ export type Entry =
       readonly quiet: string | null;
       readonly spoken: boolean;
       /** The helper it came from, named as the Helpers panel names it; null when no helper sent it. */
-      readonly helper?: { readonly id: string; readonly name: string } | null;
+      readonly helper?: { readonly id: string; readonly name: string; readonly look?: Look } | null;
     };
+
+/** A Connected tools entry a helper's draft suggests, and whether it is set up now. */
+export interface DraftConnection {
+  readonly id: string;
+  readonly title: string;
+  readonly connected: boolean;
+}
+
+/** What a helper's create card drafted (the your helpers spec, Creating one). */
+export interface HelperDraft {
+  readonly name: string;
+  readonly job: string;
+  readonly notes: string;
+  readonly connectors: readonly DraftConnection[];
+  readonly asks: readonly string[];
+}
+
+/** `past`: an older offer, once a newer one came: only the newest can be answered. */
+export type OfferStatus = 'open' | 'past' | 'creating' | 'made' | 'declined' | 'failed';
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
 
@@ -315,7 +354,16 @@ function scheduledOf(msg: ServerMsg): Entry | null {
     // A core from before speaking up never said: then she spoke it.
     spoken: msg['spoken'] !== false,
     // Only from a helper: a reminder, a spend notice or any other carries none.
-    ...(str(msg['helper_id']) && str(msg['helper_name']) ? { helper: { id: str(msg['helper_id']), name: str(msg['helper_name']) } } : {}),
+    // One of the user's own carries its picture too.
+    ...(str(msg['helper_id']) && str(msg['helper_name'])
+      ? {
+          helper: {
+            id: str(msg['helper_id']),
+            name: str(msg['helper_name']),
+            ...(str(msg['helper_icon']) ? { look: lookOf(msg['helper_icon'], msg['helper_color']) } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -413,12 +461,22 @@ const TOOL_LABELS: Readonly<Record<string, readonly [working: string, done: stri
   memory_recall: ['Checking what she remembers', 'Checked what she remembers'],
   decision_record: ['Checking the record', 'Checked the record'],
   web_fetch: ['Reading the page', 'Read the page'],
+  helper_create: ['Drafting a helper', 'Drafted a helper'],
+  helper_ask: ['Asking a helper', 'Asked a helper'],
+  helper_suggest: ['Thinking of a helper', 'Offered a helper'],
+  helper_update: ['Changing a helper', 'Changed a helper'],
+  helper_narrow: ['Noting that', 'Noted'],
+  helper_widen: ['Drafting a change', 'Drafted a change'],
 };
 
+const WAITING_OK = 'waiting for your OK';
+
 /** The chip for one tool call: what it is doing, then how it ended. */
-export function toolLabel(name: string, outcome: string | null, ok: boolean): string {
+export function toolLabel(name: string, outcome: string | null, ok: boolean, label?: string): string {
   // She confirmed a card that was already settled: nothing ran, so no second success.
   if (outcome === 'already_resolved') return 'Already settled';
+  // A card asks the user: said plainly, with the card's own name for it when known.
+  if (outcome === 'confirmation_required') return label ? `${label}: ${WAITING_OK}` : 'Waiting for your OK';
   const words = TOOL_LABELS[name];
   if (outcome === null) return words ? `${words[0]} …` : `${name} …`;
   // Sent off to run while the user talks: it is not done, and nothing failed.
@@ -445,6 +503,84 @@ function unsent(entries: readonly Entry[], text: string): Entry[] {
     if (e?.kind === 'user' && e.text === text) return [...entries.slice(0, i), ...entries.slice(i + 1)];
   }
   return entries.slice();
+}
+
+/** A create card's draft as the core sent it, or null when it is not one. */
+export function draftIn(raw: unknown): HelperDraft | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r['name']);
+  const job = str(r['job']);
+  if (!name || !job) return null;
+  const connectors = (Array.isArray(r['connectors']) ? r['connectors'] : []).flatMap((c): DraftConnection[] => {
+    if (!c || typeof c !== 'object') return [];
+    const x = c as Record<string, unknown>;
+    const id = str(x['id']);
+    return id ? [{ id, title: str(x['title']) || id, connected: x['connected'] === true }] : [];
+  });
+  const asks = (Array.isArray(r['asks']) ? r['asks'] : []).filter((a): a is string => typeof a === 'string' && a.trim() !== '');
+  return { name, job, notes: str(r['notes']), connectors, asks };
+}
+
+/** The helper draft still waiting in a conversation: there is only ever one. */
+export function pinnedDraft(entries: readonly Entry[]): Extract<Entry, { kind: 'card' }> | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind === 'card' && e.draft && e.status === 'waiting') return e;
+  }
+  return null;
+}
+
+function lookIn(raw: unknown): Look | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { icon?: unknown; color?: unknown };
+  return lookOf(r.icon, r.color);
+}
+
+type OfferEntry = Extract<Entry, { kind: 'offer' }>;
+
+/** Why an offer's Create made nothing, in a few plain words. */
+export function offerFailed(reason: string, name: string): string {
+  switch (reason) {
+    case 'full':
+      return 'You have 20 helpers, the most there can be. Delete one to make room.';
+    case 'taken':
+      return `There is already a helper called ${name}.`;
+    case 'stale':
+      return 'That offer has run out. Ask her again if you still want one.';
+    case 'invalid':
+      return "That name or job didn't work. Ask her to make it.";
+    default:
+      return "That didn't work. Try again in a moment.";
+  }
+}
+
+function lastOffer(entries: readonly Entry[], match: (e: OfferEntry) => boolean): number {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind === 'offer' && match(e)) return i;
+  }
+  return -1;
+}
+
+/** The offer of `area` whose Create was tapped, settled: made, or why not. Any other is left alone. */
+function settleOffer(view: View, area: string, next: (e: OfferEntry) => OfferEntry): View {
+  if (!area) return view;
+  const at = lastOffer(view.entries, (e) => e.area === area && e.status === 'creating');
+  if (at < 0) return view;
+  const entries = view.entries.slice();
+  entries[at] = next(entries[at] as OfferEntry);
+  return { ...view, entries };
+}
+
+/** The user tapped Create or No thanks on the offer for `area`: No thanks is said at once. */
+export function offerChosen(view: View, area: string, choice: 'create' | 'decline'): View {
+  const at = lastOffer(view.entries, (e) => e.area === area && e.status === 'open');
+  if (at < 0) return view;
+  const entries = view.entries.slice();
+  const e = entries[at] as OfferEntry;
+  entries[at] = { ...e, status: choice === 'create' ? 'creating' : 'declined' };
+  return { ...view, entries };
 }
 
 export function reduce(view: View, msg: ServerMsg): View {
@@ -595,24 +731,54 @@ function step(view: View, msg: ServerMsg): View {
     case 'confirm.request': {
       const pendingId = str(msg['pending_id']);
       if (view.entries.some((e) => e.kind === 'card' && e.pendingId === pendingId)) return view;
-      return {
-        ...view,
-        entries: [
-          ...view.entries,
-          {
-            kind: 'card',
-            pendingId,
-            summary: str(msg['summary']),
-            expiresAt: typeof msg['expires_at'] === 'number' ? msg['expires_at'] : 0,
-            tapOnly: msg['tap_only'] === true,
-            status: 'waiting',
-            note: '',
-            toolLabel: labelOf(msg['tool_label'], msg['tool']),
-            reason: REASONS.find((r) => r === msg['reason']) ?? null,
-          },
-        ],
+      // The chip of the call that raised it takes the card's friendly name.
+      const label = typeof msg['tool_label'] === 'string' ? msg['tool_label'].trim() : '';
+      const named = label
+        ? replaceLast(
+            view.entries,
+            (e) => e.kind === 'tool' && e.name === msg['tool'] && e.outcome === 'confirmation_required',
+            (e) => ({ ...e, label }) as Entry,
+          )
+        : view.entries;
+      const draft = draftIn(msg['draft']);
+      const card: Entry = {
+        kind: 'card',
+        pendingId,
+        summary: str(msg['summary']),
+        expiresAt: typeof msg['expires_at'] === 'number' ? msg['expires_at'] : 0,
+        tapOnly: msg['tap_only'] === true,
+        status: 'waiting',
+        note: '',
+        toolLabel: labelOf(msg['tool_label'], msg['tool']),
+        reason: REASONS.find((r) => r === msg['reason']) ?? null,
+        ...(lookIn(msg['look']) ? { look: lookIn(msg['look']) } : {}),
+        ...(draft ? { draft } : {}),
       };
+      // A new helper draft replaces the one still waiting, where it was: the core retired
+      // that card when this one was made, so there is only ever one.
+      const old = draft ? pinnedDraft(named) : null;
+      if (old) return { ...view, entries: named.map((e) => (e === old ? card : e)) };
+      return { ...view, entries: [...named, card] };
     }
+    case 'helper.offer': {
+      const name = str(msg['name']);
+      const job = str(msg['job']);
+      if (!name || !job) return view;
+      const entry: Entry = { kind: 'offer', area: str(msg['area']), name, job, status: 'open', note: '' };
+      // Only the newest offer can be answered: any older one still open is past.
+      const past = (list: readonly Entry[]): Entry[] => list.map((e) => (e.kind === 'offer' && e.status === 'open' ? { ...e, status: 'past' } : e));
+      const v = { ...view, entries: past(view.entries), held: past(view.held) };
+      // Like a notice, it never lands inside a reply that is still under way.
+      return v.replyOpen || v.busy ? { ...v, held: [...v.held, entry] } : { ...v, entries: [...v.entries, entry] };
+    }
+    case 'helper.offer.failed':
+      // Only the offer of that area whose answer was sent: Create (why not), or No thanks (kept as said).
+      return settleOffer(view, str(msg['area']), (e) =>
+        e.status === 'creating' ? { ...e, status: 'failed', note: offerFailed(str(msg['reason']), e.name) } : e,
+      );
+    case 'helper.created':
+      // Made from an offer: that offer's line, and no other. One from a card names no area.
+      return settleOffer(view, str(msg['area']), (e) => (e.status === 'creating' ? { ...e, status: 'made' } : e));
     case 'confirm.resolved': {
       const outcome = cardOutcome(str(msg['status']), str(msg['reason']), str(msg['detail']));
       return {

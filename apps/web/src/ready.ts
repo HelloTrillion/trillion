@@ -6,6 +6,19 @@
 
 import { type From, fromTag } from './notice';
 
+/**
+ * What follows a helper's name on its line, the name not said twice: "Inbox: 3 are
+ * overdue." reads ": 3 are overdue", "Inbox needs you: approve it." reads " needs you:
+ * approve it", and "Your Morning brief is ready" after its name reads ": ready".
+ */
+export function afterName(title: string, name: string): string {
+  const plain = title.replace(/\.$/, '');
+  if (plain === `Your ${name} is ready`) return ': ready';
+  if (plain.startsWith(`${name} needs you`)) return plain.slice(name.length);
+  if (plain.startsWith(`${name}: `)) return `: ${plain.slice(name.length + 2)}`;
+  return `: ${plain}`;
+}
+
 export function readyLine(
   title: string,
   conversationId: string | null,
@@ -19,8 +32,7 @@ export function readyLine(
   if (from && show) {
     // Its helper's name first, as the Helpers panel says it, and a tap there opens it.
     // "Your Morning brief is ready" after "Morning brief" says only "ready".
-    const plain = title.replace(/\.$/, '');
-    words.append(fromTag(from, show), `: ${plain === `Your ${from.name} is ready` ? 'ready' : plain}`);
+    words.append(fromTag(from, show), afterName(title, from.name));
   } else words.textContent = title;
   line.append(words);
   // Without a conversation to go to, the line alone still says it is ready.
