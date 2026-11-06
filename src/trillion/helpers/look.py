@@ -1,6 +1,7 @@
-"""A helper's picture (the your helpers spec, Its picture): an icon in a colour, never
-blank. One she leaves out or names wrong is picked from the job's words, else a spark,
-and the colour from the name, so it stays the same each time."""
+"""A helper's picture (the your helpers spec, Its picture): a colour, drawn as an orb,
+and an icon kept with it, never blank. One she leaves out or names wrong is picked from
+the job's words, else a spark, and the colour from the name, so it stays the same each
+time."""
 
 from __future__ import annotations
 
@@ -35,7 +36,20 @@ ICONS = (
     "lightbulb",
     "spark",
 )
-COLORS = ("blue", "green", "amber", "rose", "violet", "teal", "orange", "slate")
+# The web draws each as an orb in that colour; the icon is kept but no longer drawn.
+COLORS = (
+    "blue",
+    "green",
+    "amber",
+    "rose",
+    "violet",
+    "teal",
+    "orange",
+    "slate",
+    "red",
+    "fuchsia",
+    "lime",
+)
 FALLBACK_ICON = "spark"
 
 # A word in the job, as it starts, and the icon it suggests. The first that matches wins.

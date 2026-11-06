@@ -5,7 +5,7 @@
  *
  * A tap opens that one's chat; hers goes back to her last conversation. The picture whose
  * chat is showing is ringed. A right-click, a long press, or Shift+F10 opens a small menu:
- * a helper's picture, Pause or Resume, its details in the panel, Delete. Hers opens the
+ * a helper's colour, Pause or Resume, its details in the panel, Delete. Hers opens the
  * panel, where her routines, timed asks and watchers are. Only one menu or popover is
  * open at a time, and Escape closes it, back on the picture that opened it.
  */
@@ -397,7 +397,7 @@ export function createRail(element: HTMLElement, d: RailDeps): Rail {
     const h = it.helper;
     const toggle = ownToggleWords(h);
     openMenu(it.button, h.name, [
-      ['Change picture', () => openPicker(it)],
+      ['Change colour', () => openPicker(it)],
       [
         toggle,
         () => {
@@ -450,7 +450,7 @@ export function createRail(element: HTMLElement, d: RailDeps): Rail {
     no.focus();
   }
 
-  // ── Its picture: the panel's picker, saved at each tap ──
+  // ── Its colour: the panel's picker, saved at each tap ──
   let taps = 0;
   function openPicker(it: Item): void {
     const h = it.helper;

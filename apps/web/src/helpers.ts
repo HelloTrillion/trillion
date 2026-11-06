@@ -538,7 +538,7 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   dPic.type = 'button';
   dPic.setAttribute('aria-haspopup', 'dialog');
   dPic.setAttribute('aria-expanded', 'false');
-  dPic.title = 'Change its picture';
+  dPic.title = 'Change its colour';
   dPicWrap.append(dPic);
   const dName = el('h3', 'hp-d-name');
   dHead.append(dPicWrap, dName);

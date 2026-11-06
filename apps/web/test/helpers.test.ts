@@ -16,7 +16,7 @@ import {
   summaryLine,
   timeText,
 } from '../src/helpers';
-import { COLORS, ICONS, createPicker, lookOf, picture, pictureLabel } from '../src/look';
+import { COLORS, createPicker, lookOf, picture, pictureLabel } from '../src/look';
 import type { Api } from '../src/settings';
 
 const json = (body: unknown, status = 200): Response =>
@@ -682,38 +682,43 @@ const key = (target: Element, k: string): void => {
 };
 
 describe('a picture', () => {
-  it('has the core’s 24 icons and 8 colours', () => {
-    expect(ICONS).toHaveLength(24);
-    expect(new Set(ICONS).size).toBe(24);
-    expect(COLORS).toEqual(['blue', 'green', 'amber', 'rose', 'violet', 'teal', 'orange', 'slate']);
+  it('has the core’s colours, round the wheel, and no icons of its own', () => {
+    expect(COLORS).toEqual(['red', 'orange', 'amber', 'lime', 'green', 'teal', 'blue', 'violet', 'fuchsia', 'rose', 'slate']);
     const core = readFileSync(resolve(__dirname, '../../../src/trillion/helpers/look.py'), 'utf8');
-    for (const id of ICONS) expect(core).toContain(`"${id}"`);
+    const listed = /^COLORS = \(([^)]*)\)/m.exec(core)?.[1] ?? '';
+    expect([...listed.matchAll(/"(\w+)"/g)].map((m) => m[1]).sort()).toEqual([...COLORS].sort());
   });
 
-  it('is never blank: anything off the lists is a spark in slate', () => {
+  it('is never blank: a colour off the list is slate, and an odd icon the core’s spark', () => {
     expect(lookOf('receipt', 'green')).toEqual({ icon: 'receipt', color: 'green' });
-    expect(lookOf('dragon', 7)).toEqual({ icon: 'spark', color: 'slate' });
+    expect(lookOf('envelope', 'fuchsia')).toEqual({ icon: 'envelope', color: 'fuchsia' });
+    expect(lookOf(3, 7)).toEqual({ icon: 'spark', color: 'slate' });
   });
 
-  it('draws round, in its colour, with a name a screen reader says', () => {
+  it('is an orb in its colour, with no icon drawn, and a name a screen reader says', () => {
     const p = picture({ icon: 'receipt', color: 'green' }, 28, 'Invoices');
+    expect(p.classList.contains('look')).toBe(true);
     expect(p.dataset['color']).toBe('green');
     expect(p.dataset['size']).toBe('28');
-    expect(p.querySelectorAll('svg path').length).toBeGreaterThan(0);
+    expect(p.querySelector('svg')).toBeNull();
+    expect(p.childElementCount).toBe(0);
+    expect(p.dataset['icon']).toBeUndefined();
     expect(p.getAttribute('role')).toBe('img');
-    expect(p.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
-    expect(pictureLabel('Invoices', { icon: 'receipt', color: 'green' })).toBe('Invoices picture: receipt, green');
+    expect(p.getAttribute('aria-label')).toBe('Invoices, green');
+    expect(pictureLabel('Inbox Monitor', { icon: 'envelope', color: 'teal' })).toBe('Inbox Monitor, teal');
     expect(picture({ icon: 'spark', color: 'blue' }, 18).getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('has colour tokens for light and dark, and the picker fits a phone', () => {
+  it('is built as her orb is, with colour tokens for light and dark, and the picker fits a phone', () => {
     const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8');
     for (const c of COLORS) {
       expect(css).toContain(`--helper-${c}:`);
-      expect(css).toContain(`[data-color='${c}']`);
+      expect(css).toContain(`.look[data-color='${c}']`);
     }
     expect(css).toMatch(/:root\[data-theme='light'\][^{]*\{[^}]*--helper-green:/);
+    expect(css).toMatch(/\.look,\s*\.look-color\s*\{[^}]*radial-gradient\(\s*circle at 35% 30%,\s*var\(--color-ink-on-dark\) 0,\s*var\(--look/);
     expect(css).toMatch(/\.look-picker\s*\{[^}]*max-width:\s*calc\(100vw - 32px\)/);
+    expect(css).not.toContain('.look-icon');
   });
 });
 
@@ -725,45 +730,50 @@ describe('the picker', () => {
     document.body.append(p.element);
     return { p, picks, close, root: p.element };
   }
-  const iconBtn = (root: HTMLElement, id: string): HTMLButtonElement => root.querySelector(`.look-icon[data-icon="${id}"]`) as HTMLButtonElement;
   const colorBtn = (root: HTMLElement, id: string): HTMLButtonElement => root.querySelector(`.look-color[data-color="${id}"]`) as HTMLButtonElement;
 
-  it('labels 24 icons and 8 colours, marks the chosen ones, and has one tab stop each', () => {
+  it('shows only the colours, each an orb, the chosen one marked and the one tab stop', () => {
     const { root } = open();
-    expect(root.getAttribute('aria-label')).toBe('Picture for Invoices');
-    const icons = [...root.querySelectorAll<HTMLButtonElement>('.look-icon')];
-    expect(icons.map((b) => b.getAttribute('aria-label'))).toEqual([...ICONS]);
-    expect(root.querySelectorAll('.look-color')).toHaveLength(8);
-    expect(iconBtn(root, 'receipt').getAttribute('aria-pressed')).toBe('true');
+    expect(root.getAttribute('aria-label')).toBe('Colour for Invoices');
+    expect(root.querySelector('.look-icon, [data-icon], svg')).toBeNull();
+    const colors = [...root.querySelectorAll<HTMLButtonElement>('.look-color')];
+    expect(colors.map((b) => b.getAttribute('aria-label'))).toEqual([...COLORS]);
     expect(colorBtn(root, 'green').getAttribute('aria-pressed')).toBe('true');
-    expect(icons.filter((b) => b.tabIndex === 0)).toEqual([iconBtn(root, 'receipt')]);
+    expect(colors.filter((b) => b.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
+    expect(colors.filter((b) => b.tabIndex === 0)).toEqual([colorBtn(root, 'green')]);
   });
 
-  it('saves a tap at once, and shows it chosen', () => {
+  it('saves a tap at once with the icon it had, and shows it chosen; the chosen one again does nothing', () => {
     const { root, picks } = open();
-    iconBtn(root, 'envelope').click();
     colorBtn(root, 'blue').click();
+    colorBtn(root, 'blue').click();
+    colorBtn(root, 'rose').click();
     expect(picks).toEqual([
-      { icon: 'envelope', color: 'green' },
-      { icon: 'envelope', color: 'blue' },
+      { icon: 'receipt', color: 'blue' },
+      { icon: 'receipt', color: 'rose' },
     ]);
-    expect(iconBtn(root, 'envelope').getAttribute('aria-pressed')).toBe('true');
-    expect(colorBtn(root, 'blue').getAttribute('aria-pressed')).toBe('true');
+    expect(colorBtn(root, 'rose').getAttribute('aria-pressed')).toBe('true');
+    expect(colorBtn(root, 'green').getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('moves by arrow keys across and down the grid, and along the colours, and closes on Escape', () => {
+  it('moves by arrow keys across and down the colours, and closes on Escape', () => {
     const { p, root, close } = open();
     p.focus();
-    expect(document.activeElement).toBe(iconBtn(root, 'receipt'));
+    expect(document.activeElement).toBe(colorBtn(root, 'green'));
     key(document.activeElement as Element, 'ArrowRight');
-    expect(document.activeElement).toBe(iconBtn(root, 'envelope'));
+    expect(document.activeElement).toBe(colorBtn(root, 'teal'));
+    key(document.activeElement as Element, 'ArrowLeft');
+    key(document.activeElement as Element, 'ArrowLeft');
+    expect(document.activeElement).toBe(colorBtn(root, 'lime'));
     key(document.activeElement as Element, 'ArrowDown');
-    expect(document.activeElement).toBe(iconBtn(root, 'chat'));
+    expect(document.activeElement).toBe(colorBtn(root, 'rose'));
+    key(document.activeElement as Element, 'ArrowUp');
+    expect(document.activeElement).toBe(colorBtn(root, 'lime'));
     key(document.activeElement as Element, 'End');
-    expect(document.activeElement).toBe(iconBtn(root, 'spark'));
-    colorBtn(root, 'green').focus();
-    key(document.activeElement as Element, 'ArrowRight');
-    expect(document.activeElement).toBe(colorBtn(root, 'amber'));
+    expect(document.activeElement).toBe(colorBtn(root, 'slate'));
+    key(document.activeElement as Element, 'Home');
+    expect(document.activeElement).toBe(colorBtn(root, 'red'));
+    expect([...root.querySelectorAll<HTMLButtonElement>('.look-color')].filter((b) => b.tabIndex === 0)).toEqual([colorBtn(root, 'red')]);
     key(document.activeElement as Element, 'Escape');
     expect(close).toHaveBeenCalledOnce();
   });
@@ -775,14 +785,14 @@ describe('your helpers in the panel', () => {
     await helpers.open();
     const r = row(root, OWN);
     const pic = r.querySelector('.look') as HTMLElement;
-    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pic.getAttribute('aria-label')).toBe('Invoices, green');
     expect(pic.dataset['size']).toBe('28');
     expect(r.querySelector('.hp-pic .hp-dot')).not.toBeNull();
     expect(r.querySelector('.hp-status')?.textContent).toBe('Keeps track of who owes you');
     helpers.update(list([own({ state: 'working', doing: 'Reading invoices', since_ms: NOW - 5_000 })]));
     expect(r.querySelector('.hp-status')?.textContent).toBe('Reading invoices · 0:05');
-    helpers.update(list([own({ icon: 'envelope', color: 'blue' })]));
-    expect(r.querySelector('.look')?.getAttribute('aria-label')).toBe('Invoices picture: envelope, blue');
+    helpers.update(list([own({ color: 'blue' })]));
+    expect(r.querySelector('.look')?.getAttribute('aria-label')).toBe('Invoices, blue');
   });
 
   it('finds the helper whose chat a conversation is', async () => {
@@ -801,7 +811,7 @@ describe('your helpers in the panel', () => {
     expect(calls.some((c) => c.path === `/api/helpers/${OWN_PATH}/runs`)).toBe(true);
     const pic = d.querySelector('.hp-d-pic') as HTMLButtonElement;
     expect((d.querySelector('.hp-d-picwrap') as HTMLElement).hidden).toBe(false);
-    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pic.getAttribute('aria-label')).toBe('Invoices, green');
     expect(pic.dataset['size']).toBe('44');
     expect(d.textContent).toContain('Keeps track of who owes you');
     expect(d.textContent).toContain('What it knows');
@@ -875,7 +885,7 @@ describe('your helpers in the panel', () => {
 
   it('changes its picture from the details: one tap saves it, Escape closes and focus goes back', async () => {
     const { show, calls, helpers } = details(list([own()]), {
-      [`PUT /api/helpers/${OWN_PATH}/look`]: () => json(list([own({ icon: 'envelope' })])),
+      [`PUT /api/helpers/${OWN_PATH}/look`]: () => json(list([own({ color: 'violet' })])),
     });
     const d = await show(OWN);
     const pic = d.querySelector('.hp-d-pic') as HTMLButtonElement;
@@ -884,13 +894,14 @@ describe('your helpers in the panel', () => {
     const picker = d.querySelector('.look-picker') as HTMLElement;
     expect(picker).not.toBeNull();
     expect(pic.getAttribute('aria-expanded')).toBe('true');
-    expect(document.activeElement).toBe(picker.querySelector('.look-icon[data-icon="receipt"]'));
-    (picker.querySelector('.look-icon[data-icon="envelope"]') as HTMLButtonElement).click();
+    expect(document.activeElement).toBe(picker.querySelector('.look-color[data-color="green"]'));
+    (picker.querySelector('.look-color[data-color="violet"]') as HTMLButtonElement).click();
     // At once, before the core answers.
-    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: envelope, green');
+    expect(pic.getAttribute('aria-label')).toBe('Invoices, violet');
     await flush();
-    expect(calls).toContainEqual({ method: 'PUT', path: `/api/helpers/${OWN_PATH}/look`, body: { icon: 'envelope', color: 'green' } });
-    expect(row(helpers.element, OWN).querySelector('.look')?.getAttribute('aria-label')).toBe('Invoices picture: envelope, green');
+    // The icon it had goes back unchanged: only the colour is picked.
+    expect(calls).toContainEqual({ method: 'PUT', path: `/api/helpers/${OWN_PATH}/look`, body: { icon: 'receipt', color: 'violet' } });
+    expect(row(helpers.element, OWN).querySelector('.look')?.getAttribute('aria-label')).toBe('Invoices, violet');
     key(document.activeElement as Element, 'Escape');
     expect(d.querySelector('.look-picker')).toBeNull();
     expect(document.activeElement).toBe(pic);
@@ -919,7 +930,7 @@ describe('your helpers in the panel', () => {
     (d.querySelector('.look-color[data-color="rose"]') as HTMLButtonElement).click();
     await flush();
     expect(d.textContent).toContain("That didn't work. It may have just finished or been removed.");
-    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pic.getAttribute('aria-label')).toBe('Invoices, green');
   });
 });
 

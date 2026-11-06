@@ -144,7 +144,7 @@ describe('pictures in the chat', () => {
     const head = chatHead('Invoices', { icon: 'receipt', color: 'green' }, 'Keeps track of who owes you');
     const pic = head.querySelector('.look') as HTMLElement;
     expect(pic.dataset['size']).toBe('44');
-    expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
+    expect(pic.getAttribute('aria-label')).toBe('Invoices, green');
     expect(head.querySelector('.helper-head-name')?.textContent).toBe('Invoices');
     expect(head.textContent).toContain('Keeps track of who owes you');
   });
@@ -225,7 +225,7 @@ describe('review fixes', () => {
     expect(look).toEqual({ icon: 'spark', color: 'slate' });
     const p = picture(look, 28, 'Invoices');
     expect(p.dataset['color']).toBe('slate');
-    expect(p.dataset['icon']).toBe('spark');
+    expect(p.dataset['icon']).toBeUndefined();
     const v = feed([{ type: 'confirm.request', pending_id: 'p1', tool: 'helper_create', summary: 's', expires_at: 1, look: { icon: '<svg>', color: "x'] {}" } }]);
     expect(v.entries[0]).toMatchObject({ look: { icon: 'spark', color: 'slate' } });
   });
@@ -257,7 +257,7 @@ describe('review fixes', () => {
     document.body.append(strip.el);
     strip.draw([{ card, mode: 'ask', askedAt: Date.now() }]);
     const pic = strip.el.querySelector('.ap-card .look') as HTMLElement;
-    expect(pic.dataset['icon']).toBe('receipt');
+    expect(pic.querySelector('svg')).toBeNull();
     expect(pic.dataset['color']).toBe('green');
     strip.dispose();
   });

@@ -44,7 +44,7 @@ Your helpers live in a slim rail of round pictures down the left edge of the sid
 - **Top to bottom:** her own picture (a small orb, named with her name), one picture per helper of yours in the order the list gives, then a dashed **+** ("New helper"). It scrolls on its own when there are many.
 - **A tap** opens that helper's chat; her picture goes back to her last conversation that is not a helper's, or a new one. The picture whose chat is showing is ringed in the accent, with `aria-current="page"`.
 - **Its state:** a dot while it is working (accent) or needs you (amber, larger); a paused one is dimmed. Its name, and its state when not at rest, is on hover and in its accessible name: "Inbox Monitor, needs you".
-- **Its menu** (right-click, long press, Shift+F10 or the menu key; Escape closes it): **Change picture** (the picker), **Pause** or **Resume**, **Details** (the panel, at it), **Delete** (the panel's same confirm). Her picture's menu has one item, **Routines and watchers**, which opens the panel.
+- **Its menu** (right-click, long press, Shift+F10 or the menu key; Escape closes it): **Change colour** (the picker), **Pause** or **Resume**, **Details** (the panel, at it), **Delete** (the panel's same confirm). Her picture's menu has one item, **Routines and watchers**, which opens the panel.
 - **On a phone** the rail is a strip across the top of the sheet, so the chat keeps the sheet's full width. It hides with the sidebar.
 
 ## Talking to it
@@ -75,11 +75,12 @@ Your helpers live in a slim rail of round pictures down the left edge of the sid
 
 ## Its picture
 
-Every helper has a small round picture: an icon in a colour, so the panel reads at a glance, as Grok Bot's bots do.
+Every helper's picture is a small orb built exactly as hers is (lit from the top left, with a soft glow), in the helper's own colour, so you can colour-code them and the rail and panel read at a glance. Hers stays her own: the first in the rail, in her accent.
 
-- **About 24 icons** (receipt, envelope, calendar, chart, cart, folder, people, chat, star, heart, bell, globe, book, briefcase, wrench, leaf, home, plane, music, camera, code, shield, lightbulb, spark) and **8 colours**, each a theme token that reads in light and dark.
+- **11 colours:** red, orange, amber, lime, green, teal, blue, violet, fuchsia, rose and slate, each a theme token (`--helper-<colour>`), bright in dark and deeper in light, as her accent is, and none her own mint. Its accessible name is its name and colour ("Inbox Monitor, teal").
+- **An icon is still stored** (one of about 24, picked from the job), but not drawn; nothing is migrated.
 - **Never blank.** `helper_create` takes an optional `icon` and `color`. She picks ones that fit the job, and the card shows the picture beside the name. One she leaves out or gets wrong is picked from the job's words (a receipt for invoices, an envelope for email), else a spark, and the colour from the name, so it stays the same each time.
-- **Changing it is one tap.** Tap the picture in the helper's details: a grid of the icons and a row of the colours. Your tap saves it at once (`PUT /api/helpers/own:<id>/look {icon, color}`), with no card, since a picture changes nothing she does.
+- **Changing it is one tap.** Tap the picture in the helper's details, or **Change colour** in its rail menu: the colours, each an orb, the current one chosen (arrows move, Escape closes). Your tap saves it at once (`PUT /api/helpers/own:<id>/look {icon, color}`, the icon sent back as it was), with no card, since a colour changes nothing she does.
 - **Where it shows:** its row in the Helpers panel (the state dot sits on the picture's edge), the top of its details and its chat, its "Invoices: ..." lines in her conversation, and the create card.
 - Stored on the helper (`icon`, `color`). Only names from the lists are kept.
 
@@ -117,7 +118,7 @@ AGT-1 and AGT-2 describe a manifest (accent colour, avatar, model, tool allowlis
 - Per-helper permissions, models or voices.
 - Helpers talking to each other, or handing work on.
 - Sharing, importing or exporting helpers.
-- Uploading your own picture for a helper (icons and colours only, for now).
+- Uploading your own picture for a helper (colours only, for now).
 
 ## Tests
 

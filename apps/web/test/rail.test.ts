@@ -96,6 +96,18 @@ describe('the rail', () => {
     expect(labels(nav)).toEqual(['Ada', 'Inbox Monitor', 'Receipts', 'New helper']);
   });
 
+  it('draws each helper as an orb in its own colour, and her as her own orb', () => {
+    const { r, nav } = rail();
+    r.update(list([own({ id: 'own:1', color: 'teal' }), own({ id: 'own:2', color: 'fuchsia' })]));
+    expect(pics(nav)[0]!.querySelector('.rail-orb')).not.toBeNull();
+    const orbs = [...nav.querySelectorAll<HTMLElement>('.look')];
+    expect(orbs.map((o) => o.dataset['color'])).toEqual(['teal', 'fuchsia']);
+    expect(orbs.every((o) => o.dataset['size'] === '28' && o.childElementCount === 0)).toBe(true);
+    expect(nav.querySelector('.look svg, [data-icon]')).toBeNull();
+    r.update(list([own({ id: 'own:1', color: 'lime' }), own({ id: 'own:2', color: 'fuchsia' })]));
+    expect(nav.querySelector<HTMLElement>('.look')!.dataset['color']).toBe('lime');
+  });
+
   it('rings the picture whose chat is showing, and hers for any other', () => {
     const { r, nav } = rail();
     r.update(list([own({ id: 'own:1', conversation_id: 'c-1' }), own({ id: 'own:2', conversation_id: 'c-2' })]));
@@ -187,8 +199,8 @@ describe('the rail', () => {
     b.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
     expect(menu()?.getAttribute('role')).toBe('menu');
-    expect([...menu()!.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent)).toEqual(['Change picture', 'Pause', 'Details', 'Delete']);
-    expect(document.activeElement).toBe(item('Change picture'));
+    expect([...menu()!.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent)).toEqual(['Change colour', 'Pause', 'Details', 'Delete']);
+    expect(document.activeElement).toBe(item('Change colour'));
     key(document.activeElement!, 'ArrowDown');
     expect(document.activeElement).toBe(item('Pause'));
     key(document.activeElement!, 'Escape');
@@ -274,15 +286,16 @@ describe('the rail', () => {
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['DELETE /api/helpers/own%3A1']);
   });
 
-  it('changes its picture with the panel’s picker, saved at each tap', async () => {
+  it('changes its colour with the panel’s picker, saved at each tap with the icon it had', async () => {
     const { r, nav, calls } = rail(() => json(list([own({ id: 'own:1', icon: 'star', color: 'blue' })])));
-    r.update(list([own({ id: 'own:1' })]));
+    r.update(list([own({ id: 'own:1', icon: 'star', color: 'teal' })]));
     pic(nav, 'own:1').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-    item('Change picture').click();
+    item('Change colour').click();
     expect(menu()).toBeNull();
     const picker = document.querySelector<HTMLElement>('.look-picker')!;
-    expect(picker.getAttribute('aria-label')).toBe('Picture for Inbox Monitor');
-    picker.querySelector<HTMLButtonElement>('[data-icon="star"]')!.click();
+    expect(picker.getAttribute('aria-label')).toBe('Colour for Inbox Monitor');
+    expect(picker.querySelector('[data-icon], svg')).toBeNull();
+    picker.querySelector<HTMLButtonElement>('.look-color[data-color="blue"]')!.click();
     await flush();
     expect(calls).toEqual([{ method: 'PUT', path: '/api/helpers/own%3A1/look', body: { icon: 'star', color: 'blue' } }]);
     key(document.activeElement!, 'Escape');

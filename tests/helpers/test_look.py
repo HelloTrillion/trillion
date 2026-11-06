@@ -8,7 +8,7 @@ from trillion.helpers.look import COLORS, ICONS, pick
 
 def test_the_lists() -> None:
     assert len(ICONS) == 24 and len(set(ICONS)) == 24 and "spark" in ICONS
-    assert len(COLORS) == 8 and len(set(COLORS)) == 8
+    assert len(COLORS) == 11 and len(set(COLORS)) == 11
 
 
 def test_a_valid_icon_and_colour_are_kept() -> None:

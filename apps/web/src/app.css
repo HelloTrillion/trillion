@@ -7770,86 +7770,100 @@ button.reminders-open {
 
 /* ── Your helpers: their pictures, the picker, making one, and her offer ─── */
 
-/* A helper's colours: mid tones a white icon reads on, in both themes, from the palette
-   where it has one. */
+/* A helper's colours: each lights an orb like hers, so they are bright in the dark
+   theme and deeper in the light one, as her accent is; none is her own mint. */
 :root {
-  --helper-blue: rgb(59 108 212);
-  --helper-green: color-mix(in srgb, var(--color-accent) 62%, black);
-  --helper-amber: color-mix(in srgb, var(--color-amber) 66%, black);
-  --helper-rose: color-mix(in srgb, var(--mind-agents) 68%, black);
-  --helper-violet: color-mix(in srgb, var(--mind-memory) 72%, black);
-  --helper-teal: color-mix(in srgb, var(--mind-working) 55%, black);
-  --helper-orange: rgb(200 92 32);
-  --helper-slate: rgb(88 96 112);
-  --helper-ink: var(--color-ink-on-dark);
+  --helper-red: rgb(244 84 84);
+  --helper-orange: rgb(251 136 52);
+  --helper-amber: var(--color-amber);
+  --helper-lime: rgb(170 222 52);
+  --helper-green: rgb(72 200 92);
+  --helper-teal: rgb(40 188 232);
+  --helper-blue: rgb(84 140 255);
+  --helper-violet: var(--mind-memory);
+  --helper-fuchsia: rgb(222 92 236);
+  --helper-rose: var(--mind-agents);
+  --helper-slate: rgb(142 154 174);
 }
 :root[data-theme='light'] {
-  --helper-blue: rgb(44 92 196);
-  --helper-green: var(--color-accent);
-  --helper-amber: var(--color-amber);
-  --helper-rose: color-mix(in srgb, var(--mind-agents) 62%, black);
-  --helper-violet: color-mix(in srgb, var(--mind-memory) 66%, black);
-  --helper-teal: color-mix(in srgb, var(--mind-working) 50%, black);
-  --helper-orange: rgb(186 82 24);
-  --helper-slate: rgb(78 86 102);
-  --helper-ink: var(--color-ink-on-dark);
+  --helper-red: rgb(204 40 52);
+  --helper-orange: rgb(200 86 18);
+  --helper-amber: rgb(184 116 0);
+  --helper-lime: rgb(104 146 8);
+  --helper-green: rgb(28 138 52);
+  --helper-teal: rgb(6 122 160);
+  --helper-blue: rgb(38 98 222);
+  --helper-violet: rgb(114 72 214);
+  --helper-fuchsia: rgb(172 40 184);
+  --helper-rose: rgb(204 52 112);
+  --helper-slate: rgb(92 102 120);
 }
 
-.look[data-color='blue'],
-.look-icon[data-color='blue'],
-.look-color[data-color='blue'] {
-  --look: var(--helper-blue);
-}
-.look[data-color='green'],
-.look-icon[data-color='green'],
-.look-color[data-color='green'] {
-  --look: var(--helper-green);
-}
-.look[data-color='amber'],
-.look-icon[data-color='amber'],
-.look-color[data-color='amber'] {
-  --look: var(--helper-amber);
-}
-.look[data-color='rose'],
-.look-icon[data-color='rose'],
-.look-color[data-color='rose'] {
-  --look: var(--helper-rose);
-}
-.look[data-color='violet'],
-.look-icon[data-color='violet'],
-.look-color[data-color='violet'] {
-  --look: var(--helper-violet);
-}
-.look[data-color='teal'],
-.look-icon[data-color='teal'],
-.look-color[data-color='teal'] {
-  --look: var(--helper-teal);
+.look[data-color='red'],
+.look-color[data-color='red'] {
+  --look: var(--helper-red);
 }
 .look[data-color='orange'],
-.look-icon[data-color='orange'],
 .look-color[data-color='orange'] {
   --look: var(--helper-orange);
 }
+.look[data-color='amber'],
+.look-color[data-color='amber'] {
+  --look: var(--helper-amber);
+}
+.look[data-color='lime'],
+.look-color[data-color='lime'] {
+  --look: var(--helper-lime);
+}
+.look[data-color='green'],
+.look-color[data-color='green'] {
+  --look: var(--helper-green);
+}
+.look[data-color='teal'],
+.look-color[data-color='teal'] {
+  --look: var(--helper-teal);
+}
+.look[data-color='blue'],
+.look-color[data-color='blue'] {
+  --look: var(--helper-blue);
+}
+.look[data-color='violet'],
+.look-color[data-color='violet'] {
+  --look: var(--helper-violet);
+}
+.look[data-color='fuchsia'],
+.look-color[data-color='fuchsia'] {
+  --look: var(--helper-fuchsia);
+}
+.look[data-color='rose'],
+.look-color[data-color='rose'] {
+  --look: var(--helper-rose);
+}
 .look[data-color='slate'],
-.look-icon[data-color='slate'],
 .look-color[data-color='slate'] {
   --look: var(--helper-slate);
 }
 
-/* The round picture: its icon in white on its colour. */
-.look {
+/* The picture: an orb built as hers is (.rail-orb), lit from the top left, in its own
+   colour with a soft glow of it. */
+.look,
+.look-color {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
   flex-shrink: 0;
   box-sizing: border-box;
   border-radius: 50%;
-  background: var(--look, var(--helper-slate));
-  color: var(--helper-ink);
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--color-ink-on-dark) 0,
+    var(--look, var(--helper-slate)) 45%,
+    color-mix(in srgb, var(--look, var(--helper-slate)) 35%, var(--color-bg-0)) 100%
+  );
+  box-shadow: 0 0 10px color-mix(in srgb, var(--look, var(--helper-slate)) 40%, transparent);
 }
 .look[data-size='18'] {
   width: 18px;
   height: 18px;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--look) 40%, transparent);
 }
 .look[data-size='28'] {
   width: 28px;
@@ -7858,6 +7872,7 @@ button.reminders-open {
 .look[data-size='44'] {
   width: 44px;
   height: 44px;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--look) 40%, transparent);
 }
 
 /* A row's picture, with the state dot as a small badge on its edge. */
@@ -7997,44 +8012,21 @@ button.reminders-open {
   background: var(--color-bg-1);
   box-shadow: 0 16px 40px rgb(0 0 0 / 0.3);
 }
-.look-icons {
-  display: grid;
-  grid-template-columns: repeat(6, 36px);
-  gap: 4px;
-}
-.look-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--color-text-0);
-}
-.look-icon:hover:not(:disabled) {
-  border-color: transparent;
-  background: var(--color-bg-2);
-}
-.look-icon[aria-pressed='true'],
-.look-icon[aria-pressed='true']:hover:not(:disabled) {
-  background: var(--look);
-  color: var(--helper-ink);
-}
 .look-colors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(6, 28px);
+  gap: 10px;
+  padding: 4px;
 }
 .look-color {
   width: 28px;
   height: 28px;
   padding: 0;
   border: 0;
-  border-radius: 50%;
-  background: var(--look);
+  transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+}
+.look-color:hover:not(:disabled) {
+  transform: scale(1.1);
 }
 .look-color[aria-pressed='true'] {
   box-shadow:
@@ -8044,12 +8036,12 @@ button.reminders-open {
 .look-done {
   align-self: flex-end;
 }
-.hp-phone .look-icons {
-  grid-template-columns: repeat(6, 40px);
+.hp-phone .look-colors {
+  grid-template-columns: repeat(6, 34px);
 }
-.hp-phone .look-icon {
-  width: 40px;
-  height: 40px;
+.hp-phone .look-color {
+  width: 34px;
+  height: 34px;
 }
 
 /* A helper's picture before its name on its lines in her conversation. */
