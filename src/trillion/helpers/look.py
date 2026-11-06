@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Collection
 
 __all__ = ["COLORS", "ICONS", "pick"]
 
@@ -135,9 +136,20 @@ def _color_for(name: str) -> str:
     return COLORS[int.from_bytes(digest[:4], "big") % len(COLORS)]
 
 
-def pick(name: str, job: str, icon: object = None, color: object = None) -> tuple[str, str]:
+def pick(
+    name: str,
+    job: str,
+    icon: object = None,
+    color: object = None,
+    taken: Collection[str] = (),
+) -> tuple[str, str]:
     """(icon, colour) for a helper: the ones given when they are on the lists, else
-    picked from the job and the name."""
+    picked from the job and the name. A colour another helper has (`taken`) is passed
+    over for the next free one, so no two match until every colour is used."""
     chosen = icon if isinstance(icon, str) and icon in ICONS else _icon_for(job)
     hue = color if isinstance(color, str) and color in COLORS else _color_for(name)
+    if hue in taken:
+        start = COLORS.index(_color_for(name))
+        free = [c for c in COLORS[start:] + COLORS[:start] if c not in taken]
+        hue = free[0] if free else hue
     return chosen, hue

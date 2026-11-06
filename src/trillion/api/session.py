@@ -3897,6 +3897,12 @@ class Session:
         reg = self._rt.registry
         label = labels.tool_label(a.tool, labels.connected(reg.definition(a.tool), reg.get(a.tool)))
         summary = a.summary
+        # A new helper's colour passes over those its others have, as its tap does.
+        taken = (
+            {h.color for h in await self._rt.helpers.all(OWNER)}
+            if a.tool == HELPER_CREATE and self._rt.helpers is not None
+            else set()
+        )
         if a.tool == ASK_SCHEDULE and a.args.get("routine") in ("day", "own"):
             # A routine, not a one-off: said so, and where it lands.
             label = ROUTINE_LABEL
@@ -3916,7 +3922,7 @@ class Session:
             # A new helper's picture and draft, from the approved arguments its tap makes
             # it from. The page pins it above the message box, one per conversation.
             **(
-                {"look": helper_look(a.args), "draft": self._card_draft(a.args)}
+                {"look": helper_look(a.args, taken), "draft": self._card_draft(a.args)}
                 if a.tool == HELPER_CREATE
                 else {}
             ),

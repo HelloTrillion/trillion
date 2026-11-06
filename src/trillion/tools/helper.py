@@ -23,7 +23,7 @@ import json
 import logging
 import secrets
 import unicodedata
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from datetime import datetime
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
@@ -291,11 +291,15 @@ def plain(name: Any, job: Any) -> str | None:
     return _name_wrong(name) or _job_wrong(job)
 
 
-def card_look(args: JSON) -> dict[str, str]:
+def card_look(args: JSON, taken: Collection[str] = ()) -> dict[str, str]:
     """The picture a create card shows: the one its tap makes, from the same approved
-    arguments."""
+    arguments and the colours other helpers already have (`taken`)."""
     icon, color = pick(
-        _one_line(args.get("name")), _one_line(args.get("job")), args.get("icon"), args.get("color")
+        _one_line(args.get("name")),
+        _one_line(args.get("job")),
+        args.get("icon"),
+        args.get("color"),
+        taken,
     )
     return {"icon": icon, "color": color}
 
@@ -504,7 +508,7 @@ class HelperCreate(HelperTool):
         if why is not None or store is None:
             return _refused(why or _UNAVAILABLE)
         name, job = _one_line(args["name"]), _one_line(args["job"])
-        look = card_look(args)
+        look = card_look(args, {h.color for h in await store.all(ctx.owner_id)})
         made = await make(
             store,
             self._conversations,

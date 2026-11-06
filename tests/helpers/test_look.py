@@ -37,3 +37,17 @@ def test_names_not_on_the_lists_are_replaced() -> None:
     icon, color = pick("Invoices", "Chases overdue invoices.", "skull", "neon")
     assert icon == "receipt" and color == pick("Invoices", "x")[1]
     assert pick("Invoices", "Chases overdue invoices.", 3, None)[0] == "receipt"
+
+
+def test_a_new_helper_passes_over_colours_its_others_have() -> None:
+    _, first = pick("Socials", "I post for you.")
+    # The colour it would have is taken: the next free one, never a match.
+    _, second = pick("Socials", "I post for you.", taken={first})
+    assert second != first
+    # One it was given that is taken is passed over too.
+    _, given = pick("Socials", "I post for you.", color="blue", taken={"blue"})
+    assert given != "blue"
+    # A free one given is kept.
+    assert pick("Socials", "I post for you.", color="lime", taken={"blue"})[1] == "lime"
+    # With every colour used, it keeps its own.
+    assert pick("Socials", "I post for you.", taken=set(COLORS))[1] == first
