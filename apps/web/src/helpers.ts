@@ -243,8 +243,6 @@ export function untilIdle(idle: () => boolean, then: () => void, pollMs = IDLE_P
 export function createdOpener(d: {
   readonly idle: () => boolean;
   readonly open: (conversationId: string) => void;
-  readonly show: (helperId: string) => void;
-  readonly phone: () => boolean;
 }): { handle(msg: ServerMsg): void; cancel(): void } {
   let cancel: () => void = () => undefined;
   return {
@@ -254,9 +252,8 @@ export function createdOpener(d: {
       cancel();
       cancel = untilIdle(d.idle, () => {
         cancel = () => undefined;
+        // Its chat alone: the rail already shows its picture, selected.
         d.open(made.conversationId);
-        // On a desk the panel opens at it too; on a phone its chat is the whole screen.
-        if (!d.phone()) d.show(made.helperId);
       });
     },
     cancel: () => cancel(),

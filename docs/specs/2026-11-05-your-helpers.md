@@ -33,7 +33,7 @@ At most 20 helpers. At the limit, she says so and suggests one to delete.
 
 - **Asking.** She calls `helper_create {name, job}`, a carded tool. The card reads: "New helper: **Invoices**. Keeps track of who owes you and chases late payments." with **Create** and **Not now**.
 - **The + button.** The **+** at the foot of the rail, and **+ New helper** in the Helpers panel, open the same one field: "What should it do?" Submitting sends "New helper: {text}" to her as your message in the main conversation, the same as typing it. She drafts the name and job and raises the same card.
-- **On Create:** the helper and its chat are made. The panel opens its chat, and the helper's first message is one line saying what it'll do and asking anything it must know: "I'll keep an eye on unpaid invoices. Which account should I watch?"
+- **On Create:** the helper and its chat are made. Its chat opens (the rail shows its picture, selected; no panel opens), and the helper's first message is one line saying what it'll do and asking anything it must know: "I'll keep an eye on unpaid invoices. Which account should I watch?"
 - She is told not to make one when an existing helper's job already covers it. She suggests using that helper instead.
 - Never from a run nobody is watching (no card can be raised there).
 

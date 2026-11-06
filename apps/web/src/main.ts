@@ -2273,8 +2273,6 @@ function askForHelper(text: string): void {
 const createdChat = createdOpener({
   idle: () => !view.busy && !voice.active,
   open: (id) => openConversation(id),
-  show: (id) => showHelper(id),
-  phone: () => isPhone(innerWidth),
 });
 
 /** Words that could not go now wait in the message box, never lost. */

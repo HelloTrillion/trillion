@@ -151,26 +151,19 @@ describe('pictures in the chat', () => {
 });
 
 describe('review fixes', () => {
-  it('opens a new helper’s chat only once she is idle, however long her turn takes, never cutting her off', () => {
+  it('opens a new helper’s chat, and nothing else, only once she is idle, never cutting her off', () => {
     vi.useFakeTimers();
     let busy = true;
     const opened: string[] = [];
-    const shown: string[] = [];
-    let phone = false;
-    const opener = createdOpener({ idle: () => !busy, open: (id) => opened.push(id), show: (id) => shown.push(id), phone: () => phone });
+    const opener = createdOpener({ idle: () => !busy, open: (id) => opened.push(id) });
     // Mid-turn: her card was approved while she is still answering.
     opener.handle({ type: 'helper.created', helper_id: 'a'.repeat(32), conversation_id: 'c-new' });
     vi.advanceTimersByTime(60_000);
     expect(opened).toEqual([]);
     busy = false;
     vi.advanceTimersByTime(250);
+    // Its chat alone: the rail shows it, so no panel opens.
     expect(opened).toEqual(['c-new']);
-    expect(shown).toEqual([`own:${'a'.repeat(32)}`]);
-    // On a phone, the chat alone.
-    phone = true;
-    opener.handle({ type: 'helper.created', helper_id: 'b'.repeat(32), conversation_id: 'c-b' });
-    expect(opened).toEqual(['c-new', 'c-b']);
-    expect(shown).toHaveLength(1);
   });
 
   it('sends + New helper’s words once her conversation is open, and drops them on any switch', () => {
