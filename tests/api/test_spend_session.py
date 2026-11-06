@@ -329,13 +329,14 @@ async def test_a_choice_that_fails_unexpectedly_is_refused_so_the_page_can_retry
     session, page, card = await capped_card(rt)
 
     async def broken(*_a: Any, **_k: Any) -> Any:
-        raise RuntimeError("disk on fire 80.0")
+        raise RuntimeError("disk on fire 88.25")
 
     monkeypatch.setattr(rt.spend, "choose", broken)
-    answer = await tap(session, page, card["id"], "raise", 80.0)
+    answer = await tap(session, page, card["id"], "raise", 88.25)
     assert answer == {"type": "spend.refused", "id": card["id"], "code": "failed"}
-    # Logged by kind only: no amounts.
-    assert "80" not in caplog.text
+    # Logged by kind only: no amounts, and not the error's words. (A plain "80" also
+    # turns up inside the random ids in the log line.)
+    assert "88.25" not in caplog.text and "disk on fire" not in caplog.text
 
 
 async def test_raise_writes_the_cap_and_she_can_go_on(rt: Runtime) -> None:
@@ -659,9 +660,16 @@ async def test_past_the_warning_the_notice_says_so(rt: Runtime) -> None:
     await session.handle({"type": "turn.text", "text": "one"})
     await idle(session)
     assert rt.schedules is not None
-    held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
-    delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
-    found = [n.title for n in held] + [m["title"] for m in delivered]
+    found: list[str] = []
+    # Held, or on its way to the page: between the two it is in neither for a moment,
+    # so look again until it lands (a slow runner caught it in between).
+    for _ in range(100):
+        held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
+        delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
+        found = [n.title for n in held] + [m["title"] for m in delivered]
+        if found:
+            break
+        await asyncio.sleep(0.02)
     assert found == ["Anthropic is past your $20 warning ($23.10 so far)"]
 
 
