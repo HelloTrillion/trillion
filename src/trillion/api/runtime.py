@@ -1633,6 +1633,7 @@ async def open_runtime(
     )
     # Lambdas, so a test that replaces `rt.clock` moves every one of them.
     rt.door = Door(schedules, rt.sessions, clock=lambda: rt.clock(), owner=OWNER)
+    rt.door.helpers = helpers
     rt.jobs = Jobs(clock=lambda: rt.clock(), changed=rt.send_jobs)
     asker = Asker(
         provider=lambda: rt.background_provider,
@@ -1645,6 +1646,7 @@ async def open_runtime(
         zone=rt.zone,
         clock=lambda: rt.clock(),
         owner=OWNER,
+        helpers=lambda: rt.helpers,
         routines=RoutineDeps(
             # Made below; a routine runs only once the scheduler ticks, after this returns.
             boards=lambda: rt.boards,

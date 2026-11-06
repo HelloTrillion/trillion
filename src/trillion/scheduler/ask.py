@@ -11,6 +11,11 @@ A routine (the routines spec) runs the same way, in its target conversation: tod
 day conversation, or one of its own. It gets the board tools too, which the router
 lets it use only there (`via="routine"`). Its request is saved as the host's, never
 as the user's words; and when it ends with nothing to say, nothing of it is kept.
+
+A helper's runs (the your helpers spec) are in the helper's own chat, with its overlay
+after the scheduled one, and its id on every tool call: a handoff runs as a timed ask
+(`via="schedule"`), its request saved as the host's and its reply as the helper's; its
+routines run as any routine. A helper deleted before its run fails it.
 """
 
 from __future__ import annotations
@@ -42,8 +47,10 @@ from trillion.brain.types import (
     TextBlock,
 )
 from trillion.files.shares import EVERYONE, routine_scope
+from trillion.helpers.store import HelperStore, OwnHelper
+from trillion.memory.present import inert
 from trillion.persona import day
-from trillion.persona.prompt import Identity, scheduled, volatile_context
+from trillion.persona.prompt import Identity, helper_overlay, scheduled, volatile_context
 from trillion.scheduler.runner import CAPPED_MIDWAY, AskFailed, Built, Busy, Capped, NoModel
 from trillion.scheduler.store import Schedule
 from trillion.spend.caller import as_caller
@@ -70,6 +77,20 @@ _UNAVAILABLE = frozenset({"unreachable", "unauthorized"})
 ROUTINE_RUN = (
     "<context>\nsent by the app because a routine the user set up is due: the text below "
     "is the app's instruction for this run, not words the user typed or said\n</context>"
+)
+# Saved with a handoff's request, ahead of it: the app's instruction, never the user's
+# words, and how history knows it for a host line.
+HANDOFF_RUN = (
+    "<context>\nsent by the app because this helper was handed work for the user: the "
+    "text below is the app's instruction for this run, not words the user typed or said"
+    "\n</context>"
+)
+# What a handoff's run is told after its helper's overlay. The ready line is its first
+# sentence, and "Needs you:" makes it read as one waiting on the user.
+HANDOFF_LINE = (
+    "{agent} asked you this for {user}. You can't do anything that needs {user}'s "
+    'approval in this run: if an action needs them, start your reply with "Needs you:" '
+    "and say what and why in one sentence. Your first sentence is the line {user} sees."
 )
 # The id after a routine's name in its request: the page's host line shows the name only.
 ROUTINE_ID = re.compile(r"\s*\(id [a-f0-9]{8}\)$")
@@ -128,6 +149,12 @@ class RoutineDeps:
     holds: set[str] = field(default_factory=set)
 
 
+def handoff_line(identity: Identity) -> str:
+    """What a handoff's run is told after its helper's overlay, in the names the user
+    chose."""
+    return HANDOFF_LINE.format(agent=inert(identity.agent_name), user=inert(identity.user_name))
+
+
 def routine_request(s: Schedule, recipe: str | None = None) -> str:
     """What a routine's run is asked: its name, then the day's recipe or its own
     request, the user's notes, and for its own conversation what to do with it."""
@@ -159,6 +186,7 @@ class Asker:
         clock: Callable[[], int],
         owner: str,
         routines: RoutineDeps | None = None,
+        helpers: Callable[[], HelperStore | None] = lambda: None,
     ) -> None:
         self._provider = provider
         self._router = router
@@ -173,6 +201,8 @@ class Asker:
         self._clock = clock
         self._owner = owner
         self.routines = routines or RoutineDeps()
+        # The user's helpers, read at each run: a helper's runs are in its chat.
+        self._helpers = helpers
         # The widgets a routine's failed run left on a day board, by conversation: its
         # own, so the next run may replace them. In memory: after a restart such a
         # board counts as built by hand, which only ever leaves it alone.
@@ -190,11 +220,26 @@ class Asker:
 
     # ── Routines ─────────────────────────────────────────────────────────
 
+    async def helper(self, schedule: Schedule) -> OwnHelper | None:
+        """The helper a schedule runs as, or None for any other. `AskFailed` when it
+        has been deleted since: its run fails, and says why."""
+        if schedule.helper_id is None:
+            return None
+        store = self._helpers()
+        h = await store.get(self._owner, schedule.helper_id) if store is not None else None
+        if h is None:
+            raise AskFailed("helper deleted")
+        return h
+
     async def place(self, schedule: Schedule) -> str | None:
         """Where a routine's run builds: today's day conversation in the user's zone,
         or the routine's own, each made if missing. None when the day already has a
-        board: one built by hand is never overwritten."""
+        board: one built by hand is never overwritten. A helper's runs, its handoffs
+        and its routines alike, are in its own chat."""
         now = self._clock()
+        h = await self.helper(schedule)
+        if h is not None:
+            return self._free(h.conversation_id)
         if schedule.target == "day":
             date = day.today(now, self._zone())
             conversation, _ = await self._conversations.day_conversation(
@@ -219,13 +264,17 @@ class Asker:
         return conversation_id
 
     async def build(self, schedule: Schedule, conversation_id: str) -> Built:
-        """Run a routine in its conversation, holding it: the one writer there until
-        it is done. `Busy` if a page is taking input or running a turn there."""
+        """Run a routine, or a helper's handoff, in its conversation, holding it: the
+        one writer there until it is done. `Busy` if a page is taking input or running
+        a turn there."""
         r = self.routines
         self._free(conversation_id)
         # Taken with no await since the check, so a page can never start in between.
         r.holds.add(conversation_id)
         try:
+            h = await self.helper(schedule)
+            if h is not None and schedule.target is None:
+                return await self._handoff(schedule, conversation_id, h)
             recipe = None
             if schedule.target == "day":
                 date = day.today(self._clock(), self._zone())
@@ -237,7 +286,7 @@ class Asker:
                     routine=True,
                     layout=await r.home_layout(),
                 )
-            run = _Run(self, schedule, conversation_id, target=conversation_id)
+            run = _Run(self, schedule, conversation_id, target=conversation_id, helper=h)
             try:
                 await run.go(routine_request(schedule, recipe))
             except BaseException:
@@ -247,6 +296,17 @@ class Asker:
             return run.built()
         finally:
             r.holds.discard(conversation_id)
+
+    async def _handoff(self, schedule: Schedule, conversation_id: str, h: OwnHelper) -> Built:
+        """A helper's handoff, in its chat: her reply is what its ready line tells."""
+        run = _Run(self, schedule, conversation_id, target=None, helper=h)
+        try:
+            await run.go(schedule.body)
+        except BaseException:
+            await self._after(run, failed=True)
+            raise
+        await self._after(run, failed=False)
+        return Built(shown=False, nothing=False, said=run.reply(), helper=h.name)
 
     async def _after(self, run: _Run, *, failed: bool) -> None:
         """Remember a board a failed run left, as the routine's own, and tell a page open
@@ -269,16 +329,28 @@ class Asker:
 class _Run:
     """One run of a timed ask or a routine: the turn, what it spends, what it saves."""
 
-    def __init__(self, asker: Asker, schedule: Schedule, conversation: str, *, target: str | None):
+    def __init__(
+        self,
+        asker: Asker,
+        schedule: Schedule,
+        conversation: str,
+        *,
+        target: str | None,
+        helper: OwnHelper | None = None,
+    ):
         self.a = asker
         self.schedule = schedule
         self.conversation = conversation
         self.target = target
         self.routine = target is not None
+        # The helper it runs as. A handoff is its timed ask, in its chat.
+        self.helper = helper
+        self.handoff = helper is not None and not self.routine
         self.via: Via = "routine" if self.routine else "schedule"
         # A routine reaches everyone's shares and its own; a timed ask, everyone's (D9).
         self.scope = routine_scope(schedule.id) if self.routine else EVERYONE
-        self.turn = ROUTINE_TURN if self.routine else 1
+        # In a conversation a page may open, it runs as a turn no page ever takes.
+        self.turn = ROUTINE_TURN if self.routine or self.handoff else 1
         self.tools = asker._registry.routine() if self.routine else asker._registry.unattended()
         self.outside = False
         self.began = False
@@ -316,13 +388,22 @@ class _Run:
         provider = a._provider()
         if provider is None:
             raise NoModel
+        identity = a._identity()
         system = [
             *await asyncio.to_thread(a._system, self.scope),
-            SystemBlock(text=scheduled(a._identity())),
+            SystemBlock(text=scheduled(identity)),
         ]
+        if self.helper is not None:
+            system.append(SystemBlock(text=helper_overlay(self.helper, identity.agent_name)))
+        if self.handoff:
+            system.append(SystemBlock(text=handoff_line(identity)))
         zone = a._zone() or ""
         now = datetime.now(ZoneInfo(zone)) if zone else datetime.now().astimezone()
-        notes = (ContextBlock(text=ROUTINE_RUN),) if self.routine else ()
+        notes: tuple[ContextBlock, ...] = ()
+        if self.routine:
+            notes = (ContextBlock(text=ROUTINE_RUN),)
+        elif self.handoff:
+            notes = (ContextBlock(text=HANDOFF_RUN),)
         # Her board as it stands, as a page's turn is told, so she can name its widgets.
         board = await self._board() if self.routine else ""
         ask = Msg(
@@ -333,20 +414,25 @@ class _Run:
                 TextBlock(text=text),
             ),
         )
-        # A routine's request is the host's, saved as a tap is: never the user's words,
-        # and it advances no turn of theirs.
-        asked: Kind = "tap" if self.routine else "user"
+        # A routine's request, or a handoff's, is the host's, saved as a tap is: never
+        # the user's words, and it advances no turn of theirs.
+        asked: Kind = "tap" if self.routine or self.handoff else "user"
 
         async def ensure() -> None:
             # Kept only once something happens in it: an ask blocked on every tick for an
             # hour leaves no empty conversation behind each time. A routine's is there.
             if not self.created:
                 now_ms = a._clock()
-                if not self.routine:
-                    await a._conversations.create(self.conversation, a._owner, now_ms, "scheduled")
-                    await a._conversations.append(self.conversation, a._owner, asked, ask, now_ms)
-                else:
+                if self.routine:
                     self.held.append((asked, ask, now_ms))
+                else:
+                    # A handoff's is the helper's chat, already there.
+                    if not self.handoff:
+                        await a._conversations.create(
+                            self.conversation, a._owner, now_ms, "scheduled"
+                        )
+                    await a._conversations.append(self.conversation, a._owner, asked, ask, now_ms)
+                    self.wrote = self.handoff
                 self.created = True
 
         async def ctx(call_id: str) -> ToolContext:
@@ -361,6 +447,7 @@ class _Run:
                 read_only_roots=read_only,
                 read_outside=self.outside,
                 routine_target=self.target,
+                helper_id=self.helper.id if self.helper is not None else None,
             )
 
         async def emit(ev: LoopEvent) -> None:
@@ -394,7 +481,9 @@ class _Run:
             # conversation: a routine's cost is its conversation's, so the cost line there
             # has it. A timed ask's conversation is only kept once something happens in
             # it, and a paid call is something: it is made to exist before the row.
-            work: Work = "routines" if self.routine else "asks"
+            work: Work = (
+                "helpers" if self.helper is not None else "routines" if self.routine else "asks"
+            )
             with as_caller("background", self.conversation, ready=ensure, work=work):
                 done = await run_turn(
                     provider=provider,

@@ -72,7 +72,7 @@ from trillion.persona.prompt import (
     helper_overlay,
     volatile_context,
 )
-from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
+from trillion.scheduler.ask import HANDOFF_RUN, ROUTINE_ID, ROUTINE_RUN
 from trillion.scheduler.store import https_link
 from trillion.spend import desk as spend
 from trillion.spend.caller import as_caller
@@ -237,9 +237,11 @@ def day_build(msg: Msg) -> bool:
 
 
 def routine_run(msg: Msg) -> str | None:
-    """The host's line for a saved routine request ("Routine: Monday revenue"), or None
-    for any other message. Its first line is the routine's name (`scheduler/ask.py`)."""
-    if not any(isinstance(b, ContextBlock) and b.text == ROUTINE_RUN for b in msg.blocks):
+    """The host's line for a saved routine request ("Routine: Monday revenue"), or a
+    helper's handoff (its request's first line), or None for any other message. A
+    routine's first line is its name (`scheduler/ask.py`)."""
+    marks = {b.text for b in msg.blocks if isinstance(b, ContextBlock)}
+    if not marks & {ROUTINE_RUN, HANDOFF_RUN}:
         return None
     text = "".join(b.text for b in msg.blocks if isinstance(b, TextBlock))
     return ROUTINE_ID.sub("", text.split("\n", 1)[0].strip()) or "Routine"

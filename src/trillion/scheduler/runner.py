@@ -18,6 +18,10 @@ conversation or its own, where it builds a board. A board becomes a 'ready' noti
 naming the conversation to open; nothing worth saying, no notice at all (AGT-6). A
 paused routine is not run, and after three failures in a row it pauses itself.
 
+A helper's handoff (the your helpers spec) is a one-off timed ask run in the helper's
+chat: it always ends with one 'ready' notice named for the helper, opening that chat,
+its title the helper's first sentence. A helper's routines run as any routine.
+
 At a hard spend cap (the spend caps spec) a routine or timed ask is not run: its run is
 `skipped` with the reason `capped`, never failed, retried or counted toward a pause.
 The schedule has already moved on, so it next runs at its next time, if the cap has
@@ -32,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -107,6 +112,11 @@ T = TypeVar("T")
 Outcome = Literal["ready", "nothing"]
 DAY_READY = "Your day is ready"
 DAY_FAILED = "Your day couldn't be built"
+# A handoff's ready line, at most: one line, never a paragraph.
+HANDOFF_TITLE_MAX = 140
+# How a handoff's reply says an action needs the user (its overlay tells it to).
+NEEDS_YOU = re.compile(r"^needs you:\s*", re.IGNORECASE)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -117,6 +127,8 @@ class Built:
     shown: bool
     nothing: bool
     said: str
+    # The helper it ran as, by name: a handoff's ready line is named for it.
+    helper: str | None = None
 
     @property
     def outcome(self) -> Outcome:
@@ -136,6 +148,24 @@ class Routines(Protocol):
         ...
 
     async def build(self, s: Schedule, conversation_id: str) -> Built: ...
+
+
+def handoff_title(name: str, said: str) -> str:
+    """A handoff's ready line: "Invoices: 3 invoices are overdue.", its first sentence,
+    or "Invoices needs you: approve sending 3 reminders." With nothing said it still
+    says so: it was asked for, so silence would read as lost."""
+    text = " ".join(said.split())
+    needs = NEEDS_YOU.match(text)
+    if needs is not None:
+        text = text[needs.end() :]
+    first = _SENTENCE_END.split(text, maxsplit=1)[0] if text else ""
+    if needs is not None:
+        title = f"{name} needs you: {first}" if first else f"{name} needs you"
+    else:
+        title = f"{name}: {first or 'nothing to report'}"
+    if len(title) > HANDOFF_TITLE_MAX:
+        title = title[: HANDOFF_TITLE_MAX - 1].rstrip() + "\u2026"
+    return title
 
 
 def ready_title(s: Schedule) -> str:
@@ -385,7 +415,8 @@ class Scheduler:
         if self._held is not None and await self._held(kind):
             await self._capped(run, s)
             return
-        if s.target is not None:
+        if s.target is not None or s.helper_id is not None:
+            # A helper's handoff runs in its chat, placed and built as a routine is.
             await self._routine(run, s, late)
             return
         try:
@@ -430,7 +461,7 @@ class Scheduler:
 
     async def _routine(self, run: Run, s: Schedule, late: bool) -> None:
         """Run a routine where it lands, and tell the user only when there is
-        something to see."""
+        something to see. A helper's handoff runs here too, in the helper's chat."""
         routines = self._routines
         if routines is None:
             await self._notice(run, s, "failed", None, "failed", "routines are not set up")
@@ -447,6 +478,9 @@ class Scheduler:
         try:
             target, built = await self._attempt(run, s, work)
         except _Handled:
+            return
+        if s.target is None and target is not None and built is not None:
+            await self._handed_back(run, s, late, target, built)
             return
         if target is None or built is None:
             # The day was built by hand: hers stays, and nobody is told anything.
@@ -473,6 +507,16 @@ class Scheduler:
         await self._notice(
             run, s, "ready", f"{title}.", status, title=title, conversation_id=target
         )
+
+    async def _handed_back(
+        self, run: Run, s: Schedule, late: bool, target: str, built: Built
+    ) -> None:
+        """A helper's handoff ends with one ready line, named for the helper, that opens
+        its chat. It was asked for, so it is never silent."""
+        title = handoff_title(built.helper or s.title, built.said)
+        text = title if title.endswith((".", "!", "?", "\u2026")) else f"{title}."
+        status: RunStatus = "late" if late else "delivered"
+        await self._notice(run, s, "ready", text, status, title=title, conversation_id=target)
 
     async def _notice(
         self,
