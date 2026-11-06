@@ -17,6 +17,9 @@ every /api/ route.
   of the user's only (`own:<id>`), with its schedules; each answers with the list. A
   routine, timed ask or watcher has routes of its own. A helper's runs are those of
   all its schedules, its handoffs and its routines.
+- `PUT /api/helpers/{id}/look {icon, color}`: a new picture for a helper of the user's,
+  saved at once with no card, since it changes nothing it does. 400 for a name not on
+  the lists (`helpers/look.py`). Answers with the list.
 
 The page only displays: no route here starts a run or answers a card (SPN-14).
 Everything that changes a helper calls `Runtime.helpers_changed`, and every open page
@@ -34,9 +37,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter
 from fastapi import Path as Segment
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from trillion.attention.settings import TITLED, WATCHERS
 from trillion.helpers.build import run_of, snapshot
+from trillion.helpers.look import COLORS, ICONS
 from trillion.helpers.model import to_json
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import HelperStore, OwnHelper
@@ -59,6 +64,11 @@ HELPER_ID = Segment(
     max_length=60,
     pattern=r"^((routine|ask):[a-f0-9]{8}|watcher:[a-z_]{1,30}|own:[a-f0-9]{32})$",
 )
+
+
+class Look(BaseModel):
+    icon: str = Field(max_length=40)
+    color: str = Field(max_length=40)
 
 
 def note_for(name: str) -> str:
@@ -152,6 +162,15 @@ def create_helpers_router(rt: Runtime) -> APIRouter:
             return _not_found()
         # Its routines from their next due time after now: none is run late.
         await resume_helper(made(), store(), runner, OWNER, h.id, rt.clock())
+        return await listing()
+
+    @router.put("/{helper_id}/look")
+    async def look(body: Look, helper_id: str = HELPER_ID) -> Any:
+        if body.icon not in ICONS or body.color not in COLORS:
+            return JSONResponse({"error": "bad_request"}, status_code=400)
+        h = await own_of(helper_id)
+        if h is None or not await made().set_look(OWNER, h.id, body.icon, body.color):
+            return _not_found()
         return await listing()
 
     @router.delete("/{helper_id}")

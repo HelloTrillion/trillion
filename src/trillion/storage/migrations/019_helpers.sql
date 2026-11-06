@@ -40,7 +40,8 @@ CREATE UNIQUE INDEX conversations_one_day ON conversations (owner_id, day)
 -- `name_key` is the name casefolded by the store, since SQLite's lower() knows only ASCII.
 -- `notes` grows a line at a time, as a routine's do. Paused while `paused_ms` is set.
 -- Deleted only softly (SPN-9): `deleted_at` hides it, and its schedules keep pointing
--- at it for their runs' history.
+-- at it for their runs' history. `icon` and `color` are its picture, names from the
+-- lists in `helpers/look.py`; `hello_ms` is set once its first hello has run.
 CREATE TABLE helpers (
     id               TEXT PRIMARY KEY,
     owner_id         TEXT NOT NULL REFERENCES owners(id),
@@ -50,6 +51,9 @@ CREATE TABLE helpers (
     notes            TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 1000),
     conversation_id  TEXT NOT NULL REFERENCES conversations(id),
     paused_ms        INTEGER,
+    icon             TEXT NOT NULL DEFAULT 'spark',
+    color            TEXT NOT NULL DEFAULT 'blue',
+    hello_ms         INTEGER,
     created_at       INTEGER NOT NULL,
     deleted_at       INTEGER
 );

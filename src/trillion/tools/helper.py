@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 from trillion.brain.standing import MAX_RULE_CHARS, RuleError, clean
 from trillion.brain.types import Msg, TextBlock
+from trillion.helpers.look import COLORS, ICONS, pick
 from trillion.helpers.store import JOB_MAX, MAX_HELPERS, NAME_MAX, NOTES_MAX, HelperStore, OwnHelper
 from trillion.memory.present import inert
 from trillion.scheduler.store import Schedule, ScheduleStore
@@ -94,6 +95,16 @@ _JOB: dict[str, Any] = {
     "minLength": 1,
     "maxLength": JOB_MAX,
     "description": "One sentence: what it does for the user.",
+}
+_ICON: dict[str, Any] = {
+    "type": "string",
+    "enum": list(ICONS),
+    "description": "Its picture's icon: one that fits the job.",
+}
+_COLOR: dict[str, Any] = {
+    "type": "string",
+    "enum": list(COLORS),
+    "description": "Its picture's colour.",
 }
 _NOTES_SCHEMA: JSON = {
     "type": "object",
@@ -172,6 +183,15 @@ def plain(name: Any, job: Any) -> str | None:
     return _name_wrong(name) or _job_wrong(job)
 
 
+def card_look(args: JSON) -> dict[str, str]:
+    """The picture a create card shows: the one its tap makes, from the same approved
+    arguments."""
+    icon, color = pick(
+        _one_line(args.get("name")), _one_line(args.get("job")), args.get("icon"), args.get("color")
+    )
+    return {"icon": icon, "color": color}
+
+
 async def make(
     store: HelperStore,
     conversations: Conversations | None,
@@ -179,10 +199,13 @@ async def make(
     name: str,
     job: str,
     now_ms: int,
+    *,
+    icon: str | None = None,
+    color: str | None = None,
 ) -> OwnHelper | Literal["full", "taken"]:
     """Make a helper, and save its first line to its chat as hers: on a card's tap or
-    an offer's."""
-    made = await store.create(owner_id, name, job, now_ms)
+    an offer's. Its picture is the one given, else picked from the job and name."""
+    made = await store.create(owner_id, name, job, now_ms, icon=icon, color=color)
     if isinstance(made, str):
         return made
     if conversations is not None:
@@ -291,12 +314,12 @@ class HelperCreate(HelperTool):
         description=(
             "Make a helper: a specialist with one job and a chat of its own, when the user "
             "asks for one. Draft a short `name` and a one-sentence `job` from what they "
-            "said. Not when a helper's job already covers it: suggest using that one. "
-            + ASKS_BY_CARD
+            "said, and pick an `icon` and `color` for its picture that fit the job. Not "
+            "when a helper's job already covers it: suggest using that one. " + ASKS_BY_CARD
         ),
         input_schema={
             "type": "object",
-            "properties": {"name": _NAME, "job": _JOB},
+            "properties": {"name": _NAME, "job": _JOB, "icon": _ICON, "color": _COLOR},
             "required": ["name", "job"],
             "additionalProperties": False,
         },
@@ -347,7 +370,17 @@ class HelperCreate(HelperTool):
         if why is not None or store is None:
             return _refused(why or _UNAVAILABLE)
         name, job = _one_line(args["name"]), _one_line(args["job"])
-        made = await make(store, self._conversations, ctx.owner_id, name, job, self._clock())
+        look = card_look(args)
+        made = await make(
+            store,
+            self._conversations,
+            ctx.owner_id,
+            name,
+            job,
+            self._clock(),
+            icon=look["icon"],
+            color=look["color"],
+        )
         if made == "full":
             return _refused(_FULL, "full")
         if made == "taken":

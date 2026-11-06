@@ -1,0 +1,199 @@
+"""A helper's first hello (the your helpers spec, Its first hello): when its chat first
+opens it takes one turn of its own, once ever, in its own voice; a routine it offers is
+its own on a card; a model that fails leaves its fixed first line. And the create card
+shows the picture its tap makes."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import pytest
+
+from tests.api.test_session import Page, idle
+from tests.brain.fakes import say, use
+from tests.scheduler.conftest import FakeClock, ms
+from tests.scheduler.test_ask import Recording
+from trillion.api.runtime import Runtime, open_runtime
+from trillion.api.session import HELPER_HELLO, Session
+from trillion.brain.types import ContextBlock, ProviderError, TextBlock
+from trillion.helpers.store import OwnHelper
+from trillion.secrets.store import MemoryStore
+from trillion.tools.helper import CREATE, make
+
+NOW = ms("2026-11-05T09:00")
+JOB = "Chases overdue invoices."
+
+
+@pytest.fixture
+async def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Runtime]:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    runtime = await open_runtime(
+        share_rules=lambda _p: None,
+        granted_roots=(granted,),
+        persona=tmp_path,
+        secrets=MemoryStore(),
+        env={"TZ": "UTC"},
+    )
+    runtime.clock = FakeClock(NOW)
+    await runtime.stop_background()
+    yield runtime
+    await runtime.close()
+
+
+async def made(rt: Runtime) -> OwnHelper:
+    assert rt.helpers is not None
+    h = await make(rt.helpers, rt.conversations, "local", "Invoices", JOB, NOW)
+    assert isinstance(h, OwnHelper)
+    return h
+
+
+def texts(rt_history: list[tuple[str, object]]) -> list[str]:
+    out = []
+    for _, msg in rt_history:
+        blocks = getattr(msg, "blocks", ())
+        out.extend(b.text for b in blocks if isinstance(b, TextBlock))
+    return out
+
+
+async def test_the_first_hello_runs_one_turn_once_in_its_voice(rt: Runtime) -> None:
+    h = await made(rt)
+    provider = Recording(say("First I'll look for anything overdue."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert len(provider.calls) == 1
+    # Conversation spend: the user is looking at its chat.
+    assert provider.callers == ["conversation"]
+    _system, messages = provider.calls[0]
+    last = messages[-1]
+    context = "\n".join(b.text for b in last.blocks if isinstance(b, ContextBlock))
+    assert "You are Invoices, one of Trillion's helpers." in context
+    assert any(isinstance(b, TextBlock) and b.text == HELPER_HELLO for b in last.blocks)
+    history = await rt.conversations.history(h.conversation_id, "local")
+    assert [k for k, _ in history] == ["assistant", "tap", "assistant"]
+    said = texts(history)
+    assert said[0].startswith("Hi, I'm Invoices.")
+    assert said[-1] == "First I'll look for anything overdue."
+    assert rt.helpers is not None
+    got = await rt.helpers.get("local", h.id)
+    assert got is not None and got.hello_ms == NOW
+    # Never again, on this page or another.
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    await session.close()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert len(provider.calls) == 1
+    await session.close()
+
+
+async def test_no_hello_outside_a_helpers_chat(rt: Runtime) -> None:
+    await made(rt)
+    provider = Recording(say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert provider.calls == []
+    await session.close()
+
+
+async def test_no_hello_over_a_running_turn(rt: Runtime) -> None:
+    h = await made(rt)
+    provider = Recording(say("Sure."), say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "turn.text", "text": "skip March"})
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert len(provider.calls) == 1
+    # Not spent: it may still say hello once that turn is over.
+    assert rt.helpers is not None
+    got = await rt.helpers.get("local", h.id)
+    assert got is not None and got.hello_ms is None
+    await session.close()
+
+
+async def test_a_routine_it_offers_is_its_own_on_a_card(rt: Runtime) -> None:
+    h = await made(rt)
+    offer = {
+        "when": "2026-11-09T09:00",
+        "ask": "Check for overdue invoices.",
+        "title": "Overdue check",
+        "repeat": {"every": "week", "days": ["mon"]},
+        "routine": "own",
+    }
+    provider = Recording(
+        use("ask_schedule", offer, "c1"),
+        say("Want me to check every Monday at 9?"),
+        say("Done."),
+    )
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "helper.hello"})
+    await page.until("confirm.request")
+    await idle(session)
+    card = page.all("confirm.request")[0]
+    assert rt.schedules is not None
+    assert await rt.schedules.active("local") == []
+    # Nothing starts without the tap.
+    await session.handle({"type": "confirm", "pending_id": card["pending_id"]})
+    await page.until("confirm.resolved")
+    await idle(session)
+    (s,) = await rt.schedules.active("local")
+    assert (s.target, s.helper_id, s.conversation_id) == ("own", h.id, h.conversation_id)
+    await session.close()
+
+
+async def test_a_model_that_fails_leaves_the_fixed_line(rt: Runtime) -> None:
+    h = await made(rt)
+    rt.provider = Recording(ProviderError("unreachable"))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    history = await rt.conversations.history(h.conversation_id, "local")
+    said = [t for k, m in history if k == "assistant" for t in texts([(k, m)])]
+    assert said == [f"Hi, I'm Invoices. {JOB} Tell me anything I should know to start."]
+    # Once ever: a failed hello is not tried again.
+    assert rt.helpers is not None
+    got = await rt.helpers.get("local", h.id)
+    assert got is not None and got.hello_ms is not None
+    await session.close()
+
+
+async def test_the_create_card_shows_the_picture_its_tap_makes(rt: Runtime) -> None:
+    args = {"name": "Invoices", "job": JOB, "icon": "leaf", "color": "rose"}
+    provider = Recording(use(CREATE, args, "c1"), say("Tap Approve to make it."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "make me an invoices helper"})
+    await page.until("confirm.request")
+    await idle(session)
+    card = page.all("confirm.request")[0]
+    assert card["look"] == {"icon": "leaf", "color": "rose"}
+    await session.close()
+
+
+async def test_only_a_create_card_carries_a_look(rt: Runtime) -> None:
+    offer = {"when": "2026-11-09T09:00", "ask": "Check the news.", "title": "News"}
+    provider = Recording(use("ask_schedule", offer, "c1"), say("Tap Approve."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "check the news on monday"})
+    await page.until("confirm.request")
+    await idle(session)
+    assert "look" not in page.all("confirm.request")[0]
+    await session.close()

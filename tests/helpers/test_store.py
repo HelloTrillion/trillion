@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from tests.scheduler.conftest import ms, runs, schedule
+from trillion.helpers.look import pick
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import MAX_HELPERS, OwnHelper
 from trillion.scheduler import runner
@@ -328,3 +329,38 @@ async def test_resume_leaves_a_routine_paused_before_the_helper(stores: Stores) 
     assert r1 is not None and r1.paused_ms is None
     r2 = await stores.schedules.get("r2")
     assert r2 is not None and r2.paused_ms == NOW - 1
+
+
+async def test_a_new_helper_has_a_picture_and_its_look_changes(stores: Stores) -> None:
+    h = await made(stores)
+    # Picked from the job and the name when none is given: never blank.
+    assert (h.icon, h.color) == pick("Invoices", JOB)
+    assert h.hello_ms is None
+    given = await stores.helpers.create(OWNER, "Inbox", "Sorts it.", NOW, icon="leaf", color="rose")
+    assert isinstance(given, OwnHelper) and (given.icon, given.color) == ("leaf", "rose")
+    wrong = await stores.helpers.create(OWNER, "Trips", "Plans travel.", NOW, icon="x", color="y")
+    assert isinstance(wrong, OwnHelper) and (wrong.icon, wrong.color) == pick(
+        "Trips", "Plans travel."
+    )
+    stores.told.clear()
+    assert await stores.helpers.set_look(OWNER, h.id, "star", "teal")
+    assert stores.told == ["changed"]
+    got = await stores.helpers.get(OWNER, h.id)
+    assert got is not None and (got.icon, got.color) == ("star", "teal")
+    # Only names from the lists, and only a helper of the owner's.
+    stores.told.clear()
+    assert not await stores.helpers.set_look(OWNER, h.id, "skull", "teal")
+    assert not await stores.helpers.set_look(OWNER, h.id, "star", "neon")
+    assert not await stores.helpers.set_look("someone", h.id, "star", "teal")
+    assert not await stores.helpers.set_look(OWNER, "0" * 32, "star", "teal")
+    assert stores.told == []
+
+
+async def test_said_hello_is_true_only_the_first_time(stores: Stores) -> None:
+    h = await made(stores)
+    assert not await stores.helpers.said_hello("someone", h.id, NOW)
+    assert await stores.helpers.said_hello(OWNER, h.id, NOW + 1)
+    assert not await stores.helpers.said_hello(OWNER, h.id, NOW + 2)
+    got = await stores.helpers.get(OWNER, h.id)
+    assert got is not None and got.hello_ms == NOW + 1
+    assert not await stores.helpers.said_hello(OWNER, "0" * 32, NOW)

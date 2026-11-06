@@ -177,6 +177,7 @@ async def test_a_handoff_runs_in_its_chat_and_a_ready_line_names_it(rt: Runtime)
     assert (got.kind, got.title, got.text) == ("ready", title, title)
     assert got.conversation_id == h.conversation_id
     assert (got.helper_id, got.helper_name) == (f"own:{h.id}", "Invoices")
+    assert (got.helper_icon, got.helper_color) == (h.icon, h.color) and got.helper_icon
     # Model-written from what it read: whatever she does next counts as read.
     assert got.handoff
     assert await it.runs() == [("delivered", None)]
@@ -259,6 +260,7 @@ async def test_a_deleted_helper_fails_the_run_with_why(rt: Runtime) -> None:
     assert await it.runs() == [("failed", "helper deleted")]
     (got,) = it.page.got
     assert got.kind == "failed" and (got.helper_id, got.helper_name) == (None, None)
+    assert (got.helper_icon, got.helper_color) == (None, None)
 
 
 async def test_a_lock_screen_shows_its_name_never_its_words(rt: Runtime) -> None:

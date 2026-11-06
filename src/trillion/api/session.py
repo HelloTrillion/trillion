@@ -98,6 +98,7 @@ from trillion.tools.helper import OFFER_PREF as HELPER_OFFER
 from trillion.tools.helper import SUGGEST as HELPER_SUGGEST
 from trillion.tools.helper import UPDATE as HELPER_UPDATE
 from trillion.tools.helper import WIDEN as HELPER_WIDEN
+from trillion.tools.helper import card_look as helper_look
 from trillion.tools.helper import make as make_helper
 from trillion.tools.helper import plain as plain_helper
 from trillion.tools.quiet import asks
@@ -211,6 +212,15 @@ class Overlap:
     # Words heard over her so far, and when that last changed (`_quiet_s`).
     words_seen: int = 0
     word_at: float = 0.0
+
+
+# What a new helper is told for its first hello (the your helpers spec, Its first
+# hello): the app's words, never the page's, in its own chat with its overlay.
+HELPER_HELLO = (
+    "[host] This is your first message to the user. In one or two sentences say what "
+    "you'll do first and anything you need to know. If a regular check suits your job, "
+    'offer one with ask_schedule as your routine (routine "own"), at a sensible time.'
+)
 
 
 # Saved with a message sent by tapping a widget's ask, ahead of its words. It tells her
@@ -1438,6 +1448,8 @@ class Session:
             await self._on_greet()
         elif kind == "day.build":
             await self._on_day_build(spoken=msg.get("spoken") is True)
+        elif kind == "helper.hello":
+            await self._on_helper_hello()
         elif kind == "speech.mute":
             self._muted = msg.get("muted") is True
         elif kind == "mic.opened":
@@ -1603,6 +1615,37 @@ class Session:
             self._via = "text"
             self._arrived = self._starting("greet")
             self._queued.append(greeting(rt.identity))
+            self._begin()
+
+    async def _on_helper_hello(self) -> None:
+        """A helper's chat opened: the first time ever, it says hello in its own words
+        and may offer a routine on a card. The page only asks; the note is the app's.
+        Marked before the turn runs, so a hello that fails is never tried again and
+        its fixed first line stands."""
+        rt = self._rt
+        store = rt.helpers
+        if store is None or rt.provider is None or self.kind != "helper":
+            return
+        async with self._taking_input():
+            if self._task is not None or await self._routine_building():
+                return
+            await self._read_place()
+            h = self._helper
+            if h is None or self._task is not None:
+                return
+            try:
+                first = await store.said_hello(OWNER, h.id, rt.clock())
+            except Exception as e:
+                logger.warning(
+                    "helper hello not marked in session %s: %s", self.id, type(e).__name__
+                )
+                return
+            if not first or self._task is not None:
+                return
+            await self._stop_listening()
+            self._via = "text"
+            self._arrived = self._starting("greet")
+            self._queued.append(HELPER_HELLO)
             self._begin()
 
     async def _on_day_build(self, *, spoken: bool = False) -> None:
@@ -3804,6 +3847,8 @@ class Session:
             expires_at=a.expires_at,
             # Spend and anything unrecoverable can only be approved here, by a tap (SPN-14).
             tap_only=a.risk is Risk.SPEND or not a.recoverable,
+            # A new helper's picture, from the approved arguments its tap makes it from.
+            **({"look": helper_look(a.args)} if a.tool == HELPER_CREATE else {}),
         )
 
     async def _state(self, orb: str, *, notice: bool = False) -> None:
@@ -3929,6 +3974,8 @@ class Session:
                 # Which helper it came from, named as the panel names it.
                 helper_id=n.helper_id,
                 helper_name=n.helper_name,
+                helper_icon=n.helper_icon,
+                helper_color=n.helper_color,
             )
         if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

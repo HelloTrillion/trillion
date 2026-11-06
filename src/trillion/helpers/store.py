@@ -34,14 +34,27 @@ class OwnHelper:
     # Paused when set: handed no work, and its routines paused with it.
     paused_ms: int | None
     created_at: int
+    # Its picture: names from the lists in `helpers/look.py`.
+    icon: str = "spark"
+    color: str = "blue"
+    # When its first hello ran; None until it has.
+    hello_ms: int | None = None
 
 
 class HelperStore(Protocol):
     async def create(
-        self, owner_id: str, name: str, job: str, now_ms: int
+        self,
+        owner_id: str,
+        name: str,
+        job: str,
+        now_ms: int,
+        *,
+        icon: str | None = None,
+        color: str | None = None,
     ) -> OwnHelper | Literal["full", "taken"]:
         """Make a helper and its 'helper' conversation, titled with its name, together.
-        "full" at `MAX_HELPERS`, "taken" when the name is, in any case."""
+        "full" at `MAX_HELPERS`, "taken" when the name is, in any case. Its picture is
+        `look.pick`'s: the icon and colour given when they are on the lists."""
         ...
 
     async def get(self, owner_id: str, helper_id: str) -> OwnHelper | None: ...
@@ -64,6 +77,15 @@ class HelperStore(Protocol):
     async def add_note(self, owner_id: str, helper_id: str, line: str) -> bool:
         """Add a line to its notes (AGT-7), only while they stay within `NOTES_MAX`.
         False, and nothing changed, otherwise or for no such helper."""
+        ...
+
+    async def set_look(self, owner_id: str, helper_id: str, icon: str, color: str) -> bool:
+        """A new picture. False, and nothing changed, for a name not on the lists or no
+        such helper."""
+        ...
+
+    async def said_hello(self, owner_id: str, helper_id: str, now_ms: int) -> bool:
+        """Mark its first hello as run: True only the first time, for one call at once."""
         ...
 
     async def pause(self, owner_id: str, helper_id: str, now_ms: int) -> bool:

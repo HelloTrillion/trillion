@@ -319,6 +319,8 @@ def _own(
         conversation_id=h.conversation_id,
         paused=paused,
         notes=h.notes,
+        icon=h.icon,
+        color=h.color,
         routines=tuple(
             RoutineLine(
                 id=s.id,

@@ -166,6 +166,8 @@ class _ScheduleTool(BaseTool):
             zone, repeat, first = self._plan(args, body_key, limit)
         except WhenError as e:
             return _refused(str(e))
+        # An own routine set in a helper's chat is the helper's: it runs there, as it.
+        helper = ctx.helper_id if target == "own" else None
         s = Schedule(
             id=_new_id(),
             owner_id=ctx.owner_id,
@@ -180,6 +182,8 @@ class _ScheduleTool(BaseTool):
             created_ms=self._clock(),
             created_in=ctx.session_id,
             target=target,
+            conversation_id=ctx.session_id if helper is not None else None,
+            helper_id=helper,
         )
         await store.create(s)
         what = "reminder" if kind == "reminder" else "timed ask"

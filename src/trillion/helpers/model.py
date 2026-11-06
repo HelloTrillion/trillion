@@ -83,6 +83,9 @@ class Helper:
     # for any other kind.
     notes: str | None = None
     routines: tuple[RoutineLine, ...] = ()
+    # A helper of the user's: its picture (`helpers/look.py`). None for any other kind.
+    icon: str | None = None
+    color: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -102,6 +105,8 @@ class Helper:
             "connected": self.connected,
             "notes": self.notes,
             "routines": [r.to_json() for r in self.routines],
+            "icon": self.icon,
+            "color": self.color,
         }
 
 

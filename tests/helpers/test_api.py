@@ -24,6 +24,7 @@ from trillion.api.session import Session
 from trillion.brain.types import ContextBlock
 from trillion.helpers import live
 from trillion.helpers.build import snapshot
+from trillion.helpers.look import pick
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.wiring import RuntimeSources
 from trillion.persona import day
@@ -133,7 +134,10 @@ def test_the_list_holds_routines_asks_and_watchers(make: Any) -> None:
         "connected",
         "notes",
         "routines",
+        "icon",
+        "color",
     }
+    assert (rows["watcher:email"]["icon"], rows["watcher:email"]["color"]) == (None, None)
 
 
 def test_a_routines_runs_newest_first(make: Any) -> None:
@@ -796,6 +800,53 @@ async def test_your_helper_changing_is_pushed(rt: Runtime) -> None:
     await session.close()
 
 
+def put(app: App, path: str, body: Any, **kw: Any) -> Any:
+    return app.client.put(path, headers={**app.auth, **kw.pop("headers", {})}, json=body, **kw)
+
+
+def test_its_picture_changes_with_one_tap(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    told: list[int] = []
+    app.rt.helpers_changed = lambda: told.append(1)  # type: ignore[method-assign]
+    assert app.rt.helpers is not None
+    app.rt.helpers.changed = app.rt.helpers_changed
+    look = f"{PATH}/own:{h.id}/look"
+    r = put(app, look, {"icon": "leaf", "color": "rose"})
+    assert r.status_code == 200
+    row = next(x for x in r.json()["helpers"] if x["id"] == f"own:{h.id}")
+    assert (row["icon"], row["color"]) == ("leaf", "rose")
+    assert told
+    got = call(app, app.rt.helpers.get, OWNER, h.id)
+    assert (got.icon, got.color) == ("leaf", "rose")
+
+
+def test_its_picture_needs_the_token_our_origin_names_on_the_lists_and_your_helper(
+    make: Any,
+) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    look = f"{PATH}/own:{h.id}/look"
+    body = {"icon": "leaf", "color": "rose"}
+    assert app.client.put(look, json=body).status_code == 401
+    elsewhere = {"origin": "https://evil.example"}
+    assert put(app, look, body, headers=elsewhere).status_code == 403
+    # JSON only, like every other change (SPN-11).
+    plain = {**app.auth, "content-type": "text/plain"}
+    assert app.client.put(look, headers=plain, content="icon=leaf").status_code in (400, 415)
+    assert put(app, look, {"icon": "skull", "color": "rose"}).status_code == 400
+    assert put(app, look, {"icon": "leaf", "color": "neon"}).status_code == 400
+    assert put(app, look, {"icon": "leaf"}).status_code in (400, 422)
+    assert app.rt.schedules is not None
+    call(app, app.rt.schedules.create, routine())
+    for other in (f"routine:{RID}", "watcher:email", f"ask:{AID}", "own:" + "0" * 32):
+        assert put(app, f"{PATH}/{other}/look", body).status_code == 404
+    got = call(app, app.rt.helpers.get, OWNER, h.id) if app.rt.helpers is not None else None
+    assert got is not None and (got.icon, got.color) == pick(got.name, got.job)
+
+
 def test_your_helpers_routes_are_not_found_while_helpers_are_not_set_up(make: Any) -> None:
     app: App = make()
     ready(app)
@@ -807,4 +858,5 @@ def test_your_helpers_routes_are_not_found_while_helpers_are_not_set_up(make: An
     assert post(app, f"{own}/conversation").status_code == 404
     assert app.client.get(f"{own}/runs", headers=app.auth).status_code == 404
     assert delete(app, own).status_code == 404
+    assert put(app, f"{own}/look", {"icon": "leaf", "color": "rose"}).status_code == 404
     assert app.client.get(PATH, headers=app.auth).status_code == 200

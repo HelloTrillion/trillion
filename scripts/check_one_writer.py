@@ -92,7 +92,17 @@ NOT_DECISIONS: dict[str, str] = {
     **{
         f"helpers.{c}": "a helper the user made and its state (the your helpers spec): it"
         " approves nothing"
-        for c in ("name", "name_key", "job", "notes", "paused_ms", "deleted_at")
+        for c in (
+            "name",
+            "name_key",
+            "job",
+            "notes",
+            "paused_ms",
+            "icon",
+            "color",
+            "hello_ms",
+            "deleted_at",
+        )
     },
     **{
         f"task_runs.{c}": "a scheduled run's progress (AGT-4): it approves nothing"

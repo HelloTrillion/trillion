@@ -117,6 +117,9 @@ class Delivery:
     # its details. None for a reminder, a spend notice or any other no helper sent.
     helper_id: str | None = None
     helper_name: str | None = None
+    # A helper of the user's: its picture, for its line. None for any other.
+    helper_icon: str | None = None
+    helper_color: str | None = None
     # A helper's handoff, handed back: its line is model-written from what it read, so
     # what she does next counts as read (MEM-5).
     handoff: bool = False
@@ -424,7 +427,12 @@ class Door:
             return {}
         if h is None:
             return {}
-        return {"helper_id": f"own:{h.id}", "helper_name": h.name}
+        return {
+            "helper_id": f"own:{h.id}",
+            "helper_name": h.name,
+            "helper_icon": h.icon,
+            "helper_color": h.color,
+        }
 
     async def _due(self, n: Notice, now: int, zones: dict[str, str]) -> str:
         if n.source != "schedule":

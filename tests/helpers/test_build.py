@@ -397,6 +397,8 @@ async def test_to_json_is_the_apis_body() -> None:
                 "connected": None,
                 "notes": None,
                 "routines": [],
+                "icon": None,
+                "color": None,
             },
             {
                 "id": "ask:a1",
@@ -415,6 +417,8 @@ async def test_to_json_is_the_apis_body() -> None:
                 "connected": None,
                 "notes": None,
                 "routines": [],
+                "icon": None,
+                "color": None,
             },
         ],
         "needs_you": 1,
@@ -529,6 +533,8 @@ def mine(**kw: Any) -> OwnHelper:
         conversation_id="conv-h1",
         paused_ms=None,
         created_at=NOW - 86_400_000,
+        icon="receipt",
+        color="teal",
     )
     return dataclasses.replace(base, **kw)
 
@@ -580,8 +586,11 @@ async def test_an_idle_helper_of_yours_names_its_job_notes_and_chat() -> None:
         waiting=(),
         conversation_id="conv-h1",
         notes="Leave out the March ones.",
+        icon="receipt",
+        color="teal",
     )
     assert h.to_json()["routines"] == [] and h.to_json()["notes"] == "Leave out the March ones."
+    assert (h.to_json()["icon"], h.to_json()["color"]) == ("receipt", "teal")
 
 
 async def test_a_helper_of_yours_in_every_state() -> None:

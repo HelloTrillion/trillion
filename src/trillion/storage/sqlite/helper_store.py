@@ -15,6 +15,7 @@ from typing import Literal
 
 import aiosqlite
 
+from trillion.helpers.look import COLORS, ICONS, pick
 from trillion.helpers.store import MAX_HELPERS, NOTES_MAX, OwnHelper
 from trillion.storage.sqlite.conversation_store import tidy_title
 from trillion.storage.sqlite.schedule_store import cancel_helper_schedules
@@ -30,6 +31,9 @@ def _helper(r: aiosqlite.Row) -> OwnHelper:
         conversation_id=str(r["conversation_id"]),
         paused_ms=int(r["paused_ms"]) if r["paused_ms"] is not None else None,
         created_at=int(r["created_at"]),
+        icon=str(r["icon"]),
+        color=str(r["color"]),
+        hello_ms=int(r["hello_ms"]) if r["hello_ms"] is not None else None,
     )
 
 
@@ -93,8 +97,16 @@ class SqliteHelperStore:
         return _helper(row) if row is not None else None
 
     async def create(
-        self, owner_id: str, name: str, job: str, now_ms: int
+        self,
+        owner_id: str,
+        name: str,
+        job: str,
+        now_ms: int,
+        *,
+        icon: str | None = None,
+        color: str | None = None,
     ) -> OwnHelper | Literal["full", "taken"]:
+        icon, color = pick(name, job, icon, color)
         helper = OwnHelper(
             id=uuid.uuid4().hex,
             owner_id=owner_id,
@@ -104,6 +116,8 @@ class SqliteHelperStore:
             conversation_id=uuid.uuid4().hex,
             paused_ms=None,
             created_at=now_ms,
+            icon=icon,
+            color=color,
         )
         async with self._tx() as conn:
             async with conn.execute(
@@ -123,8 +137,18 @@ class SqliteHelperStore:
             )
             await conn.execute(
                 "INSERT INTO helpers (id, owner_id, name, name_key, job, notes, conversation_id,"
-                " paused_ms, created_at) VALUES (?, ?, ?, ?, ?, '', ?, NULL, ?)",
-                (helper.id, owner_id, name, name_key(name), job, helper.conversation_id, now_ms),
+                " paused_ms, icon, color, created_at) VALUES (?, ?, ?, ?, ?, '', ?, NULL, ?, ?, ?)",
+                (
+                    helper.id,
+                    owner_id,
+                    name,
+                    name_key(name),
+                    job,
+                    helper.conversation_id,
+                    icon,
+                    color,
+                    now_ms,
+                ),
             )
         self._told()
         return helper
@@ -186,6 +210,29 @@ class SqliteHelperStore:
             done = cur.rowcount == 1
         self._told(done)
         return done
+
+    async def set_look(self, owner_id: str, helper_id: str, icon: str, color: str) -> bool:
+        if icon not in ICONS or color not in COLORS:
+            return False
+        async with self._tx() as conn:
+            cur = await conn.execute(
+                "UPDATE helpers SET icon = ?, color = ? WHERE id = ? AND owner_id = ?"
+                " AND deleted_at IS NULL",
+                (icon, color, helper_id, owner_id),
+            )
+            done = cur.rowcount == 1
+        self._told(done)
+        return done
+
+    async def said_hello(self, owner_id: str, helper_id: str, now_ms: int) -> bool:
+        async with self._tx() as conn:
+            # Set only while unset, in one statement: two pages at once get one True.
+            cur = await conn.execute(
+                "UPDATE helpers SET hello_ms = ? WHERE id = ? AND owner_id = ?"
+                " AND hello_ms IS NULL AND deleted_at IS NULL",
+                (now_ms, helper_id, owner_id),
+            )
+            return cur.rowcount == 1
 
     async def pause(self, owner_id: str, helper_id: str, now_ms: int) -> bool:
         async with self._tx() as conn:

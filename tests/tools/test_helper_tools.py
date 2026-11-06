@@ -14,6 +14,7 @@ import pytest
 
 from tests.scheduler.conftest import FakeClock, ms
 from trillion.brain.types import TextBlock
+from trillion.helpers.look import COLORS, ICONS
 from trillion.helpers.store import JOB_MAX, MAX_HELPERS, NAME_MAX, NOTES_MAX, OwnHelper
 from trillion.spend.types import Work
 from trillion.spine.contract import ToolCall, ToolContext
@@ -44,6 +45,7 @@ from trillion.tools.helper import (
     HelperSuggest,
     HelperUpdate,
     HelperWiden,
+    card_look,
 )
 from trillion.tools.schedule import MAX_TITLE
 
@@ -166,6 +168,35 @@ async def test_made_on_a_card_that_says_what_it_is(it: Setup) -> None:
         "helper_id": h.id,
         "conversation_id": h.conversation_id,
     }
+
+
+async def test_its_picture_is_hers_or_picked_from_the_job(it: Setup) -> None:
+    args = {"name": "Invoices", "job": JOB, "icon": "leaf", "color": "rose"}
+    card = await it.router.execute(call(CREATE, args), CTX)
+    assert card.status == "confirmation_required"
+    # The card's words stay text; the look rides beside them (`card_look`).
+    assert card.summary == f"New helper: Invoices. {JOB}"
+    assert card_look(args) == {"icon": "leaf", "color": "rose"}
+    await it.router.resolve(card.pending_id or "", "confirm", tap())
+    (h,) = await it.helpers.all(OWNER)
+    assert (h.icon, h.color) == ("leaf", "rose")
+    # Left out: picked from the job and the name, as the card showed it.
+    done = await it.create.execute({"name": "Inbox", "job": "Keeps my inbox tidy."}, CTX)
+    assert done.ok
+    got = await it.helpers.get(OWNER, json.loads(done.content)["helper_id"])
+    assert got is not None
+    assert {"icon": got.icon, "color": got.color} == card_look(
+        {"name": "Inbox", "job": "Keeps my inbox tidy."}
+    )
+    assert got.icon == "envelope"
+
+
+async def test_a_picture_not_on_the_lists_is_refused_by_the_schema(it: Setup) -> None:
+    args = {"name": "Invoices", "job": JOB, "icon": "skull"}
+    card = await it.router.execute(call(CREATE, args), CTX)
+    assert card.status == "refused"
+    schema = it.create.definition.input_schema["properties"]
+    assert tuple(schema["icon"]["enum"]) == ICONS and tuple(schema["color"]["enum"]) == COLORS
 
 
 async def test_its_first_message_is_saved_as_hers(it: Setup) -> None:
