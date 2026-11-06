@@ -67,8 +67,8 @@ jobs:
     name: Python (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # A hung test must fail in minutes. Without a limit a job runs for six hours.
-    # Windows needs about ten minutes for the suite, so the limit leaves it room.
-    timeout-minutes: 15
+    # Windows needs about fifteen minutes for the suite, so the limit leaves it room.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
