@@ -58,10 +58,10 @@ At most 20 helpers. At the limit, she says so and suggests one to delete.
 
 ## Suggestions
 
-- **A need** is an area of work: the tools a turn used, mapped to areas by tool name (email, calendar, files, payments, Slack, web, or one MCP server). Each of your turns with her (not a helper's, not a run) records the areas it used, once per area per day.
+- **A need** is an area of work: the tools a turn used, mapped to areas by tool name (email, calendar, files, payments, Slack, web, or one MCP server, found from the server that registered the tool). It is counted from the tool audit that already records every call: only calls that ran, only in your own conversations with her (not a helper's, not a run), once per area per local day. The check runs at most once a day per conversation.
 - When an area reaches 3 days within 14, no helper's job covers it, and it isn't declined, her next turn gets a host note: offer a helper for it, once, in one sentence, after answering. She offers with `helper_suggest {area, name, job}`. It shows as a line with **Create** and **No thanks**.
 - **Create** raises nothing more: your tap is the approval. The helper is made as above. **No thanks** keeps the area in the preference `helper_declined`, and she never offers it again. Neither happens on its own: no tap, no helper.
-- At most one offer a day.
+- At most one offer a day, and the note to offer at most once a day even if she doesn't.
 
 ## Its picture
 
@@ -95,7 +95,7 @@ The Helpers panel lists your helpers under her with the others:
 
 - Every tool call goes through the router as today. A helper's run is unattended, so it gets only what runs without a card (D5).
 - What a run reads counts as outside (MEM-5), and its reply is saved as read, not as your words.
-- A helper's job, name and notes come from you, through her, on a card or by the narrowing allowlist. Outside content can't write them: after reading outside content in a turn, `helper_create`, `helper_update` and `helper_widen` are refused, as `routine_widen` is.
+- A helper's job, name and notes come from you, through her, on a card or by the narrowing allowlist. A job she drafted from something she read becomes the helper's instructions in its chat once you tap Create, so the card is where you check it. Outside content can't write them: after reading outside content in a turn, `helper_create`, `helper_update` and `helper_widen` are refused, as `routine_widen` is.
 - Handoff runs are background work for the spend gate (`Work` gains `"helpers"`). At a cap they pause like routines.
 
 ## PRD changes

@@ -36,6 +36,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Spend caps: the pill, Usage and limits, the card at the cap | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Spend caps: the spoken line at the cap | ✓ | ✓ | ✓ | while a page is open, with voice on | ✓ |
 | Helpers panel: her routines, timed asks and watchers, live (a full-height sheet at phone width) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Helpers you make: create, talk, hand off, suggest, pictures, pause and delete | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Shared folders: shares, the card, Settings | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Shared folders: the folder browser | ✓ | ✓ | ✓ | ✓ (drawn by the page from the server's listing) | ✓ |
 | Shared folders: the system folder picker | — | — | — | not available | ✓ `NSOpenPanel` |
