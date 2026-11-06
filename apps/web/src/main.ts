@@ -67,7 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { askTarget, bindButton, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
+import { type Helper, askTarget, bindButton, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
 import { lookOf, picture } from './look';
 import { chatHead, offerLine } from './offer';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
@@ -870,9 +870,7 @@ function render(): void {
       ? placeholder(ob)
       : !canType
         ? ''
-        : view.entries.length
-          ? `Reply to ${view.agentName}`
-          : `Say hello to ${view.agentName}`;
+        : messagePlaceholder(view.agentName, view.entries.length > 0, ownHere()?.name ?? null);
   // Reads she sent off keep running while the user talks: a quiet count, never busy.
   const jobsText = ready ? backgroundLine(view.jobs) : '';
   jobsEl.hidden = !jobsText;
@@ -2173,7 +2171,7 @@ const helpers = createHelpers({
 });
 bindButton(helpersBtn, helpersDot, helpers);
 // A helper's chat may only now be known for one: its head is drawn, and its hello asked.
-helpers.onCount(() => drawChatHead());
+helpers.onCount(() => render());
 function helpersShowing(): boolean {
   return workspace.isOpen && workspace.showing === 'helpers';
 }
@@ -2209,9 +2207,13 @@ let chatHeadKey = '';
 const hello = helloOnce(send);
 chatHeadOn = true;
 drawChatHead();
+/** The user's own helper whose chat is open, once the panel exists to say. */
+function ownHere(): Helper | null {
+  return chatHeadOn && view.link === 'ready' ? helpers.ownFor(view.conversationId) : null;
+}
 function drawChatHead(): void {
   if (!chatHeadOn) return;
-  const h = view.link === 'ready' ? helpers.ownFor(view.conversationId) : null;
+  const h = ownHere();
   const look = h ? lookOf(h.icon, h.color) : null;
   const key = h && look ? [h.id, h.name, h.job, look.icon, look.color].join('|') : '';
   if (key !== chatHeadKey) {

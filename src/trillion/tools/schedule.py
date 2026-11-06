@@ -75,7 +75,8 @@ _REPEAT: dict[str, Any] = {
     ),
 }
 # Where a routine's board lands, as its card says it (the routines spec).
-_LANDS: dict[str, str] = {"day": "on Your day", "own": "in its own conversation"}
+OWN_LANDS = "in its own conversation"
+_LANDS: dict[str, str] = {"day": "on Your day", "own": OWN_LANDS}
 _FROM_READING = (
     "a reminder can't be set after reading a page, a file or a message in this turn; "
     "tell the user what it would be for, then set it again"

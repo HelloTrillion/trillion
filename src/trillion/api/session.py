@@ -106,6 +106,8 @@ from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
 from trillion.tools.routine import mine as routine_here
 from trillion.tools.routine import named as routine_named
+from trillion.tools.schedule import ASK as ASK_SCHEDULE
+from trillion.tools.schedule import OWN_LANDS as ROUTINE_OWN_LANDS
 from trillion.tools.web import FETCH
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
@@ -219,8 +221,15 @@ class Overlap:
 HELPER_HELLO = (
     "[host] This is your first message to the user. In one or two sentences say what "
     "you'll do first and anything you need to know. If a regular check suits your job, "
-    'offer one with ask_schedule as your routine (routine "own"), at a sensible time.'
+    'offer one with ask_schedule as your routine (routine "own"), at a sensible time: '
+    "it goes to them on a card. Never say it is set up: say it starts once they tap "
+    "Approve."
 )
+
+
+# A routine's card: not a one-off timed ask. And where an own routine's card says it lands.
+ROUTINE_LABEL = "Set up a routine"
+OWN_LANDS = f", {ROUTINE_OWN_LANDS})"
 
 
 # Saved with a message sent by tapping a widget's ask, ahead of its words. It tells her
@@ -2639,7 +2648,10 @@ class Session:
         )
         await self._helper_made(response)
         action = "Approve" if decision == "confirm" else "Decline"
-        note = f"[host] The user tapped {action} on the card for {pending_id}. Result: "
+        note = (
+            f"[host] The user tapped {action} on the card for {pending_id}. Say what came "
+            "of it in one short sentence, and don't repeat what you said before. Result: "
+        )
         self._queued.append(note + response.to_model())
         if self._task is None:
             self._begin()
@@ -3848,22 +3860,41 @@ class Session:
         if a is None or a.owner_id != OWNER:
             return
         reg = self._rt.registry
+        label = labels.tool_label(a.tool, labels.connected(reg.definition(a.tool), reg.get(a.tool)))
+        summary = a.summary
+        if a.tool == ASK_SCHEDULE and a.args.get("routine") in ("day", "own"):
+            # A routine, not a one-off: said so, and where it lands.
+            label = ROUTINE_LABEL
+            if a.args.get("routine") == "own":
+                summary = await self._routine_lands(a.session_id, summary)
         await self._send(
             "confirm.request",
             pending_id=a.id,
             tool=a.tool,
             # A friendly name and the reason it needs the user, both from the host.
-            tool_label=labels.tool_label(
-                a.tool, labels.connected(reg.definition(a.tool), reg.get(a.tool))
-            ),
+            tool_label=label,
             reason=labels.reason(a.risk, a.recoverable),
-            summary=a.summary,
+            summary=summary,
             expires_at=a.expires_at,
             # Spend and anything unrecoverable can only be approved here, by a tap (SPN-14).
             tap_only=a.risk is Risk.SPEND or not a.recoverable,
             # A new helper's picture, from the approved arguments its tap makes it from.
             **({"look": helper_look(a.args)} if a.tool == HELPER_CREATE else {}),
         )
+
+    async def _routine_lands(self, session_id: str, summary: str) -> str:
+        """A routine set in a helper's chat runs there: its card says so by its name."""
+        store = self._rt.helpers
+        if store is None or not summary.endswith(OWN_LANDS):
+            return summary
+        try:
+            h = await store.by_conversation(OWNER, session_id)
+        except Exception as e:
+            logger.warning("card %s: its helper not read: %s", session_id, type(e).__name__)
+            return summary
+        if h is None:
+            return summary
+        return summary[: -len(OWN_LANDS)] + f", in {present.inert(h.name)}'s chat)"
 
     async def _state(self, orb: str, *, notice: bool = False) -> None:
         if orb != self._orb or notice != self._orb_notice:

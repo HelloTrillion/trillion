@@ -418,6 +418,8 @@ def test_a_write_raises_a_card_and_a_tap_runs_exactly_what_it_showed(make: Any) 
     note = app.provider.calls[2][1][-1].blocks[-1]
     assert isinstance(note, TextBlock) and note.text.startswith("[host] The user tapped Approve")
     assert '"status": "succeeded"' in note.text
+    # One short line on what came of it, never her last reply again.
+    assert "one short sentence, and don't repeat what you said before" in note.text
     assert app.rows("SELECT surface FROM decision_deliveries") == [("web",)]
     assert [r[0] for r in app.rows("SELECT kind FROM messages ORDER BY id")] == [
         "user", "assistant", "tool_results", "assistant", "tap", "assistant",

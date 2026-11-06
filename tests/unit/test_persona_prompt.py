@@ -435,6 +435,17 @@ def test_a_helpers_overlay_names_it_its_job_and_its_notes() -> None:
     assert f'helper: {"a" * 32} "Reports"' in text.splitlines()
 
 
+def test_a_job_in_its_own_voice_is_said_as_its_words() -> None:
+    text = helper_overlay(_helper(job="I sum up the weekly reports."))
+    assert text.startswith(
+        "You are Reports, one of Trillion's helpers. In your own words, your job: "
+        "I sum up the weekly reports."
+    )
+    # Any other job is left as it is.
+    assert "Your job: Sums up" in helper_overlay(_helper())
+    assert "Your job: Ideas" in helper_overlay(_helper(job="Ideas for the team."))
+
+
 def test_a_helper_with_no_notes_has_no_notes_sentence() -> None:
     text = helper_overlay(_helper())
     assert "notes" not in text
@@ -478,7 +489,10 @@ def test_her_helper_instructions_are_in_the_cached_block_only_when_helpers_exist
     assert block.cache
     text = block.text
     assert "helper_create" in text and "helper_ask" in text and "helper_suggest" in text
-    assert '"Asking {name}"' in text
+    # It never scripts words that claim a handoff: the tool's result says what to say,
+    # and only a helper_ask that returned may be said.
+    assert "Asking {" not in text and 'Say "Asking' not in text
+    assert "unless helper_ask returned in this turn" in text
     assert "Trillion" not in text and "{user_name}" not in text
     assert "\u2014" not in text and "\u2013" not in text
     assert system_blocks(ident, "soul", helpers=True) == system_blocks(ident, "soul", helpers=True)

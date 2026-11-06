@@ -148,6 +148,9 @@ async def test_a_routine_it_offers_is_its_own_on_a_card(rt: Runtime) -> None:
     await page.until("confirm.request")
     await idle(session)
     card = page.all("confirm.request")[0]
+    # A routine, said so, and where it runs: in this helper's chat.
+    assert card["tool_label"] == "Set up a routine"
+    assert card["summary"].endswith('(a routine, "Overdue check", in Invoices\'s chat)')
     assert rt.schedules is not None
     assert await rt.schedules.active("local") == []
     # Nothing starts without the tap.
@@ -156,6 +159,43 @@ async def test_a_routine_it_offers_is_its_own_on_a_card(rt: Runtime) -> None:
     await idle(session)
     (s,) = await rt.schedules.active("local")
     assert (s.target, s.helper_id, s.conversation_id) == ("own", h.id, h.conversation_id)
+    await session.close()
+
+
+def test_the_hello_never_says_a_routine_is_set_up() -> None:
+    assert "on a card" in HELPER_HELLO
+    assert "Never say it is set up" in HELPER_HELLO
+    assert "starts once they tap Approve" in HELPER_HELLO
+
+
+async def test_a_plain_timed_ask_keeps_its_label(rt: Runtime) -> None:
+    offer = {"when": "2026-11-09T09:00", "ask": "Check the news.", "title": "News"}
+    rt.provider = Recording(use("ask_schedule", offer, "c1"), say("Tap Approve."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "check the news on monday"})
+    await page.until("confirm.request")
+    await idle(session)
+    assert page.all("confirm.request")[0]["tool_label"] == "Schedule a timed ask"
+    await session.close()
+
+
+async def test_a_routine_in_her_chat_says_its_own_conversation(rt: Runtime) -> None:
+    offer = {
+        "when": "2026-11-09T09:00",
+        "ask": "Check the news.",
+        "title": "News",
+        "routine": "own",
+    }
+    rt.provider = Recording(use("ask_schedule", offer, "c1"), say("Tap Approve."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "check the news every monday"})
+    await page.until("confirm.request")
+    await idle(session)
+    card = page.all("confirm.request")[0]
+    assert card["tool_label"] == "Set up a routine"
+    assert card["summary"].endswith("in its own conversation)")
     await session.close()
 
 

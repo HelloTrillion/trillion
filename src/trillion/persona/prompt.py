@@ -214,7 +214,9 @@ def helper_overlay(h: OwnHelper, agent_name: str = DEFAULT_AGENT_NAME) -> str:
     (the your helpers spec): it is her, focused on one job. Its fields are the user's,
     made inert. The last line names it, for helper_update, narrow and widen."""
     job = inert(h.job)
-    said = f"You are {inert(h.name)}, one of {inert(agent_name)}'s helpers. Your job: {job}"
+    # A job in its own voice ("I keep track of...") is said as its words; any other as is.
+    lead = "In your own words, your job: " if re.match(r"I\b", job) else "Your job: "
+    said = f"You are {inert(h.name)}, one of {inert(agent_name)}'s helpers. {lead}{job}"
     if not job.endswith((".", "!", "?")):
         said += "."
 

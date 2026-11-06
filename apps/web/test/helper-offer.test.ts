@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApprovalStrip } from '../src/approvals';
-import { createAskQueue, createdOf, createdOpener, helloOnce } from '../src/helpers';
+import { createAskQueue, createdOf, createdOpener, helloOnce, messagePlaceholder } from '../src/helpers';
 import { lookOf, picture } from '../src/look';
 import { fromTag, renderScheduled } from '../src/notice';
 import { areaWords, chatHead, offerLine, type Offer } from '../src/offer';
@@ -267,5 +267,14 @@ describe('review fixes', () => {
     expect(pic.dataset['icon']).toBe('receipt');
     expect(pic.dataset['color']).toBe('green');
     strip.dispose();
+  });
+});
+
+describe('a helper’s chat', () => {
+  it('asks for a message to the helper by its name, and to her anywhere else', () => {
+    expect(messagePlaceholder('Trillion', true, 'Accounts Receivable')).toBe('Message Accounts Receivable');
+    expect(messagePlaceholder('Trillion', false, 'Invoices')).toBe('Message Invoices');
+    expect(messagePlaceholder('Trillion', true, null)).toBe('Reply to Trillion');
+    expect(messagePlaceholder('Nova', false, null)).toBe('Say hello to Nova');
   });
 });

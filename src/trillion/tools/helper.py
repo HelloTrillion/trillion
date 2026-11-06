@@ -94,7 +94,11 @@ _JOB: dict[str, Any] = {
     "type": "string",
     "minLength": 1,
     "maxLength": JOB_MAX,
-    "description": "One sentence: what it does for the user.",
+    "description": (
+        "One full sentence in the helper's own voice, starting with 'I': what it does "
+        "for the user, such as 'I keep track of unpaid invoices and remind you who owes "
+        "you money.'"
+    ),
 }
 _ICON: dict[str, Any] = {
     "type": "string",
@@ -313,8 +317,9 @@ class HelperCreate(HelperTool):
         name=CREATE,
         description=(
             "Make a helper: a specialist with one job and a chat of its own, when the user "
-            "asks for one. Draft a short `name` and a one-sentence `job` from what they "
-            "said, and pick an `icon` and `color` for its picture that fit the job. Not "
+            "asks for one. Draft a short `name`, and the `job` as one full sentence in its "
+            "own voice starting with 'I', from what they said, and pick an `icon` and "
+            "`color` for its picture that fit the job. Not "
             "when a helper's job already covers it: suggest using that one. " + ASKS_BY_CARD
         ),
         input_schema={

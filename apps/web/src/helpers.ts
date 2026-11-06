@@ -317,6 +317,12 @@ export function createAskQueue(d: {
   };
 }
 
+/** The message box's prompt: a helper's own chat is talked to by its name. */
+export function messagePlaceholder(agentName: string, started: boolean, helperName: string | null): string {
+  if (helperName) return `Message ${helperName}`;
+  return started ? `Reply to ${agentName}` : `Say hello to ${agentName}`;
+}
+
 /**
  * Where + New helper asks her: the conversation last open that is not a helper's own
  * chat, or null for a new one.
