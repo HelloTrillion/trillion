@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,7 +18,9 @@ from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import Session
 from trillion.brain.types import ContextBlock, Msg, TextBlock
 from trillion.helpers.store import OwnHelper
+from trillion.persona import day
 from trillion.secrets.store import MemoryStore
+from trillion.spine.contract import ToolContext
 from trillion.tools.helper import ASK, CREATE, NARROW, SUGGEST, UPDATE, WIDEN
 
 NOW = ms("2026-11-05T09:00")
@@ -219,4 +222,76 @@ async def test_no_helper_tools_without_the_helpers_store(rt: Runtime) -> None:
     await idle(session)
     assert not (DISPATCH | OWN) & set(provider.offered[0])
     assert 'tool="helpers"' not in context_of(provider)
+    await session.close()
+
+
+async def test_a_helper_deleted_while_its_chat_is_open_leaves_a_plain_chat(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert rt.helpers is not None
+    h = await made(rt)
+    seen: list[ToolContext] = []
+    dispatch = rt.router.dispatch
+
+    async def recording(call: Any, ctx: ToolContext, *a: Any, **kw: Any) -> Any:
+        seen.append(ctx)
+        return await dispatch(call, ctx, *a, **kw)
+
+    monkeypatch.setattr(rt.router, "dispatch", recording)
+    provider = Recording(say("Hello."), use("schedule_list", {}, "c1"), say("Nothing set."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "turn.text", "text": "hello"})
+    await idle(session)
+    assert OWN <= set(provider.offered[0])
+    assert await rt.helpers.delete("local", h.id, NOW)
+    await session.handle({"type": "turn.text", "text": "what is set?"})
+    await idle(session)
+    later = context_of(provider, len(provider.calls) - 2)
+    assert "one of Trillion's helpers" not in later and "helper:" not in later
+    assert not OWN & set(provider.offered[-1])
+    assert seen and all(c.helper_id is None for c in seen)
+    assert session.kind == "chat"
+    await session.close()
+
+
+async def test_a_failed_look_at_the_helpers_offers_none(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert rt.helpers is not None
+
+    async def broken(*_a: Any) -> None:
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(rt.helpers, "by_conversation", broken)
+    provider = Recording(say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "hello"})
+    await idle(session)
+    assert not (DISPATCH | OWN) & set(provider.offered[0])
+    await session.close()
+
+
+@pytest.mark.parametrize("where", ["day", "routine"])
+async def test_her_day_and_routine_chats_may_make_and_ask_helpers(rt: Runtime, where: str) -> None:
+    await made(rt)
+    if where == "day":
+        today = day.today(rt.clock(), rt.zone())
+        cid, _ = await rt.conversations.day_conversation(
+            "local", today.isoformat(), day.title(today), NOW
+        )
+    else:
+        cid = await rt.conversations.routine_conversation("local", "Monday revenue", NOW)
+    provider = Recording(say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, cid)
+    assert session.kind == where
+    await session.handle({"type": "turn.text", "text": "hello"})
+    await idle(session)
+    offered = set(provider.offered[0])
+    assert {CREATE, ASK} <= offered and not OWN & offered
     await session.close()

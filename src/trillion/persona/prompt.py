@@ -214,7 +214,7 @@ def helper_overlay(h: OwnHelper, agent_name: str = DEFAULT_AGENT_NAME) -> str:
     (the your helpers spec): it is her, focused on one job. Its fields are the user's,
     made inert. The last line names it, for helper_update, narrow and widen."""
     job = inert(h.job)
-    said = f"You are {inert(h.name)}, one of {agent_name}'s helpers. Your job: {job}"
+    said = f"You are {inert(h.name)}, one of {inert(agent_name)}'s helpers. Your job: {job}"
     if not job.endswith((".", "!", "?")):
         said += "."
 

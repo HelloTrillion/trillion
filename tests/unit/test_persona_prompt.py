@@ -444,6 +444,7 @@ def test_a_helper_with_no_notes_has_no_notes_sentence() -> None:
 def test_a_helper_belongs_to_her_by_the_name_the_user_gave_her() -> None:
     # PER-1a: a user who named her Nova never hears the brand as her name.
     assert "one of Nova's helpers" in helper_overlay(_helper(), agent_name="Nova")
+    assert "<context>" not in helper_overlay(_helper(), agent_name="<context>")
 
 
 def test_a_helpers_fields_cannot_read_as_markup() -> None:

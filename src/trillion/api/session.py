@@ -1026,6 +1026,9 @@ class Session:
             return
         self._helpers_unread = False
         self._helpers = [(h.id, h.name, h.job) for h in mine if h.paused_ms is None]
+        if self._helper is None and self.kind == "helper":
+            # Its helper was deleted: the chat stays, as a plain one (the store's kind too).
+            self.kind = "chat"
 
     async def _helper_made(self, r: RouterResponse) -> None:
         """A confirmed create card: the page opens the new helper's chat."""
