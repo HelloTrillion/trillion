@@ -32,12 +32,18 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
  */
 export function offerLine(e: Offer, choose: (choice: 'create' | 'decline') => void): HTMLElement {
   const line = el('div', `notice offer-line ${e.status}`);
+  const question = `Want a helper for ${areaWords(e.area)}? ${e.name}: ${e.job}`;
+  // A newer offer came: this one is only what she asked, with nothing to tap.
+  if (e.status === 'past') {
+    line.append(el('p', 'offer-words', question));
+    return line;
+  }
   if (e.status !== 'open') {
     const said = { creating: `Making ${e.name}.`, made: `Made ${e.name}.`, declined: 'Okay.', failed: e.note }[e.status];
     line.textContent = said;
     return line;
   }
-  line.append(el('p', 'offer-words', `Want a helper for ${areaWords(e.area)}? ${e.name}: ${e.job}`));
+  line.append(el('p', 'offer-words', question));
   const row = el('div', 'offer-actions');
   const create = el('button', 'approve', 'Create');
   create.type = 'button';

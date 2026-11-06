@@ -184,17 +184,25 @@ async def test_create_from_the_page_makes_the_helper(rt: Runtime) -> None:
     (h,) = await rt.helpers.all("local")
     assert (h.name, h.job) == ("Inbox", "Keeps your inbox in order.")
     assert page.all("helper.created") == [
-        {"type": "helper.created", "helper_id": h.id, "conversation_id": h.conversation_id}
+        {
+            "type": "helper.created",
+            "helper_id": h.id,
+            "conversation_id": h.conversation_id,
+            "area": "email",
+        }
     ]
     # Its first line is in its chat, as a card's would be.
     history = await rt.conversations.history(h.conversation_id, "local")
     assert first_line("Inbox", "Keeps your inbox in order.") in str(history)
     # Answered: the once-a-day mark stays, the offer itself does not.
     assert await rt.preferences.get("local", OFFER_PREF) == {"area": "email", "at_ms": NOW}
-    # A second tap is stale: nothing more is made.
+    # A second tap is stale: nothing more is made, and the page is told so.
     await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
     assert len(await rt.helpers.all("local")) == 1
     assert len(page.all("helper.created")) == 1
+    assert page.all("helper.offer.failed") == [
+        {"type": "helper.offer.failed", "area": "email", "reason": "stale"}
+    ]
     await session.close()
 
 
@@ -218,12 +226,30 @@ async def test_a_forged_answer_does_nothing(rt: Runtime, answer: dict[str, Any])
 
 
 async def test_an_answer_with_no_offer_does_nothing(rt: Runtime) -> None:
-    session = await Session.start(rt, Page(rt).send, await chat(rt))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, await chat(rt))
     await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
     await session.handle({"type": "helper.offer", "area": "email", "choice": "decline"})
     assert rt.helpers is not None
     assert await rt.helpers.all("local") == []
     assert await rt.preferences.get("local", DECLINED_PREF) is None
+    # Told it is stale, so the page's line never waits for nothing.
+    assert (
+        page.all("helper.offer.failed")
+        == [{"type": "helper.offer.failed", "area": "email", "reason": "stale"}] * 2
+    )
+    await session.close()
+
+
+async def test_an_answer_for_another_area_is_stale(rt: Runtime) -> None:
+    session, page, _ = await offered_turn(rt)
+    await session.handle({"type": "helper.offer", "area": "web", "choice": "create"})
+    assert page.all("helper.offer.failed") == [
+        {"type": "helper.offer.failed", "area": "web", "reason": "stale"}
+    ]
+    assert not page.all("helper.created")
+    assert rt.helpers is not None
+    assert await rt.helpers.all("local") == []
     await session.close()
 
 
@@ -256,7 +282,9 @@ async def test_a_create_that_cannot_be_made_says_why(rt: Runtime, why: str) -> N
     assert rt.helpers is not None
     before = len(await rt.helpers.all("local"))
     await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
-    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": why}]
+    assert page.all("helper.offer.failed") == [
+        {"type": "helper.offer.failed", "area": "email", "reason": why}
+    ]
     assert len(await rt.helpers.all("local")) == before
     assert not page.all("helper.created")
     assert await rt.preferences.get("local", DECLINED_PREF) is None
@@ -378,7 +406,9 @@ async def test_an_offer_answered_a_day_late_is_stale(rt: Runtime) -> None:
     assert isinstance(rt.clock, FakeClock)
     rt.clock.now = NOW + DAY + 1
     await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
-    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": "stale"}]
+    assert page.all("helper.offer.failed") == [
+        {"type": "helper.offer.failed", "area": "email", "reason": "stale"}
+    ]
     assert rt.helpers is not None
     assert await rt.helpers.all("local") == []
     await session.close()
@@ -390,7 +420,9 @@ async def test_an_offer_that_is_not_plain_is_not_made(rt: Runtime) -> None:
     bad = {**OFFER, "name": "<b>Inbox</b>", "at_ms": NOW}
     await rt.preferences.put("local", OFFER_PREF, bad, NOW)
     await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
-    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": "invalid"}]
+    assert page.all("helper.offer.failed") == [
+        {"type": "helper.offer.failed", "area": "email", "reason": "invalid"}
+    ]
     assert rt.helpers is not None
     assert await rt.helpers.all("local") == []
     await session.close()
@@ -406,7 +438,9 @@ async def test_a_store_that_fails_on_an_answer_is_told(
 
     monkeypatch.setattr(rt.preferences, "get", broken)
     await session.handle({"type": "helper.offer", "area": "email", "choice": "create"})
-    assert page.all("helper.offer.failed") == [{"type": "helper.offer.failed", "reason": "error"}]
+    assert page.all("helper.offer.failed") == [
+        {"type": "helper.offer.failed", "area": "email", "reason": "error"}
+    ]
     await session.close()
 
 

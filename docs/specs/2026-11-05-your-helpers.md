@@ -59,7 +59,7 @@ At most 20 helpers. At the limit, she says so and suggests one to delete.
 ## Suggestions
 
 - **A need** is an area of work: the tools a turn used, mapped to areas by tool name (email, calendar, files, payments, Slack, web, or one MCP server, found from the server that registered the tool). It is counted from the tool audit that already records every call: only calls that ran, only in your own conversations with her (not a helper's, not a run), once per area per local day. The check runs at most once a day per conversation.
-- When an area reaches 3 days within 14, no helper's job covers it, and it isn't declined, her next turn gets a host note: offer a helper for it, once, in one sentence, after answering. She offers with `helper_suggest {area, name, job}`. It shows as a line with **Create** and **No thanks**.
+- When an area reaches 3 days within 14, no helper's job covers it, and it isn't declined, her next turn gets a host note: offer a helper for it, once, in one sentence, after answering. She offers with `helper_suggest {area, name, job}`. It shows as a line with **Create** and **No thanks**. After a tap the line reads "Making {name}." until the helper is made, then "Made {name}.", or "Okay." for No thanks, or a short reason if it couldn't be made. Only the newest offer can be answered.
 - **Create** raises nothing more: your tap is the approval. The helper is made as above. **No thanks** keeps the area in the preference `helper_declined`, and she never offers it again. Neither happens on its own: no tap, no helper.
 - At most one offer a day, and the note to offer at most once a day even if she doesn't.
 

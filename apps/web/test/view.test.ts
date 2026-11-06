@@ -352,7 +352,7 @@ describe('voice in the view', () => {
     expect(toolLabel('memory_recall', 'succeeded', true)).toBe('Checked what she remembers');
     // A refusal keeps the tool's name, so what failed is never hidden behind a friendly word.
     expect(toolLabel('memory_write', 'invalid_args', false)).toBe('memory_write: invalid args');
-    expect(toolLabel('memory_forget', 'confirmation_required', true)).toBe('memory_forget: confirmation required');
+    expect(toolLabel('memory_forget', 'confirmation_required', true)).toBe('Waiting for your OK');
     expect(toolLabel('file_read', null, true)).toBe('file_read …');
     expect(toolLabel('file_read', 'succeeded', true)).toBe('file_read: succeeded');
   });

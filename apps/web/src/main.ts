@@ -67,7 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { askTarget, bindButton, capNameOf, createHelpers, createdOf, helloOnce, stepTarget } from './helpers';
+import { askTarget, bindButton, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
 import { lookOf, picture } from './look';
 import { chatHead, offerLine } from './offer';
 import { createSpendCards, createSwitchLines, speakCapped, spendReveals } from './spend';
@@ -286,10 +286,12 @@ systemLight.addEventListener('change', () => {
 let view: View = INITIAL;
 // The conversations opened on this page, the latest last; + New helper asks in one.
 let visited: string[] = [];
-// + New helper's words, waiting for her conversation to open.
-let askAfterSwitch: string | null = null;
-// A new helper's chat, waiting for her to finish before it opens.
-let cancelCreated: () => void = () => undefined;
+// + New helper's words, asked from a helper's chat: sent once her conversation is open.
+const askQueue = createAskQueue({
+  ready: () => view.link === 'ready' && !view.busy,
+  send: (words) => sendTurn(words),
+  keep: (words) => keepDraft(words),
+});
 // Set once the helpers panel and the chat's head exist: a render before then draws no head.
 let chatHeadOn = false;
 // Voice barge-in (VOI-9). While she answers a spoken question, the microphone is open
@@ -691,7 +693,7 @@ function renderEntry(e: Entry): HTMLElement {
       return box;
     }
     case 'tool': {
-      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok));
+      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
     }
     case 'notice':
       return el('p', 'notice', e.text);
@@ -1379,7 +1381,7 @@ function openReady(id: string): void {
 /** Open another conversation, or (null) a fresh one: reconnect and the core resumes it. */
 function switchTo(id: string | null): void {
   // Somewhere else now: an ask waiting for another conversation is dropped.
-  askAfterSwitch = null;
+  askQueue.drop();
   // Opened, so no longer unread.
   if (id) threads.markRead(id);
   // She stops first, so nothing of this conversation plays over the next one. Only a
@@ -1712,30 +1714,9 @@ function connect(): void {
     if (msg.type === 'spend.resolved' || (msg.type === 'error' && msg['code'] === 'capped')) void refreshUsage();
     apply(reduce(view, msg));
     // + New helper, asked from a helper's chat: said in her conversation once it is open.
-    if (msg.type === 'history' && askAfterSwitch) {
-      const words = askAfterSwitch;
-      askAfterSwitch = null;
-      whenIdle(
-        () => view.link === 'ready' && !view.busy,
-        () => {
-          if (!sendTurn(words)) keepDraft(words);
-        },
-      );
-    }
+    if (msg.type === 'history') askQueue.opened();
     // A new helper (her card, or an offer's Create): its chat opens once she is done.
-    const made = createdOf(msg);
-    if (made) {
-      cancelCreated();
-      cancelCreated = whenIdle(
-        () => !view.busy && !voice.active,
-        () => {
-          cancelCreated = () => undefined;
-          openConversation(made.conversationId);
-          // On a desk the panel opens at it too; on a phone its chat is the whole screen.
-          if (!isPhone(innerWidth)) showHelper(made.helperId);
-        },
-      );
-    }
+    createdChat.handle(msg);
     // A routine finished somewhere else: its conversation is marked until opened.
     const built = unreadFor(msg, view);
     if (built) threads.markUnread(built);
@@ -2251,7 +2232,7 @@ function askForHelper(text: string): void {
   const helperChats = new Set(visited.filter((id) => helpers.ownFor(id) !== null));
   if (view.conversationId && helperChats.has(view.conversationId)) {
     openConversation(askTarget(visited, helperChats));
-    askAfterSwitch = words;
+    askQueue.queue(words);
     return;
   }
   workspace.close();
@@ -2260,6 +2241,14 @@ function askForHelper(text: string): void {
   if (isPhone(innerWidth)) sidebar.raise('full');
   if (!sendTurn(words)) keepDraft(words);
 }
+
+// A new helper's chat opens once she is idle, never cutting her off.
+const createdChat = createdOpener({
+  idle: () => !view.busy && !voice.active,
+  open: (id) => openConversation(id),
+  show: (id) => showHelper(id),
+  phone: () => isPhone(innerWidth),
+});
 
 /** Words that could not go now wait in the message box, never lost. */
 function keepDraft(words: string): void {

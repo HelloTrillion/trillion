@@ -235,6 +235,88 @@ export function helloOnce(send: (body: Record<string, unknown>) => boolean): (he
   };
 }
 
+const IDLE_POLL_MS = 200;
+
+/**
+ * Run `then` once `idle` holds, checked again and again for as long as it takes: never
+ * given up on, so she is never cut off. Returns a cancel.
+ */
+export function untilIdle(idle: () => boolean, then: () => void, pollMs = IDLE_POLL_MS): () => void {
+  if (idle()) {
+    then();
+    return () => undefined;
+  }
+  const timer = setInterval(() => {
+    if (!idle()) return;
+    clearInterval(timer);
+    then();
+  }, pollMs);
+  return () => clearInterval(timer);
+}
+
+/**
+ * A new helper's chat (`helper.created`) opens once she is idle: no turn under way and no
+ * voice playing, however long that takes. She is never interrupted for it. A newer one
+ * replaces one still waiting.
+ */
+export function createdOpener(d: {
+  readonly idle: () => boolean;
+  readonly open: (conversationId: string) => void;
+  readonly show: (helperId: string) => void;
+  readonly phone: () => boolean;
+}): { handle(msg: ServerMsg): void; cancel(): void } {
+  let cancel: () => void = () => undefined;
+  return {
+    handle(msg) {
+      const made = createdOf(msg);
+      if (!made) return;
+      cancel();
+      cancel = untilIdle(d.idle, () => {
+        cancel = () => undefined;
+        d.open(made.conversationId);
+        // On a desk the panel opens at it too; on a phone its chat is the whole screen.
+        if (!d.phone()) d.show(made.helperId);
+      });
+    },
+    cancel: () => cancel(),
+  };
+}
+
+/**
+ * + New helper's words, asked from a helper's chat: held until her conversation has
+ * opened (`opened`, on its history) and she is free, then sent. Any switch drops them
+ * (`drop`), so they never go to the wrong conversation.
+ */
+export function createAskQueue(d: {
+  readonly ready: () => boolean;
+  readonly send: (words: string) => boolean;
+  readonly keep: (words: string) => void;
+}): { queue(words: string): void; opened(): void; drop(): void } {
+  let words: string | null = null;
+  let cancel: () => void = () => undefined;
+  return {
+    queue(next) {
+      cancel();
+      words = next;
+    },
+    opened() {
+      const w = words;
+      if (w === null) return;
+      words = null;
+      cancel();
+      cancel = untilIdle(d.ready, () => {
+        cancel = () => undefined;
+        if (!d.send(w)) d.keep(w);
+      });
+    },
+    drop() {
+      words = null;
+      cancel();
+      cancel = () => undefined;
+    },
+  };
+}
+
 /**
  * Where + New helper asks her: the conversation last open that is not a helper's own
  * chat, or null for a new one.
@@ -960,6 +1042,8 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
     },
     closed() {
       isOpen = false;
+      // Hidden with the panel: the picker goes, and its listener for taps outside too.
+      closePicker(false);
       clock();
     },
     focus() {

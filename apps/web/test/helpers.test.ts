@@ -921,6 +921,19 @@ describe('your helpers in the panel', () => {
     expect(d.hidden).toBe(false);
   });
 
+  it('closes the picker, and its listener for taps outside, when the panel hides', async () => {
+    const { show, helpers } = details(list([own()]));
+    const d = await show(OWN);
+    const off = vi.spyOn(document, 'removeEventListener');
+    (d.querySelector('.hp-d-pic') as HTMLButtonElement).click();
+    expect(d.querySelector('.look-picker')).not.toBeNull();
+    helpers.closed();
+    expect(d.querySelector('.look-picker')).toBeNull();
+    expect(off).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect((d.querySelector('.hp-d-pic') as HTMLElement).getAttribute('aria-expanded')).toBe('false');
+    off.mockRestore();
+  });
+
   it('says so, and shows the saved picture again, when a new one does not save', async () => {
     const { show } = details(list([own()]), { [`PUT /api/helpers/${OWN_PATH}/look`]: () => json({ error: 'bad_request' }, 400) });
     const d = await show(OWN);
@@ -974,5 +987,19 @@ describe('making a helper from the panel', () => {
     expect(askTarget(['c-1', 'c-2', 'c-inv'], new Set(['c-inv']))).toBe('c-2');
     expect(askTarget(['c-inv'], new Set(['c-inv']))).toBeNull();
     expect(askTarget([], new Set())).toBeNull();
+  });
+});
+
+describe('the panel at every width', () => {
+  it('has the workspace shown at every width: the sheet below the phone breakpoint, beside the sidebar above, with no gap', async () => {
+    const { PHONE_MAX } = await import('../src/layout');
+    const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8');
+    // The only width breakpoints the workspace and its panel follow are the phone's, on either side of it.
+    const widths = [...css.matchAll(/@media \((max|min)-width: (\d+)px\)/g)].map((m) => [m[1], Number(m[2])] as const);
+    expect(widths).toContainEqual(['max', PHONE_MAX - 1]);
+    expect(widths).toContainEqual(['min', PHONE_MAX]);
+    // Nothing hides it but its own [hidden], and a phone's Folders panel over its body.
+    const hides = [...css.matchAll(/([^{}]*)\{[^}]*display:\s*none/g)].map((m) => m[1]!.trim()).filter((sel) => /\.workspace(?![-\w])|\.hp(?![-\w])|#helpers-btn/.test(sel));
+    for (const sel of hides) expect(sel).toMatch(/\[hidden\]|has-folders|settings-close|settings-actions/);
   });
 });

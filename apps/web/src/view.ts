@@ -30,7 +30,8 @@ export type Entry =
   // `seen`: she chose to say nothing to it, as to a sign-off (VOI-7).
   | { readonly kind: 'user'; readonly text: string; readonly seen?: boolean }
   | { readonly kind: 'assistant'; readonly text: string; readonly interrupted: boolean }
-  | { readonly kind: 'tool'; readonly callId: string; readonly name: string; readonly outcome: string | null; readonly ok: boolean }
+  /** `label`: the host's friendly name for a carded tool, from its card, once the card has come. */
+  | { readonly kind: 'tool'; readonly callId: string; readonly name: string; readonly outcome: string | null; readonly ok: boolean; readonly label?: string }
   | {
       readonly kind: 'card';
       readonly pendingId: string;
@@ -87,7 +88,8 @@ export type Entry =
       readonly helper?: { readonly id: string; readonly name: string; readonly look?: Look } | null;
     };
 
-export type OfferStatus = 'open' | 'creating' | 'made' | 'declined' | 'failed';
+/** `past`: an older offer, once a newer one came: only the newest can be answered. */
+export type OfferStatus = 'open' | 'past' | 'creating' | 'made' | 'declined' | 'failed';
 
 export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
 
@@ -441,12 +443,22 @@ const TOOL_LABELS: Readonly<Record<string, readonly [working: string, done: stri
   memory_recall: ['Checking what she remembers', 'Checked what she remembers'],
   decision_record: ['Checking the record', 'Checked the record'],
   web_fetch: ['Reading the page', 'Read the page'],
+  helper_create: ['Drafting a helper', 'Drafted a helper'],
+  helper_ask: ['Asking a helper', 'Asked a helper'],
+  helper_suggest: ['Thinking of a helper', 'Offered a helper'],
+  helper_update: ['Changing a helper', 'Changed a helper'],
+  helper_narrow: ['Noting that', 'Noted'],
+  helper_widen: ['Drafting a change', 'Drafted a change'],
 };
 
+const WAITING_OK = 'waiting for your OK';
+
 /** The chip for one tool call: what it is doing, then how it ended. */
-export function toolLabel(name: string, outcome: string | null, ok: boolean): string {
+export function toolLabel(name: string, outcome: string | null, ok: boolean, label?: string): string {
   // She confirmed a card that was already settled: nothing ran, so no second success.
   if (outcome === 'already_resolved') return 'Already settled';
+  // A card asks the user: said plainly, with the card's own name for it when known.
+  if (outcome === 'confirmation_required') return label ? `${label}: ${WAITING_OK}` : 'Waiting for your OK';
   const words = TOOL_LABELS[name];
   if (outcome === null) return words ? `${words[0]} …` : `${name} …`;
   // Sent off to run while the user talks: it is not done, and nothing failed.
@@ -507,9 +519,10 @@ function lastOffer(entries: readonly Entry[], match: (e: OfferEntry) => boolean)
   return -1;
 }
 
-/** The offer whose Create was tapped, settled: made, or why not. Any other is left alone. */
-function settleOffer(view: View, next: (e: OfferEntry) => OfferEntry): View {
-  const at = lastOffer(view.entries, (e) => e.status === 'creating');
+/** The offer of `area` whose Create was tapped, settled: made, or why not. Any other is left alone. */
+function settleOffer(view: View, area: string, next: (e: OfferEntry) => OfferEntry): View {
+  if (!area) return view;
+  const at = lastOffer(view.entries, (e) => e.area === area && e.status === 'creating');
   if (at < 0) return view;
   const entries = view.entries.slice();
   entries[at] = next(entries[at] as OfferEntry);
@@ -674,10 +687,19 @@ function step(view: View, msg: ServerMsg): View {
     case 'confirm.request': {
       const pendingId = str(msg['pending_id']);
       if (view.entries.some((e) => e.kind === 'card' && e.pendingId === pendingId)) return view;
+      // The chip of the call that raised it takes the card's friendly name.
+      const label = typeof msg['tool_label'] === 'string' ? msg['tool_label'].trim() : '';
+      const named = label
+        ? replaceLast(
+            view.entries,
+            (e) => e.kind === 'tool' && e.name === msg['tool'] && e.outcome === 'confirmation_required',
+            (e) => ({ ...e, label }) as Entry,
+          )
+        : view.entries;
       return {
         ...view,
         entries: [
-          ...view.entries,
+          ...named,
           {
             kind: 'card',
             pendingId,
@@ -698,13 +720,20 @@ function step(view: View, msg: ServerMsg): View {
       const job = str(msg['job']);
       if (!name || !job) return view;
       const entry: Entry = { kind: 'offer', area: str(msg['area']), name, job, status: 'open', note: '' };
+      // Only the newest offer can be answered: any older one still open is past.
+      const past = (list: readonly Entry[]): Entry[] => list.map((e) => (e.kind === 'offer' && e.status === 'open' ? { ...e, status: 'past' } : e));
+      const v = { ...view, entries: past(view.entries), held: past(view.held) };
       // Like a notice, it never lands inside a reply that is still under way.
-      return view.replyOpen || view.busy ? { ...view, held: [...view.held, entry] } : { ...view, entries: [...view.entries, entry] };
+      return v.replyOpen || v.busy ? { ...v, held: [...v.held, entry] } : { ...v, entries: [...v.entries, entry] };
     }
     case 'helper.offer.failed':
-      return settleOffer(view, (e) => ({ ...e, status: 'failed', note: offerFailed(str(msg['reason']), e.name) }));
+      // Only the offer of that area whose answer was sent: Create (why not), or No thanks (kept as said).
+      return settleOffer(view, str(msg['area']), (e) =>
+        e.status === 'creating' ? { ...e, status: 'failed', note: offerFailed(str(msg['reason']), e.name) } : e,
+      );
     case 'helper.created':
-      return settleOffer(view, (e) => ({ ...e, status: 'made' }));
+      // Made from an offer: that offer's line, and no other. One from a card names no area.
+      return settleOffer(view, str(msg['area']), (e) => (e.status === 'creating' ? { ...e, status: 'made' } : e));
     case 'confirm.resolved': {
       const outcome = cardOutcome(str(msg['status']), str(msg['reason']), str(msg['detail']));
       return {

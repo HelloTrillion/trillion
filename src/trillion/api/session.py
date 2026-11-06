@@ -1145,7 +1145,8 @@ class Session:
             logger.warning("helper offer not answered in session %s: %s", self.id, type(e).__name__)
             failed = "error"
         if failed is not None:
-            await self._send("helper.offer.failed", reason=failed)
+            # With its area, so the page settles that offer's line and no other.
+            await self._send("helper.offer.failed", area=area, reason=failed)
 
     async def _answer_offer(self, area: str, choice: str) -> str | None:
         """Take the answer: why it failed, if it did in a way the page should show."""
@@ -1163,9 +1164,10 @@ class Session:
                 and isinstance(raw.get("job"), str)
                 and isinstance(at, int)
             ):
-                # Answered already, never made, or for another area.
+                # Answered already, never made, or for another area: the page is told,
+                # so its line never waits for an answer that will not come.
                 logger.info("helper offer answer not taken in session %s", self.id)
-                return None
+                return "stale"
             now = rt.clock()
             if now - at > needs.ONCE_MS:
                 return "stale"
@@ -1184,7 +1186,10 @@ class Session:
         if isinstance(made, str):
             return made
         logger.info("helper %s made from an offer in %s", made.id, self.id)
-        await self._send("helper.created", helper_id=made.id, conversation_id=made.conversation_id)
+        # With its area: the page settles that offer's line on it, and no other.
+        await self._send(
+            "helper.created", helper_id=made.id, conversation_id=made.conversation_id, area=area
+        )
         return None
 
     async def _read_place(self) -> None:

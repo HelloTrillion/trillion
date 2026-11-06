@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createdOf, helloOnce } from '../src/helpers';
+import { createApprovalStrip } from '../src/approvals';
+import { createAskQueue, createdOf, createdOpener, helloOnce } from '../src/helpers';
+import { lookOf, picture } from '../src/look';
 import { fromTag, renderScheduled } from '../src/notice';
 import { areaWords, chatHead, offerLine, type Offer } from '../src/offer';
 import { readyLine } from '../src/ready';
-import { INITIAL, type View, offerChosen, reduce } from '../src/view';
+import { INITIAL, type View, offerChosen, reduce, toolLabel } from '../src/view';
 
 const feed = (msgs: Record<string, unknown>[], from: View = INITIAL): View => msgs.reduce((v, m) => reduce(v, m as { type: string }), from);
 
@@ -13,6 +15,7 @@ const offerIn = (v: View): Offer => v.entries.find((e) => e.kind === 'offer') as
 
 afterEach(() => {
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 describe('the offer line', () => {
@@ -52,7 +55,7 @@ describe('the offer line', () => {
     let v = offerChosen(feed([OFFER]), 'email', 'create');
     expect(offerIn(v).status).toBe('creating');
     expect(offerLine(offerIn(v), () => undefined).textContent).toBe('Making Inbox.');
-    v = reduce(v, { type: 'helper.created', helper_id: 'a'.repeat(32), conversation_id: 'c-new' });
+    v = reduce(v, { type: 'helper.created', helper_id: 'a'.repeat(32), conversation_id: 'c-new', area: 'email' });
     expect(offerIn(v).status).toBe('made');
     const line = offerLine(offerIn(v), () => undefined);
     expect(line.textContent).toBe('Made Inbox.');
@@ -66,7 +69,7 @@ describe('the offer line', () => {
 
   it('says in a few plain words why it could not be made', () => {
     const words = (reason: string): string => {
-      const v = reduce(offerChosen(feed([OFFER]), 'email', 'create'), { type: 'helper.offer.failed', reason });
+      const v = reduce(offerChosen(feed([OFFER]), 'email', 'create'), { type: 'helper.offer.failed', area: 'email', reason });
       return offerLine(offerIn(v), () => undefined).textContent ?? '';
     };
     expect(words('full')).toBe('You have 20 helpers, the most there can be. Delete one to make room.');
@@ -144,5 +147,125 @@ describe('pictures in the chat', () => {
     expect(pic.getAttribute('aria-label')).toBe('Invoices picture: receipt, green');
     expect(head.querySelector('.helper-head-name')?.textContent).toBe('Invoices');
     expect(head.textContent).toContain('Keeps track of who owes you');
+  });
+});
+
+describe('review fixes', () => {
+  it('opens a new helper’s chat only once she is idle, however long her turn takes, never cutting her off', () => {
+    vi.useFakeTimers();
+    let busy = true;
+    const opened: string[] = [];
+    const shown: string[] = [];
+    let phone = false;
+    const opener = createdOpener({ idle: () => !busy, open: (id) => opened.push(id), show: (id) => shown.push(id), phone: () => phone });
+    // Mid-turn: her card was approved while she is still answering.
+    opener.handle({ type: 'helper.created', helper_id: 'a'.repeat(32), conversation_id: 'c-new' });
+    vi.advanceTimersByTime(60_000);
+    expect(opened).toEqual([]);
+    busy = false;
+    vi.advanceTimersByTime(250);
+    expect(opened).toEqual(['c-new']);
+    expect(shown).toEqual([`own:${'a'.repeat(32)}`]);
+    // On a phone, the chat alone.
+    phone = true;
+    opener.handle({ type: 'helper.created', helper_id: 'b'.repeat(32), conversation_id: 'c-b' });
+    expect(opened).toEqual(['c-new', 'c-b']);
+    expect(shown).toHaveLength(1);
+  });
+
+  it('sends + New helper’s words once her conversation is open, and drops them on any switch', () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const sent: string[] = [];
+    const kept: string[] = [];
+    const q = createAskQueue({ ready: () => ready, send: (w) => (sent.push(w), true), keep: (w) => kept.push(w) });
+    q.queue('New helper: invoices');
+    q.opened();
+    // Switched elsewhere before she was free: never sent there.
+    q.drop();
+    ready = true;
+    vi.advanceTimersByTime(1000);
+    expect(sent).toEqual([]);
+    q.queue('New helper: email');
+    q.opened();
+    expect(sent).toEqual(['New helper: email']);
+    // A second history sends nothing more.
+    q.opened();
+    expect(sent).toHaveLength(1);
+    expect(kept).toEqual([]);
+  });
+
+  it('keeps the words in the box when they cannot go', () => {
+    const kept: string[] = [];
+    const q = createAskQueue({ ready: () => true, send: () => false, keep: (w) => kept.push(w) });
+    q.queue('New helper: x');
+    q.opened();
+    expect(kept).toEqual(['New helper: x']);
+  });
+
+  it('lets only the newest offer be answered', () => {
+    const v = feed([OFFER, { type: 'helper.offer', area: 'web', name: 'Reader', job: 'Reads the news' }]);
+    const offers = v.entries.filter((e) => e.kind === 'offer') as Offer[];
+    expect(offers.map((o) => o.status)).toEqual(['past', 'open']);
+    const older = offerLine(offers[0]!, () => undefined);
+    expect(older.querySelectorAll('button')).toHaveLength(0);
+    expect(older.textContent).toBe('Want a helper for email? Inbox: Keeps your inbox tidy');
+    expect(offerChosen(v, 'email', 'create')).toBe(v);
+  });
+
+  it('settles an offer only from what belongs to it: its area, and only a Create sent', () => {
+    let v = offerChosen(feed([OFFER]), 'email', 'create');
+    // A card's helper (no area), or another area's, is not this offer's.
+    v = reduce(v, { type: 'helper.created', helper_id: 'x', conversation_id: 'c' });
+    v = reduce(v, { type: 'helper.created', helper_id: 'x', conversation_id: 'c', area: 'web' });
+    v = reduce(v, { type: 'helper.offer.failed', area: 'web', reason: 'stale' });
+    expect(offerIn(v).status).toBe('creating');
+    v = reduce(v, { type: 'helper.offer.failed', area: 'email', reason: 'stale' });
+    expect(offerIn(v).status).toBe('failed');
+    // No thanks answered stale stays "Okay.": nothing is waiting on it.
+    const no = reduce(offerChosen(feed([OFFER]), 'email', 'decline'), { type: 'helper.offer.failed', area: 'email', reason: 'stale' });
+    expect(offerLine(offerIn(no), () => undefined).textContent).toBe('Okay.');
+  });
+
+  it('gives a hostile colour or icon the fallback, and nothing else', () => {
+    const look = lookOf("x'] {}", "x'] { background: red }");
+    expect(look).toEqual({ icon: 'spark', color: 'slate' });
+    const p = picture(look, 28, 'Invoices');
+    expect(p.dataset['color']).toBe('slate');
+    expect(p.dataset['icon']).toBe('spark');
+    const v = feed([{ type: 'confirm.request', pending_id: 'p1', tool: 'helper_create', summary: 's', expires_at: 1, look: { icon: '<svg>', color: "x'] {}" } }]);
+    expect(v.entries[0]).toMatchObject({ look: { icon: 'spark', color: 'slate' } });
+  });
+
+  it('says a carded call in plain words, with the card’s name for it once known', () => {
+    expect(toolLabel('helper_create', null, true)).toBe('Drafting a helper …');
+    expect(toolLabel('helper_create', 'succeeded', true)).toBe('Drafted a helper');
+    expect(toolLabel('helper_ask', 'succeeded', true)).toBe('Asked a helper');
+    expect(toolLabel('helper_suggest', 'succeeded', true)).toBe('Offered a helper');
+    expect(toolLabel('helper_update', 'succeeded', true)).toBe('Changed a helper');
+    expect(toolLabel('helper_narrow', 'succeeded', true)).toBe('Noted');
+    expect(toolLabel('helper_widen', 'succeeded', true)).toBe('Drafted a change');
+    expect(toolLabel('helper_create', 'confirmation_required', true)).toBe('Waiting for your OK');
+    expect(toolLabel('gmail_send', 'confirmation_required', true, 'Send an email')).toBe('Send an email: waiting for your OK');
+    const v = feed([
+      { type: 'tool.start', call_id: 'k1', name: 'helper_create' },
+      { type: 'tool.end', call_id: 'k1', ok: true, summary: 'confirmation_required' },
+      { type: 'confirm.request', pending_id: 'p1', tool: 'helper_create', tool_label: 'Make a helper', summary: 's', expires_at: 1 },
+    ]);
+    const chip = v.entries[0] as Extract<View['entries'][number], { kind: 'tool' }>;
+    expect(toolLabel(chip.name, chip.outcome, chip.ok, chip.label)).toBe('Make a helper: waiting for your OK');
+    expect(toolLabel(chip.name, chip.outcome, chip.ok, chip.label)).not.toContain('confirmation');
+  });
+
+  it('shows a create card’s picture on the board too', () => {
+    const v = feed([{ type: 'confirm.request', pending_id: 'p1', tool: 'helper_create', tool_label: 'Make a helper', summary: 'New helper: Invoices.', expires_at: Date.now() + 60_000, look: { icon: 'receipt', color: 'green' } }]);
+    const card = v.entries[0] as Extract<View['entries'][number], { kind: 'card' }>;
+    const strip = createApprovalStrip({ onApprove: () => undefined, onDecline: () => undefined, onDismiss: () => undefined });
+    document.body.append(strip.el);
+    strip.draw([{ card, mode: 'ask', askedAt: Date.now() }]);
+    const pic = strip.el.querySelector('.ap-card .look') as HTMLElement;
+    expect(pic.dataset['icon']).toBe('receipt');
+    expect(pic.dataset['color']).toBe('green');
+    strip.dispose();
   });
 });
