@@ -202,7 +202,8 @@ describe('review fixes', () => {
     expect(offers.map((o) => o.status)).toEqual(['past', 'open']);
     const older = offerLine(offers[0]!, () => undefined);
     expect(older.querySelectorAll('button')).toHaveLength(0);
-    expect(older.textContent).toBe('Want a helper for email? Inbox: Keeps your inbox tidy');
+    expect(older.querySelector('.offer-words')?.textContent).toBe('Want a helper for email? Inbox: Keeps your inbox tidy');
+    expect(older.querySelector('.offer-from')?.textContent).toBe('Suggested');
     expect(offerChosen(v, 'email', 'create')).toBe(v);
   });
 

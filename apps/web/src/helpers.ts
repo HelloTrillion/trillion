@@ -10,6 +10,7 @@
  * piece of text is set with textContent, never parsed as markup.
  */
 
+import { connectionChip } from './draft';
 import { icon } from './icons';
 import { type Look, type Picker, createPicker, drawPicture, lookOf, pictureLabel } from './look';
 import type { Api } from './settings';
@@ -55,6 +56,16 @@ export interface Helper {
   readonly routines?: readonly RoutineLine[];
   readonly icon?: string | null;
   readonly color?: string | null;
+  /** One of the user's own: the connections its card suggested, and what it asks first. */
+  readonly connections?: readonly HelperConnection[];
+  readonly asks?: readonly string[];
+}
+
+/** A Connected tools entry a helper of the user's would use, and whether it is set up. */
+export interface HelperConnection {
+  readonly id: string;
+  readonly title: string;
+  readonly connected: boolean;
 }
 
 /** One of a helper's own routines, listed under it. */
@@ -186,9 +197,17 @@ export function capNameOf(providers: readonly { readonly leg: string; readonly n
   return usual?.state === 'capped' ? usual.name : null;
 }
 
-/** The Connected tools entry a step opens at (connect or sign in again), or null for the section. */
+const CATALOG_ID = /^[a-z0-9-]{1,64}$/;
+
+/**
+ * The Connected tools entry a step opens at (connect or sign in again), or null for the
+ * section. A watcher's step names what it reads; any other `connect:<id>` names the entry.
+ */
 export function stepTarget(stepId: string): string | null {
-  return STEP_TARGETS[stepId] ?? null;
+  const known = STEP_TARGETS[stepId];
+  if (known) return known;
+  const id = stepId.startsWith('connect:') ? stepId.slice('connect:'.length) : '';
+  return CATALOG_ID.test(id) ? id : null;
 }
 
 /** The panel's id for a helper the core names by its own id alone. */
@@ -569,7 +588,11 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
   const dKnows = el('p', 'hp-d-knows');
   const dRoutines = el('ul', 'hp-routines');
   const dNoRoutines = el('p', 'hp-d-note', 'No routines yet.');
-  dOwn.append(el('h4', '', 'What it knows'), dKnows, el('h4', '', 'Its routines'), dRoutines, dNoRoutines);
+  // The connections its card suggested: one not set up opens Settings at it.
+  const dConnsHead = el('h4', '', 'Its connections');
+  const dConns = el('div', 'draft-chips');
+  let connsKey = '';
+  dOwn.append(el('h4', '', 'What it knows'), dKnows, dConnsHead, dConns, el('h4', '', 'Its routines'), dRoutines, dNoRoutines);
   const runsHead = el('h4', '', 'Recent runs');
   const runsList = el('ul', 'hp-runs');
   const runsNote = el('p', 'hp-d-note');
@@ -779,6 +802,13 @@ export function createHelpers(d: HelpersDeps): HelpersPanel {
       dPic.setAttribute('aria-label', pictureLabel(h.name, look));
       if (picker && !tapped) picker.set(look);
       dKnows.textContent = h.notes?.trim() || 'Nothing yet. Tell it in its chat.';
+      const conns = h.connections ?? [];
+      const key = conns.map((c) => `${c.id}:${c.connected}`).join(',');
+      if (key !== connsKey) {
+        connsKey = key;
+        dConns.replaceChildren(...conns.map((c) => connectionChip(c, (id) => d.openStep(`connect:${id}`))));
+      }
+      dConnsHead.hidden = dConns.hidden = conns.length === 0;
       const routines = h.routines ?? [];
       dRoutines.replaceChildren(
         ...routines.map((r) => {

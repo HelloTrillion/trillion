@@ -80,6 +80,7 @@ import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
 import { createHome, dayBoardStep, endsBuild, frameKeeps, herOpensHome, localDate, returnsToHome, shouldOpenHome } from './home';
 import { createApprovals, outcomeWords } from './approvals';
+import { type DraftCard, createDraftPin } from './draft';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
 import {
@@ -91,6 +92,7 @@ import {
   expire,
   micFailed,
   offerChosen,
+  pinnedDraft,
   reduce,
   sent,
   toolLabel,
@@ -168,6 +170,14 @@ bannerEl.after(switchEl, spendEl);
 const switchLines = createSwitchLines(switchEl, (method, path, body) => api(method, path, body));
 const transcriptEl = $('transcript');
 const form = $<HTMLFormElement>('ask');
+// Her draft of a new helper, pinned above the message box while it waits: Create and Not
+// now are its card's Approve and Decline, sent as every card's are.
+const draftPin = createDraftPin({
+  onCreate: (id) => send({ type: 'confirm', pending_id: id }),
+  onNotNow: (id) => send({ type: 'cancel', pending_id: id }),
+  onConnect: (catalogId) => openStep(`connect:${catalogId}`),
+});
+form.before(draftPin.el);
 const input = $<HTMLTextAreaElement>('input');
 const sendBtn = $<HTMLButtonElement>('send');
 const stopBtn = $<HTMLButtonElement>('stop');
@@ -700,9 +710,13 @@ function renderEntry(e: Entry): HTMLElement {
       return el('p', 'notice', e.text);
     case 'offer':
       // Her offer of a helper: the tap is the user's own, sent as it is.
-      return offerLine(e, (choice) => {
-        if (send({ type: 'helper.offer', area: e.area, choice })) apply(offerChosen(view, e.area, choice));
-      });
+      return offerLine(
+        e,
+        (choice) => {
+          if (send({ type: 'helper.offer', area: e.area, choice })) apply(offerChosen(view, e.area, choice));
+        },
+        view.agentName,
+      );
     case 'host':
       // A ready line kept from an earlier visit: drawn again with its Open.
       if (e.conversationId) return readyLine(e.text, e.conversationId, openReady);
@@ -715,6 +729,15 @@ function renderEntry(e: Entry): HTMLElement {
       return renderScheduled(e, formatted, undefined, showHelper);
     }
     case 'card': {
+      if (e.draft) {
+        // A helper's draft is pinned above the message box: here, a line that goes to it.
+        if (e.status !== 'waiting') return el('p', 'chip ap-chip-done', `New helper ${e.draft.name}: ${outcomeWords(e.status, e.note)}`);
+        const chip = el('button', 'ap-chip');
+        chip.type = 'button';
+        chip.append(el('span', 'ap-chip-label', `New helper: ${e.draft.name}`), el('span', 'ap-chip-view', 'View'));
+        chip.addEventListener('click', () => draftPin.focus());
+        return chip;
+      }
       if (approvals.onBoard(e.pendingId)) {
         // Its full card is on the board: here, a line that jumps to it, then how it ended.
         if (e.status !== 'waiting') return el('p', 'chip ap-chip-done', `${e.toolLabel}: ${outcomeWords(e.status, e.note)}`);
@@ -809,6 +832,7 @@ function render(): void {
   }
   if (waiting(view)) transcriptEl.append(thinkingEl);
   if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  draftPin.draw(view.link === 'ready' ? (pinnedDraft(view.entries) as DraftCard | null) : null);
 
   showCaptions();
 
@@ -1586,7 +1610,9 @@ function connect(): void {
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
-    if (msg.type === 'confirm.request' && approvals.request(String(msg['pending_id'] ?? '')) === 'conversation') {
+    // A helper's draft is pinned above the message box instead, never on the board.
+    const draft = msg.type === 'confirm.request' && Boolean(msg['draft']);
+    if (msg.type === 'confirm.request' && (draft || approvals.request(String(msg['pending_id'] ?? '')) === 'conversation')) {
       const reveal = revealForCard(isPhone(innerWidth), sidebar.hidden);
       if (reveal.unhide) sidebar.setHidden(false);
       if (reveal.raise) sidebar.raise(reveal.raise);
@@ -2156,13 +2182,7 @@ const helpers = createHelpers({
     announceEl.textContent = text;
   },
   open: (id) => openConversation(id),
-  // Straight to the connection it needs, as Home's Connect goes; else Connected tools.
-  openStep: (stepId) => {
-    workspace.close();
-    openSettings('connected');
-    const target = stepTarget(stepId);
-    if (target) void connected.start(target);
-  },
+  openStep: (stepId) => openStep(stepId),
   now: () => Date.now(),
   phone: () => isPhone(innerWidth),
   capName: () => capNameOf(usage?.providers),
@@ -2240,10 +2260,11 @@ function drawChatHead(): void {
   if (!chatHeadOn) return;
   const h = ownHere();
   const look = h ? lookOf(h.icon, h.color) : null;
-  const key = h && look ? [h.id, h.name, h.job, look.icon, look.color].join('|') : '';
+  const conns = h?.connections ?? [];
+  const key = h && look ? [h.id, h.name, h.job, look.icon, look.color, ...conns.map((c) => `${c.id}:${c.connected}`)].join('|') : '';
   if (key !== chatHeadKey) {
     chatHeadKey = key;
-    chatHeadEl.replaceChildren(...(h && look ? [chatHead(h.name, look, h.job)] : []));
+    chatHeadEl.replaceChildren(...(h && look ? [chatHead(h.name, look, h.job, conns, (id) => openStep(`connect:${id}`))] : []));
     chatHeadEl.hidden = !key;
   }
   if (h) hello(h.id);
@@ -2267,6 +2288,14 @@ function askForHelper(text: string): void {
   sidebar.setHidden(false);
   if (isPhone(innerWidth)) sidebar.raise('full');
   if (!sendTurn(words)) keepDraft(words);
+}
+
+/** Straight to the connection a step needs, as Home's Connect goes; else Connected tools. */
+function openStep(stepId: string): void {
+  workspace.close();
+  openSettings('connected');
+  const target = stepTarget(stepId);
+  if (target) void connected.start(target);
 }
 
 // A new helper's chat opens once she is idle, never cutting her off.

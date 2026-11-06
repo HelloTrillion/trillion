@@ -46,6 +46,8 @@ export type Entry =
       readonly reason: Reason | null;
       /** A new helper's picture, on its create card; absent on any other. */
       readonly look?: Look | null;
+      /** A new helper's draft, on its create card: pinned above the message box. */
+      readonly draft?: HelperDraft;
     }
   | { readonly kind: 'notice'; readonly text: string }
   /**
@@ -87,6 +89,22 @@ export type Entry =
       /** The helper it came from, named as the Helpers panel names it; null when no helper sent it. */
       readonly helper?: { readonly id: string; readonly name: string; readonly look?: Look } | null;
     };
+
+/** A Connected tools entry a helper's draft suggests, and whether it is set up now. */
+export interface DraftConnection {
+  readonly id: string;
+  readonly title: string;
+  readonly connected: boolean;
+}
+
+/** What a helper's create card drafted (the your helpers spec, Creating one). */
+export interface HelperDraft {
+  readonly name: string;
+  readonly job: string;
+  readonly notes: string;
+  readonly connectors: readonly DraftConnection[];
+  readonly asks: readonly string[];
+}
 
 /** `past`: an older offer, once a newer one came: only the newest can be answered. */
 export type OfferStatus = 'open' | 'past' | 'creating' | 'made' | 'declined' | 'failed';
@@ -487,6 +505,32 @@ function unsent(entries: readonly Entry[], text: string): Entry[] {
   return entries.slice();
 }
 
+/** A create card's draft as the core sent it, or null when it is not one. */
+export function draftIn(raw: unknown): HelperDraft | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r['name']);
+  const job = str(r['job']);
+  if (!name || !job) return null;
+  const connectors = (Array.isArray(r['connectors']) ? r['connectors'] : []).flatMap((c): DraftConnection[] => {
+    if (!c || typeof c !== 'object') return [];
+    const x = c as Record<string, unknown>;
+    const id = str(x['id']);
+    return id ? [{ id, title: str(x['title']) || id, connected: x['connected'] === true }] : [];
+  });
+  const asks = (Array.isArray(r['asks']) ? r['asks'] : []).filter((a): a is string => typeof a === 'string' && a.trim() !== '');
+  return { name, job, notes: str(r['notes']), connectors, asks };
+}
+
+/** The helper draft still waiting in a conversation: there is only ever one. */
+export function pinnedDraft(entries: readonly Entry[]): Extract<Entry, { kind: 'card' }> | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind === 'card' && e.draft && e.status === 'waiting') return e;
+  }
+  return null;
+}
+
 function lookIn(raw: unknown): Look | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { icon?: unknown; color?: unknown };
@@ -696,24 +740,25 @@ function step(view: View, msg: ServerMsg): View {
             (e) => ({ ...e, label }) as Entry,
           )
         : view.entries;
-      return {
-        ...view,
-        entries: [
-          ...named,
-          {
-            kind: 'card',
-            pendingId,
-            summary: str(msg['summary']),
-            expiresAt: typeof msg['expires_at'] === 'number' ? msg['expires_at'] : 0,
-            tapOnly: msg['tap_only'] === true,
-            status: 'waiting',
-            note: '',
-            toolLabel: labelOf(msg['tool_label'], msg['tool']),
-            reason: REASONS.find((r) => r === msg['reason']) ?? null,
-            ...(lookIn(msg['look']) ? { look: lookIn(msg['look']) } : {}),
-          },
-        ],
+      const draft = draftIn(msg['draft']);
+      const card: Entry = {
+        kind: 'card',
+        pendingId,
+        summary: str(msg['summary']),
+        expiresAt: typeof msg['expires_at'] === 'number' ? msg['expires_at'] : 0,
+        tapOnly: msg['tap_only'] === true,
+        status: 'waiting',
+        note: '',
+        toolLabel: labelOf(msg['tool_label'], msg['tool']),
+        reason: REASONS.find((r) => r === msg['reason']) ?? null,
+        ...(lookIn(msg['look']) ? { look: lookIn(msg['look']) } : {}),
+        ...(draft ? { draft } : {}),
       };
+      // A new helper draft replaces the one still waiting, where it was: the core retired
+      // that card when this one was made, so there is only ever one.
+      const old = draft ? pinnedDraft(named) : null;
+      if (old) return { ...view, entries: named.map((e) => (e === old ? card : e)) };
+      return { ...view, entries: [...named, card] };
     }
     case 'helper.offer': {
       const name = str(msg['name']);

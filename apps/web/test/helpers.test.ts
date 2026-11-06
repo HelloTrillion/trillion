@@ -519,7 +519,11 @@ describe('a step’s Settings', () => {
     expect(stepTarget('connect:email')).toBe('gmail');
     expect(stepTarget('connect:meetings')).toBe('google-calendar');
     expect(stepTarget('connect:payments')).toBe('stripe');
-    expect(stepTarget('connect:other')).toBeNull();
+    // Any other entry by its catalog id: a helper's suggested connection.
+    expect(stepTarget('connect:canva')).toBe('canva');
+    expect(stepTarget('connect:google-drive')).toBe('google-drive');
+    expect(stepTarget('connect:')).toBeNull();
+    expect(stepTarget('connect:not an id')).toBeNull();
     expect(stepTarget('something')).toBeNull();
   });
 });
@@ -801,6 +805,21 @@ describe('your helpers in the panel', () => {
     expect(helpers.ownFor('c-inv')?.name).toBe('Invoices');
     expect(helpers.ownFor('c-other')).toBeNull();
     expect(helpers.ownFor(null)).toBeNull();
+  });
+
+  it('lists the connections its card suggested; one not set up opens Settings at it', async () => {
+    const conns = [
+      { id: 'canva', title: 'Canva', connected: false },
+      { id: 'gmail', title: 'Gmail', connected: true },
+    ];
+    const { show, steps } = details(list([own({ connections: conns })]));
+    const d = await show(OWN);
+    expect(d.textContent).toContain('Its connections');
+    const chips = [...d.querySelectorAll('.draft-chip')];
+    expect(chips.map((c) => c.textContent)).toEqual(['Connect Canva', 'Gmail']);
+    expect(chips[1]!.tagName).toBe('SPAN');
+    press(d, 'Connect Canva');
+    expect(steps).toEqual(['connect:canva']);
   });
 
   it('shows its details: the picture, job, what it knows, its routines with next runs, and its runs', async () => {

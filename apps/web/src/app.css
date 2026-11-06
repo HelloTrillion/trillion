@@ -8300,3 +8300,146 @@ button.reminders-open {
     flex-direction: row;
   }
 }
+
+/* ── Her draft of a new helper: pinned above the message box while it waits ── */
+
+.draft-pin {
+  flex-shrink: 0;
+  margin: 0 0 8px;
+  padding: 12px 14px;
+  max-height: min(45vh, 420px);
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-1);
+  border: 1px solid var(--color-amber);
+}
+.draft-pin[hidden] {
+  display: none;
+}
+.draft-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draft-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.draft-words {
+  min-width: 0;
+}
+.draft-eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-amber);
+}
+.draft-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.draft-job,
+.draft-notes-text {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.draft-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.draft-notes-text {
+  color: var(--color-text-1);
+}
+.draft-notes-text[data-clamped] {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.draft-more {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 12px;
+}
+.draft-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.draft-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-2);
+  color: var(--color-text-0);
+  font-size: 12px;
+}
+button.draft-chip:hover {
+  border-color: var(--color-accent);
+}
+.draft-chip.connected {
+  color: var(--color-text-1);
+}
+.draft-asks-head {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.draft-asks-list {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.draft-actions .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.draft-hint {
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+/* What a new draft changed glows for a moment. */
+.draft-body [data-part] {
+  border-radius: var(--radius-sm);
+  transition: background-color 0.6s ease;
+}
+.draft-body [data-changed] {
+  background: color-mix(in srgb, var(--color-amber) 18%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .draft-body [data-part] {
+    transition: none;
+  }
+}
+.helper-head-chips {
+  margin-top: 6px;
+}
+.offer-from {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-1);
+}
