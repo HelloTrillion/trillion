@@ -256,6 +256,43 @@ All tools are `category="helper"`, `trusted_output=True`, with explicit `timeout
   - delete then list means it's gone and its chat still opens.
 - [ ] Commit: `Helpers panel: your helpers, with pause and delete`
 
+### Task 7b (core): a helper's picture and its first hello
+
+**Files:**
+- Create: `src/trillion/helpers/look.py`
+- Modify:
+  - `src/trillion/storage/migrations/019_helpers.sql`: it's unreleased, so add `icon text not null default 'spark'`, `color text not null default 'blue'` and `hello_ms integer` there, and update the checksum test;
+  - `src/trillion/helpers/store.py` and `storage/sqlite/helper_store.py`: `OwnHelper.icon`, `.color` and `.hello_ms`; `set_look(owner, id, icon, color) -> bool`; `said_hello(owner, id, now_ms) -> bool` (True only the first time);
+  - `src/trillion/tools/helper.py`: `helper_create` takes an optional `icon` and `color`; the card shows them;
+  - `src/trillion/api/helpers.py`: `PUT /api/helpers/{id}/look`;
+  - `src/trillion/helpers/build.py` and `model.py`: `icon` and `color` on every Helper (for own helpers; null for others);
+  - `src/trillion/delivery/door.py`: a helper's notice carries `helper_icon` and `helper_color`;
+  - `src/trillion/api/session.py`: the first hello.
+- Test: `tests/helpers/test_look.py`, `tests/api/test_helper_hello.py`, plus additions to the store, tool and API tests.
+
+- [ ] **`look.py`:**
+  - `ICONS`: a tuple of 24 ids (receipt, envelope, calendar, chart, cart, folder, people, chat, star, heart, bell, globe, book, briefcase, wrench, leaf, home, plane, music, camera, code, shield, lightbulb, spark);
+  - `COLORS`: 8 ids (blue, green, amber, rose, violet, teal, orange, slate);
+  - `pick(name, job, icon=None, color=None) -> tuple[str, str]`. It keeps a valid `icon` and `color`. Otherwise:
+    - the icon comes from a small keyword table on the job (invoice, payment, revenue: receipt; email, inbox, mail: envelope; calendar, meeting: calendar; report, numbers: chart; ...), else `spark`;
+    - the colour comes from a stable hash of the casefolded name (not Python's `hash`).
+- [ ] **`helper_create`:** the schema adds optional `icon` (enum `ICONS`) and `color` (enum `COLORS`); the description tells her to pick ones that fit the job. `execute` stores `pick(...)`. `describe` stays text, and the card JSON carries the look so the page can draw it, through whatever field cards use for extra display data. If cards have none, add an optional `look: {icon, color}` field to the pending card's page JSON. It's display only: never part of what is approved or hashed.
+- [ ] **`PUT /api/helpers/own:<id>/look {icon, color}`:** the user's own tap, behind the usual token, origin and JSON checks. 400 for names not in the lists, 404 for a missing helper. It fires `changed`.
+- [ ] **The first hello:**
+  - The page sends `{"type": "helper.hello"}` when it opens a helper's chat.
+  - The session (in a helper's chat only) calls `said_hello`. Only when that returns True (the first time ever), it runs one host turn there with the overlay and the note: "This is your first message to the user. In one or two sentences say what you'll do first and anything you need to know. If a regular check suits your job, offer one with ask_schedule as your routine (routine "own"), at a sensible time."
+  - The fixed first line saved by `helper_create` stays as the chat's opening. If the turn fails, nothing more is said.
+  - `ask_schedule` in a helper's chat sets `helper_id` on the schedule, so the routine is the helper's and runs in its chat. Check how `ask_schedule` sets a routine's conversation; an "own" routine made in a helper's chat must use the helper's chat as its conversation.
+- [ ] **Tests:**
+  - `pick`: kept, picked from the job, a stable colour, invalid names replaced;
+  - the store's look and `said_hello` once;
+  - the card carries the look;
+  - the PUT route (token, origin, 400, 404, changed);
+  - `helper.hello` runs one turn the first time and none after;
+  - a card from the hello makes a routine with `helper_id`;
+  - a model failure leaves the fixed line.
+- [ ] Commit: `Helpers: a picture for each, and a first hello that offers a routine`
+
 ### Task 8 (web): making and managing helpers
 
 **Files:**
@@ -268,6 +305,13 @@ All tools are `category="helper"`, `trusted_output=True`, with explicit `timeout
 
 - [ ] **+ New helper** at the top of the panel opens one field, "What should it do?", with **Ask Trillion**. Submitting sends the text `New helper: {text}` as a user message in the current main conversation (not a helper's chat; if one is open, switch to the last chat conversation first). The panel then closes, so her card is seen.
 - [ ] **`helper.created`:** open that conversation and the panel's details for it.
+- [ ] **The picture** (Task 7b): `apps/web/src/look.ts` draws a helper's round picture from `{icon, color}`.
+  - Each of the 24 icons is a simple inline SVG path, drawn here (stroke style, 24x24 viewBox). Lucide's ISC-licensed paths may be used if `NOTICE` gets the licence line.
+  - The 8 colours are CSS tokens in `apps/web/src/app.css` (`--helper-blue` and so on) for light and dark, built from existing palette tokens where possible. No raw hex outside the token block (`check_raw_hex.py`).
+  - It shows on the panel row (with the state dot on its edge), in details, at the top of a helper's chat, on its ready lines in her conversation (`helper_icon`, `helper_color`), and on the create card.
+  - Tap it in details: a grid of the icons and a row of the colours. A tap sends `PUT .../look` and updates at once.
+  - It has an accessible name, "Invoices picture: receipt, green".
+- [ ] **The first hello:** when the page opens a helper's chat, it sends `{"type": "helper.hello"}` once per page load per helper. The core decides whether it's the first time.
 - [ ] **Own helper rows** show the name, the state dot, and the job when idle.
 - [ ] **Own helper details** show the job, its notes ("What it knows"), its routines with next runs, its last 10 runs, **Talk to it**, **Pause** or **Resume**, and **Delete**. Delete uses the same two-step confirm the panel uses for Cancel, with the spec's words: "Delete Invoices? Its routines stop. Its chat stays in History."
 - [ ] **The offer line** goes in the conversation: "Want a helper for {area}? {name}: {job}" with **Create** and **No thanks**. It sends `helper.offer` with the choice, and is replaced by "Made {name}." or "Okay." The line belongs to the current page only and isn't redrawn from history.

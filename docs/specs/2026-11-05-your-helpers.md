@@ -63,6 +63,24 @@ At most 20 helpers. At the limit, she says so and suggests one to delete.
 - **Create** raises nothing more: your tap is the approval. The helper is made as above. **No thanks** keeps the area in the preference `helper_declined`, and she never offers it again. Neither happens on its own: no tap, no helper.
 - At most one offer a day.
 
+## Its picture
+
+Every helper has a small round picture: an icon in a colour, so the panel reads at a glance, as Grok Bot's bots do.
+
+- **About 24 icons** (receipt, envelope, calendar, chart, cart, folder, people, chat, star, heart, bell, globe, book, briefcase, wrench, leaf, home, plane, music, camera, code, shield, lightbulb, spark) and **8 colours**, each a theme token that reads in light and dark.
+- **Never blank.** `helper_create` takes an optional `icon` and `color`. She picks ones that fit the job, and the card shows the picture beside the name. One she leaves out or gets wrong is picked from the job's words (a receipt for invoices, an envelope for email), else a spark, and the colour from the name, so it stays the same each time.
+- **Changing it is one tap.** Tap the picture in the helper's details: a grid of the icons and a row of the colours. Your tap saves it at once (`PUT /api/helpers/own:<id>/look {icon, color}`), with no card, since a picture changes nothing she does.
+- **Where it shows:** its row in the Helpers panel (the state dot sits on the picture's edge), the top of its details and its chat, its "Invoices: ..." lines in her conversation, and the create card.
+- Stored on the helper (`icon`, `color`). Only names from the lists are kept.
+
+## Its first hello
+
+A new helper doesn't wait to be told what to do. When its chat first opens after Create, it takes one turn of its own:
+
+- It says, in one or two sentences, what it will do first and anything it needs to know.
+- If a regular check suits its job, it offers one through the usual `ask_schedule` card, as one of its own routines: "Want me to check for overdue invoices every Monday at 9?" One tap starts it. Nothing starts without the tap.
+- The turn runs as a host turn in its chat, with its overlay, once per helper (`hello_ms` is set when it has run). If the model can't be reached, the fixed first line stands: "Hi, I'm {name}. {job} Tell me anything I should know to start."
+
 ## Managing
 
 The Helpers panel lists your helpers under her with the others:
@@ -89,7 +107,7 @@ AGT-1 and AGT-2 describe a manifest (accent colour, avatar, model, tool allowlis
 - Per-helper permissions, models or voices.
 - Helpers talking to each other, or handing work on.
 - Sharing, importing or exporting helpers.
-- Pictures or colours for helpers.
+- Uploading your own picture for a helper (icons and colours only, for now).
 
 ## Tests
 
@@ -104,6 +122,8 @@ AGT-1 and AGT-2 describe a manifest (accent colour, avatar, model, tool allowlis
   - dispatch tools refused to helpers by name;
   - areas counted per day, the offer at 3 in 14, declined areas never offered, one offer a day;
   - pause and delete with its schedules;
-  - the routes refuse without the token.
-- **Web:** + New helper sends the sentence, the create card, the new chat opens, the panel rows and details, pause, resume, delete with its confirmation, the suggestion line, phone width, light and dark.
+  - the routes refuse without the token;
+  - the picture: kept from the card, picked from the job when missing or wrong, the same each time, changed by `PUT .../look`, only names from the lists;
+  - the first hello runs once, offers a routine on a card, and falls back to the fixed line when the model fails.
+- **Web:** the picture on the row, the details, the chat and the ready line; the picker saves a tap; + New helper sends the sentence, the create card, the new chat opens, the panel rows and details, pause, resume, delete with its confirmation, the suggestion line, phone width, light and dark.
 - **Live** on a throwaway install with a local model: make a helper by asking and by the button, talk to it, correct it, hand it work and see the ready line, pause it, see an offer after a repeated need, delete it.
