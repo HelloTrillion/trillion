@@ -32,8 +32,11 @@ USER_INPUTS: tuple[Kind, ...] = ("user",)
 # A routine is a page's as well: one routine's own, where each of its runs puts its board.
 # A helper's is one helper's own chat, titled with its name.
 ConversationKind = Literal["chat", "scheduled", "day", "routine", "helper"]
-# The kinds a page opens, lists, renames and deletes.
-_PAGE_KINDS = "kind IN ('chat', 'day', 'routine')"
+# The kinds a page opens and lists.
+_PAGE_KINDS = "kind IN ('chat', 'day', 'routine', 'helper')"
+# The kinds a page renames, deletes and restores. Not a helper's: its title is the
+# helper's name, and it goes with the helper (`helpers/store.py`).
+_PAGE_CHANGES = "kind IN ('chat', 'day', 'routine')"
 TitleSource = Literal["words", "model", "user"]
 TITLE_MAX = 80
 WORDS_TITLE_MAX = 60
@@ -327,7 +330,7 @@ class SqliteConversationStore:
         guard = " AND (title_source IS NULL OR title_source != 'user')" if source == "model" else ""
         cur = await self._conn.execute(
             "UPDATE conversations SET title = ?, title_source = ?"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NULL" + guard,
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_CHANGES} AND deleted_at IS NULL" + guard,
             (clean, source, conversation_id, owner_id),
         )
         return cur.rowcount == 1
@@ -380,7 +383,7 @@ class SqliteConversationStore:
         """Soft delete (SPN-9): hidden from the list and from resuming, kept on disk."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = ?"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NULL",
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_CHANGES} AND deleted_at IS NULL",
             (now_ms, conversation_id, owner_id),
         )
         return cur.rowcount == 1
@@ -390,7 +393,7 @@ class SqliteConversationStore:
         and for a day whose date has a fresh day conversation since)."""
         cur = await self._conn.execute(
             "UPDATE conversations SET deleted_at = NULL"  # noqa: S608 - fixed text only
-            f" WHERE id = ? AND owner_id = ? AND {_PAGE_KINDS} AND deleted_at IS NOT NULL"
+            f" WHERE id = ? AND owner_id = ? AND {_PAGE_CHANGES} AND deleted_at IS NOT NULL"
             " AND NOT (kind = 'day' AND EXISTS (SELECT 1 FROM conversations o"
             " WHERE o.owner_id = conversations.owner_id AND o.kind = 'day'"
             " AND o.day = conversations.day AND o.deleted_at IS NULL))",

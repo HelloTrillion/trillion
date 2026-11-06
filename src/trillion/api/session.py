@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import re
 import uuid
@@ -58,6 +59,7 @@ from trillion.brain.types import (
 from trillion.connectors.stripe_revenue import NAME as STRIPE_REVENUE
 from trillion.delivery import door as delivery
 from trillion.delivery.door import Delivery, Facts, NotFree, free
+from trillion.helpers.store import OwnHelper
 from trillion.memory import present
 from trillion.persona import day
 from trillion.persona.prompt import (
@@ -67,6 +69,7 @@ from trillion.persona.prompt import (
     compaction,
     degraded,
     greeting,
+    helper_overlay,
     volatile_context,
 )
 from trillion.scheduler.ask import ROUTINE_ID, ROUTINE_RUN
@@ -84,7 +87,12 @@ from trillion.spine.router import Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.tools.folders import View, host_note, open_place
+from trillion.tools.helper import ASK as HELPER_ASK
 from trillion.tools.helper import CATEGORY as HELPER_CATEGORY
+from trillion.tools.helper import CREATE as HELPER_CREATE
+from trillion.tools.helper import NARROW as HELPER_NARROW
+from trillion.tools.helper import UPDATE as HELPER_UPDATE
+from trillion.tools.helper import WIDEN as HELPER_WIDEN
 from trillion.tools.quiet import asks
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
@@ -726,6 +734,12 @@ class Session:
         # A dropped reload, tried once more when the page is free (`catch_up`).
         self._retry: asyncio.Task[None] | None = None
         self._routine = ""
+        # The helper whose own chat this is, if it is one, and in any other the helpers
+        # not paused, as (id, name, job): read again with the routines.
+        self._helper: OwnHelper | None = None
+        self._helpers: list[tuple[str, str, str]] = []
+        # The last look failed: no helper tool is offered until one works.
+        self._helpers_unread = False
         # Background reads that ended here, waiting for a pause to be brought in, and
         # whether a saved one still waits for her (the background reads spec).
         self._finished: list[_Finished] = []
@@ -964,15 +978,26 @@ class Session:
 
     def _offers(self, d: ToolDefinition) -> bool:
         """Whether a page's turn here is offered this tool: never a routine's own,
-        unless this conversation is where it belongs (`tools/routine.py`). The helper
-        tools are offered nowhere yet."""
+        unless this conversation is where it belongs (`tools/routine.py`). In a
+        helper's own chat, only the tools that change it; anywhere else, making and
+        asking one (AGT-2)."""
         if d.category == HELPER_CATEGORY:
-            return False  # Task 4 decides where
+            return d.name in self._helper_tools()
         return d.category != ROUTINE_CATEGORY or d.name in self._routine_tools
 
-    async def _read_routines(self) -> None:
-        """Which routine tools this conversation is offered now: a routine set up, or
-        today's day turned over, since the last turn changes it."""
+    def _helper_tools(self) -> frozenset[str]:
+        if self._rt.helpers is None or self._helpers_unread:
+            return frozenset()
+        if self._helper is not None:
+            return frozenset({HELPER_UPDATE, HELPER_NARROW, HELPER_WIDEN})
+        # helper_suggest waits for a host note that says to offer one.
+        return frozenset({HELPER_CREATE, HELPER_ASK})
+
+    async def _read_place(self) -> None:
+        """What this conversation is now: which routine tools it is offered (a routine
+        set up, or today's day turned over, since the last turn changes it), and whose
+        helper's chat it is, or which helpers she can hand work to."""
+        await self._read_helpers()
         rt = self._rt
         try:
             routines = await rt.schedules.active(OWNER) if rt.schedules is not None else []
@@ -984,6 +1009,34 @@ class Session:
         self._routine_tools = routine_tools(self.kind, self.id, routines, today=today)
         found = routine_here(self.kind, self.id, routines, today=today)
         self._routine = routine_named(found) if found is not None else ""
+
+    async def _read_helpers(self) -> None:
+        store = self._rt.helpers
+        if store is None:
+            self._helper, self._helpers = None, []
+            return
+        try:
+            self._helper = await store.by_conversation(OWNER, self.id)
+            mine = await store.all(OWNER) if self._helper is None else []
+        except Exception as e:
+            # Offered none: a chat is never taken for hers, or a helper's, by mistake.
+            # Her calls keep the helper last read, so a helper's chat stays its own.
+            logger.warning("helpers not read in session %s: %s", self.id, type(e).__name__)
+            self._helpers_unread, self._helpers = True, []
+            return
+        self._helpers_unread = False
+        self._helpers = [(h.id, h.name, h.job) for h in mine if h.paused_ms is None]
+
+    async def _helper_made(self, r: RouterResponse) -> None:
+        """A confirmed create card: the page opens the new helper's chat."""
+        if r.tool != HELPER_CREATE or r.status != "succeeded":
+            return
+        try:
+            made = json.loads(r.content)
+            helper_id, conversation_id = made["helper_id"], made["conversation_id"]
+        except (ValueError, TypeError, KeyError):
+            return
+        await self._send("helper.created", helper_id=helper_id, conversation_id=conversation_id)
 
     def _model(self) -> dict[str, str] | None:
         p = self._rt.provider
@@ -2316,6 +2369,8 @@ class Session:
         if await self._routine_building():
             # The card stays: tapped again once the routine is done, it is answered.
             return
+        # Whose chat this is, read now: a tap can come before any turn here.
+        await self._read_place()
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
@@ -2336,6 +2391,7 @@ class Session:
             reason=response.reason.value if response.reason is not None else None,
             detail=response.detail or None,
         )
+        await self._helper_made(response)
         action = "Approve" if decision == "confirm" else "Decline"
         note = f"[host] The user tapped {action} on the card for {pending_id}. Result: "
         self._queued.append(note + response.to_model())
@@ -2593,6 +2649,8 @@ class Session:
                     self._outside.add(turn)
                 if r.status == "succeeded":
                     self._remember_read(turn, ev.name, ev.args)
+                    # Confirmed by her `confirm_pending_action` on the user's yes.
+                    await self._helper_made(r)
                 await self._send(
                     "tool.end",
                     call_id=ev.call_id,
@@ -2612,7 +2670,7 @@ class Session:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
             system = await asyncio.to_thread(rt.system)
-            await self._read_routines()
+            await self._read_place()
             if using is not None and list(using.system) != system:
                 # A rule or skill changed while the draft ran: it sent an old prompt.
                 trace.draft = "dropped"
@@ -3212,6 +3270,8 @@ class Session:
             read_outside=at in self._outside,
             host_turn=host_turn,
             asked=asked,
+            # In a helper's own chat, every call and tap is the helper's (AGT-2).
+            helper_id=self._helper.id if self._helper is not None else None,
         )
 
     def _asked(self) -> bool:
@@ -3411,7 +3471,7 @@ class Session:
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
         recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
-        await self._read_routines()
+        await self._read_place()
         now = self._rt.clock()
         jobs = [
             JobNote(tool=j.tool, job_id=j.id, seconds=max(0, (now - j.started_ms) // 1000))
@@ -3430,6 +3490,10 @@ class Session:
             turn=self._turn if turn is None else turn,
             # "Your last line" is asked about the user's own words, never a host note.
             who=self._rt.identity if kind == "user" else None,
+            helper=helper_overlay(self._helper, self._rt.identity.agent_name)
+            if self._helper is not None
+            else "",
+            helpers=self._helpers,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
         if marker is not None:

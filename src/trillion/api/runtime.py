@@ -1116,6 +1116,8 @@ class Runtime:
             self.shared(scope),
             [(r.id, r.text) for r in self.rules.all()],
             skills=self.skill_lines(),
+            # Her instructions for the user's helpers, only where helpers can be made.
+            helpers=self.helpers is not None,
         )
 
     def start_background(self) -> None:

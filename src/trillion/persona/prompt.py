@@ -20,6 +20,8 @@ from typing import Literal
 
 from trillion import paths
 from trillion.brain.types import SystemBlock
+from trillion.helpers.store import OwnHelper
+from trillion.memory.present import inert
 from trillion.spine.untrusted import wrap
 
 DEFAULT_AGENT_NAME = "Trillion"  # the brand is the default name (PER-1a)
@@ -164,6 +166,8 @@ def system_blocks(
     granted_roots: Sequence[Path | SharedFolder] = (),
     standing: Sequence[tuple[str, str]] = (),
     skills: Sequence[tuple[str, str]] = (),
+    *,
+    helpers: bool = False,
 ) -> list[SystemBlock]:
     """Soul, then rules, then the modality overlay: one block, identical every turn.
 
@@ -172,7 +176,10 @@ def system_blocks(
     is the user's own and is not filled in, so a brace in it stays a brace.
 
     `skills` is (label, description) for each skill turned on (CON-6), in a stable
-    order, so the block only changes when a skill is switched."""
+    order, so the block only changes when a skill is switched.
+
+    `helpers` says the user can have helpers of their own (the your helpers spec): her
+    instructions for them come only then, so no other setup's block changes."""
     shared = "\n".join(_shared_line(r) for r in granted_roots) or (
         "(none: file tools cannot be used)"
     )
@@ -183,6 +190,8 @@ def system_blocks(
         f"Shared folders:\n{shared}",
         _fill(_prompt("text.md"), identity),
     ]
+    if helpers:
+        parts.append(_fill(_prompt("helpers.md"), identity))
     if skills:
         lines, more = skill_index(skills)
         tail = f"\n({more} more skills are turned on but not listed here.)" if more else ""
@@ -193,6 +202,25 @@ def system_blocks(
     if identity.directness in _TONES:
         parts.insert(1, _fill(_prompt(f"tone_{identity.directness}.md"), identity))
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
+
+
+def _quoted(text: str) -> str:
+    """A name in her context: one line, nothing that reads as markup or closes its quotes."""
+    return inert(text).replace('"', "'")
+
+
+def helper_overlay(h: OwnHelper, agent_name: str = DEFAULT_AGENT_NAME) -> str:
+    """What every turn in a helper's own chat is told on top of her usual instructions
+    (the your helpers spec): it is her, focused on one job. Its fields are the user's,
+    made inert. The last line names it, for helper_update, narrow and widen."""
+    job = inert(h.job)
+    said = f"You are {inert(h.name)}, one of {agent_name}'s helpers. Your job: {job}"
+    if not job.endswith((".", "!", "?")):
+        said += "."
+
+    if h.notes.strip():
+        said += f" Follow these notes from the user: {inert(h.notes)}"
+    return f'{said}\nhelper: {h.id} "{_quoted(h.name)}"'
 
 
 Leg = Literal["model", "hearing", "voice"]
@@ -263,6 +291,8 @@ def volatile_context(
     jobs: Sequence[JobNote] = (),
     turn: int = 0,
     who: Identity | None = None,
+    helper: str = "",
+    helpers: Sequence[tuple[str, str, str]] = (),
 ) -> str:
     """What changes between turns. It is prepended to the newest user message only,
     so the cached prefix and every earlier message stay byte-identical.
@@ -284,6 +314,11 @@ def volatile_context(
     here: its titles may quote a page she read. It rides with the message, never in the
     cached block, and with no board nothing is added.
 
+    `helper` is a helper's overlay (`helper_overlay`), in its own chat. `helpers` are
+    (id, name, job) for each helper not paused, in her own chats, so she can hand one
+    work. A job may have been drafted from something she read, so they are wrapped as
+    untrusted, as the board is. Both ride with the message, never in the cached block.
+
     `turn` counts the user's messages in this conversation, this one included. From
     `CHECKPOINT_FROM` on, and when `who` says whom she is talking to, the tonal
     checkpoint (PER-4) rides here too, never in the cached block."""
@@ -295,6 +330,8 @@ def volatile_context(
     if routine:
         # The routine this conversation belongs to: its id, for routine_narrow and widen.
         lines.append(f"routine: {routine}")
+    if helper:
+        lines.append(helper)
     lines.extend(f"background: {j.tool} (job {j.job_id}) running {j.seconds} s" for j in jobs)
     if spoken is not None:
         # How this one message arrived (PER-3, #40). It rides here, with the message,
@@ -306,6 +343,9 @@ def volatile_context(
         lines.append(_fill(_prompt("checkpoint.md"), who))
     context = "<context>\n" + "\n".join(lines) + "\n</context>"
     extra = [wrap("workspace", board)] if board else []
+    if helpers:
+        listed = "\n".join(f'{hid} "{_quoted(name)}": {inert(job)}' for hid, name, job in helpers)
+        extra.append(wrap("helpers", listed))
     if recalled:
         extra.append(recalled)
     return "\n".join([context, *extra])

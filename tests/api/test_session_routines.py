@@ -258,8 +258,10 @@ async def test_a_reload_that_raced_a_save_is_dropped(rt: Runtime) -> None:
 # ── Changing a routine where it belongs (AGT-7) ──────────────────────
 
 
-async def test_no_page_is_offered_the_helper_tools_yet(rt: Runtime) -> None:
-    """Registered and bound at startup, but offered nowhere until where is decided."""
+async def test_a_chat_is_offered_only_her_helper_tools(rt: Runtime) -> None:
+    """Registered and bound at startup. A chat is offered making and asking a helper,
+    never the tools that change one (only in its own chat) or the offer (a host note's;
+    `test_helper_chat.py` has the rest)."""
     for name in HELPER_TOOLS:
         tool = rt.registry.get(name)
         assert isinstance(tool, HelperTool) and tool._helpers is rt.helpers, name
@@ -269,7 +271,8 @@ async def test_no_page_is_offered_the_helper_tools_yet(rt: Runtime) -> None:
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "turn.text", "text": "hello"})
     await idle(session)
-    assert not set(HELPER_TOOLS) & set(provider.offered[0])
+    offered = set(HELPER_TOOLS) & set(provider.offered[0])
+    assert offered == {"helper_create", "helper_ask"}
     await session.close()
 
 
