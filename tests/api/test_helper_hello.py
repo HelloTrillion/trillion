@@ -12,14 +12,18 @@ import pytest
 
 from tests.api.test_session import Page, idle
 from tests.brain.fakes import say, use
-from tests.scheduler.conftest import FakeClock, ms
+from tests.scheduler.conftest import FakeClock, ms, schedule
 from tests.scheduler.test_ask import Recording
 from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import HELPER_HELLO, Session
 from trillion.brain.types import ContextBlock, ProviderError, TextBlock
 from trillion.helpers.store import OwnHelper
+from trillion.scheduler.when import Repeat
 from trillion.secrets.store import MemoryStore
+from trillion.spine.contract import ToolContext
 from trillion.tools.helper import CREATE, make
+from trillion.tools.routine import NARROW as ROUTINE_NARROW
+from trillion.tools.routine import WIDEN as ROUTINE_WIDEN
 
 NOW = ms("2026-11-05T09:00")
 JOB = "Chases overdue invoices."
@@ -197,3 +201,95 @@ async def test_only_a_create_card_carries_a_look(rt: Runtime) -> None:
     await idle(session)
     assert "look" not in page.all("confirm.request")[0]
     await session.close()
+
+
+async def test_no_hello_turn_once_the_chat_has_more_than_its_first_line(rt: Runtime) -> None:
+    h = await made(rt)
+    provider = Recording(say("Noted."), say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "turn.text", "text": "skip March"})
+    await idle(session)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert len(provider.calls) == 1
+    # Spent: it is already talking.
+    assert rt.helpers is not None
+    got = await rt.helpers.get("local", h.id)
+    assert got is not None and got.hello_ms is not None
+    await session.close()
+
+
+async def test_a_paused_helper_says_hello_only_once_resumed(rt: Runtime) -> None:
+    h = await made(rt)
+    assert rt.helpers is not None
+    assert await rt.helpers.pause("local", h.id, NOW)
+    provider = Recording(say("Hello."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert provider.calls == []
+    got = await rt.helpers.get("local", h.id)
+    assert got is not None and got.hello_ms is None
+    assert await rt.helpers.resume("local", h.id)
+    await session.handle({"type": "helper.hello"})
+    await idle(session)
+    assert len(provider.calls) == 1
+    await session.close()
+
+
+async def test_a_helpers_chat_has_no_routine_tools_or_line_for_its_routines(rt: Runtime) -> None:
+    h = await made(rt)
+    assert rt.schedules is not None
+    for sid in ("r0000001", "r0000002"):
+        await rt.schedules.create(
+            schedule(
+                id=sid,
+                kind="ask",
+                title=f"Check {sid}",
+                body="Check what's overdue.",
+                target="own",
+                at_local="2026-11-09T09:00",
+                next_due_ms=ms("2026-11-09T09:00"),
+                repeat=Repeat(every="day"),
+                helper_id=h.id,
+                conversation_id=h.conversation_id,
+            )
+        )
+    provider = Recording(say("Sure."))
+    rt.provider = provider
+    page = Page(rt)
+    session = await Session.start(rt, page.send, h.conversation_id)
+    await session.handle({"type": "turn.text", "text": "anything overdue?"})
+    await idle(session)
+    assert not {ROUTINE_NARROW, ROUTINE_WIDEN} & set(provider.offered[0])
+    _system, messages = provider.calls[0]
+    context = "\n".join(b.text for b in messages[-1].blocks if isinstance(b, ContextBlock))
+    assert "routine: " not in context
+    await session.close()
+
+
+async def test_a_reminder_or_timed_ask_in_a_helpers_chat_is_not_the_helpers(
+    rt: Runtime,
+) -> None:
+    h = await made(rt)
+    ctx = ToolContext(
+        owner_id="local",
+        session_id=h.conversation_id,
+        turn=1,
+        call_id="t1",
+        via="text",
+        helper_id=h.id,
+    )
+    when = {"when": "2026-11-09T09:00", "title": "Plain"}
+    reminder, ask = rt.registry.get("reminder_set"), rt.registry.get("ask_schedule")
+    assert reminder is not None and ask is not None
+    assert (await reminder.execute({**when, "say": "Call Sam."}, ctx)).ok
+    assert (await ask.execute({**when, "title": "Asked", "ask": "Check the news."}, ctx)).ok
+    assert rt.schedules is not None
+    made_here = await rt.schedules.active("local")
+    assert len(made_here) == 2
+    assert all(s.helper_id is None and s.conversation_id is None for s in made_here)

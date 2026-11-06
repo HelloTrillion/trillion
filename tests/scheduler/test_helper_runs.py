@@ -26,6 +26,7 @@ from trillion.brain.types import (
     ToolSchema,
 )
 from trillion.delivery.door import READY, Door
+from trillion.helpers.look import pick
 from trillion.helpers.pausing import pause_helper, resume_helper
 from trillion.helpers.store import OwnHelper
 from trillion.persona.prompt import helper_overlay, system_blocks
@@ -190,6 +191,19 @@ async def test_a_handoff_runs_in_its_chat_and_a_ready_line_names_it(rt: Runtime)
     assert system.index("A TIMED ASK") < system.index(overlay) < system.index("Needs you:")
     # Background work of a helper, for the spend gate.
     assert it.provider.work == ["helpers"]
+
+
+async def test_a_stored_picture_not_on_the_lists_never_reaches_the_page(rt: Runtime) -> None:
+    it = Rig(rt, Seen(say("2 invoices are overdue.")))
+    h = await it.made()
+    await it.helpers._conn.execute(
+        "UPDATE helpers SET icon = '<b>', color = 'neon' WHERE id = ?", (h.id,)
+    )
+    await it.helpers._conn.commit()
+    await it.ask(h)
+    await it.scheduler.tick()
+    (got,) = it.page.got
+    assert (got.helper_icon, got.helper_color) == pick(h.name, h.job)
 
 
 async def test_nothing_to_say_still_says_so(rt: Runtime) -> None:

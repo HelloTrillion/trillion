@@ -1627,12 +1627,17 @@ class Session:
         if store is None or rt.provider is None or self.kind != "helper":
             return
         async with self._taking_input():
-            if self._task is not None or await self._routine_building():
+            if await self._routine_building():
                 return
             await self._read_place()
             h = self._helper
-            if h is None or self._task is not None:
+            # Paused: not spent, so it says hello once resumed. A turn running: not
+            # spent either, so it is never used up without one.
+            if h is None or h.paused_ms is not None or self._task is not None:
                 return
+            # Anything beyond its fixed first line: it is already talking, so the hello
+            # is spent with no turn.
+            fresh = self._kinds in ([], ["assistant"])
             try:
                 first = await store.said_hello(OWNER, h.id, rt.clock())
             except Exception as e:
@@ -1640,7 +1645,11 @@ class Session:
                     "helper hello not marked in session %s: %s", self.id, type(e).__name__
                 )
                 return
-            if not first or self._task is not None:
+            if not first or not fresh:
+                return
+            if self._task is not None:
+                # Never taken over a turn: it is that turn's loop that says it next.
+                self._queued.append(HELPER_HELLO)
                 return
             await self._stop_listening()
             self._via = "text"

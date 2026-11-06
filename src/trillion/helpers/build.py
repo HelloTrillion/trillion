@@ -38,6 +38,7 @@ from typing import Protocol
 
 from trillion.attention.runner import WatcherStatus
 from trillion.attention.settings import ON_UNTIL_CONNECTED, TITLED
+from trillion.helpers.look import pick
 from trillion.helpers.model import (
     Helper,
     HelperState,
@@ -305,6 +306,8 @@ def _own(
     upcoming = [
         s.next_due_ms for s in routines if s.paused_ms is None and s.next_due_ms is not None
     ]
+    # Checked against the lists again: only names the page can draw reach it.
+    icon, color = pick(h.name, h.job, h.icon, h.color)
     return Helper(
         id=f"own:{h.id}",
         kind="own",
@@ -319,8 +322,8 @@ def _own(
         conversation_id=h.conversation_id,
         paused=paused,
         notes=h.notes,
-        icon=h.icon,
-        color=h.color,
+        icon=icon,
+        color=color,
         routines=tuple(
             RoutineLine(
                 id=s.id,

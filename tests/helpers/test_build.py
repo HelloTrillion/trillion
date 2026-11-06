@@ -14,6 +14,7 @@ import pytest
 from tests.scheduler.conftest import NY, ms, schedule
 from trillion.attention.runner import WatcherStatus
 from trillion.helpers.build import helpers
+from trillion.helpers.look import pick
 from trillion.helpers.model import Helper, LastRun, RoutineLine, Waiting, to_json
 from trillion.helpers.pausing import pause_helper
 from trillion.helpers.store import OwnHelper
@@ -749,3 +750,8 @@ async def test_a_handoff_a_pause_cancelled_is_no_run(real: Real) -> None:
     assert await real.store.helper_last_results(OWNER) == {}
     (h,) = await helpers(real)
     assert (h.state, h.last_run) == ("paused", None)
+
+
+async def test_a_stored_picture_not_on_the_lists_never_reaches_the_page() -> None:
+    (h,) = await helpers(Sources(mine=[mine(icon="<b>", color="neon")]))
+    assert (h.icon, h.color) == pick("Invoices", "Chases overdue invoices")

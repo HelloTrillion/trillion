@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from trillion.delivery import notify as system
+from trillion.helpers.look import pick
 from trillion.helpers.store import OwnHelper
 from trillion.scheduler import when
 from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, Schedule, ScheduleStore
@@ -427,11 +428,13 @@ class Door:
             return {}
         if h is None:
             return {}
+        # Checked against the lists again: only names the page can draw reach it.
+        icon, color = pick(h.name, h.job, h.icon, h.color)
         return {
             "helper_id": f"own:{h.id}",
             "helper_name": h.name,
-            "helper_icon": h.icon,
-            "helper_color": h.color,
+            "helper_icon": icon,
+            "helper_color": color,
         }
 
     async def _due(self, n: Notice, now: int, zones: dict[str, str]) -> str:
