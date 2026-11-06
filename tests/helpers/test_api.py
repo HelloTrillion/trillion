@@ -23,7 +23,11 @@ from trillion.api.runtime import OWNER, Runtime, open_runtime
 from trillion.api.session import Session
 from trillion.brain.types import ContextBlock
 from trillion.helpers import live
+from trillion.helpers.build import snapshot
+from trillion.helpers.pausing import pause_helper, resume_helper
+from trillion.helpers.wiring import RuntimeSources
 from trillion.persona import day
+from trillion.scheduler import runner
 from trillion.scheduler.store import Schedule
 from trillion.scheduler.when import Repeat
 from trillion.secrets.store import MemoryStore
@@ -127,6 +131,8 @@ def test_the_list_holds_routines_asks_and_watchers(make: Any) -> None:
         "paused",
         "switched_on",
         "connected",
+        "notes",
+        "routines",
     }
 
 
@@ -605,3 +611,186 @@ async def test_a_note_for_a_deleted_conversation_is_forgotten_when_read(rt: Runt
     await rt.conversations.delete("c2", OWNER, rt.clock())
     assert await rt.helper_note("c1") == "note c1"
     assert await rt.preferences.get(OWNER, "helper_notes") == {"c1": "note c1"}
+
+
+# ── Your helpers: pause, resume, delete, runs and chat (the your helpers spec) ──
+
+
+def made(app: App, name: str = "Invoices") -> Any:
+    assert app.rt.helpers is not None
+    return call(app, app.rt.helpers.create, OWNER, name, "Chases overdue invoices", NOW)
+
+
+def its_routine(helper_id: str, **kw: Any) -> Schedule:
+    return routine(**{"id": "a9a8a7a6", "title": "Overdue check", "helper_id": helper_id, **kw})
+
+
+def handoff(helper_id: str, **kw: Any) -> Schedule:
+    return ask(**{"id": "e9e8e7e6", "title": "Invoices: who", "helper_id": helper_id, **kw})
+
+
+def delete(app: App, path: str, **kw: Any) -> Any:
+    headers = {**app.auth, "content-type": "application/json", **kw.pop("headers", {})}
+    return app.client.delete(path, headers=headers, **kw)
+
+
+def own_row(app: App, helper_id: str) -> Any:
+    rows = app.client.get(PATH, headers=app.auth).json()["helpers"]
+    found = [h for h in rows if h["id"] == f"own:{helper_id}"]
+    return found[0] if found else None
+
+
+def test_your_helper_is_listed_with_its_routines_under_it(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    store = app.rt.schedules
+    assert store is not None
+    call(app, store.create, its_routine(h.id))
+    call(app, store.create, handoff(h.id))
+    rows = app.client.get(PATH, headers=app.auth).json()["helpers"]
+    ids = [r["id"] for r in rows]
+    # Neither its routine nor its handoff is a row of its own.
+    assert f"own:{h.id}" in ids and not any(i.endswith(("a9a8a7a6", "e9e8e7e6")) for i in ids)
+    row = own_row(app, h.id)
+    assert (row["kind"], row["name"], row["job"], row["state"]) == (
+        "own",
+        "Invoices",
+        "Chases overdue invoices",
+        "idle",
+    )
+    assert (row["notes"], row["conversation_id"]) == ("", h.conversation_id)
+    assert row["routines"] == [
+        {
+            "id": "a9a8a7a6",
+            "name": "Overdue check",
+            "next_ms": ms("2099-10-26T08:00"),
+            "paused": False,
+        }
+    ]
+
+
+def test_pause_resume_and_delete_need_the_token_our_origin_and_your_helper(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    own = f"{PATH}/own:{h.id}"
+    for verb in ("pause", "resume"):
+        assert app.client.post(f"{own}/{verb}", json={}).status_code == 401
+    assert app.client.delete(own).status_code == 401
+    elsewhere = {"origin": "https://evil.example"}
+    assert post(app, f"{own}/pause", headers=elsewhere).status_code == 403
+    assert delete(app, own, headers=elsewhere).status_code == 403
+    # Only a helper of yours: a routine, an ask or a watcher has its own routes.
+    assert app.rt.schedules is not None
+    call(app, app.rt.schedules.create, routine())
+    for other in (f"routine:{RID}", "watcher:email", f"ask:{AID}", "own:" + "0" * 32):
+        assert post(app, f"{PATH}/{other}/pause").status_code == 404
+        assert post(app, f"{PATH}/{other}/resume").status_code == 404
+        assert delete(app, f"{PATH}/{other}").status_code == 404
+    assert own_row(app, h.id)["state"] == "idle"
+
+
+def test_pause_and_resume_a_helper_with_its_routines(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    store = app.rt.schedules
+    assert store is not None
+    call(app, store.create, its_routine(h.id))
+    r = post(app, f"{PATH}/own:{h.id}/pause")
+    assert r.status_code == 200
+    (row,) = [x for x in r.json()["helpers"] if x["id"] == f"own:{h.id}"]
+    assert (row["state"], row["paused"], row["next_ms"]) == ("paused", True, None)
+    assert row["routines"][0]["paused"] is True
+    assert call(app, store.get, "a9a8a7a6").paused_ms is not None
+    # Already paused is fine: the tap is answered with how it stands.
+    assert post(app, f"{PATH}/own:{h.id}/pause").status_code == 200
+    r = post(app, f"{PATH}/own:{h.id}/resume")
+    assert r.status_code == 200
+    row = own_row(app, h.id)
+    assert (row["state"], row["paused"]) == ("idle", False)
+    assert row["routines"][0]["paused"] is False
+    assert call(app, store.get, "a9a8a7a6").paused_ms is None
+
+
+def test_a_helpers_runs_come_from_all_its_schedules_newest_first(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    store = app.rt.schedules
+    assert store is not None
+    call(app, store.create, its_routine(h.id))
+    call(app, store.create, handoff(h.id))
+    for i, sid in enumerate(["a9a8a7a6", "e9e8e7e6"] * 6):
+        at = NOW + i * 1000
+        call(app, store.enqueue, sid, at, at + 86_400_000, 300.0, at)
+        run = call(app, store.claim, "w1", at, 0)
+        call(app, partial(store.finish, detail="nothing"), run.id, "nothing", at + 10)
+    body = app.client.get(f"{PATH}/own:{h.id}/runs", headers=app.auth).json()
+    assert [r["at_ms"] for r in body["runs"]] == [NOW + i * 1000 + 10 for i in range(11, 1, -1)]
+    assert own_row(app, h.id)["last_run"]["at_ms"] == NOW + 11_010
+    assert app.client.get(f"{PATH}/own:{'0' * 32}/runs", headers=app.auth).status_code == 404
+
+
+def test_delete_then_list_its_gone_and_its_chat_still_opens(make: Any) -> None:
+    app: App = make()
+    ready(app)
+    h = made(app)
+    store = app.rt.schedules
+    assert store is not None
+    call(app, store.create, its_routine(h.id))
+    talk = post(app, f"{PATH}/own:{h.id}/conversation")
+    assert talk.json() == {"conversation_id": h.conversation_id}
+    r = delete(app, f"{PATH}/own:{h.id}")
+    assert r.status_code == 200
+    assert not any(x["id"] == f"own:{h.id}" for x in r.json()["helpers"])
+    assert own_row(app, h.id) is None
+    assert call(app, store.get, "a9a8a7a6").status == "cancelled"
+    # Its chat is a plain one now: no helper opens it, but it opens by its id.
+    assert post(app, f"{PATH}/own:{h.id}/conversation").status_code == 404
+    assert delete(app, f"{PATH}/own:{h.id}").status_code == 404
+    assert call(app, app.rt.conversations.exists, h.conversation_id, OWNER)
+    assert call(app, app.rt.conversations.kind_of, h.conversation_id, OWNER) == ("chat", None)
+
+
+async def test_a_handoff_in_progress_shows_its_helper_working(rt: Runtime) -> None:
+    await rt.stop_background()
+    assert rt.helpers is not None and rt.schedules is not None
+    h = await rt.helpers.create(OWNER, "Invoices", "Chases overdue invoices", rt.clock())
+    assert not isinstance(h, str)
+    now = rt.clock()
+    await rt.schedules.create(handoff(h.id, next_due_ms=now))
+    await rt.schedules.enqueue("e9e8e7e6", now, None, 300.0, now)
+    assert await rt.schedules.claim("w1", now, 0) is not None
+    found, _ = await snapshot(RuntimeSources(rt))
+    (row,) = [x for x in found if x.id == f"own:{h.id}"]
+    assert (row.state, row.doing) == ("working", "Working")
+    assert not any(x.id.endswith("e9e8e7e6") for x in found)
+
+
+async def test_your_helper_changing_is_pushed(rt: Runtime) -> None:
+    await rt.stop_background()
+    assert rt.helpers is not None and rt.schedules is not None
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    h = await rt.helpers.create(OWNER, "Invoices", "Chases overdue invoices", rt.clock())
+    assert not isinstance(h, str)
+    seen = await pushed(page, 1)
+    assert any(x["id"] == f"own:{h.id}" for x in seen[-1]["helpers"])
+    await rt.helpers.update(OWNER, h.id, name="Bills")
+    seen = await pushed(page, 2)
+    assert [x["name"] for x in seen[-1]["helpers"] if x["id"] == f"own:{h.id}"] == ["Bills"]
+    await rt.helpers.add_note(OWNER, h.id, "Skip March.")
+    seen = await pushed(page, 3)
+    assert [x["notes"] for x in seen[-1]["helpers"] if x["id"] == f"own:{h.id}"] == ["Skip March."]
+    await pause_helper(rt.helpers, rt.schedules, OWNER, h.id, rt.clock())
+    seen = await pushed(page, 4)
+    assert [x["state"] for x in seen[-1]["helpers"] if x["id"] == f"own:{h.id}"] == ["paused"]
+    await resume_helper(rt.helpers, rt.schedules, runner, OWNER, h.id, rt.clock())
+    seen = await pushed(page, 5)
+    assert [x["state"] for x in seen[-1]["helpers"] if x["id"] == f"own:{h.id}"] == ["idle"]
+    await rt.helpers.delete(OWNER, h.id, rt.clock())
+    seen = await pushed(page, 6)
+    assert not any(x["id"] == f"own:{h.id}" for x in seen[-1]["helpers"])
+    await session.close()

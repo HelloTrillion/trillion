@@ -6,10 +6,14 @@ Routines and timed asks are schedules of kind ask, with a target or without. A p
 reminder runs no model and is no helper. A one-off ask that has fired is not active,
 so it is not listed.
 
+A helper the user made is a row of its own, `own:<id>`. Its schedules are no rows: its
+routines are listed under it, and a handoff only shows it working while it runs. Its
+last and next run come from those schedules.
+
 A helper's state, first that holds: needs you (something of it waits on the user),
-working (a run or check under way), paused (the user paused a routine, or turned a
-watcher off; a timed ask can't be paused, only cancelled), capped (its kind of work is
-paused at the background model's spend cap), idle.
+working (a run or check under way), paused (the user paused a routine or a helper of
+theirs, or turned a watcher off; a timed ask can't be paused, only cancelled), capped
+(its kind of work is paused at the background model's spend cap), idle.
 
 What waits on the user:
 - An approval: a card still proposed, raised in the helper's own conversation (its
@@ -34,7 +38,15 @@ from typing import Protocol
 
 from trillion.attention.runner import WatcherStatus
 from trillion.attention.settings import ON_UNTIL_CONNECTED, TITLED
-from trillion.helpers.model import Helper, HelperState, LastRun, Outcome, Waiting
+from trillion.helpers.model import (
+    Helper,
+    HelperState,
+    LastRun,
+    Outcome,
+    RoutineLine,
+    Waiting,
+)
+from trillion.helpers.store import OwnHelper
 from trillion.scheduler.runner import BUSY_DETAIL
 from trillion.scheduler.store import Run, RunStatus, Schedule
 from trillion.scheduler.when import WhenError, summary
@@ -121,6 +133,10 @@ class Schedules(Protocol):
 
     async def running(self, owner_id: str, now_ms: int) -> dict[str, Run]: ...
 
+    async def helper_last_results(self, owner_id: str) -> dict[str, Run]:
+        """The latest finished run of any schedule of each helper, by helper id."""
+        ...
+
 
 class Sources(Protocol):
     """Everything the list is built from, so tests can pass fakes."""
@@ -152,6 +168,10 @@ class Sources(Protocol):
         (the preference `helper_conversations`): a watcher's."""
         ...
 
+    async def own(self) -> Sequence[OwnHelper]:
+        """The helpers the user made (`HelperStore.all`)."""
+        ...
+
 
 async def helpers(sources: Sources) -> list[Helper]:
     return (await snapshot(sources))[0]
@@ -170,7 +190,18 @@ async def snapshot(sources: Sources) -> tuple[list[Helper], int | None]:
     cards = _by_conversation(open_cards)
     wake = min((a.expires_at for a in open_cards), default=None)
     talks = await sources.conversations()
-    found = [_scheduled(s, last.get(s.id), now.get(s.id), capped, cards) for s in active]
+    # A helper's schedules are its own, never rows: one whose helper is gone has none.
+    theirs = [s for s in active if s.helper_id is not None]
+    found = [
+        _scheduled(s, last.get(s.id), now.get(s.id), capped, cards)
+        for s in active
+        if s.helper_id is None
+    ]
+    by_helper = await sources.schedules.helper_last_results(owner)
+    found += [
+        _own(h, [s for s in theirs if s.helper_id == h.id], by_helper.get(h.id), now, capped, cards)
+        for h in await sources.own()
+    ]
     found += [
         _watcher(w, capped, cards, talks.get(f"watcher:{w.name}")) for w in await sources.watchers()
     ]
@@ -242,6 +273,62 @@ def _scheduled(
         waiting=tuple(waiting),
         conversation_id=conversation,
         paused=paused,
+    )
+
+
+def _own(
+    h: OwnHelper,
+    schedules: list[Schedule],
+    last: Run | None,
+    running: dict[str, Run],
+    capped: set[Work],
+    cards: dict[str, list[Waiting]],
+) -> Helper:
+    paused = h.paused_ms is not None
+    starts = [
+        r.started_ms if r.started_ms is not None else r.claimed_ms
+        for s in schedules
+        if (r := running.get(s.id)) is not None
+    ]
+    routines = [s for s in schedules if s.target is not None and s.status == "active"]
+    # Its chat, and any chat of its routines' own.
+    talks = dict.fromkeys([h.conversation_id, *(s.conversation_id for s in routines)])
+    waiting = [w for c in talks for w in _in(cards, c)]
+    state = _state(
+        waiting=bool(waiting),
+        working=bool(starts),
+        paused=paused,
+        capped="helpers" in capped,
+    )
+    known = [t for t in starts if t is not None]
+    upcoming = [
+        s.next_due_ms
+        for s in schedules
+        if s.status == "active" and s.paused_ms is None and s.next_due_ms is not None
+    ]
+    return Helper(
+        id=f"own:{h.id}",
+        kind="own",
+        name=h.name,
+        job=h.job,
+        state=state,
+        doing="Working" if state == "working" else None,
+        since_ms=min(known) if state == "working" and known else None,
+        last_run=last_run_of(last),
+        next_ms=None if paused or not upcoming else min(upcoming),
+        waiting=tuple(waiting),
+        conversation_id=h.conversation_id,
+        paused=paused,
+        notes=h.notes,
+        routines=tuple(
+            RoutineLine(
+                id=s.id,
+                name=s.title,
+                next_ms=None if paused or s.paused_ms is not None else s.next_due_ms,
+                paused=s.paused_ms is not None,
+            )
+            for s in routines
+        ),
     )
 
 

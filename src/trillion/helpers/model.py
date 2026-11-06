@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-HelperKind = Literal["routine", "ask", "watcher"]
+# `own`: a helper the user made (the your helpers spec).
+HelperKind = Literal["routine", "ask", "watcher", "own"]
 # Paused and capped helpers sit in Idle on the page, saying so.
 HelperState = Literal["needs_you", "working", "idle", "paused", "capped"]
 # `nothing`: a run that had nothing for the user (AGT-6).
@@ -40,8 +41,23 @@ class Waiting:
 
 
 @dataclass(frozen=True, kw_only=True)
+class RoutineLine:
+    """One of a helper's routines, listed under it rather than as a row of its own."""
+
+    # Its schedule's id: the routine routes act on it.
+    id: str
+    name: str
+    # None while it, or its helper, is paused.
+    next_ms: int | None
+    paused: bool
+
+    def to_json(self) -> dict[str, Any]:
+        return {"id": self.id, "name": self.name, "next_ms": self.next_ms, "paused": self.paused}
+
+
+@dataclass(frozen=True, kw_only=True)
 class Helper:
-    # `routine:<schedule_id>`, `ask:<schedule_id>` or `watcher:<name>`.
+    # `routine:<schedule_id>`, `ask:<schedule_id>`, `watcher:<name>` or `own:<id>`.
     id: str
     kind: HelperKind
     name: str
@@ -58,11 +74,15 @@ class Helper:
     # The conversation "Talk to it" opens, when one exists yet.
     conversation_id: str | None
     # What the page acts on, said outright rather than read from `state`: a routine
-    # the user paused (Resume, not Pause); a watcher switched on, and its source
-    # connected (Turn on, or Connect). None where they don't apply.
+    # the user paused, or a helper of theirs (Resume, not Pause); a watcher switched
+    # on, and its source connected (Turn on, or Connect). None where they don't apply.
     paused: bool = False
     switched_on: bool | None = None
     connected: bool | None = None
+    # A helper of the user's: what it has learned, and its routines. None and empty
+    # for any other kind.
+    notes: str | None = None
+    routines: tuple[RoutineLine, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -80,6 +100,8 @@ class Helper:
             "paused": self.paused,
             "switched_on": self.switched_on,
             "connected": self.connected,
+            "notes": self.notes,
+            "routines": [r.to_json() for r in self.routines],
         }
 
 

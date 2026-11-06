@@ -1,5 +1,6 @@
 """The helpers panel (the helpers panel spec): her routines, timed asks and watchers,
-behind the session token like every /api/ route.
+and the helpers the user made (the your helpers spec), behind the session token like
+every /api/ route.
 
 - `GET /api/helpers`: `{helpers: [...], needs_you: n}`, built fresh (`helpers/build.py`).
 - `GET /api/helpers/{id}/runs`: the last ten runs, newest first, each `{at_ms, outcome,
@@ -10,7 +11,12 @@ behind the session token like every /api/ route.
   opens. A routine's own, made if it has none yet; today's day conversation for one
   that builds there; for a timed ask, the conversation it was set in, where it reports;
   for a watcher, one of its own, made on first use, remembered in the preference
-  `helper_conversations`, and with one host note for its first turn, there only.
+  `helper_conversations`, and with one host note for its first turn, there only. For a
+  helper of the user's, its own chat.
+- `POST /api/helpers/{id}/pause`, `.../resume` and `DELETE /api/helpers/{id}`: a helper
+  of the user's only (`own:<id>`), with its schedules; each answers with the list. A
+  routine, timed ask or watcher has routes of its own. A helper's runs are those of
+  all its schedules, its handoffs and its routines.
 
 The page only displays: no route here starts a run or answers a card (SPN-14).
 Everything that changes a helper calls `Runtime.helpers_changed`, and every open page
@@ -32,8 +38,12 @@ from fastapi.responses import JSONResponse
 from trillion.attention.settings import TITLED, WATCHERS
 from trillion.helpers.build import run_of, snapshot
 from trillion.helpers.model import to_json
+from trillion.helpers.pausing import pause_helper, resume_helper
+from trillion.helpers.store import HelperStore, OwnHelper
 from trillion.helpers.wiring import CONVERSATIONS_PREF, OWNER, RuntimeSources, talks
 from trillion.persona import day
+from trillion.scheduler import runner
+from trillion.scheduler.store import Run
 
 if TYPE_CHECKING:
     from trillion.api.runtime import Runtime
@@ -45,7 +55,9 @@ RUNS = 10
 # A find claimed this long ago and never told was lost (as Settings counts it).
 LOST_AFTER_MS = 5 * 60_000
 HELPER_ID = Segment(
-    min_length=3, max_length=60, pattern=r"^((routine|ask):[a-f0-9]{8}|watcher:[a-z_]{1,30})$"
+    min_length=3,
+    max_length=60,
+    pattern=r"^((routine|ask):[a-f0-9]{8}|watcher:[a-z_]{1,30}|own:[a-f0-9]{32})$",
 )
 
 
@@ -72,6 +84,22 @@ def _find_run(status: str, first_seen_ms: int, now_ms: int) -> tuple[str, str | 
     return "skipped", "telling you now"
 
 
+def _told(history: list[tuple[Run, str | None]]) -> list[dict[str, Any]]:
+    """Runs as the panel tells them, with the conversation each opens."""
+    out = []
+    for run, opens in history:
+        last = run_of(run)
+        out.append(
+            {
+                "at_ms": last.at_ms,
+                "outcome": last.outcome,
+                "reason": last.reason,
+                "conversation_id": opens,
+            }
+        )
+    return out
+
+
 def create_helpers_router(rt: Runtime) -> APIRouter:
     router = APIRouter(prefix="/api/helpers")
     # One helper conversation made at a time: two taps never make two.
@@ -87,13 +115,57 @@ def create_helpers_router(rt: Runtime) -> APIRouter:
             return None
         return s if (s.target is not None) == (kind == "routine") else None
 
-    @router.get("")
-    async def read() -> dict[str, Any]:
+    def made() -> HelperStore:
+        if rt.helpers is None:
+            raise RuntimeError("helpers are not set up")
+        return rt.helpers
+
+    async def own_of(helper_id: str) -> OwnHelper | None:
+        """The user's own helper this id names, if it is one."""
+        kind, _, hid = helper_id.partition(":")
+        return await made().get(OWNER, hid) if kind == "own" else None
+
+    async def listing() -> dict[str, Any]:
         found, _ = await snapshot(RuntimeSources(rt))
         return to_json(found)
 
+    @router.get("")
+    async def read() -> dict[str, Any]:
+        return await listing()
+
+    @router.post("/{helper_id}/pause")
+    async def pause(helper_id: str = HELPER_ID) -> Any:
+        h = await own_of(helper_id)
+        if h is None:
+            return _not_found()
+        # Already paused is fine: the tap is answered with how it stands.
+        await pause_helper(made(), store(), OWNER, h.id, rt.clock())
+        return await listing()
+
+    @router.post("/{helper_id}/resume")
+    async def resume(helper_id: str = HELPER_ID) -> Any:
+        h = await own_of(helper_id)
+        if h is None:
+            return _not_found()
+        # Its routines from their next due time after now: none is run late.
+        await resume_helper(made(), store(), runner, OWNER, h.id, rt.clock())
+        return await listing()
+
+    @router.delete("/{helper_id}")
+    async def delete(helper_id: str = HELPER_ID) -> Any:
+        h = await own_of(helper_id)
+        # Its schedules go with it; its chat stays in History as a plain one.
+        if h is None or not await made().delete(OWNER, h.id, rt.clock()):
+            return _not_found()
+        return await listing()
+
     @router.get("/{helper_id}/runs")
     async def runs(helper_id: str = HELPER_ID) -> Any:
+        if helper_id.startswith("own:"):
+            h = await own_of(helper_id)
+            if h is None:
+                return _not_found()
+            return {"runs": _told(await store().helper_history(OWNER, h.id, RUNS))}
         if helper_id.startswith("watcher:"):
             name = helper_id.removeprefix("watcher:")
             if name not in WATCHERS or rt.attention_store is None:
@@ -115,21 +187,15 @@ def create_helpers_router(rt: Runtime) -> APIRouter:
         s = await schedule_of(helper_id)
         if s is None:
             return _not_found()
-        out = []
-        for run, opens in await store().history(OWNER, s.id, RUNS):
-            last = run_of(run)
-            out.append(
-                {
-                    "at_ms": last.at_ms,
-                    "outcome": last.outcome,
-                    "reason": last.reason,
-                    "conversation_id": opens,
-                }
-            )
-        return {"runs": out}
+        return {"runs": _told(await store().history(OWNER, s.id, RUNS))}
 
     @router.post("/{helper_id}/conversation")
     async def conversation(helper_id: str = HELPER_ID) -> Any:
+        if helper_id.startswith("own:"):
+            h = await own_of(helper_id)
+            if h is None:
+                return _not_found()
+            return {"conversation_id": h.conversation_id}
         if helper_id.startswith("watcher:"):
             name = helper_id.removeprefix("watcher:")
             if name not in WATCHERS:

@@ -439,6 +439,35 @@ class SqliteScheduleStore:
         ) as cur:
             return {str(r["schedule_id"]): _run(r) for r in await cur.fetchall()}
 
+    async def helper_last_results(self, owner_id: str) -> dict[str, Run]:
+        """The latest finished run of any of each helper's schedules, by helper id:
+        handoffs long done count too."""
+        async with self._conn.execute(
+            "SELECT r.*, s.helper_id AS helper FROM task_runs r"
+            " JOIN schedules s ON s.id = r.schedule_id"
+            " JOIN (SELECT MAX(x.id) AS id FROM task_runs x JOIN schedules y"
+            " ON y.id = x.schedule_id WHERE y.owner_id = ? AND y.helper_id IS NOT NULL"
+            " AND x.status NOT IN ('queued', 'running') GROUP BY y.helper_id) last"
+            " ON last.id = r.id",
+            (owner_id,),
+        ) as cur:
+            return {str(r["helper"]): _run(r) for r in await cur.fetchall()}
+
+    async def helper_history(
+        self, owner_id: str, helper_id: str, limit: int
+    ) -> list[tuple[Run, str | None]]:
+        """`history` across every schedule of a helper's: its handoffs and routines."""
+        async with self._conn.execute(
+            "SELECT r.*, n.conversation_id AS opens FROM task_runs r"
+            " JOIN schedules s ON s.id = r.schedule_id"
+            " LEFT JOIN notices n ON n.id = r.result_notice"
+            " WHERE s.owner_id = ? AND s.helper_id = ? AND r.status NOT IN ('queued', 'running')"
+            " ORDER BY COALESCE(r.finished_ms, r.claimed_ms, r.due_ms) DESC, r.id DESC LIMIT ?",
+            (owner_id, helper_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(_run(r), str(r["opens"]) if r["opens"] is not None else None) for r in rows]
+
     async def history(
         self, owner_id: str, schedule_id: str, limit: int
     ) -> list[tuple[Run, str | None]]:
