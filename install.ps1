@@ -12,10 +12,15 @@
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -NoSetup
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1))) -NoSetup
 #
+#   -Channel C     stable (the default), beta or dev           $env:TRILLION_CHANNEL = "C"
 #   -Version X     install Trillion X instead of the latest   $env:TRILLION_VERSION = "X"
 #   -Wheel PATH    install this wheel file or URL instead      $env:TRILLION_WHEEL = "PATH"
 #   -NoSetup       install only; don't run `trillion setup`    $env:TRILLION_NO_SETUP = "1"
 #   -Help          show this help
+#
+# The channel is remembered (in ~\.trillion\channel), so running it again, or
+# `trillion update`, stays on it. stable and beta come from PyPI; dev is the newest
+# build of main, from the `dev` release on GitHub.
 #
 # macOS and Linux: use install.sh instead (see the README).
 #
@@ -59,9 +64,41 @@
         return $null
     }
 
+    # The wheel on the rolling `dev` release: the newest build of main, or $null.
+    function Find-DevWheel {
+        $api = 'https://api.github.com/repos/HelloTrillion/trillion/releases/tags/dev'
+        if ($env:TRILLION_DEV_RELEASE) { $api = $env:TRILLION_DEV_RELEASE }
+        try {
+            $answer = Invoke-RestMethod -Uri $api -Headers @{ Accept = 'application/vnd.github+json' } -UseBasicParsing
+        } catch {
+            throw "couldn't ask GitHub for the dev build ($api): $($_.Exception.Message)"
+        }
+        $found = @($answer.assets) | Where-Object { "$($_.browser_download_url)" -match '/trillion-[^/]*\.whl$' } | Select-Object -First 1
+        if ($found) { return "$($found.browser_download_url)" }
+        return $null
+    }
+
     # Installs everything and returns the path to trillion.exe. Throws on failure.
-    function Install-Trillion([string]$Version, [string]$Wheel) {
+    function Install-Trillion([string]$Version, [string]$Wheel, [string]$Channel) {
         if ($Version -and $Wheel) { throw 'use -Version or -Wheel, not both' }
+        # A tag works as a version too: v2026.11.0-beta.1 is 2026.11.0-beta.1 to uv.
+        if ($Version) { $Version = $Version -replace '^v', '' }
+
+        # The channel: the one asked for, else the one remembered, else stable.
+        $dataHome = Join-Path $HOME '.trillion'
+        if ($env:TRILLION_HOME) { $dataHome = $env:TRILLION_HOME }
+        $channelFile = Join-Path $dataHome 'channel'
+        $was = ''
+        if (Test-Path -LiteralPath $channelFile -PathType Leaf) {
+            $was = "$(Get-Content -LiteralPath $channelFile -TotalCount 1)".Trim().ToLowerInvariant()
+        }
+        if (@('stable', 'beta', 'dev') -notcontains $was) { $was = 'stable' }
+        $chosen = $was
+        if ($Channel) { $chosen = $Channel.ToLowerInvariant() }
+        if (@('stable', 'beta', 'dev') -notcontains $chosen) { throw "unknown channel: $chosen (use stable, beta or dev)" }
+        if ($chosen -eq 'dev' -and $Version) {
+            throw 'the dev channel has no versions: it is always the newest build of main. Use -Wheel to install a particular build.'
+        }
         if ([Environment]::OSVersion.Platform -ne 'Win32NT') {
             throw 'this installer is for Windows. On macOS or Linux, use install.sh: curl -fsSL https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.sh | sh'
         }
@@ -117,7 +154,16 @@
             Write-Step "installing Trillion from $Wheel$keeping"
             Invoke-Native $uv @('tool', 'install', '--reinstall', '--python', '3.13', $target)
             if ($LASTEXITCODE -ne 0) { throw "uv could not install $target (see above). $oldUv" }
-        } elseif ($installed -and -not $Version -and -not $pinned) {
+        } elseif ($chosen -eq 'dev') {
+            $url = Find-DevWheel
+            if (-not $url) { throw 'there is no dev build to install yet (no wheel on https://github.com/HelloTrillion/trillion/releases/tag/dev)' }
+            $target = "trillion @ $url"
+            if ($extras) { $target = "trillion[$extras] @ $url" }
+            # --reinstall: each dev build replaces the one before.
+            Write-Step "installing the newest dev build of Trillion$keeping"
+            Invoke-Native $uv @('tool', 'install', '--reinstall', '--python', '3.13', $target)
+            if ($LASTEXITCODE -ne 0) { throw "uv could not install $url (see above). $oldUv" }
+        } elseif ($installed -and -not $Version -and -not $pinned -and $chosen -eq 'stable' -and $was -eq 'stable') {
             Write-Step "upgrading Trillion$keeping"
             if ($detailed) {
                 $reinstall = "uv tool install --reinstall --python 3.13 '$package'"
@@ -127,9 +173,19 @@
             Invoke-Native $uv @('tool', 'upgrade', 'trillion')
             if ($LASTEXITCODE -ne 0) { throw "uv could not upgrade Trillion (see above). To reinstall it: $reinstall. $oldUv" }
         } else {
-            if ($Version) { $package = "$package==$Version" }
-            Write-Step "installing $package (this upgrades it if it is already installed)"
-            Invoke-Native $uv @('tool', 'install', '--upgrade', '--python', '3.13', $package)
+            if ($Version) {
+                $package = "$package==$Version"
+            } elseif ($chosen -eq 'beta') {
+                # A requirement that names a pre-release lets uv pick one for Trillion,
+                # and for nothing else it depends on.
+                $package = "$package>=0.0.0b0"
+            }
+            # Leaving a channel needs a fresh start: --upgrade alone would keep a beta
+            # that is installed, and moving to stable means the newest stable.
+            $fresh = '--upgrade'
+            if ($chosen -ne $was) { $fresh = '--reinstall' }
+            Write-Step "installing $package from the $chosen channel (this upgrades it if it is already installed)"
+            Invoke-Native $uv @('tool', 'install', $fresh, '--python', '3.13', $package)
             if ($LASTEXITCODE -ne 0) { throw "uv could not install $package (see above). $oldUv" }
         }
 
@@ -164,6 +220,17 @@
         $versionOutput = & $trillion --version 2>$null
         $ErrorActionPreference = 'Stop'
         Write-Step "installed $(@($versionOutput) | Select-Object -First 1) in $bindir"
+
+        # Remember a channel that was asked for, so a re-run and `trillion update` stay on it.
+        if ($Channel) {
+            try {
+                New-Item -ItemType Directory -Force -Path $dataHome | Out-Null
+                Set-Content -LiteralPath $channelFile -Value $chosen -Encoding Ascii
+                Write-Step "on the $chosen channel from now on"
+            } catch {
+                Write-Step "couldn't note the $chosen channel in $channelFile; a re-run will need -Channel $chosen again"
+            }
+        }
         return $trillion
     }
 
@@ -192,11 +259,12 @@
     # Options: the environment first, then the parameters.
     if (-not $ownArgs) {
         if ($Arguments.Count -gt 0) {
-            Write-Step 'piped into iex, so parameters are ignored; set TRILLION_VERSION, TRILLION_WHEEL or TRILLION_NO_SETUP instead'
+            Write-Step 'piped into iex, so parameters are ignored; set TRILLION_CHANNEL, TRILLION_VERSION, TRILLION_WHEEL or TRILLION_NO_SETUP instead'
         }
         $Arguments = @()
     }
     $version = $env:TRILLION_VERSION
+    $channel = $env:TRILLION_CHANNEL
     $wheel = $env:TRILLION_WHEEL
     $noSetup = @('1', 'true', 'yes') -contains "$env:TRILLION_NO_SETUP"
     $status = 0
@@ -204,10 +272,12 @@
         for ($i = 0; $i -lt $Arguments.Count; $i++) {
             $name = $Arguments[$i]
             switch ($name) {
-                { $_ -in '-Version', '-Wheel' } {
+                { $_ -in '-Version', '-Wheel', '-Channel' } {
                     if ($i + 1 -ge $Arguments.Count) { throw "$name needs a value" }
                     $i++
-                    if ($name -eq '-Version') { $version = $Arguments[$i] } else { $wheel = $Arguments[$i] }
+                    if ($name -eq '-Version') { $version = $Arguments[$i] }
+                    elseif ($name -eq '-Wheel') { $wheel = $Arguments[$i] }
+                    else { $channel = $Arguments[$i] }
                 }
                 '-NoSetup' { $noSetup = $true }
                 { $_ -in '-Help', '-?' } {
@@ -219,9 +289,13 @@ Install Trillion on Windows, or upgrade it, then run `trillion setup`.
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.ps1))) -NoSetup
 
 Options, as parameters (not through iex), or the environment variable beside each:
+  -Channel C     stable (the default), beta or dev           $env:TRILLION_CHANNEL = "C"
   -Version X     install Trillion X instead of the latest   $env:TRILLION_VERSION = "X"
   -Wheel PATH    install this wheel file or URL instead      $env:TRILLION_WHEEL = "PATH"
   -NoSetup       install only; don't run `trillion setup`    $env:TRILLION_NO_SETUP = "1"
+
+The channel is remembered, so running this again stays on it. beta has the
+pre-releases as well as the releases; dev is the newest build of main.
 '@
                     return
                 }
@@ -232,7 +306,7 @@ Options, as parameters (not through iex), or the environment variable beside eac
         # This process too, for the downloads uv's installer and irm make.
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
 
-        $trillion = Install-Trillion -Version $version -Wheel $wheel
+        $trillion = Install-Trillion -Version $version -Wheel $wheel -Channel $channel
         if ($noSetup) {
             Write-Step "done. Open a new window and run 'trillion setup' to start."
         } else {

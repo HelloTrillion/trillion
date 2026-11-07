@@ -1,6 +1,6 @@
 {
   "name": "@hellotrillion/galaxy",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Trillion's visual engine: the orb, the landscape, and the states between them.",
   "license": "Apache-2.0",
   "type": "module",

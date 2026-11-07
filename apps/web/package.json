@@ -1,6 +1,6 @@
 {
   "name": "@hellotrillion/web",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Trillion's web app: the Galaxy, the conversation, and the confirmation card.",
   "license": "Apache-2.0",

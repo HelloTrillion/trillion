@@ -15,7 +15,7 @@ own. An installed wheel has neither unless the build puts them in. So this:
 Never prints the Google app's values. Run it after building the page:
 
     pnpm install && pnpm --filter @hellotrillion/web build
-    uv run python scripts/build_release.py [--tag v0.0.1] [--require-google]
+    uv run python scripts/build_release.py [--tag v2026.11.0] [--require-google]
 
 The copied page and a Google file written from the environment are removed again
 afterwards, so a checkout keeps serving apps/web/dist and keeps no secret.
@@ -24,6 +24,7 @@ afterwards, so a checkout keeps serving apps/web/dist and keeps no secret.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -31,7 +32,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -54,9 +54,18 @@ class ReleaseError(Exception):
     """Something is wrong with the build. The message never holds a secret."""
 
 
-def version() -> str:
-    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return str(data["project"]["version"])
+def check_tag(tag: str) -> None:
+    """The tag names the version in pyproject.toml and the package (scripts/version.py)."""
+    spec = importlib.util.spec_from_file_location("trillion_version", ROOT / "scripts/version.py")
+    if spec is None or spec.loader is None:
+        raise ReleaseError("scripts/version.py is missing")
+    versions = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = versions  # its dataclass looks itself up there
+    spec.loader.exec_module(versions)
+    try:
+        versions.check_tag(tag, ROOT)
+    except versions.VersionError as e:
+        raise ReleaseError(str(e)) from None
 
 
 def google_file(text: str, *, require_picker: bool = False) -> str:
@@ -203,14 +212,16 @@ def smoke(wheel: Path, *, google: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tag", help="the release tag; must be v<version from pyproject>")
+    parser.add_argument(
+        "--tag", help="the release tag; must name the version in pyproject (scripts/version.py)"
+    )
     parser.add_argument(
         "--require-google", action="store_true", help="fail without a Google app (releases)"
     )
     args = parser.parse_args(argv)
     try:
-        if args.tag and args.tag != f"v{version()}":
-            raise ReleaseError(f"tag {args.tag} does not match version {version()}")
+        if args.tag:
+            check_tag(args.tag)
         with staged(require_google=args.require_google) as google:
             wheel = build()
         inspect(wheel, google=google)

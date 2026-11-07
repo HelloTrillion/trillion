@@ -10,11 +10,16 @@
 # root: Trillion lives in your own home folder.
 #
 # Options (after `sh -s --` when piped), or the environment variable beside each:
+#   --channel C     stable (the default), beta or dev           TRILLION_CHANNEL=C
 #   --version X     install Trillion X instead of the latest   TRILLION_VERSION=X
 #   --wheel PATH    install this wheel file or URL instead      TRILLION_WHEEL=PATH
 #   --no-setup      install only; don't run `trillion setup`    TRILLION_NO_SETUP=1
 #   --help          show this help
 #   -- ARGS         pass ARGS on to `trillion setup`, such as: -- --no-run
+#
+# The channel is remembered (in ~/.trillion/channel), so running it again, or
+# `trillion update`, stays on it. stable and beta come from PyPI; dev is the newest
+# build of main, from the `dev` release on GitHub.
 #
 # In a container where root is the only user, TRILLION_ALLOW_ROOT=1 lets it run.
 #
@@ -27,11 +32,14 @@ main() {
 
     version="${TRILLION_VERSION:-}"
     wheel="${TRILLION_WHEEL:-}"
+    channel="${TRILLION_CHANNEL:-}"
     no_setup="${TRILLION_NO_SETUP:-}"
     case "$no_setup" in 1 | true | yes) no_setup=1 ;; *) no_setup="" ;; esac
 
     while [ $# -gt 0 ]; do
         case "$1" in
+            --channel) need_value "$@"; channel="$2"; shift 2 ;;
+            --channel=*) channel="${1#*=}"; shift ;;
             --version) need_value "$@"; version="$2"; shift 2 ;;
             --version=*) version="${1#*=}"; shift ;;
             --wheel) need_value "$@"; wheel="$2"; shift 2 ;;
@@ -45,6 +53,22 @@ main() {
     # Whatever is left goes to `trillion setup`.
     if [ -n "$version" ] && [ -n "$wheel" ]; then
         fail "use --version or --wheel, not both"
+    fi
+    # A tag works as a version too: v2026.11.0-beta.1 is 2026.11.0-beta.1 to uv.
+    version="${version#v}"
+
+    # The channel: the one asked for, else the one remembered, else stable.
+    channel_file="${TRILLION_HOME:-$HOME/.trillion}/channel"
+    was="$(head -n 1 "$channel_file" 2>/dev/null | tr -d ' \r' || true)"
+    case "$was" in stable | beta | dev) ;; *) was=stable ;; esac
+    chosen="$channel"
+    [ -n "$chosen" ] || chosen="$was"
+    case "$chosen" in
+        stable | beta | dev) ;;
+        *) fail "unknown channel: $chosen (use stable, beta or dev)" ;;
+    esac
+    if [ "$chosen" = dev ] && [ -n "$version" ]; then
+        fail "the dev channel has no versions: it is always the newest build of main. Use --wheel to install a particular build."
     fi
 
     # Trillion and its data belong to a person, in their home folder. As root they
@@ -106,7 +130,17 @@ Update uv ('uv self update', or the way you installed it) and try again."
         say "installing Trillion from $wheel${extras:+ (keeping $extras)}"
         "$uv" tool install --reinstall --python 3.13 "$target" ||
             fail "uv could not install $target (see above). $old_uv"
-    elif [ -n "$installed" ] && [ -z "$version" ] && [ -z "$pinned" ]; then
+    elif [ "$chosen" = dev ]; then
+        url="$(dev_wheel)"
+        [ -n "$url" ] || fail "there is no dev build to install yet (no wheel on https://github.com/HelloTrillion/trillion/releases/tag/dev)"
+        target="trillion @ $url"
+        [ -n "$extras" ] && target="trillion[$extras] @ $url"
+        # --reinstall: each dev build replaces the one before.
+        say "installing the newest dev build of Trillion${extras:+ (keeping $extras)}"
+        "$uv" tool install --reinstall --python 3.13 "$target" ||
+            fail "uv could not install $url (see above). $old_uv"
+    elif [ -n "$installed" ] && [ -z "$version" ] && [ -z "$pinned" ] &&
+        [ "$chosen" = stable ] && [ "$was" = stable ]; then
         say "upgrading Trillion${extras:+ (keeping $extras)}"
         if [ -z "$detailed" ]; then
             reinstall="uv tool install --reinstall --python 3.13 trillion (as 'trillion[whisper]' if you use Whisper)"
@@ -116,9 +150,19 @@ Update uv ('uv self update', or the way you installed it) and try again."
         "$uv" tool upgrade trillion ||
             fail "uv could not upgrade Trillion (see above). To reinstall it: $reinstall. $old_uv"
     else
-        [ -n "$version" ] && package="$package==$version"
-        say "installing $package (this upgrades it if it is already installed)"
-        "$uv" tool install --upgrade --python 3.13 "$package" ||
+        if [ -n "$version" ]; then
+            package="$package==$version"
+        elif [ "$chosen" = beta ]; then
+            # A requirement that names a pre-release lets uv pick one for Trillion,
+            # and for nothing else it depends on.
+            package="$package>=0.0.0b0"
+        fi
+        # Leaving a channel needs a fresh start: --upgrade alone would keep a beta
+        # that is installed, and moving to stable means the newest stable.
+        fresh="--upgrade"
+        [ "$chosen" = "$was" ] || fresh="--reinstall"
+        say "installing $package from the $chosen channel (this upgrades it if it is already installed)"
+        "$uv" tool install "$fresh" --python 3.13 "$package" ||
             fail "uv could not install $package (see above). $old_uv"
     fi
 
@@ -138,6 +182,15 @@ Update uv ('uv self update', or the way you installed it) and try again."
     trillion="$bindir/trillion"
     [ -x "$trillion" ] || fail "Trillion was installed but $trillion is missing"
     say "installed $("$trillion" --version) in $bindir"
+
+    # Remember a channel that was asked for, so a re-run and `trillion update` stay on it.
+    if [ -n "$channel" ]; then
+        if (umask 077 && mkdir -p "$(dirname "$channel_file")" && printf '%s\n' "$chosen" >"$channel_file"); then
+            say "on the $chosen channel from now on"
+        else
+            say "couldn't note the $chosen channel in $channel_file; a re-run will need --channel $chosen again"
+        fi
+    fi
 
     if [ -n "$no_setup" ]; then
         [ $# -eq 0 ] || say "not running setup (--no-setup), so '$*' is not used"
@@ -176,11 +229,15 @@ Install Trillion on macOS or Linux, or upgrade it, then run `trillion setup`.
   curl -fsSL https://raw.githubusercontent.com/HelloTrillion/trillion/main/install.sh | sh -s -- --no-setup
 
 Options, or the environment variable beside each:
+  --channel C     stable (the default), beta or dev           TRILLION_CHANNEL=C
   --version X     install Trillion X instead of the latest   TRILLION_VERSION=X
   --wheel PATH    install this wheel file or URL instead      TRILLION_WHEEL=PATH
   --no-setup      install only; don't run `trillion setup`    TRILLION_NO_SETUP=1
   --help          show this help
   -- ARGS         pass ARGS on to `trillion setup`, such as: -- --no-run
+
+The channel is remembered, so running this again stays on it. beta has the
+pre-releases as well as the releases; dev is the newest build of main.
 
 It never uses sudo, and won't run as root. In a container where root is the
 only user, set TRILLION_ALLOW_ROOT=1.
@@ -201,6 +258,23 @@ find_uv() {
             return 0
         fi
     done
+}
+
+# The wheel on the rolling `dev` release: the newest build of main. Prints its URL,
+# or nothing if there is none.
+dev_wheel() {
+    api="${TRILLION_DEV_RELEASE:-https://api.github.com/repos/HelloTrillion/trillion/releases/tags/dev}"
+    if command -v curl >/dev/null 2>&1; then
+        answer="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api")" ||
+            fail "couldn't ask GitHub for the dev build ($api)"
+    elif command -v wget >/dev/null 2>&1; then
+        answer="$(wget -qO- "$api")" || fail "couldn't ask GitHub for the dev build ($api)"
+    else
+        fail "neither curl nor wget is installed; install one of them to use the dev channel"
+    fi
+    printf '%s\n' "$answer" |
+        grep -o '"browser_download_url": *"[^"]*/trillion-[^"/]*\.whl"' |
+        head -n 1 | sed 's/.*"\([^"]*\)"$/\1/'
 }
 
 # Astral's official installer: https://docs.astral.sh/uv/getting-started/installation/

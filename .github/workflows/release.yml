@@ -3,9 +3,14 @@ name: Release
 # The wheel testers and users install: the app, its page, and our Google app, so
 # "Sign in with Google" works without anyone registering a Google app of their own.
 #
-# - Push a tag v<version> (matching pyproject.toml): builds, checks, and attaches the
-#   wheel to a GitHub release (a pre-release while the version is 0.x), then
-#   publishes the same wheel to PyPI, so `uv tool install trillion` gets it.
+# - Push a tag (matching pyproject.toml; scripts/version.py checks it first):
+#   - vYYYY.M.PATCH, the stable channel: a GitHub release, then PyPI.
+#   - vYYYY.M.PATCH-beta.N, the beta channel: a GitHub pre-release, then PyPI, where
+#     its version (YYYY.M.PATCHbN) is a pre-release too.
+#   - v0.X.Y, the old numbering: a pre-release, then PyPI, as before.
+#   It builds, checks, and attaches the wheel to the release, then publishes the
+#   same wheel to PyPI, so `uv tool install trillion` gets it.
+#   Builds of main (the dev channel) are made by dev-build.yml, never here.
 # - Run it by hand (Actions → Release → Run workflow): builds and checks, and keeps
 #   the wheel as a download on that run, with no release.
 #
@@ -45,6 +50,12 @@ jobs:
       contents: write # to create the release; nothing else
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The tag names the version in pyproject.toml and the package
+        # First, so a mistyped tag stops in seconds, before anything is built.
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/version.py check-tag "$TAG"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -72,8 +83,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # beta tags and the old 0.x ones are pre-releases; stable ones are not.
           pre=""
-          case "$TAG" in v0.*) pre="--prerelease" ;; esac
+          case "$TAG" in v0.* | *-beta.*) pre="--prerelease" ;; esac
           gh release create "$TAG" dist-release/*.whl $pre --generate-notes --title "Trillion $TAG"
 
   pypi:
@@ -125,7 +137,8 @@ jobs:
         working-directory: apps/desktop/src-tauri
       - name: Build the AppImage and .deb, as this release's version
         run: |
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          # As SemVer (2026.11.0-beta.1), which Tauri needs; PyPI's 2026.11.0b1 isn't.
+          version="$(python3 scripts/version.py --semver)"
           pnpm -C apps/desktop tauri build --bundles deb,appimage --config "{\"version\": \"$version\"}"
       - name: The .deb names the libraries it needs
         working-directory: apps/desktop/src-tauri/target/release/bundle
@@ -217,7 +230,8 @@ jobs:
           fi
           unset SET_APPLE_CERTIFICATE SET_APPLE_CERTIFICATE_PASSWORD SET_APPLE_SIGNING_IDENTITY \
             SET_APPLE_ID SET_APPLE_PASSWORD SET_APPLE_TEAM_ID
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          # As SemVer (2026.11.0-beta.1), which Tauri needs; PyPI's 2026.11.0b1 isn't.
+          version="$(python3 scripts/version.py --semver)"
           pnpm -C apps/desktop tauri build --target universal-apple-darwin --bundles app,dmg \
             --config "{\"version\": \"$version\"}"
           echo "signed=$signed" >> "$GITHUB_OUTPUT"
