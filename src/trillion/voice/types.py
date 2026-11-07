@@ -152,6 +152,10 @@ class SpeakerEmbedding:
     vector: tuple[float, ...]
     # Which embedder made it: vectors from different models are never compared.
     model: str
+    # The sound's own shape, frame by frame, for telling a recording played back from
+    # a person saying it again (SPN-14a): 16 bits of how the spectrum moves, plus bit
+    # 16 when the frame is loud. Empty when the embedder does not make one.
+    fingerprint: tuple[int, ...] = ()
 
 
 class SpeakerEmbedder(Protocol):

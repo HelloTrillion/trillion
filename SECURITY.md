@@ -74,6 +74,41 @@ Phase 0 assumes **one trusted owner at the machine**. Concretely:
 If you find a way around the first two, that is a vulnerability. The third
 is a known limit of this phase.
 
+### Once you teach her your voice (§5.3a, optional)
+
+Settings → Your voice records three short phrases and keeps a voiceprint in
+`voiceprint.json` in Trillion's data folder (owner-only, never sent anywhere,
+unreadable by any tool). It needs the optional `speaker` install and a model
+the user downloads from that screen. Once a voice is enrolled:
+
+- A spoken yes approves a card only if the turn's voice matched the enrolled
+  voice. A voice that is not quite clear is asked to say it again, then to
+  tap; another voice can't approve at all.
+- A turn in another voice is **default-private**: no memory, file, folder,
+  connected account, board, reminder, rule or helper tool runs for it (the
+  router refuses them; only `web_fetch` and `stay_quiet` run), no memory or
+  card wording rides with its words, and the shared folders are not named.
+- A recording of something she already heard in the owner's voice (an
+  enrolment phrase or a recent turn) is refused as a replay.
+- Taps and typed messages are unchanged: they come from the session.
+
+What it does **not** protect against, by design:
+
+- **A good voice clone.** The model scores how alike two voices sound. A
+  synthetic voice that sounds enough like the owner passes. There is no
+  liveness or anti-spoofing model.
+- **A recording she never heard.** The replay check only knows sounds she
+  heard herself. The owner's yes recorded elsewhere and played to her is
+  judged like a live voice, and passes if it sounds like the owner.
+- **The conversation so far.** Earlier turns stay in her context. On a
+  stranger's turn she is told not to repeat them, but that is an instruction,
+  not code.
+- **Anyone at the keyboard.** A typed message and a tap are the session's,
+  as in Phase 0.
+
+If a voice that isn't enrolled gets a spoken yes through on a card, or a tool
+outside the guest list runs on its turn, that is a vulnerability.
+
 ## What is true today
 
 - **There is no shell tool.** The tools are the file tools (confined to

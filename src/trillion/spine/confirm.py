@@ -14,6 +14,21 @@ from trillion.spine.contract import Risk, ToolContext, ToolDefinition
 
 EXPIRY_MS = 10 * 60 * 1000
 
+# What the model is told when a spoken yes is not the owner's (§5.3a). SPN-15a: the
+# first unsure yes asks for a fresh one; the next falls back to the card's tap.
+UNSURE_AGAIN = (
+    "the voice wasn't clear enough to be sure it was the owner's; ask them to say the yes "
+    "again, a little longer, or tap Approve on the card"
+)
+UNSURE_TAP = "still not sure it was the owner's voice; ask them to tap Approve on the card"
+NOT_OWNER_DETAIL = (
+    "that voice isn't the owner's, so it can't approve; only the owner can, by voice or a tap"
+)
+REPLAY_DETAIL = (
+    "that yes matched one already heard exactly, like a recording played back; "
+    "ask the owner to tap Approve on the card"
+)
+
 Event = Literal["confirm", "cancel"]
 
 
@@ -62,6 +77,12 @@ class Refusal(StrEnum):
     NOT_FOR_HELPERS = "not_for_helpers"
     # A tap on a widget's ask: she wrote its words, maybe from a page she read.
     ASK = "ask"
+    # A spoken yes in a voice that is not the enrolled owner's, or a recording (SPN-18).
+    NOT_OWNER = "not_owner"
+    # A spoken yes that could not be told for sure to be the owner's (SPN-15a).
+    VOICE_UNSURE = "voice_unsure"
+    # The voice this turn is not the owner's: nothing personal runs (PER-13).
+    PRIVATE = "private"
 
 
 @dataclass(frozen=True)
@@ -128,6 +149,14 @@ def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Sta
         return Rejection(Refusal.SAME_TURN, "ask the user; confirm on their next turn")
     if (a.risk is Risk.SPEND or not a.recoverable) and ctx.via != "tap":
         return Rejection(Refusal.TAP_REQUIRED, "this action needs a tap on the confirmation card")
+    if ctx.via != "tap" and ctx.private:
+        # Speaker-scoped, not session-scoped (SPN-14a, SPN-18): a spoken yes counts only
+        # in the enrolled owner's voice. A tap is a physical act, judged as it always was.
+        if ctx.speaker == "unsure":
+            return Rejection(Refusal.VOICE_UNSURE, UNSURE_AGAIN)
+        if ctx.speaker == "replay":
+            return Rejection(Refusal.NOT_OWNER, REPLAY_DETAIL)
+        return Rejection(Refusal.NOT_OWNER, NOT_OWNER_DETAIL)
     return Status.APPROVED
 
 

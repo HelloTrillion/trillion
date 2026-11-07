@@ -34,6 +34,7 @@ from trillion.spine.confirm import (
     META_TOOLS,
     REPRESENT_TOOL,
     REPRESENTABLE,
+    UNSURE_TAP,
     PendingAction,
     Refusal,
     Rejection,
@@ -100,6 +101,17 @@ REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
 # Named here so the spine needs nothing from the tools (tests check the names match).
 HELPER_NEVER = frozenset({"helper_create", "helper_ask", "helper_suggest"})
 _NOT_FOR_HELPERS = "only Trillion makes helpers or hands them work"
+# All that runs for a voice that is not the enrolled owner's (PER-13): nothing that
+# reads or changes what is theirs. Memory, files, folders, connected accounts, her
+# board, reminders, rules, helpers and describe_self (which names the shared folders)
+# are all outside it. Named here so the spine needs nothing from the tools.
+GUEST_TOOLS = frozenset({"web_fetch", "stay_quiet"})
+_PRIVATE = (
+    "this voice isn't the owner's, so nothing personal is shared or changed for it; "
+    "say so plainly, and that the owner can ask themselves"
+)
+# A spoken yes judged unsure this many times for one card falls back to the tap (SPN-15a).
+UNSURE_TRIES = 1
 # OPS-1: a check that can't reach the provider is tried again for this long after the
 # action was proposed, then the action is `unknown`.
 CHECK_FOR_MS = 24 * 60 * 60 * 1000
@@ -330,6 +342,8 @@ class Router:
         # so nobody approves what they never saw (#4). The running app sets it.
         self._require_delivery = require_delivery
         self._owners: set[str] = set()
+        # Spoken yeses judged unsure, per card (SPN-15a). In memory: a restart asks again.
+        self._unsure: dict[str, int] = {}
         # The roots `recover` was given, for the later checks that have none of their own.
         self._granted: tuple[Path, ...] = ()
 
@@ -401,6 +415,10 @@ class Router:
         if tool is None:
             return await audited("unknown", _refused(Refusal.UNKNOWN_TOOL))
         risk = tool.definition.risk.value
+        if ctx.private and call.name not in GUEST_TOOLS:
+            # Default-private to a voice that isn't the owner's (PER-13): refused before
+            # any of the tool's code runs, whether or not it was offered.
+            return await audited(risk, _refused(Refusal.PRIVATE, _PRIVATE))
         if ctx.via in _UNWATCHED and not _routine_may(tool.definition, ctx):
             if ctx.via == "routine" and tool.definition.name in ROUTINE_BOARD:
                 return await audited(risk, _refused(Refusal.UNATTENDED, _NOT_HERE))
@@ -592,8 +610,16 @@ class Router:
                     detail="already settled earlier; nothing ran again",
                 )
                 return await self._audit_resolution(a, ctx, start, settled)
-            response = _refused(verdict.reason, verdict.detail)
+            detail = verdict.detail
+            if verdict.reason is Refusal.VOICE_UNSURE:
+                # A fresh sample first, then the tap: never a dead end (SPN-15a).
+                tries = self._unsure.get(a.id, 0)
+                self._unsure[a.id] = tries + 1
+                if tries >= UNSURE_TRIES:
+                    detail = UNSURE_TAP
+            response = _refused(verdict.reason, detail)
             return await self._audit_resolution(a, ctx, start, response)
+        self._unsure.pop(a.id, None)
         if (
             verdict is Status.APPROVED
             and self._require_delivery

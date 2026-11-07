@@ -144,6 +144,8 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice import models as voice_models
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.providers import whisper
+from trillion.voice.providers.wespeaker import embedder as speaker_embedder
+from trillion.voice.speaker import Voiceprints
 from trillion.voice.types import SpeakerEmbedder, STTProvider, TTSProvider, UnknownSpeaker
 from trillion.workspace.board import Board
 from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
@@ -442,6 +444,9 @@ class Runtime:
     # Who spoke each utterance (VOI-15): the Shell's stub never knows. Phase 1's
     # speaker check replaces it here, and capture does not change.
     speakers: SpeakerEmbedder = field(default_factory=UnknownSpeaker)
+    # The enrolled owner's voice (§5.3a). None where nobody can enrol (most tests):
+    # the session is then the anchor, as in Phase 0 (SPN-14).
+    voiceprints: Voiceprints | None = None
     speech_last: SpeechSettings | None = None
     listening_last: ListenSettings | None = None
     # Whether she drafts a reply while the user may still be talking (VOI-12).
@@ -1122,13 +1127,14 @@ class Runtime:
         self.skills_on = entries
         return lines
 
-    def system(self, scope: str = EVERYONE) -> list[SystemBlock]:
+    def system(self, scope: str = EVERYONE, *, guest: bool = False) -> list[SystemBlock]:
         """The system blocks a turn gets, read now: rules, the folders shared with
-        `scope` and the skills that are on. Blocking, like `skill_lines`."""
+        `scope` and the skills that are on. Blocking, like `skill_lines`. For a `guest`
+        (a voice that isn't the owner's, PER-13) the shared folders are not named."""
         return system_blocks(
             self.identity,
             self.soul,
-            self.shared(scope),
+            () if guest else self.shared(scope),
             [(r.id, r.text) for r in self.rules.all()],
             skills=self.skill_lines(),
             # Her instructions for the user's helpers, only where helpers can be made.
@@ -1610,6 +1616,9 @@ async def open_runtime(
                 await conn.close()
         raise
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
+    # Whose voice it is (§5.3a): the owner's voiceprint, and the embedder it needs.
+    rt.voiceprints = Voiceprints()
+    rt.speakers = speaker_embedder(await asyncio.to_thread(rt.voiceprints.get) is not None)
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(

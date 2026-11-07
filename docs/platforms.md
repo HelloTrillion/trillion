@@ -40,6 +40,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Shared folders: shares, the card, Settings | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Shared folders: the folder browser | ✓ | ✓ | ✓ | ✓ (drawn by the page from the server's listing) | ✓ |
 | Shared folders: the system folder picker | — | — | — | not available | ✓ `NSOpenPanel` |
+| Your voice: enrolment, the speaker check, default-private ([spec](specs/2026-11-07-speaker-identity.md)) | ✓ | ✓, the file is not limited to the owner (no mode 600) | ✓ | ✓ (recorded by the page, judged by the server) | ✓ |
 | Desktop app | ✓ unsigned dev build | not built (SUR-3c) | not built (SUR-3b) | — | — |
 
 ### The gaps, and why
@@ -53,6 +54,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 - **The folder browser's places differ by system** (`src/trillion/files/browse.py`): Home, Desktop, Documents and Downloads everywhere (Windows known folders, so a redirected Documents is found; on Linux `xdg-user-dir`, falling back to the English names); drives are `/Volumes/*` on macOS, drive letters with a disk on Windows, and `/media/<user>/*`, `/run/media/<user>/*` and `/mnt/*` on Linux. Hidden folders are a leading `.` everywhere, plus the hidden flag on macOS and the hidden or system attribute on Windows. Names compare without case on macOS and Windows and with case on Linux.
 - **Folders that can't be shared** are the same rule on every system (`src/trillion/files/rules.py`): a home folder, another user's home, a drive root or mount point, system folders, Trillion's data folder, `~/Library` and `AppData` (iCloud Drive, folders under `~/Library/CloudStorage` and iCloud app folders excepted), hidden and protected folders. Under WSL, `/mnt/c/Users/<user>` is a folder on a mounted drive, not a home.
 - **The one-line installer** (`install.sh`, `install.ps1`) installs the server with uv on each system, and CI runs it on all three (as a file and piped, twice). It does not install the desktop app on any system. `install.sh` is POSIX `sh`, so it runs under dash, bash and macOS's `/bin/sh`. On Linux it needs `curl` or `wget` only when uv is not already installed.
+- **Your voice on Windows.** The voiceprint file is written with mode 600, which Windows ignores; it relies on the user folder's own permissions there. onnxruntime ships wheels for all three systems, so the speaker check itself runs everywhere. CI runs only the synthetic tests: no model and no onnxruntime.
 - **The desktop app on Windows and Linux** is not built. See below.
 - **The mic probe and the Focus probe** have limits on each system. See the next section.
 

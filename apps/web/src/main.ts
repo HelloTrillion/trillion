@@ -12,6 +12,7 @@ import { createListeningSettings } from './listening';
 import { createMic } from './mic';
 import { BargeDetector, HOLD_MS, Preroll, afterOver, frameLevel, holdForReply, watchMode, watchTitle } from './barge';
 import { createMicrophones } from './microphone';
+import { createVoiceprintSettings } from './voiceprint';
 import { createNamesSettings } from './names';
 import {
   APPROVE,
@@ -1207,6 +1208,34 @@ const COMPUTER = 'This computer';
 panel.add({ id: 'model', label: 'Model', group: HER, icon: 'model', keywords: 'brain provider key anthropic openai ollama', summary: () => view.model ?? 'None chosen', open: () => settings.open() });
 panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 'speech speak elevenlabs sound', summary: () => (view.speech ? 'On' : 'Off'), open: () => speechSettings.open() });
 panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
+// Your voice (§5.3a): its own microphone, open only while a phrase is recorded.
+let phraseFrame: ((pcm: ArrayBuffer) => void) | null = null;
+const phraseMic = createMic({
+  onFrame: (pcm) => phraseFrame?.(pcm),
+  device: savedMic,
+  deviceName: savedMicName,
+  onProblem: () => {
+    phraseFrame = null;
+  },
+  attach: (node) => galaxy.attachAnalyser(node, 'mic'),
+});
+const voiceprint = createVoiceprintSettings(
+  panel.host('voiceprint'),
+  api,
+  {
+    start: async (onFrame) => {
+      phraseFrame = onFrame;
+      await phraseMic.start();
+    },
+    stop: () => {
+      phraseFrame = null;
+      phraseMic.stop();
+    },
+  },
+  { changed: () => panel.refresh() },
+);
+void voiceprint.peek().then(() => panel.refresh());
+panel.add({ id: 'voiceprint', label: 'Your voice', group: HER, icon: 'mic', keywords: 'voiceprint speaker identity recognise recognize enrol enroll who is speaking guest private approve yes', summary: () => voiceprint.summary(), open: () => voiceprint.open() });
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });

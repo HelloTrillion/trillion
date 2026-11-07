@@ -43,6 +43,7 @@ from trillion.api.settings import create_router
 from trillion.api.skills import create_skills_router
 from trillion.api.slack import create_slack_router
 from trillion.api.usage import create_spend_router, create_usage_router
+from trillion.api.voiceprint import create_voiceprint_router
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,7 @@ def create_app(
     app.include_router(create_attention_router(rt))
     app.include_router(create_helpers_router(rt))
     app.include_router(create_home_router(rt))
+    app.include_router(create_voiceprint_router(rt))
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:
