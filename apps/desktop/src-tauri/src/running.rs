@@ -61,6 +61,37 @@ pub fn started_near(start_s: i64, started_at_ms: i64) -> bool {
 }
 
 /// When a process started, in seconds since the epoch, or None if it cannot be read.
+#[cfg(target_os = "linux")]
+pub fn start_time(pid: i32) -> Option<i64> {
+    if pid <= 0 {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let system = std::fs::read_to_string("/proc/stat").ok()?;
+    // SAFETY: only asks.
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    linux_start(&stat, &system, ticks as i64)
+}
+
+/// A process's start from Linux's `/proc/<pid>/stat` (field 22, clock ticks since
+/// boot) and `/proc/stat` (`btime`, the boot in seconds since the epoch).
+#[cfg(any(target_os = "linux", test))]
+fn linux_start(stat: &str, system: &str, ticks_per_s: i64) -> Option<i64> {
+    // Field 2, the name, is in brackets and may hold spaces and brackets of its own.
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    // After it come fields 3 onwards, so field 22 is the 20th.
+    let ticks: i64 = after_name.split_whitespace().nth(19)?.parse().ok()?;
+    let boot: i64 = system
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    (ticks_per_s > 0).then(|| boot + ticks / ticks_per_s)
+}
+
+/// When a process started, in seconds since the epoch, or None if it cannot be read.
+#[cfg(target_os = "macos")]
 pub fn start_time(pid: i32) -> Option<i64> {
     if pid <= 0 {
         return None;
@@ -206,6 +237,18 @@ mod tests {
         let me = std::process::id() as i32;
         assert_eq!(group_of(me), Some(unsafe { libc::getpgrp() }));
         assert_eq!(group_of(99_999_999), None);
+    }
+
+    #[test]
+    fn a_linux_start_time_is_boot_plus_ticks() {
+        // A name with a space and a bracket, as `(tri llion) x)` could be.
+        let stat = "4242 (tri llion) x) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 \
+                    20 0 3 0 12345 1000000 500 18446744073709551615";
+        let system = "cpu  1 2 3\nintr 9\nbtime 1800000000\nprocesses 7\n";
+        assert_eq!(linux_start(stat, system, 100), Some(1_800_000_123));
+        assert_eq!(linux_start(stat, "cpu 1\n", 100), None);
+        assert_eq!(linux_start("4242 (short) S 1", system, 100), None);
+        assert_eq!(linux_start(stat, system, 0), None);
     }
 
     #[test]

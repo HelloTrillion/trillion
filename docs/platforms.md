@@ -5,8 +5,8 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 ## How to read this
 
 - The server (`trillion run`) does the work on every system. Most features live there, so they work wherever it runs.
-- The page runs in a browser tab on any system, or inside the desktop app. The desktop app is macOS only today (PRD SUR-2).
-- CI runs every Python test directory on Ubuntu, macOS and Windows, the one-line installers on all three, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS only (`.github/workflows/ci.yml`).
+- The page runs in a browser tab on any system, or inside the desktop app. The desktop app is made for macOS (PRD SUR-2); it also builds for Linux (SUR-3b), untested by hand.
+- CI runs every Python test directory on Ubuntu, macOS and Windows, the one-line installers on all three, a clean-machine install, setup and doctor on Ubuntu 22.04 and macOS, the TypeScript suites on Ubuntu and Windows, and the desktop app's Rust checks and build on macOS and Ubuntu 22.04 (`.github/workflows/ci.yml`).
 - ✓ means the code is there and its tests run in CI on that system. The manual checks in [`TESTING.md`](TESTING.md) have been written on a Mac; on Windows and Linux a ✓ is untested by hand unless the row says otherwise.
 
 ## By feature
@@ -40,7 +40,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Shared folders: shares, the card, Settings | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Shared folders: the folder browser | ✓ | ✓ | ✓ | ✓ (drawn by the page from the server's listing) | ✓ |
 | Shared folders: the system folder picker | — | — | — | not available | ✓ `NSOpenPanel` |
-| Desktop app | ✓ unsigned dev build | not built (SUR-3c) | not built (SUR-3b) | — | — |
+| Desktop app | ✓ universal `.dmg`; signed and notarized in a release once the Apple secrets are set | not built (SUR-3c) | AppImage and `.deb` built on Ubuntu 22.04, never opened by hand (SUR-3b) | — | — |
 
 ### The gaps, and why
 
@@ -49,11 +49,11 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 - **The talk shortcut in a tab** works only while the tab is in front, and never with Fn. A page hears keys only while it has focus. The desktop app makes a combination work from any app.
 - **A spoken notice needs a page.** The voice runs in the page. With no page open, the notice waits for the next page and a system notification shows instead.
 - **System notifications on Linux** need `notify-send` (libnotify). Without it none is shown, and the notice still waits for the page. A silent one asks the notification daemon for no sound with a hint; a daemon may ignore it.
-- **No system folder picker in a browser tab.** A browser never gives the page a folder's real path, so Add a folder opens the folder browser instead. The desktop app's picker (`rfd`) would be the common item dialog on Windows and the GTK dialog on Linux, but the desktop app is not built there yet.
+- **No system folder picker in a browser tab.** A browser never gives the page a folder's real path, so Add a folder opens the folder browser instead. The desktop app's picker (`rfd`) would be the common item dialog on Windows and the GTK dialog on Linux, but the desktop app is not built on Windows yet, and on Linux it is untested.
 - **The folder browser's places differ by system** (`src/trillion/files/browse.py`): Home, Desktop, Documents and Downloads everywhere (Windows known folders, so a redirected Documents is found; on Linux `xdg-user-dir`, falling back to the English names); drives are `/Volumes/*` on macOS, drive letters with a disk on Windows, and `/media/<user>/*`, `/run/media/<user>/*` and `/mnt/*` on Linux. Hidden folders are a leading `.` everywhere, plus the hidden flag on macOS and the hidden or system attribute on Windows. Names compare without case on macOS and Windows and with case on Linux.
 - **Folders that can't be shared** are the same rule on every system (`src/trillion/files/rules.py`): a home folder, another user's home, a drive root or mount point, system folders, Trillion's data folder, `~/Library` and `AppData` (iCloud Drive, folders under `~/Library/CloudStorage` and iCloud app folders excepted), hidden and protected folders. Under WSL, `/mnt/c/Users/<user>` is a folder on a mounted drive, not a home.
-- **The one-line installer** (`install.sh`, `install.ps1`) installs the server with uv on each system, and CI runs it on all three (as a file and piped, twice). It does not install the desktop app on any system. `install.sh` is POSIX `sh`, so it runs under dash, bash and macOS's `/bin/sh`. On Linux it needs `curl` or `wget` only when uv is not already installed.
-- **The desktop app on Windows and Linux** is not built. See below.
+- **The one-line installer** (`install.sh`, `install.ps1`) installs the server with uv on each system, and CI runs it on all three (as a file and piped, twice). It does not install the desktop app on any system. `install.sh` is POSIX `sh`, so it runs under dash, bash and macOS's `/bin/sh`. On Linux it needs `curl` or `wget` only when uv is not already installed. It won't run as root (`TRILLION_ALLOW_ROOT=1` in a container). The `clean-machine` CI job runs it on Ubuntu 22.04 and macOS with an empty home and no uv, then checks `setup`, `doctor` and `run`.
+- **The desktop app on Windows** is not built, and **on Linux** it builds but has never been opened by hand. See below.
 - **The mic probe and the Focus probe** have limits on each system. See the next section.
 
 ## Speaking up: the probes
@@ -78,11 +78,11 @@ The meeting rule covers both: with Google Calendar connected and "While you are 
 
 ## Desktop app on Windows and Linux
 
-The desktop app (`apps/desktop`) builds and runs on macOS only. A Linux build is PRD SUR-3b (AppImage and `.deb`). A Windows build is part of SUR-3c, with the signed build. Each macOS-only piece, and what it needs on the other two:
+The desktop app (`apps/desktop`) is made for macOS. It builds on Linux too (PRD SUR-3b): CI runs its Rust checks and tests on Ubuntu 22.04, and a release attaches an AppImage and a `.deb`. Nobody has opened it there yet, so every "check it" below still stands. A Windows build is part of SUR-3c, with the signed build. Each macOS-only piece, and what it needs on the other two:
 
-| Piece | Today, on macOS | Windows needs (SUR-3c) | Linux needs (SUR-3b) |
+| Piece | Today, on macOS | Windows needs (SUR-3c) | Linux (SUR-3b) |
 |---|---|---|---|
-| Build and CI | `tauri build --bundles app` and `cargo test`/`clippy` on `macos-latest` | A Windows job and an installer target | A Linux job and AppImage and `.deb` targets |
+| Build and CI | `tauri build --bundles app` and `cargo test`/`clippy` on `macos-latest` | A Windows job and an installer target | Done: `tauri build --bundles deb,appimage` and `cargo test`/`clippy` on `ubuntu-22.04`, off pull requests; the Release workflow attaches both |
 | Timers in a hidden window (`webkit.rs`) | Turns off WebKit's private hidden-page timer throttling, so voice reports stay on time with the window hidden | A spike: does WebView2 throttle a hidden window's timers, audio or socket, and what turns it off | The same spike for WebKitGTK |
 | Background throttling switch (`lib.rs`) | `BackgroundThrottlingPolicy::Disabled` on the main window | Check it has an effect on WebView2 | Check it has an effect on WebKitGTK |
 | Floating orb (`orb.rs`, `macOSPrivateApi` in `tauri.conf.json`) | Transparent, frameless, always on top, never takes focus; over full-screen apps and every Space through AppKit calls | A transparent WebView2 window that does not take focus | A transparent window needs a compositor; check it on X11 and Wayland. The full-screen and every-workspace behaviour needs its own code on each |
@@ -90,12 +90,13 @@ The desktop app (`apps/desktop`) builds and runs on macOS only. A Linux build is
 | Finding `trillion` (`locate.rs`, `shell.rs`) | `TRILLION_BIN`, else the login shell (`$SHELL -lc`), else `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. The login shell also gives the server the user's environment | No login shell: read the user's `PATH` from the environment and look for `trillion.exe` where the installer puts it (uv's tool folder) | An app started from a desktop menu may also lack the shell's `PATH`; the login-shell probe can work, but check it, and add the usual install places |
 | Stopping the server (`server.rs`, `record.rs`) | The child gets its own process group; Quit sends SIGTERM to the group, then SIGKILL after 5 s | No process groups or signals: put the child in a Job Object that kills it with the app, and ask it to stop first (close its input, below) | As macOS (process groups and signals) |
 | The app's own quit on a signal (`quit_on_signals`) | SIGTERM, SIGINT, SIGHUP quit the app and stop the server | The console-close and shutdown events instead | As macOS |
-| Is the server running (`running.rs`) | `kill(pid, 0)` for a live process, `proc_pidinfo` and `getpgid` to know it | `OpenProcess` and its start time | `/proc/<pid>` |
+| Is the server running (`running.rs`) | `kill(pid, 0)` for a live process, `proc_pidinfo` and `getpgid` to know it | `OpenProcess` and its start time | Done: `/proc/<pid>/stat` and `/proc/stat` for the start time; `kill` and `getpgid` as macOS |
 | The input lifeline (`server.rs`, `cli/server.py`) | The app holds the server's input open; when the app goes, even by a force quit, the input closes and the server stops itself | Check that the pipe closes on a force quit and the server's reader sees it | Expected to work as on macOS; check it |
 | Global talk shortcut (`talk.rs`, `tauri-plugin-global-shortcut`) | The D6 rule: Command, Control or Option plus a key, not a common combination | Name the modifiers Ctrl, Alt and Win; leave out the combinations Windows keeps for itself | The plugin's Linux support is X11. On Wayland a global shortcut needs the desktop's own portal; until then, say it works only while the window is in front |
 | Open at login (`tauri-plugin-autostart`) | A LaunchAgent | The plugin's registry entry; check it | The plugin's autostart file; check it |
-| Microphone permission | `NSMicrophoneUsageDescription` in `Info.plist`; the webview's request is granted for the server's page only | WebView2's permission request, granted the same way; Windows' own microphone privacy switch | WebKitGTK's permission request, granted the same way |
+| Microphone permission | `NSMicrophoneUsageDescription` in `Info.plist`, and the `audio-input` entitlement for a signed build (`Entitlements.plist`); the webview's request is granted for the server's page only | WebView2's permission request, granted the same way; Windows' own microphone privacy switch | WebKitGTK's permission request, granted the same way; the `.deb` depends on `gstreamer1.0-plugins-good`, which WebKitGTK records through. The AppImage uses the system's GStreamer; check it |
 | The mic probe's host | Leaves out the app and WebKit's helpers | Already names `msedgewebview2` and the app's exe | Already names `webkitwebprocess` and the app's binary |
-| Signing | Not signed (dev build) | Signed installer (SUR-3c) | AppImage and `.deb` (SUR-3b) |
+| Signing | A release signs with a Developer ID, notarizes and staples, once the Apple secrets are set ([`releasing.md`](releasing.md)); otherwise unsigned and not attached | Signed installer (SUR-3c) | Not signed: AppImage and `.deb` as built. A signed apt repository is for later |
+| The Dock icon (`RunEvent::Reopen` in `lib.rs`) | Clicking it shows the window | — | No such event: macOS only in the code; the tray shows the window |
 
 The page side needs no change: `desktop.ts` is the same on every system, and the server already runs everywhere.
