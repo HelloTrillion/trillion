@@ -94,7 +94,6 @@ from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.notes_store import SqliteNotesStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
-from trillion.storage.sqlite.week_store import read_week
 from trillion.tools.day import DAY_OPEN, DayOpen, Where
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
@@ -108,7 +107,6 @@ from trillion.tools.home import ARRANGE as HOME_ARRANGE
 from trillion.tools.home import HomeArrange
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
-from trillion.tools.roast import WEEK_ROAST, WeekRoast
 from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
 from trillion.tools.rules import (
     DROP,
@@ -497,6 +495,9 @@ class Runtime:
     routine_holds: set[str] = field(default_factory=set)
     # Slow reads running in the background, per conversation (the background reads spec).
     jobs: Jobs = field(default_factory=lambda: Jobs(clock=_now_ms))
+    # The conversations' connection, for a feature's read-only queries (a tool's
+    # `attach`): a read here never waits on a write elsewhere.
+    read_conn: aiosqlite.Connection | None = None
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     # Pages being told the shares changed.
     _telling: set[asyncio.Task[None]] = field(default_factory=set)
@@ -1629,6 +1630,7 @@ async def open_runtime(
         token=token,
         token_from_app=token_from_app,
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
+        read_conn=chat_conn,
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn, helper_conn],
     )
     # Before anything that can reach a provider is started: the gate never fails open.
@@ -1844,10 +1846,6 @@ async def open_runtime(
     day_tool = registry.get(DAY_OPEN)
     if isinstance(day_tool, DayOpen):
         day_tool.bind(rt.open_day, OWNER)
-    roast_tool = registry.get(WEEK_ROAST)
-    if isinstance(roast_tool, WeekRoast):
-        # Read on the conversations' connection: it only reads, so it never waits on a write.
-        roast_tool.bind(lambda: read_week(chat_conn, OWNER, rt.clock(), rt.zone() or ""), OWNER)
     home_tool = registry.get(HOME_ARRANGE)
     if isinstance(home_tool, HomeArrange):
         home_tool.bind(rt.home_layout, rt.arrange_home, OWNER)
@@ -1859,6 +1857,13 @@ async def open_runtime(
         tool = registry.get(name)
         if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):
             tool.bind(book)
+    # Newer tools connect themselves: one that defines `async def attach(self, rt)` is
+    # handed the runtime here, so adding a tool doesn't edit this file (the plug-in
+    # features spec). The binds above predate it and move over as they are touched.
+    for definition in registry.definitions():
+        attach = getattr(registry.get(definition.name), "attach", None)
+        if attach is not None:
+            await attach(rt)
     # A send a crash left in doubt: the user hears of it, once (OPS-1). Those settled
     # lately are looked for too, so a notice lost to a quit before it was written is
     # still given; one already written is not given again.

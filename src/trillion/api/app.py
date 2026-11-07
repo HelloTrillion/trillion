@@ -28,25 +28,22 @@ from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
 from trillion.api.attention import create_attention_router
-from trillion.api.confirmations import create_confirmations_router
 from trillion.api.conversations import create_conversations_router
 from trillion.api.folders import create_folders_router
 from trillion.api.google import create_google_router
 from trillion.api.helpers import create_helpers_router
 from trillion.api.home import create_home_router
 from trillion.api.mcp import create_callback_router, create_mcp_router
-from trillion.api.memories import create_memories_router
 from trillion.api.persona import create_persona_router
+from trillion.api.routes import plugged
 from trillion.api.routines import create_routines_router
 from trillion.api.runtime import Runtime
 from trillion.api.schedules import create_schedules_router
-from trillion.api.security import create_security_router
 from trillion.api.session import PROTOCOL, Session, page_host
 from trillion.api.settings import create_router
 from trillion.api.skills import create_skills_router
 from trillion.api.slack import create_slack_router
 from trillion.api.usage import create_spend_router, create_usage_router
-from trillion.api.voiceprint import create_voiceprint_router
 
 logger = logging.getLogger(__name__)
 
@@ -233,10 +230,9 @@ def create_app(
     app.include_router(create_attention_router(rt))
     app.include_router(create_helpers_router(rt))
     app.include_router(create_home_router(rt))
-    app.include_router(create_confirmations_router(rt))
-    app.include_router(create_memories_router(rt))
-    app.include_router(create_security_router(rt))
-    app.include_router(create_voiceprint_router(rt))
+    # Newer features mount themselves: a module with `ROUTES` (trillion/api/routes.py).
+    for router in plugged(rt):
+        app.include_router(router)
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:

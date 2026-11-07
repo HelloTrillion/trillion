@@ -8,9 +8,14 @@ is hers to follow; the facts come back as a result like any other, never as orde
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from trillion.roast.week import Week, facts
 from trillion.spine.contract import JSON, BaseTool, Risk, ToolContext, ToolDefinition, ToolResult
+from trillion.storage.sqlite.week_store import read_week
+
+if TYPE_CHECKING:
+    from trillion.api.runtime import Runtime
 
 WEEK_ROAST = "week_roast"
 CATEGORY = "roast"
@@ -48,8 +53,18 @@ class WeekRoast(BaseTool):
         self._owner = ""
 
     def bind(self, read: ReadWeek, owner_id: str) -> None:
-        """Called once at startup with how to read the week."""
+        """How to read the week, and whose it is. Tests call this directly."""
         self._read, self._owner = read, owner_id
+
+    async def attach(self, rt: Runtime) -> None:
+        """Called once the runtime is built: the tool connects itself (no runtime.py edit)."""
+        from trillion.api.runtime import OWNER
+
+        conn = rt.read_conn
+        if conn is None:
+            return
+        # On the conversations' connection: it only reads, so it never waits on a write.
+        self.bind(lambda: read_week(conn, OWNER, rt.clock(), rt.zone() or ""), OWNER)
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
         if self._read is None or ctx.owner_id != self._owner:

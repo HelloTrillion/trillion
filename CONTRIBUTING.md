@@ -98,6 +98,23 @@ On Windows, run the loop in Git Bash, or run the eight `uv run python scripts/�
 
 This is not distrust. These are the parts where a subtle change quietly removes a promise we make to users.
 
+## Adding a feature without touching shared files
+
+Many pull requests are open at once, so a feature lives in files of its own and plugs in. It doesn't add a line to a shared list. `scripts/check_plug_in.py` fails CI when a shared file gains a hook, and says what to do instead.
+
+| You're adding | Do this | Not this |
+|---|---|---|
+| A Settings section | A file in `apps/web/src/features/` that exports `feature` and calls `panel.add({ …, after: '<section id>' })`. See `features/memories.ts`. | A `panel.add` line in `main.ts` |
+| Its styles | A CSS file beside it, imported by it (`features/memories.css`) | A block at the end of `app.css` |
+| Its icon | `addIcon(name, paths)` in its file | A line in `icons.ts` |
+| Session messages it hears | `ctx.on((msg) => …)` in its `setup` | A `handle(msg)` line in `main.ts` |
+| HTTP routes | End the router's module with `ROUTES = (create_my_router,)` | An `include_router` line in `app.py` |
+| A tool that needs the runtime | `async def attach(self, rt)` on the tool (see `tools/roast.py`) | A `bind(…)` in `runtime.py` |
+| A database migration | `YYYYMMDDHHMM_name.sql`, named by the time you wrote it, plus `tests/unit/shipped_migrations/<name>.sha256` | The next three-digit number |
+| A test that applies migrations | `names(after="016")` from `trillion.storage.migrate` | A copied list of migration names |
+
+When you move an old hook out of a shared file, lower its number in `scripts/check_plug_in.py` in the same pull request. The numbers only go down.
+
 ## Changing her voice
 
 Her voice comes from the soul (`persona/SOUL.md`) and the prompts in `src/trillion/persona/prompts/`. When you change either, CI fails until a persona baseline matches them. CI runs no model: you make the baseline on your own machine and commit it.

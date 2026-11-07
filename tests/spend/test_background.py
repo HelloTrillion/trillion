@@ -45,7 +45,7 @@ from trillion.spend.gate import ModelCapped
 from trillion.spend.ledger import Row
 from trillion.spend.types import Work
 from trillion.storage.db import connect
-from trillion.storage.migrate import migrate
+from trillion.storage.migrate import migrate, names
 from trillion.storage.sqlite.attention_store import SqliteAttentionStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.zones import next_month_start
@@ -507,13 +507,7 @@ async def test_a_deferred_find_is_claimed_again_and_never_deleted(tmp_path: Path
         old = SqliteAttentionStore(conn)
         assert await old.claim("local", "email", ["k0"], NOW) == ["k0"]
         await old.told("local", ["k0"], "n0")
-        assert await migrate(conn) == [
-            "018_attention_deferred",
-            "019_helpers",
-            "020_helper_draft",
-            "021_memory_vectors",
-            "022_memory_notes",
-        ]
+        assert await migrate(conn) == names(after="017")
         store = SqliteAttentionStore(conn)
         assert [(f.key, f.status) for f in await store.recent("local", NOW)] == [("k0", "told")]
 
@@ -722,13 +716,7 @@ async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> N
         sql = "SELECT rowid, * FROM attention_finds ORDER BY rowid"
         async with conn.execute(sql) as cur:
             rows = [tuple(r) for r in await cur.fetchall()]
-        assert await migrate(conn) == [
-            "018_attention_deferred",
-            "019_helpers",
-            "020_helper_draft",
-            "021_memory_vectors",
-            "022_memory_notes",
-        ]
+        assert await migrate(conn) == names(after="017")
         async with conn.execute(sql) as cur:
             assert [tuple(r) for r in await cur.fetchall()] == rows
         async with conn.execute(

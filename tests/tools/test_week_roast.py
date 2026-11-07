@@ -15,7 +15,7 @@ from trillion.spine.contract import ToolContext
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
 from trillion.storage.sqlite.week_store import read_week
-from trillion.tools.roast import WeekRoast
+from trillion.tools.roast import WEEK_ROAST, WeekRoast
 
 OWNER = "local"
 ZONE = "America/New_York"
@@ -146,3 +146,22 @@ async def test_the_tool_reads_the_week_for_its_owner_only() -> None:
 
     tool.bind(nothing, OWNER)
     assert "No messages" in (await tool.execute({}, ctx)).content
+
+
+async def test_the_runtime_hands_the_tool_its_week_through_attach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool that defines `attach` connects itself; runtime.py isn't edited for it."""
+    from trillion.api.runtime import open_runtime
+    from trillion.secrets.store import MemoryStore
+
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    rt = await open_runtime(persona=tmp_path, secrets=MemoryStore(), env={})
+    try:
+        tool = rt.registry.get(WEEK_ROAST)
+        assert isinstance(tool, WeekRoast)
+        ctx = ToolContext(owner_id="local", session_id="c1", turn=1, call_id="t1", via="text")
+        result = await tool.execute({}, ctx)
+        assert result.ok and result.content == "No messages from them in the last seven days."
+    finally:
+        await rt.close()

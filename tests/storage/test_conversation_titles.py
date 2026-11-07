@@ -11,7 +11,7 @@ import pytest
 
 from trillion.brain.types import Msg, TextBlock
 from trillion.storage.db import connect
-from trillion.storage.migrate import migrate
+from trillion.storage.migrate import migrate, names
 from trillion.storage.sqlite.conversation_store import WORDS_TITLE_MAX, SqliteConversationStore
 
 OWNER = "local"
@@ -186,21 +186,7 @@ async def test_the_migration_backfills_old_conversations(tmp_path: Path) -> None
         " VALUES ('local', 'bare', 'user', 'user', ?, 9)",
         (json.dumps([{"t": "context", "text": "no words"}]),),
     )
-    assert await migrate(conn) == [
-        "010_conversation_titles",
-        "011_boards",
-        "012_rule_events",
-        "013_day_conversations",
-        "014_routines",
-        "015_attention",
-        "016_decision_events",
-        "017_usage_spend",
-        "018_attention_deferred",
-        "019_helpers",
-        "020_helper_draft",
-        "021_memory_vectors",
-        "022_memory_notes",
-    ]
+    assert await migrate(conn) == names(after="009")
     store = SqliteConversationStore(conn)
     assert await store.title_of("old", OWNER) == ("Plan the trip", "words")
     assert (await store.list_chats(OWNER))[0][0].last_message_at == 9

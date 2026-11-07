@@ -11,7 +11,7 @@ import pytest
 
 from trillion.brain.types import Usage
 from trillion.storage.db import connect
-from trillion.storage.migrate import migrate
+from trillion.storage.migrate import migrate, names
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 
 OWNER = "local"
@@ -47,14 +47,7 @@ async def test_the_migration_upgrades_a_database_holding_old_rows(tmp_path: Path
             " VALUES ('local', NULL, ?, 'm', 10, 2, 0, 0, NULL, 5)",
             (provider,),
         )
-    assert await migrate(conn) == [
-        "017_usage_spend",
-        "018_attention_deferred",
-        "019_helpers",
-        "020_helper_draft",
-        "021_memory_vectors",
-        "022_memory_notes",
-    ]
+    assert await migrate(conn) == names(after="016")
     store = SqliteConversationStore(conn)
     assert await _columns(store) == [
         ("anthropic", "anthropic", "conversation", "tokens"),

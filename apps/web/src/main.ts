@@ -2,7 +2,7 @@ import { createGalaxy, type StageRect, type Theme } from '@hellotrillion/galaxy'
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
-import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createNotesSwitch, createShortcuts, createUsageSettings } from './browser';
+import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
 import { type Choice, createFolderPanel, createShares, createSharedFolders, footText, loadRoutines, parseFrame } from './folders';
 import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, enterInField, matches } from './hotkey';
 import * as desktop from './desktop';
@@ -62,15 +62,14 @@ import { announcement, statusText } from './announce';
 import { readyLine } from './ready';
 import { renderScheduled } from './notice';
 import { createReminders } from './reminders';
-import { createConfirmations } from './confirmations';
-import { createMemories } from './memories';
 import { createSpeaking } from './speaking';
 import { createSidebar, revealForCard } from './sidebar';
 import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from './threads';
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
-import { createDevicesSettings, deviceId } from './devices';
+import { deviceId } from './devices';
+import { COMPUTER, HER, YOU, loadFeatures } from './features';
 import { type Helper, askTarget, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
 import { lookOf, picture } from './look';
 import { createRail } from './rail';
@@ -1100,7 +1099,6 @@ const appearance = createAppearance(
   },
 );
 const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh(), { get: savedHomeDaily, set: saveHomeDaily });
-const memoryNotes = createNotesSwitch(api, () => panel.refresh());
 // Shares, read and changed through the routes: Settings and the Folders panel share them.
 const shares = createShares(api);
 const routineChoices = (): Promise<Choice[]> => loadRoutines(api);
@@ -1184,10 +1182,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') void home.refresh();
 });
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
-const memories = createMemories(panel.host('memories'), api, send, () => panel.refresh(), memoryNotes);
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh(), openReady);
 // Read-only: a waiting row goes to its card's conversation, where it is answered (SPN-14).
-const confirmations = createConfirmations(panel.host('confirmations'), api, () => panel.refresh(), openReady);
 const speaking = createSpeaking(panel.host('speaking'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
@@ -1220,9 +1216,6 @@ const spendCards = createSpendCards(spendEl, (body) => send(body), undefined, (c
   // Raised on a provider that has a switch: the banner asks whether to go back now.
   if (status === 'raised') switchLines.raised(card.provider_id);
 });
-const HER = 'Her';
-const YOU = 'You';
-const COMPUTER = 'This computer';
 panel.add({ id: 'model', label: 'Model', group: HER, icon: 'model', keywords: 'brain provider key anthropic openai ollama', summary: () => view.model ?? 'None chosen', open: () => settings.open() });
 panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 'speech speak elevenlabs sound', summary: () => (view.speech ? 'On' : 'Off'), open: () => speechSettings.open() });
 panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
@@ -1259,16 +1252,14 @@ panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', 
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
-panel.add({ id: 'confirmations', label: 'Confirmations', group: YOU, icon: 'confirmations', keywords: 'approvals approved approve decisions record history audit cards yes declined waiting unknown did that reach me', summary: () => confirmations.summary(), open: () => confirmations.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
 panel.add({ id: 'usage', label: 'Usage and limits', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
-panel.add({ id: 'memories', label: 'Memories', group: HER, icon: 'memories', keywords: 'memory remember remembered forget facts about me edit correct notes chats learn privacy', summary: () => memories.summary(), open: () => memories.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
-const devicesSettings = createDevicesSettings(panel.host('devices'), api);
-panel.add({ id: 'devices', label: 'Devices', group: COMPUTER, icon: 'devices', keywords: 'security sign in browser device forget new login', summary: () => devicesSettings.summary(), open: () => devicesSettings.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
+// Newer sections plug in from features/: each file places itself (the plug-in features spec).
+const features = loadFeatures({ panel, api, send, refresh: () => panel.refresh(), openConversation: openReady });
 function openSettings(at?: string): void {
   void namesSettings.peek().then(() => panel.refresh());
   panel.open(at);
@@ -1681,7 +1672,7 @@ function connect(): void {
       );
     }
     helpers.handle(msg);
-    memories.handle(msg);
+    features.dispatch(msg);
     // A tool started: once its chip is drawn and scrolled to, a faint arc runs to it from the orb (GAL-8).
     if (msg.type === 'tool.start') {
       const callId = String(msg['call_id'] ?? '');

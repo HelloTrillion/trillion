@@ -48,3 +48,7 @@ def create_security_router(rt: Runtime) -> APIRouter:
         return {"ok": True}
 
     return router
+
+
+# Mounted by `trillion.api.routes.plugged`: nothing to add to app.py.
+ROUTES = (create_security_router,)
