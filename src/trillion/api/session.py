@@ -3755,7 +3755,7 @@ class Session:
         spoken = kind == "user" and via == "voice"
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
-        recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
+        recalled, brought = await self._remembered(text) if kind == "user" else ("", frozenset())
         await self._read_place()
         now = self._rt.clock()
         jobs = [
@@ -3867,7 +3867,7 @@ class Session:
         replayed unchanged on every later turn: history is only ever appended to."""
         await self._commit_input(kind, await self._build_input(kind, text, marker=marker))
 
-    def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
+    async def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
         """What she has saved that bears on this message, as untrusted text (MEM-5),
         and the ids it used. Nothing is marked as brought until the message is saved.
 
@@ -3875,7 +3875,7 @@ class Session:
         replays byte for byte. A correction or a forgetting therefore shows from the
         next message on, not in messages already sent (MEM-6b)."""
         rt = self._rt
-        fresh = [m for m in rt.memory.recall(said) if m.id not in self._brought]
+        fresh = [m for m in await rt.memory.search(said) if m.id not in self._brought]
         text, used = present.alongside(fresh, rt.clock())
         return (wrap("memory_recall", text) if used else "", frozenset(m.id for m in used))
 

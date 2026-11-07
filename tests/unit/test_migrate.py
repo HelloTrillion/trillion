@@ -30,6 +30,7 @@ async def test_applies_once_and_records_checksum(tmp_path):
         "018_attention_deferred",
         "019_helpers",
         "020_helper_draft",
+        "021_memory_vectors",
     ]
     assert await migrate(conn) == []
     async with conn.execute("SELECT id FROM owners") as cur:
@@ -123,6 +124,7 @@ SHIPPED = {
     ),
     "019_helpers.sql": ("07b6e74c77ba3c1229c64104938bebccfe571fd8e4ff8f0c56fc70523481f4ab"),
     "020_helper_draft.sql": ("c94f3f667cbeb6b1ffc5f7cc65319e162f0a8aea07095ba39287804fb0ee9bd0"),
+    "021_memory_vectors.sql": ("0cf1be378147691d71bbebd0cc527881d197694a0a18bda7dcf60e95c7cba22b"),
 }
 
 

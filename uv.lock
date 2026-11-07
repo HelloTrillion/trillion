@@ -1663,6 +1663,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+meaning = [
+    { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "tokenizers" },
+]
 whisper = [
     { name = "faster-whisper" },
 ]
@@ -1690,12 +1695,15 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "keyring", specifier = ">=25" },
     { name = "mcp", specifier = ">=1.20" },
+    { name = "numpy", marker = "extra == 'meaning'", specifier = ">=2" },
+    { name = "onnxruntime", marker = "extra == 'meaning'", specifier = ">=1.19" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "tokenizers", marker = "extra == 'meaning'", specifier = ">=0.20" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.2" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", specifier = ">=13" },
 ]
-provides-extras = ["whisper"]
+provides-extras = ["whisper", "meaning"]
 
 [package.metadata.requires-dev]
 dev = [

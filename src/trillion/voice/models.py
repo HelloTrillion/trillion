@@ -67,6 +67,8 @@ async def download(
             if target.is_file() and target.stat().st_size == f.size:
                 done += f.size
                 continue
+            # A name may sit in a subfolder of the model's own (`onnx/model.onnx`).
+            target.parent.mkdir(parents=True, exist_ok=True)
             part = folder / (f.name + ".part")
             digest = hashlib.sha256()
             written = 0

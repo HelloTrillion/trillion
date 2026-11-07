@@ -44,6 +44,9 @@ Changelog = "https://github.com/HelloTrillion/trillion/releases"
 # be heard, for anyone who wants nothing to leave the machine.
 [project.optional-dependencies]
 whisper = ["faster-whisper>=1.1"]
+# Recall by meaning (MEM-2). Optional because it is large: without it, memory is
+# found by its words alone. The model itself is fetched by `trillion setup` (ONB-7).
+meaning = ["onnxruntime>=1.19", "tokenizers>=0.20", "numpy>=2"]
 
 [project.scripts]
 trillion = "trillion.cli.main:entrypoint"
@@ -172,7 +175,7 @@ faulthandler_timeout = 120
 
 # Optional installs: typed as Any whether or not they are present.
 [[tool.mypy.overrides]]
-module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*"]
+module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*", "onnxruntime", "onnxruntime.*", "tokenizers", "tokenizers.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false
 follow_imports = "skip"

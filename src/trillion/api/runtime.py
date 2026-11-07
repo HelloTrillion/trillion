@@ -52,6 +52,7 @@ from trillion.files.rules import why_not
 from trillion.files.shares import EVERYONE, ShareError, Shares
 from trillion.helpers import wiring as helpers_wiring
 from trillion.helpers.live import Notifier
+from trillion.memory import meaning
 from trillion.memory.book import MemoryBook
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
@@ -1427,6 +1428,7 @@ class Runtime:
             self._month_timer = None
         # First, so no tick or read runs on a connection that is closing.
         await self.stop_background()
+        await self.memory.close()
         await self.jobs.stop()
         if self.mcp is not None:
             await self.mcp.stop()
@@ -1520,10 +1522,18 @@ async def open_runtime(
     keychain = secrets if secrets is not None else KeychainStore()
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
-    book = MemoryBook(SqliteMemoryStore(chat_conn), memory or paths.memory_dir(), OWNER)
+    book = MemoryBook(
+        SqliteMemoryStore(chat_conn),
+        memory or paths.memory_dir(),
+        OWNER,
+        # Search by meaning, when it is installed and its model was fetched (MEM-2).
+        embedder=meaning.local(paths.models_dir()),
+    )
     # The files are the truth: whatever changed on disk since last time is adopted
     # now, and anything that does not add up is logged, never silently repaired.
     await book.sync(_now_ms())
+    # Memories with no vector for their text are embedded beside the server.
+    book.start_catching_up(_now_ms)
     listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
     standing = StandingRules(rules or paths.rules_path())
     conversations = SqliteConversationStore(chat_conn)
