@@ -2823,6 +2823,107 @@ button.reminders-open {
   overflow-wrap: anywhere;
 }
 
+/* ── Confirmations ───────────────────────────────────────────────────── */
+
+/* Its parts sit in the section's own column, spaced like every other section. */
+.confirmations-body {
+  display: contents;
+}
+.confirmations-window {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+.confirmations-summary {
+  font-size: 13px;
+  color: var(--color-text-0);
+  overflow-wrap: anywhere;
+}
+/* A status in a word: done in the accent, failed in danger, unknown in amber. */
+.confirmations-status {
+  flex: none;
+  align-self: flex-start;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  background: color-mix(in srgb, var(--color-text-0) 7%, transparent);
+}
+.confirmations-status.is-succeeded {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.confirmations-status.is-failed {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+.confirmations-status.is-unknown,
+.confirmations-status.is-pending {
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 14%, transparent);
+}
+/* An unknown outcome stands out: it may or may not have happened. */
+.confirmations-card.is-unknown {
+  box-shadow: inset 3px 0 0 var(--color-amber);
+}
+.connected-chip.is-unknown {
+  border-color: var(--color-amber);
+}
+.confirmations-facts {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.confirmations-line {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 8px;
+}
+.confirmations-line dt {
+  color: var(--color-text-2);
+}
+.confirmations-line dd {
+  margin: 0;
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+}
+.confirmations-line.is-missing dd {
+  font-style: italic;
+}
+.confirmations-line.connected-warn dd {
+  color: var(--color-amber);
+}
+.confirmations-line.is-failed dd {
+  color: var(--color-danger);
+}
+button.confirmations-go {
+  justify-self: start;
+  padding: 2px 12px;
+  font-size: 12px;
+  color: var(--color-accent);
+}
+.confirmations-more summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.confirmations-args {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-text-0) 4%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ── Speaking up ─────────────────────────────────────────────────────── */
 
 /* A notice's Join, with where it goes beside it, so a link is seen before it is opened. */

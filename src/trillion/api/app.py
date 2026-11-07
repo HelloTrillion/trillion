@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from trillion import paths
 from trillion.api.attention import create_attention_router
+from trillion.api.confirmations import create_confirmations_router
 from trillion.api.conversations import create_conversations_router
 from trillion.api.folders import create_folders_router
 from trillion.api.google import create_google_router
@@ -216,6 +217,7 @@ def create_app(
     app.include_router(create_attention_router(rt))
     app.include_router(create_helpers_router(rt))
     app.include_router(create_home_router(rt))
+    app.include_router(create_confirmations_router(rt))
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:
