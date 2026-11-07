@@ -91,6 +91,7 @@ from trillion.storage.sqlite.helper_store import SqliteHelperStore
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
+from trillion.storage.sqlite.week_store import read_week
 from trillion.tools.day import DAY_OPEN, DayOpen, Where
 from trillion.tools.describe import NAME as DESCRIBE_SELF
 from trillion.tools.describe import DescribeSelf
@@ -104,6 +105,7 @@ from trillion.tools.home import ARRANGE as HOME_ARRANGE
 from trillion.tools.home import HomeArrange
 from trillion.tools.memory import FORGET, RECALL, WRITE, MemoryForget, MemoryRecall, MemoryWrite
 from trillion.tools.record import RECORD, DecisionRecord
+from trillion.tools.roast import WEEK_ROAST, WeekRoast
 from trillion.tools.routine import NARROW, WIDEN, RoutineNarrow, RoutineWiden
 from trillion.tools.rules import (
     DROP,
@@ -1809,6 +1811,10 @@ async def open_runtime(
     day_tool = registry.get(DAY_OPEN)
     if isinstance(day_tool, DayOpen):
         day_tool.bind(rt.open_day, OWNER)
+    roast_tool = registry.get(WEEK_ROAST)
+    if isinstance(roast_tool, WeekRoast):
+        # Read on the conversations' connection: it only reads, so it never waits on a write.
+        roast_tool.bind(lambda: read_week(chat_conn, OWNER, rt.clock(), rt.zone() or ""), OWNER)
     home_tool = registry.get(HOME_ARRANGE)
     if isinstance(home_tool, HomeArrange):
         home_tool.bind(rt.home_layout, rt.arrange_home, OWNER)
