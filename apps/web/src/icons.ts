@@ -17,6 +17,8 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   connected: ['M9 3.5v4M15 3.5v4', 'M6.5 7.5h11v3a5.5 5.5 0 0 1-11 0z', 'M12 16v4.5'],
   // An open book: instructions she reads when a task calls for them.
   skills: ['M12 6.5c-2-1.5-5-2-8-1.5v13c3-.5 6 0 8 1.5c2-1.5 5-2 8-1.5v-13c-3-.5-6 0-8 1.5z', 'M12 6.5v13'],
+  // A bookmark: what she kept from your conversations.
+  memories: ['M6.5 3.5h11v17l-5.5-4l-5.5 4z', 'M9.5 8h5'],
   usage: ['M4 17a8 8 0 1 1 16 0', 'M12 17l4-5'],
   // A clock: what is set to come back at a time.
   reminders: ['M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17z', 'M12 7.5V12l3 2'],

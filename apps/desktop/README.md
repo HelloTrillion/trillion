@@ -2,7 +2,9 @@
 
 Trillion as a Mac app instead of a browser tab. It is a thin Tauri v2 shell around the same web app. It starts your installed `trillion run`, shows a splash orb until the server answers, lives in the menu bar, and makes the talk shortcut work from any app.
 
-This is an unsigned development build. Signing, notarizing and bundling Python come later. The design is in [`docs/specs/2026-10-28-desktop-app.md`](../../docs/specs/2026-10-28-desktop-app.md).
+A local build is unsigned. A release build is signed and notarized once the maintainers have set up the Apple secrets ([`docs/releasing.md`](../../docs/releasing.md)). Python is not bundled: the app needs an installed `trillion`. The design is in [`docs/specs/2026-10-28-desktop-app.md`](../../docs/specs/2026-10-28-desktop-app.md).
+
+It also builds on Linux, as an AppImage and a `.deb` ([`docs/specs/2026-11-07-installers.md`](../../docs/specs/2026-11-07-installers.md)), but nobody has opened it there yet: see [`docs/platforms.md`](../../docs/platforms.md) for what is unchecked.
 
 ## Run in development
 
@@ -22,6 +24,17 @@ pnpm -C apps/desktop bundle
 ```
 
 The app lands at `apps/desktop/src-tauri/target/release/bundle/macos/Trillion.app`. It is not signed, so the first time you open it, right-click it and choose Open.
+
+On Linux (Ubuntu 22.04 or later), with the libraries Tauri builds against:
+
+```sh
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev file xdg-utils
+pnpm -C apps/desktop bundle:linux
+```
+
+The AppImage and `.deb` land under `apps/desktop/src-tauri/target/release/bundle/`.
+
+A signed build needs the Developer ID in your keychain and `APPLE_SIGNING_IDENTITY` set; the Release workflow does it with the secrets in [`docs/releasing.md`](../../docs/releasing.md). `Entitlements.plist` gives a signed build the microphone under the hardened runtime.
 
 ## Where it looks for `trillion`
 

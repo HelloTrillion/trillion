@@ -3,9 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use tauri::{
-    AppHandle, LogicalPosition, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, LogicalPosition, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 pub const LABEL: &str = "orb";
 const WIDTH: f64 = 220.0;
@@ -117,7 +115,7 @@ pub fn point_at(
 /// Lets the orb show over an app in full screen, as well as on every Space, at the
 /// level of the menu bar's own status items. Checked before use, as webkit.rs does.
 #[cfg(target_os = "macos")]
-fn over_full_screen(window: &WebviewWindow) {
+fn over_full_screen(window: &tauri::WebviewWindow) {
     use objc2::msg_send;
     use objc2::runtime::{AnyObject, Bool};
     use objc2::sel;
