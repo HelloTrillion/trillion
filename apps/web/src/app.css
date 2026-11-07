@@ -8611,6 +8611,8 @@ button.draft-chip:hover {
 textarea.memories-edit {
   font-family: inherit;
   font-size: 14px;
+}
+
 /* Settings, Devices (SEC-11): each device that signed in, with Forget. */
 .devices-list {
   display: grid;
@@ -8636,6 +8638,9 @@ textarea.memories-edit {
   margin-left: 8px;
   font-size: 11px;
   font-weight: 400;
+  color: var(--color-text-1);
+}
+
 /* ── Roast my week ───────────────────────────────────────────────────── */
 
 /* Her roast, then one quiet way to share it. */
