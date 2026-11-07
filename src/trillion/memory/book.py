@@ -61,8 +61,13 @@ class SyncReport:
         )
 
 
+def same_key(text: str) -> str:
+    """What two memories saying the same thing have in common: case and spacing aside."""
+    return " ".join(text.lower().split())
+
+
 def _same(a: str, b: str) -> bool:
-    return " ".join(a.lower().split()) == " ".join(b.lower().split())
+    return same_key(a) == same_key(b)
 
 
 class MemoryBook:
@@ -172,7 +177,11 @@ class MemoryBook:
         moves: bool,
         now_ms: int,
         replaces: str | None = None,
+        as_of: int | None = None,
+        origin: str | None = None,
     ) -> Written:
+        """`as_of` is when the fact was known, if earlier than now (an imported note's
+        date); `origin` is where an imported claim came from (CON-8)."""
         body = files.clean(text)
         if type not in TYPES or source not in SOURCES:
             raise MemoryError_("bad_request")
@@ -200,9 +209,12 @@ class MemoryBook:
                 source=source,
                 moves=moves,
                 created_at=now_ms,
-                as_of=now_ms,
+                as_of=now_ms if as_of is None else min(as_of, now_ms),
                 supersedes=old.id if old else None,
+                origin=origin,
             )
+            if problem := files.check(new):
+                raise MemoryError_("bad_request", problem)
             # The new fact first: if anything fails after this, both are still on disk
             # and nothing true has been lost.
             await self._save(new, now_ms)

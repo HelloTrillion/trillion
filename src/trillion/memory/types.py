@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, get_args
 
 # What a memory is about. `user`: who they are. `feedback`: how they want her to
@@ -38,6 +38,9 @@ class Memory:
     as_of: int
     supersedes: str | None = None
     superseded_by: str | None = None
+    # Where an imported claim came from ("openclaw USER.md"). Kept in the file's
+    # header only: the file is the truth and the index does not carry it (MEM-1).
+    origin: str | None = field(default=None, compare=False)
 
     @property
     def current(self) -> bool:

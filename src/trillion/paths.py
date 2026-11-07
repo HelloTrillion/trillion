@@ -75,6 +75,12 @@ def skills_config_path() -> Path:
     return home() / "skills.json"
 
 
+def skills_dir() -> Path:
+    """Skills copied in by `trillion import` (CON-8). Listed in Settings → Skills like a
+    folder the user added, each off until they turn it on. No tool can write here."""
+    return home() / "skills"
+
+
 def slack_config_path() -> Path:
     """Which Slack tools may run without asking. Tokens are in the keychain."""
     return home() / "slack.json"

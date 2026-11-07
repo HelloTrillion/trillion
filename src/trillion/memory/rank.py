@@ -94,4 +94,7 @@ def blend(
 def _best(memories: Sequence[Memory], scored: Mapping[str, float], limit: int) -> list[Memory]:
     found = [(scored[m.id], m.as_of, m) for m in memories if m.id in scored]
     found.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    # An imported claim never outranks what the user said, or anything else she holds
+    # (MEM-6a): it comes after every other match, best first among themselves.
+    found.sort(key=lambda s: s[2].source == "imported_claim")
     return [m for _, _, m in found[:limit]]
