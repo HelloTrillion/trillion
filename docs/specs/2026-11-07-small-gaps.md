@@ -57,3 +57,33 @@ Nothing. She still says she can't tell voices apart, which stays true until Phas
 
 - Any real embedder, enrolment or scoring (Phase 1).
 - Passing the embedding into the turn: it stops at `_heard` in `api/session.py`, where the speaker check will read it.
+
+## Scheduled work starts hidden on Windows (OPS-3)
+
+### Why
+
+On Windows, starting `python.exe` or `node.exe` directly flashes a console window at every run. OPS-3 asks that scheduled and background work never does.
+
+### What is there
+
+Nothing is scheduled with the operating system. Routines, reminders and watchers run inside the one `trillion run` process (the scheduler and attention loops), so there is no scheduled launch command to generate. Background work does start a few processes, and each already hides its window:
+
+- System notifications: PowerShell with `CREATE_NO_WINDOW` (`delivery/notify.py`, tested in `tests/delivery/test_notify.py`).
+- The watchers' probes: `CREATE_NO_WINDOW` (`attention/probes`).
+- Connected MCP servers, often `node` or `python`: started by the MCP SDK, which uses `CREATE_NO_WINDOW` on Windows.
+- `trillion doctor` runs commands too, but only when the user types it in a terminal.
+- The desktop app starts its core and can open at login, but it ships for macOS only.
+
+### Decisions
+
+1. **Satisfied by design; a test keeps it so.** `tests/unit/test_hidden_launch.py`, in the Python suite that runs on Windows CI:
+   - no OS scheduler is used (`schtasks`, scheduled tasks, cron, `launchctl`, systemd, the registry's Run key) in the core, the desktop app or the installers;
+   - every process the core starts passes `creationflags`, but for an explained allowed list (`cli/doctor.py`), which must still be needed;
+   - no source names `python.exe` or `node.exe`;
+   - the MCP SDK still starts Windows servers with `CREATE_NO_WINDOW`, so an upgrade that drops it fails;
+   - once the desktop app bundles for Windows, its core must start with `CREATE_NO_WINDOW`.
+2. **If an OS-scheduled launch ever arrives,** it uses `pythonw.exe` or a windowless shim, and the scheduler check is where it is reviewed.
+
+### What the user sees
+
+Nothing, which is the point.
