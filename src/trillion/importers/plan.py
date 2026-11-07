@@ -113,7 +113,12 @@ def _profile_changes(found: Found, current: setup.Profile | None) -> list[Change
             can_save = True
         old: str | None = None
         if current is not None:
-            old = getattr(current, name) or None
+            held = {
+                "user_name": current.user_name,
+                "timezone": current.timezone,
+                "agent_name": current.agent_name,
+            }
+            old = held[name] or None
         status: Status = "set" if old is None else ("same" if old == new else "conflict")
         out.append(Change(field=name, new=new, old=old, status=status))
     if not can_save:
