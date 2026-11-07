@@ -571,6 +571,30 @@ def check_memory(directory: Path) -> Check:
     return Check(name="Memory", status="ok" if total else "info", detail=said)
 
 
+def check_meaning(models_dir: Path) -> Check:
+    """Whether memory is searched by meaning as well as words (MEM-2). Looks at what is
+    installed and fetched; loads nothing and fetches nothing."""
+    from trillion.memory import meaning
+
+    name = "Meaning"
+    found = meaning.state(models_dir)
+    if found == "no_runtime":
+        return Check(
+            name=name,
+            status="info",
+            detail="off: memory is found by its words",
+            fix="Install trillion[meaning], then run: trillion setup",
+        )
+    if found == "no_model":
+        return Check(
+            name=name,
+            status="info",
+            detail="off: the model is not downloaded",
+            fix="Run: trillion setup",
+        )
+    return Check(name=name, status="ok", detail=f"on: {meaning.PACK.id}")
+
+
 # ── Every saved credential (SEC-9) ───────────────────────────────────────
 
 
@@ -813,6 +837,7 @@ async def examine(
         check_microphone(),
         check_introduction(paths.persona_dir()),
         check_memory(paths.memory_dir()),
+        check_meaning(paths.models_dir()),
         *check_mcp(paths.mcp_config_path(), secrets),
         check_skills(paths.skills_config_path()),
         check_scheduler(paths.db_path(), time.time_ns() // 1_000_000),

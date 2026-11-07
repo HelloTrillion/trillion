@@ -193,7 +193,7 @@ class MemoryWrite(_MemoryTool):
         else:
             # A correction often arrives as a plain new fact. The older memories it may
             # have outdated are named, so retiring one is a single further call.
-            near = book.related(done.memory)
+            near = await book.related(done.memory)
             if near:
                 note += (
                     "\nStill held on the same subject:\n"
@@ -234,7 +234,7 @@ class MemoryRecall(_MemoryTool):
         book = self._for(ctx)
         if book is None:
             return _refused("disk")
-        found = book.recall(
+        found = await book.search(
             str(args.get("query") or ""),
             type=args.get("type"),
             history=args.get("include_history") is True,

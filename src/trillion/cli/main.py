@@ -154,6 +154,30 @@ async def _prepare() -> list[str]:
     return done
 
 
+def _meaning_wanted() -> bool:
+    """Its runtime is installed and its model is not here yet."""
+    from trillion import paths
+    from trillion.memory import meaning
+
+    return meaning.state(paths.models_dir()) == "no_model"
+
+
+async def _fetch_meaning() -> str:
+    """The model for recall by meaning (MEM-2), fetched once and checked (ONB-7). A
+    failure is said, never fatal: memory works by its words until setup runs again."""
+    from trillion import paths
+    from trillion.memory import meaning
+
+    mb = round(meaning.PACK.size / (1 << 20))
+    sys.stdout.write(f"setup  fetching the meaning model ({mb} MB)...\n")
+    sys.stdout.flush()
+    try:
+        await meaning.fetch(paths.models_dir())
+    except meaning.MeaningError as e:
+        return f"meaning model not fetched ({e.kind}): memory is found by its words for now"
+    return f"fetched the meaning model ({mb} MB)"
+
+
 async def _setup(args: argparse.Namespace) -> int:
     for folder in args.grant:
         if not folder.expanduser().is_dir():
@@ -164,8 +188,11 @@ async def _setup(args: argparse.Namespace) -> int:
     except OSError as e:
         sys.stderr.write(f"trillion: the data folder could not be prepared: {e.strerror}\n")
         return 1
-    for line in done or ["already prepared: nothing to do"]:
+    fetch = not args.offline and _meaning_wanted()
+    for line in done or ([] if fetch else ["already prepared: nothing to do"]):
         sys.stdout.write(f"setup  {line}\n")
+    if fetch:
+        sys.stdout.write(f"setup  {await _fetch_meaning()}\n")
     sys.stdout.write("\n")
     report, healthy = await _examine(args, secrets=False)
     sys.stdout.write(report)

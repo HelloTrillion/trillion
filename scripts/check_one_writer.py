@@ -133,6 +133,10 @@ NOT_DECISIONS: dict[str, str] = {
             "superseded_by file_digest"
         ).split()
     },
+    **{
+        f"memory_vectors.{c}": "made from a memory's text to find it by meaning: decides nothing"
+        for c in ("model", "text_digest", "dimensions", "vector")
+    },
 }
 
 # Files that decide what she may reach, the function in paths.py that says where

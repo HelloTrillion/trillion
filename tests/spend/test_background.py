@@ -511,6 +511,7 @@ async def test_a_deferred_find_is_claimed_again_and_never_deleted(tmp_path: Path
             "018_attention_deferred",
             "019_helpers",
             "020_helper_draft",
+            "021_memory_vectors",
         ]
         store = SqliteAttentionStore(conn)
         assert [(f.key, f.status) for f in await store.recent("local", NOW)] == [("k0", "told")]
@@ -718,6 +719,7 @@ async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> N
             "018_attention_deferred",
             "019_helpers",
             "020_helper_draft",
+            "021_memory_vectors",
         ]
         async with conn.execute(sql) as cur:
             assert [tuple(r) for r in await cur.fetchall()] == rows
