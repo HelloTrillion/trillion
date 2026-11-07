@@ -15,6 +15,14 @@ name: Release
 # PyPI takes the wheel by trusted publishing: PyPI trusts this workflow, in the
 # `pypi` environment, to upload. There is no PyPI token anywhere. One-time setup is
 # in docs/releasing.md.
+#
+# The desktop app is built too, once the release exists:
+# - Linux (SUR-3b): an AppImage and a .deb, attached to the release.
+# - macOS: a universal .dmg. Signed and notarized when the Apple secrets are set
+#   (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, then
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID to notarize; docs/releasing.md). Only a
+#   signed and notarized one is attached to the release; otherwise the log says it is
+#   unsigned and the .dmg is kept on the run only.
 
 on:
   push:
@@ -87,3 +95,169 @@ jobs:
           name: trillion-wheel
           path: dist
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  desktop-linux:
+    name: Desktop app for Linux (AppImage and .deb)
+    # After the wheel: its job checks the tag against the version and makes the
+    # release these files are attached to. No Rust cache in a release build.
+    needs: wheel
+    runs-on: ubuntu-22.04 # the oldest the PRD supports, so the AppImage's glibc fits all
+    timeout-minutes: 45
+    permissions:
+      contents: write # to attach to the release; nothing else
+    env:
+      # linuxdeploy is itself an AppImage; this runs it without FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The libraries Tauri builds against (WebKitGTK 4.1, GTK 3, AppIndicator)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev file xdg-utils
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile --filter @hellotrillion/desktop
+      # The toolchain is pinned in src-tauri/rust-toolchain.toml; rustup installs it here.
+      - run: rustup show active-toolchain || rustup toolchain install
+        working-directory: apps/desktop/src-tauri
+      - name: Build the AppImage and .deb, as this release's version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          pnpm -C apps/desktop tauri build --bundles deb,appimage --config "{\"version\": \"$version\"}"
+      - name: The .deb names the libraries it needs
+        working-directory: apps/desktop/src-tauri/target/release/bundle
+        run: |
+          deb="$(ls deb/*.deb)"
+          dpkg-deb --info "$deb"
+          dpkg-deb --field "$deb" Depends | grep -q libwebkit2gtk-4.1
+          ls -l deb appimage
+      - name: Keep them on this run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trillion-desktop-linux
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attach them to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: apps/desktop/src-tauri/target/release/bundle
+        run: gh release upload "$TAG" deb/*.deb appimage/*.AppImage --clobber --repo "$GITHUB_REPOSITORY"
+
+  desktop-mac:
+    name: Desktop app for macOS (signed and notarized when set up)
+    needs: wheel
+    runs-on: macos-latest
+    # Two architectures, then Apple's notary service, which can take a while.
+    timeout-minutes: 60
+    permissions:
+      contents: write # to attach to the release; nothing else
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile --filter @hellotrillion/desktop
+      - name: The pinned Rust, for Apple silicon and Intel
+        working-directory: apps/desktop/src-tauri
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build the app and .dmg (universal), signed and notarized if the secrets are set
+        id: build
+        env:
+          # Under other names, so Tauri sees only a complete set: an empty
+          # APPLE_CERTIFICATE would make it try to import nothing and fail.
+          SET_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          SET_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SET_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          SET_APPLE_ID: ${{ secrets.APPLE_ID }}
+          SET_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          SET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -eu
+          # Which are set, by name only. Their values are never printed.
+          missing=""
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+            eval "value=\${SET_$name}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          signed=""
+          notarized=""
+          if [ -z "$missing" ]; then
+            signed=1
+            export APPLE_CERTIFICATE="$SET_APPLE_CERTIFICATE"
+            export APPLE_CERTIFICATE_PASSWORD="$SET_APPLE_CERTIFICATE_PASSWORD"
+            export APPLE_SIGNING_IDENTITY="$SET_APPLE_SIGNING_IDENTITY"
+            echo "Signing with the Developer ID certificate in APPLE_CERTIFICATE."
+            gone=""
+            for name in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              eval "value=\${SET_$name}"
+              [ -n "$value" ] || gone="$gone $name"
+            done
+            if [ -z "$gone" ]; then
+              notarized=1
+              export APPLE_ID="$SET_APPLE_ID"
+              export APPLE_PASSWORD="$SET_APPLE_PASSWORD"
+              export APPLE_TEAM_ID="$SET_APPLE_TEAM_ID"
+              echo "Notarizing with Apple as APPLE_ID, for team APPLE_TEAM_ID."
+            else
+              echo "::warning title=Not notarized::Signed but NOT notarized: these secrets are not set:$gone. macOS will warn whoever opens it. See docs/releasing.md."
+            fi
+          else
+            echo "::warning title=Unsigned build::Building an UNSIGNED app: these secrets are not set:$missing. It is kept on this run only and not attached to the release. See docs/releasing.md."
+          fi
+          unset SET_APPLE_CERTIFICATE SET_APPLE_CERTIFICATE_PASSWORD SET_APPLE_SIGNING_IDENTITY \
+            SET_APPLE_ID SET_APPLE_PASSWORD SET_APPLE_TEAM_ID
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          pnpm -C apps/desktop tauri build --target universal-apple-darwin --bundles app,dmg \
+            --config "{\"version\": \"$version\"}"
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+          echo "notarized=$notarized" >> "$GITHUB_OUTPUT"
+      - name: Check the signature and notarization
+        working-directory: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
+        env:
+          SIGNED: ${{ steps.build.outputs.signed }}
+          NOTARIZED: ${{ steps.build.outputs.notarized }}
+        run: |
+          app=macos/Trillion.app
+          # Both architectures: arm64 x86_64.
+          for bin in "$app"/Contents/MacOS/*; do lipo -archs "$bin"; done
+          if [ -z "$SIGNED" ]; then
+            echo "Unsigned: nothing to check. Opening it needs right-click → Open, or System Settings → Privacy & Security."
+            # So nobody takes it for a release build.
+            for dmg in dmg/*.dmg; do mv "$dmg" "${dmg%.dmg}_unsigned.dmg"; done
+            ls -l dmg
+            exit 0
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # The hardened runtime (flags=0x10000(runtime)), which notarizing requires.
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime|CodeDirectory)'
+          codesign --display --entitlements - "$app"
+          if [ -n "$NOTARIZED" ]; then
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+          fi
+          ls -l dmg
+      - name: Keep it on this run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trillion-desktop-macos
+          path: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attach it to the release (signed and notarized only)
+        if: github.ref_type == 'tag' && steps.build.outputs.notarized == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
+        run: gh release upload "$TAG" dmg/*.dmg --clobber --repo "$GITHUB_REPOSITORY"

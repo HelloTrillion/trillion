@@ -18,6 +18,10 @@
     "active": true,
     "targets": ["app"],
     "category": "Productivity",
+    "shortDescription": "A voice-first AI assistant with a face",
+    "longDescription": "Trillion's desktop app: it starts your installed trillion server, shows its page in a window, lives in the tray and makes the talk shortcut work from any app.",
+    "homepage": "https://github.com/HelloTrillion/trillion",
+    "license": "Apache-2.0",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -25,8 +29,14 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
+    "linux": {
+      "deb": {
+        "depends": ["gstreamer1.0-plugins-good"]
+      }
+    },
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "entitlements": "Entitlements.plist"
     }
   }
 }

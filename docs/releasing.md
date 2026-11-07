@@ -14,6 +14,18 @@ wheel, and checks it: the page and the Google app are inside, nothing private is
 and installed on its own into a fresh environment it finds both. The Release
 workflow (`.github/workflows/release.yml`) runs that script.
 
+The same workflow builds the desktop app and attaches it to the release:
+
+- **Linux:** `Trillion_<version>_amd64.AppImage` and `Trillion_<version>_amd64.deb`,
+  built on Ubuntu 22.04. Nothing to set up.
+- **macOS:** `Trillion_<version>_universal.dmg` (Apple silicon and Intel), signed
+  and notarized. Only once the Apple setup below is done: until then the build is
+  unsigned, the log says so, and the `.dmg` is kept on the run as
+  `…_unsigned.dmg`, never attached to the release.
+
+Both are a thin shell around an installed `trillion`: they don't include Python
+or the server. Someone runs the one-line installer first.
+
 ## One-time setup: the Google secret
 
 Our Google app's settings are never in the repository. The Release workflow reads
@@ -62,6 +74,76 @@ A version can be uploaded to PyPI once and never replaced or reused, even after 
 is deleted. So publishing is the workflow's last step: it runs only after the wheel
 is built, checked and attached to the GitHub release.
 
+## One-time setup: signing and notarizing the Mac app
+
+Without this, releases still work: they carry the wheel and the Linux app, and the
+Mac app is built unsigned and kept on the run only. With it, the Release workflow
+signs the app with a Developer ID, has Apple notarize it, staples the ticket, and
+attaches the `.dmg`. Tauri does the signing and notarizing itself; the workflow
+only hands it these six secrets, under the names Tauri reads.
+
+You need a paid **Apple Developer Program** membership (the individual or
+organization account that will be named as the developer) and a Mac with Xcode or
+the Command Line Tools.
+
+1. **A Developer ID Application certificate.** On the Mac: Keychain Access →
+   Certificate Assistant → Request a Certificate From a Certificate Authority,
+   saved to disk. At [developer.apple.com](https://developer.apple.com/account/resources/certificates/list)
+   → Certificates → +, choose **Developer ID Application** (not "Apple
+   Development", not "Mac App Distribution"), upload the request, download the
+   certificate and double-click it, so it lands in your login keychain with its
+   private key.
+2. **Export it as a .p12.** In Keychain Access → My Certificates, right-click
+   "Developer ID Application: *Name* (*TEAMID*)" → Export, as a `.p12`, with a
+   strong password of your choosing. Then base64 it, on one line:
+
+   ```bash
+   base64 -i DeveloperID.p12 | tr -d '\n' > DeveloperID.p12.base64
+   ```
+
+3. **The signing identity**, the certificate's full name:
+
+   ```bash
+   security find-identity -v -p codesigning
+   ```
+
+   Use the quoted text, such as `Developer ID Application: Example Ltd (AB12CD34EF)`.
+4. **An app-specific password for notarizing.** At
+   [account.apple.com](https://account.apple.com) → Sign-In and Security →
+   App-Specific Passwords, make one named for this workflow. Your **Team ID** is
+   the ten characters in brackets in the identity, also under Membership details
+   at developer.apple.com.
+5. **The GitHub secrets.** Repository **Settings → Secrets and variables →
+   Actions → New repository secret**, one each. With the `gh` command, each value
+   is read from your terminal or a file, so it is never in your shell history:
+
+   | Secret | Value | |
+   |---|---|---|
+   | `APPLE_CERTIFICATE` | the one-line base64 of the `.p12` | `gh secret set APPLE_CERTIFICATE < DeveloperID.p12.base64` |
+   | `APPLE_CERTIFICATE_PASSWORD` | the `.p12`'s export password | `gh secret set APPLE_CERTIFICATE_PASSWORD` (it asks) |
+   | `APPLE_SIGNING_IDENTITY` | the identity from step 3 | `gh secret set APPLE_SIGNING_IDENTITY` |
+   | `APPLE_ID` | the Apple Account email of the developer account | `gh secret set APPLE_ID` |
+   | `APPLE_PASSWORD` | the app-specific password from step 4 (not the account password) | `gh secret set APPLE_PASSWORD` |
+   | `APPLE_TEAM_ID` | the Team ID | `gh secret set APPLE_TEAM_ID` |
+
+   The first three sign; the last three notarize. With only the first three, the
+   app is signed but not notarized, and the log warns; the `.dmg` is not attached.
+6. **Delete the local copies** of the `.p12` and its base64 once the secrets are
+   set. The certificate stays in your keychain; export it again if it is ever
+   needed.
+
+The workflow never prints these values: it names a missing secret, never a set
+one's value, and GitHub masks every secret in the log. It has no pull request
+trigger, so code from a fork never runs with them. A Developer ID certificate is
+valid for five years; when it is renewed, repeat steps 1 to 3 and update the first
+three secrets. To revoke access, delete the secrets, and revoke the app-specific
+password at account.apple.com.
+
+Apple's notary service usually answers in a few minutes, sometimes much longer;
+the job allows an hour. If notarizing fails, the job fails and the log has
+Apple's reason, and `xcrun notarytool log <id>` on a Mac with the same Apple
+Account shows the details.
+
 ## Making a release
 
 1. Set the version in `pyproject.toml` and `src/trillion/__init__.py`, and merge.
@@ -75,9 +157,13 @@ is built, checked and attached to the GitHub release.
    wheel attached (a pre-release while the version is 0.x). It then waits for a
    maintainer to approve the `pypi` environment, and publishes the same wheel to
    PyPI. The tag must match the version, or the build stops.
+4. Meanwhile it builds the desktop app, with the version from `pyproject.toml`,
+   and attaches the Linux AppImage and `.deb`, and the Mac `.dmg` if it was signed
+   and notarized. A desktop job that fails can be re-run on its own; it replaces
+   what it attached before.
 
 To try a build without releasing, run **Actions → Release → Run workflow**. The
-wheel is kept as a download on that run for 30 days.
+wheel and the desktop builds are kept as downloads on that run for 30 days.
 
 ## Building one locally
 
@@ -119,10 +205,16 @@ old to list extras still installs and upgrades: the installer falls back to a pl
 `uv tool list`, and upgrades with `uv tool upgrade trillion` if Trillion is there. `--version X` (`TRILLION_VERSION`) installs a given version and `--wheel`
 (`TRILLION_WHEEL`) a wheel file or URL instead, which is how to try a build before
 it is released. Then they add uv's tool folder to the PATH (`uv tool update-shell`)
-and run `trillion setup`, unless `--no-setup` (`TRILLION_NO_SETUP=1`).
+and run `trillion setup`, unless `--no-setup` (`TRILLION_NO_SETUP=1`). With
+`install.sh`, anything after `--` goes to `trillion setup`: `sh install.sh -- --no-run`
+prepares and checks without starting the app.
 
-They do not install the desktop app (an unsigned developer build, not in releases),
-a wake-word model (deferred), or a Homebrew formula (none yet).
+`install.sh` won't run as root or under `sudo`: Trillion and its data belong in a
+person's home folder. In a container where root is the only user,
+`TRILLION_ALLOW_ROOT=1` lets it run.
+
+They do not install the desktop app (it is on the release page, and needs the
+installed `trillion`), a wake-word model (deferred), or a Homebrew formula (none yet).
 
 CI tests both (the `installer` job in `.github/workflows/ci.yml`): on Ubuntu and
 Windows for every pull request, and on macOS too for every push to main, nightly
@@ -142,3 +234,23 @@ takes parameters, and through `Invoke-Expression` inside a function called with
 arguments of its own, which must not be taken as the installer's. Installing from PyPI
 itself is not tested there, so after a release, run the one-liner once on a clean
 machine.
+
+## The clean-machine check
+
+Phase 0 is done only if, on a clean Mac and a clean Ubuntu 22.04,
+`uv tool install trillion && trillion setup` succeeds and `trillion doctor` is green.
+The `clean-machine` job in `.github/workflows/ci.yml` checks that: on Ubuntu 22.04
+for every pull request, and on macOS for every push to main, nightly and on demand.
+With an empty home and only `/usr/bin:/bin` on the PATH (no uv, no Python of the
+runner's), it runs `install.sh --wheel <the wheel built here> -- --no-run --no-open`,
+which has to install uv with Astral's installer, install Trillion and run
+`trillion setup`. Then `trillion doctor` must exit 0 with no `fail` line, and
+`trillion run` must serve the page on port 7777. No keys, no model and no paid
+service: the first rung of the ladder. Run it on your own machine the same way,
+with a throwaway home:
+
+```bash
+home="$(mktemp -d)"
+env -i PATH=/usr/bin:/bin HOME="$home" sh install.sh --wheel "$PWD"/dist-release/trillion-*.whl -- --no-run --no-open
+env -i PATH=/usr/bin:/bin HOME="$home" "$home/.local/bin/trillion" doctor
+```
