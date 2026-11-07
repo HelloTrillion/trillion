@@ -1793,7 +1793,9 @@ class Session:
         tail = self._tail[0] if self._tail is not None else None
         # Nothing heard is shown until it turns out to be the user's turn, and no
         # draft starts from it: her reply must stay as it is until then.
-        listener = Listener(rt.stt, rt.listening_used.choice, on_partial=self._unshown)
+        listener = Listener(
+            rt.stt, rt.listening_used.choice, on_partial=self._unshown, speakers=rt.speakers
+        )
         ov = Overlap(listener=listener, started=self._now(), speaker=self._speaker or tail)
         self._overlap = ov
         try:
@@ -2145,7 +2147,9 @@ class Session:
             wake.set()  # judged at once, not at the next tick
 
         # Nothing heard is shown, and no draft starts from it.
-        listener = Listener(rt.stt, rt.listening_used.choice, on_partial=heard, watch=True)
+        listener = Listener(
+            rt.stt, rt.listening_used.choice, on_partial=heard, watch=True, speakers=rt.speakers
+        )
         now = self._now()
         # Her reply on this listener's clock: the one playing, or, before her voice
         # starts, the one coming.
@@ -2371,6 +2375,7 @@ class Session:
                 on_turn=self._turn_signal,
                 # The quiet window: only words hold it open (VOI-7).
                 words_only=quiet,
+                speakers=rt.speakers,
             )
             # Set before it starts: what was held while it connected is judged the same way.
             listener.key_held = held

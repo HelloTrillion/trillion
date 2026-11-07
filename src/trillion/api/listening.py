@@ -25,7 +25,16 @@ from trillion.voice.endpoint import (
     sounds_finished,
 )
 from trillion.voice.overlap import words_of
-from trillion.voice.types import Heard, STTProvider, STTStream, VoiceError, Word
+from trillion.voice.types import (
+    Heard,
+    SpeakerEmbedder,
+    SpeakerEmbedding,
+    STTProvider,
+    STTStream,
+    UnknownSpeaker,
+    VoiceError,
+    Word,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +64,11 @@ LEVELS_KEPT_S = 30.0
 ROOM_LOOKBACK_S = 10.0
 NEAR_WORD_S = 0.25
 ROOM_DEFAULT = 0.002
+# The audio kept for knowing who spoke (VOI-15): the latest this-many seconds.
+SPEAKER_AUDIO_S = 30.0
+_SPEAKER_BYTES = round(SPEAKER_AUDIO_S * _BYTES_PER_S)
+# How long the embedder gets: it sits between the user's last word and her answer.
+SPEAKER_TIMEOUT_S = 1.0
 
 
 # Punctuation that never starts what the user said, once her words before it are gone.
@@ -66,8 +80,9 @@ Judge = Callable[[Sequence[Word]], Sequence[bool]]
 @dataclass(frozen=True, kw_only=True)
 class Utterance:
     text: str
-    # The seam for knowing who spoke (VOI-15). Nothing fills it yet.
-    speaker: tuple[float, ...] | None = None
+    # Who spoke it (VOI-15): the embedder's answer for this utterance, None when it
+    # cannot tell, as the Shell's stub never can. Never logged or saved.
+    speaker: SpeakerEmbedding | None = None
 
 
 def describe(
@@ -95,8 +110,14 @@ class Listener:
         on_turn: Callable[[str, str], Awaitable[None]] | None = None,
         watch: bool = False,
         words_only: bool = False,
+        speakers: SpeakerEmbedder | None = None,
     ) -> None:
         self._provider = provider
+        # Who spoke each committed utterance (VOI-15); the stub knows nobody.
+        self._speakers: SpeakerEmbedder = speakers or UnknownSpeaker()
+        # The latest audio sent, for the embedder: chunks and their total size.
+        self._audio: deque[bytes] = deque()
+        self._audio_bytes = 0
         self._choice = choice
         self._on_partial = on_partial
         self._on_turn = on_turn
@@ -347,6 +368,7 @@ class Listener:
         # Measured before the send waits, so audio is placed in the order it is sent,
         # even while the backlog's send is still going.
         self._measure(pcm)
+        self._keep(pcm)
         await self._stream.send(pcm)
         if self._watching:
             return None  # nothing ends while watching: the session decides
@@ -535,7 +557,38 @@ class Listener:
             await self.abandon()
         if self._error is not None and not self.text():
             raise self._error
-        return Utterance(text=self.text())
+        text = self.text()
+        return Utterance(text=text, speaker=await self._who() if text else None)
+
+    def _keep(self, pcm: bytes) -> None:
+        """Keep the latest SPEAKER_AUDIO_S of audio sent, for the embedder."""
+        self._audio.append(pcm)
+        self._audio_bytes += len(pcm)
+        while self._audio_bytes > _SPEAKER_BYTES and len(self._audio) > 1:
+            self._audio_bytes -= len(self._audio.popleft())
+
+    async def _who(self) -> SpeakerEmbedding | None:
+        """Ask the embedder who said this utterance, once. Its failure is not knowing."""
+        pcm = b"".join(self._audio)
+        start_s = self.sent_s - len(pcm) / _BYTES_PER_S
+        self._audio.clear()
+        self._audio_bytes = 0
+        try:
+            words = self.heard_words()
+            if self._judge is not None and words:
+                # Only the user's: her echo is not who spoke (#102).
+                keep = self._judge(words)
+                words = tuple(w for w, k in zip(words, keep, strict=False) if k)
+            return await asyncio.wait_for(
+                self._speakers.embed(pcm, start_s=start_s, words=words),
+                timeout=SPEAKER_TIMEOUT_S,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The class name only: nothing about the voice is logged.
+            logger.warning("speaker embedder %s failed: %s", self._speakers.name, type(e).__name__)
+            return None
 
     async def abandon(self) -> None:
         """Stop without using what was heard. Safe to call twice."""

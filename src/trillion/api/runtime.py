@@ -144,7 +144,7 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice import models as voice_models
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.providers import whisper
-from trillion.voice.types import STTProvider, TTSProvider
+from trillion.voice.types import SpeakerEmbedder, STTProvider, TTSProvider, UnknownSpeaker
 from trillion.workspace.board import Board
 from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
 from trillion.workspace.home import HOME_LAYOUT_PREF, Layout, clean
@@ -439,6 +439,9 @@ class Runtime:
     tts: TTSProvider | None
     listening: ListenSettings | None = None
     stt: STTProvider | None = None
+    # Who spoke each utterance (VOI-15): the Shell's stub never knows. Phase 1's
+    # speaker check replaces it here, and capture does not change.
+    speakers: SpeakerEmbedder = field(default_factory=UnknownSpeaker)
     speech_last: SpeechSettings | None = None
     listening_last: ListenSettings | None = None
     # Whether she drafts a reply while the user may still be talking (VOI-12).
