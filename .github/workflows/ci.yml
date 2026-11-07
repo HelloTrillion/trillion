@@ -125,6 +125,8 @@ jobs:
       - run: python3 scripts/check_agent_name.py
       - run: python3 scripts/check_raw_hex.py --selftest
       - run: python3 scripts/check_raw_hex.py
+      - run: python3 scripts/check_css.py --selftest
+      - run: python3 scripts/check_css.py
       - run: python3 scripts/check_one_writer.py --selftest
       - run: python3 scripts/check_one_writer.py
 
