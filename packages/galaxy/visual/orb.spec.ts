@@ -30,7 +30,10 @@ test('supernova, large, dark', async ({ page }) => {
   await page.goto('/');
   await page.locator('body[data-ready="true"]').waitFor();
   await page.evaluate(([n]) => window.snap('idle', 'dark', n, { tier: 'large', frames: 32 }), [SETTLED] as const);
-  await expect(page.locator('#galaxy')).toHaveScreenshot('supernova-large-dark.png');
+  // A burst this bright magnifies small differences in software drawing between
+  // machines (1% of pixels from a Mac to CI), so it gets more room than the states.
+  // The burst changes about a quarter of the picture, so a missing one still fails.
+  await expect(page.locator('#galaxy')).toHaveScreenshot('supernova-large-dark.png', { maxDiffPixelRatio: 0.02 });
 });
 
 test('the same state at the same seed draws the same picture', async ({ page }) => {

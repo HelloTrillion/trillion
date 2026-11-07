@@ -121,7 +121,7 @@ describe('by construction', () => {
     const src = resolve(__dirname, '../src');
     const files = [...readdirSync(src).map((f) => resolve(src, f)), ...readdirSync(resolve(src, 'features')).map((f) => resolve(src, 'features', f))].filter((f) => f.endsWith('.ts'));
     const callers = files.filter((f) => /\.supernova\(/.test(readFileSync(f, 'utf8')));
-    expect(callers.map((f) => f.slice(src.length + 1))).toEqual(['features/celebrations.ts']);
+    expect(callers.map((f) => f.slice(src.length + 1).replace(/\\/g, '/'))).toEqual(['features/celebrations.ts']);
     const feature = readFileSync(resolve(src, 'features/celebrations.ts'), 'utf8');
     expect(feature.match(/\.supernova\(/g)).toHaveLength(1);
     expect(feature).toContain('new Celebrations((tier) => galaxy.supernova(tier), savedCelebrations)');
