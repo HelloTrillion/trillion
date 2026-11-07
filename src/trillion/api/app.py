@@ -34,6 +34,7 @@ from trillion.api.google import create_google_router
 from trillion.api.helpers import create_helpers_router
 from trillion.api.home import create_home_router
 from trillion.api.mcp import create_callback_router, create_mcp_router
+from trillion.api.memories import create_memories_router
 from trillion.api.persona import create_persona_router
 from trillion.api.routines import create_routines_router
 from trillion.api.runtime import Runtime
@@ -216,6 +217,7 @@ def create_app(
     app.include_router(create_attention_router(rt))
     app.include_router(create_helpers_router(rt))
     app.include_router(create_home_router(rt))
+    app.include_router(create_memories_router(rt))
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:
