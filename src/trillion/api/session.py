@@ -4078,6 +4078,8 @@ class Session:
                 helper_name=n.helper_name,
                 helper_icon=n.helper_icon,
                 helper_color=n.helper_color,
+                # A security alert (SEC-11): the page marks it.
+                critical=n.critical,
             )
         if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

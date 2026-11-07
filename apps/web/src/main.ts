@@ -67,6 +67,7 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
+import { createDevicesSettings, deviceId } from './devices';
 import { type Helper, askTarget, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
 import { lookOf, picture } from './look';
 import { createRail } from './rail';
@@ -1195,6 +1196,8 @@ panel.add({ id: 'usage', label: 'Usage and limits', group: YOU, icon: 'usage', k
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
+const devicesSettings = createDevicesSettings(panel.host('devices'), api);
+panel.add({ id: 'devices', label: 'Devices', group: COMPUTER, icon: 'devices', keywords: 'security sign in browser device forget new login', summary: () => devicesSettings.summary(), open: () => devicesSettings.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
   void namesSettings.peek().then(() => panel.refresh());
@@ -1553,7 +1556,8 @@ function connect(): void {
   ws.addEventListener('open', () => {
     retryMs = 1000;
     // `host`: where the page runs, so the mic check leaves this app's own recording out.
-    send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY), host: pageHost(navigator, desktop.DESKTOP) });
+    // `device`: this browser's own id, so a new device is told about (SEC-11); never an address.
+    send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY), host: pageHost(navigator, desktop.DESKTOP), device: deviceId() });
   });
   ws.binaryType = 'arraybuffer';
   ws.addEventListener('message', (ev) => {

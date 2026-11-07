@@ -85,6 +85,11 @@ def channels_config_path() -> Path:
     return home() / "channels.json"
 
 
+def devices_path() -> Path:
+    """The devices that signed in, by a hash of each page's own id (SEC-11)."""
+    return home() / "devices.json"
+
+
 def folders_config_path() -> Path:
     """The folders the user shared with her, each with its access and who it is for.
     Only `trillion.files.shares` reads or writes it (scripts/check_one_writer.py)."""

@@ -3,7 +3,8 @@
 The reasons, in order, the first that applies:
 
 1. Quiet hours, in the user's zone as reminders tell it. Watcher notices only: a
-   reminder or timed ask was set for its time by the user. An unknown zone skips it.
+   reminder or timed ask was set for its time by the user, and a security alert is
+   critical. An unknown zone skips it.
 2. In a meeting, from the meetings watcher's last read (`in_meeting`, can't tell
    until it is filled), unless switched off. A heads-up for the next meeting is still
    spoken.
@@ -35,6 +36,7 @@ from trillion.attention.probes.mic import mic_in_use
 from trillion.attention.settings import AttentionSettings, QuietHours
 from trillion.scheduler import when
 from trillion.scheduler.store import Notice
+from trillion.security.alerts import is_security
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +181,8 @@ class Quiet:
     async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
         """`host` is where the page the notice goes to runs; None asks the live page's."""
         s = self._settings()
-        watcher = notice.source == "attention"
+        # A security alert is critical (SEC-11): quiet hours never hold it.
+        watcher = notice.source == "attention" and not is_security(notice.source_id)
         if watcher and in_quiet_hours(s.quiet_hours, self._zone(), now_ms):
             return QUIET_HOURS
         next_meeting = watcher and notice.source_id.startswith(MEETING_KEY)
