@@ -5,6 +5,7 @@ import {
 import type { Levels } from '../audio/levels';
 import { NOISE_GLSL } from '../shaders/noise';
 import type { OrbParams } from '../states';
+import { NO_NOVA, type NovaFrame } from '../supernova';
 
 // Shaders match the predecessor's desktop orb, which has been tuned in daily use:
 // a calm surface at rest (displacement scales with breath and audio), a thin
@@ -98,6 +99,8 @@ export interface OrbFrame {
   readonly dt: number;
   readonly flare: number;
   readonly motion: number;
+  /** A celebration under way (GAL-9); nothing when absent. */
+  readonly nova?: NovaFrame;
 }
 
 // A plain ring spinning in its own plane looks still, so each carries a small
@@ -130,6 +133,12 @@ export class Orb {
     uColor: { value: new Vector3() },
     uOpacity: { value: 0 },
   };
+  // The Supernova's shock wave: a fresnel shell that widens and fades (GAL-9).
+  private readonly wave: Mesh<IcosahedronGeometry, ShaderMaterial>;
+  private readonly wu = {
+    uColor: { value: new Vector3() },
+    uOpacity: { value: 0 },
+  };
   private spinAngle = 0;
 
   constructor(detail: number) {
@@ -156,7 +165,19 @@ export class Orb {
         depthWrite: false,
       }),
     );
-    this.group.add(this.glow, this.core);
+    this.wave = new Mesh(
+      new IcosahedronGeometry(1.0, 6),
+      new ShaderMaterial({
+        uniforms: this.wu,
+        vertexShader: GLOW_VERTEX,
+        fragmentShader: GLOW_FRAGMENT,
+        blending: AdditiveBlending,
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    this.wave.visible = false;
+    this.group.add(this.glow, this.core, this.wave);
 
     for (const spec of RING_SPECS) {
       const mesh = new Mesh(
@@ -187,9 +208,11 @@ export class Orb {
   /** Additive glow washes to white on a light sky; blend it normally there. */
   setTheme(light: boolean): void {
     const blending = light ? NormalBlending : AdditiveBlending;
-    if (this.glow.material.blending !== blending) {
-      this.glow.material.blending = blending;
-      this.glow.material.needsUpdate = true;
+    for (const m of [this.glow.material, this.wave.material]) {
+      if (m.blending !== blending) {
+        m.blending = blending;
+        m.needsUpdate = true;
+      }
     }
   }
 
@@ -200,6 +223,7 @@ export class Orb {
 
   update(f: OrbFrame): void {
     const { params: p, levels, time, dt, flare, motion } = f;
+    const nova = f.nova ?? NO_NOVA;
     const t = time; // already scaled by motion in index.ts
 
     // Processing: the colour mix swings on a 2s cycle, with a pulse each cycle.
@@ -219,11 +243,20 @@ export class Orb {
     this.u.uFresnel.value = p.fresnelPower;
 
     this.gu.uColor.value.copy(this.u.uColor.value);
-    this.gu.uOpacity.value = (p.glowOpacity + levels.level * 0.25) * (1 + flare * 2);
+    this.gu.uOpacity.value = (p.glowOpacity + levels.level * 0.25) * (1 + flare * 2 + nova.glow * 2.5);
 
-    const scale = 1 + levels.level * 0.12 + levels.bass * 0.08 + flare * 0.1 + pulse;
+    const scale = 1 + levels.level * 0.12 + levels.bass * 0.08 + flare * 0.1 + pulse + nova.swell;
     this.core.scale.setScalar(scale);
-    this.glow.scale.setScalar(1 + levels.level * 0.2 + levels.bass * 0.12 + flare * 0.1);
+    this.glow.scale.setScalar(1 + levels.level * 0.2 + levels.bass * 0.12 + flare * 0.1 + nova.swell * 1.5);
+
+    // The wave takes her colour, washed toward white as the burst is brightest.
+    this.wave.visible = nova.waveOpacity > 0.005 && nova.wave > 0;
+    if (this.wave.visible) {
+      const w = Math.min(1, nova.glow * 0.5);
+      this.wu.uColor.value.set(p.color[0] + (1 - p.color[0]) * w, p.color[1] + (1 - p.color[1]) * w, p.color[2] + (1 - p.color[2]) * w);
+      this.wu.uOpacity.value = nova.waveOpacity * 1.6;
+      this.wave.scale.setScalar(nova.wave);
+    }
 
     this.spinAngle += dt * motion * (p.rotationSpeed + levels.level * 0.4);
     this.core.rotation.y = this.spinAngle;
@@ -247,6 +280,8 @@ export class Orb {
     this.core.material.dispose();
     this.glow.geometry.dispose();
     this.glow.material.dispose();
+    this.wave.geometry.dispose();
+    this.wave.material.dispose();
     for (const r of this.rings) {
       r.mesh.geometry.dispose();
       r.mesh.material.dispose();

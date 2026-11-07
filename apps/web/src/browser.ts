@@ -291,7 +291,19 @@ export interface DetailChoice {
   set(detail: Detail): void;
 }
 
-export function createAppearance(host: Host, current: () => Theme, choose: (t: Theme) => void, detail?: DetailChoice): { open(): void } {
+/** Whether the orb celebrates (GAL-9), kept in this browser (prefs.ts). */
+export interface CelebrationsChoice {
+  get(): boolean;
+  set(on: boolean): void;
+}
+
+export function createAppearance(
+  host: Host,
+  current: () => Theme,
+  choose: (t: Theme) => void,
+  detail?: DetailChoice,
+  celebrations?: CelebrationsChoice,
+): { open(): void } {
   const { finish } = section(host, 'appearance', 'Appearance', 'Kept in this browser only.');
   const theme = radios<Theme>(
     'appearance',
@@ -315,12 +327,32 @@ export function createAppearance(host: Host, current: () => Theme, choose: (t: T
         (d) => detail.set(d),
       )
     : null;
-  if (perf) finish(el('h3', 'connected-heading', 'Theme'), theme.element, el('h3', 'connected-heading', 'Performance'), perf.element);
-  else finish(theme.element);
+  // A rare win (a new helper's first job, a routine's 30th morning) makes the orb burst.
+  let party: HTMLInputElement | null = null;
+  const partyRow: HTMLElement[] = [];
+  if (celebrations) {
+    const row = el('label', 'settings-check');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.setAttribute('role', 'switch');
+    box.id = 'appearance-celebrations';
+    const words = el('span');
+    words.append(
+      el('strong', '', 'Celebrations'),
+      el('small', '', 'A burst of light from the orb for a rare win, such as a new helper finishing its first job. With reduced motion, a soft glow. Never a sound.'),
+    );
+    row.append(box, words);
+    box.addEventListener('change', () => celebrations.set(box.checked));
+    party = box;
+    partyRow.push(el('h3', 'connected-heading', 'Celebrations'), row);
+  }
+  if (perf) finish(el('h3', 'connected-heading', 'Theme'), theme.element, el('h3', 'connected-heading', 'Performance'), perf.element, ...partyRow);
+  else finish(theme.element, ...partyRow);
   return {
     open() {
       theme.set(current());
       if (perf && detail) perf.set(detail.get());
+      if (party && celebrations) party.checked = celebrations.get();
       host.showModal();
     },
   };

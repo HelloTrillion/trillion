@@ -428,6 +428,38 @@ class SqliteScheduleStore:
             for r in rows
         ]
 
+    async def run_of_notice(self, owner_id: str, notice_id: str) -> Run | None:
+        """The run that wrote a notice, if one did: the attention engine reads it (GAL-9)."""
+        async with self._conn.execute(
+            "SELECT r.* FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
+            " WHERE s.owner_id = ? AND r.result_notice = ?",
+            (owner_id, notice_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return _run(row) if row is not None else None
+
+    async def brought(
+        self,
+        owner_id: str,
+        up_to_run: int,
+        *,
+        schedule_id: str | None = None,
+        helper_id: str | None = None,
+    ) -> int:
+        """How many runs, up to and including `up_to_run`, brought the user something
+        (delivered or late): one schedule's, or all of a helper's."""
+        if (schedule_id is None) == (helper_id is None):
+            raise ValueError("count one schedule's runs or one helper's")
+        # Exactly one is given; the other is None, which matches nothing.
+        async with self._conn.execute(
+            "SELECT count(*) FROM task_runs r JOIN schedules s ON s.id = r.schedule_id"
+            " WHERE s.owner_id = ? AND (s.id = ? OR s.helper_id = ?) AND r.id <= ?"
+            " AND r.status IN ('delivered', 'late')",
+            (owner_id, schedule_id, helper_id, up_to_run),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row is not None else 0
+
     async def last_results(self, owner_id: str) -> dict[str, Run]:
         async with self._conn.execute(
             # Only the latest finished run of each schedule, never its whole history.

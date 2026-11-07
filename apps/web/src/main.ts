@@ -49,6 +49,8 @@ import {
   saveHomeDate,
   saveHomeDaily,
   savedBarge,
+  savedCelebrations,
+  saveCelebrations,
   savedDetail,
   savedHomeDaily,
   savedMic,
@@ -58,6 +60,7 @@ import {
   shownTheme,
 } from './prefs';
 import { announcement, statusText } from './announce';
+import { Celebrations } from './supernova';
 import { readyLine } from './ready';
 import { renderScheduled } from './notice';
 import { createReminders } from './reminders';
@@ -295,6 +298,8 @@ systemLight.addEventListener('change', () => {
 });
 
 let view: View = INITIAL;
+// GAL-9: only the core's attention engine asks for one (supernova.ts); the user may turn them off.
+const celebrations = new Celebrations((tier) => galaxy.supernova(tier), savedCelebrations);
 // The conversations opened on this page, the latest last; + New helper asks in one.
 let visited: string[] = [];
 // + New helper's words, asked from a helper's chat: sent once her conversation is open.
@@ -937,6 +942,8 @@ function apply(next: View): void {
   if (next === view) return;
   const before = view;
   view = next;
+  // A celebration that waited for a reply to end goes now.
+  celebrations.settle(view.replyOpen || view.busy);
   if (view.conversationId && view.conversationId !== before.conversationId) {
     store(CONVERSATION_KEY, view.conversationId);
     // Where + New helper asks her: the last open that is not a helper's own chat.
@@ -1061,6 +1068,7 @@ const appearance = createAppearance(
       panel.refresh();
     },
   },
+  { get: savedCelebrations, set: saveCelebrations },
 );
 const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh(), { get: savedHomeDaily, set: saveHomeDaily });
 // Shares, read and changed through the routes: Settings and the Folders panel share them.
@@ -1187,7 +1195,7 @@ panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 's
 panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
-panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
+panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail celebrations supernova', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
@@ -1742,6 +1750,8 @@ function connect(): void {
     speakCapped(msg, view.speech === null);
     if (msg.type === 'spend.resolved' || (msg.type === 'error' && msg['code'] === 'capped')) void refreshUsage();
     apply(reduce(view, msg));
+    // GAL-9: the attention engine's celebration, on its notice; never over a live reply.
+    celebrations.take(msg, view.replyOpen || view.busy);
     // + New helper, asked from a helper's chat: said in her conversation once it is open.
     if (msg.type === 'history') askQueue.opened();
     // A new helper (her card, or an offer's Create): its chat opens once she is done.

@@ -9,6 +9,7 @@ import { Orb } from './orb/orb';
 import { type PerfMode, PerfGovernor, motionScale, qualityFor } from './perf';
 import { ORB_DISTANCE, ORB_FOV, type StageRect, defaultRect, placeOrb, stepStage } from './stage';
 import { ORB_STATES, displayedState, type OrbParams, type OrbStateName } from './states';
+import { Supernova, type SupernovaTier } from './supernova';
 
 export { ORB_STATE_NAMES, ORB_STATES, STATE_LABELS, displayedState } from './states';
 export type { OrbParams, OrbStateName } from './states';
@@ -16,6 +17,8 @@ export type { AnalyserRole, Levels } from './audio/levels';
 export type { PerfMode } from './perf';
 export { defaultRect } from './stage';
 export type { StageRect } from './stage';
+export { SUPERNOVA_TIERS } from './supernova';
+export type { SupernovaTier } from './supernova';
 
 export type Theme = 'dark' | 'light';
 
@@ -53,6 +56,10 @@ export interface Galaxy {
   attachAnalyser(node: AudioNode, role: AnalyserRole): () => void;
   /** A brief surge of light, for acknowledgements and small wins. */
   flare(strength?: number): void;
+  /** GAL-9: a celebration, small, medium or large. A bigger one replaces a smaller one
+   * under way; a smaller one meanwhile is ignored. Reduced motion gets a gentle glow,
+   * performance mode no shock wave. Makes no sound. */
+  supernova(tier: SupernovaTier): void;
   /** GAL-7, Phase 1: no-op until the constellation lands. */
   addSatellite(spec: SatelliteSpec): void;
   /** GAL-7, Phase 1: no-op until the constellation lands. */
@@ -99,6 +106,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   let params: OrbParams = ORB_STATES.idle;
   let levels: Levels = SILENT;
   let flareLevel = 0;
+  const nova = new Supernova();
   let theme: Theme = opts.theme ?? 'dark';
   landscape.setTheme(theme === 'light');
   orb.setTheme(theme === 'light');
@@ -189,7 +197,9 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     // The network answers her voice (and her thinking), not the user's mic.
     const voiced = showing === 'speaking' || showing === 'processing';
 
-    orb.update({ params, levels, time: animClock, dt, flare: flareLevel, motion });
+    // Real time, not the motion-scaled clock: reduced motion has a burst of its own.
+    const novaFrame = nova.step(dt, perfActive);
+    orb.update({ params, levels, time: animClock, dt, flare: flareLevel, motion, nova: novaFrame });
     landscape.update({
       time: animClock, dt, motion, light,
       voice: voiced ? levels.level : 0,
@@ -235,6 +245,10 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     },
     flare(strength = 1) {
       flareLevel = Math.min(1.5, flareLevel + Math.max(0, strength));
+    },
+    supernova(tier) {
+      if (destroyed) return;
+      nova.fire(tier, reduced);
     },
     addSatellite() {},
     removeSatellite() {},

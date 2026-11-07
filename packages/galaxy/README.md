@@ -11,7 +11,7 @@ pnpm install
 pnpm --filter @hellotrillion/galaxy dev
 ```
 
-Then open http://127.0.0.1:5173/. The demo page has a button for every state, your microphone, a soft test tone for speaking, a flare, the performance toggle and the theme toggle.
+Then open http://127.0.0.1:5173/. The demo page has a button for every state, your microphone, a soft test tone for speaking, a flare, the three supernovas, the performance toggle and the theme toggle.
 
 ## Usage
 
@@ -41,6 +41,7 @@ const detachVoice = galaxy.attachAnalyser(playbackGainNode, 'playback');
 galaxy.setState('speaking');
 
 galaxy.flare();           // a brief surge of light
+galaxy.supernova('medium'); // a celebration: 'small' | 'medium' | 'large'
 galaxy.setStage({ x: 800, y: 300, size: 240 }); // the orb's centre and diameter in CSS px; it glides there
 galaxy.setTheme('light');
 galaxy.setPerfMode('on');
@@ -48,6 +49,8 @@ galaxy.destroy();         // stops the loop and frees GPU resources
 ```
 
 `setStage(rect, { animate })` places the orb on the canvas by its centre and diameter (CSS pixels from the top left), and it keeps every state and reaction at that size; `animate: false` jumps, for a window being resized. `defaultRect(w, h)` is where it sits without one. `StageRect` is `{ x, y, size }`.
+
+`supernova(tier)` is a celebration in three sizes (GAL-9): a swell of light, then a shock wave for medium and large, each bigger and longer than the last. A bigger one replaces a smaller one under way; a smaller one meanwhile is ignored. With reduced motion it is a gentle glow and nothing moves; in performance mode the wave is skipped. It makes no sound. Keep it rare: in Trillion only the attention engine asks for one.
 
 `attachAnalyser` only taps the node: it never changes what is heard. When no playback analyser is attached, speaking falls back to a gentle synthetic pulse so the orb never looks dead.
 
@@ -75,4 +78,4 @@ pnpm --filter @hellotrillion/galaxy build
 pnpm --filter @hellotrillion/galaxy test:visual
 ```
 
-`test:visual` photographs every state in dark and light at a fixed seed and compares each with its reference in `visual/snapshots/` (GAL-12). It draws in software, so it needs no graphics card; the first run may need `pnpm --filter @hellotrillion/galaxy exec playwright install chromium`. After changing the look on purpose, run it with `--update-snapshots` and look at the new pictures before committing them.
+`test:visual` photographs every state in dark and light, and a large supernova at its peak, at a fixed seed and compares each with its reference in `visual/snapshots/` (GAL-12). It draws in software, so it needs no graphics card; the first run may need `pnpm --filter @hellotrillion/galaxy exec playwright install chromium`. After changing the look on purpose, run it with `--update-snapshots` and look at the new pictures before committing them.

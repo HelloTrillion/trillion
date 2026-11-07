@@ -141,3 +141,10 @@ export const saveHomeDaily = (on: boolean): void => set(HOME_KEY, on ? 'on' : 'o
 export const lastHomeDate = (): string | null => get(HOME_DATE_KEY);
 
 export const saveHomeDate = (date: string): void => set(HOME_DATE_KEY, date);
+
+const CELEBRATE_KEY = 'trillion-celebrations';
+
+/** Whether the orb may celebrate a rare win with a supernova (GAL-9). On unless turned off. */
+export const savedCelebrations = (): boolean => get(CELEBRATE_KEY) !== 'off';
+
+export const saveCelebrations = (on: boolean): void => set(CELEBRATE_KEY, on ? 'on' : 'off');

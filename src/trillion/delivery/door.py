@@ -19,16 +19,22 @@ is shown by the computer too, silent when quiet. Those notifications are sent af
 the hand-over, from a task of their own: the session waits on `offer`, and several of
 them can take seconds. A held notice's notification, with no page open, is silent
 when quiet too.
+
+A notice may carry a celebration (GAL-9): the attention engine's `Celebrate` says
+which tier, the door asks it as it asks the quiet check, and only the door puts it on
+a delivery. At most one per hand-over, the largest, and none when her voice is held
+for a quiet reason. It arrives with its notice, so never during a reply (VOI-17).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from trillion.delivery import notify as system
 from trillion.helpers.look import pick
@@ -45,6 +51,12 @@ PLAYBACK_GRACE_MS = 120_000
 # A quiet check runs under the door's lock: one that never answers can't tell, and
 # must not stop every delivery behind it (D11).
 QUIET_TIMEOUT_S = 2.5
+# The same for the attention engine's celebration check: can't tell is no celebration.
+CELEBRATE_TIMEOUT_S = 1.0
+# The supernova's tiers, as the attention engine names them (`attention.celebrate`, not
+# imported: the door sits below the watchers).
+Tier = Literal["small", "medium", "large"]
+_TIER_RANK: dict[Tier, int] = {"small": 0, "medium": 1, "large": 2}
 # Shown for a timed ask: her answer may quote an email, and a lock screen is public.
 READY = "Ready in Trillion"
 # The kinds that carry her words, to be shown and spoken.
@@ -124,6 +136,10 @@ class Delivery:
     # A helper's handoff, handed back: its line is model-written from what it read, so
     # what she does next counts as read (MEM-5).
     handoff: bool = False
+    # The supernova this notice brings (GAL-9), a `Tier` as the attention engine chose it;
+    # set by the door alone. None for almost every notice. (Typed `str` only so the
+    # helper fields can be splatted in beside it.)
+    celebrate: str | None = None
 
 
 # A handed-back line's lock screen title when its helper can't be named.
@@ -153,6 +169,18 @@ class Quiet(Protocol):
 
 class NeverQuiet:
     async def reason(self, notice: Notice, now_ms: int, *, host: str | None = None) -> str | None:
+        return None
+
+
+class Celebrate(Protocol):
+    """Whether a notice deserves a celebration, and which tier. `attention/celebrate.py`
+    is the real one: the attention engine is the only thing that decides (GAL-9)."""
+
+    async def tier(self, notice: Notice, now_ms: int) -> Tier | None: ...
+
+
+class NoCelebrations:
+    async def tier(self, notice: Notice, now_ms: int) -> Tier | None:
         return None
 
 
@@ -213,6 +241,8 @@ class Door:
         self.quiet: Quiet = quiet or NeverQuiet()
         # Public so the runtime can put the helpers in place once they are open.
         self.helpers: Helpers | None = None
+        # Public so the runtime can put the attention engine's in place.
+        self.celebrate: Celebrate = NoCelebrations()
         self._lock = asyncio.Lock()
         self._notifying = asyncio.Lock()
         # Notices whose notification was tried in this process, shown or not.
@@ -283,6 +313,8 @@ class Door:
             host = session.facts().host
             # A watcher's notices: shown and not spoken, the computer shows them too.
             watched: set[str] = set()
+            # Each notice's celebration, if the attention engine gave it one.
+            tiers: list[Tier | None] = []
             try:
                 for n in await self._store.held(self._owner, now):
                     if not await self._store.mark_delivered(n.id, session.id, now):
@@ -312,6 +344,8 @@ class Door:
                             handoff=await self._handoff(n, schedules) is not None,
                         )
                     )
+                    # Never over a quiet reason: a burst of light is not quiet.
+                    tiers.append(await self._celebration(n, now) if held_by is None else None)
             except BaseException:
                 # Stopped or broken part way: none was sent, so every one marked so far
                 # is held again, however often this is cancelled meanwhile.
@@ -320,6 +354,7 @@ class Door:
                 raise
         if not out:
             return 0
+        out = _one_celebration(out, tiers)
         # Its own task, so a tick cut short never cuts a hand-over short: past its save
         # the session must not stop half way, or they would be held and saved again.
         handing = asyncio.ensure_future(session.deliver(out))
@@ -363,6 +398,16 @@ class Door:
         except Exception as e:
             logger.warning("quiet check failed for notice %s: %s", n.id, type(e).__name__)
             return None
+
+    async def _celebration(self, n: Notice, now: int) -> Tier | None:
+        """The attention engine's tier for `n`, in time. A check that fails or is slow
+        can't tell, and can't tell celebrates nothing."""
+        try:
+            tier = await asyncio.wait_for(self.celebrate.tier(n, now), CELEBRATE_TIMEOUT_S)
+        except Exception as e:
+            logger.warning("celebration check failed for notice %s: %s", n.id, type(e).__name__)
+            return None
+        return tier if tier in _TIER_RANK else None
 
     async def _notify_after(
         self, quiet: Sequence[str], unspoken: Sequence[str], host: str | None
@@ -468,6 +513,16 @@ class Door:
         for n in await self._store.held(self._owner, self._clock()):
             if n.notified_ms is None and n.id not in self._tried:
                 await self._notify(n.id)
+
+
+def _one_celebration(out: list[Delivery], tiers: Sequence[Tier | None]) -> list[Delivery]:
+    """At most one celebration per hand-over: the largest, on the first notice that has
+    it. Every other delivery carries none."""
+    given = [(i, t) for i, t in enumerate(tiers) if t is not None]
+    if not given:
+        return out
+    best, tier = max(given, key=lambda it: (_TIER_RANK[it[1]], -it[0]))
+    return [dataclasses.replace(d, celebrate=tier) if i == best else d for i, d in enumerate(out)]
 
 
 def _asks(n: Notice) -> bool:

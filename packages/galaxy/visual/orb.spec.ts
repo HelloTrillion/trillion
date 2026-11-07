@@ -25,6 +25,14 @@ for (const theme of ['dark', 'light'] as const) {
   }
 }
 
+// GAL-9: a large supernova at its brightest (its rise is 15% of 3.6 s), wave on its way.
+test('supernova, large, dark', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('body[data-ready="true"]').waitFor();
+  await page.evaluate(([n]) => window.snap('idle', 'dark', n, { tier: 'large', frames: 32 }), [SETTLED] as const);
+  await expect(page.locator('#galaxy')).toHaveScreenshot('supernova-large-dark.png');
+});
+
 test('the same state at the same seed draws the same picture', async ({ page }) => {
   // The tolerance above is for software drawing between machines. On one machine
   // two runs must agree, or the snapshots would flicker for no reason.
