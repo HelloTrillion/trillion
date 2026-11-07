@@ -61,6 +61,7 @@ import { announcement, statusText } from './announce';
 import { readyLine } from './ready';
 import { renderScheduled } from './notice';
 import { createReminders } from './reminders';
+import { createMemories } from './memories';
 import { createSpeaking } from './speaking';
 import { createSidebar, revealForCard } from './sidebar';
 import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from './threads';
@@ -1146,6 +1147,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') void home.refresh();
 });
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
+const memories = createMemories(panel.host('memories'), api, send, () => panel.refresh());
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh(), openReady);
 const speaking = createSpeaking(panel.host('speaking'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
@@ -1194,6 +1196,7 @@ panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', 
 panel.add({ id: 'usage', label: 'Usage and limits', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
+panel.add({ id: 'memories', label: 'Memories', group: HER, icon: 'memories', keywords: 'memory remember remembered forget facts about me edit correct', summary: () => memories.summary(), open: () => memories.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 function openSettings(at?: string): void {
@@ -1607,6 +1610,7 @@ function connect(): void {
       );
     }
     helpers.handle(msg);
+    memories.handle(msg);
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.

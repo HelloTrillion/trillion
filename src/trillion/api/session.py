@@ -62,6 +62,7 @@ from trillion.delivery.door import Delivery, Facts, NotFree, free
 from trillion.helpers import needs
 from trillion.helpers.store import CONNECTOR_TITLES, OwnHelper
 from trillion.memory import present
+from trillion.memory.files import valid_id as valid_memory_id
 from trillion.persona import day
 from trillion.persona.prompt import (
     JobNote,
@@ -102,6 +103,7 @@ from trillion.tools.helper import card_draft as helper_draft
 from trillion.tools.helper import card_look as helper_look
 from trillion.tools.helper import make as make_helper
 from trillion.tools.helper import plain as plain_helper
+from trillion.tools.memory import FORGET as MEMORY_FORGET
 from trillion.tools.quiet import asks
 from trillion.tools.routine import CATEGORY as ROUTINE_CATEGORY
 from trillion.tools.routine import for_session as routine_tools
@@ -721,6 +723,8 @@ class Session:
         self._queued: list[str] = []
         # The cards her last reply raised: only one of those can a plain no end (SPN-2f).
         self._asked_last: set[str] = set()
+        # Cards raised from the Memories screen, not by her: their taps start no turn.
+        self._page_asked: set[str] = set()
         self._closed = False
         self._greeted = False
         self._orb = ""
@@ -1481,6 +1485,8 @@ class Session:
                 await self._conclude("end")
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
+        elif kind == "memory.forget":
+            await self._on_memory_forget(msg.get("id"))
         elif kind == "spend.choice":
             await self._on_spend_choice(msg)
         elif kind == "greet":
@@ -2672,6 +2678,11 @@ class Session:
             reason=response.reason.value if response.reason is not None else None,
             detail=response.detail or None,
         )
+        if pending_id in self._page_asked:
+            # Raised from the Memories screen, not by her: nothing of hers to report.
+            # What changed reaches her with the next message, like any memory (MEM-6b).
+            self._page_asked.discard(pending_id)
+            return
         await self._helper_made(response)
         action = "Approve" if decision == "confirm" else "Decline"
         note = (
@@ -2681,6 +2692,32 @@ class Session:
         self._queued.append(note + response.to_model())
         if self._task is None:
             self._begin()
+
+    async def _on_memory_forget(self, memory_id: object) -> None:
+        """Forget, tapped on the Memories screen (MEM-6). It is `memory_forget`, proposed
+        through the router like her own call, so it raises the same card in this session
+        and runs only on a yes to it (SPN-2, SPN-14). The page never deletes anything."""
+        if not valid_memory_id(memory_id):
+            await self._error("bad_message")
+            return
+        self.active_ms = self._rt.clock()
+        async with self._taking_input():
+            ctx = await self._ctx(f"page-{uuid.uuid4().hex}", via="tap")
+            response = await self._rt.router.dispatch(
+                ToolCall(name=MEMORY_FORGET, args={"id": memory_id}), ctx
+            )
+            pid = response.pending_id if response.status == "confirmation_required" else None
+            if pid is not None:
+                self._page_asked.add(pid)
+                if not response.already_asked:
+                    await self._send_card(pid)
+            await self._send(
+                "memory.asked",
+                id=memory_id,
+                pending_id=pid,
+                status=response.status,
+                reason=response.reason.value if response.reason is not None else None,
+            )
 
     async def _said_no(
         self, text: str, via: Literal["voice", "text"], turn: int
