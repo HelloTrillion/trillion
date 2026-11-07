@@ -22,6 +22,7 @@ from trillion.api.runtime import ListenSettings, Runtime, open_runtime
 from trillion.api.session import Session
 from trillion.persona.prompt import degraded
 from trillion.secrets.store import MemoryStore
+from trillion.voice.types import SpeakerEmbedding, UnknownSpeaker, Word
 
 
 @pytest.fixture
@@ -371,3 +372,37 @@ async def test_closing_the_tab_closes_the_microphone(rt: Runtime) -> None:
     await session.close()
     assert stt.stream.closed and session._listener is None
     await session.audio(tone(0.1))
+
+
+async def test_who_spoke_is_asked_once_per_spoken_turn(rt: Runtime) -> None:
+    """VOI-15: the runtime's embedder is asked once for each utterance that becomes a
+    turn, and never for sound with no words in it. The Shell's own is the stub."""
+    assert isinstance(rt.speakers, UnknownSpeaker)
+
+    class Counting:
+        name = "counting"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def embed(
+            self, pcm: bytes, *, start_s: float, words: tuple[Word, ...]
+        ) -> SpeakerEmbedding | None:
+            self.calls += 1
+            return None
+
+    counting = Counting()
+    rt.speakers = counting
+    stt = hearing(rt, say("Morning."), say("Noted."))
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    for words in ("good morning", "and a note", None):
+        await session.handle({"type": "listen.start"})
+        await speak(session, room(0.2) + tone(0.6))
+        if words:
+            stt.stream.say(words, final=True)
+        await speak(session, room(0.6))
+        await idle(session)
+    assert [m["text"] for m in page.all("transcript.final")] == ["good morning", "and a note"]
+    assert counting.calls == 2
+    await session.close()
