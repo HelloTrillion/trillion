@@ -44,6 +44,8 @@ Changelog = "https://github.com/HelloTrillion/trillion/releases"
 # be heard, for anyone who wants nothing to leave the machine.
 [project.optional-dependencies]
 whisper = ["faster-whisper>=1.1"]
+# Telling the owner's voice from others (§5.3a). The model is fetched in Settings.
+speaker = ["onnxruntime>=1.20", "numpy>=2.0"]
 
 [project.scripts]
 trillion = "trillion.cli.main:entrypoint"
@@ -173,7 +175,7 @@ faulthandler_timeout = 120
 
 # Optional installs: typed as Any whether or not they are present.
 [[tool.mypy.overrides]]
-module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*"]
+module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*", "onnxruntime", "onnxruntime.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false
 follow_imports = "skip"

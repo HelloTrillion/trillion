@@ -41,6 +41,8 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 | Shared folders: the folder browser | ✓ | ✓ | ✓ | ✓ (drawn by the page from the server's listing) | ✓ |
 | Shared folders: the system folder picker | — | — | — | not available | ✓ `NSOpenPanel` |
 | Desktop app | ✓ universal `.dmg`; signed and notarized in a release once the Apple secrets are set | not built (SUR-3c) | AppImage and `.deb` built on Ubuntu 22.04, never opened by hand (SUR-3b) | — | — |
+| Your voice: enrolment, the speaker check, default-private ([spec](specs/2026-11-07-speaker-identity.md)) | ✓ | ✓, the file is not limited to the owner (no mode 600) | ✓ | ✓ (recorded by the page, judged by the server) | ✓ |
+| Desktop app | ✓ unsigned dev build | not built (SUR-3c) | not built (SUR-3b) | — | — |
 
 ### The gaps, and why
 
@@ -54,6 +56,9 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 - **Folders that can't be shared** are the same rule on every system (`src/trillion/files/rules.py`): a home folder, another user's home, a drive root or mount point, system folders, Trillion's data folder, `~/Library` and `AppData` (iCloud Drive, folders under `~/Library/CloudStorage` and iCloud app folders excepted), hidden and protected folders. Under WSL, `/mnt/c/Users/<user>` is a folder on a mounted drive, not a home.
 - **The one-line installer** (`install.sh`, `install.ps1`) installs the server with uv on each system, and CI runs it on all three (as a file and piped, twice). It does not install the desktop app on any system. `install.sh` is POSIX `sh`, so it runs under dash, bash and macOS's `/bin/sh`. On Linux it needs `curl` or `wget` only when uv is not already installed. It won't run as root (`TRILLION_ALLOW_ROOT=1` in a container). The `clean-machine` CI job runs it on Ubuntu 22.04 and macOS with an empty home and no uv, then checks `setup`, `doctor` and `run`.
 - **The desktop app on Windows** is not built, and **on Linux** it builds but has never been opened by hand. See below.
+- **The one-line installer** (`install.sh`, `install.ps1`) installs the server with uv on each system, and CI runs it on all three (as a file and piped, twice). It does not install the desktop app on any system. `install.sh` is POSIX `sh`, so it runs under dash, bash and macOS's `/bin/sh`. On Linux it needs `curl` or `wget` only when uv is not already installed.
+- **Your voice on Windows.** The voiceprint file is written with mode 600, which Windows ignores; it relies on the user folder's own permissions there. onnxruntime ships wheels for all three systems, so the speaker check itself runs everywhere. CI runs only the synthetic tests: no model and no onnxruntime.
+- **The desktop app on Windows and Linux** is not built. See below.
 - **The mic probe and the Focus probe** have limits on each system. See the next section.
 
 ## Speaking up: the probes

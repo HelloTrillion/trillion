@@ -17,6 +17,10 @@ JSON = Mapping[str, Any]
 # on its own conversation (`ToolContext.routine_target`).
 Via = Literal["voice", "text", "tap", "channel", "schedule", "ask", "refresh", "routine"]
 Effect = Literal["confirmed", "none", "unknown"]
+# Whose voice said a spoken turn, when an owner's voice is enrolled (§5.3a): theirs,
+# not sure (between the thresholds, or it could not be scored), someone else's, or a
+# recording of something already heard. Set by the session from the speaker check.
+Speaker = Literal["owner", "unsure", "other", "replay"]
 
 
 class Risk(StrEnum):
@@ -89,6 +93,16 @@ class ToolContext:
     # The user's words this turn end in a question mark. Set by the session, never from
     # anything the model says. She may not stay quiet after a question (VOI-7).
     asked: bool = False
+    # Who said this turn (SPN-14a, SPN-18, PER-13). None when the turn was typed or a
+    # tap, or when nobody's voice is enrolled: the session is the anchor then (SPN-14).
+    # Anything but "owner" can't approve a card, and only `GUEST_TOOLS` run for it. Set
+    # by the session from the speaker check, never from anything the model says.
+    speaker: Speaker | None = None
+
+    @property
+    def private(self) -> bool:
+        """The voice this turn is not the enrolled owner's (PER-13)."""
+        return self.speaker is not None and self.speaker != "owner"
 
 
 @dataclass(frozen=True, kw_only=True)
