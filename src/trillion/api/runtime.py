@@ -19,6 +19,7 @@ import aiosqlite
 from trillion import paths
 from trillion.api.jobs import Jobs
 from trillion.attention import settings as watch_prefs
+from trillion.attention.celebrate import Celebrations
 from trillion.attention.mail import GoogleMail, UrgentEmail
 from trillion.attention.meetings import GoogleCalendar, Meetings
 from trillion.attention.payments import Payments
@@ -1736,6 +1737,8 @@ async def open_runtime(
     )
     rt.quiet = Quiet(settings=lambda: rt.attention_settings, zone=rt.zone, host=rt.live_host)
     rt.door.quiet = rt.quiet
+    # The attention engine decides celebrations (GAL-9); the door only carries them.
+    rt.door.celebrate = Celebrations(schedules, owner=OWNER)
     rt.attention_store = SqliteAttentionStore(attention_conn)
     rt.attention = AttentionRunner(
         rt.attention_store,

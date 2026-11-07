@@ -2,7 +2,7 @@ import '../tokens.css';
 import './demo.css';
 import {
   ORB_STATE_NAMES, STATE_LABELS, createGalaxy, defaultRect,
-  type OrbStateName, type PerfMode, type StageRect, type Theme,
+  type OrbStateName, type PerfMode, type StageRect, type SupernovaTier, type Theme,
 } from '../src/index';
 
 const byId = <T extends HTMLElement>(id: string): T => {
@@ -109,6 +109,9 @@ byId<HTMLButtonElement>('speak').addEventListener('click', async () => {
 });
 
 byId<HTMLButtonElement>('flare-btn').addEventListener('click', () => galaxy.flare());
+for (const b of document.querySelectorAll<HTMLButtonElement>('[data-nova]')) {
+  b.addEventListener('click', () => galaxy.supernova(b.dataset['nova'] as SupernovaTier));
+}
 
 // Position: where a host might put the orb. The rect follows the window as it resizes.
 type Stage = 'centre' | 'panel' | 'docked';

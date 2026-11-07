@@ -30,14 +30,14 @@ const FRAME_MS = 1000 / 60;
 declare global {
   interface Window {
     /** Draw one state and theme, settled, and say when the picture is ready. */
-    snap(state: string, theme: 'dark' | 'light', frames: number): Promise<void>;
+    snap(state: string, theme: 'dark' | 'light', frames: number, nova?: { tier: string; frames: number }): Promise<void>;
   }
 }
 
 const { createGalaxy } = await import('../src/index');
 const canvas = document.getElementById('galaxy') as HTMLCanvasElement;
 
-window.snap = async (state, theme, frames) => {
+window.snap = async (state, theme, frames, nova) => {
   document.documentElement.dataset.theme = theme;
   owned = true;
   now = 0;
@@ -50,11 +50,19 @@ window.snap = async (state, theme, frames) => {
     demo: true,
   });
   galaxy.setState(state as Parameters<typeof galaxy.setState>[0]);
-  for (let i = 0; i < frames; i++) {
-    const step = pending;
-    pending = null;
-    now += FRAME_MS;
-    step?.(now);
+  const draw = (n: number): void => {
+    for (let i = 0; i < n; i++) {
+      const step = pending;
+      pending = null;
+      now += FRAME_MS;
+      step?.(now);
+    }
+  };
+  draw(frames);
+  // A celebration fired once the state has settled, drawn `nova.frames` frames in (GAL-9).
+  if (nova) {
+    galaxy.supernova(nova.tier as Parameters<typeof galaxy.supernova>[0]);
+    draw(nova.frames);
   }
   // The orb's next frame stays pending forever: the picture holds still.
   owned = false;

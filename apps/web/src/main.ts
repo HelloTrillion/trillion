@@ -1259,7 +1259,7 @@ panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords:
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 // Newer sections plug in from features/: each file places itself (the plug-in features spec).
-const features = loadFeatures({ panel, api, send, refresh: () => panel.refresh(), openConversation: openReady });
+const features = loadFeatures({ panel, api, send, refresh: () => panel.refresh(), openConversation: openReady, galaxy, replying: () => view.replyOpen || view.busy });
 function openSettings(at?: string): void {
   void namesSettings.peek().then(() => panel.refresh());
   panel.open(at);
