@@ -22,16 +22,29 @@ tauri-plugin-global-shortcut = "2.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.3"
-libc = "0.2"
 hmac = "0.12"
 sha2 = "0.10"
-signal-hook = "0.4.5"
 url = "2"
 # The system folder picker, used directly rather than through tauri-plugin-dialog:
 # the plugin injects a script into every page that replaces window.alert and
 # window.confirm, and the server's page must not get its API. Same crate and
 # features the plugin uses.
 rfd = { version = "0.17.2", default-features = false, features = ["gtk3", "common-controls-v6"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = "0.4.5"
+
+# SUR-3c: the server in a Job Object, so it ends with the app, and process times.
+# The same version tauri and wry already use.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Matches the version tauri and wry use, for webkit.rs.

@@ -4,7 +4,7 @@ Trillion as a Mac app instead of a browser tab. It is a thin Tauri v2 shell arou
 
 A local build is unsigned. A release build is signed and notarized once the maintainers have set up the Apple secrets ([`docs/releasing.md`](../../docs/releasing.md)). Python is not bundled: the app needs an installed `trillion`. The design is in [`docs/specs/2026-10-28-desktop-app.md`](../../docs/specs/2026-10-28-desktop-app.md).
 
-It also builds on Linux, as an AppImage and a `.deb` ([`docs/specs/2026-11-07-installers.md`](../../docs/specs/2026-11-07-installers.md)), but nobody has opened it there yet: see [`docs/platforms.md`](../../docs/platforms.md) for what is unchecked.
+It also builds on Linux, as an AppImage and a `.deb` ([`docs/specs/2026-11-07-installers.md`](../../docs/specs/2026-11-07-installers.md)), and on Windows, as an NSIS installer ([`docs/specs/2026-11-07-windows-hardening.md`](../../docs/specs/2026-11-07-windows-hardening.md)), but nobody has opened it on either yet: see [`docs/platforms.md`](../../docs/platforms.md) for what is unchecked.
 
 ## Run in development
 
@@ -34,13 +34,24 @@ pnpm -C apps/desktop bundle:linux
 
 The AppImage and `.deb` land under `apps/desktop/src-tauri/target/release/bundle/`.
 
+On Windows 10 or 11, with Rust (MSVC) and the Visual Studio C++ build tools:
+
+```sh
+pnpm -C apps/desktop bundle:windows
+```
+
+The installer, `Trillion_<version>_x64-setup.exe`, lands under `apps/desktop/src-tauri/target/release/bundle/nsis/`. It installs for the current user, without asking for an administrator. Unsigned, so SmartScreen warns the first time it runs: More info, then Run anyway.
+
 A signed build needs the Developer ID in your keychain and `APPLE_SIGNING_IDENTITY` set; the Release workflow does it with the secrets in [`docs/releasing.md`](../../docs/releasing.md). `Entitlements.plist` gives a signed build the microphone under the hardened runtime.
 
 ## Where it looks for `trillion`
 
 1. `TRILLION_BIN`, if set.
 2. Your login shell (`$SHELL -lc 'command -v trillion'`). Apps opened from the Finder do not get your shell's PATH, so the app asks the shell.
-3. `~/.local/bin/trillion`, `/opt/homebrew/bin/trillion`, `/usr/local/bin/trillion`.
+3. The PATH the app was started with.
+4. `~/.local/bin/trillion`, `/opt/homebrew/bin/trillion`, `/usr/local/bin/trillion`.
+
+On Windows there is no login shell: `TRILLION_BIN`, then the PATH (which the installer adds uv's tool folder to), then `%USERPROFILE%\.local\bin\trillion.exe`. The server starts with no console window, in a Job Object that ends it, and anything it started, whenever the app ends.
 
 If none is found, the splash says "Trillion isn't installed" with the install command and Retry.
 

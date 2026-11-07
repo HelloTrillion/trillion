@@ -119,7 +119,7 @@ async def _examine(args: argparse.Namespace, *, secrets: bool) -> tuple[str, boo
         doctor.Options(port=args.port, host=HOST, offline=args.offline, secrets=secrets),
         secrets=store,
         page=web_dir(),
-        backend=keyring.get_keyring().name if store.available() else "",
+        backend=doctor.backend_name(keyring.get_keyring()) if store.available() else "",
     )
     return doctor.render(checks), doctor.healthy(checks)
 

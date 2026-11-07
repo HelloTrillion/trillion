@@ -16,7 +16,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": ["app", "nsis"],
     "category": "Productivity",
     "shortDescription": "A voice-first AI assistant with a face",
     "longDescription": "Trillion's desktop app: it starts your installed trillion server, shows its page in a window, lives in the tray and makes the talk shortcut work from any app.",
@@ -27,11 +27,17 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
+      "icons/icon.ico",
       "icons/icon.png"
     ],
     "linux": {
       "deb": {
         "depends": ["gstreamer1.0-plugins-good"]
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
       }
     },
     "macOS": {

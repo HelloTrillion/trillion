@@ -9,6 +9,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from trillion import owner_only
+
 # aiosqlite logs every statement with its parameters at DEBUG: argument values, tool
 # output, outcome details. Nothing in Trillion may log those, at any level.
 _DRIVER_LOG_FLOOR = logging.INFO
@@ -35,8 +37,11 @@ def _make_private(path: Path) -> None:
     """Pending actions and outcomes hold argument values: owner-only, whatever the umask.
 
     SQLite creates the -wal and -shm files with the database file's mode. Windows
-    ignores POSIX modes (it uses ACLs, which the home directory already restricts);
-    real Windows hardening is Phase 1 (SUR-3c)."""
+    ignores POSIX modes: there the folder and the file get an access list of their own,
+    the user's alone, and the -wal and -shm files inherit the folder's (SUR-3c).
+    `restrict` does nothing elsewhere."""
+    owner_only.restrict(path.parent)
+    owner_only.restrict(path)
     if os.name == "nt":
         return
     os.chmod(path.parent, 0o700)

@@ -4,7 +4,10 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,6 +24,23 @@ pub const TOKEN_ENV: &str = "TRILLION_SESSION_TOKEN";
 
 /// How long a server has to stop on SIGTERM before it is killed.
 pub const GRACE: Duration = Duration::from_secs(5);
+
+/// Windows: no console window for the server or anything it starts (OPS-3), and
+/// held until it is in its Job Object (`winproc`).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// PATH's separator, and the PATH a bare environment gets.
+#[cfg(windows)]
+const PATH_SEP: char = ';';
+#[cfg(not(windows))]
+const PATH_SEP: char = ':';
+#[cfg(windows)]
+const BARE_PATH: &str = "";
+#[cfg(not(windows))]
+const BARE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// The server's answer to the app's challenge (`trillion.api.app.DESKTOP_HELLO`).
 const HELLO: &str = "/api/desktop/hello";
@@ -46,13 +66,16 @@ impl Ring {
 
 /// A `trillion run` this app started.
 pub struct Server {
-    /// Its process group, which is its leader's pid.
+    /// Its process group, which is its leader's pid. On Windows, its pid.
     pub pgid: i32,
     child: Mutex<Child>,
     /// The other end of the server's input. Never written: when this app goes, even
     /// by a force quit, it closes and the server stops itself.
     lifeline: Mutex<Option<ChildStdin>>,
     lines: Arc<Mutex<Ring>>,
+    /// Windows: the job it runs in, which ends it with the app.
+    #[cfg(windows)]
+    job: crate::winproc::Job,
 }
 
 impl Server {
@@ -75,13 +98,25 @@ impl Server {
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         // Not the app bundle's folder, which is wherever the app was launched from.
         if let Some(home) = home.filter(|h| h.is_dir()) {
             command.current_dir(home);
         }
         let mut child = command.spawn()?;
+        #[cfg(windows)]
+        let job = match crate::winproc::Job::adopt(&child) {
+            Ok(job) => job,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
         let lines = Arc::new(Mutex::new(Ring::default()));
         if let Some(out) = child.stdout.take() {
             keep_lines(out, lines.clone());
@@ -94,6 +129,8 @@ impl Server {
             lifeline: Mutex::new(child.stdin.take()),
             child: Mutex::new(child),
             lines,
+            #[cfg(windows)]
+            job,
         })
     }
 
@@ -105,6 +142,7 @@ impl Server {
         lock(&self.lines).lines()
     }
 
+    #[cfg(unix)]
     pub fn stop(&self) -> Stopped {
         let mut child = lock(&self.child);
         let how = stop_group(self.pgid, GRACE, &mut || {
@@ -112,6 +150,35 @@ impl Server {
         });
         lock(&self.lifeline).take();
         how
+    }
+
+    /// Windows has no SIGTERM: closing the server's input asks it to stop, as Ctrl+C
+    /// does. Whatever is left in its job after the grace period is ended.
+    #[cfg(windows)]
+    pub fn stop(&self) -> Stopped {
+        let mut child = lock(&self.child);
+        let mut exited = || matches!(child.try_wait(), Ok(Some(_)) | Err(_));
+        if exited() {
+            self.job.terminate();
+            lock(&self.lifeline).take();
+            return Stopped::Already;
+        }
+        lock(&self.lifeline).take();
+        let deadline = Instant::now() + GRACE;
+        while Instant::now() < deadline {
+            if exited() {
+                // Anything it started and left behind goes too.
+                self.job.terminate();
+                return Stopped::Term;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.job.terminate();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !exited() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Stopped::Kill
     }
 }
 
@@ -144,15 +211,34 @@ pub enum Stopped {
 }
 
 /// Whether no process is left in this group.
+#[cfg(unix)]
 pub fn group_gone(pgid: i32) -> bool {
     // SAFETY: signal 0 only asks.
     let found = unsafe { libc::kill(-pgid, 0) } == 0;
     !found && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
+/// Windows: whether the process is gone. A server's job ends it with the app that
+/// started it, so one is left behind only if the app could not make the job.
+#[cfg(windows)]
+pub fn group_gone(pid: i32) -> bool {
+    !crate::winproc::alive(pid)
+}
+
+/// Windows: ends the process; there is no signal to ask first.
+#[cfg(windows)]
+pub fn stop_group(pid: i32, _grace: Duration, _reaped: &mut dyn FnMut() -> bool) -> Stopped {
+    if pid <= 0 || group_gone(pid) {
+        return Stopped::Already;
+    }
+    crate::winproc::terminate(pid);
+    Stopped::Kill
+}
+
 /// SIGTERM to the whole process group (`uv` and the Python under it, and anything they
 /// started), then SIGKILL once `grace` has passed. Done when the leader is reaped
 /// (`reaped`, which a parent must do itself) and no process is left in the group.
+#[cfg(unix)]
 pub fn stop_group(pgid: i32, grace: Duration, reaped: &mut dyn FnMut() -> bool) -> Stopped {
     let done = |reaped: &mut dyn FnMut() -> bool| reaped() && group_gone(pgid);
     if pgid <= 1 {
@@ -247,7 +333,7 @@ pub fn child_env(
     let app: Vec<(String, String)> = app.into_iter().collect();
     let mut env = if login.is_empty() { app.clone() } else { login };
     for (name, value) in app.into_iter().filter(|(k, _)| k.starts_with("TRILLION_")) {
-        match env.iter_mut().find(|(k, _)| *k == name) {
+        match env.iter_mut().find(|(k, _)| same_name(k, &name)) {
             Some(slot) => slot.1 = value,
             None => env.push((name, value)),
         }
@@ -256,25 +342,39 @@ pub fn child_env(
     env
 }
 
+/// Whether two variable names are the same one: on Windows `Path` is `PATH`.
+fn same_name(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
 /// The value of `name` in an environment.
 pub fn var<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    env.iter()
+        .find(|(k, _)| same_name(k, name))
+        .map(|(_, v)| v.as_str())
 }
 
 /// Puts these folders at the front of PATH when it lacks them: `trillion`'s own (so
 /// what it runs, such as `uv`, is found beside it) and `~/.local/bin`, where uv puts
 /// tools.
 pub fn with_path(mut env: Vec<(String, String)>, first: &[&Path]) -> Vec<(String, String)> {
-    let current = var(&env, "PATH").unwrap_or("/usr/bin:/bin:/usr/sbin:/sbin");
-    let mut parts: Vec<String> = current.split(':').map(str::to_string).collect();
+    let current = var(&env, "PATH").unwrap_or(BARE_PATH);
+    let mut parts: Vec<String> = match current {
+        "" => vec![],
+        _ => current.split(PATH_SEP).map(str::to_string).collect(),
+    };
     for dir in first.iter().rev() {
         let dir = dir.to_string_lossy().to_string();
         if !dir.is_empty() && !parts.contains(&dir) {
             parts.insert(0, dir);
         }
     }
-    let path = parts.join(":");
-    match env.iter_mut().find(|(k, _)| k == "PATH") {
+    let path = parts.join(&PATH_SEP.to_string());
+    match env.iter_mut().find(|(k, _)| same_name(k, "PATH")) {
         Some(slot) => slot.1 = path,
         None => env.push(("PATH".into(), path)),
     }
@@ -337,6 +437,7 @@ mod tests {
         assert!(child_env(login, app).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn path_gains_the_folders_it_lacks_in_front() {
         let env = pairs(&[("PATH", "/usr/bin:/Users/u/.local/bin")]);
@@ -353,6 +454,45 @@ mod tests {
             var(&env, "PATH"),
             Some("/a:/b:/usr/bin:/bin:/usr/sbin:/sbin")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_is_found_whatever_its_case_and_split_by_semicolons() {
+        let env = pairs(&[("Path", r"C:\Windows;C:\Users\u\.local\bin")]);
+        assert_eq!(var(&env, "PATH"), Some(r"C:\Windows;C:\Users\u\.local\bin"));
+        let env = with_path(
+            env,
+            &[Path::new(r"C:\tools"), Path::new(r"C:\Users\u\.local\bin")],
+        );
+        assert_eq!(env.len(), 1, "one Path, not a second PATH beside it");
+        assert_eq!(
+            var(&env, "Path"),
+            Some(r"C:\tools;C:\Windows;C:\Users\u\.local\bin")
+        );
+        let env = with_path(vec![], &[Path::new(r"C:\a")]);
+        assert_eq!(var(&env, "PATH"), Some(r"C:\a"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_server_hears_its_input_close_and_is_ended_with_its_job() {
+        // A batch file waits on its input, as `trillion run` does for the app.
+        let dir = std::env::temp_dir().join(format!("trillion-desktop-win-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("waits.cmd");
+        std::fs::write(&bin, "@echo waiting\r\n@more >nul\r\n@echo closed\r\n").unwrap();
+        let env: Vec<(String, String)> = std::env::vars().collect();
+        let server = Server::start(&bin, 7783, &"t".repeat(43), env, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while server.lines().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(server.lines().iter().any(|l| l.contains("waiting")));
+        assert!(!server.exited());
+        assert_ne!(server.stop(), Stopped::Already);
+        assert!(server.exited());
+        assert!(group_gone(server.pgid));
     }
 
     #[test]
@@ -384,6 +524,7 @@ mod tests {
         assert!(verify("Jefe", "what do ya want for nothing?", mac));
     }
 
+    #[cfg(unix)]
     fn sh(script: &str) -> Child {
         Command::new("/bin/sh")
             .args(["-c", script])
@@ -392,11 +533,13 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(unix)]
     fn stop(child: &mut Child, grace: Duration) -> Stopped {
         let pgid = child.id() as i32;
         stop_group(pgid, grace, &mut || matches!(child.try_wait(), Ok(Some(_))))
     }
 
+    #[cfg(unix)]
     #[test]
     fn stop_ends_a_process_that_heeds_sigterm() {
         let mut child = sh("sleep 30");
@@ -405,6 +548,7 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg(unix)]
     #[test]
     fn stop_kills_a_process_that_ignores_sigterm() {
         let mut child = sh("trap '' TERM; while :; do sleep 0.05; done");
@@ -417,6 +561,7 @@ mod tests {
         assert!(group_gone(pgid));
     }
 
+    #[cfg(unix)]
     #[test]
     fn stop_reaches_a_child_that_outlives_its_parent() {
         // The leader stops on SIGTERM; what it started ignores it and would be left.
@@ -428,6 +573,7 @@ mod tests {
         assert!(group_gone(pgid));
     }
 
+    #[cfg(unix)]
     #[test]
     fn stop_on_an_exited_process_is_already() {
         let mut child = sh("exit 0");
@@ -435,6 +581,7 @@ mod tests {
         assert_eq!(stop(&mut child, Duration::from_secs(5)), Stopped::Already);
     }
 
+    #[cfg(unix)]
     fn fake_bin(name: &str, script: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir =
@@ -446,6 +593,7 @@ mod tests {
         bin
     }
 
+    #[cfg(unix)]
     fn wait_for(server: &Server, lines: usize) -> Vec<String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         while server.lines().len() < lines && Instant::now() < deadline {
@@ -456,6 +604,7 @@ mod tests {
         got
     }
 
+    #[cfg(unix)]
     #[test]
     fn start_runs_the_server_with_the_token_and_keeps_its_output() {
         let bin = fake_bin(
@@ -482,6 +631,7 @@ mod tests {
         assert_eq!(server.stop(), Stopped::Already);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_server_sees_its_input_close_when_stopped() {
         // Waits for its input to end, as `trillion run` does when the app made its token.
