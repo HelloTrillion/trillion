@@ -607,3 +607,14 @@ def test_saving_retries_while_another_reader_holds_the_file(
         lib.turn_off("curated:weekly-review")
     assert ids(lib) == {"curated:weekly-review": "on"}
     assert not [p for p in (lib._path.parent).iterdir() if p.name.startswith(".skills-")]
+
+
+def test_skills_copied_into_trillions_own_skills_folder_are_listed_off(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    make(home / "skills", "imported-one")
+    lib = Library(home / "skills.json", tmp_path / "curated-none", data_root=home)
+    [entry] = lib.scan()
+    assert (entry.name, entry.state, entry.source) == ("imported-one", "off", "folder")
+    assert entry.root == (home / "skills").resolve()
+    lib.turn_on(entry.id)
+    assert [e.name for e in lib.enabled()] == ["imported-one"]

@@ -54,4 +54,7 @@ def rank(memories: Sequence[Memory], query: str, limit: int) -> list[Memory]:
             score = sum(weight[w] for w in hit) / (1 + math.log(1 + len(bag)) / 4)
             scored.append((score, m.as_of, m))
     scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    # An imported claim never outranks what the user said, or anything else she holds
+    # (MEM-6a): it comes after every other match, best first among themselves.
+    scored.sort(key=lambda s: s[2].source == "imported_claim")
     return [m for _, _, m in scored[:limit]]

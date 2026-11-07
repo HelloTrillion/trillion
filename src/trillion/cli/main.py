@@ -1,4 +1,4 @@
-"""Entry point for the `trillion` command: `run`, `setup` and `doctor`."""
+"""Entry point for the `trillion` command: `run`, `setup`, `doctor` and `import`."""
 
 from __future__ import annotations
 
@@ -61,6 +61,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         checks.add_argument(
             "--offline", action="store_true", help="skip the checks that need the network"
         )
+    imports = sub.add_parser(
+        "import",
+        help="bring names, memories and skills over from OpenClaw or Hermes (CON-8)",
+        description="Shows what would be imported. Nothing changes without --apply. "
+        "The other app's SOUL.md is never imported.",
+    )
+    imports.add_argument("app", choices=["openclaw", "hermes"])
+    imports.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        metavar="DIR",
+        help="the app's folder, if not where it usually is",
+    )
+    imports.add_argument("--apply", action="store_true", help="import; without it, a dry run")
+    imports.add_argument(
+        "--replace-profile",
+        action="store_true",
+        help="replace a name or timezone you already set, without asking",
+    )
     args = parser.parse_args(argv)
     if args.version:
         sys.stdout.write(f"trillion {__version__}\n")
@@ -71,6 +91,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_doctor(args))
     if args.command == "setup":
         return _until_stopped(_setup(args))
+    if args.command == "import":
+        return _import(args)
     parser.print_help()
     return 0
 
@@ -126,6 +148,14 @@ def _trace(args: argparse.Namespace) -> int:
     rows = inspect.timings(paths.db_path(), doctor.OWNER, args.trace)
     sys.stdout.write(trace.report(rows))
     return 0
+
+
+def _import(args: argparse.Namespace) -> int:
+    from trillion.cli import importer
+
+    return asyncio.run(
+        importer.run(args.app, args.source, do=args.apply, replace_profile=args.replace_profile)
+    )
 
 
 async def _prepare() -> list[str]:
