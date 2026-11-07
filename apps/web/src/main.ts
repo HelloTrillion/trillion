@@ -50,8 +50,6 @@ import {
   saveHomeDate,
   saveHomeDaily,
   savedBarge,
-  savedCelebrations,
-  saveCelebrations,
   savedDetail,
   savedHomeDaily,
   savedMic,
@@ -61,7 +59,6 @@ import {
   shownTheme,
 } from './prefs';
 import { announcement, statusText } from './announce';
-import { Celebrations } from './supernova';
 import { readyLine } from './ready';
 import { renderScheduled } from './notice';
 import { createReminders } from './reminders';
@@ -321,8 +318,6 @@ systemLight.addEventListener('change', () => {
 });
 
 let view: View = INITIAL;
-// GAL-9: only the core's attention engine asks for one (supernova.ts); the user may turn them off.
-const celebrations = new Celebrations((tier) => galaxy.supernova(tier), savedCelebrations);
 // The conversations opened on this page, the latest last; + New helper asks in one.
 let visited: string[] = [];
 // + New helper's words, asked from a helper's chat: sent once her conversation is open.
@@ -978,8 +973,6 @@ function apply(next: View): void {
   if (next === view) return;
   const before = view;
   view = next;
-  // A celebration that waited for a reply to end goes now.
-  celebrations.settle(view.replyOpen || view.busy);
   if (view.conversationId && view.conversationId !== before.conversationId) {
     store(CONVERSATION_KEY, view.conversationId);
     // Where + New helper asks her: the last open that is not a helper's own chat.
@@ -1104,7 +1097,6 @@ const appearance = createAppearance(
       panel.refresh();
     },
   },
-  { get: savedCelebrations, set: saveCelebrations },
 );
 const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh(), { get: savedHomeDaily, set: saveHomeDaily });
 // Shares, read and changed through the routes: Settings and the Folders panel share them.
@@ -1257,7 +1249,7 @@ void voiceprint.peek().then(() => panel.refresh());
 panel.add({ id: 'voiceprint', label: 'Your voice', group: HER, icon: 'mic', keywords: 'voiceprint speaker identity recognise recognize enrol enroll who is speaking guest private approve yes', summary: () => voiceprint.summary(), open: () => voiceprint.open() });
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
-panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail celebrations supernova', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
+panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
 panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords: 'workspace widgets live refresh fresh update cards home morning daily briefing', summary: () => boardSettings.summary(), open: () => boardSettings.open() });
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
@@ -1267,7 +1259,7 @@ panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords:
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
 // Newer sections plug in from features/: each file places itself (the plug-in features spec).
-const features = loadFeatures({ panel, api, send, refresh: () => panel.refresh(), openConversation: openReady });
+const features = loadFeatures({ panel, api, send, refresh: () => panel.refresh(), openConversation: openReady, galaxy, replying: () => view.replyOpen || view.busy });
 function openSettings(at?: string): void {
   void namesSettings.peek().then(() => panel.refresh());
   panel.open(at);
@@ -1825,8 +1817,6 @@ function connect(): void {
     speakCapped(msg, view.speech === null);
     if (msg.type === 'spend.resolved' || (msg.type === 'error' && msg['code'] === 'capped')) void refreshUsage();
     apply(reduce(view, msg));
-    // GAL-9: the attention engine's celebration, on its notice; never over a live reply.
-    celebrations.take(msg, view.replyOpen || view.busy);
     // + New helper, asked from a helper's chat: said in her conversation once it is open.
     if (msg.type === 'history') askQueue.opened();
     // A new helper (her card, or an offer's Create): its chat opens once she is done.

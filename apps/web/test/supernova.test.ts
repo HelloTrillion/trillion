@@ -1,11 +1,9 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SupernovaTier } from '@hellotrillion/galaxy';
-import { createAppearance } from '../src/browser';
-import { saveCelebrations, savedCelebrations } from '../src/prefs';
-import { Celebrations, WAIT_MS, celebrationOf } from '../src/supernova';
+import { Celebrations, WAIT_MS, celebrationOf, createCelebrationsSettings, saveCelebrations, savedCelebrations } from '../src/supernova';
 import type { ServerMsg } from '../src/view';
 
 const notice = (extra: Record<string, unknown> = {}): ServerMsg => ({
@@ -99,27 +97,63 @@ describe('the Celebrations setting', () => {
     expect(savedCelebrations()).toBe(true);
   });
 
-  it('is a switch under Appearance', () => {
+  it('is a switch in its own Settings section', () => {
     const h = Object.assign(document.createElement('div'), { open: false, showModal() {}, close() {} });
     document.body.append(h);
-    let on = true;
-    const a = createAppearance(h, () => 'system', () => {}, undefined, { get: () => on, set: (v) => { on = v; } });
-    a.open();
-    const box = h.querySelector<HTMLInputElement>('#appearance-celebrations');
+    let changed = 0;
+    const c = createCelebrationsSettings(h, () => { changed++; });
+    c.open();
+    const box = h.querySelector<HTMLInputElement>('#celebrations-on');
     expect(box?.getAttribute('role')).toBe('switch');
     expect(box?.checked).toBe(true);
+    expect(c.summary()).toBe('On');
     expect(h.textContent).toContain('Never a sound');
     box!.checked = false;
     box!.dispatchEvent(new Event('change'));
-    expect(on).toBe(false);
+    expect(savedCelebrations()).toBe(false);
+    expect(c.summary()).toBe('Off');
+    expect(changed).toBe(1);
   });
 });
 
 describe('by construction', () => {
-  it('the page asks the galaxy for one in one place: the attention engine’s notice', () => {
-    const main = readFileSync(resolve(__dirname, '../src/main.ts'), 'utf8');
-    expect(main.match(/\.supernova\(/g)).toHaveLength(1);
-    expect(main).toContain('new Celebrations((tier) => galaxy.supernova(tier), savedCelebrations)');
-    expect(main.match(/celebrations\.take\(/g)).toHaveLength(1);
+  it('the page asks the galaxy for one in one place: the celebrations feature', () => {
+    const src = resolve(__dirname, '../src');
+    const files = [...readdirSync(src).map((f) => resolve(src, f)), ...readdirSync(resolve(src, 'features')).map((f) => resolve(src, 'features', f))].filter((f) => f.endsWith('.ts'));
+    const callers = files.filter((f) => /\.supernova\(/.test(readFileSync(f, 'utf8')));
+    expect(callers.map((f) => f.slice(src.length + 1))).toEqual(['features/celebrations.ts']);
+    const feature = readFileSync(resolve(src, 'features/celebrations.ts'), 'utf8');
+    expect(feature.match(/\.supernova\(/g)).toHaveLength(1);
+    expect(feature).toContain('new Celebrations((tier) => galaxy.supernova(tier), savedCelebrations)');
+  });
+});
+
+describe('the celebrations feature', () => {
+  it('fires the notice’s tier once the page has taken it in, never over a live reply', async () => {
+    const { feature } = await import('../src/features/celebrations');
+    const fired: SupernovaTier[] = [];
+    let replying = true;
+    const handlers: ((m: ServerMsg) => void)[] = [];
+    const host = Object.assign(document.createElement('div'), { open: false, showModal() {}, close() {} });
+    const added: string[] = [];
+    feature.setup({
+      panel: { host: () => host, add: (s: { id: string }) => void added.push(s.id) } as never,
+      api: async () => new Response('{}'),
+      send: () => true,
+      refresh: () => undefined,
+      openConversation: () => undefined,
+      on: (h) => void handlers.push(h),
+      galaxy: { supernova: (t) => void fired.push(t) },
+      replying: () => replying,
+    });
+    expect(added).toEqual(['celebrations']);
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    handlers.forEach((h) => h(notice({ celebrate: 'large' })));
+    await tick();
+    expect(fired).toEqual([]);
+    replying = false;
+    handlers.forEach((h) => h({ type: 'reply.done' }));
+    await tick();
+    expect(fired).toEqual(['large']);
   });
 });

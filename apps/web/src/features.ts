@@ -7,6 +7,7 @@
  * session. It brings its own CSS (imported from its file) and its own icon (`addIcon`).
  */
 
+import type { Galaxy } from '@hellotrillion/galaxy';
 import type { Panel } from './panel';
 import type { Api } from './settings';
 
@@ -26,6 +27,10 @@ export interface FeatureContext {
   readonly refresh: () => void;
   /** Close Settings and open a conversation. */
   readonly openConversation: (id: string) => void;
+  /** The orb, for a feature that draws on it (the Supernova, GAL-9). */
+  readonly galaxy?: Pick<Galaxy, 'supernova'>;
+  /** Whether a reply is in flight on the page right now (VOI-17). */
+  readonly replying?: () => boolean;
   /** Hear every message from the session. */
   on(handler: (msg: Message) => void): void;
 }

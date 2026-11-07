@@ -20,20 +20,20 @@ A celebration is a way of reaching the user, so it follows the same rules as eve
 5. **Rare by construction.** At most one per hand-over (the largest). None for a notice more than 30 minutes old by the time it is shown: a celebration is for now. None when her voice is held for a quiet reason (quiet hours, a meeting, Focus): a burst of light is not quiet.
 6. **Reduced motion gets a gentle glow.** No swell, no wave: a slow, soft brightening that fades. Performance mode keeps the glow and the swell and skips the wave, which is extra geometry to draw.
 7. **No sound.** Ever.
-8. **The user can turn it off.** Settings → Appearance → Celebrations, kept in this browser like the theme. Off means the orb never bursts; the notice is unchanged.
+8. **The user can turn it off.** Settings → Celebrations (under You, after Appearance), kept in this browser like the theme. Off means the orb never bursts; the notice is unchanged.
 
 ## What the user sees
 
 - A helper they made finishes its first job: its ready line arrives, and the orb swells and sends out one ring of light, then settles.
 - On the 30th morning of a routine, the ready line arrives with a larger burst.
 - With reduced motion on, the orb glows softly for a few seconds instead.
-- In Settings → Appearance, a **Celebrations** switch, on by default.
+- In Settings → Celebrations, one switch, on by default.
 
 ## How
 
 - **Galaxy.** `galaxy.supernova(tier)` joins the public API (GAL-5). The maths is in `src/supernova.ts`: an envelope with a quick eased rise and a slow eased fall, per tier, and what it means for the orb each frame (extra glow, swell, wave radius and opacity). It runs on the shared renderer and the orb's own frame. A bigger burst replaces a smaller one; a smaller one during a bigger one is ignored. Unit tests at fixed times; a visual snapshot of a large burst at its peak.
 - **Core.** `Celebrations` in `attention/celebrate.py` reads the notice's run and schedule from the schedule store (two new reads there: the run that wrote a notice, and how many runs up to it brought something). It only reads. The door gains `celebrate`, a `Celebrate` like `Quiet`, put in place by the runtime. A check that fails or is slow (1 s) celebrates nothing. `Delivery.celebrate` carries the tier; the session sends it on the `notice` message. A structure test allows the words "celebrate" and "supernova" in four files of the core only (the engine, the door, the session's one pass-through line, the runtime's one binding), and checks no tool, skill, connector (MCP included), channel or helper module imports the door.
-- **Web.** `supernova.ts` reads the tier off a schedule notice and fires it, unless Celebrations is off. If a reply is somehow open on the page, it waits for it to end (both sides gate VOI-17); one that waited more than a minute is dropped.
+- **Web.** A plug-in feature, `features/celebrations.ts`: its Settings section, and a `ctx.on` handler that hands each message to `supernova.ts`, which reads the tier off a schedule notice and fires it, unless Celebrations is off. The feature context gains `galaxy` and `replying` (optional) so a feature can draw on the orb and see whether a reply is in flight. A test checks no other file on the page calls `supernova(`. If a reply is somehow open on the page, it waits for it to end (both sides gate VOI-17); one that waited more than a minute is dropped.
 
 ## Not now
 
