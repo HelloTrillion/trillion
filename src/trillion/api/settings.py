@@ -122,6 +122,12 @@ class WidgetsFresh(BaseModel):
     widgets_fresh: StrictBool
 
 
+class MemoryNotes(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notes: StrictBool
+
+
 class ListenSave(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -570,6 +576,27 @@ def create_router(rt: Runtime) -> APIRouter:
             # Back on: a board on a screen catches up now, not at the next tick.
             rt.refresher.wake()
         return {"widgets_fresh": rt.widgets_fresh}
+
+    # ── Memory: notes from chats (MEM-4) ──
+
+    def describe_memory() -> dict[str, Any]:
+        noter = rt.noter
+        return {"notes": noter.on if noter is not None else False, "count": rt.memory.count()}
+
+    @router.get("/memory")
+    async def read_memory() -> dict[str, Any]:
+        return describe_memory()
+
+    @router.put("/memory")
+    async def save_memory(body: MemoryNotes) -> Any:
+        """Whether she keeps notes from quiet chats. Off takes effect at once; back on,
+        she reads only what is said from then on."""
+        if rt.noter is None:
+            return _fail(409, "not_running")
+        await rt.noter.set_on(body.notes)
+        # What pauses at a cap is listed from what is set up.
+        rt.helpers_changed()
+        return describe_memory()
 
     @router.post("/listening/choices")
     async def listening_choices(body: ListenProbe) -> Any:

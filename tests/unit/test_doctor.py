@@ -156,7 +156,7 @@ def test_setup_prepares_the_machine_and_can_be_run_again(
     prepared(home)  # a second run finishes what is there and changes nothing
     assert "already prepared: nothing to do" in capsys.readouterr().out
     assert examine()["Database"] == Check(
-        name="Database", status="ok", detail="up to date (21 migrations)"
+        name="Database", status="ok", detail="up to date (22 migrations)"
     )
 
 

@@ -70,6 +70,7 @@ async def test_019_keeps_every_row_of_a_018_database(tmp_path: Path) -> None:
         )
         before = {t: await _rows(conn, t) for t in TABLES}
         assert await migrate(conn) == ["019_helpers", "020_helper_draft", "021_memory_vectors"]
+        assert await migrate(conn) == ["019_helpers", "020_helper_draft", "022_memory_notes"]
         for t in TABLES:
             after = await _rows(conn, t)
             if t == "schedules":
@@ -154,6 +155,7 @@ async def test_020_adds_the_draft_to_a_019_database(tmp_path: Path) -> None:
         )
         before = await _rows(conn, "helpers")
         assert await migrate(conn) == ["020_helper_draft", "021_memory_vectors"]
+        assert await migrate(conn) == ["020_helper_draft", "022_memory_notes"]
         after = await _rows(conn, "helpers")
         assert [r[:-2] for r in after] == before
         assert [r[-2:] for r in after] == [("[]", "[]")]

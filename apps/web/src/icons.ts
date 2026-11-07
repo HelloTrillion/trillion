@@ -29,6 +29,8 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   // A screen on a stand: the devices that signed in.
   devices: ['M3.5 5.5h17v11h-17z', 'M9 20h6', 'M12 16.5V20'],
   about: ['M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17z', 'M12 11v5.5', 'M12 7.8h.01'],
+  // A bookmark: what she keeps from one conversation to the next.
+  memory: ['M7 4.5h10v15l-5-3.5l-5 3.5z'],
   // A turning arrow: fetch a live widget's numbers again now.
   refresh: ['M19.5 12a7.5 7.5 0 1 1-2.2-5.3', 'M19.5 4.5V8H16'],
   close: ['M6.5 6.5l11 11M17.5 6.5l-11 11'],

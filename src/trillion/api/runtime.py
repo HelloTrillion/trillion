@@ -54,6 +54,7 @@ from trillion.helpers import wiring as helpers_wiring
 from trillion.helpers.live import Notifier
 from trillion.memory import meaning
 from trillion.memory.book import MemoryBook
+from trillion.memory.noter import Noter
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
 from trillion.persona.prompt import (
@@ -90,6 +91,7 @@ from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.helper_store import SqliteHelperStore
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
+from trillion.storage.sqlite.notes_store import SqliteNotesStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.storage.sqlite.week_store import read_week
@@ -462,6 +464,9 @@ class Runtime:
     widgets_fresh: bool = True
     # The queue that keeps them fresh, started with the server.
     refresher: Refresher | None = None
+    # Notes from chats (MEM-4): lasting facts from quiet conversations, started with
+    # the server, and switched off in Settings.
+    noter: Noter | None = None
     identity: Identity
     soul: str
     # Where the identity files live, and what onboarding last wrote there (PER-6).
@@ -911,6 +916,8 @@ class Runtime:
         kinds: set[Work] = {"titles"}
         if self.widgets_fresh:
             kinds.add("board")
+        if self.noter is not None and self.noter.on:
+            kinds.add("memories")
         if self.schedules is not None:
             for s in await self.schedules.active(OWNER):
                 if s.kind != "ask" or s.paused_ms is not None:
@@ -1157,6 +1164,8 @@ class Runtime:
             self.attention.start()
         if self.refresher is not None:
             self.refresher.start()
+        if self.noter is not None:
+            self.noter.start()
         if self._checking is None:
             self._checking = asyncio.create_task(self._check_again())
 
@@ -1168,6 +1177,8 @@ class Runtime:
                 await task
         if self.refresher is not None:
             await self.refresher.stop()
+        if self.noter is not None:
+            await self.noter.stop()
         if self.attention is not None:
             await self.attention.stop()
         if self.scheduler is not None:
@@ -1879,5 +1890,18 @@ async def open_runtime(
         clock=lambda: rt.clock(),
         wanted=lambda: bool(rt.sessions),
     )
+    # Notes from chats (MEM-4): on the usual model, paused at its cap, and never on a
+    # conversation where a turn is running.
+    rt.noter = Noter(
+        SqliteNotesStore(chat_conn),
+        book,
+        preferences,
+        provider=lambda: rt.background_provider,
+        held=rt.held,
+        busy=rt.page_writing,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+    )
+    await rt.noter.load()
     rt.month_timer()
     return rt
