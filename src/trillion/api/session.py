@@ -3875,9 +3875,8 @@ class Session:
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
         recalled, brought = (
-            self._remembered(text) if kind == "user" and not private else ("", frozenset())
+            await self._remembered(text) if kind == "user" and not private else ("", frozenset())
         )
-        recalled, brought = await self._remembered(text) if kind == "user" else ("", frozenset())
         await self._read_place()
         now = self._rt.clock()
         jobs = [

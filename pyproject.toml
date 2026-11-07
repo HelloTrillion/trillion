@@ -178,7 +178,6 @@ faulthandler_timeout = 120
 
 # Optional installs: typed as Any whether or not they are present.
 [[tool.mypy.overrides]]
-module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*", "onnxruntime", "onnxruntime.*"]
 module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*", "onnxruntime", "onnxruntime.*", "tokenizers", "tokenizers.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false
