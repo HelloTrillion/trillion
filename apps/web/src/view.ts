@@ -88,6 +88,8 @@ export type Entry =
       readonly spoken: boolean;
       /** The helper it came from, named as the Helpers panel names it; null when no helper sent it. */
       readonly helper?: { readonly id: string; readonly name: string; readonly look?: Look } | null;
+      /** A security alert (SEC-11): marked as one. */
+      readonly critical?: boolean;
     };
 
 /** A Connected tools entry a helper's draft suggests, and whether it is set up now. */
@@ -353,6 +355,7 @@ function scheduledOf(msg: ServerMsg): Entry | null {
     quiet: str(msg['quiet']) || null,
     // A core from before speaking up never said: then she spoke it.
     spoken: msg['spoken'] !== false,
+    ...(msg['critical'] === true ? { critical: true } : {}),
     // Only from a helper: a reminder, a spend notice or any other carries none.
     // One of the user's own carries its picture too.
     ...(str(msg['helper_id']) && str(msg['helper_name'])

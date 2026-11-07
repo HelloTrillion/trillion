@@ -66,6 +66,8 @@ from trillion.scheduler import when
 from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
+from trillion.security.alerts import SecurityAlerts
+from trillion.security.devices import DeviceBook
 from trillion.skills.library import Entry, Library
 from trillion.spend import gate as spend_gate
 from trillion.spend import metered, prices
@@ -431,6 +433,8 @@ class Runtime:
     attention: AttentionRunner | None = None
     quiet: Quiet | None = None
     attention_settings: watch_prefs.AttentionSettings = watch_prefs.DEFAULT
+    # Security alerts (SEC-11): the devices she knows, and who is told about.
+    security: SecurityAlerts | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -1156,6 +1160,8 @@ class Runtime:
             await self.attention.stop()
         if self.scheduler is not None:
             await self.scheduler.stop()
+        if self.security is not None:
+            await self.security.stop()
         if self.door is not None:
             # Quiet notices' notifications on their way: a moment to finish, no more.
             with contextlib.suppress(TimeoutError):
@@ -1714,6 +1720,15 @@ async def open_runtime(
     rt.attention.add(UrgentEmail(GoogleMail(lambda: rt.google)))
     # Reads Stripe only while a Stripe server is connected and its read never asks.
     rt.attention.add(Payments(registry, zone=rt.zone))
+    rt.security = SecurityAlerts(
+        DeviceBook(paths.devices_path()),
+        schedules,
+        rt.door,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+        provider=lambda: rt.background_provider,
+    )
+    rt.channels.knocked = rt.security.knocked
     for name in (SPEAK_NARROW, SPEAK_WIDEN):
         speak_tool = registry.get(name)
         if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):

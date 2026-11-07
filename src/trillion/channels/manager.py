@@ -63,6 +63,9 @@ class Channels:
         self.gate = Gate()
         self.on: dict[Platform, bool] = {}
         self.adapters: dict[Platform, ChannelAdapter] = {}
+        # Told when someone not allowed writes for the first time in this run (SEC-11):
+        # the security alerts. Set by the runtime; it never reaches a surface itself.
+        self.knocked: Callable[[Platform, str], None] | None = None
         self._tasks: dict[Platform, asyncio.Task[None]] = {}
         self._load()
 
@@ -149,7 +152,16 @@ class Channels:
 
     async def handle(self, m: Inbound) -> None:
         """One message from a channel: answered if the gate lets it through, else not."""
-        if self.gate.judge(m, self._clock()) != "answer":
+        before = m.sender in self.gate.knocks.get(m.platform, {})
+        verdict = self.gate.judge(m, self._clock())
+        if verdict == "not_allowed":
+            knock = self.gate.knocks.get(m.platform, {}).get(m.sender)
+            if not before and knock is not None and self.knocked is not None:
+                try:
+                    self.knocked(m.platform, knock.name)
+                except Exception as e:
+                    logger.warning("knock not reported: %s", type(e).__name__)
+        if verdict != "answer":
             return
         adapter = self.adapters.get(m.platform)
         if adapter is None:

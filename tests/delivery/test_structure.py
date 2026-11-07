@@ -142,3 +142,12 @@ def test_the_check_sees_round_the_back_ways() -> None:
     assert reached({"subprocessing", "trillion.apiary", "os.systems"}) == []
     pkg = imports("from .delivery import notify", "trillion", package=True)
     assert "trillion.delivery.notify" in pkg
+
+
+def test_security_alerts_have_no_route_to_a_surface() -> None:
+    """SEC-11 through SUR-9: security alerts write notices and tell the door, nothing else."""
+    found = sorted((SRC / "security").rglob("*.py"))
+    assert len(found) >= 3
+    for py in found:
+        bad = reached(file_imports(py))
+        assert bad == [], f"{py.relative_to(SRC)} reaches {bad}"

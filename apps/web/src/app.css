@@ -2954,6 +2954,21 @@ button.confirmations-go {
 .notice-held {
   font-style: italic;
 }
+/* A security alert (SEC-11): a small mark before the line. */
+.notice-critical {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--color-danger);
+  border-radius: 999px;
+  color: var(--color-danger);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+.msg > .notice-critical {
+  margin-bottom: 4px;
+}
 .notice-block {
   display: grid;
   gap: 2px;
@@ -8596,4 +8611,30 @@ button.draft-chip:hover {
 textarea.memories-edit {
   font-family: inherit;
   font-size: 14px;
+/* Settings, Devices (SEC-11): each device that signed in, with Forget. */
+.devices-list {
+  display: grid;
+  gap: 8px;
+}
+.devices-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.devices-words {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+.devices-words small {
+  color: var(--color-text-1);
+}
+.devices-mine {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-1);
 }
