@@ -1,0 +1,35 @@
+/* Settings → Memories (features/memories.ts). Loads after app.css. */
+
+/* ── Memories ────────────────────────────────────────────────────────── */
+
+/* Its parts sit in the section's own column, spaced like every other section. */
+.memories-body {
+  display: contents;
+}
+
+/* What she remembers, in the user's own reading size: it is the point of the row. */
+.memories-text {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color-text-0);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Edit and Forget, side by side; Save and Cancel under an edit. */
+.memories-actions {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.memories-edit-label {
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+
+/* The memory being corrected is prose, not a pasted config. */
+textarea.memories-edit {
+  font-family: inherit;
+  font-size: 14px;
+}

@@ -8,6 +8,7 @@
  * it goes.
  */
 
+import './roast.css';
 import type { Entry } from './view';
 
 export const ROAST_TOOL = 'week_roast';
