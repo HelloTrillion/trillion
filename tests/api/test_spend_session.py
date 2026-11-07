@@ -627,6 +627,21 @@ async def test_models_already_set_up_are_known_from_the_first_start(rt: Runtime)
 # ── The warning and the soft cap ─────────────────────────────────────────
 
 
+async def spend_notices(rt: Runtime, page: Page) -> tuple[list[str], list[dict[str, Any]]]:
+    """The spend notices held or delivered, by title, and those delivered. The session
+    comes to rest before the door hands over what it holds: in between, a notice is
+    marked delivered but not yet on the page, in neither list. So look until it lands."""
+    assert rt.schedules is not None
+    for _ in range(400):
+        held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
+        delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
+        found = [n.title for n in held] + [m["title"] for m in delivered]
+        if found:
+            return found, delivered
+        await asyncio.sleep(0.005)
+    raise AssertionError("no spend notice was held or delivered")
+
+
 async def test_the_warning_is_one_notice_once_a_month(rt: Runtime) -> None:
     provider = ScriptedProvider(say("One."), say("Two."))
     await on_model(rt, ANTHROPIC, provider)
@@ -639,10 +654,7 @@ async def test_the_warning_is_one_notice_once_a_month(rt: Runtime) -> None:
         await session.handle({"type": "turn.text", "text": text})
         await idle(session)
 
-    assert rt.schedules is not None
-    held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
-    delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
-    found = [n.title for n in held] + [m["title"] for m in delivered]
+    found, delivered = await spend_notices(rt, page)
     assert found == ["Anthropic is close to your $20 warning ($16.50 so far)"]
     told = await rt.preferences.get(OWNER, desk.TOLD_PREF)
     assert told["warned"] == {"anthropic": month_start(rt.clock(), rt.zone() or "")[0]}
@@ -659,17 +671,7 @@ async def test_past_the_warning_the_notice_says_so(rt: Runtime) -> None:
     session = await Session.start(rt, page.send, None)
     await session.handle({"type": "turn.text", "text": "one"})
     await idle(session)
-    assert rt.schedules is not None
-    found: list[str] = []
-    # Held, or on its way to the page: between the two it is in neither for a moment,
-    # so look again until it lands (a slow runner caught it in between).
-    for _ in range(100):
-        held = [n for n in await rt.schedules.held(OWNER) if n.source_id.startswith("spend:")]
-        delivered = [m for m in page.all("notice") if m.get("code") == "schedule"]
-        found = [n.title for n in held] + [m["title"] for m in delivered]
-        if found:
-            break
-        await asyncio.sleep(0.02)
+    found, _ = await spend_notices(rt, page)
     assert found == ["Anthropic is past your $20 warning ($23.10 so far)"]
 
 

@@ -34,6 +34,24 @@ _SELECT_PENDING = (
 )
 # An audited call that ran: a card the user turned down is no use of anything.
 _ALLOWED = frozenset({"executed"})
+# What the user reads an action's status as (SUR-7): a proposal is waiting until it
+# expires, and one retired by a newer request or a changed target was cancelled. The
+# one parameter is the time now. Built only from constants.
+_LIFECYCLE = (
+    "CASE WHEN p.status = 'proposed' AND p.expires_at > ? THEN 'pending'"
+    " WHEN p.status = 'proposed' THEN 'expired'"
+    " WHEN p.status IN ('superseded', 'invalidated') THEN 'cancelled'"
+    " ELSE p.status END"
+)
+# The frozen row only: its arguments are the slim copy (#20). The full ones, kept apart
+# for thirty days, are never read for the Confirmations page.
+_SELECT_SLIM = (
+    "SELECT "  # noqa: S608
+    + ", ".join(f"p.{c.strip()}" for c in _PENDING_COLUMNS.split(","))
+    + ", NULL AS full_args_json, NULL AS args_cleared_at, "
+    + _LIFECYCLE
+    + " AS lifecycle FROM pending_actions p WHERE p.owner_id = ? AND p.created_at >= ?"
+)
 
 
 def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
@@ -298,6 +316,71 @@ class SqliteSpineStore:
             (owner_id, since_ms, *patterns, limit),
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
+
+    async def confirmations(
+        self,
+        owner_id: str,
+        *,
+        since_ms: int,
+        now_ms: int,
+        lifecycle: str | None = None,
+        limit: int,
+    ) -> list[tuple[str, PendingAction, DeliveryRow | None, list[DecisionRow]]]:
+        """The owner's actions proposed since a moment, newest first, for the
+        Confirmations page (SUR-7): each with what the user reads its status as, when
+        its card was shown, and its decisions in order. `lifecycle` keeps only one
+        status. The arguments are the frozen slim copy, never the full ones."""
+        async with self._conn.execute(
+            f"SELECT * FROM ({_SELECT_SLIM}) WHERE (? IS NULL OR lifecycle = ?)"  # noqa: S608
+            " ORDER BY created_at DESC, id LIMIT ?",
+            (now_ms, owner_id, since_ms, lifecycle, lifecycle, limit),
+        ) as cur:
+            rows = [(str(r["lifecycle"]), _row_to_pending(r)) for r in await cur.fetchall()]
+        if not rows:
+            return []
+        ids = [a.id for _, a in rows]
+        # One placeholder per id: the statement's text never holds a value.
+        marks = ", ".join("?" for _ in ids)
+        delivered: dict[str, DeliveryRow] = {}
+        async with self._conn.execute(
+            "SELECT pending_id, surface, delivered_at FROM decision_deliveries"  # noqa: S608
+            f" WHERE pending_id IN ({marks})",
+            ids,
+        ) as cur:
+            for r in await cur.fetchall():
+                delivered[str(r["pending_id"])] = DeliveryRow(
+                    pending_id=str(r["pending_id"]),
+                    surface=str(r["surface"]),
+                    delivered_at=int(r["delivered_at"]),
+                )
+        decided: dict[str, list[DecisionRow]] = {i: [] for i in ids}
+        async with self._conn.execute(
+            "SELECT pending_id, event, decided_by, via, at FROM decisions"  # noqa: S608
+            f" WHERE pending_id IN ({marks}) ORDER BY id",
+            ids,
+        ) as cur:
+            for r in await cur.fetchall():
+                decided[str(r["pending_id"])].append(
+                    DecisionRow(
+                        pending_id=str(r["pending_id"]),
+                        event=str(r["event"]),
+                        decided_by=str(r["decided_by"]),
+                        via=str(r["via"]),
+                        at=int(r["at"]),
+                    )
+                )
+        return [(life, a, delivered.get(a.id), decided[a.id]) for life, a in rows]
+
+    async def confirmation_counts(
+        self, owner_id: str, *, since_ms: int, now_ms: int
+    ) -> dict[str, int]:
+        """How many of the owner's actions since a moment are in each status, as the
+        user reads it (SUR-7)."""
+        async with self._conn.execute(
+            f"SELECT lifecycle, COUNT(*) AS n FROM ({_SELECT_SLIM}) GROUP BY lifecycle",  # noqa: S608
+            (now_ms, owner_id, since_ms),
+        ) as cur:
+            return {str(r["lifecycle"]): int(r["n"]) for r in await cur.fetchall()}
 
     async def last_decisions_since(self, events: Sequence[str], since_ms: int) -> list[DecisionRow]:
         # One placeholder per event: the statement's text never holds a value.

@@ -456,6 +456,85 @@ export function createBoardSettings(
   };
 }
 
+// ── Memory ───────────────────────────────────────────────────────────────
+
+/** The core's switch for notes from chats (MEM-4). On unless turned off. */
+export const MEMORY_NOTES_PATH = '/api/settings/memory';
+
+/** The notes-from-chats switch. It sits at the top of Settings → Memories. */
+export interface NotesSwitch {
+  readonly element: HTMLElement;
+  /** Reads the saved choice again and shows it. */
+  open(): Promise<void>;
+  summary(): string;
+}
+
+export function createNotesSwitch(api: Api, changed: () => void): NotesSwitch {
+  const row = el('label', 'settings-check');
+  const box = el('input');
+  box.type = 'checkbox';
+  box.setAttribute('role', 'switch');
+  box.id = 'memory-notes';
+  const words = el('span');
+  words.append(
+    el('strong', '', 'Keep notes from our chats'),
+    el(
+      'small',
+      '',
+      'When a conversation has been quiet for ten minutes, she reads it again and keeps up to three lasting facts, marked as her own notes. Never a permission or a rule. Uses a little of your model. Turned off, nothing is read, and turning it back on reads only what is said after.',
+    ),
+  );
+  row.append(box, words);
+  const status = el('p', 'settings-status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  const element = el('div', 'memories-notes');
+  element.append(row, status);
+
+  let on = true;
+  const take = async (r: Response): Promise<void> => {
+    const body = (await r.json()) as { notes?: unknown };
+    on = body.notes !== false;
+  };
+  box.addEventListener('change', () => {
+    const want = box.checked;
+    box.disabled = true;
+    status.textContent = '';
+    void api('PUT', MEMORY_NOTES_PATH, { notes: want })
+      .then(async (r) => {
+        if (r.ok) await take(r);
+        else status.textContent = 'That could not be saved. Try again.';
+      })
+      .catch(() => {
+        status.textContent = 'That could not be saved. Try again.';
+      })
+      .finally(() => {
+        box.checked = on;
+        box.disabled = false;
+        changed();
+      });
+  });
+  const load = async (): Promise<void> => {
+    try {
+      const r = await api('GET', MEMORY_NOTES_PATH);
+      if (r.ok) await take(r);
+    } catch {
+      // Unread: the switch shows the default.
+    }
+  };
+  // Read now, so the section's summary is right before it is first opened.
+  void load().then(changed);
+  return {
+    element,
+    async open() {
+      status.textContent = '';
+      await load();
+      box.checked = on;
+    },
+    summary: () => (on ? 'Notes from chats' : 'Only when asked'),
+  };
+}
+
 // ── API usage ────────────────────────────────────────────────────────────
 
 export function createUsageSettings(host: Host, load: () => Promise<Usage | null>, api: Api): { open(): Promise<void> } {

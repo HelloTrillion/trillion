@@ -35,6 +35,7 @@ from trillion.api.helpers import create_helpers_router
 from trillion.api.home import create_home_router
 from trillion.api.mcp import create_callback_router, create_mcp_router
 from trillion.api.persona import create_persona_router
+from trillion.api.routes import plugged
 from trillion.api.routines import create_routines_router
 from trillion.api.runtime import Runtime
 from trillion.api.schedules import create_schedules_router
@@ -121,12 +122,17 @@ def create_app(
         # A page on another site can point a hostname at 127.0.0.1 (DNS rebinding);
         # it cannot make the browser send our Host header.
         if request.headers.get("host") not in hosts:
+            _refused(rt, "request", "host")
             return PlainTextResponse("forbidden", status_code=403)
         # The challenge proves the token without sending it, so it needs none.
         challenge = request.url.path == DESKTOP_HELLO
         if request.url.path.startswith("/api/") and request.method != "OPTIONS" and not challenge:
             refusal = _api_refusal(request, rt.token, origins)
             if refusal is not None:
+                # A wrong media type came with the right token: not a refusal of who.
+                if refusal.status_code in (401, 403):
+                    why = "token" if refusal.status_code == 401 else "origin"
+                    _refused(rt, "request", why)
                 return refusal
         response = await call_next(request)
         # A page that needs its own policy (Google's file picker) sets it; every
@@ -142,6 +148,7 @@ def create_app(
         if socket.headers.get("host") not in hosts or (
             origin is not None and origin not in origins
         ):
+            _refused(rt, "socket", "origin")
             await socket.close(code=CLOSE_FORBIDDEN)
             return
         await socket.accept()
@@ -156,8 +163,15 @@ def create_app(
         if isinstance(hello, bytes):
             hello = None
         if not _authenticated(hello, rt.token):
+            _refused(rt, "socket", "token")
             await _refuse(socket, send)
             return
+        # Signed in: a device not seen before is told about (SEC-11), by the page's own
+        # id, never its address.
+        if rt.security is not None and hello is not None:
+            rt.security.signed_in(
+                hello.get("device"), str(hello.get("host")), str(hello.get("client"))
+            )
 
         resume = hello.get("resume") if hello else None
         session = await Session.start(
@@ -216,6 +230,9 @@ def create_app(
     app.include_router(create_attention_router(rt))
     app.include_router(create_helpers_router(rt))
     app.include_router(create_home_router(rt))
+    # Newer features mount themselves: a module with `ROUTES` (trillion/api/routes.py).
+    for router in plugged(rt):
+        app.include_router(router)
     if rt.google is not None:
         loopback = sorted(h for h in hosts if h.startswith("127.0.0.1:"))
         if loopback:
@@ -274,6 +291,15 @@ async def _receive(socket: WebSocket) -> dict[str, Any] | bytes | None:
     except (ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _refused(rt: Runtime, where: str, why: str) -> None:
+    """Counted for the security alerts (SEC-11): only repeated refusals are told."""
+    if rt.security is not None:
+        try:
+            rt.security.refused(where, why)
+        except Exception as e:
+            logger.warning("refusal not counted: %s", type(e).__name__)
 
 
 def _authenticated(hello: dict[str, Any] | None, token: str) -> bool:

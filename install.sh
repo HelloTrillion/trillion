@@ -6,13 +6,17 @@
 # It installs uv (Astral's Python tool manager) if you don't have it, installs
 # Trillion with uv, puts it on your PATH, then runs `trillion setup`, which
 # prepares the data folder, checks this machine and opens the app.
-# Running it again upgrades Trillion. It never uses sudo.
+# Running it again upgrades Trillion. It never uses sudo, and it won't run as
+# root: Trillion lives in your own home folder.
 #
 # Options (after `sh -s --` when piped), or the environment variable beside each:
 #   --version X     install Trillion X instead of the latest   TRILLION_VERSION=X
 #   --wheel PATH    install this wheel file or URL instead      TRILLION_WHEEL=PATH
 #   --no-setup      install only; don't run `trillion setup`    TRILLION_NO_SETUP=1
 #   --help          show this help
+#   -- ARGS         pass ARGS on to `trillion setup`, such as: -- --no-run
+#
+# In a container where root is the only user, TRILLION_ALLOW_ROOT=1 lets it run.
 #
 # Windows: use install.ps1 instead (see the README).
 
@@ -34,11 +38,22 @@ main() {
             --wheel=*) wheel="${1#*=}"; shift ;;
             --no-setup) no_setup=1; shift ;;
             -h | --help) usage; return 0 ;;
+            --) shift; break ;;
             *) fail "unknown option: $1 (try --help)" ;;
         esac
     done
+    # Whatever is left goes to `trillion setup`.
     if [ -n "$version" ] && [ -n "$wheel" ]; then
         fail "use --version or --wheel, not both"
+    fi
+
+    # Trillion and its data belong to a person, in their home folder. As root they
+    # would land in root's, and the app would run as root.
+    if [ "$(id -u)" = 0 ]; then
+        case "${TRILLION_ALLOW_ROOT:-}" in
+            1 | true | yes) say "running as root, because TRILLION_ALLOW_ROOT is set" ;;
+            *) fail "don't run this as root or with sudo. Run it as yourself: Trillion installs into your own home folder and never needs sudo. (In a container where root is the only user, set TRILLION_ALLOW_ROOT=1.)" ;;
+        esac
     fi
 
     case "$(uname -s)" in
@@ -125,17 +140,18 @@ Update uv ('uv self update', or the way you installed it) and try again."
     say "installed $("$trillion" --version) in $bindir"
 
     if [ -n "$no_setup" ]; then
+        [ $# -eq 0 ] || say "not running setup (--no-setup), so '$*' is not used"
         say "done. Open a new terminal and run 'trillion setup' to start."
         return 0
     fi
 
     # 4. Setup: prepares, checks, starts the app and opens the browser. Under
     # `curl | sh` our input is the script itself, so give setup the terminal.
-    say "running trillion setup (Ctrl+C stops Trillion; to start it again later, open a new terminal and run 'trillion run')"
+    say "running trillion setup${1:+ $*} (Ctrl+C stops Trillion; to start it again later, open a new terminal and run 'trillion run')"
     if (exec </dev/tty) 2>/dev/null; then
-        exec "$trillion" setup </dev/tty
+        exec "$trillion" setup "$@" </dev/tty
     else
-        exec "$trillion" setup </dev/null
+        exec "$trillion" setup "$@" </dev/null
     fi
 }
 
@@ -164,6 +180,10 @@ Options, or the environment variable beside each:
   --wheel PATH    install this wheel file or URL instead      TRILLION_WHEEL=PATH
   --no-setup      install only; don't run `trillion setup`    TRILLION_NO_SETUP=1
   --help          show this help
+  -- ARGS         pass ARGS on to `trillion setup`, such as: -- --no-run
+
+It never uses sudo, and won't run as root. In a container where root is the
+only user, set TRILLION_ALLOW_ROOT=1.
 EOF
 }
 

@@ -1,36 +1,16 @@
 import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from trillion.storage.db import connect
-from trillion.storage.migrate import MigrationChecksumError, migrate
+from trillion.storage.migrate import MigrationChecksumError, migrate, names
 
 
 async def test_applies_once_and_records_checksum(tmp_path):
     conn = await connect(tmp_path / "t.db")
-    assert await migrate(conn) == [
-        "001_spine",
-        "002_args_retention",
-        "003_conversations",
-        "004_preferences",
-        "005_memory",
-        "006_compactions",
-        "007_turn_timings",
-        "008_schedules",
-        "009_turn_drafts",
-        "010_conversation_titles",
-        "011_boards",
-        "012_rule_events",
-        "013_day_conversations",
-        "014_routines",
-        "015_attention",
-        "016_decision_events",
-        "017_usage_spend",
-        "018_attention_deferred",
-        "019_helpers",
-        "020_helper_draft",
-    ]
+    assert await migrate(conn) == names()
     assert await migrate(conn) == []
     async with conn.execute("SELECT id FROM owners") as cur:
         assert [r[0] for r in await cur.fetchall()] == ["local"]
@@ -95,35 +75,9 @@ async def test_the_database_is_private_to_the_user(tmp_path):
 
 # Migrations that have shipped. A database that applied one refuses to open if the
 # file later changes by a single byte, comments included, so these are frozen: to
-# change the schema, add a new numbered file. A new migration adds a line here.
-SHIPPED = {
-    "001_spine.sql": "74e5901760ef1de981c06f0a94cc2a0dd3cd9aa9800e87028886520b8ff671f1",
-    "002_args_retention.sql": "d226e1823fa839252e5d984fd14a7fd1d402fa54d795a4419bfa817711889bec",
-    "003_conversations.sql": "7b495ef2389ec7513caf9ca71be306adfcf03f0e765847dbe003087836ad6ba8",
-    "004_preferences.sql": "70d48ef6ba5422c4bb15b894697ad7c320e509880ce12ab7b789abfd6302c2c5",
-    "005_memory.sql": "e710a7ddf4f2a545866466441160e9f8a2c43bc9fc4a03580cd96badf64374e1",
-    "006_compactions.sql": "ba00340cbba9ea010e9bce8f36e053b65b126620af234aeab07ee6a7e8ee2210",
-    "007_turn_timings.sql": "94fd5927476868590c692dd4d25eb6759cbdb97028490934b91c8174c31143e7",
-    "008_schedules.sql": "6cf1aff31f5f9a4f182452af311525b2ed1ee79f31c958063c718ab1a276ec12",
-    "009_turn_drafts.sql": "ebdb53c705c7a5c7ffc12dc6d18e279ffb452c867de9603122b96bcad165b5a6",
-    "010_conversation_titles.sql": (
-        "93bc8f7ed4b938ae7751a0ddd19e36e0ce54771a327bc747eceff35444edd769"
-    ),
-    "011_boards.sql": "e76da2a7b12317962aa0cf242920324717eb36852b1bfd3127d0c4d537684e6a",
-    "012_rule_events.sql": "ce8dce7c93dfce7db8a9c7fed4676954d371a9a1277e45bf6867cb60f645154f",
-    "013_day_conversations.sql": (
-        "613e24ac9ccd3341281cba89b58e5352d32632474ee570a101c5c69e6dbb7b19"
-    ),
-    "014_routines.sql": "8f464a56fa9e92e11293af638c5f14e72da1bf8517858e17fac9af055588bedf",
-    "015_attention.sql": "cce2497b7bb1199dffb1f7925dbe37c8c8d621a19cbd416d27497a023bb58ea6",
-    "016_decision_events.sql": ("7ed1dbea2c94cd2255016b0afba2045a98b11a7448650c25e529cc0c71cf52bb"),
-    "017_usage_spend.sql": "14f30b86a751145bcaf72fa291f509d54e0c2545be606df1ee38d331c6e410e5",
-    "018_attention_deferred.sql": (
-        "521447edaea29b579b5dde70a3e573e2826531ea653abce865e80318f1d98d8d"
-    ),
-    "019_helpers.sql": ("07b6e74c77ba3c1229c64104938bebccfe571fd8e4ff8f0c56fc70523481f4ab"),
-    "020_helper_draft.sql": ("c94f3f667cbeb6b1ffc5f7cc65319e162f0a8aea07095ba39287804fb0ee9bd0"),
-}
+# change the schema, add a new file named by the time (YYYYMMDDHHMM_name.sql). Each
+# shipped migration's SHA-256 is in its own file here, so a new one adds a file.
+SHIPPED = Path(__file__).parent / "shipped_migrations"
 
 
 def test_shipped_migrations_never_change():
@@ -135,4 +89,26 @@ def test_shipped_migrations_never_change():
         for entry in (files("trillion.storage") / "migrations").iterdir()
         if entry.name.endswith(".sql")
     }
-    assert found == SHIPPED, "a shipped migration changed, or a new one is not listed here"
+    shipped = {
+        f"{p.stem}.sql": p.read_text(encoding="utf-8").strip() for p in SHIPPED.glob("*.sha256")
+    }
+    assert found == shipped, (
+        "a shipped migration changed, or a new one has no checksum file. A new migration "
+        "adds tests/unit/shipped_migrations/<its name>.sha256 holding its SHA-256."
+    )
+
+
+async def test_a_migration_named_by_time_runs_after_every_numbered_one(tmp_path):
+    """Two branches can't take the same next number when new ones are named by time."""
+    src = tmp_path / "migrations"
+    src.mkdir()
+    (src / "001_first.sql").write_text("CREATE TABLE a (x);", encoding="utf-8")
+    (src / "202611071200_later.sql").write_text("CREATE TABLE c (x);", encoding="utf-8")
+    (src / "202611071130_earlier.sql").write_text("CREATE TABLE b (x);", encoding="utf-8")
+    (src / "02_bad_number.sql").write_text("CREATE TABLE z (x);", encoding="utf-8")
+    assert names(source=src) == ["001_first", "202611071130_earlier", "202611071200_later"]
+    assert names(after="001", source=src) == ["202611071130_earlier", "202611071200_later"]
+    conn = await connect(tmp_path / "t.db")
+    assert await migrate(conn, src) == names(source=src)
+    assert await migrate(conn, src) == []
+    await conn.close()

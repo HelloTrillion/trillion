@@ -329,6 +329,7 @@ const WORK_WORDS: Readonly<Record<string, string>> = {
   channels: 'channel replies',
   titles: 'naming conversations',
   board: 'refreshing your board',
+  memories: 'notes from chats',
 };
 
 function list(words: readonly string[]): string {

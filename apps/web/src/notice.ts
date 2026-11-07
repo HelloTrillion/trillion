@@ -103,6 +103,8 @@ export function renderScheduled(
 ): HTMLElement {
   const more = extras(e, open);
   const from = e.helper && show ? fromTag(e.helper, show) : null;
+  // A security alert (SEC-11) says so first, whoever's words follow.
+  const mark = e.critical ? el('span', 'notice-critical', 'Security') : null;
   const quiet = e.what === 'missed' || e.what === 'failed';
   if (e.text === null) {
     // No words of hers: missed or failed says so, anything else is shown by its title.
@@ -112,12 +114,14 @@ export function renderScheduled(
       const rest = quiet ? quietAfterName(e) : e.title === from.textContent ? '' : e.title;
       line.append(from, ...(rest ? [`: ${rest}`] : []));
     } else line.textContent = quiet ? quietLine(e) : e.title;
+    if (mark) line.prepend(mark);
     if (!more.length) return line;
     const box = el('div', 'notice-block');
     box.append(line, ...more);
     return box;
   }
   const box = el('div', 'msg assistant');
+  if (mark) box.append(mark);
   if (from) box.append(from);
   box.append(...words(e.text));
   // Late: when it was due, so "now" in her words is not taken for now.

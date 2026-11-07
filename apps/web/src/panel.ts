@@ -35,6 +35,11 @@ export interface SectionSpec {
   readonly label: string;
   readonly group: string;
   readonly icon: string;
+  /**
+   * The section this one follows in its group. A section from `features/` says where it
+   * goes this way, so its place doesn't depend on the order the files load in.
+   */
+  readonly after?: string;
   /** More words a search should find this section by. */
   readonly keywords?: string;
   /** Shown under the label: the current choice, in a word or two. */
@@ -175,7 +180,12 @@ export function createPanel(surface: Surface): Panel {
       };
     },
     add(section) {
-      sections.push(section);
+      const anchor = section.after ? sections.findIndex((s) => s.id === section.after && s.group === section.group) : -1;
+      // After its anchor and any section already placed after the same anchor, in the order added.
+      let at = anchor;
+      while (at >= 0 && at + 1 < sections.length && sections[at + 1]!.after === section.after && sections[at + 1]!.group === section.group) at++;
+      if (at >= 0) sections.splice(at + 1, 0, section);
+      else sections.push(section);
       pane(section.id);
       let group = groups.get(section.group);
       if (!group) {
@@ -193,7 +203,9 @@ export function createPanel(surface: Surface): Panel {
       link.addEventListener('click', () => void section.open());
       links.set(section.id, link);
       item.append(link);
-      group.querySelector('ul')?.append(item);
+      const before = at >= 0 ? links.get(sections[at]!.id)?.parentElement : null;
+      if (before) before.after(item);
+      else group.querySelector('ul')?.append(item);
       refresh();
     },
     open(id) {

@@ -53,7 +53,9 @@ from trillion.files.rules import why_not
 from trillion.files.shares import EVERYONE, ShareError, Shares
 from trillion.helpers import wiring as helpers_wiring
 from trillion.helpers.live import Notifier
+from trillion.memory import meaning
 from trillion.memory.book import MemoryBook
+from trillion.memory.noter import Noter
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
 from trillion.persona.prompt import (
@@ -67,6 +69,8 @@ from trillion.scheduler import when
 from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
 from trillion.secrets.store import KeychainStore, SecretStore
+from trillion.security.alerts import SecurityAlerts
+from trillion.security.devices import DeviceBook
 from trillion.skills.library import Entry, Library
 from trillion.spend import gate as spend_gate
 from trillion.spend import metered, prices
@@ -88,6 +92,7 @@ from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.helper_store import SqliteHelperStore
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
+from trillion.storage.sqlite.notes_store import SqliteNotesStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 from trillion.storage.sqlite.spine_store import SqliteSpineStore
 from trillion.tools.day import DAY_OPEN, DayOpen, Where
@@ -145,7 +150,9 @@ from trillion.tools.workspace import definitions as board_definitions
 from trillion.voice import models as voice_models
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.providers import whisper
-from trillion.voice.types import STTProvider, TTSProvider
+from trillion.voice.providers.wespeaker import embedder as speaker_embedder
+from trillion.voice.speaker import Voiceprints
+from trillion.voice.types import SpeakerEmbedder, STTProvider, TTSProvider, UnknownSpeaker
 from trillion.workspace.board import Board
 from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
 from trillion.workspace.home import HOME_LAYOUT_PREF, Layout, clean
@@ -432,6 +439,8 @@ class Runtime:
     attention: AttentionRunner | None = None
     quiet: Quiet | None = None
     attention_settings: watch_prefs.AttentionSettings = watch_prefs.DEFAULT
+    # Security alerts (SEC-11): the devices she knows, and who is told about.
+    security: SecurityAlerts | None = None
     provider: ModelProvider | None
     # Where the model configuration came from: the environment wins and is read-only.
     source: Source
@@ -440,6 +449,12 @@ class Runtime:
     tts: TTSProvider | None
     listening: ListenSettings | None = None
     stt: STTProvider | None = None
+    # Who spoke each utterance (VOI-15): the Shell's stub never knows. Phase 1's
+    # speaker check replaces it here, and capture does not change.
+    speakers: SpeakerEmbedder = field(default_factory=UnknownSpeaker)
+    # The enrolled owner's voice (§5.3a). None where nobody can enrol (most tests):
+    # the session is then the anchor, as in Phase 0 (SPN-14).
+    voiceprints: Voiceprints | None = None
     speech_last: SpeechSettings | None = None
     listening_last: ListenSettings | None = None
     # Whether she drafts a reply while the user may still be talking (VOI-12).
@@ -448,6 +463,9 @@ class Runtime:
     widgets_fresh: bool = True
     # The queue that keeps them fresh, started with the server.
     refresher: Refresher | None = None
+    # Notes from chats (MEM-4): lasting facts from quiet conversations, started with
+    # the server, and switched off in Settings.
+    noter: Noter | None = None
     identity: Identity
     soul: str
     # Where the identity files live, and what onboarding last wrote there (PER-6).
@@ -478,6 +496,9 @@ class Runtime:
     routine_holds: set[str] = field(default_factory=set)
     # Slow reads running in the background, per conversation (the background reads spec).
     jobs: Jobs = field(default_factory=lambda: Jobs(clock=_now_ms))
+    # The conversations' connection, for a feature's read-only queries (a tool's
+    # `attach`): a read here never waits on a write elsewhere.
+    read_conn: aiosqlite.Connection | None = None
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     # Pages being told the shares changed.
     _telling: set[asyncio.Task[None]] = field(default_factory=set)
@@ -897,6 +918,8 @@ class Runtime:
         kinds: set[Work] = {"titles"}
         if self.widgets_fresh:
             kinds.add("board")
+        if self.noter is not None and self.noter.on:
+            kinds.add("memories")
         if self.schedules is not None:
             for s in await self.schedules.active(OWNER):
                 if s.kind != "ask" or s.paused_ms is not None:
@@ -1120,13 +1143,14 @@ class Runtime:
         self.skills_on = entries
         return lines
 
-    def system(self, scope: str = EVERYONE) -> list[SystemBlock]:
+    def system(self, scope: str = EVERYONE, *, guest: bool = False) -> list[SystemBlock]:
         """The system blocks a turn gets, read now: rules, the folders shared with
-        `scope` and the skills that are on. Blocking, like `skill_lines`."""
+        `scope` and the skills that are on. Blocking, like `skill_lines`. For a `guest`
+        (a voice that isn't the owner's, PER-13) the shared folders are not named."""
         return system_blocks(
             self.identity,
             self.soul,
-            self.shared(scope),
+            () if guest else self.shared(scope),
             [(r.id, r.text) for r in self.rules.all()],
             skills=self.skill_lines(),
             # Her instructions for the user's helpers, only where helpers can be made.
@@ -1142,6 +1166,8 @@ class Runtime:
             self.attention.start()
         if self.refresher is not None:
             self.refresher.start()
+        if self.noter is not None:
+            self.noter.start()
         if self._checking is None:
             self._checking = asyncio.create_task(self._check_again())
 
@@ -1153,10 +1179,14 @@ class Runtime:
                 await task
         if self.refresher is not None:
             await self.refresher.stop()
+        if self.noter is not None:
+            await self.noter.stop()
         if self.attention is not None:
             await self.attention.stop()
         if self.scheduler is not None:
             await self.scheduler.stop()
+        if self.security is not None:
+            await self.security.stop()
         if self.door is not None:
             # Quiet notices' notifications on their way: a moment to finish, no more.
             with contextlib.suppress(TimeoutError):
@@ -1428,6 +1458,7 @@ class Runtime:
             self._month_timer = None
         # First, so no tick or read runs on a connection that is closing.
         await self.stop_background()
+        await self.memory.close()
         await self.jobs.stop()
         if self.mcp is not None:
             await self.mcp.stop()
@@ -1521,10 +1552,18 @@ async def open_runtime(
     keychain = secrets if secrets is not None else KeychainStore()
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
-    book = MemoryBook(SqliteMemoryStore(chat_conn), memory or paths.memory_dir(), OWNER)
+    book = MemoryBook(
+        SqliteMemoryStore(chat_conn),
+        memory or paths.memory_dir(),
+        OWNER,
+        # Search by meaning, when it is installed and its model was fetched (MEM-2).
+        embedder=meaning.local(paths.models_dir()),
+    )
     # The files are the truth: whatever changed on disk since last time is adopted
     # now, and anything that does not add up is logged, never silently repaired.
     await book.sync(_now_ms())
+    # Memories with no vector for their text are embedded beside the server.
+    book.start_catching_up(_now_ms)
     listening = ListenSettings.from_json(await preferences.get(OWNER, LISTEN_PREF))
     standing = StandingRules(rules or paths.rules_path())
     conversations = SqliteConversationStore(chat_conn)
@@ -1592,6 +1631,7 @@ async def open_runtime(
         token=token,
         token_from_app=token_from_app,
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
+        read_conn=chat_conn,
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn, helper_conn],
     )
     # Before anything that can reach a provider is started: the gate never fails open.
@@ -1608,6 +1648,9 @@ async def open_runtime(
                 await conn.close()
         raise
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
+    # Whose voice it is (§5.3a): the owner's voiceprint, and the embedder it needs.
+    rt.voiceprints = Voiceprints()
+    rt.speakers = speaker_embedder(await asyncio.to_thread(rt.voiceprints.get) is not None)
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(
@@ -1717,6 +1760,15 @@ async def open_runtime(
     rt.attention.add(UrgentEmail(GoogleMail(lambda: rt.google)))
     # Reads Stripe only while a Stripe server is connected and its read never asks.
     rt.attention.add(Payments(registry, zone=rt.zone))
+    rt.security = SecurityAlerts(
+        DeviceBook(paths.devices_path()),
+        schedules,
+        rt.door,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+        provider=lambda: rt.background_provider,
+    )
+    rt.channels.knocked = rt.security.knocked
     for name in (SPEAK_NARROW, SPEAK_WIDEN):
         speak_tool = registry.get(name)
         if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):
@@ -1808,6 +1860,13 @@ async def open_runtime(
         tool = registry.get(name)
         if isinstance(tool, MemoryWrite | MemoryRecall | MemoryForget):
             tool.bind(book)
+    # Newer tools connect themselves: one that defines `async def attach(self, rt)` is
+    # handed the runtime here, so adding a tool doesn't edit this file (the plug-in
+    # features spec). The binds above predate it and move over as they are touched.
+    for definition in registry.definitions():
+        attach = getattr(registry.get(definition.name), "attach", None)
+        if attach is not None:
+            await attach(rt)
     # A send a crash left in doubt: the user hears of it, once (OPS-1). Those settled
     # lately are looked for too, so a notice lost to a quit before it was written is
     # still given; one already written is not given again.
@@ -1839,5 +1898,18 @@ async def open_runtime(
         clock=lambda: rt.clock(),
         wanted=lambda: bool(rt.sessions),
     )
+    # Notes from chats (MEM-4): on the usual model, paused at its cap, and never on a
+    # conversation where a turn is running.
+    rt.noter = Noter(
+        SqliteNotesStore(chat_conn),
+        book,
+        preferences,
+        provider=lambda: rt.background_provider,
+        held=rt.held,
+        busy=rt.page_writing,
+        clock=lambda: rt.clock(),
+        owner=OWNER,
+    )
+    await rt.noter.load()
     rt.month_timer()
     return rt

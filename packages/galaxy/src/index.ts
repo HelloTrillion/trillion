@@ -1,4 +1,6 @@
 import { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
+import { type Point, arcStart, arcsAllowed } from './arc';
+import { ArcLayer } from './arcs';
 import { AnalyserBank } from './audio/analysers';
 import {
   type AnalyserRole, type Levels, SILENT, smooth, syntheticListening, syntheticSpeech,
@@ -16,6 +18,7 @@ export type { OrbParams, OrbStateName } from './states';
 export type { AnalyserRole, Levels } from './audio/levels';
 export type { PerfMode } from './perf';
 export { defaultRect } from './stage';
+export type { Point } from './arc';
 export type { StageRect } from './stage';
 export { SUPERNOVA_TIERS } from './supernova';
 export type { SupernovaTier } from './supernova';
@@ -41,6 +44,11 @@ export interface GalaxyOptions {
   readonly demo?: boolean;
   /** Called when perf mode switches on or off. */
   readonly onPerfChange?: (active: boolean) => void;
+  /**
+   * Where `pulseArc(targetId)` points (GAL-8): CSS pixels from the canvas's top-left,
+   * or null when the target is not on screen. Without it, arcs draw nothing.
+   */
+  readonly arcTarget?: (targetId: string) => Point | null;
 }
 
 /** Reserved for the constellation (GAL-7, Phase 1). */
@@ -64,7 +72,10 @@ export interface Galaxy {
   addSatellite(spec: SatelliteSpec): void;
   /** GAL-7, Phase 1: no-op until the constellation lands. */
   removeSatellite(id: string): void;
-  /** GAL-8, Phase 1: no-op until energy arcs land. */
+  /**
+   * GAL-8: a faint pulse of light from the orb to `arcTarget(targetId)`. Nothing when
+   * that is null, in perf mode, or with reduced motion.
+   */
   pulseArc(targetId: string): void;
   setPerfMode(mode: PerfMode): void;
   setTheme(theme: Theme): void;
@@ -97,6 +108,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
   let perfActive = governor.sample(60, 0);
   let quality = qualityFor(perfActive, devicePixelRatio);
   const orb = new Orb(quality.orbDetail);
+  const arcs = new ArcLayer();
   orbScene.add(orb.group);
   const landscape = new Landscape(quality.dustCount, quality.nodeCount, opts.seed ?? 1);
   renderer.setPixelRatio(quality.pixelRatio);
@@ -136,6 +148,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     // Once placed, placeOrb owns the orb camera's zoom and lens shift.
     if (stage) placeOrb(orbCamera, stage, w, h);
     stageDirty = true;
+    arcs.setSize(w, h);
     landscape.setAspect(w / h);
   };
   const observer = new ResizeObserver(resize);
@@ -150,6 +163,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     }
     if (next.pixelRatio !== quality.pixelRatio) renderer.setPixelRatio(next.pixelRatio);
     quality = next;
+    if (perfActive) arcs.clear();
     opts.onPerfChange?.(perfActive);
   };
   if (perfActive) opts.onPerfChange?.(true);
@@ -223,6 +237,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     landscape.render(renderer);
     renderer.clearDepth();
     renderer.render(orbScene, orbCamera);
+    if (arcs.active) arcs.render(renderer, now);
   };
   raf = requestAnimationFrame(frame);
 
@@ -252,7 +267,17 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     },
     addSatellite() {},
     removeSatellite() {},
-    pulseArc() {},
+    pulseArc(targetId) {
+      if (destroyed || !arcsAllowed(perfActive, reduced)) return;
+      const to = opts.arcTarget?.(targetId);
+      if (!to || !Number.isFinite(to.x) || !Number.isFinite(to.y)) return;
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      const from = arcStart(stage ?? stageTarget ?? defaultRect(w, h), to);
+      if (!from) return;
+      // The working colour, whatever the orb is easing through right now.
+      arcs.add(from, to, ORB_STATES.processing.color, performance.now());
+    },
     setPerfMode(mode) {
       if (destroyed) return;
       governor.setMode(mode);
@@ -281,6 +306,7 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
       observer.disconnect();
       media?.removeEventListener('change', onMotionChange);
       bank.detachAll();
+      arcs.clear();
       orb.dispose();
       landscape.dispose();
       renderer.dispose();

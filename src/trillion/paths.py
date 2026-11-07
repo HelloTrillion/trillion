@@ -75,6 +75,12 @@ def skills_config_path() -> Path:
     return home() / "skills.json"
 
 
+def skills_dir() -> Path:
+    """Skills copied in by `trillion import` (CON-8). Listed in Settings → Skills like a
+    folder the user added, each off until they turn it on. No tool can write here."""
+    return home() / "skills"
+
+
 def slack_config_path() -> Path:
     """Which Slack tools may run without asking. Tokens are in the keychain."""
     return home() / "slack.json"
@@ -85,7 +91,18 @@ def channels_config_path() -> Path:
     return home() / "channels.json"
 
 
+def devices_path() -> Path:
+    """The devices that signed in, by a hash of each page's own id (SEC-11)."""
+    return home() / "devices.json"
+
+
 def folders_config_path() -> Path:
     """The folders the user shared with her, each with its access and who it is for.
     Only `trillion.files.shares` reads or writes it (scripts/check_one_writer.py)."""
     return home() / "folders.json"
+
+
+def voiceprint_path() -> Path:
+    """The enrolled owner's voiceprint (§5.3a): owner-only, never sent anywhere, and
+    inside Trillion's own folder, so no tool can read it."""
+    return home() / "voiceprint.json"

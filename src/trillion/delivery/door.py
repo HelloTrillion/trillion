@@ -41,6 +41,7 @@ from trillion.helpers.look import pick
 from trillion.helpers.store import OwnHelper
 from trillion.scheduler import when
 from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, Schedule, ScheduleStore
+from trillion.security.alerts import is_security
 from trillion.spine.clock import Clock
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,8 @@ class Delivery:
     # set by the door alone. None for almost every notice. (Typed `str` only so the
     # helper fields can be splatted in beside it.)
     celebrate: str | None = None
+    # A security alert (SEC-11): the page marks it as one.
+    critical: bool = False
 
 
 # A handed-back line's lock screen title when its helper can't be named.
@@ -342,6 +345,7 @@ class Door:
                             detail=n.detail,
                             **await self._helper(n, schedules),
                             handoff=await self._handoff(n, schedules) is not None,
+                            critical=critical(n),
                         )
                     )
                     # Never over a quiet reason: a burst of light is not quiet.
@@ -523,6 +527,11 @@ def _one_celebration(out: list[Delivery], tiers: Sequence[Tier | None]) -> list[
         return out
     best, tier = max(given, key=lambda it: (_TIER_RANK[it[1]], -it[0]))
     return [dataclasses.replace(d, celebrate=tier) if i == best else d for i, d in enumerate(out)]
+
+
+def critical(n: Notice) -> bool:
+    """A security alert's notice (SEC-11)."""
+    return n.source == "attention" and is_security(n.source_id)
 
 
 def _asks(n: Notice) -> bool:

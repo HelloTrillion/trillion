@@ -154,6 +154,13 @@ def _header(text: str) -> tuple[dict[str, object], str] | Invalid:
     return data, body.strip()
 
 
+def header_fields(source: bytes) -> dict[str, object]:
+    """The header of a SKILL.md as `parse` reads it (a BOM and Windows line endings
+    allowed), or {} when it has none it would accept."""
+    found = _header(source.decode("utf-8", "replace"))
+    return {} if isinstance(found, Invalid) else found[0]
+
+
 def _tools(raw: object) -> tuple[str, ...] | Invalid:
     # Claude Code writes `Bash(git add:*), Read`: with a comma, only commas separate.
     if raw is None:

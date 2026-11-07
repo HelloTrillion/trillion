@@ -2853,6 +2853,21 @@ button.reminders-open {
 .notice-held {
   font-style: italic;
 }
+/* A security alert (SEC-11): a small mark before the line. */
+.notice-critical {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--color-danger);
+  border-radius: 999px;
+  color: var(--color-danger);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+.msg > .notice-critical {
+  margin-bottom: 4px;
+}
 .notice-block {
   display: grid;
   gap: 2px;

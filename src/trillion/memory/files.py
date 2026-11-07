@@ -73,6 +73,8 @@ def render(m: Memory) -> str:
         head.append(f"supersedes: {m.supersedes}")
     if m.superseded_by:
         head.append(f"superseded_by: {m.superseded_by}")
+    if m.origin:
+        head.append(f"origin: {m.origin}")
     return "\n".join([_FENCE, *head, _FENCE, "", m.text, ""])
 
 
@@ -102,6 +104,7 @@ def parse(raw: str) -> Memory:
             as_of=_unstamp(fields.get("as_of", fields["created"])),
             supersedes=fields.get("supersedes") or None,
             superseded_by=fields.get("superseded_by") or None,
+            origin=fields.get("origin") or None,
             text=text,
         )
     except KeyError as e:
@@ -127,7 +130,16 @@ def check(m: Memory) -> str | None:
     for link in (m.supersedes, m.superseded_by):
         if link is not None and (not valid_id(link) or link == m.id):
             return "bad link to another memory"
+    if m.origin is not None and not _one_line(m.origin):
+        return "bad origin"
     return None
+
+
+MAX_ORIGIN = 200
+
+
+def _one_line(text: str) -> bool:
+    return 0 < len(text) <= MAX_ORIGIN and text == text.strip() and text.isprintable()
 
 
 def digest(text: str) -> str:

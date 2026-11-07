@@ -1,0 +1,29 @@
+/* Settings → Devices (features/devices.ts). Loads after app.css. */
+
+/* Settings, Devices (SEC-11): each device that signed in, with Forget. */
+.devices-list {
+  display: grid;
+  gap: 8px;
+}
+.devices-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.devices-words {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+.devices-words small {
+  color: var(--color-text-1);
+}
+.devices-mine {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-1);
+}

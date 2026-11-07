@@ -854,6 +854,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("the Trillion app");
     app.run(|app, event| match event {
+        // Clicking the Dock icon. Linux has no such event; the tray's menu shows it.
+        #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => show_main_window(app),
         RunEvent::Exit => stop_server(app),
         _ => {}

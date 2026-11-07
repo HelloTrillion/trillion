@@ -56,7 +56,9 @@ galaxy.destroy();         // stops the loop and frees GPU resources
 
 **Gold means the microphone is live, and nothing else.** If you call `setState('listening')` before a microphone is attached, the orb shows `arming` (ember) until `attachAnalyser(node, 'mic')` is called, and `onStateChange` reports `arming` too, so a screen reader never announces listening when nothing is recording. `getState()` still returns what you asked for. For demos and screenshots, `createGalaxy(canvas, { demo: true })` lets `listening` pulse gold without a microphone.
 
-`addSatellite`, `removeSatellite` and `pulseArc` already have their final signatures but are no-ops in this release; the constellation (GAL-7) and energy arcs (GAL-8) arrive in Phase 1.
+`addSatellite` and `removeSatellite` already have their final signatures but are no-ops in this release; the constellation (GAL-7) arrives later.
+
+`pulseArc(targetId)` sends a faint pulse of light from the orb's edge to wherever `arcTarget(targetId)` says that target is (CSS pixels from the canvas's top-left; GAL-8). It draws nothing when `arcTarget` is missing or returns null, in perf mode, or with reduced motion. At most three run at once.
 
 ## States
 

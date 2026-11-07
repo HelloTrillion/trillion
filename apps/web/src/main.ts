@@ -1,4 +1,4 @@
-import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
+import { createGalaxy, type StageRect, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
@@ -12,6 +12,7 @@ import { createListeningSettings } from './listening';
 import { createMic } from './mic';
 import { BargeDetector, HOLD_MS, Preroll, afterOver, frameLevel, holdForReply, watchMode, watchTitle } from './barge';
 import { createMicrophones } from './microphone';
+import { createVoiceprintSettings } from './voiceprint';
 import { createNamesSettings } from './names';
 import {
   APPROVE,
@@ -70,6 +71,8 @@ import { createDayOpener, createThreads, escapeAction, listPath, whenIdle } from
 import { type Api, createSettings } from './settings';
 import { createSkills } from './skills';
 import { createSpeechSettings } from './speech';
+import { deviceId } from './devices';
+import { COMPUTER, HER, YOU, loadFeatures } from './features';
 import { type Helper, askTarget, messagePlaceholder, capNameOf, createAskQueue, createHelpers, createdOpener, helloOnce, stepTarget } from './helpers';
 import { lookOf, picture } from './look';
 import { createRail } from './rail';
@@ -85,7 +88,9 @@ import { createHome, dayBoardStep, endsBuild, frameKeeps, herOpensHome, localDat
 import { createApprovals, outcomeWords } from './approvals';
 import { type DraftCard, createDraftPin } from './draft';
 import { DOCK, isPhone } from './layout';
+import { arcTarget, orbSeen } from './arcs';
 import { captionOf, createCaptions } from './captions';
+import { ROAST_TOOL, openRoastCard } from './roast';
 import {
   type Entry,
   INITIAL,
@@ -222,9 +227,24 @@ let shellKeys = new ShellKeys(talkKeys);
 let version = '';
 // How much the galaxy draws, as chosen in this browser: automatic unless changed (GAL-6).
 let detailChoice = savedDetail();
+// Where the orb was last placed, in canvas pixels: an energy arc leaves from it (GAL-8).
+let orbAt: StageRect | null = null;
 const galaxy = createGalaxy(canvas, {
   theme: shownTheme(themeChoice, systemLight.matches),
   perfMode: perfModeOf(detailChoice),
+  arcTarget: (callId) => {
+    const box = canvas.getBoundingClientRect();
+    const viewport = { w: innerWidth, h: innerHeight };
+    const chip = transcriptEl.querySelector<HTMLElement>(`[data-call="${CSS.escape(callId)}"]`);
+    const centre = orbAt ? { x: box.left + orbAt.x, y: box.top + orbAt.y } : null;
+    return arcTarget({
+      chip: chip?.getBoundingClientRect() ?? null,
+      clip: transcriptEl.getBoundingClientRect(),
+      viewport,
+      canvas: box,
+      orb: orbSeen(centre, viewport, document.hidden),
+    });
+  },
 });
 
 // The docked orb's size and place come from DOCK; the CSS (its button, the hole in the workspace) reads them here.
@@ -251,7 +271,10 @@ const workspace = createWorkspace({
   sidebarWidth: () => sidebar.width(),
   sheetTop: () => sidebar.sheetTop(),
   hold: (open) => sidebar.hold(open),
-  place: (rect, animate) => galaxy.setStage(rect, { animate }),
+  place: (rect, animate) => {
+    orbAt = rect;
+    galaxy.setStage(rect, { animate });
+  },
   // A caption never sits over the workspace.
   changed: () => showCaptions(),
   fallback: () => (sidebar.hidden ? showSidebarBtn : null),
@@ -706,10 +729,20 @@ function renderEntry(e: Entry): HTMLElement {
       const box = el('div', 'msg assistant');
       box.append(...formatted(e.text));
       if (e.interrupted) box.append(el('span', 'mark', '(stopped)'));
-      return box;
+      if (e.roast !== 'done' || !e.text.trim()) return box;
+      // Her roast, finished: one tap makes it a card to share.
+      const turn = el('div', 'roast-turn');
+      const share = el('button', 'roast-share', 'Share this roast');
+      share.type = 'button';
+      share.addEventListener('click', () => openRoastCard(e.text, view.agentName));
+      turn.append(box, share);
+      return turn;
     }
     case 'tool': {
-      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
+      const chip = el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
+      // The energy arc finds its chip by this (GAL-8).
+      chip.dataset['call'] = e.callId;
+      return chip;
     }
     case 'notice':
       return el('p', 'notice', e.text);
@@ -824,6 +857,9 @@ function render(): void {
     last?.kind === 'assistant' &&
     prev?.kind === 'assistant' &&
     last.interrupted === prev.interrupted &&
+    // A finished roast carries its Share button: drawn whole, never as text alone.
+    last.roast !== 'done' &&
+    last.roast === prev.roast &&
     all.slice(0, -1).every((e, i) => e === rendered[i]);
   if (onlyTextGrew && transcriptEl.lastElementChild) {
     transcriptEl.lastElementChild.replaceChildren(...formatted(last.text));
@@ -1155,6 +1191,7 @@ document.addEventListener('visibilitychange', () => {
 });
 const skills = createSkills(panel.host('skills'), api, () => panel.refresh());
 const reminders = createReminders(panel.host('reminders'), api, () => panel.refresh(), openReady);
+// Read-only: a waiting row goes to its card's conversation, where it is answered (SPN-14).
 const speaking = createSpeaking(panel.host('speaking'), api, () => panel.refresh());
 const about = createAbout(panel.host('about'), () => ({ version, model: view.model ?? 'None chosen' }));
 async function refreshUsage(): Promise<Usage | null> {
@@ -1187,12 +1224,37 @@ const spendCards = createSpendCards(spendEl, (body) => send(body), undefined, (c
   // Raised on a provider that has a switch: the banner asks whether to go back now.
   if (status === 'raised') switchLines.raised(card.provider_id);
 });
-const HER = 'Her';
-const YOU = 'You';
-const COMPUTER = 'This computer';
 panel.add({ id: 'model', label: 'Model', group: HER, icon: 'model', keywords: 'brain provider key anthropic openai ollama', summary: () => view.model ?? 'None chosen', open: () => settings.open() });
 panel.add({ id: 'voice', label: 'Voice', group: HER, icon: 'voice', keywords: 'speech speak elevenlabs sound', summary: () => (view.speech ? 'On' : 'Off'), open: () => speechSettings.open() });
 panel.add({ id: 'mic', label: 'Hearing', group: HER, icon: 'mic', keywords: 'microphone mic listen whisper deepgram', summary: () => (view.listening ? 'On' : 'Off'), open: () => listeningSettings.open() });
+// Your voice (§5.3a): its own microphone, open only while a phrase is recorded.
+let phraseFrame: ((pcm: ArrayBuffer) => void) | null = null;
+const phraseMic = createMic({
+  onFrame: (pcm) => phraseFrame?.(pcm),
+  device: savedMic,
+  deviceName: savedMicName,
+  onProblem: () => {
+    phraseFrame = null;
+  },
+  attach: (node) => galaxy.attachAnalyser(node, 'mic'),
+});
+const voiceprint = createVoiceprintSettings(
+  panel.host('voiceprint'),
+  api,
+  {
+    start: async (onFrame) => {
+      phraseFrame = onFrame;
+      await phraseMic.start();
+    },
+    stop: () => {
+      phraseFrame = null;
+      phraseMic.stop();
+    },
+  },
+  { changed: () => panel.refresh() },
+);
+void voiceprint.peek().then(() => panel.refresh());
+panel.add({ id: 'voiceprint', label: 'Your voice', group: HER, icon: 'mic', keywords: 'voiceprint speaker identity recognise recognize enrol enroll who is speaking guest private approve yes', summary: () => voiceprint.summary(), open: () => voiceprint.open() });
 panel.add({ id: 'names', label: 'Names and tone', group: HER, icon: 'names', keywords: 'name blunt gentle timezone personality', summary: () => namesSettings.summary(), open: () => namesSettings.open() });
 panel.add({ id: 'shortcuts', label: 'Shortcuts', group: YOU, icon: 'shortcuts', keywords: 'hotkey keyboard space push to talk key', summary: () => shortcuts.summary(), open: () => shortcuts.open() });
 panel.add({ id: 'appearance', label: 'Appearance', group: YOU, icon: 'appearance', keywords: 'theme dark light system mode performance smooth detail celebrations supernova', summary: () => appearanceSummary(themeChoice, detailChoice), open: () => appearance.open() });
@@ -1204,6 +1266,8 @@ panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connec
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });
 panel.add({ id: 'about', label: 'About', group: COMPUTER, icon: 'about', keywords: 'version doctor help', summary: () => version, open: () => about.open() });
+// Newer sections plug in from features/: each file places itself (the plug-in features spec).
+const features = loadFeatures({ panel, api, send, refresh: () => panel.refresh(), openConversation: openReady });
 function openSettings(at?: string): void {
   void namesSettings.peek().then(() => panel.refresh());
   panel.open(at);
@@ -1561,7 +1625,8 @@ function connect(): void {
   ws.addEventListener('open', () => {
     retryMs = 1000;
     // `host`: where the page runs, so the mic check leaves this app's own recording out.
-    send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY), host: pageHost(navigator, desktop.DESKTOP) });
+    // `device`: this browser's own id, so a new device is told about (SEC-11); never an address.
+    send({ type: 'hello', token, protocol: PROTOCOL, client: 'web', resume: store(CONVERSATION_KEY), host: pageHost(navigator, desktop.DESKTOP), device: deviceId() });
   });
   ws.binaryType = 'arraybuffer';
   ws.addEventListener('message', (ev) => {
@@ -1615,6 +1680,12 @@ function connect(): void {
       );
     }
     helpers.handle(msg);
+    features.dispatch(msg);
+    // A tool started: once its chip is drawn and scrolled to, a faint arc runs to it from the orb (GAL-8).
+    if (msg.type === 'tool.start') {
+      const callId = String(msg['call_id'] ?? '');
+      requestAnimationFrame(() => galaxy.pulseArc(callId));
+    }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
@@ -1632,6 +1703,10 @@ function connect(): void {
       if (reveal.raise) sidebar.raise(reveal.raise);
     }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
+    // She has read the week: the orb flares before the roast lands.
+    if (msg.type === 'tool.end' && msg['ok'] === true && view.entries.some((e) => e.kind === 'tool' && e.callId === msg['call_id'] && e.name === ROAST_TOOL)) {
+      galaxy.flare(1);
+    }
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
     }

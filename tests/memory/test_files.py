@@ -152,3 +152,12 @@ def test_a_file_moved_to_another_folder_takes_that_folders_type(tmp_path: Path) 
     (tmp_path / "user" / f"{COFFEE.id}.md").rename(tmp_path / "feedback" / f"{COFFEE.id}.md")
     (found,) = files.scan(tmp_path).found
     assert found.memory.type == "feedback"
+
+
+def test_an_imported_claim_keeps_its_origin_in_the_file() -> None:
+    imported = replace(COFFEE, source="imported_claim", origin="openclaw memory/2026-10-01.md")
+    raw = files.render(imported)
+    assert "origin: openclaw memory/2026-10-01.md\n" in raw
+    back = files.parse(raw)
+    assert back.origin == "openclaw memory/2026-10-01.md"
+    assert files.check(replace(imported, origin="two\nlines")) == "bad origin"
