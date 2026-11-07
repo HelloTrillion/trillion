@@ -671,6 +671,8 @@ def test_saving_puts_the_key_in_the_keychain_and_nowhere_else(
             # Its provider starts with the default caps, and the upgrade seeding is done.
             ('{"anthropic": {"soft": 20.0, "hard": 50.0, "warn_pct": 80, "unit": "dollars"}}',),
             ("true",),
+            # Notes from chats: on, reading from the first start.
+            (f'{{"on": true, "since": {app.rt.noter.since}}}',),
         ]
     )
     # Read while the app still runs: closing it would fold the -wal file into the

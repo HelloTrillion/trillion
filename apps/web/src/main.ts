@@ -2,7 +2,7 @@ import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
-import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createShortcuts, createUsageSettings } from './browser';
+import { appearanceSummary, createAbout, createAppearance, createBoardSettings, createMemorySettings, createShortcuts, createUsageSettings } from './browser';
 import { type Choice, createFolderPanel, createShares, createSharedFolders, footText, loadRoutines, parseFrame } from './folders';
 import { type Key, ShellKeys, TalkKeys, type TalkPrefs, contextOf, enterInField, matches } from './hotkey';
 import * as desktop from './desktop';
@@ -1063,6 +1063,7 @@ const appearance = createAppearance(
   },
 );
 const boardSettings = createBoardSettings(panel.host('board'), api, () => panel.refresh(), { get: savedHomeDaily, set: saveHomeDaily });
+const memorySettings = createMemorySettings(panel.host('memory'), api, () => panel.refresh());
 // Shares, read and changed through the routes: Settings and the Folders panel share them.
 const shares = createShares(api);
 const routineChoices = (): Promise<Choice[]> => loadRoutines(api);
@@ -1192,6 +1193,7 @@ panel.add({ id: 'board', label: 'Board', group: YOU, icon: 'workspace', keywords
 panel.add({ id: 'reminders', label: 'Reminders', group: YOU, icon: 'reminders', keywords: 'remind reminder schedule timed ask every weekday routine alarm notification', summary: () => reminders.summary(), open: () => reminders.open() });
 panel.add({ id: 'speaking', label: 'Speaking up', group: YOU, icon: 'speaking', keywords: 'heads up meeting calendar email gmail urgent payments stripe quiet hours focus do not disturb microphone watch notify', summary: () => speaking.summary(), open: () => speaking.open() });
 panel.add({ id: 'usage', label: 'Usage and limits', group: YOU, icon: 'usage', keywords: 'cost spend bill tokens money', summary: () => (usage ? pill(usage) : ''), open: () => usageSettings.open() });
+panel.add({ id: 'memory', label: 'Memory', group: HER, icon: 'memory', keywords: 'remember memories notes facts privacy forget learn', summary: () => memorySettings.summary(), open: () => memorySettings.open() });
 panel.add({ id: 'connected', label: 'Connected tools', group: HER, icon: 'connected', keywords: 'mcp server tools plugins apps connect integrations calendar gmail drive notion linear github sign in', summary: () => connected.summary(), open: () => connected.open() });
 panel.add({ id: 'skills', label: 'Skills', group: HER, icon: 'skills', keywords: 'skills skill.md instructions abilities claude agent skills folder', summary: () => skills.summary(), open: () => skills.open() });
 panel.add({ id: 'folders', label: 'Shared folders', group: COMPUTER, icon: 'folders', keywords: 'files grant folder share browse picker access read change', summary: () => folders.summary(), open: () => folders.open() });

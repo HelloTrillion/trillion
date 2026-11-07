@@ -140,7 +140,7 @@ async def test_a_routine_at_the_cap_is_skipped_capped_and_waits_for_its_next_tim
     assert await runs(rt) == [("skipped", "capped")]
     # Said once, by the app, shown and not spoken; no failed or missed notice.
     assert [(n[1], n[2], n[3]) for n in await notices(rt)] == [("heads_up", PAUSED, None)]
-    assert await rt.spend.paused("anthropic") == ["routines", "titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["routines", "titles", "board", "memories"]
 
     # Its next time, still capped: skipped again, and nothing more said.
     at(rt, ms("2026-11-11T09:00"))
@@ -170,7 +170,7 @@ async def test_a_timed_ask_at_the_cap_is_skipped_and_leaves_no_conversation(
     ) as cur:
         assert (await cur.fetchone())[0] == 0  # type: ignore[index]
     # Two kinds paused, one notice naming what is set up.
-    assert await rt.spend.paused("anthropic") == ["routines", "asks", "titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["routines", "asks", "titles", "board", "memories"]
     assert [n[2] for n in await paused_notices(rt)] == [
         "Routines, timed asks and the board are paused: Anthropic is at its $50 cap"
     ]
@@ -204,7 +204,7 @@ async def test_routines_resume_when_the_cap_is_raised(rt: Runtime) -> None:
     await capped(rt, provider)
     await rt.schedules.create(daily(kind="ask", target=None, next_due_ms=now))
     await rt.scheduler.tick()
-    assert await rt.spend.paused("anthropic") == ["asks", "titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["asks", "titles", "board", "memories"]
 
     await caps(rt, anthropic=RAISED)
     assert await rt.spend.paused("anthropic") == []
@@ -225,7 +225,7 @@ async def test_everything_resumes_on_the_1st_and_a_new_month_says_so_again(
     await capped(rt, provider)
     await rt.schedules.create(daily(kind="ask", target=None, next_due_ms=now))
     await rt.scheduler.tick()
-    assert await rt.spend.paused("anthropic") == ["asks", "titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["asks", "titles", "board", "memories"]
     assert len(await paused_notices(rt)) == 1
 
     # The 1st: a new month has spent nothing, so it runs.
@@ -367,7 +367,7 @@ async def test_the_runtime_holds_background_work_until_the_cap_is_raised(rt: Run
     quiet(rt)
     await capped(rt, ScriptedProvider())
     assert await rt.held("watchers")
-    assert await rt.spend.paused("anthropic") == ["titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["titles", "board", "memories"]
     await caps(rt, anthropic=RAISED)
     assert not await rt.held("watchers")
     assert await rt.spend.paused("anthropic") == []
@@ -388,7 +388,7 @@ async def test_a_title_at_the_cap_is_dropped_quietly(rt: Runtime) -> None:
         await session._name(said, reply)
         assert provider.calls == []
         assert page.all("conversation.title") == [] and page.all("error") == []
-        assert await rt.spend.paused("anthropic") == ["titles", "board"]
+        assert await rt.spend.paused("anthropic") == ["titles", "board", "memories"]
     finally:
         await session.close()
 
@@ -416,7 +416,7 @@ async def test_a_channel_reply_at_the_cap_is_not_made_and_nothing_is_kept(
     assert await rt.channels._answerer.answer(m) is None
     assert provider.calls == []
     assert not await rt.conversations.exists(m.conversation, OWNER)
-    assert await rt.spend.paused("anthropic") == ["titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["titles", "board", "memories"]
 
 
 async def test_a_channel_reply_refused_mid_way_is_dropped_too(rt: Runtime) -> None:
@@ -472,7 +472,7 @@ async def test_a_board_refresh_at_the_cap_leaves_the_board_as_it_was(world: Worl
     assert world.page.all("board.refreshing") == []
     assert await world.board() == before
     assert world.refresher._fails == {}
-    assert await rt.spend.paused("anthropic") == ["titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["titles", "board", "memories"]
 
     # Raised: it refreshes on the next step.
     await caps(rt, anthropic=RAISED)
@@ -511,6 +511,7 @@ async def test_a_deferred_find_is_claimed_again_and_never_deleted(tmp_path: Path
             "018_attention_deferred",
             "019_helpers",
             "020_helper_draft",
+            "021_memory_notes",
         ]
         store = SqliteAttentionStore(conn)
         assert [(f.key, f.status) for f in await store.recent("local", NOW)] == [("k0", "told")]
@@ -672,10 +673,16 @@ async def test_paused_lists_the_work_set_up_and_holds_across_a_restart(
     again = await _open(tmp_path, _secrets())
     try:
         # Nothing has run since the restart: what is set up is listed, in order.
-        assert await again.spend.paused("anthropic") == ["routines", "asks", "titles", "board"]
+        assert await again.spend.paused("anthropic") == [
+            "routines",
+            "asks",
+            "titles",
+            "board",
+            "memories",
+        ]
         # Turned off, a kind is not listed; another provider pauses nothing.
         again.widgets_fresh = False
-        assert await again.spend.paused("anthropic") == ["routines", "asks", "titles"]
+        assert await again.spend.paused("anthropic") == ["routines", "asks", "titles", "memories"]
         await caps(again, anthropic=CAPS, openai=CAPS)
         again.ledger.add(Row("openai", "conversation", "tokens", 0, 50.0, again.clock()))
         assert again.gate.state("openai") == "capped"
@@ -718,6 +725,7 @@ async def test_018_keeps_every_find_its_rowid_and_the_index(tmp_path: Path) -> N
             "018_attention_deferred",
             "019_helpers",
             "020_helper_draft",
+            "021_memory_notes",
         ]
         async with conn.execute(sql) as cur:
             assert [tuple(r) for r in await cur.fetchall()] == rows
@@ -766,7 +774,7 @@ async def test_a_helpers_work_pauses_at_the_cap_like_routines(rt: Runtime) -> No
     provider = ScriptedProvider(say("never"))
     await capped(rt, provider)
     await rt.schedules.create(daily(id="d4e5f6a7", next_due_ms=now, helper_id=made.id))
-    assert await rt.spend.paused("anthropic") == ["helpers", "titles", "board"]
+    assert await rt.spend.paused("anthropic") == ["helpers", "titles", "board", "memories"]
 
     await rt.scheduler.tick()
     assert provider.calls == []
