@@ -83,6 +83,7 @@ import { createApprovals, outcomeWords } from './approvals';
 import { type DraftCard, createDraftPin } from './draft';
 import { DOCK, isPhone } from './layout';
 import { captionOf, createCaptions } from './captions';
+import { ROAST_TOOL, openRoastCard } from './roast';
 import {
   type Entry,
   INITIAL,
@@ -701,7 +702,14 @@ function renderEntry(e: Entry): HTMLElement {
       const box = el('div', 'msg assistant');
       box.append(...formatted(e.text));
       if (e.interrupted) box.append(el('span', 'mark', '(stopped)'));
-      return box;
+      if (e.roast !== 'done' || !e.text.trim()) return box;
+      // Her roast, finished: one tap makes it a card to share.
+      const turn = el('div', 'roast-turn');
+      const share = el('button', 'roast-share', 'Share this roast');
+      share.type = 'button';
+      share.addEventListener('click', () => openRoastCard(e.text, view.agentName));
+      turn.append(box, share);
+      return turn;
     }
     case 'tool': {
       return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
@@ -819,6 +827,9 @@ function render(): void {
     last?.kind === 'assistant' &&
     prev?.kind === 'assistant' &&
     last.interrupted === prev.interrupted &&
+    // A finished roast carries its Share button: drawn whole, never as text alone.
+    last.roast !== 'done' &&
+    last.roast === prev.roast &&
     all.slice(0, -1).every((e, i) => e === rendered[i]);
   if (onlyTextGrew && transcriptEl.lastElementChild) {
     transcriptEl.lastElementChild.replaceChildren(...formatted(last.text));
@@ -1624,6 +1635,10 @@ function connect(): void {
       if (reveal.raise) sidebar.raise(reveal.raise);
     }
     if (msg.type === 'confirm.resolved' && msg['status'] === 'succeeded') galaxy.flare(0.6);
+    // She has read the week: the orb flares before the roast lands.
+    if (msg.type === 'tool.end' && msg['ok'] === true && view.entries.some((e) => e.kind === 'tool' && e.callId === msg['call_id'] && e.name === ROAST_TOOL)) {
+      galaxy.flare(1);
+    }
     if (msg.type === 'reply.sentence') {
       voice.sentence(Number(msg['turn']), Number(msg['seq']), String(msg['text'] ?? ''));
     }

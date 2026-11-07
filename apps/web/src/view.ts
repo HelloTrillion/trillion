@@ -4,6 +4,7 @@
  */
 
 import { type Look, lookOf } from './look';
+import { isRoastTurn } from './roast';
 
 /** What the core saves for a reply cut off before a word of it was heard (VOI-9). */
 const INTERRUPTED_MARK = '[interrupted]';
@@ -29,7 +30,8 @@ export type NoticeKind = 'reminder' | 'ask' | 'missed' | 'failed' | 'ready' | 'h
 export type Entry =
   // `seen`: she chose to say nothing to it, as to a sign-off (VOI-7).
   | { readonly kind: 'user'; readonly text: string; readonly seen?: boolean }
-  | { readonly kind: 'assistant'; readonly text: string; readonly interrupted: boolean }
+  /** `roast`: a reply to Roast my week, being written, then done and ready to share. */
+  | { readonly kind: 'assistant'; readonly text: string; readonly interrupted: boolean; readonly roast?: 'writing' | 'done' }
   /** `label`: the host's friendly name for a carded tool, from its card, once the card has come. */
   | { readonly kind: 'tool'; readonly callId: string; readonly name: string; readonly outcome: string | null; readonly ok: boolean; readonly label?: string }
   | {
@@ -398,6 +400,13 @@ export function readyConversation(msg: ServerMsg): string | null {
 const REFUSED: ReadonlySet<string> = new Set(['busy', 'routine_building']);
 
 /** A reply is over: what waited for it joins the conversation, in order. */
+/** A roast still being written is done once her turn is over: only then can it be shared. */
+function roastsDone(entries: readonly Entry[]): readonly Entry[] {
+  return entries.some((e) => e.kind === 'assistant' && e.roast === 'writing')
+    ? entries.map((e) => (e.kind === 'assistant' && e.roast === 'writing' ? { ...e, roast: 'done' } : e))
+    : entries;
+}
+
 function release(view: View): View {
   return view.held.length ? { ...view, entries: [...view.entries, ...view.held], held: [] } : view;
 }
@@ -467,6 +476,7 @@ const TOOL_LABELS: Readonly<Record<string, readonly [working: string, done: stri
   helper_update: ['Changing a helper', 'Changed a helper'],
   helper_narrow: ['Noting that', 'Noted'],
   helper_widen: ['Drafting a change', 'Drafted a change'],
+  week_roast: ['Reading your week', 'Read your week'],
 };
 
 const WAITING_OK = 'waiting for your OK';
@@ -701,10 +711,13 @@ function step(view: View, msg: ServerMsg): View {
       if (view.replyOpen && last?.kind === 'assistant') {
         return { ...view, entries: [...view.entries.slice(0, -1), { ...last, text: last.text + text }] };
       }
-      return { ...view, replyOpen: true, pending: null, entries: [...view.entries, { kind: 'assistant', text, interrupted: false }] };
+      const reply: Entry = isRoastTurn(view.entries)
+        ? { kind: 'assistant', text, interrupted: false, roast: 'writing' }
+        : { kind: 'assistant', text, interrupted: false };
+      return { ...view, replyOpen: true, pending: null, entries: [...view.entries, reply] };
     }
     case 'turn.complete':
-      return release({ ...view, replyOpen: false, busy: false, hearing: '', pending: null });
+      return release({ ...view, replyOpen: false, busy: false, hearing: '', pending: null, entries: roastsDone(view.entries) });
     case 'seen':
       // She chose to say nothing to their last message: it was seen, not left unanswered.
       return { ...view, entries: replaceLast(view.entries, (e) => e.kind === 'user', (e) => ({ ...e, seen: true }) as Entry) };
@@ -798,7 +811,7 @@ function step(view: View, msg: ServerMsg): View {
         hearing: '',
         pending: null,
         entries: replaceLast(
-          view.entries,
+          roastsDone(view.entries),
           (e) => e.kind === 'assistant',
           // With `kept`, only what the user heard of a spoken reply is shown (VOI-9).
           // Nothing heard is saved as the marker alone: shown as a reload shows it.
