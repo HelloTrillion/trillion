@@ -7,12 +7,9 @@ file can't move the cursor, clear the screen or pose as Trillion's own output.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
-
-import yaml
 
 from trillion.importers.sources import TITLE, Entry, Found, LeftOut
 from trillion.memory import files
@@ -20,12 +17,10 @@ from trillion.memory.book import same_key
 from trillion.memory.types import MAX_TEXT
 from trillion.persona import setup
 from trillion.skills.fingerprint import fingerprint
-from trillion.skills.parse import Invalid, Skill, TooBig, is_link, parse, walk
+from trillion.skills.parse import Invalid, Skill, TooBig, header_fields, is_link, parse, walk
 
 # New memories added by one run (MEM-6b). The rest wait for the next run.
 MAX_NEW_MEMORIES = 500
-_OPEN = re.compile(r"\A---[ \t]*\n")
-_CLOSE = re.compile(r"^---[ \t]*$", re.M)
 
 FieldName = Literal["user_name", "timezone", "agent_name"]
 LABEL: dict[FieldName, str] = {
@@ -170,20 +165,6 @@ def _memories(plan: Plan, held: set[str]) -> None:
 # ── Skills ───────────────────────────────────────────────────────────────
 
 
-def _header(skill: Skill) -> dict[str, object]:
-    """The skill's header, which `parse` already accepted (no aliases, a mapping)."""
-    text = skill.source.decode("utf-8", "replace")
-    start = _OPEN.match(text)
-    end = _CLOSE.search(text, start.end()) if start else None
-    if start is None or end is None:
-        return {}
-    try:
-        head = yaml.safe_load(text[start.end() : end.start()])
-    except yaml.YAMLError:
-        return {}
-    return head if isinstance(head, dict) else {}
-
-
 def _get(data: object, *keys: str) -> object:
     for key in keys:
         if not isinstance(data, dict):
@@ -204,7 +185,7 @@ def _names(raw: object, limit: int = 8) -> list[str]:
 
 def needs(skill: Skill) -> tuple[str, ...]:
     """What the skill says it needs, as the user should see before turning it on."""
-    head = _header(skill)
+    head = header_fields(skill.source)
     out: list[str] = []
     tools = [shown(t, 40) for t in skill.allowed_tools][:8]
     tools += _names(_get(head, "metadata", "hermes", "requires_tools"))
