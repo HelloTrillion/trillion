@@ -451,9 +451,9 @@ def test_background_work_paused_at_the_hard_cap_is_listed_by_kind(make: Any) -> 
     recount(app)
     row = providers(app)["anthropic"]
     assert row["state"] == "capped"
-    assert row["paused"] == ["titles", "board"]
+    assert row["paused"] == ["titles", "board", "memories"]
     app.rt.widgets_fresh = False
-    assert providers(app)["anthropic"]["paused"] == ["titles"]
+    assert providers(app)["anthropic"]["paused"] == ["titles", "memories"]
 
 
 def test_caps_in_tokens_count_priced_tokens_in_the_split_too(make: Any) -> None:

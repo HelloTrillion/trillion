@@ -57,3 +57,12 @@ def _fresh_secret_registry() -> Iterator[None]:
     secret_store.forget_all()
     yield
     secret_store.forget_all()
+
+
+@pytest.fixture(autouse=True)
+def _no_enrolled_voice(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Nobody's voice is enrolled unless a test enrols one: the voiceprint of the
+    machine running the tests is never read (§5.3a)."""
+    from trillion import paths
+
+    monkeypatch.setattr(paths, "voiceprint_path", lambda: tmp_path / "voiceprint.json")

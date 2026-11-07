@@ -12,7 +12,13 @@ from trillion.api import listening
 from trillion.api.listening import Listener, Utterance
 from trillion.voice.endpoint import HELD_QUIET_S
 from trillion.voice.overlap import decide
-from trillion.voice.types import VoiceError, Word
+from trillion.voice.types import (
+    SpeakerEmbedder,
+    SpeakerEmbedding,
+    UnknownSpeaker,
+    VoiceError,
+    Word,
+)
 
 
 async def feed(listener: Listener, pcm: bytes) -> str | None:
@@ -672,3 +678,118 @@ async def test_abandoning_closes_the_stream_even_when_it_is_cancelled_meanwhile(
     let_go.set()
     await asyncio.sleep(0.01)
     assert stream.closed
+
+
+# ── Who spoke (VOI-15) ───────────────────────────────────────────────────
+
+
+class Embedder:
+    """Records what it is asked and answers with a fixed embedding."""
+
+    name = "fake"
+
+    def __init__(self, answer: SpeakerEmbedding | None = None, *, fail: bool = False) -> None:
+        self.answer = answer
+        self.fail = fail
+        self.calls: list[tuple[bytes, float, tuple[Word, ...]]] = []
+
+    async def embed(
+        self, pcm: bytes, *, start_s: float, words: tuple[Word, ...]
+    ) -> SpeakerEmbedding | None:
+        self.calls.append((pcm, start_s, words))
+        if self.fail:
+            raise RuntimeError("model missing")
+        return self.answer
+
+
+VOICE = SpeakerEmbedding(vector=(0.1, 0.2, 0.3), model="fake-1")
+
+
+async def test_the_stub_never_knows_who_spoke() -> None:
+    stub: SpeakerEmbedder = UnknownSpeaker()
+    assert await stub.embed(tone(0.5), start_s=0.0, words=()) is None
+
+
+async def test_the_embedder_is_asked_once_and_its_answer_travels_with_the_words() -> None:
+    stt = FakeSTT()
+    speakers = Embedder(VOICE)
+    listener = Listener(stt, "one", on_partial=nothing, speakers=speakers)
+    await listener.start()
+    pcm = room(0.2) + tone(0.6)
+    await feed(listener, pcm)
+    word = Word(text="hello", start_s=0.25, end_s=0.6)
+    stt.stream.say("hello", final=True, words=(word,))
+    await feed(listener, room(0.6))
+    said = await listener.end()
+    assert said == Utterance(text="hello", speaker=VOICE)
+    assert len(speakers.calls) == 1
+    audio, start_s, words = speakers.calls[0]
+    # All of it, as the recognizer was sent it, on the recognizer's clock.
+    assert audio == bytes(stt.stream.audio) and start_s == 0.0 and words == (word,)
+
+
+async def test_no_words_no_question() -> None:
+    stt = FakeSTT()
+    speakers = Embedder(VOICE)
+    listener = Listener(stt, "one", on_partial=nothing, speakers=speakers)
+    await listener.start()
+    await feed(listener, room(0.2) + tone(0.3))
+    assert await listener.end() == Utterance(text="", speaker=None)
+    await listener.abandon()
+    assert speakers.calls == []
+
+
+async def test_an_embedder_that_fails_or_stalls_is_not_knowing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    for speakers in (Embedder(VOICE, fail=True), None):
+        stt = FakeSTT()
+        if speakers is None:
+
+            class Stalls(Embedder):
+                async def embed(
+                    self, pcm: bytes, *, start_s: float, words: tuple[Word, ...]
+                ) -> SpeakerEmbedding | None:
+                    await asyncio.sleep(10)
+                    return VOICE
+
+            speakers = Stalls(VOICE)
+            monkeypatch.setattr(listening, "SPEAKER_TIMEOUT_S", 0.01)
+        listener = Listener(stt, "one", on_partial=nothing, speakers=speakers)
+        await listener.start()
+        await feed(listener, tone(0.4))
+        stt.stream.say("call Sam", final=True)
+        assert await listener.end() == Utterance(text="call Sam", speaker=None)
+    # Only the class name: nothing about the voice or the words.
+    assert "Sam" not in caplog.text and "RuntimeError" in caplog.text
+
+
+async def test_only_the_latest_audio_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(listening, "_SPEAKER_BYTES", 32_000)  # one second
+    stt = FakeSTT()
+    speakers = Embedder()
+    listener = Listener(stt, "one", on_partial=nothing, speakers=speakers, watch=True)
+    await listener.start()
+    await feed(listener, tone(3.0))
+    stt.stream.say("still here", final=True)
+    await listener.end()
+    audio, start_s, _ = speakers.calls[0]
+    # At most the last second, short by less than one frame.
+    assert 32_000 - 1_280 <= len(audio) <= 32_000
+    # Its start is on the recognizer's clock, so word times line up with it.
+    assert start_s == pytest.approx(3.0 - len(audio) / 32_000)
+
+
+async def test_her_echo_is_not_handed_over_as_their_words() -> None:
+    stt = FakeSTT()
+    speakers = Embedder()
+    listener = Listener(stt, "one", on_partial=nothing, speakers=speakers, watch=True)
+    await listener.start()
+    await feed(listener, tone(0.6))
+    hers = Word(text="sunny", start_s=0.1, end_s=0.3)
+    theirs = Word(text="stop", start_s=0.4, end_s=0.5)
+    stt.stream.say("sunny stop", final=True, words=(hers, theirs))
+    await asyncio.sleep(0.01)
+    listener.hear(judge=lambda words: [w.text == "stop" for w in words])
+    await listener.end()
+    assert speakers.calls[0][2] == (theirs,)

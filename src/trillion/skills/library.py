@@ -121,11 +121,19 @@ def _subfolders(root: Path) -> list[Path]:
 
 class Library:
     def __init__(
-        self, settings_path: Path, curated_root: Path = CURATED, *, data_root: Path | None = None
+        self,
+        settings_path: Path,
+        curated_root: Path = CURATED,
+        *,
+        data_root: Path | None = None,
+        imported_root: Path | None = None,
     ) -> None:
         self._path = settings_path
         self._curated = curated_root
         self._data = (data_root or paths.home()).expanduser().resolve()
+        # Skills `trillion import` copied in (CON-8): inside Trillion's own folder, which
+        # the user cannot add, so it is listed here instead.
+        self._imported = imported_root or self._data / "skills"
         # Every change reads, edits and writes the whole file: one at a time.
         self._lock = threading.Lock()
 
@@ -194,6 +202,10 @@ class Library:
         out: dict[str, _Candidate] = {}
         for sub in _subfolders(self._curated):
             out.setdefault(f"curated:{sub.name}", (f"curated:{sub.name}", "curated", sub, None))
+        if _is_folder(self._imported):
+            for sub in _subfolders(self._imported):
+                sid = f"folder:{sub}"
+                out.setdefault(sid, (sid, "folder", sub, self._imported))
         for f in self.folders():
             if not f.found:
                 continue

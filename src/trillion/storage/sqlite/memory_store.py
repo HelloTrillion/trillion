@@ -87,3 +87,39 @@ class SqliteMemoryStore:
             "UPDATE memories SET file_missing = 1, updated_at = ? WHERE id = ? AND owner_id = ?",
             (now_ms, memory_id, owner_id),
         )
+
+    # ── What each memory means (MEM-2) ───────────────────────────────────
+
+    async def vectors(self, owner_id: str, model: str) -> dict[str, tuple[str, bytes]]:
+        """Each stored vector made by `model`, by memory id: the digest of the text it
+        was made from, and its float32 bytes."""
+        cur = await self._conn.execute(
+            "SELECT memory_id, text_digest, vector FROM memory_vectors "
+            "WHERE owner_id = ? AND model = ?",
+            (owner_id, model),
+        )
+        return {
+            r["memory_id"]: (r["text_digest"], bytes(r["vector"])) for r in await cur.fetchall()
+        }
+
+    async def put_vector(
+        self,
+        owner_id: str,
+        memory_id: str,
+        *,
+        model: str,
+        digest: str,
+        vector: bytes,
+        now_ms: int,
+    ) -> None:
+        """Keep one memory's vector, replacing whatever was made from older text."""
+        await self._conn.execute(
+            "INSERT INTO memory_vectors "
+            "(memory_id, owner_id, model, text_digest, dimensions, vector, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (memory_id) DO UPDATE SET model = excluded.model, "
+            "text_digest = excluded.text_digest, dimensions = excluded.dimensions, "
+            "vector = excluded.vector, updated_at = excluded.updated_at "
+            "WHERE memory_vectors.owner_id = excluded.owner_id",
+            (memory_id, owner_id, model, digest, len(vector) // 4, vector, now_ms),
+        )

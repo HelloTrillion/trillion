@@ -137,3 +137,50 @@ class STTProvider(Protocol):
     async def prepare(self, choice: str) -> None:
         """One-time setup for a choice, such as a download. Most providers need none."""
         ...
+
+
+# ── Who spoke (VOI-15) ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, kw_only=True)
+class SpeakerEmbedding:
+    """A voice's fingerprint for one utterance: what a later speaker check scores.
+
+    Biometric. Never logged, never saved, never sent anywhere; it lives as long as
+    the utterance it came with."""
+
+    vector: tuple[float, ...]
+    # Which embedder made it: vectors from different models are never compared.
+    model: str
+    # The sound's own shape, frame by frame, for telling a recording played back from
+    # a person saying it again (SPN-14a): 16 bits of how the spectrum moves, plus bit
+    # 16 when the frame is loud. Empty when the embedder does not make one.
+    fingerprint: tuple[int, ...] = ()
+
+
+class SpeakerEmbedder(Protocol):
+    """Turns one committed utterance's audio into a speaker embedding.
+
+    Called once per utterance that has words, after the recognizer is done. `pcm` is
+    the utterance's audio as captured (CAPTURE: 16 kHz mono PCM16, its latest 30
+    seconds at most), starting `start_s` seconds after the stream opened. `words` are
+    the user's words with times on that clock (her echo left out), when the
+    recognizer gives times. Returns None when it cannot tell."""
+
+    name: str
+
+    async def embed(
+        self, pcm: bytes, *, start_s: float, words: tuple[Word, ...]
+    ) -> SpeakerEmbedding | None: ...
+
+
+class UnknownSpeaker:
+    """The Shell's embedder: it never knows who spoke (VOI-15). Phase 1's speaker
+    check (§5.3a) replaces it; nothing in capture changes when it does."""
+
+    name = "unknown"
+
+    async def embed(
+        self, pcm: bytes, *, start_s: float, words: tuple[Word, ...]
+    ) -> SpeakerEmbedding | None:
+        return None

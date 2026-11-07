@@ -85,7 +85,7 @@ from trillion.spine.confirm import Status
 from trillion.spine.contract import JSON, Risk, ToolCall, ToolContext, ToolDefinition
 from trillion.spine.loop_guard import LoopGuard
 from trillion.spine.refusal import plain_no
-from trillion.spine.router import Router, RouterResponse
+from trillion.spine.router import GUEST_TOOLS, Router, RouterResponse
 from trillion.spine.untrusted import is_outside, wrap
 from trillion.storage.sqlite.conversation_store import USER_INPUTS, ConversationKind, Kind
 from trillion.tools.folders import View, host_note, open_place
@@ -114,8 +114,9 @@ from trillion.tools.schedule import OWN_LANDS as ROUTINE_OWN_LANDS
 from trillion.tools.web import FETCH
 from trillion.voice.endpoint import NOTHING_AFTER_S, Verdict
 from trillion.voice.overlap import confirm, decide, is_filler, words_of
+from trillion.voice.speaker import Match, judge
 from trillion.voice.timeline import LEAD_S, TAIL_S, Timeline
-from trillion.voice.types import VoiceError, Word
+from trillion.voice.types import SpeakerEmbedding, VoiceError, Word
 from trillion.voice.whose import EchoShare, matched, whose
 from trillion.workspace import live
 from trillion.workspace.board import Board
@@ -619,10 +620,39 @@ class BuiltInput:
     helper_note: str | None = None
     # The area its host note said to offer a helper for, if one did.
     offer: str | None = None
+    # Built for a voice that isn't the owner's (PER-13): nothing personal rode with it.
+    private: bool = False
 
 
 # Where a page can say it runs, in its hello. Anything else is "other".
 HOSTS = frozenset({"desktop", "chrome", "edge", "firefox", "safari", "other"})
+
+
+# A waiting card, as a voice that isn't the owner's turn is told of it (PER-13).
+GUEST_CARD = "(an approval waiting for the owner)"
+_GUEST = (
+    "[host] This turn's voice is not the owner's enrolled voice{how}. Treat the speaker "
+    "as a guest in the room. Answer only what would be fine to say to anyone there: the "
+    "time, the weather, general questions. Decline anything personal (the owner's "
+    "memories, files, accounts, messages, calendar, plans, or what was said earlier in "
+    "this conversation) and any change, with a plain, named reason: that voice isn't "
+    "the one you know. A yes in this voice approves nothing."
+)
+_UNSURE = (
+    "[host] You couldn't tell for sure that this turn's voice is the owner's. Keep to "
+    "what would be fine to say to anyone in the room until you can. If they ask for "
+    "something personal, or approve a card, say plainly that you couldn't be sure it "
+    "was their voice, and ask them to say it again, a little longer, or to type it or "
+    "tap the card."
+)
+
+
+def guest_note(who: str) -> str:
+    """What she is told on a turn whose voice isn't the owner's (PER-13)."""
+    if who == "unsure":
+        return _UNSURE
+    how = ": it matched a recording of something already said" if who == "replay" else ""
+    return _GUEST.format(how=how)
 
 
 def offer_note(area: str) -> str:
@@ -749,6 +779,9 @@ class Session:
         # How the current turn was said. A spoken yes is recorded as spoken (SPN-14).
         # A tap on a widget's ask is "ask": typed, except that it can never approve.
         self._via: Literal["voice", "text", "ask"] = "text"
+        # Whose voice said the latest spoken turn, once an owner is enrolled (§5.3a).
+        # None when nobody is enrolled. Read only while `_via` is "voice".
+        self._who: Match | None = None
         # How long turns take (ONB-11): the next turn's start, the running turn's
         # trace, and the last one saved, which the page's "audible" may still reach.
         self._arrived: Trace | None = None
@@ -1062,7 +1095,10 @@ class Session:
         """Whether a page's turn here is offered this tool: never a routine's own,
         unless this conversation is where it belongs (`tools/routine.py`). In a
         helper's own chat, only the tools that change it; anywhere else, making and
-        asking one (AGT-2)."""
+        asking one (AGT-2). A voice that isn't the owner's is offered only what is
+        fine for anyone in the room (PER-13); the router refuses the rest anyway."""
+        if self._private():
+            return d.name in GUEST_TOOLS
         if d.category == HELPER_CATEGORY:
             return d.name in self._helper_tools()
         return d.category != ROUTINE_CATEGORY or d.name in self._routine_tools
@@ -1799,7 +1835,9 @@ class Session:
         tail = self._tail[0] if self._tail is not None else None
         # Nothing heard is shown until it turns out to be the user's turn, and no
         # draft starts from it: her reply must stay as it is until then.
-        listener = Listener(rt.stt, rt.listening_used.choice, on_partial=self._unshown)
+        listener = Listener(
+            rt.stt, rt.listening_used.choice, on_partial=self._unshown, speakers=rt.speakers
+        )
         ov = Overlap(listener=listener, started=self._now(), speaker=self._speaker or tail)
         self._overlap = ov
         try:
@@ -2151,7 +2189,9 @@ class Session:
             wake.set()  # judged at once, not at the next tick
 
         # Nothing heard is shown, and no draft starts from it.
-        listener = Listener(rt.stt, rt.listening_used.choice, on_partial=heard, watch=True)
+        listener = Listener(
+            rt.stt, rt.listening_used.choice, on_partial=heard, watch=True, speakers=rt.speakers
+        )
         now = self._now()
         # Her reply on this listener's clock: the one playing, or, before her voice
         # starts, the one coming.
@@ -2377,6 +2417,7 @@ class Session:
                 on_turn=self._turn_signal,
                 # The quiet window: only words hold it open (VOI-7).
                 words_only=quiet,
+                speakers=rt.speakers,
             )
             # Set before it starts: what was held while it connected is judged the same way.
             listener.key_held = held
@@ -2585,11 +2626,20 @@ class Session:
             elif text:
                 trace.mark("heard", self._now())
                 self._arrived = trace
+                # Whose voice it was, before anything is done with what it said.
+                self._who = await self._who_spoke(said.speaker)
+                private = self._who is not None and self._who.who != "owner"
                 # Said over her too: a "no" while her question still plays is the usual
                 # answer. "Stop" is never a refusal, so quieting her cancels nothing.
                 declined = await self._said_no(text, "voice", self._turn + 1)
                 # A draft was built while the card still waited: it never saw the no.
-                usable = declined is None and draft is not None and self._usable(draft, text)
+                usable = (
+                    declined is None
+                    and draft is not None
+                    and self._usable(draft, text)
+                    # Built for the voice this turn turned out to be (PER-13).
+                    and draft.built.private == private
+                )
                 # A used draft saves its own words: the screen shows those, so a reload
                 # shows the same.
                 shown = draft.words if usable and draft is not None else text
@@ -2992,7 +3042,10 @@ class Session:
         try:
             await self._state("processing")
             # Rules and the skills that are on, read once for this turn, off the event loop.
-            system = await asyncio.to_thread(rt.system)
+            # A voice that isn't the owner's is not told which folders are shared (PER-13).
+            system = await asyncio.to_thread(
+                functools.partial(rt.system, guest=True) if self._private() else rt.system
+            )
             await self._read_place()
             if using is not None and list(using.system) != system:
                 # A rule or skill changed while the draft ran: it sent an old prompt.
@@ -3595,7 +3648,30 @@ class Session:
             asked=asked,
             # In a helper's own chat, every call and tap is the helper's (AGT-2).
             helper_id=self._helper.id if self._helper is not None else None,
+            # Whose voice said this turn (SPN-14a, SPN-18, PER-13): spoken turns only.
+            speaker=self._who.who if (via or self._via) == "voice" and self._who else None,
         )
+
+    def _private(self) -> bool:
+        """This turn was spoken in a voice that isn't the enrolled owner's (PER-13)."""
+        return self._via == "voice" and self._who is not None and self._who.who != "owner"
+
+    async def _who_spoke(self, embedding: SpeakerEmbedding | None) -> Match | None:
+        """Judge one spoken turn's voice against the enrolled owner's (§5.3a). An
+        accepted one is kept for the replay check. Never logged: not the score, not
+        the voice. A failure here is not knowing, which is never "owner"."""
+        prints = self._rt.voiceprints
+        if prints is None:
+            return None
+        try:
+            profile = await asyncio.to_thread(prints.get)
+            match = await asyncio.to_thread(judge, embedding, profile)
+            if match is not None and match.who == "owner" and embedding is not None:
+                await asyncio.to_thread(prints.heard, embedding)
+            return match
+        except Exception as e:
+            logger.warning("speaker check failed in session %s: %s", self.id, type(e).__name__)
+            return Match(who="unsure", score=None)
 
     def _asked(self) -> bool:
         """The user's words this turn, spoken or typed, end in a question mark. A used
@@ -3788,11 +3864,19 @@ class Session:
         belongs to, when it is not yet counted (an early draft)."""
         via = via or self._via
         open_actions = await self._open_actions()
-        pending = [PendingNote(pending_id=a.id, summary=a.summary) for a in open_actions]
         spoken = kind == "user" and via == "voice"
+        # A voice that isn't the owner's (PER-13): no memory, board, card wording or
+        # helper rides with its words, and she is told who she may be talking to.
+        private = spoken and self._who is not None and self._who.who != "owner"
+        pending = [
+            PendingNote(pending_id=a.id, summary=GUEST_CARD if private else a.summary)
+            for a in open_actions
+        ]
         # The user's own clock, so "at four" means four where they are (AGT-9).
         zone = self._rt.zone()
-        recalled, brought = self._remembered(text) if kind == "user" else ("", frozenset())
+        recalled, brought = (
+            await self._remembered(text) if kind == "user" and not private else ("", frozenset())
+        )
         await self._read_place()
         now = self._rt.clock()
         jobs = [
@@ -3806,21 +3890,24 @@ class Session:
             # Said aloud: she is told it is a transcript, and that she will be heard (#40).
             spoken=self._rt.identity if spoken else None,
             zone=zone or "",
-            board=board_summary(await self._board()),
+            board="" if private else board_summary(await self._board()),
             routine=self._routine,
             jobs=jobs,
             turn=self._turn if turn is None else turn,
             # "Your last line" is asked about the user's own words, never a host note.
             who=self._rt.identity if kind == "user" else None,
             helper=helper_overlay(self._helper, self._rt.identity.agent_name)
-            if self._helper is not None
+            if self._helper is not None and not private
             else "",
-            helpers=self._helpers,
+            helpers=() if private else self._helpers,
         )
         notes = (ContextBlock(text=ASKED),) if kind == "user" and via == "ask" else ()
+        if private and self._who is not None:
+            notes = (*notes, ContextBlock(text=guest_note(self._who.who)))
         if marker is not None:
             notes = (*notes, ContextBlock(text=marker))
-        folder_note = self._folder_note
+        # Where the folder browser is names a folder: kept for the owner's next turn.
+        folder_note = None if private else self._folder_note
         if folder_note is not None:
             notes = (*notes, ContextBlock(text=folder_note))
         # A soft cap passed, or a switch ended: told once, in her own words (PER-11).
@@ -3828,7 +3915,7 @@ class Session:
         spend_notes = self._rt.spend.notes(self._in_use())
         notes = (*notes, *(ContextBlock(text=note) for _, note in spend_notes))
         # What this conversation is about, when it is a helper's own: here only, once.
-        helper_note = await self._rt.helper_note(self.id)
+        helper_note = None if private else await self._rt.helper_note(self.id)
         if helper_note is not None:
             notes = (*notes, ContextBlock(text=helper_note))
         # A need that keeps coming back, on the user's own turn: offer a helper, once.
@@ -3837,7 +3924,11 @@ class Session:
         drafting = any(a.tool == HELPER_CREATE for a in open_actions)
         offer = (
             await self._offer_due()
-            if kind == "user" and via != "ask" and not drafting and not needs.asks_for_helper(text)
+            if kind == "user"
+            and via != "ask"
+            and not private
+            and not drafting
+            and not needs.asks_for_helper(text)
             else None
         )
         if offer is not None:
@@ -3852,6 +3943,7 @@ class Session:
             spend_notes=tuple(key for key, _ in spend_notes),
             helper_note=helper_note,
             offer=offer,
+            private=private,
         )
 
     async def _commit_input(self, kind: Kind, built: BuiltInput) -> None:
@@ -3904,7 +3996,7 @@ class Session:
         replayed unchanged on every later turn: history is only ever appended to."""
         await self._commit_input(kind, await self._build_input(kind, text, marker=marker))
 
-    def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
+    async def _remembered(self, said: str) -> tuple[str, frozenset[str]]:
         """What she has saved that bears on this message, as untrusted text (MEM-5),
         and the ids it used. Nothing is marked as brought until the message is saved.
 
@@ -3912,7 +4004,7 @@ class Session:
         replays byte for byte. A correction or a forgetting therefore shows from the
         next message on, not in messages already sent (MEM-6b)."""
         rt = self._rt
-        fresh = [m for m in rt.memory.recall(said) if m.id not in self._brought]
+        fresh = [m for m in await rt.memory.search(said) if m.id not in self._brought]
         text, used = present.alongside(fresh, rt.clock())
         return (wrap("memory_recall", text) if used else "", frozenset(m.id for m in used))
 
@@ -4115,6 +4207,8 @@ class Session:
                 helper_name=n.helper_name,
                 helper_icon=n.helper_icon,
                 helper_color=n.helper_color,
+                # A security alert (SEC-11): the page marks it.
+                critical=n.critical,
             )
         if said and rt.tts is not None and rt.speech_used is not None and not self._muted:
             if self._task is None and not self._closed and not self._stopped:

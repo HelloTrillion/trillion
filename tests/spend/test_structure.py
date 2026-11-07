@@ -289,6 +289,7 @@ ALLOWED_CALLS = {
     ("api/draft.py", "Draft._run", "stream", "provider"): f"an early draft: {HANDED}",
     ("brain/compact.py", "summarize", "stream", "provider"): f"a summary: {HANDED}",
     ("brain/title.py", "name.ask", "stream", "provider"): f"naming: {HANDED}",
+    ("memory/notes.py", "ask", "stream", "provider"): f"notes from chats: {HANDED}",
     ("workspace/fill.py", "fill.ask", "stream", "provider"): f"a widget's fill-in: {HANDED}",
     ("attention/mail.py", "UrgentEmail.judge.ask", "stream", "provider"): f"a judge: {HANDED}",
     ("attention/words.py", "ask.run", "stream", "provider"): f"a watcher's line: {HANDED}",

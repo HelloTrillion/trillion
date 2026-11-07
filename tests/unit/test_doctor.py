@@ -151,12 +151,12 @@ def test_setup_prepares_the_machine_and_can_be_run_again(
 ) -> None:
     prepared(home)
     first = capsys.readouterr().out
-    assert "database ready (20 updates applied)" in first and "Start it with: trillion run" in first
+    assert "database ready (22 updates applied)" in first and "Start it with: trillion run" in first
     assert (home / "trillion.db").exists() and (home / "persona").is_dir()
     prepared(home)  # a second run finishes what is there and changes nothing
     assert "already prepared: nothing to do" in capsys.readouterr().out
     assert examine()["Database"] == Check(
-        name="Database", status="ok", detail="up to date (20 migrations)"
+        name="Database", status="ok", detail="up to date (22 migrations)"
     )
 
 
@@ -650,3 +650,70 @@ def test_a_failed_or_blocked_run_in_the_last_day_is_worth_a_look(home: Path) -> 
     assert "Settings → Reminders" in check.fix
     older = doctor.check_scheduler(home / "trillion.db", now + 2 * doctor.DAY_MS)
     assert older.status == "ok"
+
+
+# ── Recall by meaning (MEM-2, ONB-7) ─────────────────────────────────────
+
+
+def test_the_meaning_line_says_whether_memory_is_searched_by_meaning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trillion.memory import meaning
+    from trillion.voice.models import ModelFile, ModelPack
+
+    monkeypatch.setattr(meaning, "runtime_installed", lambda: False)
+    off = doctor.check_meaning(tmp_path)
+    assert off.status == "info" and off.detail == "off: memory is found by its words"
+    assert off.fix == "Install trillion[meaning], then run: trillion setup"
+    monkeypatch.setattr(meaning, "runtime_installed", lambda: True)
+    missing = doctor.check_meaning(tmp_path)
+    assert (
+        missing.detail == "off: the model is not downloaded"
+        and missing.fix == "Run: trillion setup"
+    )
+    tiny = ModelPack(id="tiny", base_url="", files=(ModelFile(name="m.onnx", size=2, sha256=""),))
+    monkeypatch.setattr(meaning, "PACK", tiny)
+    (tmp_path / "tiny").mkdir()
+    (tmp_path / "tiny" / "m.onnx").write_bytes(b"ok")
+    assert doctor.check_meaning(tmp_path) == Check(name="Meaning", status="ok", detail="on: tiny")
+
+
+def test_the_examination_includes_meaning(home: Path, offers: list) -> None:
+    assert examine()["Meaning"].status in ("ok", "info")
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_setup_fetches_the_meaning_model_only_when_it_can_be_used(
+    home: Path,
+    offers: list,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fails: bool,
+) -> None:
+    from trillion.memory import meaning
+
+    fetched: list[Path] = []
+
+    async def fetch(models_dir: Path, **_: Any) -> None:
+        fetched.append(models_dir)
+        if fails:
+            raise meaning.MeaningError("unreachable")
+
+    monkeypatch.setattr(meaning, "fetch", fetch)
+    monkeypatch.setattr(meaning, "runtime_installed", lambda: False)
+    prepared(home)  # offline: nothing fetched
+    assert main(["setup", "--no-run", "--port", str(free_port())]) == 0
+    assert fetched == []  # not installed: nothing to fetch it for
+    monkeypatch.setattr(meaning, "runtime_installed", lambda: True)
+    prepared(home)
+    assert fetched == []  # --offline fetches nothing, ever
+    capsys.readouterr()
+    assert (
+        main(["setup", "--no-run", "--port", str(free_port())]) == 0
+    )  # a failure never stops setup
+    out = capsys.readouterr().out
+    assert fetched == [paths.models_dir()]
+    if fails:
+        assert "meaning model not fetched (unreachable): memory is found by its words" in out
+    else:
+        assert "setup  fetched the meaning model (" in out

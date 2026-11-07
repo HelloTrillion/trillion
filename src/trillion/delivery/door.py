@@ -35,6 +35,7 @@ from trillion.helpers.look import pick
 from trillion.helpers.store import OwnHelper
 from trillion.scheduler import when
 from trillion.scheduler.store import LATE_MS, Notice, NoticeKind, Schedule, ScheduleStore
+from trillion.security.alerts import is_security
 from trillion.spine.clock import Clock
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,8 @@ class Delivery:
     # A helper's handoff, handed back: its line is model-written from what it read, so
     # what she does next counts as read (MEM-5).
     handoff: bool = False
+    # A security alert (SEC-11): the page marks it as one.
+    critical: bool = False
 
 
 # A handed-back line's lock screen title when its helper can't be named.
@@ -310,6 +313,7 @@ class Door:
                             detail=n.detail,
                             **await self._helper(n, schedules),
                             handoff=await self._handoff(n, schedules) is not None,
+                            critical=critical(n),
                         )
                     )
             except BaseException:
@@ -468,6 +472,11 @@ class Door:
         for n in await self._store.held(self._owner, self._clock()):
             if n.notified_ms is None and n.id not in self._tried:
                 await self._notify(n.id)
+
+
+def critical(n: Notice) -> bool:
+    """A security alert's notice (SEC-11)."""
+    return n.source == "attention" and is_security(n.source_id)
 
 
 def _asks(n: Notice) -> bool:

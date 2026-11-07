@@ -364,3 +364,23 @@ async def test_she_can_say_truthfully_that_she_remembers(home: Path) -> None:
     assert names["memory_write"] == "runs at once" and names["memory_recall"] == "runs at once"
     assert names["memory_forget"] == "calling it shows an approval card; a yes or a tap approves it"
     await rt.close()
+
+
+async def test_a_memory_found_by_meaning_rides_as_what_was_said(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.memory.test_meaning import FakeEmbedder
+    from trillion.memory import meaning
+
+    monkeypatch.setattr(meaning, "local", lambda _models: FakeEmbedder())
+    rt = await boot(home, say("Black."), use("memory_recall", {"query": "a drink"}), say("Same."))
+    assert rt.memory.by_meaning
+    await rt.memory.write(now_ms=rt.clock(), **STORED)  # type: ignore[arg-type]
+    await talk(rt, "what do I have in the morning to drink?")
+    brought = context_of(sent_to_model(rt)[-1])
+    # No word in common, only the meaning; and still only what was said, untrusted (MEM-5).
+    assert '<untrusted_tool_result tool="memory_recall">' in brought
+    assert "I take my coffee black." in brought and "the user said" in brought
+    await talk(rt, "anything else?")
+    assert any("I take my coffee black." in r for r in results(rt))
+    await rt.close()

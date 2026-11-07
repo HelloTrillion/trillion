@@ -1,4 +1,4 @@
-"""Entry point for the `trillion` command: `run`, `setup` and `doctor`."""
+"""Entry point for the `trillion` command: `run`, `setup`, `doctor` and `import`."""
 
 from __future__ import annotations
 
@@ -61,6 +61,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         checks.add_argument(
             "--offline", action="store_true", help="skip the checks that need the network"
         )
+    imports = sub.add_parser(
+        "import",
+        help="bring names, memories and skills over from OpenClaw or Hermes (CON-8)",
+        description="Shows what would be imported. Nothing changes without --apply. "
+        "The other app's SOUL.md is never imported.",
+    )
+    imports.add_argument("app", choices=["openclaw", "hermes"])
+    imports.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        metavar="DIR",
+        help="the app's folder, if not where it usually is",
+    )
+    imports.add_argument("--apply", action="store_true", help="import; without it, a dry run")
+    imports.add_argument(
+        "--replace-profile",
+        action="store_true",
+        help="replace a name or timezone you already set, without asking",
+    )
     args = parser.parse_args(argv)
     if args.version:
         sys.stdout.write(f"trillion {__version__}\n")
@@ -71,6 +91,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_doctor(args))
     if args.command == "setup":
         return _until_stopped(_setup(args))
+    if args.command == "import":
+        return _import(args)
     parser.print_help()
     return 0
 
@@ -128,6 +150,14 @@ def _trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import(args: argparse.Namespace) -> int:
+    from trillion.cli import importer
+
+    return asyncio.run(
+        importer.run(args.app, args.source, do=args.apply, replace_profile=args.replace_profile)
+    )
+
+
 async def _prepare() -> list[str]:
     """Everything local and deterministic that a first start needs (ONB-2a).
 
@@ -154,6 +184,30 @@ async def _prepare() -> list[str]:
     return done
 
 
+def _meaning_wanted() -> bool:
+    """Its runtime is installed and its model is not here yet."""
+    from trillion import paths
+    from trillion.memory import meaning
+
+    return meaning.state(paths.models_dir()) == "no_model"
+
+
+async def _fetch_meaning() -> str:
+    """The model for recall by meaning (MEM-2), fetched once and checked (ONB-7). A
+    failure is said, never fatal: memory works by its words until setup runs again."""
+    from trillion import paths
+    from trillion.memory import meaning
+
+    mb = round(meaning.PACK.size / (1 << 20))
+    sys.stdout.write(f"setup  fetching the meaning model ({mb} MB)...\n")
+    sys.stdout.flush()
+    try:
+        await meaning.fetch(paths.models_dir())
+    except meaning.MeaningError as e:
+        return f"meaning model not fetched ({e.kind}): memory is found by its words for now"
+    return f"fetched the meaning model ({mb} MB)"
+
+
 async def _setup(args: argparse.Namespace) -> int:
     for folder in args.grant:
         if not folder.expanduser().is_dir():
@@ -164,8 +218,11 @@ async def _setup(args: argparse.Namespace) -> int:
     except OSError as e:
         sys.stderr.write(f"trillion: the data folder could not be prepared: {e.strerror}\n")
         return 1
-    for line in done or ["already prepared: nothing to do"]:
+    fetch = not args.offline and _meaning_wanted()
+    for line in done or ([] if fetch else ["already prepared: nothing to do"]):
         sys.stdout.write(f"setup  {line}\n")
+    if fetch:
+        sys.stdout.write(f"setup  {await _fetch_meaning()}\n")
     sys.stdout.write("\n")
     report, healthy = await _examine(args, secrets=False)
     sys.stdout.write(report)
