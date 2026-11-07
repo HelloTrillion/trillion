@@ -151,7 +151,7 @@ def test_setup_prepares_the_machine_and_can_be_run_again(
 ) -> None:
     prepared(home)
     first = capsys.readouterr().out
-    assert "database ready (21 updates applied)" in first and "Start it with: trillion run" in first
+    assert "database ready (22 updates applied)" in first and "Start it with: trillion run" in first
     assert (home / "trillion.db").exists() and (home / "persona").is_dir()
     prepared(home)  # a second run finishes what is there and changes nothing
     assert "already prepared: nothing to do" in capsys.readouterr().out
