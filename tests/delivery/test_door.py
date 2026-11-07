@@ -190,6 +190,39 @@ async def test_a_page_that_cannot_take_them_leaves_them_held(store: SqliteSchedu
     assert [x.id for x in after.got] == [first.id, second.id]
 
 
+class RefusesLater(FakePage):
+    """A page whose hand-over is under way when it turns out not to be free."""
+
+    def __init__(self, id: str, active_ms: int = 0) -> None:
+        super().__init__(id, active_ms)
+        self.taking, self.gate = asyncio.Event(), asyncio.Event()
+
+    async def deliver(self, notices: Sequence[Delivery]) -> None:
+        self.taking.set()
+        await self.gate.wait()
+        raise NotFree
+
+
+async def test_a_page_offered_while_another_refuses_still_gets_them(
+    store: SqliteScheduleStore,
+) -> None:
+    # The window between the door letting go of its lock and holding them again: a
+    # page offered then finds none held, and must not wait for the next tick.
+    first_page = RefusesLater("c1", active_ms=2)
+    pages: list[FakePage] = [first_page]
+    d, _, _ = door(store, pages)
+    first, second = await add(store), await add(store)
+    handing = asyncio.create_task(d.offer(first_page))
+    await first_page.taking.wait()
+    newer = FakePage("c2", active_ms=3)
+    pages.append(newer)
+    assert await d.offer(newer) == 0  # both are on their way to the first page
+    first_page.gate.set()
+    assert await handing == 0
+    assert [x.id for x in newer.got] == [first.id, second.id]
+    assert await store.held("local") == []
+
+
 async def test_two_notices_at_once_with_no_page_show_once_each(
     store: SqliteScheduleStore,
 ) -> None:

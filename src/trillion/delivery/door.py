@@ -214,6 +214,9 @@ class Door:
         # Public so the runtime can put the helpers in place once they are open.
         self.helpers: Helpers | None = None
         self._lock = asyncio.Lock()
+        # Offers begun, counted under the lock: a hand-over that fails can tell whether
+        # another offer came while its notices were out, and found none held.
+        self._offers = 0
         self._notifying = asyncio.Lock()
         # Notices whose notification was tried in this process, shown or not.
         self._tried: set[str] = set()
@@ -273,6 +276,8 @@ class Door:
         """A page opened or came free: it gets every held notice, oldest first, if it is
         the live page. Returns how many it got."""
         async with self._lock:
+            self._offers += 1
+            seen = self._offers
             now = self._clock()
             if session is not self.live() or not free(session.facts(), now):
                 return 0
@@ -328,13 +333,20 @@ class Door:
         except asyncio.CancelledError:
             await _finished(handing)
             if not handing.cancelled() and handing.exception() is not None:
-                await asyncio.shield(self._hold([d.id for d in out], session))
+                await asyncio.shield(self._put_back([d.id for d in out], session, seen))
             raise
         except Exception as e:
             # It raised before taking any: they are held again for the next free page.
             logger.warning("page %s could not take notices: %s", session.id, type(e).__name__)
-            await self._hold([d.id for d in out], session)
-            return 0
+            if not await self._put_back([d.id for d in out], session, seen):
+                return 0
+            # A page offered while they were out found none: it gets them now, not on
+            # the next tick. Only another offer leads here, so this never loops.
+            live = self.live()
+            if live is None:
+                return 0
+            got = await self.offer(live)
+            return got if live is session else 0
         quiet = [d.id for d in out if d.quiet is not None]
         unspoken = [d.id for d in out if d.quiet is None and not d.spoken and d.id in watched]
         if quiet or unspoken:
@@ -448,6 +460,13 @@ class Door:
             return when.due_words(n.due_ms, zones[n.source_id], now)
         except when.WhenError:
             return ""
+
+    async def _put_back(self, ids: Sequence[str], session: SessionLike, seen: int) -> bool:
+        """Hold them again under the lock, so any offer either finds them held or ran
+        before and is counted. True when one ran since `seen`: offer them again."""
+        async with self._lock:
+            await self._hold(ids, session)
+            return self._offers != seen
 
     async def _hold(self, ids: Sequence[str], session: SessionLike) -> None:
         """Only for notices `session` was never sent: by the contract it took none."""
