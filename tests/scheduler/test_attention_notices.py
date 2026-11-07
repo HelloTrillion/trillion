@@ -11,7 +11,7 @@ import pytest
 from tests.scheduler.conftest import NY, runs, written
 from trillion.scheduler.store import https_link
 from trillion.storage.db import connect
-from trillion.storage.migrate import migrate
+from trillion.storage.migrate import migrate, names
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 
 DUE = 1_000_000
@@ -160,16 +160,7 @@ async def test_the_migration_keeps_every_notice_and_reference(tmp_path: Path) ->
         " result_notice, created_ms) VALUES (41, 's1', 9, 'delivered', 120, 1, 'n2', 9)"
     )
     await conn.commit()
-    assert await migrate(conn) == [
-        "015_attention",
-        "016_decision_events",
-        "017_usage_spend",
-        "018_attention_deferred",
-        "019_helpers",
-        "020_helper_draft",
-        "021_memory_vectors",
-        "022_memory_notes",
-    ]
+    assert await migrate(conn) == names(after="014")
     async with conn.execute("PRAGMA foreign_key_check") as cur:
         assert await cur.fetchall() == []
     store = SqliteScheduleStore(conn)

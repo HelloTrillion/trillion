@@ -98,3 +98,7 @@ def create_memories_router(rt: Runtime) -> APIRouter:
         return {**state(), "id": done.memory.id, "duplicate": done.duplicate}
 
     return router
+
+
+# Mounted by `trillion.api.routes.plugged`: nothing to add to app.py.
+ROUTES = (create_memories_router,)

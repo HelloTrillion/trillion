@@ -161,3 +161,7 @@ def create_voiceprint_router(rt: Runtime) -> APIRouter:
         return await state()
 
     return router
+
+
+# Mounted by `trillion.api.routes.plugged`: nothing to add to app.py.
+ROUTES = (create_voiceprint_router,)

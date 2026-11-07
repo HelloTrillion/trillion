@@ -1,4 +1,9 @@
-"""Apply numbered SQL migrations once each, and refuse to run over an edited one."""
+"""Apply numbered SQL migrations once each, and refuse to run over an edited one.
+
+A migration is `NNN_name.sql` (the three-digit ones shipped before 2026-11-07) or
+`YYYYMMDDHHMM_name.sql`: new ones are named by the time they were written, so two
+branches never take the same number. Twelve digits sort after every three-digit one.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ from importlib.resources.abc import Traversable
 
 import aiosqlite
 
-_FILE = re.compile(r"^(\d{3})_([a-z0-9_]+)\.sql$")
+_FILE = re.compile(r"^(\d{3}|\d{12})_([a-z0-9_]+)\.sql$")
 
 
 class MigrationChecksumError(RuntimeError):
@@ -19,6 +24,18 @@ class MigrationChecksumError(RuntimeError):
 
 def _bundled() -> Traversable:
     return files("trillion.storage") / "migrations"
+
+
+def names(after: str | None = None, source: Traversable | None = None) -> list[str]:
+    """Every migration's name (`019_helpers`), in the order they apply.
+
+    `after` keeps only those after that version or name: `names(after="016")` is what
+    `migrate` applies to a database that has 001 to 016. Tests use this rather than
+    copying the list, so a new migration edits no test."""
+    found = sorted(e.name[:-4] for e in (source or _bundled()).iterdir() if _FILE.match(e.name))
+    if after is None:
+        return found
+    return [n for n in found if n.split("_", 1)[0] > after.split("_", 1)[0]]
 
 
 async def migrate(conn: aiosqlite.Connection, source: Traversable | None = None) -> list[str]:

@@ -164,3 +164,7 @@ def create_confirmations_router(rt: Runtime) -> APIRouter:
         }
 
     return router
+
+
+# Mounted by `trillion.api.routes.plugged`: nothing to add to app.py.
+ROUTES = (create_confirmations_router,)

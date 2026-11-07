@@ -14,6 +14,7 @@ from trillion.brain.types import Msg, TextBlock
 from trillion.scheduler.store import PAUSE_AFTER, Schedule
 from trillion.storage.db import connect
 from trillion.storage.migrate import migrate
+from trillion.storage.migrate import names as migration_names
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
 
@@ -236,17 +237,7 @@ async def test_the_migration_keeps_every_row_and_reference(tmp_path: Path) -> No
         "INSERT INTO task_runs (id, schedule_id, due_ms, status, timeout_s, attempts,"
         " result_notice, created_ms) VALUES (41, 's1', 9, 'delivered', 120, 1, 'n1', 9)"
     )
-    assert await migrate(conn) == [
-        "014_routines",
-        "015_attention",
-        "016_decision_events",
-        "017_usage_spend",
-        "018_attention_deferred",
-        "019_helpers",
-        "020_helper_draft",
-        "021_memory_vectors",
-        "022_memory_notes",
-    ]
+    assert await migrate(conn) == migration_names(after="013")
     async with conn.execute("PRAGMA foreign_key_check") as cur:
         assert await cur.fetchall() == []
     store = SqliteScheduleStore(conn)

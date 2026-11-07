@@ -1,6 +1,6 @@
 /** Line icons for Settings and the sidebar, built as SVG elements: no markup strings, no library. */
 
-const PATHS: Readonly<Record<string, readonly string[]>> = {
+const PATHS: Record<string, readonly string[]> = {
   // A four-point star: what she is, against the galaxy.
   model: ['M12 3.5c.7 4.6 3.4 7.3 8 8c-4.6.7-7.3 3.4-8 8c-.7-4.6-3.4-7.3-8-8c4.6-.7 7.3-3.4 8-8z'],
   voice: ['M4 9.5v5h3.5L13 19V5L7.5 9.5H4z', 'M16.5 9a4.2 4.2 0 0 1 0 6', 'M19 6.5a7.8 7.8 0 0 1 0 11'],
@@ -58,6 +58,15 @@ const PATHS: Readonly<Record<string, readonly string[]>> = {
   ],
   search: ['M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 0 0 0-13z', 'M20 20l-4.8-4.8'],
 };
+
+/**
+ * A feature's own icon, from `features/`: it brings its paths instead of adding a line
+ * here, so two new sections don't edit this file at once. A name is taken only once.
+ */
+export function addIcon(name: string, paths: readonly string[]): void {
+  if (name in PATHS) throw new Error(`icon "${name}" already exists`);
+  PATHS[name] = paths;
+}
 
 const SVG = 'http://www.w3.org/2000/svg';
 

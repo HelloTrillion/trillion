@@ -20,6 +20,7 @@ from trillion.cli.doctor import Check, Options
 from trillion.cli.main import main
 from trillion.persona import setup
 from trillion.secrets.store import MemoryStore
+from trillion.storage.migrate import names
 from trillion.voice.providers.deepgram import Deepgram
 from trillion.voice.types import Choice, VoiceError
 
@@ -151,12 +152,13 @@ def test_setup_prepares_the_machine_and_can_be_run_again(
 ) -> None:
     prepared(home)
     first = capsys.readouterr().out
-    assert "database ready (22 updates applied)" in first and "Start it with: trillion run" in first
+    assert f"database ready ({len(names())} updates applied)" in first
+    assert "Start it with: trillion run" in first
     assert (home / "trillion.db").exists() and (home / "persona").is_dir()
     prepared(home)  # a second run finishes what is there and changes nothing
     assert "already prepared: nothing to do" in capsys.readouterr().out
     assert examine()["Database"] == Check(
-        name="Database", status="ok", detail="up to date (22 migrations)"
+        name="Database", status="ok", detail=f"up to date ({len(names())} migrations)"
     )
 
 

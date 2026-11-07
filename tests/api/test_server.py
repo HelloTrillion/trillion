@@ -1091,3 +1091,41 @@ def test_the_scheduler_runs_while_the_server_does(make: Any) -> None:
     assert scheduler is not None and scheduler.running
     app.client.portal.call(app.rt.close)  # the runtime stops it first, before closing
     assert not scheduler.running
+
+
+# ── Routes that plug in (docs/specs/2026-11-07-plug-in-features.md) ──────
+
+
+def test_routers_offered_through_routes_are_mounted(make: Any) -> None:
+    app = make()
+    for path in ("/api/confirmations", "/api/memories", "/api/devices", "/api/voiceprint"):
+        assert app.client.get(path, headers=app.auth).status_code == 200, path
+
+
+def test_a_module_needs_only_routes_to_plug_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import APIRouter
+
+    from trillion.api.routes import plugged
+
+    pkg = tmp_path / "plugdemo"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "b_two.py").write_text(
+        "from fastapi import APIRouter\n"
+        "def make(rt):\n    r = APIRouter()\n    r.get('/two')(lambda: rt)\n    return r\n"
+        "ROUTES = (make,)\n",
+        encoding="utf-8",
+    )
+    (pkg / "a_one.py").write_text(
+        "from fastapi import APIRouter\n"
+        "def make(rt):\n    r = APIRouter()\n    r.get('/one')(lambda: rt)\n    return r\n"
+        "ROUTES = (make,)\n",
+        encoding="utf-8",
+    )
+    (pkg / "c_none.py").write_text("X = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    routers = plugged(object(), package="plugdemo")  # type: ignore[arg-type]
+    assert all(isinstance(r, APIRouter) for r in routers)
+    assert [r.routes[0].path for r in routers] == ["/one", "/two"]  # type: ignore[attr-defined]
