@@ -1,4 +1,4 @@
-import { createGalaxy, type Theme } from '@hellotrillion/galaxy';
+import { createGalaxy, type StageRect, type Theme } from '@hellotrillion/galaxy';
 import '@hellotrillion/galaxy/tokens.css';
 import './app.css';
 import { type Inline, parse } from './format';
@@ -82,6 +82,7 @@ import { createHome, dayBoardStep, endsBuild, frameKeeps, herOpensHome, localDat
 import { createApprovals, outcomeWords } from './approvals';
 import { type DraftCard, createDraftPin } from './draft';
 import { DOCK, isPhone } from './layout';
+import { arcTarget, orbSeen } from './arcs';
 import { captionOf, createCaptions } from './captions';
 import {
   type Entry,
@@ -219,9 +220,24 @@ let shellKeys = new ShellKeys(talkKeys);
 let version = '';
 // How much the galaxy draws, as chosen in this browser: automatic unless changed (GAL-6).
 let detailChoice = savedDetail();
+// Where the orb was last placed, in canvas pixels: an energy arc leaves from it (GAL-8).
+let orbAt: StageRect | null = null;
 const galaxy = createGalaxy(canvas, {
   theme: shownTheme(themeChoice, systemLight.matches),
   perfMode: perfModeOf(detailChoice),
+  arcTarget: (callId) => {
+    const box = canvas.getBoundingClientRect();
+    const viewport = { w: innerWidth, h: innerHeight };
+    const chip = transcriptEl.querySelector<HTMLElement>(`[data-call="${CSS.escape(callId)}"]`);
+    const centre = orbAt ? { x: box.left + orbAt.x, y: box.top + orbAt.y } : null;
+    return arcTarget({
+      chip: chip?.getBoundingClientRect() ?? null,
+      clip: transcriptEl.getBoundingClientRect(),
+      viewport,
+      canvas: box,
+      orb: orbSeen(centre, viewport, document.hidden),
+    });
+  },
 });
 
 // The docked orb's size and place come from DOCK; the CSS (its button, the hole in the workspace) reads them here.
@@ -248,7 +264,10 @@ const workspace = createWorkspace({
   sidebarWidth: () => sidebar.width(),
   sheetTop: () => sidebar.sheetTop(),
   hold: (open) => sidebar.hold(open),
-  place: (rect, animate) => galaxy.setStage(rect, { animate }),
+  place: (rect, animate) => {
+    orbAt = rect;
+    galaxy.setStage(rect, { animate });
+  },
   // A caption never sits over the workspace.
   changed: () => showCaptions(),
   fallback: () => (sidebar.hidden ? showSidebarBtn : null),
@@ -704,7 +723,10 @@ function renderEntry(e: Entry): HTMLElement {
       return box;
     }
     case 'tool': {
-      return el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
+      const chip = el('p', `chip${e.ok ? '' : ' bad'}`, toolLabel(e.name, e.outcome, e.ok, e.label));
+      // The energy arc finds its chip by this (GAL-8).
+      chip.dataset['call'] = e.callId;
+      return chip;
     }
     case 'notice':
       return el('p', 'notice', e.text);
@@ -1607,6 +1629,11 @@ function connect(): void {
       );
     }
     helpers.handle(msg);
+    // A tool started: once its chip is drawn and scrolled to, a faint arc runs to it from the orb (GAL-8).
+    if (msg.type === 'tool.start') {
+      const callId = String(msg['call_id'] ?? '');
+      requestAnimationFrame(() => galaxy.pulseArc(callId));
+    }
     if (msg.type === 'conversation.title') threads.retitle(String(msg['id'] ?? ''), String(msg['title'] ?? ''));
     // A card is asked of the user: it is in the sidebar's transcript, so show the sidebar.
     // On the board when it can open there; the board opens once the card is in the view.
