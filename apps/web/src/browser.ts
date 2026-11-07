@@ -429,8 +429,15 @@ export function createBoardSettings(
 /** The core's switch for notes from chats (MEM-4). On unless turned off. */
 export const MEMORY_NOTES_PATH = '/api/settings/memory';
 
-export function createMemorySettings(host: Host, api: Api, changed: () => void): { open(): Promise<void>; summary(): string } {
-  const { finish } = section(host, 'memory', 'Memory', 'She remembers what you tell her between conversations. Each memory is a file on this computer that you can read.');
+/** The notes-from-chats switch. It sits at the top of Settings → Memories. */
+export interface NotesSwitch {
+  readonly element: HTMLElement;
+  /** Reads the saved choice again and shows it. */
+  open(): Promise<void>;
+  summary(): string;
+}
+
+export function createNotesSwitch(api: Api, changed: () => void): NotesSwitch {
   const row = el('label', 'settings-check');
   const box = el('input');
   box.type = 'checkbox';
@@ -449,7 +456,8 @@ export function createMemorySettings(host: Host, api: Api, changed: () => void):
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  finish(row, status);
+  const element = el('div', 'memories-notes');
+  element.append(row, status);
 
   let on = true;
   const take = async (r: Response): Promise<void> => {
@@ -485,11 +493,11 @@ export function createMemorySettings(host: Host, api: Api, changed: () => void):
   // Read now, so the section's summary is right before it is first opened.
   void load().then(changed);
   return {
+    element,
     async open() {
       status.textContent = '';
       await load();
       box.checked = on;
-      host.showModal();
     },
     summary: () => (on ? 'Notes from chats' : 'Only when asked'),
   };

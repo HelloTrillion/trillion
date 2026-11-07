@@ -22,14 +22,14 @@ The risk is the one memory always has: what she reads can be written by someone 
 9. **The usual model, as background work.** The model is chosen by who reads the output (BRN-11). Nobody reads this answer: code reads it and files it. So this is a classification job, and it runs on whichever model background work uses. There is no separate cheaper model to configure yet, so that is the usual model, and never a model switched to for the conversation (the spend caps spec, decision 7). Each call is metered as `background`, with work kind `memories`, for the conversation it read.
 10. **At the hard cap it pauses.** The noter checks `held("memories")` before a sweep. A call the gate refuses mid-sweep stops the sweep and records nothing, so those words are read once the cap lifts. Settings → Usage and limits lists "notes from chats" under the provider as paused. Like titles, it is left out of the words of the one paused notice: it is on unless turned off, and nobody thinks of it as work of hers.
 11. **A failed call is not retried.** A call that errors, times out (90 seconds) or answers in no usable shape is recorded `failed`. Those messages are not read again. A note is a nicety, and a call that fails every minute would cost every minute.
-12. **On by default, with a switch.** MEM-4 describes how memory works, not an extra to opt into. Nothing leaves the computer that the user's chosen model didn't already see: the noter sends the same conversation to the same model. Every note is a local file the user can read, edit or forget, marked as her inference. And it costs very little, inside the caps. So it starts on, with a switch in Settings → Memory, under "Keep notes from our chats":
+12. **On by default, with a switch.** MEM-4 describes how memory works, not an extra to opt into. Nothing leaves the computer that the user's chosen model didn't already see: the noter sends the same conversation to the same model. Every note is a local file the user can read, edit or forget, marked as her inference. And it costs very little, inside the caps. So it starts on, with a switch in Settings → Memories, under "Keep notes from our chats":
     - **Off** takes effect at once. A pass whose answer arrives after the switch keeps nothing and records nothing.
     - **Back on** reads only what is said from then on. What was said while it was off is never read.
     - **On first start** with this change, nothing said before that start is read. An upgrade doesn't go back through months of old chats.
 
 ## What the user sees
 
-- Settings → Memory: one switch, "Keep notes from our chats", with a line saying what it does, that it never keeps a permission or a rule, and that it uses a little of the model. The section's summary reads "Notes from chats" or "Only when asked".
+- Settings → Memories: one switch, "Keep notes from our chats", with a line saying what it does, that it never keeps a permission or a rule, and that it uses a little of the model. The section's summary reads "Notes from chats" or "Only when asked".
 - In a later conversation she knows "the user is writing a soup cookbook". If asked how she knows, the recall line says it was her own inference, with the date.
 - Nothing is shown or said when a note is kept. The memory browser (MEM-6) will show them.
 - At a hard cap, Settings → Usage and limits lists "notes from chats" as paused.
@@ -44,7 +44,7 @@ The risk is the one memory always has: what she reads can be written by someone 
 | Wiring, started and stopped with the server | `api/runtime.py` (`rt.noter`) |
 | The switch | `GET`/`PUT /api/settings/memory` `{notes}`, behind the token and origin checks |
 | Work kind `memories` | `spend/types.py`, `spend/desk.py`, `apps/web/src/spend.ts` |
-| Settings → Memory | `apps/web/src/browser.ts` (`createMemorySettings`), `main.ts` |
+| Settings → Memories | `apps/web/src/browser.ts` (`createNotesSwitch`), `memories.ts`, `main.ts` |
 
 The instructions are a constant in `notes.py`, like the title writer's. They are not in `persona/prompts/`: they shape a background job, never her voice, so they are outside the persona eval's fingerprint and need no new baseline.
 

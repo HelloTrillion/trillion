@@ -178,6 +178,8 @@ export function createMemories(
   /** Sends one message to the session; false when it is not connected. */
   send: (body: Record<string, unknown>) => boolean,
   changed: () => void,
+  /** The notes-from-chats switch (MEM-4), shown above the list. */
+  notes?: { readonly element: HTMLElement; open(): Promise<void> },
 ): Memories {
   let last: MemoriesState | null = null;
   let loadError = '';
@@ -212,7 +214,7 @@ export function createMemories(
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const body = el('div', 'memories-body');
-  form.append(title, note, searchWrap, status, body);
+  form.append(title, note, ...(notes ? [notes.element] : []), searchWrap, status, body);
   host.replaceChildren(form);
 
   const say = (text: string): void => {
@@ -416,7 +418,7 @@ export function createMemories(
     async open() {
       host.showModal();
       draw();
-      await load();
+      await Promise.all([load(), notes?.open()]);
       draw();
     },
     summary: () => memoriesSummary(last),
