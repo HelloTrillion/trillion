@@ -499,6 +499,17 @@ async def test_notice_speech_says_so_in_its_state_and_a_turns_does_not(rt: Runti
     await session.close()
 
 
+async def rested_after_stop(session: Session) -> None:
+    """The first rest after a Stop is over: what it offered has been handed over, and
+    the quiet it asked for has ended. The stopped task lets go of the session before
+    it comes to rest, so its task being gone is not enough."""
+    for _ in range(400):
+        if session._task is None and not session._stopped:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("the session never came to rest after the Stop")
+
+
 async def test_after_stop_over_a_notice_the_next_held_one_is_shown_not_spoken(
     rt: Runtime,
 ) -> None:
@@ -511,7 +522,7 @@ async def test_after_stop_over_a_notice_the_next_held_one_is_shown_not_spoken(
     assert len(page.all("notice")) == 1
     rt.tts = FakeVoice()
     await session.handle({"type": "interrupt"})  # Stop
-    await idle(session)
+    await rested_after_stop(session)
     assert [m["text"] for m in page.all("notice")] == ["One.", "Two."]
     assert [m["text"] for m in page.all("reply.sentence")] == ["One."]
     assert session._task is None
