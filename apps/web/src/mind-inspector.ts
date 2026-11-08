@@ -10,7 +10,7 @@ import type { MindNode } from '@hellotrillion/galaxy';
 export type Detail = Readonly<Record<string, unknown>>;
 
 export interface InspectorOptions {
-  /** The detail for a node, or null when there is none (a 404, a failed read). */
+  /** The detail for a node, or null when there is none (a 404). Throws when it couldn't be read (a 503). */
   readonly load: (id: string) => Promise<Detail | null>;
   /** The node as the skeleton has it, when it is drawn. */
   readonly node: (id: string) => MindNode | undefined;
@@ -117,10 +117,10 @@ export function renderDetail(node: MindNode, d: Detail, hop: (id: string) => voi
       break;
     }
     case 'knowledge': {
-      badge(words(node.extra['kind']));
+      badge(words(d['kind']) ?? words(node.extra['kind']));
       out.push(el('h2', '', str(d['path']) ?? node.label));
       out.push(facts([['Changed', when(d['modified_ms'])], ['Characters', num(d['chars'])?.toLocaleString() ?? null]]));
-      const preview = str(d['preview']) ?? str(d['text']) ?? str(d['head']);
+      const preview = str(d['text']);
       if (preview) out.push(el('pre', 'mind-preview', preview));
       break;
     }
@@ -137,7 +137,7 @@ export function renderDetail(node: MindNode, d: Detail, hop: (id: string) => voi
       break;
     case 'connector': {
       badge(words(d['status']));
-      out.push(el('h2', '', node.label));
+      out.push(el('h2', '', str(d['label']) ?? node.label));
       const tools = strings(d['tools']).map((t) => ({ label: t, id: has(`tool:${t}`) ? `tool:${t}` : null }));
       const box = list('Tools', tools, hop);
       if (box) out.push(box);
@@ -189,13 +189,18 @@ export function createInspector(root: HTMLElement, opts: InspectorOptions): Insp
       title.textContent = node?.label ?? id;
       body.replaceChildren(el('p', 'mind-muted', 'Loading…'));
       let detail: Detail | null = null;
+      let failed = false;
       try {
         detail = await opts.load(id);
       } catch {
-        detail = null;
+        failed = true;
       }
       // Hopped elsewhere while it loaded: this answer is for a panel no longer shown.
       if (openId !== id) return;
+      if (failed) {
+        body.replaceChildren(el('p', 'mind-muted', "Couldn't load this one right now."));
+        return;
+      }
       if (!node || !detail) {
         body.replaceChildren(el('p', 'mind-muted', 'No detail for this one.'));
         return;

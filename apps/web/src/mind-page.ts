@@ -51,14 +51,14 @@ export function deepLinkNode(hash: string): string | null {
 
 export const deepLink = (id: string | null): string => (id ? `#node=${encodeURIComponent(id)}` : '');
 
-/** What each region is called when the server didn't say. */
+/** What each region is called when the server didn't say (the server's own names). */
 export const REGION_NAMES: Readonly<Record<RegionId, string>> = {
-  core: 'Her',
+  core: 'Core',
   memory: 'Memory',
   working: 'Recent chats',
   agents: 'Helpers',
   knowledge: 'Knowledge',
-  rim: 'Tools and connectors',
+  rim: 'Tools',
 };
 
 export const REGION_ORDER: readonly RegionId[] = ['core', 'memory', 'working', 'agents', 'knowledge', 'rim'];

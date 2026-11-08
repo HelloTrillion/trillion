@@ -57,7 +57,7 @@ describe('the stats line', () => {
       'No memories by meaning: install the meaning extra',
       'No chats yet',
       'No helpers yet',
-      "Tools and connectors couldn't be read (see her log)",
+      "Tools couldn't be read (see her log)",
     ]);
     expect(statsLine(map({ memory: 'empty', knowledge: 'error' })).notes).toEqual(['No memories yet', "Knowledge couldn't be read (see her log)"]);
   });
