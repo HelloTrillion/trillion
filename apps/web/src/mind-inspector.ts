@@ -6,6 +6,7 @@
  */
 
 import type { MindNode } from '@hellotrillion/galaxy';
+import { memoryWords } from './memories';
 
 export type Detail = Readonly<Record<string, unknown>>;
 
@@ -78,13 +79,14 @@ export function renderDetail(node: MindNode, d: Detail, hop: (id: string) => voi
   };
   switch (node.type) {
     case 'memory': {
-      badge(words(d['kind']) ?? 'memory');
+      // The Memories screen's own words for its types and sources.
+      badge(memoryWords('type', d['kind']) ?? words(d['kind']) ?? 'Memory');
       out.push(el('p', 'mind-body', str(d['text']) ?? node.label));
       out.push(
         facts([
           ['Written', when(d['created_ms'])],
           ['True as of', when(d['as_of_ms'])],
-          ['From', words(d['source'])],
+          ['From', memoryWords('source', d['source']) ?? words(d['source'])],
           ['Version', num(d['version'])?.toString() ?? null],
         ]),
       );

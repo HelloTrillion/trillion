@@ -33,6 +33,25 @@ const searchEl = $<HTMLInputElement>('mind-search');
 const resultsEl = $('mind-results');
 const tooltipEl = $('mind-tooltip');
 const unreachableEl = $('mind-unreachable');
+const topEl = $('mind-top');
+const statsBoxEl = $('mind-stats-box');
+const inspectorEl = $('mind-inspector');
+
+/** The panel takes room from the scene only on a screen wide enough to have room beside it. */
+const PANEL_BESIDE_MIN = 700;
+
+/** What the HUD covers, so the scene frames the space left over. */
+function hudInsets(panelOpen: boolean): { top: number; right: number; bottom: number; left: number } {
+  const shown = (el: HTMLElement): DOMRect | null => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? r : null;
+  };
+  const top = shown(topEl)?.bottom ?? 0;
+  const lows = [shown(legendEl), shown(statsBoxEl)].filter((r): r is DOMRect => r !== null).map((r) => r.top);
+  const bottom = lows.length ? Math.max(0, innerHeight - Math.min(...lows)) : 0;
+  const right = panelOpen && innerWidth >= PANEL_BESIDE_MIN ? inspectorEl.offsetWidth : 0;
+  return { top, right, bottom, left: 0 };
+}
 const whyEl = $('mind-unreachable-why');
 
 function storage(): Storage | null {
@@ -150,7 +169,7 @@ async function start(source: Source): Promise<void> {
     return;
   }
 
-  const inspector = createInspector($('mind-inspector'), {
+  const inspector = createInspector(inspectorEl, {
     load: (id) => source.detail(id),
     node: (id) => mind.node(id),
     hop: (id) => select(id),
@@ -160,15 +179,18 @@ async function start(source: Source): Promise<void> {
 
   function draw(next: MindMap): void {
     map = next;
-    mind.setData(next);
     titleEl.textContent = pageTitle(next.agent);
     document.title = pageTitle(next.agent);
     const stats = statsLine(next);
     statsEl.textContent = stats.summary;
     notesEl.replaceChildren(...stats.notes.map((n) => Object.assign(document.createElement('li'), { textContent: n })));
     drawLegend();
+    // The HUD is drawn first, so the scene knows what it covers when it frames itself.
+    mind.setInsets(hudInsets(inspector.openId !== null));
+    mind.setData(next);
     if (inspector.openId && !mind.has(inspector.openId)) overview();
   }
+  addEventListener('resize', () => mind.setInsets(hudInsets(inspector.openId !== null)));
 
   function drawLegend(): void {
     legendEl.replaceChildren(
@@ -206,13 +228,18 @@ async function start(source: Source): Promise<void> {
   }
 
   function select(id: string): void {
-    if (!mind.focus(id)) return;
+    if (!mind.has(id)) return;
+    const opened = inspector.open(id);
+    // The panel is open now: the node lands in the middle of the space beside it.
+    mind.setInsets(hudInsets(true));
+    mind.focus(id);
     history.replaceState(null, '', `${location.pathname}${location.search}${deepLink(id)}`);
-    void inspector.open(id);
+    void opened;
   }
 
   function overview(): void {
     inspector.hide();
+    mind.setInsets(hudInsets(false));
     mind.focus(null);
     history.replaceState(null, '', `${location.pathname}${location.search}`);
   }

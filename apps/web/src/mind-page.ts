@@ -4,6 +4,7 @@
  */
 
 import type { MindMap, MindNode, RegionId, SourceStatus } from '@hellotrillion/galaxy';
+import { memoryWords } from './memories';
 
 export const TOKEN_KEY = 'trillion-token';
 
@@ -138,7 +139,7 @@ export function nodeDetail(n: MindNode): string {
   const x = n.extra;
   switch (n.type) {
     case 'memory':
-      return [word(x['kind']), word(x['source'])].filter(Boolean).join(' · ');
+      return [memoryWords('type', x['kind']) ?? word(x['kind']), memoryWords('source', x['source']) ?? word(x['source'])].filter(Boolean).join(' · ');
     case 'tool':
       return [word(x['category']), x['risk'] ? `${word(x['risk'])} risk` : ''].filter(Boolean).join(' · ');
     case 'connector':

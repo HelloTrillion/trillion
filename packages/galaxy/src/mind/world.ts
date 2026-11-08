@@ -3,12 +3,12 @@
  * renderer, camera or page. `createMind` puts it on a canvas; tests build it bare.
  */
 
-import { Color, FogExp2, Group, type InstancedMesh, type Object3D, Scene, Vector3 } from 'three';
+import { Box3, Color, FogExp2, Group, type InstancedMesh, type Object3D, Scene, Sphere, Vector3 } from 'three';
 import { type MindMap, type MindNode, type ObserveEvent, REGION_IDS, type RegionId } from './contract';
 import { Drift, EdgeLayer, PulsePool } from './edges';
 import type { DegradeLevel } from './governor';
-import { ANCHORS, type Vec3, edgeEnd, layoutMind } from './layout';
-import { type Core, type GlowSphere, Population, type Shared, buildAccent, buildCore, buildMembrane, buildStarfield, disposeTree, makeGlowSphere, toVector } from './nodes';
+import { ANCHORS, RING_RADII, type Vec3, edgeEnd, layoutMind } from './layout';
+import { type Core, type GlowSphere, NODE_SCALE, Population, type Shared, buildAccent, buildCore, buildMembrane, buildStarfield, disposeTree, makeGlowSphere, toVector } from './nodes';
 import { type MindPalette, type PaletteKey, paletteColors } from './palette';
 import { type Effect, type Tint, planEvent } from './pulses';
 import { seededRandom } from '../random';
@@ -41,6 +41,9 @@ interface Flare {
   readonly scale: number;
   readonly tint: Color | null;
 }
+
+/** A helper's glow sphere grows with its size. */
+const helperRadius = (n: MindNode): number => 0.4 * n.size;
 
 const HALO_BASE = 0.4;
 const HALO_ACTIVE = 0.8;
@@ -134,13 +137,13 @@ export class MindWorld {
     // Helpers: glow spheres of their own, with their names beside them.
     const labels: Label[] = [];
     for (const n of nodes.filter((x) => x.type === 'helper')) {
-      const glow = makeGlowSphere(this.colors.agents, 0.55, HALO_BASE);
+      const glow = makeGlowSphere(this.colors.agents, helperRadius(n), HALO_BASE);
       glow.group.position.copy(toVector(this.at(n.id)));
       glow.core.userData['nodeId'] = n.id;
       this.regionGroups[n.region].add(glow.group);
       this.helpers.set(n.id, glow);
       this.registry.set(n.id, { kind: 'object', object: glow.group, node: n, glow });
-      labels.push({ text: n.label, kind: 'helper', region: n.region, id: n.id, at: toVector(this.at(n.id)).add(new Vector3(0, -1.2, 0)) });
+      labels.push({ text: n.label, kind: 'helper', region: n.region, id: n.id, at: toVector(this.at(n.id)).add(new Vector3(0, -(helperRadius(n) * 2 + 0.3), 0)) });
     }
 
     // Everything else: one instanced population per region.
@@ -174,13 +177,75 @@ export class MindWorld {
         if (coreNode && map.agent) labels.push({ text: map.agent, kind: 'core', region: r, id: coreNode.id, at: new Vector3(0, -2.2, 0) });
         continue;
       }
-      labels.push({ text: regionLabel.get(r) ?? r, kind: 'region', region: r, id: null, at: toVector(ANCHORS[r]).add(new Vector3(0, r === 'agents' ? 11 : 6, 0)) });
+      // Just above the cluster as it was actually placed.
+      const box = this.regionBox(r);
+      if (!box) continue;
+      labels.push({ text: regionLabel.get(r) ?? r, kind: 'region', region: r, id: null, at: new Vector3((box.min.x + box.max.x) / 2, box.max.y + 1, (box.min.z + box.max.z) / 2) });
     }
     this.labelList = labels;
 
     if (before) for (const n of nodes) if (!before.has(n.id) && n.region !== 'core') this.blooms.set(n.id, 0);
     this.applyMotion();
     this.applyVisibility();
+  }
+
+  /** How big a node is drawn, in world units (its radius, glow aside). */
+  nodeRadius(id: string): number {
+    const n = this.registry.get(id)?.node;
+    if (!n) return 0;
+    if (n.type === 'core') return 1.4;
+    if (n.type === 'ring') return RING_RADII[n.id] ?? 2.3;
+    if (n.type === 'helper') return helperRadius(n);
+    return NODE_SCALE * n.size * (n.type === 'connector' ? 1.6 : 1);
+  }
+
+  /**
+   * The radius around a node worth seeing when it is focused: the node itself and its
+   * nearest links, within reason.
+   */
+  focusRadius(id: string): number {
+    const at = this.positions.get(id);
+    if (!at || !this.map) return 0;
+    const own = this.nodeRadius(id);
+    const near: number[] = [];
+    for (const e of this.map.edges) {
+      const other = e.source === id ? e.target : e.target === id ? e.source : null;
+      const p = other ? this.positions.get(other) : undefined;
+      if (p) near.push(Math.hypot(p.x - at.x, p.y - at.y, p.z - at.z));
+    }
+    near.sort((a, b) => a - b);
+    // The median link, so one long trunk to her star doesn't pull the camera far back.
+    const link = near.length ? near[Math.floor((near.length - 1) / 2)]! : 0;
+    return Math.min(8, Math.max(own * 4, 2.5, Math.min(link, 6)));
+  }
+
+  /** The box round one region's placed nodes, sizes included; null when it has none. */
+  regionBox(r: RegionId): Box3 | null {
+    const box = new Box3();
+    for (const [id, e] of this.registry) {
+      if (e.node.region !== r) continue;
+      const p = this.positions.get(id);
+      if (!p) continue;
+      const rad = this.nodeRadius(id);
+      box.expandByPoint(new Vector3(p.x - rad, p.y - rad, p.z - rad));
+      box.expandByPoint(new Vector3(p.x + rad, p.y + rad, p.z + rad));
+    }
+    return box.isEmpty() ? null : box;
+  }
+
+  /** The sphere round every drawn node (only shown regions when asked), or null for an empty mind. */
+  bounds(shownOnly = false): Sphere | null {
+    const box = new Box3();
+    for (const r of REGION_IDS) {
+      if (shownOnly && this.hidden.has(r)) continue;
+      const b = this.regionBox(r);
+      if (b) box.union(b);
+    }
+    if (box.isEmpty()) return null;
+    const sphere = box.getBoundingSphere(new Sphere());
+    // Her star's coronas reach beyond its body.
+    if (this.registry.has('core') && (!shownOnly || !this.hidden.has('core'))) sphere.radius = Math.max(sphere.radius, sphere.center.length() + 4);
+    return sphere;
   }
 
   get data(): MindMap | null {
