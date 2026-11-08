@@ -1,1 +1,3 @@
-"""Credentials live in the operating system's keychain and nowhere else (SEC-1, SEC-4)."""
+"""Credentials live in the OS keychain, or in the encrypted key file the user chose.
+
+SEC-1, SEC-2, SEC-4."""

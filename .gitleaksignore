@@ -1,2 +1,4 @@
 # A fake key in a test, since rebuilt from pieces. Only this commit and line.
 e1914fec34238ed94749f41691b533776347ac64:tests/unit/test_secrets.py:generic-api-key:258
+# A made-up keychain value in a test, since given spaces so it no longer looks like a key. Only this commit and line.
+4b488bf107dd5db71af35e18b2204d5b645379e5:tests/unit/test_secret_file.py:generic-api-key:388

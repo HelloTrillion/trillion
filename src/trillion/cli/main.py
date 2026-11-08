@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import os
 import socket
 import sys
 import webbrowser
-from collections.abc import Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     setup.add_argument(
         "--no-run", action="store_true", help="prepare and check, but do not start the app"
+    )
+    setup.add_argument(
+        "--secrets-file",
+        action="store_true",
+        help="keep keys in an encrypted file instead of the system keychain (SEC-2)",
     )
     doctor = sub.add_parser("doctor", help="check this machine and say how to fix what is wrong")
     doctor.add_argument("--port", type=int, default=7777, help="the port you start Trillion on")
@@ -97,6 +103,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "remembered once an update with it succeeds",
     )
     args = parser.parse_args(argv)
+    # Out of the environment before anything starts, so nothing she runs inherits it.
+    from trillion.secrets.fallback import take_passphrase
+
+    args.passphrase = take_passphrase()
     if args.version:
         sys.stdout.write(f"trillion {__version__}\n")
         return 0
@@ -131,9 +141,10 @@ async def _examine(args: argparse.Namespace, *, secrets: bool) -> tuple[str, boo
 
     from trillion.api.app import HOST, web_dir
     from trillion.cli import doctor
-    from trillion.secrets.store import KeychainStore
+    from trillion.secrets.fallback import choose
 
-    store = KeychainStore()
+    # Testing every key may ask for the key file's passphrase; a plain check does not.
+    store = choose(passphrase=args.passphrase, ask=_asker() if secrets else None)
     checks = await doctor.examine(
         doctor.Options(port=args.port, host=HOST, offline=args.offline, secrets=secrets),
         secrets=store,
@@ -141,6 +152,87 @@ async def _examine(args: argparse.Namespace, *, secrets: bool) -> tuple[str, boo
         backend=doctor.backend_name(keyring.get_keyring()) if store.available() else "",
     )
     return doctor.render(checks), doctor.healthy(checks)
+
+
+def _asker() -> Callable[[str], str | None] | None:
+    """A prompt that never echoes, when a person is at a terminal; otherwise None."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        return None
+
+    def ask(prompt: str) -> str | None:
+        try:
+            return getpass.getpass(prompt) or None
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+    return ask
+
+
+def _key_file(args: argparse.Namespace) -> str | None:
+    """Make the encrypted key file when the user asks for it (SEC-2, spec D1). A line
+    for setup to print, or None when there is nothing to say."""
+    from trillion import paths
+    from trillion.secrets.fallback import FileStoreError, create
+    from trillion.secrets.store import KeychainStore
+
+    path = paths.secrets_path()
+    if os.path.lexists(path):
+        return f"keys are kept in the encrypted file {path}"
+    keychain = KeychainStore()
+    usable = keychain.available()
+    ask = _asker()
+    wanted = args.secrets_file
+    if not wanted and not usable and ask is not None:
+        sys.stdout.write(
+            "setup  this machine has no usable system keychain, so a key can't be saved.\n"
+        )
+        answer = input("       Keep keys in an encrypted file with a passphrase? [y/N] ")
+        wanted = answer.strip().lower() in {"y", "yes"}
+    if not wanted:
+        return None
+
+    def passphrase() -> str | None:
+        if args.passphrase:
+            return str(args.passphrase)
+        if ask is None:
+            return None
+        for _ in range(3):
+            first = ask("       Choose a passphrase (8 characters or more): ")
+            if not first:
+                return None
+            if len(first) < 8:
+                sys.stdout.write("       That is too short.\n")
+                continue
+            if ask("       Type it again: ") == first:
+                return first
+            sys.stdout.write("       Those did not match.\n")
+        return None
+
+    try:
+        made = create(path, keychain=keychain if usable else None, passphrase=passphrase)
+    except FileStoreError as e:
+        return f"no encrypted key file made: {e}. {e.fix}".rstrip()
+    except OSError as e:
+        return f"no encrypted key file made: {e.strerror}"
+    how = "the system keychain" if made.unlocked_by == "keychain" else "your passphrase"
+    line = f"keys will be kept in {path}, unlocked by {how}"
+    if usable:
+        line += (
+            ". Keys saved in the system keychain before are not moved: enter them again in the app"
+        )
+    return line
+
+
+def _keys_line(store: object) -> str:
+    """The line `trillion run` prints about the key file, or "" for the keychain."""
+    from trillion.secrets.fallback import FileStore
+
+    if not isinstance(store, FileStore):
+        return ""
+    if store.available():
+        return "  keys:    encrypted file, unlocked\n"
+    why = store.problem.kind.replace("_", " ") if store.problem else "locked"
+    return f"  keys:    encrypted file is locked ({why}): features that need a key are off\n"
 
 
 async def _doctor(args: argparse.Namespace) -> int:
@@ -238,8 +330,11 @@ async def _setup(args: argparse.Namespace) -> int:
         sys.stderr.write(f"trillion: the data folder could not be prepared: {e.strerror}\n")
         return 1
     fetch = not args.offline and _meaning_wanted()
-    for line in done or ([] if fetch else ["already prepared: nothing to do"]):
+    keys = _key_file(args)
+    for line in done or ([] if fetch or keys else ["already prepared: nothing to do"]):
         sys.stdout.write(f"setup  {line}\n")
+    if keys:
+        sys.stdout.write(f"setup  {keys}\n")
     if fetch:
         sys.stdout.write(f"setup  {await _fetch_meaning()}\n")
     sys.stdout.write("\n")
@@ -336,8 +431,16 @@ async def _serve(args: argparse.Namespace, session: dict[str, str | None]) -> in
         return 2
 
     from trillion import build
+    from trillion.secrets.fallback import FileStore, choose
 
-    rt = await open_runtime(shares=shares, session=app_token)
+    # The key file, unlocked now if it can be; a locked one still starts the app (ONB-4).
+    secrets = choose(passphrase=args.passphrase, ask=None if from_app else _asker())
+    args.passphrase = None
+    # Without a key file the runtime opens the keychain itself, as it always has.
+    if isinstance(secrets, FileStore):
+        rt = await open_runtime(shares=shares, session=app_token, secrets=secrets)
+    else:
+        rt = await open_runtime(shares=shares, session=app_token)
     session["token"] = rt.token
     provider = rt.provider
     try:
@@ -373,6 +476,7 @@ async def _serve(args: argparse.Namespace, session: dict[str, str | None]) -> in
             f"  open:    {open_line}\n"
             f"  model:   {model}\n"
             f"  folders: {grants}\n"
+            f"{_keys_line(secrets)}"
             f"Press Ctrl+C to stop.\n"
         )
         sys.stdout.flush()
