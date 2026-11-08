@@ -233,19 +233,30 @@ export class MindWorld {
     return box.isEmpty() ? null : box;
   }
 
-  /** The sphere round every drawn node (only shown regions when asked), or null for an empty mind. */
+  /**
+   * The sphere round the drawn nodes themselves (only shown regions when asked), centred
+   * on their own middle: not the origin, not the membrane. Null for an empty mind.
+   */
   bounds(shownOnly = false): Sphere | null {
+    const nodes = this.nodesShown(shownOnly);
+    if (!nodes.length) return null;
     const box = new Box3();
-    for (const r of REGION_IDS) {
-      if (shownOnly && this.hidden.has(r)) continue;
-      const b = this.regionBox(r);
-      if (b) box.union(b);
+    for (const n of nodes) box.expandByPoint(n.at);
+    const centre = box.getCenter(new Vector3());
+    let radius = 0;
+    for (const n of nodes) radius = Math.max(radius, n.at.distanceTo(centre) + n.radius);
+    return new Sphere(centre, radius);
+  }
+
+  /** Every drawn node with where it is and how big, for framing and for picking by distance. */
+  nodesShown(shownOnly = true): { id: string; at: Vector3; radius: number }[] {
+    const out: { id: string; at: Vector3; radius: number }[] = [];
+    for (const [id, e] of this.registry) {
+      if (shownOnly && this.hidden.has(e.node.region)) continue;
+      const p = this.positions.get(id);
+      if (p) out.push({ id, at: toVector(p), radius: this.nodeRadius(id) });
     }
-    if (box.isEmpty()) return null;
-    const sphere = box.getBoundingSphere(new Sphere());
-    // Her star's coronas reach beyond its body.
-    if (this.registry.has('core') && (!shownOnly || !this.hidden.has('core'))) sphere.radius = Math.max(sphere.radius, sphere.center.length() + 4);
-    return sphere;
+    return out;
   }
 
   get data(): MindMap | null {
