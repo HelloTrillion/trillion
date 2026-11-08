@@ -22,6 +22,9 @@
   --mind-working: #67E8F9;
   --mind-agents: #E88FB3;
   --mind-knowledge: #F5A524;
+  --mind-rim: #8B93A1;
+  /* The space behind the Living Mind (GAL-10). */
+  --mind-void: #05070B;
 }
 
 [data-theme='light'] {
@@ -36,6 +39,15 @@
   --color-danger: #C62828;
   --color-border: rgb(22 23 29 / 0.1);
   --color-surface-glass: rgb(255 255 255 / 0.72);
+
+  /* Deeper, so each region still reads on a light page. */
+  --mind-core: #08775B;
+  --mind-memory: #6D4FD8;
+  --mind-working: #0E7490;
+  --mind-agents: #B83E73;
+  --mind-knowledge: #8F5900;
+  --mind-rim: #5B6372;
+  --mind-void: #EEF0F4;
 }
 
 :root {
