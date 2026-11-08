@@ -175,7 +175,14 @@ def test_on_windows_keyring_chooses_credential_manager() -> None:
     from keyring.backend import by_priority, get_all_keyring
     from keyring.backends.Windows import WinVaultKeyring
 
-    chosen = max(get_all_keyring(), key=by_priority)
+    # keyring's own backends: the tests define stand-ins, which would join a chain.
+    own = [
+        k
+        for k in get_all_keyring()
+        if type(k).__module__.startswith("keyring.backends.")
+        and not type(k).__module__.endswith("chainer")
+    ]
+    chosen = max(own, key=by_priority)
     assert isinstance(chosen, WinVaultKeyring)
     assert doctor.KEYCHAIN_NAMES[doctor.backend_name(chosen)] == "Windows Credential Manager"
 
@@ -255,6 +262,14 @@ def test_who_else_an_access_list_lets_in(descriptor: str, who: list[str]) -> Non
     assert owner_only.others(descriptor, USER) == who
 
 
+def test_the_users_own_account_in_short_form_is_the_user() -> None:
+    admin = "S-1-5-21-1111111111-2222222222-3333333333-500"
+    descriptor = "D:P(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)"
+    full = {"LA": admin}.get
+    assert owner_only.others(descriptor, admin, lambda s: full(s) or s) == []
+    assert owner_only.others(descriptor, USER, lambda s: full(s) or s) == ["another account"]
+
+
 def test_exposed_reads_the_list_on_windows(tmp_path: Path) -> None:
     def read(path: Path) -> str:
         return f"D:AI(A;ID;FA;;;{USER})(A;OICIID;0x1200a9;;;BU)"
@@ -321,7 +336,7 @@ def test_on_windows_restrict_leaves_only_the_user_and_system(tmp_path: Path) -> 
     after = folder / "after.txt"
     after.write_text("made after")
     for path in (folder, before, after):
-        assert owner_only.exposed(path) == [], path
+        assert owner_only.exposed(path) == [], (path, owner_only._read(path), sid)
     assert doctor.check_privacy(folder) == doctor.Check(
         name="Data folder access", status="ok", detail="only you can open it"
     )

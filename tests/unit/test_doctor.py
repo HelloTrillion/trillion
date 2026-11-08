@@ -58,6 +58,12 @@ def sound(monkeypatch: pytest.MonkeyPatch) -> None:
         "which",
         lambda name, *a, **k: f"/usr/bin/{name}" if name == "pactl" else which(name, *a, **k),
     )
+    # Windows: a microphone, the default, and the privacy switches on.
+    from trillion.cli import windows_audio
+
+    mic = windows_audio.Inputs(names=("Microphone",), default="Microphone")
+    monkeypatch.setattr(windows_audio, "inputs", lambda: mic)
+    monkeypatch.setattr(windows_audio, "access", lambda: "on")
 
 
 @pytest.fixture(autouse=True)

@@ -205,7 +205,7 @@ def test_saved_owner_only_read_back_and_deleted(tmp_path: Path) -> None:
     else:  # an access list of its own: nobody else is let in (SUR-3c)
         from trillion import owner_only
 
-        assert owner_only.exposed(path) == []
+        assert owner_only.exposed(path) == [], owner_only._read(path)
     again = Voiceprints(lambda: path).get()
     assert again is not None
     assert again.model == MODEL and len(again.samples) == 3

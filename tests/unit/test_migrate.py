@@ -60,7 +60,7 @@ async def test_the_database_is_private_to_the_user_on_windows(tmp_path):
         await migrate(conn)
         for f in [home, home / "t.db", home / "t.db-wal", home / "t.db-shm"]:
             if f.exists():
-                assert owner_only.exposed(f) == [], f
+                assert owner_only.exposed(f) == [], (f, owner_only._read(f))
         for f in [home, home / "t.db"]:
             assert owner_only._read(f).startswith("D:P"), f  # nothing inherited from above
     finally:

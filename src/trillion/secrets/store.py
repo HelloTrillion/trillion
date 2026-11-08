@@ -20,7 +20,7 @@ import logging
 import re
 import sys
 import threading
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import keyring
 import keyring.errors
@@ -151,12 +151,14 @@ class KeychainStore:
     Credential Manager, D-Bus errors from Secret Service), so every failure is caught
     here; only its class name is logged, never a value."""
 
-    def __init__(self, service: str = SERVICE, *, piece: int | None = None) -> None:
+    def __init__(
+        self, service: str = SERVICE, *, piece: int | Literal["auto"] | None = "auto"
+    ) -> None:
         self._service = service
-        # Longest value kept in one entry. None: no limit, except on Windows.
-        self._piece = (
-            piece if piece is not None else (WINDOWS_PIECE if sys.platform == "win32" else None)
-        )
+        # Longest value kept in one entry; None for no limit. "auto": Windows' limit there.
+        if isinstance(piece, str):
+            piece = WINDOWS_PIECE if sys.platform == "win32" else None
+        self._piece = piece
 
     def available(self) -> bool:
         backend = keyring.get_keyring()
@@ -191,9 +193,6 @@ class KeychainStore:
         # A value that looks like a list of pieces is stored as one, so it reads back whole.
         split = (self._piece is not None and len(value) > self._piece) or value.startswith(_SPLIT)
         try:
-            before = 0
-            if self._piece is not None or split:
-                before = _pieces_in(keyring.get_password(self._service, name))
             if split:
                 size = self._piece or WINDOWS_PIECE
                 pieces = [value[i : i + size] for i in range(0, len(value), size)]
@@ -203,8 +202,12 @@ class KeychainStore:
             else:
                 pieces = []
                 keyring.set_password(self._service, name, value)
-            for i in range(len(pieces), before):
-                self._remove(_piece_name(name, i))
+            # Pieces of a longer value stored before go, up to the first that isn't there.
+            # Nothing is read first: a write never waits on, or races, a read.
+            if self._piece is not None or split:
+                i = len(pieces)
+                while self._remove(_piece_name(name, i)):
+                    i += 1
         except Exception as e:
             raise SecretStoreError(f"the keychain refused to store {name}") from e
 
@@ -218,11 +221,13 @@ class KeychainStore:
             raise SecretStoreError(f"the keychain refused to remove {name}") from e
         _note(name, None)
 
-    def _remove(self, entry: str) -> None:
+    def _remove(self, entry: str) -> bool:
+        """Whether there was an entry to remove."""
         try:
             keyring.delete_password(self._service, entry)
         except keyring.errors.PasswordDeleteError:
-            pass  # already gone
+            return False  # already gone
+        return True
 
 
 class MemoryStore:

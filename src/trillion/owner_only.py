@@ -79,8 +79,12 @@ def restrict(path: Path, *, apply: Apply | None = None, user: str | None = None)
     return True
 
 
-def others(descriptor: str, user_sid: str) -> list[str]:
-    """Who besides the user (and SYSTEM and administrators) an SDDL lets in, by name."""
+def others(descriptor: str, user_sid: str, full: Callable[[str], str] | None = None) -> list[str]:
+    """Who besides the user (and SYSTEM and administrators) an SDDL lets in, by name.
+
+    SDDL writes some accounts in short form, the user's own among them when it is a
+    well-known one (LA, the machine's built-in Administrator account). `full` turns a
+    short form into the full SID; Windows does it in `exposed`."""
     if "NO_ACCESS_CONTROL" in descriptor.split("S:")[0]:
         return ["Everyone"]  # a null DACL lets anyone in
     dacl = descriptor.partition("D:")[2].split("S:")[0]
@@ -90,7 +94,11 @@ def others(descriptor: str, user_sid: str) -> list[str]:
         if len(fields) < 6 or fields[0] not in _ALLOWS:
             continue
         who = fields[5]
-        if who == user_sid or who in _TRUSTED:
+        if who in _TRUSTED:
+            continue
+        if who == user_sid or (
+            full is not None and not who.startswith("S-") and full(who) == user_sid
+        ):
             continue
         name = _NAMES.get(who, "another account")
         if name not in found:
@@ -118,7 +126,7 @@ def exposed(
         descriptor = (read or _read)(path)
     except OSError:
         return None
-    return None if sid is None else others(descriptor, sid)
+    return None if sid is None else others(descriptor, sid, None if read else _full_sid)
 
 
 # ── Windows, through ctypes ──────────────────────────────────────────────
@@ -185,6 +193,36 @@ def user_sid() -> str | None:
             kernel32.LocalFree(text)
     finally:
         kernel32.CloseHandle(token)
+
+
+def _full_sid(short: str) -> str:
+    """An SDDL short form (LA, BU) as a full SID string; itself if Windows can't say."""
+    if sys.platform != "win32":
+        return short
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    sid = ctypes.c_void_p()
+    if not advapi32.ConvertStringSidToSidW(short, ctypes.byref(sid)):
+        return short
+    try:
+        text = ctypes.c_void_p()
+        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)) or not text.value:
+            return short
+        try:
+            return ctypes.wstring_at(text.value)
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.LocalFree(sid)
 
 
 def _apply(path: Path, descriptor: str) -> None:
