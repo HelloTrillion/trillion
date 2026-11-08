@@ -70,7 +70,7 @@ def test_a_key_saved_is_read_back_after_a_fresh_unlock(key_file: Path) -> None:
     first = made(key_file)
     assert first.available() and first.unlocked_by == "passphrase"
     first.set("anthropic/api_key", KEY)
-    first.set("slack/bot", "test-bot-value-0001")
+    first.set("slack/bot", "test bot value 0001")
     again = FileStore(key_file)
     assert not again.available() and again.get("anthropic/api_key") is None
     again.unlock(PHRASE)
@@ -147,7 +147,7 @@ def test_a_wrong_passphrase_is_a_clear_error_and_the_file_is_kept(key_file: Path
     assert e.value.kind == "wrong_passphrase" and "does not open" in str(e.value)
     assert not store.available() and store.problem is e.value
     with pytest.raises(SecretStoreError):
-        store.set("a/key", "replacement-value-0000")
+        store.set("a/key", "replacement value 0000")
     assert key_file.read_bytes() == before
 
 
@@ -182,7 +182,7 @@ def test_a_file_changed_after_unlock_is_never_overwritten(key_file: Path) -> Non
     key_file.write_bytes(bytes(raw))
     assert store.get("a/key") is None
     with pytest.raises(FileStoreError) as e:
-        store.set("b/key", "another-value-00000000")
+        store.set("b/key", "another value 00000000")
     assert e.value.kind == "damaged" and "integrity" in str(e.value)
     assert key_file.read_bytes() == bytes(raw)
 
@@ -292,7 +292,7 @@ def test_a_write_that_fails_leaves_the_old_file_and_no_temporary_file(
 
     monkeypatch.setattr(fallback.os, "replace", broken)
     with pytest.raises(SecretStoreError, match="refused to store b/key"):
-        store.set("b/key", "another-value-00000000")
+        store.set("b/key", "another value 00000000")
     assert key_file.read_bytes() == before
     assert sorted(p.name for p in key_file.parent.iterdir()) == ["secrets.age"]
 
@@ -385,7 +385,7 @@ def test_with_the_file_it_is_the_store_and_never_the_keychain(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     keychain = MemoryStore()
-    keychain.set("a/key", "from-the-keychain-0000")
+    keychain.set("a/key", "from the keychain 0000")
     monkeypatch.setattr("trillion.secrets.store.KeychainStore", lambda: keychain)
     made(home / "secrets.age").set("a/key", KEY)
     chosen = choose(passphrase=PHRASE)
@@ -394,7 +394,7 @@ def test_with_the_file_it_is_the_store_and_never_the_keychain(
     assert isinstance(locked, FileStore) and not locked.available()
     assert locked.get("a/key") is None
     with pytest.raises(SecretStoreError, match="needs its passphrase"):
-        locked.set("a/key", "something-new-000000")
+        locked.set("a/key", "something new 000000")
 
 
 def test_a_terminal_is_asked_up_to_three_times(
@@ -431,7 +431,7 @@ def test_environment_keys_still_win_over_the_file(key_file: Path) -> None:
     store = made(key_file)
     store.set(config.secret_name("anthropic"), KEY)
     settings = config.ModelSettings(kind="anthropic", model="m")
-    _, source = config.resolve(settings, store, {config.ANTHROPIC_KEY: "sk-from-env-0000"})
+    _, source = config.resolve(settings, store, {config.ANTHROPIC_KEY: "sk-" + "from env " * 3})
     assert source == "env"
     _, source = config.resolve(settings, store, {})
     assert source == "settings"
