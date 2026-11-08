@@ -605,3 +605,37 @@ jobs:
           dpkg-deb --info "$deb"
           dpkg-deb --field "$deb" Depends | grep -q libwebkit2gtk-4.1
           ls -l target/release/bundle/appimage/*.AppImage
+
+  desktop-windows:
+    # SUR-3c: the desktop app builds on Windows, as the NSIS installer a release
+    # attaches, and its Rust tests run there (the server's Job Object, PATH, finding
+    # trillion.exe). Off pull requests, as the other desktop jobs are: a first Tauri
+    # build is long, and the Release workflow builds it again anyway.
+    name: Desktop (windows-latest)
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @hellotrillion/desktop
+        working-directory: .
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - name: The NSIS installer builds (unsigned, not run)
+        run: pnpm -C apps/desktop bundle:windows
+        working-directory: .
+      - name: The installer is there
+        shell: bash
+        run: ls -l target/release/bundle/nsis/*-setup.exe

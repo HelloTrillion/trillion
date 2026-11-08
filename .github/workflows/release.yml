@@ -275,3 +275,125 @@ jobs:
           TAG: ${{ github.ref_name }}
         working-directory: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
         run: gh release upload "$TAG" dmg/*.dmg --clobber --repo "$GITHUB_REPOSITORY"
+
+  desktop-windows:
+    # SUR-3c: an NSIS installer, per user, no administrator needed. Signed with Azure
+    # Artifact Signing when its six secrets are set (AZURE_TENANT_ID, AZURE_CLIENT_ID,
+    # AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
+    # AZURE_SIGNING_PROFILE; docs/releasing.md). Only a signed one is attached to the
+    # release; otherwise the log says it is unsigned and it is kept on the run only.
+    name: Desktop app for Windows (NSIS installer, signed when set up)
+    needs: wheel
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # to attach to the release; nothing else
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile --filter @hellotrillion/desktop
+      # The toolchain is pinned in src-tauri/rust-toolchain.toml; rustup installs it here.
+      - run: rustup show active-toolchain || rustup toolchain install
+        working-directory: apps/desktop/src-tauri
+      - name: Which signing secrets are set
+        id: signing
+        env:
+          SET_AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SET_AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          SET_AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SET_AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          SET_AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          SET_AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          set -eu
+          # By name only. Their values are never printed.
+          missing=""
+          for name in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET \
+            AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT AZURE_SIGNING_PROFILE; do
+            eval "value=\${SET_$name}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          if [ -z "$missing" ]; then
+            echo "Signing with Azure Artifact Signing, profile AZURE_SIGNING_PROFILE."
+            echo "signed=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Unsigned build::Building an UNSIGNED Windows installer: these secrets are not set:$missing. It is kept on this run only and not attached to the release. See docs/releasing.md."
+            echo "signed=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the app, as this release's version
+        run: |
+          # Tauri needs SemVer. scripts/version.py --semver gives it once the release
+          # channels land; until then, the version as pyproject.toml has it.
+          if [ -f scripts/version.py ]; then
+            version="$("$(command -v python3 || command -v python)" scripts/version.py --semver)"
+          else
+            version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          fi
+          echo "config={\"version\": \"$version\"}" >> "$GITHUB_ENV"
+          pnpm -C apps/desktop tauri build --no-bundle --config "{\"version\": \"$version\"}"
+      # The program first, so the copy the installer holds is signed, then the installer.
+      - name: Sign the program
+        if: steps.signing.outputs.signed == '1'
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\apps\desktop\src-tauri\target\release
+          files-folder-filter: exe
+          description: Trillion
+      - name: Make the installer
+        run: pnpm -C apps/desktop tauri bundle --bundles nsis --config "$config"
+      - name: Sign the installer
+        if: steps.signing.outputs.signed == '1'
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\apps\desktop\src-tauri\target\release\bundle\nsis
+          files-folder-filter: exe
+          description: Trillion installer
+      - name: Check the signatures
+        working-directory: apps/desktop/src-tauri/target/release
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          set -eu
+          if [ -z "$SIGNED" ]; then
+            echo "Unsigned: nothing to check. SmartScreen warns whoever runs it: More info, then Run anyway."
+            # So nobody takes it for a release build.
+            for exe in bundle/nsis/*-setup.exe; do mv "$exe" "${exe%.exe}_unsigned.exe"; done
+            ls -l bundle/nsis
+            exit 0
+          fi
+          for exe in *.exe bundle/nsis/*-setup.exe; do
+            powershell -NoProfile -Command "\$s = Get-AuthenticodeSignature -LiteralPath '$exe'; \$s | Format-List Status, SignerCertificate, TimeStamperCertificate; if (\$s.Status -ne 'Valid') { exit 1 }"
+          done
+          ls -l bundle/nsis
+      - name: Keep it on this run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trillion-desktop-windows
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attach it to the release (signed only)
+        if: github.ref_type == 'tag' && steps.signing.outputs.signed == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: apps/desktop/src-tauri/target/release/bundle/nsis
+        run: gh release upload "$TAG" ./*-setup.exe --clobber --repo "$GITHUB_REPOSITORY"

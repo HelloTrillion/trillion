@@ -4,11 +4,21 @@
 use std::path::{Path, PathBuf};
 
 /// Where installers put it, in the order they are tried.
-pub const FALLBACKS: [&str; 3] = [
+#[cfg(not(windows))]
+pub const FALLBACKS: &[&str] = &[
     "~/.local/bin/trillion",
     "/opt/homebrew/bin/trillion",
     "/usr/local/bin/trillion",
 ];
+/// Windows: uv's tool folder, where `install.ps1` puts it.
+#[cfg(windows)]
+pub const FALLBACKS: &[&str] = &["~/.local/bin/trillion.exe"];
+
+/// The program's file name.
+#[cfg(not(windows))]
+const NAME: &str = "trillion";
+#[cfg(windows)]
+const NAME: &str = "trillion.exe";
 
 /// What looking found.
 #[derive(Debug, PartialEq, Eq)]
@@ -37,7 +47,8 @@ pub fn locate(
         };
     }
     // `command -v` can answer with an alias or a function: only a path counts.
-    if let Some(answer) = shell_answer.map(str::trim).filter(|a| a.starts_with('/')) {
+    let is_path = |a: &&str| a.starts_with('/') || Path::new(a).is_absolute();
+    if let Some(answer) = shell_answer.map(str::trim).filter(is_path) {
         let answer = PathBuf::from(answer);
         if is_exec(&answer) {
             return Located::Found(answer);
@@ -54,11 +65,34 @@ pub fn locate(
 }
 
 /// A file someone may run.
+#[cfg(unix)]
 pub fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// A file someone may run: on Windows, a program file.
+#[cfg(not(unix))]
+pub fn is_executable(path: &Path) -> bool {
+    let program = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("com"));
+    program && path.is_file()
+}
+
+/// The first `trillion` in a PATH value, as a shell would find it. Windows has no
+/// login shell to ask, so the app's own PATH, which the installer added uv's tool
+/// folder to, stands in for it.
+pub fn on_path(path: Option<&str>, is_exec: &dyn Fn(&Path) -> bool) -> Option<String> {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    path?
+        .split(separator)
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| Path::new(dir.trim_matches('"')).join(NAME))
+        .find(|p| is_exec(p))
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -92,6 +126,7 @@ mod tests {
         assert_eq!(found, Located::NotRunnable(PathBuf::from("/nope")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_empty_env_var_is_unset() {
         let exec = files(&["/opt/homebrew/bin/trillion"]);
@@ -117,6 +152,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_shell_alias_or_missing_file_falls_through() {
         let exec = files(&["/usr/local/bin/trillion"]);
@@ -135,6 +171,45 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_finds_it_on_the_path_or_in_uvs_tool_folder() {
+        let exec = files(&[r"C:\Users\u\.local\bin\trillion.exe"]);
+        let path = r"C:\Windows;C:\Users\u\.local\bin";
+        let found = on_path(Some(path), &exec);
+        assert_eq!(
+            found.as_deref(),
+            Some(r"C:\Users\u\.local\bin\trillion.exe")
+        );
+        assert_eq!(
+            locate(
+                None,
+                found.as_deref(),
+                Some(Path::new(r"C:\Users\u")),
+                &exec
+            ),
+            Located::Found(PathBuf::from(r"C:\Users\u\.local\bin\trillion.exe"))
+        );
+        let fallback = |p: &Path| p == Path::new(r"C:\Users\u\.local/bin/trillion.exe");
+        assert_eq!(on_path(Some(r"C:\Windows"), &fallback), None);
+        assert_eq!(
+            locate(None, None, Some(Path::new(r"C:\Users\u")), &fallback),
+            Located::Found(PathBuf::from(r"C:\Users\u\.local/bin/trillion.exe"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_path_is_searched_in_order() {
+        let exec = files(&["/b/trillion", "/c/trillion"]);
+        assert_eq!(
+            on_path(Some("/a::/b:/c"), &exec).as_deref(),
+            Some("/b/trillion")
+        );
+        assert_eq!(on_path(None, &exec), None);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn the_fallbacks_in_order() {
         let all = files(&[
@@ -158,6 +233,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn no_home_skips_the_home_fallback() {
         let exec = files(&["/Users/u/.local/bin/trillion"]);

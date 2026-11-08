@@ -14,6 +14,8 @@ mod token;
 mod tray;
 #[cfg(target_os = "macos")]
 mod webkit;
+#[cfg(windows)]
+mod winproc;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -289,9 +291,12 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
     // The login shell first: the data folder and binary may be set there.
     let probe = shell::probe().unwrap_or_default();
     let env = server::child_env(probe.env, std::env::vars());
+    // Windows names the user's folder USERPROFILE; HOME is usually unset there.
     let user_home = var(&env, "HOME")
+        .or_else(|| var(&env, "USERPROFILE"))
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from));
     let data = running::data_home(
         var(&env, "TRILLION_HOME"),
         user_home.as_deref().unwrap_or(Path::new("/")),
@@ -308,9 +313,11 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
         });
     }
 
+    // Without a login shell's answer (always on Windows), the PATH the app was given.
+    let on_path = locate::on_path(var(&env, "PATH"), &locate::is_executable);
     let bin = match locate::locate(
         var(&env, "TRILLION_BIN"),
-        probe.bin.as_deref(),
+        probe.bin.as_deref().or(on_path.as_deref()),
         user_home.as_deref(),
         &locate::is_executable,
     ) {
@@ -331,7 +338,7 @@ fn attempt_start(app: &AppHandle, attempt: u64) -> Option<Splash> {
         ));
     };
 
-    let local_bin = user_home.as_deref().map(|h| h.join(".local/bin"));
+    let local_bin = user_home.as_deref().map(|h| h.join(".local").join("bin"));
     let mut first: Vec<&Path> = bin.parent().into_iter().collect();
     first.extend(local_bin.as_deref());
     let env = server::with_path(env, &first);
@@ -760,6 +767,7 @@ fn stop_server(app: &AppHandle) {
 /// A terminal's Ctrl+C or a logout's SIGTERM quits as Quit does, so the server stops
 /// with the app. (A force quit cannot be caught: the server's lifeline and the record
 /// of it see to that.)
+#[cfg(unix)]
 fn quit_on_signals(app: &AppHandle) {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) else {
@@ -772,6 +780,11 @@ fn quit_on_signals(app: &AppHandle) {
         }
     });
 }
+
+/// Windows sends a windowed app no signals: a sign-out closes its windows, and the
+/// server's Job Object ends it whenever the app ends, however it ends.
+#[cfg(not(unix))]
+fn quit_on_signals(_app: &AppHandle) {}
 
 pub fn run() {
     let app = tauri::Builder::default()

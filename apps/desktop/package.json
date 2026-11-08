@@ -8,6 +8,7 @@
     "dev": "TRILLION_BIN=$PWD/scripts/trillion-dev tauri dev",
     "bundle": "tauri build --bundles app",
     "bundle:linux": "tauri build --bundles deb,appimage",
+    "bundle:windows": "tauri build --bundles nsis",
     "tauri": "tauri"
   },
   "devDependencies": {

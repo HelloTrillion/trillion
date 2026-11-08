@@ -3,6 +3,7 @@
 //! Holds no token (SPN-11a).
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -25,18 +26,18 @@ pub struct Record {
     pub port: u16,
 }
 
-/// Owner-only, and whole or not at all.
+/// Owner-only, and whole or not at all. On Windows the app's data folder is already
+/// the user's own (under their profile).
 pub fn write(path: &Path, record: &Record) -> std::io::Result<()> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temporary)?;
     file.write_all(&serde_json::to_vec(record)?)?;
     file.sync_all()?;
     std::fs::rename(&temporary, path)
@@ -142,20 +143,24 @@ mod tests {
 
     #[test]
     fn writes_owner_only_and_reads_back() {
-        use std::os::unix::fs::PermissionsExt;
         let dir =
             std::env::temp_dir().join(format!("trillion-desktop-record-{}", std::process::id()));
         let path = dir.join("child.json");
         write(&path, &record()).unwrap();
         assert_eq!(read(&path), Some(record()));
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.to_lowercase().contains("token"));
         remove(&path);
         assert_eq!(read(&path), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_real_process_group_is_recognised() {
         use crate::running::{group_of, start_time};
