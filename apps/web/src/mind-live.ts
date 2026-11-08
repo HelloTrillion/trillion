@@ -9,7 +9,8 @@ import { type ObserveEvent, parseObserveEvent } from '@hellotrillion/galaxy';
 
 export type LiveState = 'connecting' | 'live' | 'retrying' | 'refused' | 'closed';
 
-/** The server's close code for a bad token or origin (api/app.py CLOSE_FORBIDDEN). */
+/** The server's close codes: a wrong token, and another origin (api/app.py). Neither is retried. */
+export const CLOSE_UNAUTHENTICATED = 4401;
 export const CLOSE_FORBIDDEN = 4403;
 const FIRST_WAIT_MS = 1000;
 const LONGEST_WAIT_MS = 15_000;
@@ -51,6 +52,17 @@ export function connectObserve(opts: LiveOptions): Live {
 
   const state = (s: LiveState): void => opts.onState?.(s);
 
+  const refuse = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+    const sock = ws;
+    ws = null;
+    sock?.close();
+    state('refused');
+  };
+
   const open = (): void => {
     if (stopped || paused) return;
     state('connecting');
@@ -67,7 +79,12 @@ export function connectObserve(opts: LiveOptions): Live {
       } catch {
         return;
       }
-      if ((msg as { type?: unknown })?.type === 'observe.ready') {
+      const m = msg as { type?: unknown; code?: unknown };
+      if (m?.type === 'error' && m.code === 'unauthenticated') {
+        refuse();
+        return;
+      }
+      if (m?.type === 'observe.ready') {
         wait = FIRST_WAIT_MS;
         state('live');
         return;
@@ -79,9 +96,8 @@ export function connectObserve(opts: LiveOptions): Live {
       if (ws !== sock) return;
       ws = null;
       if (stopped || paused) return;
-      if (ev.code === CLOSE_FORBIDDEN) {
-        stopped = true;
-        state('refused');
+      if (ev.code === CLOSE_FORBIDDEN || ev.code === CLOSE_UNAUTHENTICATED) {
+        refuse();
         return;
       }
       state('retrying');

@@ -51,6 +51,12 @@ describe('observe events become pulses', () => {
     expect(planEvent({ type: 'memory.written', id: 'mem_9' }, ctx(ON_PAGE, false, ['memory']))).toEqual([{ kind: 'refetch' }]);
   });
 
+  it('prefixes the raw ids the server sends, as the map names its nodes', () => {
+    const c = ctx(['core', 'helper:ask:c1c2c3d4', 'chat:42']);
+    expect(planEvent({ type: 'helper.started', id: 'ask:c1c2c3d4' }, c)[0]).toEqual({ kind: 'halo', id: 'helper:ask:c1c2c3d4', on: true });
+    expect(planEvent({ type: 'turn', conversation_id: '42' }, c)).toEqual([{ kind: 'brighten', id: 'chat:42', tint: 'working' }]);
+  });
+
   it('flickers the per-turn ring and the chat, haloes a helper, ripples on a critical alert', () => {
     expect(planEvent({ type: 'turn', conversation_id: 'c1' }, ctx(ON_PAGE))).toEqual([{ kind: 'ring' }, { kind: 'brighten', id: 'chat:c1', tint: 'working' }]);
     expect(planEvent({ type: 'helper.started', id: 'h1' }, ctx(ON_PAGE))).toEqual([

@@ -74,7 +74,9 @@ function serverSource(tok: string): Source {
     },
     async detail(id) {
       const res = await get(`/api/mind/node/${encodeURIComponent(id)}`);
-      if (!res.ok) return null;
+      if (res.status === 404) return null;
+      // 503: its source couldn't be read just now.
+      if (!res.ok) throw new Error(`detail ${res.status}`);
       const body: unknown = await res.json().catch(() => null);
       return body && typeof body === 'object' && !Array.isArray(body) ? (body as Detail) : null;
     },
@@ -275,6 +277,10 @@ async function start(source: Source): Promise<void> {
     (state) => {
       liveEl.textContent = LIVE_WORDS[state];
       liveEl.dataset['state'] = state;
+      // A wrong token or another origin: retrying would only be refused again.
+      if (state === 'refused') {
+        showUnreachable('She refused this page\'s sign-in. Open it again from Settings → Her mind.', null);
+      }
     },
   );
   document.addEventListener('visibilitychange', () => live?.visibility(document.hidden));

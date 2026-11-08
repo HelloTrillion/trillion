@@ -82,8 +82,8 @@ export function fixtureSkeleton(memories = 160): unknown {
   return {
     agent: 'Nova',
     regions: [
-      { id: 'core', label: 'Her', count: 3 }, { id: 'memory', label: 'Memory', count: memories }, { id: 'working', label: 'Recent chats', count: 10 },
-      { id: 'agents', label: 'Helpers', count: helpers.length }, { id: 'knowledge', label: 'Knowledge', count: 6 }, { id: 'rim', label: 'Tools and connectors', count: tools.length + 3 },
+      { id: 'core', label: 'Core', count: 3 }, { id: 'memory', label: 'Memory', count: memories }, { id: 'working', label: 'Recent chats', count: 10 },
+      { id: 'agents', label: 'Helpers', count: helpers.length }, { id: 'knowledge', label: 'Knowledge', count: 6 }, { id: 'rim', label: 'Tools', count: tools.length + 3 },
     ],
     nodes,
     edges,
@@ -100,7 +100,7 @@ export function fixtureDetail(id: string, skeleton: { nodes: readonly MindNode[]
         .filter((e) => e.kind === 'similarity' && (e.source === id || e.target === id))
         .map((e) => {
           const other = e.source === id ? e.target : e.source;
-          return { id: other.slice(4), label: skeleton.nodes.find((x) => x.id === other)?.label ?? other, score: e.weight };
+          return { id: other, label: skeleton.nodes.find((x) => x.id === other)?.label ?? other, score: e.weight };
         });
       return { text: `The user ${n.label}. A made-up memory for looking at the page.`, kind: n.extra['kind'], source: n.extra['source'], created_ms: Date.now() - 86_400_000 * 9, as_of_ms: Date.now() - 86_400_000 * 9, version: 1, similar };
     }
@@ -109,11 +109,11 @@ export function fixtureDetail(id: string, skeleton: { nodes: readonly MindNode[]
     case 'helper':
       return { name: n.label, job: 'A made-up helper for looking at the page.', state: n.extra['state'], doing: null, last_run: Date.now() - 3_600_000, next_ms: Date.now() + 7_200_000, connections: ['google'] };
     case 'knowledge':
-      return { path: n.label, modified_ms: Date.now() - 86_400_000, chars: 1800, preview: '# A made-up file\n\nFor looking at the page.' };
+      return { path: n.label, modified_ms: Date.now() - 86_400_000, chars: 1800, kind: n.extra['kind'], text: '# A made-up file\n\nFor looking at the page.' };
     case 'tool':
       return { label: n.label, description: 'A made-up tool for looking at the page.', risk: n.extra['risk'], category: n.extra['category'], recoverable: true };
     case 'connector':
-      return { status: n.extra['status'], tools: skeleton.edges.filter((e) => e.source === id).map((e) => e.target.slice(5)) };
+      return { label: n.label, status: n.extra['status'], tools: skeleton.edges.filter((e) => e.source === id).map((e) => e.target.slice(5)) };
     case 'core':
       return { agent: 'Nova', blocks: { stable: 9200, turn: 1400 } };
     case 'ring':

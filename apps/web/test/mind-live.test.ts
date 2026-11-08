@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ObserveEvent } from '@hellotrillion/galaxy';
-import { CLOSE_FORBIDDEN, type LiveState, connectObserve } from '../src/mind-live';
+import { CLOSE_FORBIDDEN, CLOSE_UNAUTHENTICATED, type LiveState, connectObserve } from '../src/mind-live';
 
 type Listener = (ev: { data?: unknown; code?: number }) => void;
 
@@ -72,10 +72,19 @@ describe('the observe socket', () => {
     expect(h.sockets).toHaveLength(7);
   });
 
-  it('stops when refused', () => {
+  it('stops when refused: a wrong token (4401, or its error first) or another origin (4403)', () => {
+    for (const code of [CLOSE_UNAUTHENTICATED, CLOSE_FORBIDDEN]) {
+      const h = harness();
+      h.sockets[0]!.emit('close', { code });
+      expect(h.states.at(-1)).toBe('refused');
+      expect(h.timers).toHaveLength(0);
+    }
     const h = harness();
-    h.sockets[0]!.emit('close', { code: CLOSE_FORBIDDEN });
-    expect(h.states.at(-1)).toBe('refused');
+    const s = h.sockets[0]!;
+    s.emit('message', { data: JSON.stringify({ type: 'error', code: 'unauthenticated' }) });
+    s.emit('close', { code: CLOSE_UNAUTHENTICATED });
+    expect(s.closed).toBe(true);
+    expect(h.states.filter((x) => x === 'refused')).toHaveLength(1);
     expect(h.timers).toHaveLength(0);
   });
 
