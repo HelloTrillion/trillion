@@ -68,7 +68,8 @@ from trillion.persona.prompt import (
 from trillion.scheduler import when
 from trillion.scheduler.ask import Asker, RoutineDeps
 from trillion.scheduler.runner import Scheduler
-from trillion.secrets.store import KeychainStore, SecretStore
+from trillion.secrets.fallback import PASSPHRASE_ENV, choose
+from trillion.secrets.store import SecretStore
 from trillion.security.alerts import SecurityAlerts
 from trillion.security.devices import DeviceBook
 from trillion.skills.library import Entry, Library
@@ -1549,7 +1550,8 @@ async def open_runtime(
     settled = await router.recover(store_of_shares.known(EVERYONE)[0])
     await router.forget_settled_arguments()
     preferences = SqlitePreferences(chat_conn)
-    keychain = secrets if secrets is not None else KeychainStore()
+    # The encrypted key file when the user made one (SEC-2), else the keychain.
+    keychain = secrets if secrets is not None else choose(passphrase=given.get(PASSPHRASE_ENV))
     settings = ModelSettings.from_json(await preferences.get(OWNER, MODEL_PREF))
     speech = SpeechSettings.from_json(await preferences.get(OWNER, SPEECH_PREF))
     book = MemoryBook(

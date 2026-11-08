@@ -269,8 +269,23 @@ outside the guest list runs on its turn, that is a vulnerability.
   it. Every request and socket needs the session token, which is issued
   fresh at each launch; another origin is refused even with the token, and
   an unauthenticated socket is told so and can do nothing else.
-- **API keys live in the OS keychain.** On a machine with no keychain, a key
-  is refused rather than written to disk.
+- **API keys live in the OS keychain**, or, only if the user chose it in
+  `trillion setup`, in one encrypted file (SEC-2). On a machine with neither, a
+  key is refused rather than written to disk. The file, `secrets.age` in
+  Trillion's folder, is AES-256-GCM (Trillion's own documented container, not
+  the age format) with a random data key, wrapped by a key kept in the keychain
+  when one works, otherwise by one derived from the user's passphrase with
+  Argon2id. It is written whole through a temporary file, is `0600`, and is
+  refused if anyone else can read it or it is a link. A wrong passphrase or a
+  changed byte is an error that leaves the file as it is, and a locked file
+  starts the app without keys rather than not at all. Keys are never moved
+  between the keychain and the file. Proven by `tests/unit/test_secret_file.py`
+  and `tests/spine/test_secret_file_floor.py`.
+- **`TRILLION_SECRETS_PASSPHRASE` is a risk you take on knowingly.** It unlocks
+  the key file for unattended runs. The CLI removes it from its environment at
+  once, so nothing Trillion starts inherits it, and it is never logged or
+  stored; but while it is set, other programs running as you may read it, and
+  it may sit in a service file. Prefer typing the passphrase, or a keychain.
 - **Tool output is untrusted data.** Every result is wrapped and marked as
   data, not instructions; only first-party tools may opt out.
 - **The database is owner-only** (folder `0700`, files `0600`) on macOS and
@@ -286,8 +301,9 @@ rely on them:
   is held in memory for one launch, not in the keychain, and there is no
   way to revoke it early. There is no remote access, and so no pairing
   tunnel.
-- **An encrypted-file fallback for keys** (SEC-2), for machines with no
-  keychain.
+- **Owner-only access for the key file on Windows.** Off Windows it is
+  `0600`; on Windows it relies on the home folder's permissions until the
+  owner-only access list (SUR-3c) lands.
 - **Database hardening on Windows** (SUR-3c). Windows relies on the home
   folder's own permissions for now.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.

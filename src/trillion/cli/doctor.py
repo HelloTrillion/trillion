@@ -32,6 +32,7 @@ from trillion import __version__, build, owner_only, paths
 from trillion.brain import config
 from trillion.brain.config import ConfigError, ModelSettings
 from trillion.brain.types import ProviderError
+from trillion.secrets.fallback import PASSPHRASE_ENV, FileStore
 from trillion.secrets.store import SecretStore
 from trillion.storage import inspect
 from trillion.voice.catalog import LISTENING, SPEECH, listen_option, speech_option
@@ -296,6 +297,28 @@ KEYCHAIN_NAMES = {
 }
 
 
+def check_key_file(store: FileStore) -> Check:
+    """Which store is in use when it is the encrypted file, and whether it is open (SEC-9).
+    Never a value, never the passphrase."""
+    name = "Key file"
+    where = str(store.path)
+    if store.available():
+        how = "by the system keychain" if store.unlocked_by == "keychain" else "with a passphrase"
+        return Check(name=name, status="ok", detail=f"{where}, unlocked {how}")
+    problem = store.problem
+    if problem is None or problem.kind in {"locked", "wrong_passphrase"}:
+        detail = str(problem) if problem else f"{where} is locked"
+        return Check(
+            name=name,
+            status="warn",
+            detail=f"{detail}: features that need a key are off",
+            fix=problem.fix
+            if problem and problem.fix
+            else f"Set {PASSPHRASE_ENV}, or run trillion doctor --secrets in a terminal.",
+        )
+    return Check(name=name, status="fail", detail=str(problem), fix=problem.fix)
+
+
 def backend_name(backend: Any) -> str:
     """The name `keyring` gives the backend it chose. When several work, it chains
     them, and the first one is where a new key is written."""
@@ -306,15 +329,21 @@ def backend_name(backend: Any) -> str:
 
 
 def check_keychain(secrets: SecretStore, backend: str = "") -> Check:
+    if isinstance(secrets, FileStore):
+        return check_key_file(secrets)
     name = "Keychain"
     if secrets.available():
         shown = KEYCHAIN_NAMES.get(backend, backend or "available")
         return Check(name=name, status="ok", detail=shown)
-    fix = "Without one, a key cannot be saved in the app. A local model still works."
+    fix = (
+        "Without one, a key cannot be saved in the app. A local model still works. "
+        "To keep keys in an encrypted file instead: trillion setup --secrets-file"
+    )
     if sys.platform.startswith("linux"):
         fix = (
-            "Install and unlock a Secret Service keychain (GNOME Keyring or KWallet). "
-            "Without one, a key cannot be saved in the app. A local model still works."
+            "Install and unlock a Secret Service keychain (GNOME Keyring or KWallet), "
+            "or keep keys in an encrypted file: trillion setup --secrets-file. "
+            "Without either, a key cannot be saved in the app. A local model still works."
         )
     return Check(name=name, status="warn", detail="this machine has no system keychain", fix=fix)
 

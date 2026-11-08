@@ -311,6 +311,7 @@ NOT_PROVIDERS = {
     ("spine/audit.py", "os"): "a file descriptor",
     ("spine/deny_floor.py", "os"): "a file descriptor",
     ("tools/beneath.py", "os"): "a file descriptor",
+    ("secrets/fallback.py", "os"): "a file descriptor",
 }
 NAMES = frozenset({"stream", "synthesize", "open"})
 

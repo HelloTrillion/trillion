@@ -47,7 +47,7 @@ _SHAPES = re.compile(
     )
 )
 # Environment variables whose names say they hold a credential.
-_ENV_NAME = re.compile(r"(?:KEY|TOKEN|SECRET|PASSWORD)$")
+_ENV_NAME = re.compile(r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE)$")
 _MIN_KNOWN = 8  # a shorter "secret" would redact ordinary words
 _busy = threading.local()
 # What every record has; anything else came in through `extra=`.
