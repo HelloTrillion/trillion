@@ -11,7 +11,7 @@ describe('the inspector', () => {
     const nodes = new Map([['mem:a', mem('mem:a', 'a')], ['mem:b', mem('mem:b', 'b')]]);
     const hops: string[] = [];
     const insp = createInspector(root, {
-      load: async () => ({ text: '<img src=x onerror=alert(1)>', kind: 'fact', source: 'user_statement', created_ms: 1, similar: [{ id: 'mem:mem_b', label: 'b', score: 0.71 }, { id: 'mem:gone', label: 'not drawn', score: 0.65 }] }),
+      load: async () => ({ text: '<img src=x onerror=alert(1)>', kind: 'user', source: 'user_statement', created_ms: 1, similar: [{ id: 'mem:mem_b', label: 'b', score: 0.71 }, { id: 'mem:gone', label: 'not drawn', score: 0.65 }] }),
       node: (id) => nodes.get(id),
       hop: (id) => hops.push(id),
       close: () => undefined,
@@ -22,6 +22,9 @@ describe('the inspector', () => {
     expect(root.hidden).toBe(false);
     expect(root.querySelector('img')).toBeNull();
     expect(root.querySelector('.mind-body')?.textContent).toBe('<img src=x onerror=alert(1)>');
+    // The Memories screen's words, not the raw values.
+    expect(root.querySelector('.mind-badge')?.textContent).toBe('About you');
+    expect(root.querySelector('.mind-facts')?.textContent).toContain('You said this');
     const buttons = [...root.querySelectorAll<HTMLButtonElement>('.mind-hop')];
     expect(buttons.map((b) => b.textContent)).toEqual(['b  ·  0.71']);
     expect(root.querySelector('.mind-item')?.textContent).toBe('not drawn  ·  0.65');

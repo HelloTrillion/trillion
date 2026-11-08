@@ -61,6 +61,13 @@ const SOURCES: Readonly<Record<Source, string>> = {
   agent_inference: 'Her own guess',
 };
 
+/** A type or source as the Memories screen words it, from a raw value; null for one it doesn't know. */
+export function memoryWords(kind: 'type' | 'source', value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const table: Readonly<Record<string, string>> = kind === 'type' ? TYPE_LABELS : SOURCES;
+  return Object.hasOwn(table, value) ? (table[value] ?? null) : null;
+}
+
 /** Where it came from, in words: who said it, and whether it corrected an earlier one. */
 export function sourceText(m: Pick<Memory, 'source' | 'supersedes'>): string {
   const from = SOURCES[m.source] ?? 'Unknown source';

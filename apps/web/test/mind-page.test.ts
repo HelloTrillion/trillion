@@ -78,7 +78,10 @@ describe('search', () => {
 
 describe('words on the page', () => {
   it('gives a tooltip line per type', () => {
-    expect(nodeDetail(n('mem:1', 'x', 'memory', { kind: 'project', source: 'user_statement' }))).toBe('project · user statement');
+    // A memory in the Memories screen's own words.
+    expect(nodeDetail(n('mem:1', 'x', 'memory', { kind: 'project', source: 'user_statement' }))).toBe('Projects · You said this');
+    expect(nodeDetail(n('mem:2', 'x', 'memory', { kind: 'reference', source: 'agent_inference' }))).toBe('Where things are · Her own guess');
+    expect(nodeDetail(n('mem:3', 'x', 'memory', { kind: 'new_kind', source: 'imported_claim' }))).toBe('new kind · From something she read');
     expect(nodeDetail(n('tool:x', 'x', 'tool', { category: 'web', risk: 'low' }))).toBe('web · low risk');
     expect(nodeDetail(n('conn:google', 'x', 'connector', { status: 'ok' }))).toBe('ok');
   });

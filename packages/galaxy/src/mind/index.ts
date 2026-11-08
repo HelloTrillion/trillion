@@ -5,7 +5,7 @@
  * the data, the HUD and the inspector; this owns three.js.
  */
 
-import { ACESFilmicToneMapping, PerspectiveCamera, Raycaster, Vector2, Vector3, WebGLRenderer } from 'three';
+import { ACESFilmicToneMapping, FogExp2, PerspectiveCamera, Raycaster, Sphere, Vector2, Vector3, WebGLRenderer } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -13,7 +13,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { MindMap, MindNode, ObserveEvent, RegionId } from './contract';
 import { type DegradeLevel, MindGovernor, shouldAutoRotate } from './governor';
-import { ANCHORS } from './layout';
+import { type Insets, NO_INSETS, fitDistance, freeCentreShift } from './framing';
 import { type MindPalette, readPalette } from './palette';
 import { MindWorld } from './world';
 
@@ -22,6 +22,7 @@ export { planEvent, type Effect, type Tint } from './pulses';
 export { layoutMind, layoutMemory, ANCHORS, MEMBRANE_RADIUS, MEMORY_RADIUS } from './layout';
 export { MindGovernor, shouldAutoRotate, IDLE_ROTATE_MS, type DegradeLevel } from './governor';
 export { PALETTE_TOKENS, type MindPalette } from './palette';
+export { fitDistance, freeCentreShift, type Insets } from './framing';
 export { MindWorld } from './world';
 
 export interface MindOptions {
@@ -61,11 +62,17 @@ export interface Mind {
   has(id: string): boolean;
   node(id: string): MindNode | undefined;
   setReducedMotion(on: boolean): void;
+  /**
+   * What the page covers, in CSS pixels (top bar, legend and stats, an open panel). The
+   * overview fits the space left, and a focused node sits in its middle. Set it before
+   * `focus` for the flight to aim right.
+   */
+  setInsets(insets: Partial<Insets>): void;
   dispose(): void;
 }
 
-const OVERVIEW_POS = new Vector3(0, 6, 34);
-const OVERVIEW_LOOK = new Vector3(0, 0, 0);
+/** The overview looks at the mind from here: in front and a little above. */
+const OVERVIEW_DIR = new Vector3(0, 6, 34).normalize();
 const MAX_DT = 0.1;
 
 export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): Mind {
@@ -85,7 +92,7 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
   });
   const scene = world.scene;
   const camera = new PerspectiveCamera(55, 1, 0.1, 600);
-  camera.position.copy(OVERVIEW_POS);
+  camera.position.copy(OVERVIEW_DIR).multiplyScalar(34);
 
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -108,6 +115,26 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
   };
   applyLevel(governor.level);
 
+  // ── The HUD: the picture shifts so its middle is the middle of the free space. ──
+  let insets: Insets = NO_INSETS;
+  let shift = { x: 0, y: 0 };
+  const applyShift = (jump: boolean, dt = 0): void => {
+    const w = canvas.clientWidth || 1;
+    const h = canvas.clientHeight || 1;
+    const target = freeCentreShift(w, h, insets);
+    const k = jump || reduced ? 1 : 1 - Math.pow(0.88, dt * 60);
+    const next = { x: shift.x + (target.x - shift.x) * k, y: shift.y + (target.y - shift.y) * k };
+    if (Math.abs(next.x - target.x) < 0.5 && Math.abs(next.y - target.y) < 0.5) next.x = target.x, next.y = target.y;
+    const changed = next.x !== shift.x || next.y !== shift.y;
+    shift = next;
+    if (!changed && !jump) return;
+    // Moving the view window left draws the picture further right, and so on.
+    if (shift.x === 0 && shift.y === 0) camera.clearViewOffset();
+    else camera.setViewOffset(w, h, -shift.x, -shift.y, w, h);
+    camera.updateProjectionMatrix();
+  };
+  const distanceFor = (radius: number): number => fitDistance(radius, camera.fov, canvas.clientWidth || 1, canvas.clientHeight || 1, insets);
+
   const resize = (): void => {
     const w = canvas.clientWidth || 1;
     const h = canvas.clientHeight || 1;
@@ -116,7 +143,7 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
     bloom.setSize(w, h);
     labelRenderer?.setSize(w, h);
     camera.aspect = w / h;
-    camera.updateProjectionMatrix();
+    applyShift(true);
   };
   const observer = new ResizeObserver(resize);
   observer.observe(canvas);
@@ -264,6 +291,10 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
       }
     }
 
+    applyShift(false, dt);
+    draw(dt);
+  };
+  const draw = (dt: number): void => {
     world.update(dt);
     composer.render(dt);
     labelRenderer?.render(scene, camera);
@@ -271,8 +302,28 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
   raf = requestAnimationFrame(frame);
 
   const onVisible = (): void => {
-    // Back from hidden: no catch-up burst of time.
+    // Back from hidden: no catch-up burst of time, and a picture at once.
     last = performance.now();
+    if (!document.hidden && !disposed) draw(0);
+  };
+
+  /** Where the overview stands: the whole mind (what is shown of it) in the free space. */
+  let focused: string | null = null;
+  let framed = false;
+  const overview = (jump: boolean): void => {
+    const sphere = world.bounds(true);
+    const look = sphere ? sphere.center.clone() : new Vector3();
+    const dist = sphere ? distanceFor(sphere.radius) : 34;
+    controls.maxDistance = Math.max(90, dist * 1.5);
+    // The fog was tuned for a camera 34 out; standing further back thins it to match.
+    if (scene.fog instanceof FogExp2) scene.fog.density = 0.012 * Math.min(1, 34 / Math.max(1, dist));
+    const pos = look.clone().addScaledVector(OVERVIEW_DIR, dist);
+    if (jump) {
+      camera.position.copy(pos);
+      controls.target.copy(look);
+      fly = null;
+      touch();
+    } else flyTo(pos, look);
   };
   document.addEventListener('visibilitychange', onVisible);
 
@@ -282,31 +333,43 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
       world.setData(map);
       buildLabels();
       if (hovered && !world.has(hovered)) setHover(null, null);
+      if (focused && !world.has(focused)) focused = null;
+      // The first skeleton is framed at once; a new one re-frames the overview if that is the view.
+      if (!framed) {
+        framed = true;
+        applyShift(true);
+        overview(true);
+      } else if (!focused) overview(false);
+      // A first picture now, even in a background tab where no frame would run yet.
+      draw(0);
     },
     focus(id) {
       if (disposed) return false;
       if (id === null) {
-        flyTo(OVERVIEW_POS.clone(), OVERVIEW_LOOK.clone());
+        focused = null;
+        overview(false);
         return true;
       }
       const at = world.positionOf(id);
       if (!at) return false;
-      const dir = camera.position.clone().sub(at);
-      if (dir.lengthSq() < 1e-4) dir.set(0, 0.4, 1);
+      focused = id;
+      const dir = camera.position.clone().sub(controls.target);
+      if (dir.lengthSq() < 1e-4) dir.copy(OVERVIEW_DIR);
       dir.normalize();
-      // Her star is big; stand further back from it.
-      const node = world.node(id);
-      const back = node?.type === 'core' || node?.type === 'ring' ? 10 : 4.5;
-      flyTo(at.clone().addScaledVector(dir, back), at.clone());
+      // Far enough to see the node and its nearest links, scaled to its size.
+      flyTo(at.clone().addScaledVector(dir, distanceFor(world.focusRadius(id))), at.clone());
       return true;
     },
     focusRegion(region) {
-      const a = ANCHORS[region];
-      const look = new Vector3(a.x, a.y, a.z);
-      const dir = camera.position.clone().sub(look);
-      if (dir.lengthSq() < 1e-4) dir.set(0, 0.4, 1);
+      const box = world.regionBox(region);
+      if (!box) return;
+      const sphere = box.getBoundingSphere(new Sphere());
+      focused = null;
+      const look = sphere.center.clone();
+      const dir = camera.position.clone().sub(controls.target);
+      if (dir.lengthSq() < 1e-4) dir.copy(OVERVIEW_DIR);
       dir.normalize();
-      flyTo(look.clone().addScaledVector(dir, 11), look);
+      flyTo(look.clone().addScaledVector(dir, distanceFor(Math.max(sphere.radius, 2.5))), look);
     },
     setRegionVisible(region, visible) {
       world.setRegionVisible(region, visible);
@@ -323,6 +386,10 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
     setReducedMotion(on) {
       reduced = on;
       world.setReducedMotion(on);
+    },
+    setInsets(next) {
+      const clean = (v: number | undefined): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+      insets = { top: clean(next.top ?? insets.top), right: clean(next.right ?? insets.right), bottom: clean(next.bottom ?? insets.bottom), left: clean(next.left ?? insets.left) };
     },
     dispose() {
       if (disposed) return;

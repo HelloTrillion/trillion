@@ -15,7 +15,8 @@ const TOPICS = [
   'the car is due for a service', 'is training for a 10k run', 'prefers metric units',
   'the quarterly report goes to the board', 'has a dentist appointment soon', 'wants weekly summaries on Friday',
 ];
-const KINDS = ['fact', 'preference', 'project', 'person', 'routine'];
+const KINDS = ['user', 'feedback', 'project', 'reference'];
+const SOURCES = ['user_statement', 'imported_claim', 'agent_inference'];
 
 function rand(seed: number): () => number {
   let a = seed >>> 0;
@@ -44,7 +45,7 @@ export function fixtureSkeleton(memories = 160): unknown {
     const id = `mem:mem_${i.toString(16).padStart(12, '0')}`;
     memIds.push(id);
     const topic = TOPICS[i % TOPICS.length] ?? '';
-    nodes.push(node(id, 'memory', 'memory', `${topic} (${i})`, { kind: KINDS[i % KINDS.length], source: i % 3 ? 'user_statement' : 'chat_note' }, 1, Math.pow(0.5, (r() * 120) / 30)));
+    nodes.push(node(id, 'memory', 'memory', `${topic} (${i})`, { kind: KINDS[i % KINDS.length], source: SOURCES[i % SOURCES.length] }, 1, Math.pow(0.5, (r() * 120) / 30)));
   }
   // Similar memories: those about the same topic, top three each.
   const degree = new Map<string, number>();

@@ -30,11 +30,18 @@ export const NODE_FRAGMENT = /* glsl */ `
     vec3 col = mix(uColor, vec3(1.0), core * 0.85);
     col += uColor * rim * 1.4;
     col *= 1.0 + uBoost;
-    gl_FragColor = vec4(col, (core * 0.95 + rim * 0.6) * uOpacity);
+    // The rim fades out over the last sliver, so the silhouette is soft, not a cut disc.
+    float edge = smoothstep(0.0, 0.2, facing);
+    gl_FragColor = vec4(col, (core * 0.95 + rim * 0.6 * edge) * uOpacity);
   }
 `;
 
-/** The back-side outer halo of a glow sphere. */
+/**
+ * The back-side outer halo of a glow sphere. Seen from inside, a back face's normal
+ * points away, so the usual max(dot) is zero everywhere and the halo was a flat,
+ * hard-edged disc. abs(dot) is 1 at the halo's centre and 0 at its edge: a glow that
+ * falls smoothly to nothing.
+ */
 export const HALO_FRAGMENT = /* glsl */ `
   uniform vec3 uColor;
   uniform float uOpacity;
@@ -42,8 +49,8 @@ export const HALO_FRAGMENT = /* glsl */ `
   varying vec3 vViewPosition;
   void main() {
     vec3 viewDir = normalize(vViewPosition);
-    float rim = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 3.0);
-    gl_FragColor = vec4(uColor * rim * 2.0, rim * uOpacity);
+    float glow = pow(abs(dot(vNormal, viewDir)), 2.5);
+    gl_FragColor = vec4(uColor * glow * 1.6, glow * uOpacity);
   }
 `;
 
@@ -122,7 +129,8 @@ export const INST_NODE_FRAGMENT = /* glsl */ `
     // Fresh memories burn; old ones ember.
     float glow = 0.45 + 0.75 * vFreshness;
     col *= glow * (1.0 + (0.03 + 0.05 * vFreshness) * vBreath) * (1.0 + vBoost);
-    gl_FragColor = vec4(col, (core * 0.95 + rim * 0.6) * uOpacity);
+    float edge = smoothstep(0.0, 0.2, facing);
+    gl_FragColor = vec4(col, (core * 0.95 + rim * 0.6 * edge) * uOpacity);
   }
 `;
 

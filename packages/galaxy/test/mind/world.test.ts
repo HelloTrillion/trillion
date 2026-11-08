@@ -54,6 +54,33 @@ describe('the scene, built without a screen', () => {
     world.dispose();
   });
 
+  it('puts each region label just above its own cluster', () => {
+    const world = new MindWorld({ palette: PALETTE });
+    world.setData(smallMind(30));
+    for (const label of world.labels.filter((l) => l.kind === 'region')) {
+      const box = world.regionBox(label.region)!;
+      expect(label.at.y).toBeGreaterThan(box.max.y);
+      expect(label.at.y).toBeLessThan(box.max.y + 2);
+      expect(label.at.x).toBeGreaterThanOrEqual(box.min.x);
+      expect(label.at.x).toBeLessThanOrEqual(box.max.x);
+    }
+    world.dispose();
+  });
+
+  it('frames a bigger node from further back, and the whole mind in one sphere', () => {
+    const world = new MindWorld({ palette: PALETTE });
+    const map = smallMind(10);
+    world.setData({ ...map, nodes: map.nodes.map((n) => (n.id === 'helper:h1' ? { ...n, size: 3 } : n)) });
+    expect(world.nodeRadius('helper:h1')).toBeGreaterThan(world.nodeRadius('mem:m1'));
+    expect(world.focusRadius('helper:h1')).toBeGreaterThanOrEqual(world.nodeRadius('helper:h1') * 4);
+    expect(world.focusRadius('mem:m1')).toBeGreaterThanOrEqual(2.5);
+    const all = world.bounds()!;
+    for (const n of map.nodes) expect(all.containsPoint(world.positionOf(n.id)!), n.id).toBe(true);
+    world.setRegionVisible('rim', false);
+    expect(world.bounds(true)!.radius).toBeLessThanOrEqual(all.radius);
+    world.dispose();
+  });
+
   it('draws an empty region as nothing at all', () => {
     const world = new MindWorld({ palette: PALETTE });
     const map = smallMind(0);
