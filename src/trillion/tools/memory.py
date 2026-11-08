@@ -242,6 +242,8 @@ class MemoryRecall(_MemoryTool):
         )
         while len(found) > 1 and recalled_tokens(found) > MAX_RECALL_TOKENS:
             found = found[:-1]
+        # The Living Mind flares what she is shown (ids only).
+        book.recalled([m for m in found if m.current])
         text = present.render(found, _now_ms(), empty="Nothing remembered about that.")
         return ToolResult(ok=True, content=text, effect="none")
 

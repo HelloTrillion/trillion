@@ -315,3 +315,16 @@ export function createGalaxy(canvas: HTMLCanvasElement, opts: GalaxyOptions = {}
     },
   };
 }
+
+// GAL-10: the Living Mind, a page of its own (apps/web/mind.html).
+export { createMind } from './mind';
+export type { Mind, MindOptions } from './mind';
+export {
+  parseMindMap, parseObserveEvent, nodeId, planEvent, layoutMind, layoutMemory, MindWorld, MindGovernor,
+  shouldAutoRotate, IDLE_ROTATE_MS, ANCHORS, MEMBRANE_RADIUS, MEMORY_RADIUS, PALETTE_TOKENS,
+  REGION_IDS, NODE_TYPES, EDGE_KINDS, SOURCE_STATUSES,
+} from './mind';
+export type {
+  MindMap, MindNode, MindEdge, MindRegion, MindStats, ObserveEvent, ObserveType, RegionId, NodeType, EdgeKind,
+  SourceStatus, Effect, Tint, DegradeLevel, MindPalette,
+} from './mind';

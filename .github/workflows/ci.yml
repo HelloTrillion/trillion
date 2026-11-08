@@ -87,7 +87,7 @@ jobs:
       - run: uv run mypy
       # Every directory under tests/ but tests/spine, which the Spine job runs.
       - name: Every test directory but the spine's
-        run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills tests/delivery tests/scheduler tests/storage tests/workspace tests/spend tests/helpers tests/tools tests/evals tests/importers
+        run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills tests/delivery tests/scheduler tests/storage tests/workspace tests/spend tests/helpers tests/tools tests/evals tests/importers tests/mind
       # On macOS the spine suite runs here, not in a job of its own: one Mac runner
       # instead of two (they are scarce, and a job that waits too long is cancelled).
       - name: tests/unit + tests/spine (95% branch coverage on trillion.spine)

@@ -56,6 +56,7 @@ from trillion.helpers.live import Notifier
 from trillion.memory import meaning
 from trillion.memory.book import MemoryBook
 from trillion.memory.noter import Noter
+from trillion.mind.observe import Observer
 from trillion.persona import setup
 from trillion.persona.day import DAY_READS, SetUp, today
 from trillion.persona.prompt import (
@@ -527,6 +528,9 @@ class Runtime:
     # The helpers panel's live updates (the helpers panel spec), and whether each kind
     # of background work was held at a cap when it last asked, so a change is told.
     helpers_live: Notifier | None = None
+    # The Living Mind's pulses (GAL-10): ids and names of what she does, for the pages
+    # watching `/ws/observe`. Nothing is kept when nobody watches.
+    observe: Observer = field(default_factory=Observer)
     _held_last: dict[str, bool] = field(default_factory=dict)
     # Held while the preference `helper_notes` is read, changed and saved.
     _helper_notes: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -1892,6 +1896,10 @@ async def open_runtime(
     # A lapse picks again by itself; a switch still in force is picked here.
     if not await rt.spend.lapse(rt._usual) and rt.spend.banner():
         await rt.use_switches()
+    # The Living Mind hears what she does, by id and name only (GAL-10).
+    book.observe = rt.observe.publish
+    rt.door.observe = rt.observe.publish
+    rt.scheduler.observe = rt.observe.publish
     # The helpers panel, live: a card raised or answered, and every change above.
     store.changed = rt.helpers_changed
     rt.helpers_live = Notifier(

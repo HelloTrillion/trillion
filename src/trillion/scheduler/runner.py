@@ -244,6 +244,9 @@ class Scheduler:
         # When the scheduler last read its queue: at the start of each look, and at the
         # end of each tick. Settings shows it; it goes stale if this stops or can't read.
         self.checked_ms: int | None = None
+        # The Living Mind's bus, set by the runtime: told a helper's id as its run
+        # starts and ends, never what it was asked or said.
+        self.observe: Callable[..., None] | None = None
 
     @property
     def running(self) -> bool:
@@ -423,18 +426,37 @@ class Scheduler:
         if self._held is not None and await self._held(kind):
             await self._capped(run, s)
             return
-        if s.target is not None or s.helper_id is not None:
-            # A helper's handoff runs in its chat, placed and built as a routine is.
-            await self._routine(run, s, late)
-            return
+        # As the helpers panel names it (`helpers/build.py`).
+        helper = (
+            f"own:{s.helper_id}"
+            if s.helper_id is not None
+            else f"{'routine' if s.target is not None else 'ask'}:{s.id}"
+        )
+        self._tell("helper.started", id=helper)
+        ok = False
         try:
-            said = await self._attempt(run, s, lambda: self._run_ask(s))
-        except _Handled:
-            return
-        if not said.strip():
-            await self._notice(run, s, "failed", None, "failed", "no reply")
-            return
-        await self._notice(run, s, "ask", said, "late" if late else "delivered")
+            if s.target is not None or s.helper_id is not None:
+                # A helper's handoff runs in its chat, placed and built as a routine is.
+                ok = await self._routine(run, s, late)
+                return
+            try:
+                said = await self._attempt(run, s, lambda: self._run_ask(s))
+            except _Handled:
+                return
+            if not said.strip():
+                await self._notice(run, s, "failed", None, "failed", "no reply")
+                return
+            await self._notice(run, s, "ask", said, "late" if late else "delivered")
+            ok = True
+        finally:
+            self._tell("helper.done", id=helper, ok=ok)
+
+    def _tell(self, kind: str, **ids: object) -> None:
+        if self.observe is not None:
+            try:
+                self.observe(kind, **ids)
+            except Exception as e:
+                logger.warning("the mind was not told: %s", type(e).__name__)
 
     async def _attempt(self, run: Run, s: Schedule, work: Callable[[], Awaitable[T]]) -> T:
         """Run an ask within its timeout. No model blocks the run; any failure is
@@ -467,13 +489,14 @@ class Scheduler:
         logger.info("schedule %s not run: its model is at its spend cap", s.id)
         await self._store.finish(run.id, "skipped", self._clock(), detail=CAPPED)
 
-    async def _routine(self, run: Run, s: Schedule, late: bool) -> None:
+    async def _routine(self, run: Run, s: Schedule, late: bool) -> bool:
         """Run a routine where it lands, and tell the user only when there is
-        something to see. A helper's handoff runs here too, in the helper's chat."""
+        something to see. A helper's handoff runs here too, in the helper's chat.
+        Returns whether it went through (a skip is no failure)."""
         routines = self._routines
         if routines is None:
             await self._notice(run, s, "failed", None, "failed", "routines are not set up")
-            return
+            return False
 
         async def work() -> tuple[str | None, Built | None]:
             target = await routines.place(s)
@@ -486,19 +509,19 @@ class Scheduler:
         try:
             target, built = await self._attempt(run, s, work)
         except _Handled:
-            return
+            return False
         if s.target is None and target is not None and built is not None:
             await self._handed_back(run, s, late, target, built)
-            return
+            return True
         if target is None or built is None:
             # The day was built by hand: hers stays, and nobody is told anything.
             logger.info("routine %s skipped: its day already has a board", s.id)
             await self._store.finish(run.id, "skipped", self._clock(), detail="already built")
-            return
+            return True
         if s.target == "day" and built.outcome == "ready" and not built.shown:
             # Words but no board: the day was not built, and the user hears that.
             await self._notice(run, s, "failed", None, "failed", "no board", title=DAY_FAILED)
-            return
+            return False
         try:
             await self._store.succeeded(s.id)
         except Exception as e:
@@ -507,7 +530,7 @@ class Scheduler:
             # Nothing worth the user's attention: a log line, never a notice (AGT-6).
             logger.info("routine %s had nothing to say", s.id)
             await self._store.finish(run.id, "nothing", self._clock(), detail="nothing")
-            return
+            return True
         # Her words, if any, stay in the routine's conversation. The notice is one line
         # of the host's, spoken once like a reminder's (D3).
         title = ready_title(s)
@@ -515,6 +538,7 @@ class Scheduler:
         await self._notice(
             run, s, "ready", f"{title}.", status, title=title, conversation_id=target
         )
+        return True
 
     async def _handed_back(
         self, run: Run, s: Schedule, late: bool, target: str, built: Built

@@ -390,6 +390,23 @@ class SqliteConversationStore:
         ]
         return out, len(rows) > limit
 
+    async def chat_detail(self, conversation_id: str, owner_id: str) -> tuple[ChatRow, int] | None:
+        """One line of the thread list and how many messages of the user's and hers it
+        holds (the Living Mind's detail); None when the list doesn't show it."""
+        async with self._conn.execute(
+            "SELECT c.id, c.title, c.last_message_at, c.kind, c.day,"  # noqa: S608 - fixed text
+            " (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id"
+            "  AND m.kind IN ('user', 'assistant')) AS messages"
+            f" FROM conversations c WHERE c.id = ? AND c.owner_id = ? AND c.{_PAGE_KINDS}"
+            " AND c.deleted_at IS NULL AND c.last_message_at IS NOT NULL",
+            (conversation_id, owner_id),
+        ) as cur:
+            r = await cur.fetchone()
+        if r is None:
+            return None
+        row = ChatRow(r["id"], r["title"], int(r["last_message_at"]), r["kind"], r["day"])
+        return row, int(r["messages"])
+
     async def delete(self, conversation_id: str, owner_id: str, now_ms: int) -> bool:
         """Soft delete (SPN-9): hidden from the list and from resuming, kept on disk."""
         cur = await self._conn.execute(

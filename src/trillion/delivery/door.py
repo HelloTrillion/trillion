@@ -32,7 +32,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -246,6 +246,9 @@ class Door:
         self.helpers: Helpers | None = None
         # Public so the runtime can put the attention engine's in place.
         self.celebrate: Celebrate = NoCelebrations()
+        # Public so the runtime can put the Living Mind's bus in place: told that a
+        # critical notice came, never what it says.
+        self.observe: Callable[..., None] | None = None
         self._lock = asyncio.Lock()
         self._notifying = asyncio.Lock()
         # Notices whose notification was tried in this process, shown or not.
@@ -260,6 +263,11 @@ class Door:
     async def added(self, notice: Notice) -> None:
         """A notice was written. Delivered now if the live page is free; held otherwise,
         with a system notification when no page is open at all."""
+        if self.observe is not None and critical(notice):
+            try:
+                self.observe("alert", critical=True)
+            except Exception as e:
+                logger.warning("the mind was not told of an alert: %s", type(e).__name__)
         live = self.live()
         if live is not None:
             await self.offer(live)

@@ -3012,6 +3012,8 @@ class Session:
                 speaking = False
                 await self._state("processing")
                 await self._send("tool.start", call_id=ev.call_id, name=ev.name, risk=ev.risk)
+                # The Living Mind's pulse: the tool's name, never its arguments (SEC-4).
+                rt.observe.publish("tool.start", name=ev.name)
             elif isinstance(ev, ToolEnded):
                 r = ev.response
                 if self._read_outside(ev.name, r):
@@ -3024,12 +3026,10 @@ class Session:
                     await self._helper_made(r)
                     if ev.name == HELPER_SUGGEST:
                         await self._offered()
-                await self._send(
-                    "tool.end",
-                    call_id=ev.call_id,
-                    ok=r.status in ("succeeded", "confirmation_required", "started"),
-                    summary=_chip(r),
-                )
+                ok = r.status in ("succeeded", "confirmation_required", "started")
+                await self._send("tool.end", call_id=ev.call_id, ok=ok, summary=_chip(r))
+                # Its name and whether it went through, never its result (SEC-4).
+                rt.observe.publish("tool.end", name=ev.name, ok=ok)
                 if r.status == "confirmation_required" and r.pending_id:
                     self._asked_last.add(r.pending_id)
                 # A call proposed again while its card waits gets no second card.
@@ -3132,6 +3132,7 @@ class Session:
                     "cache_write_tokens": u.cache_write_tokens,
                 },
             )
+            rt.observe.publish("turn", conversation_id=self.id)
             # A provider this turn took to its warning is said once, through the door.
             await self._spend_warn()
         except asyncio.CancelledError:
@@ -4006,6 +4007,7 @@ class Session:
         rt = self._rt
         fresh = [m for m in await rt.memory.search(said) if m.id not in self._brought]
         text, used = present.alongside(fresh, rt.clock())
+        rt.memory.recalled(used)
         return (wrap("memory_recall", text) if used else "", frozenset(m.id for m in used))
 
     async def _save_from_loop(self, msg: Msg) -> None:

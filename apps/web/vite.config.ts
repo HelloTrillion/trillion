@@ -13,7 +13,7 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
-    // The page, and the desktop app's floating orb window.
-    rolldownOptions: { input: { main: here('index.html'), orb: here('orb.html') } },
+    // The page, the desktop app's floating orb window, and the Living Mind (GAL-10).
+    rolldownOptions: { input: { main: here('index.html'), orb: here('orb.html'), mind: here('mind.html') } },
   },
 });

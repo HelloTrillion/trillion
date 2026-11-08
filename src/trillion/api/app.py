@@ -110,6 +110,9 @@ def create_app(
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     origins = frozenset(f"http://{h}" for h in hosts) | extra_origins
+    # Read by every socket's check (`admit`), the plugged-in ones too.
+    app.state.hosts = hosts
+    app.state.origins = origins
 
     @app.exception_handler(RequestValidationError)
     async def invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -143,43 +146,27 @@ def create_app(
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket) -> None:
-        origin = socket.headers.get("origin")
-        # Browsers always send Origin on a WebSocket; a local CLI client sends none.
-        if socket.headers.get("host") not in hosts or (
-            origin is not None and origin not in origins
-        ):
-            _refused(rt, "socket", "origin")
-            await socket.close(code=CLOSE_FORBIDDEN)
+        hello = await admit(socket, rt)
+        if hello is None:
             return
-        await socket.accept()
 
         async def send(body: dict[str, Any]) -> None:
             await socket.send_text(json.dumps(body, ensure_ascii=False))
 
-        try:
-            hello = await asyncio.wait_for(_receive(socket), HELLO_TIMEOUT_S)
-        except (TimeoutError, WebSocketDisconnect):
-            hello = None
-        if isinstance(hello, bytes):
-            hello = None
-        if not _authenticated(hello, rt.token):
-            _refused(rt, "socket", "token")
-            await _refuse(socket, send)
-            return
         # Signed in: a device not seen before is told about (SEC-11), by the page's own
         # id, never its address.
-        if rt.security is not None and hello is not None:
+        if rt.security is not None:
             rt.security.signed_in(
                 hello.get("device"), str(hello.get("host")), str(hello.get("client"))
             )
 
-        resume = hello.get("resume") if hello else None
+        resume = hello.get("resume")
         session = await Session.start(
             rt,
             send,
             resume if isinstance(resume, str) else None,
             socket.send_bytes,
-            host=page_host(hello.get("host") if hello else None),
+            host=page_host(hello.get("host")),
         )
         try:
             while True:
@@ -273,6 +260,37 @@ def _api_refusal(request: Request, token: str, origins: frozenset[str]) -> Respo
         if kind != "application/json":
             return PlainTextResponse("unsupported media type", status_code=415)
     return None
+
+
+async def admit(socket: WebSocket, rt: Runtime) -> dict[str, Any] | None:
+    """Every socket's door: our Host, our Origin (or none, from a local client), then a
+    `hello` with the session token within `HELLO_TIMEOUT_S`. Returns the hello, or None
+    once the socket has been refused and closed. The hosts and origins are the app's
+    (`create_app` keeps them on `app.state`)."""
+    hosts: frozenset[str] = socket.app.state.hosts
+    origins: frozenset[str] = socket.app.state.origins
+    origin = socket.headers.get("origin")
+    # Browsers always send Origin on a WebSocket; a local CLI client sends none.
+    if socket.headers.get("host") not in hosts or (origin is not None and origin not in origins):
+        _refused(rt, "socket", "origin")
+        await socket.close(code=CLOSE_FORBIDDEN)
+        return None
+    await socket.accept()
+
+    async def send(body: dict[str, Any]) -> None:
+        await socket.send_text(json.dumps(body, ensure_ascii=False))
+
+    try:
+        hello = await asyncio.wait_for(_receive(socket), HELLO_TIMEOUT_S)
+    except (TimeoutError, WebSocketDisconnect):
+        hello = None
+    if isinstance(hello, bytes):
+        hello = None
+    if hello is None or not _authenticated(hello, rt.token):
+        _refused(rt, "socket", "token")
+        await _refuse(socket, send)
+        return None
+    return hello
 
 
 async def _receive(socket: WebSocket) -> dict[str, Any] | bytes | None:

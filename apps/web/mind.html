@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Her mind</title>
+  </head>
+  <body class="mind-page">
+    <canvas id="mind-canvas" aria-label="A 3D map of her mind"></canvas>
+    <div id="mind-labels" class="mind-labels"></div>
+
+    <header id="mind-top" class="mind-hud mind-top">
+      <h1 id="mind-title" class="mind-title">Her mind</h1>
+      <div class="mind-search">
+        <input id="mind-search" type="search" placeholder="Find anything in her mind" autocomplete="off" aria-label="Search her mind" />
+        <ul id="mind-results" class="mind-results" role="listbox" hidden></ul>
+      </div>
+    </header>
+
+    <div id="mind-legend" class="mind-hud mind-legend" role="group" aria-label="Show or hide regions"></div>
+    <div id="mind-stats-box" class="mind-hud mind-stats" role="status" aria-live="polite">
+      <div id="mind-stats"></div>
+      <ul id="mind-notes" class="mind-notes"></ul>
+      <div id="mind-live" class="mind-live"></div>
+    </div>
+
+    <div id="mind-tooltip" class="mind-tooltip" hidden>
+      <div class="mind-tooltip-region"></div>
+      <div class="mind-tooltip-label"></div>
+      <div class="mind-tooltip-detail"></div>
+    </div>
+    <aside id="mind-inspector" class="mind-inspector" aria-label="Details" hidden></aside>
+
+    <section id="mind-unreachable" class="mind-unreachable" hidden>
+      <h2>Couldn't reach her</h2>
+      <p id="mind-unreachable-why"></p>
+      <button id="mind-retry" type="button">Try again</button>
+    </section>
+
+    <script type="module" src="./src/mind.ts"></script>
+  </body>
+</html>

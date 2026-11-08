@@ -204,6 +204,41 @@ def system_blocks(
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
 
 
+def stable_parts(
+    identity: Identity, *, helpers: bool, skills: bool, standing: bool
+) -> list[tuple[str, str | None]]:
+    """What `system_blocks` puts in the stable block, in its order: each part's name
+    and the prompt file it comes from (None for the soul and the shared folders). The
+    Living Mind names these; it never shows their text."""
+    parts: list[tuple[str, str | None]] = [("soul", None)]
+    if identity.directness in _TONES:
+        parts.append(("tone", f"tone_{identity.directness}.md"))
+    parts += [("rules", "rules.md"), ("shared folders", None), ("text", "text.md")]
+    if helpers:
+        parts.append(("helpers", "helpers.md"))
+    if skills:
+        parts.append(("skills", "skills.md"))
+    if standing:
+        parts.append(("standing rules", "standing.md"))
+    return parts
+
+
+# What `volatile_context` may add to the newest message, by name: always the time, the
+# rest when they apply.
+TURN_PARTS = (
+    "now",
+    "waiting for an answer",
+    "routine",
+    "helper",
+    "background reads",
+    "voice",
+    "checkpoint",
+    "workspace",
+    "helpers",
+    "memory_recall",
+)
+
+
 def _quoted(text: str) -> str:
     """A name in her context: one line, nothing that reads as markup or closes its quotes."""
     return inert(text).replace('"', "'")
