@@ -1,0 +1,5 @@
+/* Settings → Her mind (features/mind.ts). Loads after app.css. */
+
+.mind-open {
+  white-space: nowrap;
+}

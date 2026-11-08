@@ -1,0 +1,439 @@
+/* The Living Mind page (mind.html, GAL-10). Colours only through tokens. */
+
+html,
+body.mind-page {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--mind-void);
+  color: var(--color-text-0);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+#mind-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.mind-labels {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.mind-label {
+  pointer-events: auto;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.mind-label-region {
+  color: var(--color-text-1);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.mind-label-helper,
+.mind-label-core {
+  color: var(--color-text-0);
+  font-size: 12px;
+  text-shadow: 0 0 6px var(--mind-void);
+}
+
+.mind-label-core {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mind-hud {
+  position: fixed;
+  z-index: 10;
+}
+
+.mind-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  pointer-events: none;
+}
+
+.mind-top > * {
+  pointer-events: auto;
+}
+
+.mind-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.mind-search {
+  position: relative;
+}
+
+.mind-search input {
+  width: 240px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-glass);
+  color: var(--color-text-0);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.mind-search input:focus-visible {
+  border-color: var(--mind-core);
+}
+
+.mind-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 280px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+}
+
+.mind-results li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mind-results li:hover {
+  background: var(--color-bg-2);
+}
+
+.mind-legend {
+  left: 20px;
+  bottom: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100vw - 40px);
+}
+
+.mind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-glass);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mind-chip[aria-pressed='false'] {
+  opacity: 0.4;
+}
+
+.mind-chip:focus-visible {
+  outline: 2px solid var(--mind-core);
+  outline-offset: 2px;
+}
+
+.mind-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--chip, var(--color-text-1));
+}
+
+.mind-chip-core,
+.mind-badge-core {
+  --chip: var(--mind-core);
+}
+.mind-chip-memory,
+.mind-badge-memory {
+  --chip: var(--mind-memory);
+}
+.mind-chip-working,
+.mind-badge-working {
+  --chip: var(--mind-working);
+}
+.mind-chip-agents,
+.mind-badge-agents {
+  --chip: var(--mind-agents);
+}
+.mind-chip-knowledge,
+.mind-badge-knowledge {
+  --chip: var(--mind-knowledge);
+}
+.mind-chip-rim,
+.mind-badge-rim {
+  --chip: var(--mind-rim);
+}
+
+.mind-stats {
+  right: 20px;
+  bottom: 18px;
+  max-width: min(420px, calc(100vw - 40px));
+  text-align: right;
+  font-size: 11px;
+  color: var(--color-text-1);
+}
+
+.mind-notes {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-amber);
+}
+
+.mind-live {
+  margin-top: 4px;
+}
+
+.mind-live[data-state='refused'] {
+  color: var(--color-danger);
+}
+
+.mind-tooltip {
+  position: fixed;
+  z-index: 20;
+  max-width: 280px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-1);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.mind-tooltip-region {
+  color: var(--color-text-1);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.mind-tooltip-detail {
+  margin-top: 3px;
+  color: var(--color-text-1);
+}
+
+.mind-inspector {
+  position: fixed;
+  z-index: 15;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100vw);
+  box-sizing: border-box;
+  padding: 18px 22px;
+  overflow-y: auto;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface-glass);
+  backdrop-filter: blur(10px);
+  transform: translateX(100%);
+  transition: transform var(--motion-slow) ease;
+}
+
+.mind-inspector.open {
+  transform: none;
+}
+
+.mind-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mind-inspector-region {
+  color: var(--color-text-1);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.mind-inspector-close {
+  border: none;
+  background: none;
+  color: var(--color-text-1);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mind-inspector-title {
+  margin: 8px 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mind-inspector-body h2 {
+  margin: 4px 0 8px;
+  font-size: 15px;
+}
+
+.mind-inspector-body h3 {
+  margin: 16px 0 6px;
+  color: var(--color-text-1);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mind-badge {
+  display: inline-block;
+  margin-bottom: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--chip);
+  border: 1px solid color-mix(in srgb, var(--chip) 40%, transparent);
+  background: color-mix(in srgb, var(--chip) 14%, transparent);
+}
+
+.mind-body {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mind-preview {
+  margin: 8px 0;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-0);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mind-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.mind-facts dt {
+  color: var(--color-text-1);
+}
+
+.mind-facts dd {
+  margin: 0;
+}
+
+.mind-hop {
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--mind-core);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mind-hop:hover,
+.mind-hop:focus-visible {
+  background: var(--color-bg-2);
+}
+
+.mind-item {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+
+.mind-muted {
+  color: var(--color-text-1);
+}
+
+.mind-unreachable {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  background: var(--mind-void);
+}
+
+.mind-unreachable[hidden] {
+  display: none;
+}
+
+.mind-unreachable h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.mind-unreachable p {
+  max-width: 420px;
+  margin: 0 0 8px;
+  color: var(--color-text-1);
+}
+
+.mind-unreachable button {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-2);
+  color: var(--color-text-0);
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (max-width: 600px) {
+  .mind-top {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .mind-search input,
+  .mind-results {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .mind-stats {
+    display: none;
+  }
+}
