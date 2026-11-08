@@ -75,6 +75,11 @@ describe('the scene, built without a screen', () => {
     expect(world.focusRadius('helper:h1')).toBeGreaterThanOrEqual(world.nodeRadius('helper:h1') * 4);
     expect(world.focusRadius('mem:m1')).toBeGreaterThanOrEqual(2.5);
     const all = world.bounds()!;
+    // Round the nodes themselves: not centred on her star, and tight to the farthest node.
+    const nodes = world.nodesShown(false);
+    const farthest = Math.max(...nodes.map((x) => x.at.distanceTo(all.center) + x.radius));
+    expect(all.radius).toBeCloseTo(farthest, 6);
+    expect(all.center.length()).toBeGreaterThan(0.5);
     for (const n of map.nodes) expect(all.containsPoint(world.positionOf(n.id)!), n.id).toBe(true);
     world.setRegionVisible('rim', false);
     expect(world.bounds(true)!.radius).toBeLessThanOrEqual(all.radius);

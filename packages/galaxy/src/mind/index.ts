@@ -74,6 +74,8 @@ export interface Mind {
 /** The overview looks at the mind from here: in front and a little above. */
 const OVERVIEW_DIR = new Vector3(0, 6, 34).normalize();
 const MAX_DT = 0.1;
+/** However small a node is drawn, a pointer this close (CSS pixels) to its centre hits it. */
+export const PICK_PX = 8;
 
 export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): Mind {
   const renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -209,7 +211,27 @@ export function createMind(canvas: HTMLCanvasElement, opts: MindOptions = {}): M
       const id = world.idFromHit(hit.object, hit.instanceId);
       if (id) return id;
     }
-    return null;
+    // Missed every surface: take the nearest node within a few pixels, so small ones far
+    // away are still easy to hit. Rings are only hit on their surface.
+    return nearestOnScreen(ev.clientX - rect.left, ev.clientY - rect.top, rect.width, rect.height);
+  };
+  const projected = new Vector3();
+  const nearestOnScreen = (x: number, y: number, w: number, h: number): string | null => {
+    let best: string | null = null;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (const n of world.nodesShown(true)) {
+      if (world.node(n.id)?.type === 'ring') continue;
+      projected.copy(n.at).project(camera);
+      if (projected.z < -1 || projected.z > 1) continue;
+      const px = ((projected.x + 1) / 2) * w;
+      const py = ((1 - projected.y) / 2) * h;
+      const d = Math.hypot(px - x, py - y);
+      if (d <= PICK_PX && d < bestD) {
+        bestD = d;
+        best = n.id;
+      }
+    }
+    return best;
   };
   let hovered: string | null = null;
   const setHover = (id: string | null, ev: PointerEvent | null): void => {
