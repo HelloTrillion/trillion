@@ -91,6 +91,9 @@ class MemoryBook:
         # Each memory's vector, by id, with the digest of the text it was made from.
         self._vectors: dict[str, tuple[str, Vector]] = {}
         self._catching_up: asyncio.Task[int] | None = None
+        # The Living Mind's bus (`mind/observe.py`): told a memory's id when one is
+        # written or used in a turn, never its text. Set by the runtime.
+        self.observe: Callable[..., None] | None = None
 
     # ── Reading ──────────────────────────────────────────────────────────
 
@@ -104,6 +107,29 @@ class MemoryBook:
 
     def count(self) -> int:
         return sum(m.current for m in self._known.values())
+
+    def current(self) -> list[Memory]:
+        """Every memory recalled as current: none retracted or superseded."""
+        return [m for m in self._known.values() if m.current]
+
+    def vectors(self) -> dict[str, Vector] | None:
+        """Each current memory's vector, made from the text it has now; None when search
+        by meaning is off for this run."""
+        if self._embedder is None:
+            return None
+        return {m.id: v for m in self.current() if (v := self._vector(m)) is not None}
+
+    def recalled(self, memories: Sequence[Memory]) -> None:
+        """These were brought into a turn: the Living Mind is told their ids."""
+        if memories:
+            self._tell("memory.recalled", ids=[m.id for m in memories])
+
+    def _tell(self, kind: str, **ids: object) -> None:
+        if self.observe is not None:
+            try:
+                self.observe(kind, **ids)
+            except Exception as e:
+                logger.warning("the mind was not told: %s", type(e).__name__)
 
     def recall(
         self,
@@ -220,6 +246,7 @@ class MemoryBook:
             await self._save(new, now_ms)
             if old is not None:
                 await self._retire(old, new.id, now_ms)
+            self._tell("memory.written", id=new.id)
             return Written(memory=new)
 
     async def _retire(self, old: Memory, by: str, now_ms: int) -> None:
