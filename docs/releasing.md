@@ -201,23 +201,95 @@ secrets and the client secret, or remove the role assignment.
 A newly signed program has no reputation with SmartScreen yet, so the first people
 to run it may still see a warning until downloads build one up.
 
-## Making a release
+## Versions and channels
 
-1. Set the version in `pyproject.toml` and `src/trillion/__init__.py`, and merge.
+Versions are CalVer: `YYYY.M.PATCH`, the month without a leading zero, the patch
+counting from 0 within the month. There are three channels
+([the spec](specs/2026-11-07-release-channels.md)):
+
+| Channel | Tag | GitHub | PyPI | Installed with |
+|---|---|---|---|---|
+| stable | `v2026.11.0` | release | `2026.11.0` | the one-liner, `uv tool install trillion` |
+| beta | `v2026.11.0-beta.1` | pre-release | `2026.11.0b1` (a pre-release) | `--channel beta` |
+| dev | none: every push to main | the rolling `dev` pre-release | never | `--channel dev` |
+
+Python writes a beta as `2026.11.0b1`, and npm and the desktop app as
+`2026.11.0-beta.1`. [`scripts/version.py`](../scripts/version.py) knows both and
+sets the version in every place at once: `pyproject.toml`, `src/trillion/__init__.py`,
+the project's entry in `uv.lock`, and the `package.json` of `@hellotrillion/galaxy`,
+the web app and the desktop app. CI fails if they disagree. The desktop app's
+`tauri.conf.json` and `Cargo.toml` keep a placeholder: the release build stamps the
+version in.
+
+```bash
+python3 scripts/version.py                    # 2026.11.0b1
+python3 scripts/version.py --semver           # 2026.11.0-beta.1
+python3 scripts/version.py set 2026.11.0      # a tag works too: v2026.11.0
+python3 scripts/version.py check              # every place agrees
+```
+
+The old `v0.X.Y` tags still work, and are still pre-releases on GitHub.
+
+## Making a stable release
+
+1. Set the version and merge it:
+
+   ```bash
+   python3 scripts/version.py set 2026.11.0
+   ```
+
 2. Tag the merge on main and push the tag:
 
    ```bash
-   git tag v0.0.1 && git push origin v0.0.1
+   git tag v2026.11.0 && git push origin v2026.11.0
    ```
 
-3. The Release workflow builds and checks the wheel and creates the release with the
-   wheel attached (a pre-release while the version is 0.x). It then waits for a
-   maintainer to approve the `pypi` environment, and publishes the same wheel to
-   PyPI. The tag must match the version, or the build stops.
-4. Meanwhile it builds the desktop app, with the version from `pyproject.toml`,
-   and attaches the Linux AppImage and `.deb`, the Mac `.dmg` if it was signed
-   and notarized, and the Windows installer if it was signed. A desktop job that fails can be re-run on its own; it replaces
-   what it attached before.
+3. The Release workflow first checks the tag names the version in `pyproject.toml`
+   and `src/trillion/__init__.py`; if not, it stops at once and says how to fix it.
+   Then it builds and checks the wheel and creates the release with the wheel
+   attached. It waits for a maintainer to approve the `pypi` environment, and
+   publishes the same wheel to PyPI.
+4. Meanwhile it builds the desktop app, with the version from `pyproject.toml` (as
+   SemVer), and attaches the Linux AppImage and `.deb`, the Mac `.dmg` if it was signed
+   and notarized, and the Windows installer if it was signed. A desktop job that fails can be re-run on its own; it
+   replaces what it attached before.
+
+## Making a beta
+
+The same, with a `-beta.N` version, counting from 1:
+
+```bash
+python3 scripts/version.py set 2026.12.0-beta.1   # pyproject says 2026.12.0b1
+git tag v2026.12.0-beta.1 && git push origin v2026.12.0-beta.1
+```
+
+The GitHub release is marked pre-release, and PyPI treats `2026.12.0b1` as one, so
+`uv tool install trillion` and the stable channel never pick it. The beta channel
+does, and also gets any stable release newer than the newest beta. When the beta is
+good, set `2026.12.0`, merge, and tag `v2026.12.0`.
+
+## The dev channel
+
+Every push to main runs [`dev-build.yml`](../.github/workflows/dev-build.yml): it
+builds the wheel as a release does (page and Google app inside, checked), gives it
+the version of dev build N of main (`2026.11.0` on main makes `2026.11.1.devN`,
+which sorts after it and before the next release), and puts it on one GitHub
+pre-release tagged `dev`, replacing the wheel before. The `dev` tag moves with main.
+Nothing goes to PyPI and no desktop app is built. It runs only in this repository.
+
+Nothing to do by hand. To rebuild it, run **Actions → Dev build → Run workflow**.
+
+## `trillion update`
+
+`trillion update --check` asks GitHub's releases API for the newest version on the
+user's channel and says whether they have it. `trillion update` installs it with
+the installer's own `uv tool install`, keeping their extras. They run only when
+typed: nothing checks for updates on its own (ONB-8). The channel is the one the
+user installed from (`~/.trillion/channel`; none means stable), or
+`--channel stable|beta|dev`, which `trillion update` then remembers.
+
+A release is on GitHub a little before its PyPI upload is approved. In that time
+`--check` names the new version but uv can't install it yet: approve the upload.
 
 To try a build without releasing, run **Actions → Release → Run workflow**. The
 wheel and the desktop builds are kept as downloads on that run for 30 days.
@@ -250,7 +322,17 @@ hellotrillion.ai can redirect to these later. A change to either script reaches
 everyone as soon as it is merged, without a release.
 
 Each installs uv if it is missing (with Astral's own installer), then installs
-the latest version on PyPI, or upgrades to it. They work from release 0.0.2, the
+the latest version on PyPI, or upgrades to it. `--channel beta` (`-Channel beta`,
+`TRILLION_CHANNEL=beta`) installs the newest beta or stable, whichever is newer, by
+asking uv for `trillion>=0.0.0b0`, plus `--prerelease-package trillion=allow` when
+`uv tool install --help` lists it. Older uv picks a pre-release from the requirement
+alone and lacks the option; newer uv (0.13) needs it. Either way only Trillion may
+be a pre-release, never what it depends on. `--channel dev` asks GitHub's
+API for the wheel on the `dev` release and installs it with `--reinstall`. The
+channel asked for is remembered in `~/.trillion/channel` (or under `TRILLION_HOME`),
+so a re-run and `trillion update` stay on it; moving to another channel reinstalls,
+so going back to stable gets the newest stable even from a newer beta.
+`--channel dev` with `--version` is refused: dev has no versions. They work from release 0.0.2, the
 first on PyPI. If Trillion is already installed from PyPI, they run
 `uv tool upgrade trillion`, which keeps the extras someone added (such as
 `[whisper]`) and the tool's Python; if that fails, they stop and say how to
@@ -279,8 +361,10 @@ and on demand (Mac runners are too scarce to block a pull request). It builds th
 above but without Google, installs it with the installer and `--wheel`, runs the
 installer a second time (piped, with the environment variables) to prove a re-run
 is fine, and checks `trillion --version` from uv's tool folder. It checks that a
-failure exits nonzero, that the installer installs uv when there is none, and that
-a re-run and `--wheel` keep `[whisper]`, with stand-in wheels in a local folder in
+failure exits nonzero, that the installer installs uv when there is none, that
+a re-run and `--wheel` keep `[whisper]`, and that the channels work (stable, beta,
+remembered, back to stable, and with `install.sh` dev, with `TRILLION_DEV_RELEASE`
+pointing at a stand-in for GitHub's answer), with stand-in wheels in a local folder in
 place of PyPI ([`scripts/fake_trillion_wheels.py`](../scripts/fake_trillion_wheels.py)).
 On Ubuntu it also
 runs `shellcheck install.sh`. On Windows it runs `install.ps1` in Windows

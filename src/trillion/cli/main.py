@@ -1,4 +1,4 @@
-"""Entry point for the `trillion` command: `run`, `setup`, `doctor` and `import`."""
+"""Entry point for the `trillion` command: `run`, `setup`, `doctor`, `import` and `update`."""
 
 from __future__ import annotations
 
@@ -81,6 +81,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="replace a name or timezone you already set, without asking",
     )
+    update = sub.add_parser(
+        "update",
+        help="install the newest Trillion on your channel; --check only looks (ONB-8)",
+        description="Asks GitHub for the newest release on your channel (stable, beta or "
+        "dev), only when you run this. Nothing checks for updates on its own.",
+    )
+    update.add_argument(
+        "--check", action="store_true", help="only say whether a newer version is out"
+    )
+    update.add_argument(
+        "--channel",
+        choices=["stable", "beta", "dev"],
+        help="use this channel instead of the one you installed from; "
+        "remembered once an update with it succeeds",
+    )
     args = parser.parse_args(argv)
     if args.version:
         sys.stdout.write(f"trillion {__version__}\n")
@@ -93,6 +108,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _until_stopped(_setup(args))
     if args.command == "import":
         return _import(args)
+    if args.command == "update":
+        from trillion.cli import update as updates
+
+        return updates.run(check_only=args.check, channel=args.channel)
     parser.print_help()
     return 0
 

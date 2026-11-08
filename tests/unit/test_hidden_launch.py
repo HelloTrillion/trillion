@@ -46,6 +46,8 @@ ALLOWED = {
     # `trillion doctor` is a command the user types in a terminal: there is already
     # a console, and it is theirs. Never run by a routine or in the background.
     "cli/doctor.py",
+    # `trillion update` likewise: typed in a terminal, and uv's output belongs in it.
+    "cli/update.py",
 }
 
 

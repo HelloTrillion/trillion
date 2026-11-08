@@ -105,3 +105,18 @@ def test_private_files_are_never_in_a_wheel(release: ModuleType, name: str) -> N
 )
 def test_ordinary_files_are_allowed(release: ModuleType, name: str) -> None:
     assert not release.NEVER.search(name)
+
+
+def test_a_tag_must_name_the_version_in_the_package(release: ModuleType) -> None:
+    versions = release.ROOT / "scripts" / "version.py"
+    spec = importlib.util.spec_from_file_location("version_for_test", versions)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    here = module.current(release.ROOT)
+    release.check_tag(here.tag())  # the version on this branch, as its tag
+    with pytest.raises(release.ReleaseError, match=r"scripts/version\.py set"):
+        release.check_tag("v2099.1.0")
+    with pytest.raises(release.ReleaseError, match="not a release tag"):
+        release.check_tag("2099.1.0")

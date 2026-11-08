@@ -131,6 +131,9 @@ jobs:
       - run: python3 scripts/check_plug_in.py
       - run: python3 scripts/check_one_writer.py --selftest
       - run: python3 scripts/check_one_writer.py
+      - run: python3 scripts/version.py --selftest
+      - name: The version is the same everywhere
+        run: python3 scripts/version.py check
 
   js:
     name: TypeScript (${{ matrix.os }})
@@ -282,6 +285,30 @@ jobs:
           uv run --no-sync python scripts/fake_trillion_wheels.py "$RUNNER_TEMP/fake-later" 0.0.3
           sh install.sh --wheel "$RUNNER_TEMP/fake-later/trillion-0.0.3-py3-none-any.whl" --no-setup
           uv tool list --show-extras | grep -F 'trillion v0.0.3 [extras: whisper]'
+      - name: install.sh follows the channel it is given, and remembers it
+        if: runner.os != 'Windows'
+        run: |
+          # Stand-in wheels, in place of PyPI: a stable release and a newer beta. And a
+          # stand-in for GitHub's answer about the dev release, naming a local wheel.
+          links="$RUNNER_TEMP/channel-index"
+          uv run --no-sync python scripts/fake_trillion_wheels.py "$links" 0.0.3 0.0.4b1
+          uv run --no-sync python scripts/fake_trillion_wheels.py "$RUNNER_TEMP/channel-dev" 0.0.5.dev3
+          printf '{"tag_name": "dev", "assets": [{"browser_download_url": "file://%s"}]}\n' \
+            "$RUNNER_TEMP/channel-dev/trillion-0.0.5.dev3-py3-none-any.whl" > "$RUNNER_TEMP/dev.json"
+          export UV_NO_INDEX=1 UV_FIND_LINKS="$links" TRILLION_HOME="$RUNNER_TEMP/channel-home"
+          export UV_TOOL_DIR="$RUNNER_TEMP/channel-tools" UV_TOOL_BIN_DIR="$RUNNER_TEMP/channel-bin"
+          export TRILLION_DEV_RELEASE="file://$RUNNER_TEMP/dev.json"
+          is() { got="$("$UV_TOOL_BIN_DIR/trillion" --version)"; echo "$got"; test "$got" = "trillion $1"; }
+          sh install.sh --no-setup && is 0.0.3
+          test ! -e "$TRILLION_HOME/channel"
+          sh install.sh --channel beta --no-setup && is 0.0.4b1
+          test "$(cat "$TRILLION_HOME/channel")" = beta
+          sh install.sh --no-setup && is 0.0.4b1 # remembered
+          TRILLION_CHANNEL=stable sh install.sh --no-setup && is 0.0.3 # back to stable
+          test "$(cat "$TRILLION_HOME/channel")" = stable
+          sh install.sh --channel=dev --no-setup && is 0.0.5.dev3
+          if sh install.sh --channel nightly --no-setup; then echo "expected a failure"; exit 1; fi
+          if sh install.sh --channel dev --version 1 --no-setup; then echo "expected a failure"; exit 1; fi
       - name: install.sh with no uv installs uv first
         if: runner.os != 'Windows'
         run: |
@@ -403,6 +430,39 @@ jobs:
           $env:TRILLION_WHEEL = $wheel
           Invoke-Caller -Version 1 -Wheel x
           if ($LASTEXITCODE -ne 0) { Write-Host "iex in a function: status $LASTEXITCODE"; exit 1 }
+      - name: install.ps1 follows the channel it is given, and remembers it
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $links = Join-Path $env:RUNNER_TEMP 'channel-index'
+          uv run --no-sync python scripts/fake_trillion_wheels.py $links 0.0.3 0.0.4b1
+          $env:UV_NO_INDEX = '1'
+          $env:UV_FIND_LINKS = $links
+          $env:UV_TOOL_DIR = Join-Path $env:RUNNER_TEMP 'channel-tools'
+          $env:UV_TOOL_BIN_DIR = Join-Path $env:RUNNER_TEMP 'channel-bin'
+          $env:TRILLION_HOME = Join-Path $env:RUNNER_TEMP 'channel-home'
+          $env:TRILLION_NO_SETUP = '1'
+          function Test-Installed([string]$Want) {
+            $got = & (Join-Path $env:UV_TOOL_BIN_DIR 'trillion.exe') --version
+            Write-Host $got
+            if ($got -ne "trillion $Want") { exit 1 }
+          }
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Channel beta
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Test-Installed '0.0.4b1'
+          if ("$(Get-Content (Join-Path $env:TRILLION_HOME 'channel'))".Trim() -ne 'beta') { exit 1 }
+          Get-Content -Raw install.ps1 | Invoke-Expression # remembered
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Test-Installed '0.0.4b1'
+          $env:TRILLION_CHANNEL = 'stable'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Test-Installed '0.0.3'
+          $env:TRILLION_CHANNEL = 'nightly'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 1) { Write-Host 'expected a failure'; exit 1 }
+          $global:LASTEXITCODE = 0
       - name: install.ps1 with no uv installs uv first
         if: runner.os == 'Windows'
         shell: powershell
