@@ -111,15 +111,36 @@ pub fn start_time(pid: i32) -> Option<i64> {
     (got == size).then_some(info.pbi_start_tvsec as i64)
 }
 
+/// When a process started, in seconds since the epoch, or None if it cannot be read.
+#[cfg(windows)]
+pub fn start_time(pid: i32) -> Option<i64> {
+    crate::winproc::start_time(pid)
+}
+
 /// The process group a process is in, if it exists.
+#[cfg(unix)]
 pub fn group_of(pid: i32) -> Option<i32> {
     // SAFETY: only asks.
     let group = unsafe { libc::getpgid(pid) };
     (pid > 0 && group > 0).then_some(group)
 }
 
+/// Windows has no process groups. A server the app started ends with the app (its
+/// Job Object), so no server is ever left behind to recognise as the app's.
+#[cfg(windows)]
+pub fn group_of(_pid: i32) -> Option<i32> {
+    None
+}
+
+/// Whether a process with this id exists.
+#[cfg(windows)]
+pub fn pid_alive(pid: i32) -> bool {
+    crate::winproc::alive(pid)
+}
+
 /// Whether a process with this id exists. Asking a process we may not signal still
 /// says it exists.
+#[cfg(unix)]
 pub fn pid_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -234,9 +255,14 @@ mod tests {
             .as_secs() as i64;
         assert!(me <= now && now - me < 3600);
         assert_eq!(start_time(99_999_999), None);
+        assert_eq!(group_of(99_999_999), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_process_group_is_readable() {
         let me = std::process::id() as i32;
         assert_eq!(group_of(me), Some(unsafe { libc::getpgrp() }));
-        assert_eq!(group_of(99_999_999), None);
     }
 
     #[test]

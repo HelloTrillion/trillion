@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-from trillion import paths
+from trillion import owner_only, paths
 from trillion.voice.types import SpeakerEmbedding
 
 # ── The thresholds, in one place ─────────────────────────────────────────
@@ -300,6 +300,8 @@ def _write_private(path: Path, text: str) -> None:
         tmp.unlink(missing_ok=True)
         tmp.touch(mode=0o600)
         os.chmod(tmp, 0o600)
+        # Windows ignores the mode: give the file an access list of its own (SUR-3c).
+        owner_only.restrict(tmp)
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
     finally:

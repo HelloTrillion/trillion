@@ -22,8 +22,13 @@ The same workflow builds the desktop app and attaches it to the release:
   and notarized. Only once the Apple setup below is done: until then the build is
   unsigned, the log says so, and the `.dmg` is kept on the run as
   `…_unsigned.dmg`, never attached to the release.
+- **Windows:** `Trillion_<version>_x64-setup.exe`, an NSIS installer that installs
+  for the current user without asking for an administrator. Signed with Azure
+  Artifact Signing once the Windows setup below is done: until then it is built
+  unsigned, the log says so, and it is kept on the run as `…_unsigned.exe`, never
+  attached to the release.
 
-Both are a thin shell around an installed `trillion`: they don't include Python
+All three are a thin shell around an installed `trillion`: they don't include Python
 or the server. Someone runs the one-line installer first.
 
 ## One-time setup: the Google secret
@@ -144,6 +149,58 @@ the job allows an hour. If notarizing fails, the job fails and the log has
 Apple's reason, and `xcrun notarytool log <id>` on a Mac with the same Apple
 Account shows the details.
 
+## One-time setup: signing the Windows installer
+
+Without this, releases still work, and the Windows installer is built unsigned and
+kept on the run only. With it, the Release workflow signs the program, builds the
+installer around the signed program, signs the installer, checks both signatures
+(Authenticode) and attaches the installer.
+
+Why not a certificate file, as for the Mac: since June 2023 the private key of a
+publicly trusted code-signing certificate must be kept in hardware, so a new one can
+no longer be exported as a `.pfx` to put in a secret. Azure Artifact Signing (until
+2025 called Trusted Signing) keeps the key in Microsoft's hardware and signs over
+the network. It is a paid Azure service with a monthly fee; nothing else in the
+project needs it.
+
+1. **An Artifact Signing account.** In the [Azure portal](https://portal.azure.com),
+   with a subscription, create an **Artifact Signing account** in a region near you.
+   Its overview shows its **Account URI**, such as `https://eus.codesigning.azure.net`:
+   that is the endpoint.
+2. **Identity validation.** In the account, **Identity validation → New**, as an
+   organization or an individual, and wait for Microsoft to approve it.
+3. **A certificate profile** of type **Public Trust**, using that identity. Its name
+   is the profile.
+4. **An app registration for the workflow.** **Microsoft Entra ID → App registrations
+   → New registration**, named for this workflow. Note its **Application (client)
+   ID** and **Directory (tenant) ID**. Under **Certificates & secrets**, make a client
+   secret and copy its value at once (it is shown once).
+5. **Let it sign.** In the Artifact Signing account, **Access control (IAM) → Add
+   role assignment**: **Artifact Signing Certificate Profile Signer** (formerly
+   Trusted Signing Certificate Profile Signer), to the app registration.
+6. **The GitHub secrets**, one each, as for the Mac:
+
+   | Secret | Value | |
+   |---|---|---|
+   | `AZURE_TENANT_ID` | the directory (tenant) ID | `gh secret set AZURE_TENANT_ID` |
+   | `AZURE_CLIENT_ID` | the application (client) ID | `gh secret set AZURE_CLIENT_ID` |
+   | `AZURE_CLIENT_SECRET` | the client secret's value | `gh secret set AZURE_CLIENT_SECRET` (it asks) |
+   | `AZURE_SIGNING_ENDPOINT` | the account URI from step 1 | `gh secret set AZURE_SIGNING_ENDPOINT` |
+   | `AZURE_SIGNING_ACCOUNT` | the Artifact Signing account's name | `gh secret set AZURE_SIGNING_ACCOUNT` |
+   | `AZURE_SIGNING_PROFILE` | the certificate profile's name | `gh secret set AZURE_SIGNING_PROFILE` |
+
+   With any of them missing, the build is unsigned and the log names which.
+
+The signing is done by Microsoft's own action (`Azure/artifact-signing-action`,
+pinned to a commit), which is given these as inputs and never prints them. The
+workflow has no pull request trigger, so code from a fork never runs with them. A
+client secret expires (two years at most): make a new one in the app registration
+and update `AZURE_CLIENT_SECRET` before it does. To revoke access, delete the
+secrets and the client secret, or remove the role assignment.
+
+A newly signed program has no reputation with SmartScreen yet, so the first people
+to run it may still see a warning until downloads build one up.
+
 ## Making a release
 
 1. Set the version in `pyproject.toml` and `src/trillion/__init__.py`, and merge.
@@ -158,8 +215,8 @@ Account shows the details.
    maintainer to approve the `pypi` environment, and publishes the same wheel to
    PyPI. The tag must match the version, or the build stops.
 4. Meanwhile it builds the desktop app, with the version from `pyproject.toml`,
-   and attaches the Linux AppImage and `.deb`, and the Mac `.dmg` if it was signed
-   and notarized. A desktop job that fails can be re-run on its own; it replaces
+   and attaches the Linux AppImage and `.deb`, the Mac `.dmg` if it was signed
+   and notarized, and the Windows installer if it was signed. A desktop job that fails can be re-run on its own; it replaces
    what it attached before.
 
 To try a build without releasing, run **Actions → Release → Run workflow**. The

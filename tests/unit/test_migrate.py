@@ -48,6 +48,25 @@ async def test_connection_pragmas(tmp_path):
     await conn.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows access lists (SUR-3c)")
+async def test_the_database_is_private_to_the_user_on_windows(tmp_path):
+    """The folder and the file get access lists of their own; -wal and -shm inherit."""
+    from trillion import owner_only
+
+    home = tmp_path / "home"
+    home.mkdir()
+    conn = await connect(home / "t.db")
+    try:
+        await migrate(conn)
+        for f in [home, home / "t.db", home / "t.db-wal", home / "t.db-shm"]:
+            if f.exists():
+                assert owner_only.exposed(f) == [], (f, owner_only._read(f))
+        for f in [home, home / "t.db"]:
+            assert owner_only._read(f).startswith("D:P"), f  # nothing inherited from above
+    finally:
+        await conn.close()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows uses ACLs, not POSIX modes (SUR-3c)")
 async def test_the_database_is_private_to_the_user(tmp_path):
     """Pending actions hold argument values (file contents, amounts): owner-only."""

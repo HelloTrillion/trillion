@@ -4,6 +4,10 @@ macOS Keychain, Windows Credential Manager, or Secret Service on Linux, through
 the `keyring` library. Entries are namespaced `trillion/<connector>/<field>`.
 Values are fetched when a request is made and never cached here (SEC-6).
 
+Windows Credential Manager keeps at most 2,560 bytes in one entry, and `keyring`
+writes text there as UTF-16. A sign-in's tokens can be longer, so on Windows a long
+value is kept in numbered pieces beside its own entry, which says how many there are.
+
 The values currently stored are also held in memory, by name, for one purpose:
 so the log scrubber can remove them (SEC-5) whichever connector asked for them,
 and however late. A value replaced or removed is dropped from that list too.
@@ -14,8 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import keyring
 import keyring.errors
@@ -121,7 +126,40 @@ class SecretStore(Protocol):
     def delete(self, name: str) -> None: ...
 
 
+# CRED_MAX_CREDENTIAL_BLOB_SIZE is 2,560 bytes. In UTF-16 a character takes two or
+# four, so 640 characters always fit.
+WINDOWS_PIECE = 640
+# A value kept in pieces: its own entry holds this and the number of pieces.
+_SPLIT = "trillion-split:v1:"
+
+
+def _piece_name(name: str, i: int) -> str:
+    return f"{name}~piece-{i + 1}"
+
+
+def _pieces_in(head: str | None) -> int:
+    if head is None or not head.startswith(_SPLIT):
+        return 0
+    count = head.removeprefix(_SPLIT)
+    return int(count) if count.isdigit() else 0
+
+
 class KeychainStore:
+    """The system keychain, through `keyring`.
+
+    A backend raises errors of its own beside keyring's (pywintypes.error from
+    Credential Manager, D-Bus errors from Secret Service), so every failure is caught
+    here; only its class name is logged, never a value."""
+
+    def __init__(
+        self, service: str = SERVICE, *, piece: int | Literal["auto"] | None = "auto"
+    ) -> None:
+        self._service = service
+        # Longest value kept in one entry; None for no limit. "auto": Windows' limit there.
+        if isinstance(piece, str):
+            piece = WINDOWS_PIECE if sys.platform == "win32" else None
+        self._piece = piece
+
     def available(self) -> bool:
         backend = keyring.get_keyring()
         # `fail` is what keyring falls back to on a machine with no keychain at all.
@@ -131,8 +169,17 @@ class KeychainStore:
     def get(self, name: str) -> str | None:
         began = _version(name)
         try:
-            value = keyring.get_password(SERVICE, name)
-        except keyring.errors.KeyringError as e:
+            value = keyring.get_password(self._service, name)
+            count = _pieces_in(value)
+            if count:
+                pieces = [
+                    keyring.get_password(self._service, _piece_name(name, i)) for i in range(count)
+                ]
+                if any(p is None for p in pieces):
+                    logger.warning("keychain entry %s is missing a piece", name)
+                    return None
+                value = "".join(p for p in pieces if p is not None)
+        except Exception as e:
             logger.warning("keychain read of %s failed: %s", name, type(e).__name__)
             return None
         _note(name, value, read_at=began)
@@ -143,19 +190,44 @@ class KeychainStore:
             raise SecretStoreError("this machine has no system keychain")
         # Noted first, and kept if the write fails: the caller still holds the value.
         _note(name, value)
+        # A value that looks like a list of pieces is stored as one, so it reads back whole.
+        split = (self._piece is not None and len(value) > self._piece) or value.startswith(_SPLIT)
         try:
-            keyring.set_password(SERVICE, name, value)
-        except keyring.errors.KeyringError as e:
+            if split:
+                size = self._piece or WINDOWS_PIECE
+                pieces = [value[i : i + size] for i in range(0, len(value), size)]
+                for i, piece in enumerate(pieces):
+                    keyring.set_password(self._service, _piece_name(name, i), piece)
+                keyring.set_password(self._service, name, f"{_SPLIT}{len(pieces)}")
+            else:
+                pieces = []
+                keyring.set_password(self._service, name, value)
+            # Pieces of a longer value stored before go, up to the first that isn't there.
+            # Nothing is read first: a write never waits on, or races, a read.
+            if self._piece is not None or split:
+                i = len(pieces)
+                while self._remove(_piece_name(name, i)):
+                    i += 1
+        except Exception as e:
             raise SecretStoreError(f"the keychain refused to store {name}") from e
 
     def delete(self, name: str) -> None:
         try:
-            keyring.delete_password(SERVICE, name)
-        except keyring.errors.PasswordDeleteError:
-            pass  # already gone
-        except keyring.errors.KeyringError as e:
+            count = _pieces_in(keyring.get_password(self._service, name))
+            self._remove(name)
+            for i in range(count):
+                self._remove(_piece_name(name, i))
+        except Exception as e:
             raise SecretStoreError(f"the keychain refused to remove {name}") from e
         _note(name, None)
+
+    def _remove(self, entry: str) -> bool:
+        """Whether there was an entry to remove."""
+        try:
+            keyring.delete_password(self._service, entry)
+        except keyring.errors.PasswordDeleteError:
+            return False  # already gone
+        return True
 
 
 class MemoryStore:

@@ -28,7 +28,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
-from trillion import __version__, build, paths
+from trillion import __version__, build, owner_only, paths
 from trillion.brain import config
 from trillion.brain.config import ConfigError, ModelSettings
 from trillion.brain.types import ProviderError
@@ -109,6 +109,25 @@ def check_home(home: Path) -> Check:
             fix="Make the folder yours to write, or point TRILLION_HOME at one that is.",
         )
     return Check(name=name, status="ok", detail=str(home))
+
+
+def check_privacy(home: Path) -> Check | None:
+    """Whether anyone but its owner can open the data folder, on every system. None
+    before it exists. Trillion limits it on each start; this only looks."""
+    if not home.is_dir():
+        return None
+    name = "Data folder access"
+    who = owner_only.exposed(home)
+    if who is None:
+        return Check(name=name, status="info", detail="could not tell who else can open it")
+    if not who:
+        return Check(name=name, status="ok", detail="only you can open it")
+    return Check(
+        name=name,
+        status="warn",
+        detail=f"{' and '.join(who)} can open it too",
+        fix="Run: trillion setup. It limits the folder to your account.",
+    )
 
 
 def check_database(path: Path) -> Check:
@@ -277,6 +296,15 @@ KEYCHAIN_NAMES = {
 }
 
 
+def backend_name(backend: Any) -> str:
+    """The name `keyring` gives the backend it chose. When several work, it chains
+    them, and the first one is where a new key is written."""
+    chained = getattr(backend, "backends", None)
+    if isinstance(chained, list | tuple) and chained:
+        backend = chained[0]
+    return str(getattr(backend, "name", ""))
+
+
 def check_keychain(secrets: SecretStore, backend: str = "") -> Check:
     name = "Keychain"
     if secrets.available():
@@ -349,7 +377,49 @@ def check_microphone() -> Check:
             detail="no PipeWire or PulseAudio was found",
             fix="Install PipeWire (or PulseAudio) so the browser has a microphone to open.",
         )
+    if sys.platform == "win32":
+        return _windows_microphone(told)
     return Check(name=name, status="info", detail=told)
+
+
+def _windows_microphone(told: str) -> Check:
+    """The microphones Windows lists, and its privacy switches. Opens none of them."""
+    from trillion.cli import windows_audio
+
+    name = "Microphone"
+    allowed = windows_audio.access()
+    if allowed in ("off", "desktop_off"):
+        switch = (
+            "Microphone access" if allowed == "off" else "Let desktop apps access your microphone"
+        )
+        return Check(
+            name=name,
+            status="warn",
+            detail=f"Windows' privacy settings keep apps off the microphone ({switch} is off)",
+            fix="Open Settings → Privacy & security → Microphone and turn on Microphone access "
+            "and Let desktop apps access your microphone.",
+        )
+    found = windows_audio.inputs()
+    if found is None:
+        return Check(name=name, status="info", detail=f"Windows did not list its devices; {told}")
+    if not found.names:
+        return Check(
+            name=name,
+            status="warn",
+            detail="Windows lists no microphone",
+            fix="Plug in or turn on a microphone, or enable it in Settings → System → Sound. "
+            "You can still type to her.",
+        )
+    count = len(found.names)
+    listed = f"{count} microphone{'s' if count != 1 else ''}"
+    if found.default is None:
+        return Check(
+            name=name,
+            status="warn",
+            detail=f"{listed} ({', '.join(found.names)}), but none is the default",
+            fix="Choose one in Settings → System → Sound → Input.",
+        )
+    return Check(name=name, status="ok", detail=f"{listed}; default: {found.default}; {told}")
 
 
 # ── What the user chose ──────────────────────────────────────────────────
@@ -826,6 +896,7 @@ async def examine(
     checks = [
         check_build(),
         check_home(paths.home()),
+        *([access] if (access := check_privacy(paths.home())) else []),
         check_database(paths.db_path()),
         check_page(page),
         check_port(options.host, options.port),

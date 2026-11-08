@@ -1,13 +1,22 @@
 //! Asking the user's login shell. An app opened from the Finder starts with a bare
 //! PATH; the login shell knows where the user's tools are and what they have set.
+//! Windows has no login shell: an app started from the Start menu already has the
+//! user's environment, so there is nothing to ask.
+#![cfg_attr(not(unix), allow(dead_code))]
 
+#[cfg(unix)]
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::sync::mpsc;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 /// A profile that waits on something must not hang the app's start.
+#[cfg(unix)]
 const LIMIT: Duration = Duration::from_secs(5);
 
 const ENV_MARK: &[u8] = b"\0TRILLION-ENV\0";
@@ -26,8 +35,15 @@ pub struct Probe {
 }
 
 /// Asks the login shell; None if it failed, said nothing usable, or took too long.
+#[cfg(unix)]
 pub fn probe() -> Option<Probe> {
     login(PROBE).and_then(|out| parse_probe(&out))
+}
+
+/// Windows: no login shell to ask.
+#[cfg(not(unix))]
+pub fn probe() -> Option<Probe> {
+    None
 }
 
 /// Reads the probe's output: only what follows the markers counts.
@@ -64,6 +80,7 @@ pub fn parse_env0(raw: &[u8]) -> Vec<(String, String)> {
 
 /// What `$SHELL -lc script` printed, whatever its exit status; None if it could not
 /// run or did not finish in time.
+#[cfg(unix)]
 fn login(script: &str) -> Option<Vec<u8>> {
     let shell = std::env::var("SHELL")
         .ok()
@@ -145,6 +162,7 @@ mod tests {
         assert_eq!(parse_probe(b""), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_real_shell_answers() {
         let probe = probe().expect("the login shell");
