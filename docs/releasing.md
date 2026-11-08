@@ -267,8 +267,10 @@ everyone as soon as it is merged, without a release.
 Each installs uv if it is missing (with Astral's own installer), then installs
 the latest version on PyPI, or upgrades to it. `--channel beta` (`-Channel beta`,
 `TRILLION_CHANNEL=beta`) installs the newest beta or stable, whichever is newer, by
-asking uv for `trillion>=0.0.0b0`: a requirement that names a pre-release lets uv
-pick one for Trillion and for nothing it depends on. `--channel dev` asks GitHub's
+asking uv for `trillion>=0.0.0b0`, plus `--prerelease-package trillion=allow` when
+`uv tool install --help` lists it. Older uv picks a pre-release from the requirement
+alone and lacks the option; newer uv (0.13) needs it. Either way only Trillion may
+be a pre-release, never what it depends on. `--channel dev` asks GitHub's
 API for the wheel on the `dev` release and installs it with `--reinstall`. The
 channel asked for is remembered in `~/.trillion/channel` (or under `TRILLION_HOME`),
 so a re-run and `trillion update` stay on it; moving to another channel reinstalls,

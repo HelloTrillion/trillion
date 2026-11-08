@@ -81,10 +81,20 @@ def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 class Uv:
     """Stands in for uv: records what it was asked to run."""
 
-    def __init__(self, code: int = 0, listing: str = "trillion v2026.11.0\n- trillion\n") -> None:
+    def __init__(
+        self,
+        code: int = 0,
+        listing: str = "trillion v2026.11.0\n- trillion\n",
+        *,
+        scoped: bool = True,
+    ) -> None:
         self.code = code
         self.text = listing
+        self.has_scoped = scoped
         self.ran: list[list[str]] = []
+
+    def scoped(self, uv: str) -> bool:
+        return self.has_scoped
 
     def listing(self, uv: str) -> str:
         return self.text
@@ -99,7 +109,14 @@ def update(uv: Uv, http: httpx.Client, **kw: Any) -> tuple[int, str, str]:
     kw.setdefault("check_only", False)
     kw.setdefault("channel", None)
     code = updates.run(
-        http=http, uv="/bin/uv", listing=uv.listing, runner=uv.run, out=out, err=err, **kw
+        http=http,
+        uv="/bin/uv",
+        listing=uv.listing,
+        scoped=uv.scoped,
+        runner=uv.run,
+        out=out,
+        err=err,
+        **kw,
     )
     return code, out.getvalue(), err.getvalue()
 
@@ -242,9 +259,49 @@ def test_beta_asks_uv_for_pre_releases_of_trillion_only(installed: None, home: P
     uv = Uv()
     code, _, _ = update(uv, github(), channel="beta")
     assert code == 0
-    assert uv.ran[0][-1] == "trillion>=0.0.0b0"
+    assert uv.ran == [
+        [
+            "/bin/uv",
+            "tool",
+            "install",
+            "--reinstall",
+            "--prerelease-package",
+            "trillion=allow",
+            "--python",
+            "3.13",
+            "trillion>=0.0.0b0",
+        ]
+    ]
     assert "--prerelease" not in uv.ran[0]  # that would let every dependency be one too
     assert updates.remembered() == "beta"  # an update with --channel switches to it
+
+
+def test_an_older_uv_gets_the_beta_without_the_option_it_lacks(installed: None) -> None:
+    updates.remember("beta")
+    uv = Uv(scoped=False)
+    code, _, _ = update(uv, github())
+    assert code == 0
+    assert uv.ran == [
+        ["/bin/uv", "tool", "install", "--upgrade", "--python", "3.13", "trillion>=0.0.0b0"]
+    ]
+
+
+def test_only_beta_asks_for_pre_releases(installed: None) -> None:
+    uv = Uv()
+    update(uv, github())
+    assert not any(part.startswith("--prerelease") for part in uv.ran[0])
+
+
+def test_scoped_pre_releases_are_read_from_uvs_help(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Done:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    said = {"text": "      --prerelease-package <PACKAGE=MODE>\n"}
+    monkeypatch.setattr(updates.subprocess, "run", lambda *a, **kw: Done(said["text"]))
+    assert updates.scoped_prereleases("/bin/uv")
+    said["text"] = "      --prerelease <PRERELEASE>\n"
+    assert not updates.scoped_prereleases("/bin/uv")
 
 
 def test_dev_installs_the_dev_wheel(installed: None) -> None:

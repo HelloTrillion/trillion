@@ -40,9 +40,12 @@ DEFAULT = "stable"
 TIMEOUT_S = 15.0
 INSTALL_SH = f"curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh"
 INSTALL_PS1 = f"irm https://raw.githubusercontent.com/{REPO}/main/install.ps1 | iex"
-# The beta channel asks for any version, pre-releases included. A requirement that
-# names a pre-release lets uv pick one for Trillion and for nothing else.
+# The beta channel asks for any version, pre-releases included. uv up to about 0.12
+# picks a pre-release when the requirement names one; newer uv also needs
+# --prerelease-package, which keeps every dependency on its releases. Older uv
+# doesn't know that option, so its help is asked first (`scoped_prereleases`).
 ANY_BETA = ">=0.0.0b0"
+PRERELEASE = ["--prerelease-package", "trillion=allow"]
 
 _TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
 _PEP440 = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:b(\d+))?(?:\.dev(\d+))?$")
@@ -203,12 +206,19 @@ def extras(listing: str) -> str:
 
 
 def command(
-    uv: str, channel: str, latest: Release | None, with_extras: str, *, switching: bool = False
+    uv: str,
+    channel: str,
+    latest: Release | None,
+    with_extras: str,
+    *,
+    switching: bool = False,
+    scoped: bool = False,
 ) -> list[str]:
     """The `uv tool install` that puts the newest of a channel in place, keeping extras.
 
     Moving to another channel starts afresh (`--reinstall`): `--upgrade` alone keeps
-    an installed beta, and moving to stable means the newest stable."""
+    an installed beta, and moving to stable means the newest stable. `scoped`: this
+    uv has --prerelease-package, which newer uv needs for a beta."""
     name = f"trillion[{with_extras}]" if with_extras else "trillion"
     if channel == "dev":
         if latest is None or not latest.wheel:
@@ -222,9 +232,22 @@ def command(
             "3.13",
             f"{name} @ {latest.wheel}",
         ]
-    wanted = name + ANY_BETA if channel == "beta" else name
     fresh = "--reinstall" if switching else "--upgrade"
-    return [uv, "tool", "install", fresh, "--python", "3.13", wanted]
+    if channel == "beta":
+        extra = PRERELEASE if scoped else []
+        return [uv, "tool", "install", fresh, *extra, "--python", "3.13", name + ANY_BETA]
+    return [uv, "tool", "install", fresh, "--python", "3.13", name]
+
+
+def scoped_prereleases(uv: str) -> bool:
+    """Whether this uv knows --prerelease-package (newer uv needs it for a beta)."""
+    try:
+        done = subprocess.run(  # noqa: S603 - uv's own path and fixed arguments, no shell
+            [uv, "tool", "install", "--help"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return False
+    return "--prerelease-package" in done.stdout
 
 
 def _listing(uv: str) -> str:
@@ -252,6 +275,7 @@ def run(
     http: httpx.Client | None = None,
     uv: str | None = None,
     listing: Callable[[str], str] = _listing,
+    scoped: Callable[[str], bool] = scoped_prereleases,
     runner: Runner = _run,
     out: Any = None,
     err: Any = None,
@@ -296,7 +320,14 @@ def run(
         )
         return 1
     try:
-        cmd = command(uv, chosen, latest, extras(listing(uv)), switching=switching)
+        cmd = command(
+            uv,
+            chosen,
+            latest,
+            extras(listing(uv)),
+            switching=switching,
+            scoped=chosen == "beta" and scoped(uv),
+        )
     except UpdateError as e:
         err.write(f"trillion: {e}\n")
         return 1

@@ -173,19 +173,26 @@
             Invoke-Native $uv @('tool', 'upgrade', 'trillion')
             if ($LASTEXITCODE -ne 0) { throw "uv could not upgrade Trillion (see above). To reinstall it: $reinstall. $oldUv" }
         } else {
+            # The beta channel asks for any version, pre-releases included. uv up to
+            # about 0.12 picks a pre-release when the requirement names one; newer uv
+            # needs --prerelease-package as well, which also keeps every dependency on
+            # its releases. Older uv doesn't know that option, so ask its help first.
+            $prerelease = @()
             if ($Version) {
                 $package = "$package==$Version"
             } elseif ($chosen -eq 'beta') {
-                # A requirement that names a pre-release lets uv pick one for Trillion,
-                # and for nothing else it depends on.
                 $package = "$package>=0.0.0b0"
+                $ErrorActionPreference = 'Continue'
+                $help = (& $uv tool install --help 2>$null | Out-String)
+                $ErrorActionPreference = 'Stop'
+                if ($help.Contains('--prerelease-package')) { $prerelease = @('--prerelease-package', 'trillion=allow') }
             }
             # Leaving a channel needs a fresh start: --upgrade alone would keep a beta
             # that is installed, and moving to stable means the newest stable.
             $fresh = '--upgrade'
             if ($chosen -ne $was) { $fresh = '--reinstall' }
             Write-Step "installing $package from the $chosen channel (this upgrades it if it is already installed)"
-            Invoke-Native $uv @('tool', 'install', $fresh, '--python', '3.13', $package)
+            Invoke-Native $uv (@('tool', 'install', $fresh) + $prerelease + @('--python', '3.13', $package))
             if ($LASTEXITCODE -ne 0) { throw "uv could not install $package (see above). $oldUv" }
         }
 

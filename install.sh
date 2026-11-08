@@ -150,20 +150,31 @@ Update uv ('uv self update', or the way you installed it) and try again."
         "$uv" tool upgrade trillion ||
             fail "uv could not upgrade Trillion (see above). To reinstall it: $reinstall. $old_uv"
     else
+        # The beta channel asks for any version, pre-releases included. uv up to
+        # about 0.12 picks a pre-release when the requirement names one; newer uv
+        # needs --prerelease-package as well, which also keeps every dependency on
+        # its releases. Older uv doesn't know that option, so ask its help first.
+        prerelease=""
         if [ -n "$version" ]; then
             package="$package==$version"
         elif [ "$chosen" = beta ]; then
-            # A requirement that names a pre-release lets uv pick one for Trillion,
-            # and for nothing else it depends on.
             package="$package>=0.0.0b0"
+            if "$uv" tool install --help 2>/dev/null | grep -q -- '--prerelease-package'; then
+                prerelease=1
+            fi
         fi
         # Leaving a channel needs a fresh start: --upgrade alone would keep a beta
         # that is installed, and moving to stable means the newest stable.
         fresh="--upgrade"
         [ "$chosen" = "$was" ] || fresh="--reinstall"
         say "installing $package from the $chosen channel (this upgrades it if it is already installed)"
-        "$uv" tool install "$fresh" --python 3.13 "$package" ||
-            fail "uv could not install $package (see above). $old_uv"
+        if [ -n "$prerelease" ]; then
+            "$uv" tool install "$fresh" --prerelease-package trillion=allow --python 3.13 "$package" ||
+                fail "uv could not install $package (see above). $old_uv"
+        else
+            "$uv" tool install "$fresh" --python 3.13 "$package" ||
+                fail "uv could not install $package (see above). $old_uv"
+        fi
     fi
 
     # 3. PATH, for new terminals. uv fails when the shell files already have it
