@@ -8,6 +8,9 @@ with it. The phrases' embeddings wait here, in memory, until the last one, when 
 become the voiceprint (`voice/speaker.py`) or are thrown away.
 
 The model is fetched only from here, when the user presses the button (ONB-7/8).
+
+Here too is the owner's switch for their own words as the yes (SPN-20): off until
+they turn it on, only once a voice is enrolled, and off again when it is forgotten.
 """
 
 from __future__ import annotations
@@ -20,9 +23,9 @@ from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
-from trillion.api.runtime import Runtime
+from trillion.api.runtime import OWN_WORDS_PREF, OWNER, Runtime
 from trillion.voice.providers import wespeaker
 from trillion.voice.speaker import PHRASES, Voiceprints, enrol
 from trillion.voice.types import SpeakerEmbedding, UnknownSpeaker, VoiceError
@@ -39,6 +42,11 @@ PROMPTS: tuple[str, ...] = (
 
 # The most audio one phrase may be: 15 seconds at 16 kHz, 16-bit, base64.
 MAX_PHRASE_B64 = 15 * 16_000 * 2 * 4 // 3 + 8
+
+
+class OwnWordsBody(BaseModel):
+    # Exactly true or false: "yes" or 1 is not the owner turning it on.
+    own_words: StrictBool
 
 
 class PhraseBody(BaseModel):
@@ -78,10 +86,21 @@ def create_voiceprint_router(rt: Runtime) -> APIRouter:
             "working": profile is not None and ready,
             "prompts": list(PROMPTS),
             "recorded": sorted(draft),
+            # Shown as on only with a voice to check it against (SPN-20).
+            "own_words": profile is not None and await rt.own_words_on(),
         }
 
     @router.get("")
     async def get_state() -> Any:
+        return await state()
+
+    @router.put("")
+    async def set_own_words(body: OwnWordsBody) -> Any:
+        """The owner's own words as the yes, on or off (SPN-20). Never from the model:
+        only this route writes it, behind the session token."""
+        if body.own_words and await asyncio.to_thread(prints().get) is None:
+            return _fail(400, "not_enrolled")
+        await rt.preferences.put(OWNER, OWN_WORDS_PREF, body.own_words, rt.clock())
         return await state()
 
     @router.post("/model")
@@ -158,6 +177,8 @@ def create_voiceprint_router(rt: Runtime) -> APIRouter:
             logger.warning("voiceprint not deleted: %s", type(e).__name__)
             return _fail(500, "not_deleted")
         rt.speakers = UnknownSpeaker()
+        # Taught again later, it starts off again: the owner turns it on afresh.
+        await rt.preferences.put(OWNER, OWN_WORDS_PREF, False, rt.clock())
         return await state()
 
     return router

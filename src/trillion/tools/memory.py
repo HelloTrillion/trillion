@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 
+from trillion.brain.standing import about_words
 from trillion.memory import present
 from trillion.memory.book import RECALL_LIMIT, MemoryBook, recalled_tokens
 from trillion.memory.files import valid_id
@@ -252,13 +253,17 @@ class MemoryForget(_MemoryTool):
     definition = ToolDefinition(
         name=FORGET,
         description=(
-            "Forget one memory, by its id. " + ASKS_BY_CARD + " Use memory_write with "
+            "Forget one memory. Give its id, or give words from it as `about` (for 'forget "
+            "the memory about X'). If more than one memory has those words, nothing is "
+            "forgotten: ask the user which one. " + ASKS_BY_CARD + " Use memory_write with "
             "replaces instead when a fact has changed rather than gone."
         ),
         input_schema={
             "type": "object",
-            "properties": {"id": {"type": "string"}},
-            "required": ["id"],
+            "properties": {
+                "id": {"type": "string"},
+                "about": {"type": "string", "minLength": 1, "maxLength": 100},
+            },
             "additionalProperties": False,
         },
         risk=Risk.IRREVERSIBLE,
@@ -266,9 +271,28 @@ class MemoryForget(_MemoryTool):
         timeout_s=10.0,
         # Soft underneath: the file is kept and marked, so a yes is enough (SPN-9).
         recoverable=True,
+        # "Forget the memory about X", said by the owner: their words are the yes
+        # (SPN-20). Never by id: an id is not something anyone says.
+        own_words=("about",),
     )
 
+    def _matches(self, args: JSON) -> list[Memory]:
+        """The current memories that hold every word of `about`, or the one by `id`."""
+        book = self._book
+        if book is None:
+            return []
+        if "about" in args:
+            words = about_words(str(args.get("about") or ""))
+            if not words:
+                return []
+            return [m for m in book.current() if all(w in m.text.casefold() for w in words)]
+        m = book.peek(str(args.get("id") or ""))
+        return [m] if m is not None else []
+
     def _memory(self, args: JSON) -> tuple[str, Memory | None]:
+        if "about" in args:
+            found = self._matches(args)
+            return ("", found[0]) if len(found) == 1 else ("", None)
         memory_id = str(args.get("id") or "")
         book = self._book
         return memory_id, book.peek(memory_id) if book is not None else None
@@ -276,22 +300,50 @@ class MemoryForget(_MemoryTool):
     def describe(self, args: JSON) -> ActionSummary:
         memory_id, m = self._memory(args)
         if m is None:
+            if "about" in args:
+                return ActionSummary(text=f"Forget the memory about {str(args['about'])[:60]}")
             return ActionSummary(text=f"Forget memory {memory_id[:40]}")
         text = " ".join(m.text.split())
         shown = text if len(text) <= _PREVIEW else text[: _PREVIEW - 1] + "…"
         return ActionSummary(text=f"Forget: “{shown}”")
 
     def target(self, args: JSON) -> str:
+        if "about" in args:
+            _, m = self._memory(args)
+            return f"memory:{m.id[:40]}" if m is not None else "memory:about"
         return f"memory:{str(args.get('id') or '')[:40]}"
 
     def fingerprint(self, args: JSON) -> str | None:
         _, m = self._memory(args)
-        # If it is corrected or forgotten between the ask and the yes, nothing runs.
-        return f"{m.version}:{m.status}" if m is not None else "absent"
+        if m is None:
+            return "absent"
+        # If it is corrected or forgotten between the ask and the yes, nothing runs. Found
+        # by its words, it must also still be the same memory.
+        state = f"{m.version}:{m.status}"
+        return f"{m.id}:{state}" if "about" in args else state
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
+        if self._for(ctx) is None:
+            return Precondition.failed("no such memory")
+        if ("id" in args) == ("about" in args):
+            return Precondition.failed("give the memory's id or words from it as about, not both")
+        if "about" in args:
+            found = self._matches(args)
+            if not found:
+                return Precondition.failed(
+                    "no current memory has those words: call memory_recall and ask the user which"
+                )
+            if len(found) > 1:
+                shown = "; ".join(
+                    f"[{m.id}] “{present.inert(' '.join(m.text.split())[:50])}”" for m in found[:3]
+                )
+                more = f" and {len(found) - 3} more" if len(found) > 3 else ""
+                return Precondition.failed(
+                    f"not forgotten: {len(found)} memories match, so ask the user which one:"
+                    f" {shown}{more}"
+                )
         _, m = self._memory(args)
-        if self._for(ctx) is None or m is None:
+        if m is None:
             return Precondition.failed("no such memory")
         if not m.current:
             return Precondition.failed("that memory is already forgotten or replaced")
@@ -301,8 +353,11 @@ class MemoryForget(_MemoryTool):
         book = self._for(ctx)
         if book is None:
             return _refused("disk")
+        _, m = self._memory(args)
+        if m is None:
+            return _refused("not_found")
         try:
-            gone = await book.forget(str(args["id"]), _now_ms())
+            gone = await book.forget(m.id, _now_ms())
         except MemoryError_ as e:
             return _refused(e.kind)
         return ToolResult(ok=True, content=f"forgot {gone.id}", effect="confirmed")

@@ -184,6 +184,8 @@ LISTEN_PREF = "listening"
 THINK_EARLY_PREF = "think_early"
 # Whether live widgets refresh while the board is seen (the live widgets spec).
 WIDGETS_FRESH_PREF = "widgets_fresh"
+# "Let my own words approve things I can undo" (SPN-20): off unless exactly true.
+OWN_WORDS_PREF = "own_words"
 # The last choice made, kept when the feature is switched off so that switching it
 # back on does not mean choosing everything again.
 SPEECH_LAST_PREF = "speech_last"
@@ -1126,6 +1128,11 @@ class Runtime:
             if session.id == conversation_id:
                 await session.send("board", board=board)
 
+    async def own_words_on(self) -> bool:
+        """Whether the owner turned on their own words as the yes (SPN-20). Only
+        Settings → Your voice writes it; anything but exactly true is off."""
+        return await self.preferences.get(OWNER, OWN_WORDS_PREF) is True
+
     def zone(self) -> str | None:
         """The user's timezone: the one they gave (USER.md), else this computer's (AGT-9)."""
         chosen = self.profile.timezone if self.profile is not None else ""
@@ -1549,6 +1556,8 @@ async def open_runtime(
         audit_key=audit_key(paths.audit_key_path()),
         # The page reports a card once it is really on screen; only then can it be approved.
         require_delivery=True,
+        # Read for each call that could take it, once `rt` exists (SPN-20).
+        own_words_on=lambda: rt.own_words_on(),
     )
     # Finish what a crash interrupted before anything new can be proposed (SPN-17a).
     settled = await router.recover(store_of_shares.known(EVERYONE)[0])

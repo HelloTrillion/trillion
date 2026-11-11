@@ -23,7 +23,7 @@ export interface HistoryEntry {
   readonly event: string;
   readonly at: number;
   readonly channel: string;
-  readonly by: 'asking_conversation' | 'system' | 'another_session';
+  readonly by: 'asking_conversation' | 'system' | 'another_session' | 'own_words';
 }
 
 export interface Confirmation {
@@ -106,6 +106,8 @@ export function byText(kind: HistoryEntry['by'] | null): string {
   if (kind === 'asking_conversation') return 'in the conversation that asked';
   if (kind === 'system') return 'automatically';
   if (kind === 'another_session') return 'from another session';
+  // SPN-20: what the user said was itself the yes, so there was no second turn.
+  if (kind === 'own_words') return 'by your words';
   return '';
 }
 
@@ -124,6 +126,8 @@ export function answeredText(a: Pick<Confirmation, 'status' | 'decision' | 'deci
   const said = (verb: string): string => [how ? `${verb} (${how})` : verb, who].filter(Boolean).join(' ') + `, ${at}`;
   switch (a.decision) {
     case 'approved':
+      // What they said was itself the yes (SPN-20): spoken, in their voice, no card.
+      if (a.decided_by_kind === 'own_words') return `Approved by your words, ${at}`;
       return said('Approved');
     case 'rejected':
       return said('Declined');
