@@ -6,6 +6,7 @@ combination of state, event and context can be tested exhaustively.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -27,6 +28,16 @@ NOT_OWNER_DETAIL = (
 REPLAY_DETAIL = (
     "that yes matched one already heard exactly, like a recording played back; "
     "ask the owner to tap Approve on the card"
+)
+# A yes on a turn that read something from outside may be that text's, not the user's.
+AFTER_READING_DETAIL = (
+    "this turn read something from outside (a page, an email, a file), so a yes now "
+    "can't approve a card; ask the user to tap Approve on the card"
+)
+# With more than one card waiting, a yes can only be for the one shown last.
+NOT_NEWEST_DETAIL = (
+    "more than one card is waiting and a yes can only approve the newest one; ask the "
+    "user to tap Approve on the card they mean"
 )
 
 Event = Literal["confirm", "cancel"]
@@ -83,6 +94,11 @@ class Refusal(StrEnum):
     VOICE_UNSURE = "voice_unsure"
     # The voice this turn is not the owner's: nothing personal runs (PER-13).
     PRIVATE = "private"
+    # A yes, not a tap, on a turn that read something from outside: it may be that
+    # text's yes, not the user's. Only the card's tap approves then.
+    AFTER_READING = "after_reading"
+    # A yes, not a tap, for a card other than the newest one waiting: only its tap can.
+    NOT_NEWEST = "not_newest"
 
 
 @dataclass(frozen=True)
@@ -116,6 +132,33 @@ class PendingAction:
     # True once retention has cleared the full arguments (#20): `args` is then the slim
     # copy, with long values replaced by their fingerprints, and the action cannot run.
     args_cleared: bool = False
+    # Everything the card shows besides its summary, exactly as it will go (SPN-2a,
+    # spine/card.py). Kept with the full arguments and cleared with them. Empty when
+    # the summary says all of it.
+    detail: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class Waiting:
+    """A card still waiting in the session, as `decide` weighs a yes against it."""
+
+    id: str
+    created_at: int
+    expires_at: int
+    # When it was first shown on a screen (SPN-17's `delivered_at`), or None.
+    shown_at: int | None
+
+
+def newest(waiting: Sequence[Waiting], now_ms: int) -> str | None:
+    """The one card a yes can be for: of the cards still waiting, the one shown on a
+    screen last (ties: raised last). A card not yet shown is not one the user can be
+    answering, so it is never the newest. None when no waiting card has been shown:
+    then there is nothing on screen for a yes to be about, and the router's delivery
+    rule refuses every card alike (#4)."""
+    shown = [w for w in waiting if w.expires_at > now_ms and w.shown_at is not None]
+    if not shown:
+        return None
+    return max(shown, key=lambda w: (w.shown_at or 0, w.created_at, w.id)).id
 
 
 _STATUS_REFUSAL = {
@@ -125,8 +168,18 @@ _STATUS_REFUSAL = {
 }
 
 
-def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Status | Rejection:
-    """Return the next status for `a`, or why the event is refused."""
+def decide(
+    a: PendingAction,
+    event: Event,
+    ctx: ToolContext,
+    now_ms: int,
+    *,
+    waiting: Sequence[Waiting] = (),
+) -> Status | Rejection:
+    """Return the next status for `a`, or why the event is refused.
+
+    `waiting` is every card still waiting in `a`'s session, `a` among them: a yes that
+    is not a tap can only approve the newest (`newest`)."""
     if a.owner_id != ctx.owner_id:
         return Rejection(Refusal.NOT_FOUND)
     if a.session_id != ctx.session_id:
@@ -157,7 +210,25 @@ def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Sta
         if ctx.speaker == "replay":
             return Rejection(Refusal.NOT_OWNER, REPLAY_DETAIL)
         return Rejection(Refusal.NOT_OWNER, NOT_OWNER_DETAIL)
+    if ctx.via != "tap" and ctx.read_outside:
+        # Words she read this turn (a page, an email) could have said the yes. A tap is
+        # the user's own act on the card, whatever was read.
+        return Rejection(Refusal.AFTER_READING, AFTER_READING_DETAIL)
+    if ctx.via != "tap" and newest(_with(waiting, a), now_ms) not in (None, a.id):
+        # A yes is for the card the user is looking at. Planted text naming an older
+        # card's id can't move it there; that card's own tap can.
+        return Rejection(Refusal.NOT_NEWEST, NOT_NEWEST_DETAIL)
     return Status.APPROVED
+
+
+def _with(waiting: Sequence[Waiting], a: PendingAction) -> list[Waiting]:
+    """The waiting cards, `a` among them: added, never shown, when the list lacks it."""
+    if any(w.id == a.id for w in waiting):
+        return list(waiting)
+    return [
+        *waiting,
+        Waiting(id=a.id, created_at=a.created_at, expires_at=a.expires_at, shown_at=None),
+    ]
 
 
 _ID_ONLY = {

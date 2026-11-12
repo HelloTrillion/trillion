@@ -42,10 +42,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
-import idna.core
-
 from trillion import paths
 from trillion.files.rules import resolved, why_not
+from trillion.spine.card import hidden_marks
 from trillion.spine.deny_floor import CASE_BLIND, fold
 
 Access = Literal["read", "change"]
@@ -122,56 +121,9 @@ def _key(path: Path) -> str:
     return fold(str(path)) if CASE_BLIND else str(path)
 
 
-# Variation selectors 15 and 16 only choose how the character before them is drawn
-# (text or emoji); the zero-width joiner joins emoji into one ("👨‍👩‍👧").
-_PRESENTATION = frozenset("\ufe0e\ufe0f")
+# The zero-width joiner and non-joiner: names that differ only by one are one name.
 _ZWJ = "\u200d"
-# The zero-width non-joiner keeps two letters apart, as Persian and Indic names spell
-# words with it.
 _ZWNJ = "\u200c"
-
-
-def _emoji(c: str) -> bool:
-    """A pictograph, or a skin tone that changes the one before it."""
-    if len(c) != 1:
-        return False
-    o = ord(c)
-    return unicodedata.category(c) == "So" or 0x1F000 <= o <= 0x1FAFF
-
-
-def hidden_marks(text: str) -> bool:
-    """Whether `text` holds a character nobody sees that could make it read as something
-    else: a direction override or isolate, a zero-width space or joiner in a word, a
-    soft hyphen, a tag or other variation selector. Emoji drawn as they should be (a
-    variation selector, a joiner between two emoji) are not hidden: they are seen, and
-    so is a non-joiner between two letters, which changes how they are written."""
-    for i, c in enumerate(text):
-        if c in _PRESENTATION:
-            continue
-        if c == _ZWNJ:
-            # Only where it changes how letters join, by the rule domain names use
-            # (RFC 5892 CONTEXTJ): after a virama, or between letters of a script that
-            # joins. Anywhere else ("Cli\u200cents") it changes nothing anyone sees.
-            if idna.core.valid_contextj(text, i):
-                continue
-            return True
-        if c == _ZWJ:
-            before = text[i - 1] if i > 0 else ""
-            if before in _PRESENTATION and i > 1:
-                before = text[i - 2]
-            after = text[i + 1] if i + 1 < len(text) else ""
-            if _emoji(before) and _emoji(after):
-                continue
-            return True
-        o = ord(c)
-        if (
-            unicodedata.category(c) == "Cf"
-            or o == 0x034F
-            or 0xFE00 <= o <= 0xFE0D
-            or 0xE0100 <= o <= 0xE01EF
-        ):
-            return True
-    return False
 
 
 def _clean_name(raw: str) -> str:

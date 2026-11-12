@@ -82,7 +82,7 @@ import { type Kit, createKit, isKit } from './kit';
 import { openShowcase, showcaseScene } from './showcase';
 import { boardTitle, buttonAction, createBoardView, createSeen } from './board';
 import { createHome, dayBoardStep, endsBuild, frameKeeps, herOpensHome, localDate, returnsToHome, shouldOpenHome } from './home';
-import { createApprovals, outcomeWords } from './approvals';
+import { cardDetail, createApprovals, outcomeWords } from './approvals';
 import { type DraftCard, createDraftPin } from './draft';
 import { DOCK, isPhone } from './layout';
 import { arcTarget, orbSeen } from './arcs';
@@ -791,6 +791,9 @@ function renderEntry(e: Entry): HTMLElement {
         row.append(picture(e.look, 28), summary);
         card.append(row);
       } else card.append(summary);
+      // All of what it sends or writes, whole, under the summary: what Approve approves.
+      const detail = cardDetail(e.detail ?? '');
+      if (detail && e.status === 'waiting') card.append(detail);
       if (e.status !== 'waiting') {
         card.append(el('p', 'card-note', e.note));
         return card;

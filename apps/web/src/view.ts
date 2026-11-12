@@ -38,6 +38,8 @@ export type Entry =
       readonly kind: 'card';
       readonly pendingId: string;
       readonly summary: string;
+      /** Everything it sends or writes, exactly as it will go (SPN-2a); absent when the summary says it all. */
+      readonly detail?: string;
       readonly expiresAt: number;
       readonly tapOnly: boolean;
       readonly status: CardStatus;
@@ -761,6 +763,7 @@ function step(view: View, msg: ServerMsg): View {
         kind: 'card',
         pendingId,
         summary: str(msg['summary']),
+        ...(typeof msg['detail'] === 'string' && msg['detail'] ? { detail: msg['detail'] } : {}),
         expiresAt: typeof msg['expires_at'] === 'number' ? msg['expires_at'] : 0,
         tapOnly: msg['tap_only'] === true,
         status: 'waiting',
