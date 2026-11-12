@@ -9,6 +9,8 @@
  * Once she knows the voice, a spoken yes counts only in it, and to anyone else she
  * keeps the user's things to herself. A tap on a card works as it always has.
  *
+ * Once a voice is enrolled, a switch lets the user's own words approve what can be
+ * undone (SPN-20). Off until they turn it on; the core checks everything else.
  * If the voiceprint file is there but can't be read, she can't check any voice: every
  * approval needs a tap until the user teaches her again or forgets it. Said plainly
  * here, never as "not set up".
@@ -27,8 +29,20 @@ export interface VoiceprintState {
   readonly working: boolean;
   readonly prompts: readonly string[];
   readonly recorded: readonly number[];
+  /** The user's own words approve things that can be undone (SPN-20). */
+  readonly own_words?: boolean;
   /** The voiceprint file is there but can't be read: no voice is checked. */
   readonly unreadable?: 'locked' | 'damaged' | null;
+}
+
+export const OWN_WORDS_LABEL = 'Let my own words approve things I can undo';
+export const OWN_WORDS_HINT =
+  'When you say exactly what to keep, drop or forget, she does it without asking again. Only for things that can be undone, and only in your voice. Spending, sending and anything that can’t be undone always ask.';
+
+/** The switch is offered only once she knows the voice, not while teaching her, and not
+ * while the voice file can't be read (no voice can be checked then). */
+export function showsOwnWords(s: VoiceprintState | null, teaching: boolean): boolean {
+  return !!s?.enrolled && !s.unreadable && !teaching;
 }
 
 /** What the section says when the voiceprint can't be read. */
@@ -59,6 +73,7 @@ const PROBLEMS: Readonly<Record<string, string>> = {
   phrases_missing: 'Read every phrase first.',
   not_saved: "Your voice couldn't be saved in the data folder.",
   not_deleted: "Your voice couldn't be removed from the data folder.",
+  not_enrolled: 'Teach her your voice first.',
   download_failed: 'The download could not be fetched. Check the connection and try again.',
   download_mismatch: 'The downloaded file did not match what was expected, so it was thrown away. Try again.',
   unreachable: 'Could not reach the download. Check the connection and try again.',
@@ -157,6 +172,14 @@ export function createVoiceprintSettings(
   const status = el('p', 'settings-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
+  const ownRow = el('label', 'settings-check');
+  const ownBox = el('input');
+  ownBox.type = 'checkbox';
+  ownBox.setAttribute('role', 'switch');
+  ownBox.id = 'voiceprint-own-words';
+  const ownWords = el('span');
+  ownWords.append(el('strong', '', OWN_WORDS_LABEL), el('small', '', OWN_WORDS_HINT));
+  ownRow.append(ownBox, ownWords);
   const actions = el('div', 'settings-actions');
   const download = button('Get the voice model', 'approve');
   const teach = button('Teach her your voice', 'approve');
@@ -165,7 +188,7 @@ export function createVoiceprintSettings(
   const forget = button('Forget my voice');
   const close = button('Close', 'settings-close');
   actions.append(download, teach, record, again, forget, close);
-  form.append(title, intro, where, phraseBox, status, actions, privacy, credit);
+  form.append(title, intro, where, phraseBox, ownRow, status, actions, privacy, credit);
   host.replaceChildren(form);
 
   function render(): void {
@@ -199,9 +222,11 @@ export function createVoiceprintSettings(
     record.hidden = !showPhrases;
     record.textContent = recording ? 'Stop' : 'Record';
     forget.hidden = !s?.enrolled || teaching;
+    ownRow.hidden = !showsOwnWords(s, teaching);
+    ownBox.checked = s?.own_words === true;
   }
 
-  async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<Record<string, unknown> | null> {
+  async function call(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<Record<string, unknown> | null> {
     const r = await api(method, path, method === 'GET' ? undefined : (body ?? {})).catch(() => null);
     if (!r) {
       status.textContent = 'Trillion is not running.';
@@ -270,6 +295,20 @@ export function createVoiceprintSettings(
     render();
     hooks.changed();
   }
+
+  ownBox.addEventListener('change', () => {
+    const on = ownBox.checked;
+    void (async () => {
+      ownBox.disabled = true;
+      const s = await call('PUT', '/api/voiceprint', { own_words: on });
+      ownBox.disabled = false;
+      if (s) {
+        state = s as unknown as VoiceprintState;
+        status.textContent = state.own_words ? 'On. Your own words approve things you can undo.' : 'Off. Everything asks on a card, as before.';
+      }
+      render();
+    })();
+  });
 
   download.addEventListener('click', () => {
     void (async () => {

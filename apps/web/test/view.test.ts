@@ -128,6 +128,16 @@ describe('view', () => {
     expect(v.entries[0]).toMatchObject({ kind: 'card', status: expected });
   });
 
+  it('settles a card approved by the user\'s own words "on your word" (SPN-20)', () => {
+    const v = feed([card, { type: 'confirm.resolved', pending_id: 'p1', status: 'succeeded', by: 'own_words' }]);
+    expect(v.entries[0]).toMatchObject({ kind: 'card', status: 'done', note: 'Done, on your word.' });
+    // Anything but done is said as for any card.
+    const failed = feed([card, { type: 'confirm.resolved', pending_id: 'p1', status: 'failed', by: 'own_words' }]);
+    expect(failed.entries[0]).toMatchObject({ status: 'failed', note: 'It failed. Nothing was changed.' });
+    // A tap's done stays plain.
+    expect(feed([card, { type: 'confirm.resolved', pending_id: 'p1', status: 'succeeded' }]).entries[0]).toMatchObject({ note: 'Done.' });
+  });
+
   it('never calls a refused or failed card done', () => {
     for (const status of ['refused', 'failed', 'unknown', 'cancelled']) {
       const v = feed([card, { type: 'confirm.resolved', pending_id: 'p1', status }]);

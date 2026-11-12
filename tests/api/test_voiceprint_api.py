@@ -202,3 +202,12 @@ def test_forgetting_an_unreadable_file_is_nobody_enrolled(make: Any) -> None:
 def test_the_file_is_where_paths_says(tmp_path: Path) -> None:
     # The test suite's own folder (tests/conftest.py): never the machine's.
     assert paths.voiceprint_path().parent == tmp_path
+
+
+def test_own_words_cant_be_turned_on_while_the_file_cant_be_read(make: Any) -> None:
+    # SPN-20 needs a voice to check against; an unreadable file is none (2026-11-12 spec).
+    damaged()
+    app: App = make()
+    r = app.client.put(PATH, json={"own_words": True}, headers=app.auth)
+    assert r.status_code == 400 and r.json() == {"error": "not_enrolled"}
+    assert get(app)["own_words"] is False

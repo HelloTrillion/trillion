@@ -795,6 +795,9 @@ class Session:
         # Whose voice said the latest spoken turn, once an owner is enrolled (§5.3a).
         # None when nobody is enrolled. Read only while `_via` is "voice".
         self._who: Match | None = None
+        # The latest spoken turn's number and its committed words (SPN-20, VOI-15a):
+        # what the owner said, for `ToolContext.heard` on that turn only.
+        self._spoken_words: tuple[int, str] | None = None
         # How long turns take (ONB-11): the next turn's start, the running turn's
         # trace, and the last one saved, which the page's "audible" may still reach.
         self._arrived: Trace | None = None
@@ -2662,6 +2665,8 @@ class Session:
                     await self._show_declined(declined)
                 self._via = "voice"
                 self._turn += 1
+                # Exactly the words committed for this turn, as the screen shows them.
+                self._spoken_words = (self._turn, shown)
                 self.active_ms = self._rt.clock()
                 if usable and draft is not None:
                     # The message it was given is the one saved, so the turn's history
@@ -3048,6 +3053,18 @@ class Session:
                 # A call proposed again while its card waits gets no second card.
                 if r.status == "confirmation_required" and r.pending_id and not r.already_asked:
                     await self._send_card(r.pending_id)
+                if r.own_words and r.pending_id:
+                    # Approved by the owner's own words (SPN-20): its card, already
+                    # settled, with the same detail as any card and "on your word".
+                    await self._send_card(r.pending_id)
+                    await self._send(
+                        "confirm.resolved",
+                        pending_id=r.pending_id,
+                        status=r.status,
+                        reason=r.reason.value if r.reason is not None else None,
+                        detail=(r.detail or None) if r.status == "refused" else None,
+                        by="own_words",
+                    )
 
         final = "idle"
         # The draft this turn replays as its first call, if it has one (VOI-12).
@@ -3664,7 +3681,16 @@ class Session:
             helper_id=self._helper.id if self._helper is not None else None,
             # Whose voice said this turn (SPN-14a, SPN-18, PER-13): spoken turns only.
             speaker=self._who.who if (via or self._via) == "voice" and self._who else None,
+            heard=self._heard_for(via or self._via, at, host_turn),
         )
+
+    def _heard_for(self, via: str, turn: int, host_turn: bool) -> str | None:
+        """What the user said on this turn (SPN-20): the committed transcript of the
+        spoken turn it is, and nothing on any other: typed, a tap, a host note."""
+        spoken = self._spoken_words
+        if via != "voice" or host_turn or spoken is None or spoken[0] != turn:
+            return None
+        return spoken[1]
 
     def _private(self) -> bool:
         """This turn was spoken in a voice that isn't the enrolled owner's (PER-13)."""

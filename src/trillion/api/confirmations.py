@@ -20,7 +20,7 @@ from fastapi import APIRouter, Query
 from trillion.api.runtime import OWNER, Runtime
 from trillion.api.session import ROUTINE_LABEL
 from trillion.spine import labels
-from trillion.spine.confirm import FINAL, PendingAction, Status
+from trillion.spine.confirm import FINAL, OWN_WORDS, PendingAction, Status
 from trillion.spine.retention import slim
 from trillion.spine.store import DecisionRow, DeliveryRow
 from trillion.tools.record import NOT_SENT
@@ -75,9 +75,12 @@ def answered(a: PendingAction, decisions: list[DecisionRow]) -> DecisionRow | No
 
 
 def who(a: PendingAction, d: DecisionRow) -> str:
-    """Who decided: the conversation that asked, the app itself, or another session."""
+    """Who decided: the conversation that asked, the app itself, another session, or
+    the owner's own words as they said it (SPN-20)."""
     if d.decided_by == "system":
         return "system"
+    if d.decided_by == OWN_WORDS:
+        return "own_words"
     return "asking_conversation" if d.decided_by == a.session_id else "another_session"
 
 
