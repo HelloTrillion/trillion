@@ -249,7 +249,7 @@ def test_a_setting_that_is_not_a_key_is_not_called_one() -> None:
         "s",
         {
             "command": "run",
-            "env": {"PYTHONPATH": "/Users/someone/code/project/src", "API_TOKEN": "abcdefgh12345"},
+            "env": {"PYTHONPATH": "/Users/someone/code/project/src", "API_TOKEN": "made up value"},
         },
     )
     assert plain_secrets(server) == ["API_TOKEN"]
