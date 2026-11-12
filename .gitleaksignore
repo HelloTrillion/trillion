@@ -2,3 +2,5 @@
 e1914fec34238ed94749f41691b533776347ac64:tests/unit/test_secrets.py:generic-api-key:258
 # A made-up keychain value in a test, since given spaces so it no longer looks like a key. Only this commit and line.
 4b488bf107dd5db71af35e18b2204d5b645379e5:tests/unit/test_secret_file.py:generic-api-key:388
+# A made-up MCP setting in a test, since given spaces so it no longer looks like a key. Only this commit and line.
+cc34093080baf957e19772b7359652d2453e1dd4:tests/mcp/test_mcp.py:generic-api-key:252

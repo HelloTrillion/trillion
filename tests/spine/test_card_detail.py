@@ -348,6 +348,22 @@ async def test_a_re_presented_card_carries_its_detail_again(spine: Spine) -> Non
         ("family \U0001f468\u200d\U0001f469\u200d\U0001f467", None, None),
         ("\u062d\u0631\u0648\u0641\u200c\u0641\u0627\u0631\u0633\u06cc", None, None),
     ],
+    # Named, not shown: pytest puts each test's id in an environment variable, and
+    # Windows refuses one longer than 32,767 characters (the over-limit text is 20,001).
+    ids=[
+        "lines-and-tabs",
+        "line-endings",
+        "at-the-limit",
+        "over-the-limit",
+        "rtl-override",
+        "isolate",
+        "soft-hyphen",
+        "tag-char",
+        "nul",
+        "paragraph-separator",
+        "emoji-joiner",
+        "persian-zwnj",
+    ],
 )
 def test_card_detail(text: str, shown: str | None, why: str | None) -> None:
     got, problem = card_detail(text)
