@@ -150,6 +150,8 @@ def read(text: str) -> list[Proposal]:
         else:
             name = _name_from_command([str(a) for a in entry.get("args") or []])
         secrets = _take_secrets(name, entry)
-        parse_server(name, entry)  # refuse now what could not be saved later
+        # Refuse now what could not be saved later, such as a `keychain:` reference
+        # already in the paste that names a key not this server's own.
+        parse_server(name, entry)
         proposals.append(Proposal(name=name, entry=entry, secrets=secrets))
     return proposals

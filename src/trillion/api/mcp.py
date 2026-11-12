@@ -4,7 +4,9 @@ changing and removing them (CON-5).
 Behind the session token like every /api/ route; the model has no way to call any
 of it, so only the person at the page can connect a server or loosen what one may
 do. A key is never sent back: only the names of the keychain entries a server
-needs, and whether each is saved.
+needs, and whether each is saved. A server only ever reaches its own keys, saved
+under `mcp/<its name>/`: an entry naming any other is refused before anything is
+saved, and removing a server deletes its own keys and nothing else.
 
 One route is outside /api/: `/mcp/callback`, where the browser comes back after
 signing in to a service. It needs no token, because the service's site sends the
@@ -33,8 +35,10 @@ from trillion.connectors.mcp.config import (
     KEYCHAIN_REF,
     ConfigError,
     change,
+    owns,
     parse_server,
     plain_secrets,
+    valid_name,
 )
 from trillion.connectors.mcp.servers import McpServers, ServerState
 from trillion.connectors.mcp.signin import sign_in_key
@@ -139,10 +143,15 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
     def config_path() -> Any:
         return rt.mcp_config or paths.mcp_config_path()
 
+    def taken() -> set[str]:
+        # Compared without capitals: some keychains (Windows') match names that way,
+        # so `GitHub` and `github` would share keys.
+        return {n.casefold() for n in (*servers().states, *servers().problems)}
+
     def unique(base: str) -> str:
-        taken = set(servers().states) | set(servers().problems)
+        used = taken()
         name, n = base, 2
-        while name in taken:
+        while name.casefold() in used:
             name = f"{base[:36]}-{n}"
             n += 1
         return name
@@ -211,7 +220,10 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
             entry = catalog.BY_ID.get(body.catalog)
             if entry is None:
                 return _fail(404, "unknown")
-            if entry.id in mcp.states:
+            # An entry of that name that could not be used is replaced, as before. One
+            # named the same but for capitals would share its keys: it counts as taken.
+            alike = {n for n in (*mcp.states, *mcp.problems) if n.casefold() == entry.id.casefold()}
+            if entry.id in mcp.states or alike - {entry.id}:
                 return _fail(409, "already_connected", f"{entry.title} is already connected")
             name = entry.id
             try:
@@ -228,6 +240,8 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
         else:
             return _fail(400, "bad_request")
         try:
+            # Refused here, before any key is saved: an entry naming a key that is not
+            # this server's own (another server's, or Trillion's) never gets in.
             config = parse_server(name, raw)
         except ConfigError as e:
             return _fail(400, "invalid", str(e))
@@ -275,12 +289,14 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
                     entry.pop("disabled", None)
             if body.title is not None and body.title.strip():
                 entry["title"] = body.title.strip()[:60]
-            edited[0] = entry
+            # Checked before the file is written: an entry changed by hand to name
+            # another's key is refused, and the file is left as it was.
+            edited[0] = parse_server(name, entry)
 
         edited: list[Any] = [None]
         try:
             change(config_path(), edit)
-            config = parse_server(name, edited[0])
+            config = edited[0]
         except (ConfigError, OSError) as e:
             return _fail(409, "file", str(e))
         if body.disabled is not None and body.disabled != state.config.disabled:
@@ -337,11 +353,16 @@ def create_mcp_router(rt: Runtime) -> APIRouter:
         except (ConfigError, OSError) as e:
             return _fail(409, "file", str(e))
         await mcp.remove(name)
-        # Its keys go with it: the ones saved for it, and its sign-in. A key another
-        # server also names is kept.
-        mine = set(state.config.key_names()) if state else set()
+        # Its keys go with it: the ones saved under its own name, and its sign-in.
+        # Never anything else, whatever its entry names. A key another server also
+        # names is kept, and nothing is deleted while another server's name differs
+        # from this one's only in capitals (a keychain may match them as one).
+        mine = {k for k in state.config.key_names() if owns(name, k)} if state else set()
+        mine |= {sign_in_key(name)} if valid_name(name) else set()
         others = {k for s in mcp.states.values() for k in s.config.key_names()}
-        for key in (mine - others) | {sign_in_key(name)}:
+        if name.casefold() in taken():
+            mine = set()
+        for key in mine - others:
             with contextlib.suppress(SecretStoreError):
                 rt.secrets.delete(key)
         logger.info("MCP server removed: %s", name)
@@ -366,14 +387,22 @@ def rekey(
     entry: dict[str, Any], secrets: dict[str, str], proposed: str, name: str
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Move the keychain names `parse` proposed under one server name to the name it
-    is saved under, so a key is never filed under another server's name."""
-    old = f"mcp/{proposed}/" if proposed else ""
+    is saved under, so a key is never filed under another server's name. Only the
+    proposed server's own names move, to the same place under the new one; any other
+    reference is left as it is, for `parse_server` to refuse."""
+    old = f"mcp/{proposed}" if proposed and valid_name(proposed) else ""
+
+    def renamed(key: str) -> str:
+        if old and owns(proposed, key):
+            return f"mcp/{name}{key[len(old) :]}"
+        return key
 
     def move(text: str) -> str:
         def one(m: Any) -> str:
             key = m.group(1)
-            if old and key.startswith(old):
-                return f"keychain:mcp/{name}/{key[len(old) :]}"
+            new = renamed(key)
+            if new != key:
+                return f"keychain:{new}"
             return str(m.group(0))
 
         return KEYCHAIN_REF.sub(one, text)
@@ -386,8 +415,8 @@ def rekey(
             }
     moved: dict[str, str] = {}
     for key, value in secrets.items():
-        new = f"mcp/{name}/{key[len(old) :]}" if old and key.startswith(old) else key
-        if not new.startswith(f"mcp/{name}/"):
+        new = renamed(key)
+        if not owns(name, new):
             continue  # a key is saved only under this server's own name
         moved[new] = value.strip()
     return raw, moved

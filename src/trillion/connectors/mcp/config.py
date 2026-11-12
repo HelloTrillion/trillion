@@ -20,7 +20,10 @@ across, with three additions:
   says otherwise (`read` runs without asking). Only the user writes this file.
 - `keychain:NAME` anywhere in an `env` or `headers` value is replaced, when the
   server starts, by the key saved in the system keychain under that name. A key
-  never needs to sit in this file.
+  never needs to sit in this file. A server may only name its own keys: those
+  saved under `mcp/<its name>/`, or `mcp/<its name>` itself. An entry that names
+  any other key (another server's, or one of Trillion's own) is refused and does
+  not start, so a pasted or edited entry can never send it someone else's key.
 - `timeout_s` bounds one call (60 by default); `disabled: true` keeps an entry
   without starting it.
 - `title` is the name Settings shows, and `catalog` the featured entry it was added
@@ -41,6 +44,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +57,8 @@ DEFAULT_TIMEOUT_S = 60.0
 MAX_TIMEOUT_S = 600.0
 _SERVER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 KEYCHAIN_REF = re.compile(r"keychain:([A-Za-z0-9_./-]{1,100})")
+# One part of a key's name after `mcp/<server>/`: never empty, `.` or `..`.
+_KEY_PART = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
 # Risks a tool can be given here. A tool can be made to run without asking, or to
 # need a tap; never anything the spine does not know.
 _RISKS = {r.value: r for r in Risk}
@@ -60,6 +66,38 @@ _RISKS = {r.value: r for r in Risk}
 
 class ConfigError(ValueError):
     """The file, or one entry in it, cannot be used. The message is safe to show."""
+
+
+class ForeignKey(ConfigError):
+    """A `keychain:` reference to a key that is not this server's own."""
+
+
+def valid_name(name: str) -> bool:
+    """Whether `name` can be a server's name. It never holds a `/` or `..`, so
+    `mcp/<name>/` is one server's own and no other's."""
+    return bool(_SERVER_NAME.match(name)) and ".." not in name
+
+
+def owns(server: str, key: str) -> bool:
+    """Whether the keychain name `key` is `server`'s own: `mcp/<server>`, or under
+    `mcp/<server>/`. Compared on the `/`, so `mcp/git` never reaches `mcp/github/…`,
+    and no part may be `.`, `..` or empty, so it never reaches another's by a path."""
+    if not valid_name(server):
+        return False
+    own = f"mcp/{server}"
+    if key == own:
+        return True
+    if not key.startswith(own + "/"):
+        return False
+    return all(_KEY_PART.fullmatch(part) for part in key[len(own) + 1 :].split("/"))
+
+
+def foreign(server: str, key: str) -> str:
+    """Why a reference to someone else's key is refused. Safe to show: a name only."""
+    return (
+        f"keychain:{key} belongs to something else; {server} may only use keys saved "
+        f"under its own name (keychain:mcp/{server}/...)"
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -95,9 +133,18 @@ class ServerConfig:
         return self.risks.get(tool, Risk.IRREVERSIBLE)
 
     def key_names(self) -> list[str]:
-        """The keychain names this server needs."""
+        """The keychain names this server needs: its own only. A reference to any
+        other key is never one of them (see `foreign_keys`)."""
         values = [*self.env.values(), *self.headers.values()]
-        return sorted({m.group(1) for v in values for m in KEYCHAIN_REF.finditer(v)})
+        found = {m.group(1) for v in values for m in KEYCHAIN_REF.finditer(v)}
+        return sorted(k for k in found if owns(self.name, k))
+
+    def foreign_keys(self) -> list[str]:
+        """Keychain names it refers to anywhere that are not its own. A problem,
+        always: it is refused on reading and never filled in."""
+        values = [*self.env.values(), *self.headers.values(), *self.args, self.url]
+        found = {m.group(1) for v in values for m in KEYCHAIN_REF.finditer(v)}
+        return sorted(k for k in found if not owns(self.name, k))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -105,6 +152,8 @@ class Loaded:
     servers: tuple[ServerConfig, ...]
     # Entries that could not be used, by name, with why. Shown, never fatal.
     problems: Mapping[str, str]
+    # Those of them refused for naming a key that is not their own.
+    foreign: frozenset[str] = frozenset()
 
 
 def _strings(raw: Any, what: str) -> dict[str, str]:
@@ -118,8 +167,20 @@ def _strings(raw: Any, what: str) -> dict[str, str]:
 
 
 def parse_server(name: str, raw: Any) -> ServerConfig:
-    if not _SERVER_NAME.match(name):
-        raise ConfigError("a server's name is letters, digits, dots, dashes or underscores")
+    """One entry, checked. Raises ConfigError, or ForeignKey for an entry that names a
+    key that is not its own."""
+    config = _parse(name, raw)
+    refused = config.foreign_keys()
+    if refused:
+        raise ForeignKey(foreign(name, refused[0]))
+    return config
+
+
+def _parse(name: str, raw: Any) -> ServerConfig:
+    if not valid_name(name):
+        raise ConfigError(
+            "a server's name is letters, digits, dots, dashes or underscores, with no '..'"
+        )
     if not isinstance(raw, dict):
         raise ConfigError("an entry must be an object")
     command, url = raw.get("command"), raw.get("url")
@@ -184,12 +245,22 @@ def load(path: Path) -> Loaded:
         return Loaded(servers=(), problems={"mcp.json": 'needs an "mcpServers" object'})
     servers: list[ServerConfig] = []
     problems: dict[str, str] = {}
+    refused: set[str] = set()
+    # Some keychains (Windows') match names whatever their capitals, so two servers
+    # named alike would share keys. Neither starts until one is renamed.
+    folded = Counter(str(name).casefold() for name in entries)
     for name, entry in entries.items():
+        if folded[str(name).casefold()] > 1:
+            problems[str(name)] = "another server has the same name apart from capitals"
+            continue
         try:
             servers.append(parse_server(str(name), entry))
+        except ForeignKey as e:
+            problems[str(name)] = str(e)
+            refused.add(str(name))
         except ConfigError as e:
             problems[str(name)] = str(e)
-    return Loaded(servers=tuple(servers), problems=problems)
+    return Loaded(servers=tuple(servers), problems=problems, foreign=frozenset(refused))
 
 
 def read_file(path: Path) -> dict[str, Any]:
@@ -236,8 +307,14 @@ class MissingKey(ConfigError):
     """A `keychain:` reference whose key has not been saved."""
 
 
-def fill(values: Mapping[str, str], secrets: SecretStore) -> dict[str, str]:
-    """Replace every `keychain:NAME` with its key. Raises MissingKey, naming it."""
+def fill(values: Mapping[str, str], secrets: SecretStore, *, server: str) -> dict[str, str]:
+    """Replace every `keychain:NAME` with its key, for `server`. Raises ForeignKey for a
+    key that is not that server's own, before any key is read, and MissingKey for one
+    not saved. This is the last check before a key leaves Trillion."""
+    for v in values.values():
+        for m in KEYCHAIN_REF.finditer(v):
+            if not owns(server, m.group(1)):
+                raise ForeignKey(foreign(server, m.group(1)))
     out: dict[str, str] = {}
     for k, v in values.items():
 
