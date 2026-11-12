@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 from trillion.connectors import stripe_revenue
 from trillion.connectors.mcp import signin
-from trillion.connectors.mcp.config import Loaded, MissingKey, ServerConfig, fill
+from trillion.connectors.mcp.config import ConfigError, Loaded, ServerConfig, fill
 from trillion.connectors.mcp.signin import SIGN_IN_TIMEOUT_S, SignInFailed, SignIns
 from trillion.connectors.mcp.tool import McpTool, Offered, Outcome, Unusable, tool_name
 from trillion.secrets.store import SecretStore
@@ -224,7 +224,8 @@ class McpServers:
                 logger.info("MCP server %s connected: %d tools", server.name, len(state.tools))
                 self._moved()
                 await state.stop.wait()
-        except MissingKey as e:
+        except ConfigError as e:
+            # A key not saved, or one that is not this server's own: it never starts.
             state.status, state.problem = "failed", str(e)
         except SignInFailed as e:
             state.status, state.problem = "failed", f"not signed in: {e}"
@@ -258,7 +259,10 @@ class McpServers:
                 stdio_client,
             )
 
-            env = {**get_default_environment(), **fill(server.env, self._secrets)}
+            env = {
+                **get_default_environment(),
+                **fill(server.env, self._secrets, server=server.name),
+            }
             params = StdioServerParameters(
                 command=server.command, args=list(server.args), env=env, cwd=str(Path.home())
             )
@@ -290,7 +294,7 @@ class McpServers:
                 else None
             )
             client = httpx2.AsyncClient(
-                headers=fill(server.headers, self._secrets),
+                headers=fill(server.headers, self._secrets, server=server.name),
                 timeout=httpx2.Timeout(30.0, read=300.0),
                 auth=auth,
             )

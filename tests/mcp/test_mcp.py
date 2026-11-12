@@ -204,7 +204,7 @@ async def test_a_server_that_will_not_start_says_why_and_stops_nothing(
                 tmp_path,
                 {
                     "missing": {"command": "no-such-program-anywhere"},
-                    "keyless": {**FIXTURE, "env": {"T": "keychain:mcp/nothing"}},
+                    "keyless": {**FIXTURE, "env": {"T": "keychain:mcp/keyless/token"}},
                     "off": {**FIXTURE, "disabled": True},
                 },
             )
@@ -226,7 +226,7 @@ def test_doctor_reads_the_file_and_starts_nothing(tmp_path: Path) -> None:
         tmp_path,
         {
             "good": {**FIXTURE, "env": {"T": "keychain:mcp/good"}},
-            "keyless": {**FIXTURE, "env": {"T": "keychain:mcp/missing"}},
+            "keyless": {**FIXTURE, "env": {"T": "keychain:mcp/keyless/missing"}},
             "gone": {"command": "no-such-program-anywhere"},
             "leaky": {
                 "url": "https://x.example/mcp",
@@ -238,7 +238,7 @@ def test_doctor_reads_the_file_and_starts_nothing(tmp_path: Path) -> None:
     )
     checks = {c.name + " " + c.status: c for c in check_mcp(path, secrets)}
     assert "MCP: good ok" in checks
-    assert "mcp/missing" in checks["MCP: keyless fail"].detail
+    assert "mcp/keyless/missing" in checks["MCP: keyless fail"].detail
     assert "MCP: gone warn" in checks and "MCP: leaky warn" in checks
     assert "MCP: broken warn" in checks and "MCP: off info" in checks
     assert not any("abcdefghijklmnop" in c.detail for c in checks.values())  # never the key

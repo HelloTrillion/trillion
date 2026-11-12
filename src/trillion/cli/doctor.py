@@ -780,6 +780,17 @@ def check_mcp(path: Path, secrets: SecretStore) -> list[Check]:
     loaded = load(path)
     out: list[Check] = []
     for name, why in loaded.problems.items():
+        if name in loaded.foreign:
+            # It names a key that is not its own: it would be sent someone else's.
+            out.append(
+                Check(
+                    name=f"MCP: {name}",
+                    status="fail",
+                    detail=f"refused: {why}",
+                    fix=f"Remove that reference from {path}, or remove the server.",
+                )
+            )
+            continue
         out.append(
             Check(
                 name=f"MCP: {name}",
