@@ -246,13 +246,16 @@ of those holding, that is a vulnerability.
   by the deny floor wherever it points: keys, the keychain, `.ssh`, `.git`,
   `.env` files and Trillion's own folder are refused (SEC-10). Keys a server
   needs are read from the keychain by name (`keychain:NAME`), so none has to
-  sit in the file; a key pasted into Settings goes straight to the keychain.
+  sit in the file. A server may name only its own keys, saved under
+  `mcp/<its name>/`: an entry that names another server's key or one of
+  Trillion's own is refused, never started, and the key is never read. A key
+  pasted into Settings goes straight to the keychain.
   Signing in to a remote server (OAuth with PKCE) happens in the user's
   browser, and the sign-in is kept in the keychain. The browser comes back to
   `/mcp/callback`, the one route that needs no session token: it only hands a
   code to a sign-in already waiting for that exact random state, which the MCP
-  library checks again before using it. Removing a server deletes its keys and
-  its sign-in. **The limit:** a local MCP server is a program running on
+  library checks again before using it. Removing a server deletes its own keys
+  and its sign-in, never another's. **The limit:** a local MCP server is a program running on
   your machine with your privileges. The spine controls what Trillion asks it
   to do, not what it does on its own (CON-6a). Connect only servers you trust,
   as you would install only apps you trust.
