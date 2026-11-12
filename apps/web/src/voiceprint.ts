@@ -8,6 +8,10 @@
  *
  * Once she knows the voice, a spoken yes counts only in it, and to anyone else she
  * keeps the user's things to herself. A tap on a card works as it always has.
+ *
+ * If the voiceprint file is there but can't be read, she can't check any voice: every
+ * approval needs a tap until the user teaches her again or forgets it. Said plainly
+ * here, never as "not set up".
  */
 
 import type { Host } from './panel';
@@ -23,7 +27,13 @@ export interface VoiceprintState {
   readonly working: boolean;
   readonly prompts: readonly string[];
   readonly recorded: readonly number[];
+  /** The voiceprint file is there but can't be read: no voice is checked. */
+  readonly unreadable?: 'locked' | 'damaged' | null;
 }
+
+/** What the section says when the voiceprint can't be read. */
+export const UNREADABLE_TEXT =
+  "Your voice file can't be read, so she can't tell your voice from anyone's. Until you teach her again, every approval needs a tap.";
 
 /** Records one phrase: frames of PCM16 while on. */
 export interface Recorder {
@@ -63,6 +73,7 @@ export function problemText(code: string | null | undefined): string {
 /** One line on where things stand, beside "Your voice" and at the top of the section. */
 export function statusText(s: VoiceprintState | null): string {
   if (!s) return '';
+  if (s.unreadable) return "Your voice file can't be read";
   if (s.enrolled && !s.working) return 'Set up, but the voice model is missing';
   if (s.enrolled) return 'She knows your voice';
   return 'Not set up';
@@ -159,7 +170,8 @@ export function createVoiceprintSettings(
 
   function render(): void {
     const s = state;
-    where.textContent = statusText(s) ? `${statusText(s)}.` : '';
+    const said = s?.unreadable ? UNREADABLE_TEXT : statusText(s) ? `${statusText(s)}.` : '';
+    where.textContent = said;
     const ready = !!s?.installed && !!s.model.ready;
     download.hidden = !s || !s.installed || s.model.ready;
     download.textContent = s ? `Get the voice model (${megabytes(s.model.size)} download)` : 'Get the voice model';
@@ -173,7 +185,7 @@ export function createVoiceprintSettings(
       credit.append(link);
     }
     if (s && !s.installed) {
-      where.textContent = `${statusText(s)}. Telling voices apart needs an optional part of Trillion: run "uv sync --extra speaker" where Trillion is installed, then come back.`;
+      where.textContent = `${said} Telling voices apart needs an optional part of Trillion: run "uv sync --extra speaker" where Trillion is installed, then come back.`;
     }
     const next = s ? nextPhrase(s.recorded, s.prompts.length) : null;
     const showPhrases = ready && teaching && next !== null;

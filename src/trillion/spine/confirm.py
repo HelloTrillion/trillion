@@ -24,6 +24,12 @@ UNSURE_TAP = "still not sure it was the owner's voice; ask them to tap Approve o
 NOT_OWNER_DETAIL = (
     "that voice isn't the owner's, so it can't approve; only the owner can, by voice or a tap"
 )
+# The owner's voiceprint can't be read: no voice can be checked, so asking for the yes
+# again can't help. Straight to the tap, every time (2026-11-12 spec).
+UNCHECKED_DETAIL = (
+    "the owner's voice file can't be read, so no voice can be checked and a spoken yes "
+    "can't approve; ask them to tap Approve on the card"
+)
 REPLAY_DETAIL = (
     "that yes matched one already heard exactly, like a recording played back; "
     "ask the owner to tap Approve on the card"
@@ -81,6 +87,8 @@ class Refusal(StrEnum):
     NOT_OWNER = "not_owner"
     # A spoken yes that could not be told for sure to be the owner's (SPN-15a).
     VOICE_UNSURE = "voice_unsure"
+    # A spoken yes while the enrolled voice's file can't be read: only a tap (SPN-15a).
+    VOICE_UNCHECKED = "voice_unchecked"
     # The voice this turn is not the owner's: nothing personal runs (PER-13).
     PRIVATE = "private"
 
@@ -154,6 +162,8 @@ def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Sta
         # in the enrolled owner's voice. A tap is a physical act, judged as it always was.
         if ctx.speaker == "unsure":
             return Rejection(Refusal.VOICE_UNSURE, UNSURE_AGAIN)
+        if ctx.speaker == "unchecked":
+            return Rejection(Refusal.VOICE_UNCHECKED, UNCHECKED_DETAIL)
         if ctx.speaker == "replay":
             return Rejection(Refusal.NOT_OWNER, REPLAY_DETAIL)
         return Rejection(Refusal.NOT_OWNER, NOT_OWNER_DETAIL)

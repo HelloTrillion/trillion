@@ -11,6 +11,7 @@ from tests.spine.fakes import MARKER
 from trillion.spine.confirm import (
     NOT_OWNER_DETAIL,
     REPLAY_DETAIL,
+    UNCHECKED_DETAIL,
     UNSURE_AGAIN,
     UNSURE_TAP,
     Refusal,
@@ -89,6 +90,35 @@ async def test_after_an_unsure_yes_the_tap_still_approves(spine: Spine) -> None:
     assert tap.status == "succeeded"
 
 
+async def test_with_the_voiceprint_unreadable_no_spoken_yes_approves(spine: Spine) -> None:
+    # 2026-11-12 spec: an owner enrolled but the file can't be read, so no voice can be
+    # checked. Fails closed: never back to Phase 0's "any voice". Asking for the yes
+    # again can't help, so it is the tap every time (SPN-15a), and the card stays.
+    pid = await propose(spine)
+    for turn in (2, 3, 4):
+        r = await say_yes(spine, pid, "unchecked", turn=turn)
+        assert r.status == "refused" and r.reason is Refusal.VOICE_UNCHECKED
+        assert r.detail == UNCHECKED_DETAIL and "tap" in r.detail
+    pending = await spine.store.get_pending(pid)
+    assert pending is not None and pending.status is Status.PROPOSED
+    assert not (spine.granted / "note.txt").exists()
+    # The tap and a typed yes are the session's, as always.
+    tap = await spine.router.resolve(pid, "confirm", spine.ctx(turn=5, via="tap"))
+    assert tap.status == "succeeded"
+
+
+async def test_with_the_voiceprint_unreadable_a_typed_yes_is_the_sessions(spine: Spine) -> None:
+    pid = await propose(spine)
+    r = await spine.call("confirm_pending_action", {"pending_id": pid}, turn=2, via="text")
+    assert r.status == "succeeded"
+
+
+async def test_with_the_voiceprint_unreadable_spend_still_needs_the_tap(spine: Spine) -> None:
+    r = await spine.call("spend_money", {"amount_cents": 500})
+    said = await say_yes(spine, r.pending_id or "", "unchecked")
+    assert said.reason is Refusal.TAP_REQUIRED
+
+
 async def test_a_tap_is_never_judged_by_voice(spine: Spine) -> None:
     pid = await propose(spine)
     tap = await spine.router.resolve(pid, "confirm", spine.ctx(turn=2, via="tap", speaker="other"))
@@ -125,7 +155,7 @@ async def test_spend_and_unrecoverable_still_need_the_tap_from_the_owner(spine: 
     assert said.reason is Refusal.TAP_REQUIRED
 
 
-@pytest.mark.parametrize("who", ["other", "unsure", "replay"])
+@pytest.mark.parametrize("who", ["other", "unsure", "replay", "unchecked"])
 async def test_nothing_personal_runs_for_another_voice(spine: Spine, who: Speaker) -> None:
     # PER-13, enforced at the router: files are refused before any of their code runs.
     (spine.granted / "diary.txt").write_text(MARKER)

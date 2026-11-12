@@ -21,6 +21,7 @@ from trillion.voice.speaker import (
     REJECT_FLOOR,
     REPLAY_BITS,
     Profile,
+    Unreadable,
     Voiceprints,
     bits_apart,
     enrol,
@@ -207,7 +208,7 @@ def test_saved_owner_only_read_back_and_deleted(tmp_path: Path) -> None:
 
         assert owner_only.exposed(path) == [], owner_only._read(path)
     again = Voiceprints(lambda: path).get()
-    assert again is not None
+    assert isinstance(again, Profile)
     assert again.model == MODEL and len(again.samples) == 3
     assert sp.cosine(again.template, profile.template) > 0.9999
     assert again.samples[0].fingerprint == profile.samples[0].fingerprint
@@ -238,11 +239,93 @@ def test_another_models_voice_is_not_kept(tmp_path: Path) -> None:
         ' "samples": [{"v": [1.0], "f": ["x"]}]}',
     ],
 )
-def test_an_unreadable_file_is_nobody_enrolled(tmp_path: Path, text: str) -> None:
-    # The gate then falls back to the session (SPN-14), never to something weaker.
+def test_an_unreadable_file_is_someone_enrolled_and_fails_closed(tmp_path: Path, text: str) -> None:
+    # Reversed on 2026-11-12 (the unreadable voiceprint spec). This used to be "nobody
+    # enrolled", back to the session (SPN-14): but then damaging the file was a way to
+    # undo the owner's enrolment, and any voice could say yes again from the next
+    # start. A file that is there but can't be read is someone enrolled, and no voice
+    # can be checked: every one is "unchecked", which never approves.
     path = tmp_path / "v.json"
     path.write_text(text)
-    assert Voiceprints(lambda: path).get() is None
+    prints = Voiceprints(lambda: path)
+    assert prints.get() == Unreadable(why="damaged")
+    assert prints.profile() is None
+    assert judge(said(OWNER, sound(1)), prints.get()) == sp.Match(who="unchecked", score=None)
+    assert judge(None, prints.get()) == sp.Match(who="unchecked", score=None)
+    # Evidence and the owner's choice are kept: never deleted or written over here.
+    prints.heard(said(OWNER, sound(2)))
+    assert path.read_text() == text
+
+
+def test_a_missing_file_is_still_nobody_enrolled(tmp_path: Path) -> None:
+    prints = Voiceprints(lambda: tmp_path / "v.json")
+    assert prints.get() is None and judge(said(OWNER), prints.get()) is None
+
+
+def test_a_folder_where_the_file_should_be_is_unreadable(tmp_path: Path) -> None:
+    # Damage on macOS and Linux; Windows refuses to open a folder, so there it is locked.
+    (tmp_path / "v.json").mkdir()
+    assert isinstance(Voiceprints(lambda: tmp_path / "v.json").get(), Unreadable)
+
+
+def test_too_deeply_nested_is_damage_not_a_crash(tmp_path: Path) -> None:
+    path = tmp_path / "v.json"
+    path.write_text("[" * 100_000 + "]" * 100_000)
+    assert Voiceprints(lambda: path).get() == Unreadable(why="damaged")
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs a mode that locks")
+def test_a_file_that_cant_be_opened_is_locked_and_used_once_it_can(tmp_path: Path) -> None:
+    path = tmp_path / "v.json"
+    Voiceprints(lambda: path).save(enrolled())
+    path.chmod(0)
+    prints = Voiceprints(lambda: path)
+    try:
+        assert prints.get() == Unreadable(why="locked")
+    finally:
+        path.chmod(0o600)
+    # Kept as it was found until the next start, which reads it as it is then.
+    assert prints.get() == Unreadable(why="locked")
+    assert isinstance(Voiceprints(lambda: path).get(), Profile)
+
+
+def test_an_unreadable_file_that_then_goes_missing_stays_unreadable(tmp_path: Path) -> None:
+    # Forgetting the voice is the way back to nobody enrolled, not deleting it by hand.
+    path = tmp_path / "v.json"
+    path.write_text("not json")
+    prints = Voiceprints(lambda: path)
+    assert isinstance(prints.get(), Unreadable)
+    path.unlink()
+    assert isinstance(prints.get(), Unreadable)
+
+
+def test_teaching_her_again_or_forgetting_puts_an_unreadable_file_right(tmp_path: Path) -> None:
+    path = tmp_path / "v.json"
+    path.write_text("not json")
+    prints = Voiceprints(lambda: path)
+    assert isinstance(prints.get(), Unreadable)
+    prints.save(enrolled())
+    assert isinstance(prints.get(), Profile)
+    assert isinstance(Voiceprints(lambda: path).get(), Profile)
+    path.write_text("not json")
+    prints = Voiceprints(lambda: path)
+    assert isinstance(prints.get(), Unreadable)
+    prints.delete()
+    assert prints.get() is None and not path.exists()
+
+
+def test_an_unreadable_file_is_logged_once_and_without_its_contents(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "v.json"
+    path.write_text('{"version": 1, "model": "m", "enrolled_ms": 1, "template": [0.123456, NaN]}')
+    prints = Voiceprints(lambda: path)
+    with caplog.at_level("DEBUG"):
+        for _ in range(3):
+            prints.get()
+    said_ = [r.getMessage() for r in caplog.records if "voiceprint" in r.getMessage()]
+    assert said_ == ["voiceprint can't be read (damaged)"]
+    assert "0.123456" not in caplog.text
 
 
 def test_the_default_path_is_in_trillions_folder(tmp_path: Path) -> None:

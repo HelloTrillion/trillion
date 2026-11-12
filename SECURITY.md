@@ -91,6 +91,13 @@ the user downloads from that screen. Once a voice is enrolled:
 - A recording of something she already heard in the owner's voice (an
   enrolment phrase or a recent turn) is refused as a replay.
 - Taps and typed messages are unchanged: they come from the session.
+- If `voiceprint.json` is there but can't be read (damaged, or its permissions
+  don't let Trillion open it), it **fails closed**: no voice can be checked,
+  so every spoken turn is treated as anyone's. No spoken yes approves a card
+  (a tap does), and nothing personal runs for a spoken turn. Settings → Your
+  voice, a security notice and `trillion doctor` say so. The file is never
+  deleted or rewritten on its own: teaching her again replaces it, and
+  forgetting the voice deletes it.
 
 What it does **not** protect against, by design:
 
@@ -105,9 +112,13 @@ What it does **not** protect against, by design:
   not code.
 - **Anyone at the keyboard.** A typed message and a tap are the session's,
   as in Phase 0.
+- **A deleted voiceprint.** Someone who can delete `voiceprint.json` from
+  Trillion's data folder turns the check off from the next start: a missing
+  file is nobody enrolled. Whoever can do that can also replace the file.
 
 If a voice that isn't enrolled gets a spoken yes through on a card, or a tool
-outside the guest list runs on its turn, that is a vulnerability.
+outside the guest list runs on its turn, that is a vulnerability. So is any
+spoken yes that approves while the voiceprint can't be read.
 
 ## What is true today
 

@@ -725,3 +725,36 @@ def test_setup_fetches_the_meaning_model_only_when_it_can_be_used(
         assert "meaning model not fetched (unreachable): memory is found by its words" in out
     else:
         assert "setup  fetched the meaning model (" in out
+
+
+def test_your_voice_says_whether_her_voice_check_can_run(home: Path) -> None:
+    # 2026-11-12 spec: a voiceprint that is there but can't be read is worth a look, and
+    # doctor only reads it: the damaged file is left exactly as it was.
+    path = paths.voiceprint_path()
+    assert doctor.check_voice(path).status == "info"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"version": 1, "model": "m", "enrolled_ms": 1, "template": [1.0]}')
+    assert doctor.check_voice(path).detail == "she knows your voice"
+    path.write_text("{not json", encoding="utf-8")
+    check = doctor.check_voice(path)
+    assert check.status == "warn" and "every approval needs a tap" in check.detail
+    assert "Settings → Your voice" in check.fix
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs a mode that locks out")
+def test_your_voice_says_when_its_file_cannot_be_opened(home: Path) -> None:
+    path = paths.voiceprint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0)
+    try:
+        check = doctor.check_voice(path)
+    finally:
+        path.chmod(0o600)
+    assert check.status == "warn" and "can't be opened" in check.detail
+    assert str(path) in check.fix
+
+
+def test_the_examination_includes_your_voice(home: Path, offers: list) -> None:
+    assert examine()["Your voice"].status == "info"

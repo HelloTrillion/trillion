@@ -19,8 +19,10 @@ Via = Literal["voice", "text", "tap", "channel", "schedule", "ask", "refresh", "
 Effect = Literal["confirmed", "none", "unknown"]
 # Whose voice said a spoken turn, when an owner's voice is enrolled (§5.3a): theirs,
 # not sure (between the thresholds, or it could not be scored), someone else's, or a
-# recording of something already heard. Set by the session from the speaker check.
-Speaker = Literal["owner", "unsure", "other", "replay"]
+# recording of something already heard; or unchecked, when an owner enrolled but the
+# voiceprint can't be read, so no voice can be checked. Set by the session from the
+# speaker check.
+Speaker = Literal["owner", "unsure", "other", "replay", "unchecked"]
 
 
 class Risk(StrEnum):

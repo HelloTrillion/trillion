@@ -319,3 +319,35 @@ async def test_unspoken_it_is_shown_by_the_computer_too(
     assert d.critical and d.text is None and not d.spoken
     assert shown.shown == [(TITLE, "Ready in Trillion")]
     assert IDLE.turn_running is False
+
+
+async def test_a_voiceprint_that_cant_be_read_is_told_once_with_how_to_fix_it(
+    tmp_path: Path, store: SqliteScheduleStore
+) -> None:
+    # 2026-11-12 spec: found on start, told once through the door, never stock words.
+    door = Recorder()
+    a, _ = alerts(tmp_path, store, door, None)
+    a.voiceprint_unreadable("damaged")
+    await a.idle()
+    (n,) = door.got
+    assert n.title == TITLE and n.text is None and n.source_id.startswith("security:")
+    assert n.detail == "Your voice file can't be read: every approval needs a tap"
+    assert await a.flush() is None
+    # Her instructions say where it is put right.
+    assert "Settings, Your voice" in INSTRUCTIONS
+
+
+async def test_a_voiceprint_alert_is_said_in_her_words(
+    tmp_path: Path, store: SqliteScheduleStore
+) -> None:
+    door = Recorder()
+    line = "Your voice file can't be read, so taps approve for now. Teach me your voice again."
+    p = ScriptedProvider(say(line))
+    a, _ = alerts(tmp_path, store, door, p)
+    a.voiceprint_unreadable("locked")
+    await a.idle()
+    (n,) = door.got
+    assert n.text == line
+    ((_system, messages),) = p.calls
+    told = "".join(b.text for m in messages for b in m.blocks if hasattr(b, "text"))
+    assert "permissions" in told and "Settings, Your voice" in told

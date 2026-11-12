@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import os
 import threading
@@ -24,6 +25,8 @@ from typing import Literal
 
 from trillion import owner_only, paths
 from trillion.voice.types import SpeakerEmbedding
+
+logger = logging.getLogger(__name__)
 
 # ── The thresholds, in one place ─────────────────────────────────────────
 #
@@ -61,8 +64,9 @@ _MIN_LOUD = 20
 _LOUD = 1 << 16
 _BITS = _LOUD - 1
 
-# What the spine is told about one spoken turn (ToolContext.speaker).
-Who = Literal["owner", "unsure", "other", "replay"]
+# What the spine is told about one spoken turn (ToolContext.speaker). "unchecked": a
+# voice is enrolled but its file can't be read, so no voice can be checked at all.
+Who = Literal["owner", "unsure", "other", "replay", "unchecked"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -87,6 +91,16 @@ class Profile:
     template: tuple[float, ...]
     samples: tuple[Seen, ...]
     heard: tuple[Seen, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class Unreadable:
+    """`voiceprint.json` is there but can't be read: someone enrolled, and no voice can
+    be checked against it. Never "nobody enrolled": that is only a missing file."""
+
+    # "locked": the system refused to open it (its permissions); "damaged": it opened,
+    # and what is in it is not a voiceprint (bad JSON, another version, bad vectors).
+    why: Literal["locked", "damaged"]
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -131,14 +145,18 @@ def bits_apart(a: Sequence[int], b: Sequence[int]) -> float:
     return best
 
 
-def judge(embedding: SpeakerEmbedding | None, profile: Profile | None) -> Match | None:
+def judge(embedding: SpeakerEmbedding | None, profile: Profile | Unreadable | None) -> Match | None:
     """Who said it. None when nobody is enrolled: the session is the anchor (SPN-14).
 
     An utterance that could not be scored (too short, the embedder failed, another
-    model's vector) is "unsure", never "owner": not knowing is not a match. The replay
-    check runs on anything that is not plainly someone else."""
+    model's vector) is "unsure", never "owner": not knowing is not a match. With an
+    enrolled voice whose file can't be read, every voice is "unchecked": it fails
+    closed, never back to nobody enrolled. The replay check runs on anything that is
+    not plainly someone else."""
     if profile is None:
         return None
+    if isinstance(profile, Unreadable):
+        return Match(who="unchecked", score=None)
     if embedding is None or embedding.model != profile.model:
         return Match(who="unsure", score=None)
     score = cosine(embedding.vector, profile.template)
@@ -249,28 +267,53 @@ def _decode(text: str) -> Profile:
 class Voiceprints:
     """The enrolled profile, read once and kept, written owner-only.
 
-    The only reader and writer of `voiceprint.json`. A file that cannot be read is
-    treated as nobody enrolled, so the gate falls back to the session (SPN-14), the
-    Phase 0 guarantee, never to something weaker."""
+    The only reader and writer of `voiceprint.json`. Three states: no file is nobody
+    enrolled (Phase 0, the session is the anchor); a profile; or `Unreadable`, a file
+    that is there but can't be read. That one fails closed: someone enrolled, and
+    nothing can be checked against it, so no spoken yes counts and every voice is
+    private (2026-11-12 spec). It is never deleted or overwritten here on its own:
+    teaching her again replaces it, and forgetting the voice deletes it, the only way
+    back to nobody enrolled. Like a profile, it is read once and kept: a file put right
+    by hand (its permissions, a good copy back) is used from the next start, and one
+    deleted by hand stays unreadable until then."""
 
     def __init__(self, path: Callable[[], Path] | None = None) -> None:
         self._path = path or (lambda: paths.voiceprint_path())
         self._lock = threading.Lock()
-        self._cached: Profile | None = None
+        self._cached: Profile | Unreadable | None = None
         self._read = False
 
-    def get(self) -> Profile | None:
+    def get(self) -> Profile | Unreadable | None:
         with self._lock:
             if not self._read:
                 self._cached = self._load()
                 self._read = True
+                if isinstance(self._cached, Unreadable):
+                    # The kind only, nothing of the voice.
+                    logger.warning("voiceprint can't be read (%s)", self._cached.why)
             return self._cached
 
-    def _load(self) -> Profile | None:
+    def profile(self) -> Profile | None:
+        """The enrolled profile, when it could be read."""
+        found = self.get()
+        return found if isinstance(found, Profile) else None
+
+    def _load(self) -> Profile | Unreadable | None:
         try:
-            return _decode(self._path().read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+            text = self._path().read_text(encoding="utf-8")
+        except FileNotFoundError:
             return None
+        except PermissionError:
+            return Unreadable(why="locked")
+        except (OSError, ValueError):
+            # Not a file (a folder in its place), a read error, or not text.
+            return Unreadable(why="damaged")
+        try:
+            return _decode(text)
+        except Exception:
+            # Anything wrong with what is in it (bad JSON, too deeply nested, another
+            # version, bad vectors) is damage: it fails closed, never open.
+            return Unreadable(why="damaged")
 
     def save(self, profile: Profile) -> None:
         with self._lock:
@@ -280,11 +323,12 @@ class Voiceprints:
     def heard(self, embedding: SpeakerEmbedding) -> None:
         """Keep an accepted utterance for the replay check."""
         current = self.get()
-        if current is not None and embedding.model == current.model:
+        if isinstance(current, Profile) and embedding.model == current.model:
             self.save(remember(current, embedding))
 
     def delete(self) -> None:
-        """Forget the voice. The file holds only the voiceprint, so it goes."""
+        """Forget the voice. The file holds only the voiceprint, so it goes, read or
+        not: this is how an unreadable one is put back to nobody enrolled."""
         with self._lock:
             with contextlib.suppress(FileNotFoundError):
                 self._path().unlink()

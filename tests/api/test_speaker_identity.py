@@ -10,17 +10,22 @@ import json
 import math
 import random
 from collections import deque
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 from tests.api.test_listening import hearing, rt, speak  # noqa: F401  (the fixture)
 from tests.api.test_session import Page, idle
 from tests.brain.fakes import say, use
 from tests.voice.audio import room, tone
-from trillion.api.runtime import Runtime
+from trillion import paths
+from trillion.api.runtime import Runtime, open_runtime
 from trillion.api.session import GUEST_CARD, Session
 from trillion.brain.types import ContextBlock, Msg
+from trillion.secrets.store import MemoryStore
 from trillion.voice import speaker as sp
-from trillion.voice.types import SpeakerEmbedding, Word
+from trillion.voice.types import SpeakerEmbedding, UnknownSpeaker, Word
 
 MODEL = "fake-embedder"
 DIM = 64
@@ -255,3 +260,149 @@ async def test_nobody_enrolled_is_as_before(rt: Runtime) -> None:
     await spoken(session, stt, "yes, go ahead")
     assert target.read_text(encoding="utf-8") == "hi"
     await session.close()
+
+
+# ── A voiceprint that can't be read (2026-11-12 spec) ────────────────────
+
+
+def damage(rt: Runtime, text: str = "not json") -> None:
+    """The owner enrolled, then the file was damaged, and Trillion read it on start."""
+    paths.voiceprint_path().write_text(text, encoding="utf-8")
+    rt.voiceprints = sp.Voiceprints()
+
+
+async def test_with_the_voiceprint_unreadable_a_spoken_yes_needs_the_tap(rt: Runtime) -> None:
+    # The tester's report: a second voice was refused; the file was damaged; after a
+    # start, the same voice's yes approved and enrolled itself again. Now it fails closed.
+    stt = hearing(rt)
+    damage(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    card, target = await card_waiting(rt, session, page)
+    confirm_then(rt, card, "c2")
+    await spoken(session, stt, "yes, do it")
+    assert not target.exists()
+    result = last_result(rt)
+    assert result["reason"] == "voice_unchecked" and "tap" in result["detail"]
+    # She was told why and how it is fixed, and the card's words were not passed on.
+    sent = context_of(rt.provider.calls[-2][1][-1])  # type: ignore[union-attr]
+    assert "voice file can't be read" in sent and "Settings, Your voice" in sent
+    assert GUEST_CARD in sent and "a.txt" not in sent
+    # Saying it again changes nothing: still the tap, never "a little longer".
+    confirm_then(rt, card, "c3")
+    await spoken(session, stt, "yes, go ahead with it, please")
+    assert not target.exists() and last_result(rt)["reason"] == "voice_unchecked"
+    # The card stayed up, and the tap works as it always has.
+    rt.provider._replies.append(say("Done."))  # type: ignore[union-attr]
+    await session.handle({"type": "confirm", "pending_id": card})
+    await idle(session)
+    assert target.read_text(encoding="utf-8") == "hi"
+    # Nothing was written over or made in its place: the damaged file is kept.
+    assert paths.voiceprint_path().read_text(encoding="utf-8") == "not json"
+    await session.close()
+
+
+async def test_with_the_voiceprint_unreadable_a_voice_gets_nothing_personal(rt: Runtime) -> None:
+    stt = hearing(rt)
+    damage(rt, '{"version": 2}')
+    await rt.memory.write(
+        type="user",
+        text="I take my coffee black.",
+        moves=False,
+        source="user_statement",
+        now_ms=rt.clock(),
+    )
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    rt.provider._replies += [  # type: ignore[union-attr]
+        use("memory_recall", {"query": "coffee"}, "c1"),
+        say("I can't check voices right now."),
+    ]
+    await spoken(session, stt, "how do I take my coffee")
+    first = rt.provider.calls[0]  # type: ignore[union-attr]
+    assert "coffee black" not in context_of(first[1][-1])
+    offered = {t.name for t in rt.provider.tool_calls[0]}  # type: ignore[union-attr]
+    assert "memory_recall" not in offered and "web_fetch" in offered
+    assert last_result(rt)["reason"] == "private"
+    await session.close()
+
+
+async def test_with_the_voiceprint_unreadable_typing_is_the_sessions(rt: Runtime) -> None:
+    hearing(rt)
+    damage(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    card, target = await card_waiting(rt, session, page)
+    offered = {t.name for t in rt.provider.tool_calls[-1]}  # type: ignore[union-attr]
+    assert "memory_recall" in offered
+    confirm_then(rt, card, "c2")
+    await session.handle({"type": "turn.text", "text": "yes, do it"})
+    await idle(session)
+    assert target.read_text(encoding="utf-8") == "hi"
+    await session.close()
+
+
+async def test_teaching_her_again_puts_an_unreadable_voiceprint_right(rt: Runtime) -> None:
+    # Without a restart: the next spoken turn is judged against the new voiceprint.
+    stt = hearing(rt)
+    damage(rt)
+    voices = enrol_owner(rt)
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    card, target = await card_waiting(rt, session, page)
+    confirm_then(rt, card, "c2")
+    voices.next.append(voice(near(OWNER, 0.85, 95), 95))
+    await spoken(session, stt, "yes, go ahead")
+    assert target.read_text(encoding="utf-8") == "hi"
+    await session.close()
+
+
+async def test_forgetting_an_unreadable_voiceprint_is_nobody_enrolled(rt: Runtime) -> None:
+    stt = hearing(rt)
+    damage(rt)
+    assert rt.voiceprints is not None
+    rt.voiceprints.delete()
+    assert not paths.voiceprint_path().exists()
+    page = Page(rt)
+    session = await Session.start(rt, page.send, None)
+    card, target = await card_waiting(rt, session, page)
+    confirm_then(rt, card, "c2")
+    await spoken(session, stt, "yes, go ahead")
+    assert target.read_text(encoding="utf-8") == "hi"
+    await session.close()
+
+
+async def test_an_unreadable_voiceprint_found_on_start_is_told_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
+    paths.voiceprint_path().parent.mkdir(parents=True, exist_ok=True)
+    paths.voiceprint_path().write_text("not json", encoding="utf-8")
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    runtime = await open_runtime(
+        share_rules=lambda _p: None,
+        granted_roots=(granted,),
+        persona=tmp_path,
+        secrets=MemoryStore(),
+        env={},
+    )
+    try:
+        assert runtime.security is not None
+        # No voice is checked against it: the stub, and every voice is unchecked.
+        assert isinstance(runtime.speakers, UnknownSpeaker)
+        notice = await runtime.security.flush()
+        assert notice is not None and notice.source_id.startswith("security:")
+        assert notice.detail == "Your voice file can't be read: every approval needs a tap"
+        # Not again for each spoken turn: the next flush has nothing to tell.
+        stt = hearing(runtime)
+        page = Page(runtime)
+        session = await Session.start(runtime, page.send, None)
+        runtime.provider._replies += [say("Hello."), say("Hi.")]  # type: ignore[union-attr]
+        await spoken(session, stt, "hello there")
+        await spoken(session, stt, "hello again")
+        await session.close()
+        assert await runtime.security.flush() is None
+        assert paths.voiceprint_path().read_text(encoding="utf-8") == "not json"
+    finally:
+        await runtime.close()

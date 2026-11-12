@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from trillion.api.runtime import Runtime
 from trillion.voice.providers import wespeaker
-from trillion.voice.speaker import PHRASES, Voiceprints, enrol
+from trillion.voice.speaker import PHRASES, Profile, Unreadable, Voiceprints, enrol
 from trillion.voice.types import SpeakerEmbedding, UnknownSpeaker, VoiceError
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,8 @@ def create_voiceprint_router(rt: Runtime) -> APIRouter:
         return rt.voiceprints
 
     async def state() -> dict[str, Any]:
-        profile = await asyncio.to_thread(prints().get)
+        found = await asyncio.to_thread(prints().get)
+        profile = found if isinstance(found, Profile) else None
         installed = wespeaker.available()
         ready = installed and await asyncio.to_thread(wespeaker.ready)
         return {
@@ -72,10 +73,14 @@ def create_voiceprint_router(rt: Runtime) -> APIRouter:
                 "credit": wespeaker.CREDIT,
                 "licence_url": wespeaker.LICENCE_URL,
             },
-            "enrolled": profile is not None,
+            # Someone enrolled: a voiceprint that can't be read counts (it fails closed).
+            "enrolled": found is not None,
             "enrolled_ms": profile.enrolled_ms if profile is not None else None,
             # Enrolled, but the model or its runtime is gone: every voice is unsure.
             "working": profile is not None and ready,
+            # The file is there but can't be read ("locked": its permissions; "damaged":
+            # what is in it): no voice is checked, and every approval needs a tap.
+            "unreadable": found.why if isinstance(found, Unreadable) else None,
             "prompts": list(PROMPTS),
             "recorded": sorted(draft),
         }

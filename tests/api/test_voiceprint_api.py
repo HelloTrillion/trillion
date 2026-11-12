@@ -154,6 +154,51 @@ def base64_limit() -> int:
     return MAX_PHRASE_B64
 
 
+def damaged() -> None:
+    """The owner enrolled, then the file was damaged, before this start."""
+    paths.voiceprint_path().parent.mkdir(parents=True, exist_ok=True)
+    paths.voiceprint_path().write_text("not json", encoding="utf-8")
+
+
+def test_a_file_that_cant_be_read_is_reported_not_as_not_set_up(make: Any) -> None:
+    # 2026-11-12 spec: someone enrolled, and no voice can be checked. Not "not set up".
+    damaged()
+    app: App = make()
+    state = get(app)
+    assert state["enrolled"] is True and state["working"] is False
+    assert state["unreadable"] == "damaged" and state["enrolled_ms"] is None
+    # Looking never repairs: the file is kept as it was, evidence and the owner's choice.
+    assert paths.voiceprint_path().read_text(encoding="utf-8") == "not json"
+
+
+def test_a_readable_file_and_none_report_no_problem(make: Any, phrases: Phrases) -> None:
+    app: App = make()
+    assert get(app)["unreadable"] is None
+
+
+def test_teaching_her_again_replaces_an_unreadable_file(make: Any, phrases: Phrases) -> None:
+    damaged()
+    app: App = make()
+    phrases.answers = [good(OWNER), good(OWNER), good(vec(1.0, 0.2))]
+    for i in range(3):
+        assert phrase(app, i).json()["ok"] is True
+    saved = app.client.post(f"{PATH}/save", json={}, headers=app.auth).json()
+    # Put right without a restart: the cached state is the new voiceprint.
+    assert saved["ok"] is True and saved["unreadable"] is None and saved["working"] is True
+    assert get(app)["unreadable"] is None
+    assert isinstance(app.rt.voiceprints.get(), sp.Profile)  # type: ignore[union-attr]
+    assert isinstance(app.rt.speakers, wespeaker.LocalSpeaker)
+
+
+def test_forgetting_an_unreadable_file_is_nobody_enrolled(make: Any) -> None:
+    damaged()
+    app: App = make()
+    gone = app.client.request("DELETE", PATH, json={}, headers=app.auth).json()
+    assert gone["enrolled"] is False and gone["unreadable"] is None
+    assert not paths.voiceprint_path().exists()
+    assert app.rt.voiceprints.get() is None  # type: ignore[union-attr]
+
+
 def test_the_file_is_where_paths_says(tmp_path: Path) -> None:
     # The test suite's own folder (tests/conftest.py): never the machine's.
     assert paths.voiceprint_path().parent == tmp_path

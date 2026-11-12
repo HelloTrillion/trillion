@@ -10,6 +10,7 @@ import {
   problemText,
   seconds,
   statusText,
+  UNREADABLE_TEXT,
 } from '../src/voiceprint';
 
 const flush = async (): Promise<void> => {
@@ -24,7 +25,11 @@ const BASE: VoiceprintState = {
   working: false,
   prompts: ['one', 'two', 'three'],
   recorded: [],
+  unreadable: null,
 };
+
+/** Enrolled, but the voiceprint file can't be read (2026-11-12 spec). */
+const UNREADABLE: VoiceprintState = { ...BASE, enrolled: true, working: false, unreadable: 'damaged' };
 
 function fakeHost(root: HTMLElement): Host {
   const host = {
@@ -59,7 +64,7 @@ function server(initial: VoiceprintState, answers: Record<string, unknown[]> = {
       if ('recorded' in next && Object.keys(next).length > 3) state = next as unknown as VoiceprintState;
       return new Response(JSON.stringify(next), { status: 'error' in next ? 400 : 200 });
     }
-    if (method === 'DELETE' && path === '/api/voiceprint') state = { ...state, enrolled: false, working: false };
+    if (method === 'DELETE' && path === '/api/voiceprint') state = { ...state, enrolled: false, working: false, unreadable: null };
     if (method === 'DELETE' && path === '/api/voiceprint/draft') state = { ...state, recorded: [] };
     return new Response(JSON.stringify(state), { status: 200 });
   };
@@ -95,6 +100,9 @@ describe('your voice: words', () => {
     expect(statusText(BASE)).toBe('Not set up');
     expect(statusText({ ...BASE, enrolled: true, working: true })).toBe('She knows your voice');
     expect(statusText({ ...BASE, enrolled: true, working: false })).toMatch(/model is missing/);
+    // A file that can't be read is never "not set up", nor "missing the model".
+    expect(statusText(UNREADABLE)).toBe("Your voice file can't be read");
+    expect(statusText({ ...UNREADABLE, unreadable: 'locked' })).toBe("Your voice file can't be read");
   });
 
   it('says what was wrong with a phrase in plain words', () => {
@@ -237,5 +245,65 @@ describe('your voice: the section', () => {
     const writes = calls.filter((c) => c.method !== 'GET');
     expect(writes.length).toBeGreaterThan(0);
     for (const c of writes) expect(c.body).toBeDefined();
+  });
+
+  it('says plainly when the voice file cannot be read, with both ways to put it right', async () => {
+    const root = document.createElement('div');
+    const { api } = server(UNREADABLE);
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]));
+    await section.open();
+    expect(root.textContent).toContain(UNREADABLE_TEXT);
+    expect(root.textContent).not.toMatch(/Not set up/);
+    const shown = buttons(root);
+    expect(shown.has('Teach her again')).toBe(true);
+    expect(shown.has('Forget my voice')).toBe(true);
+    expect(shown.has('Teach her your voice')).toBe(false);
+    expect(section.summary()).toBe("Your voice file can't be read");
+  });
+
+  it('says it too when the optional part is missing', async () => {
+    const root = document.createElement('div');
+    const { api } = server({ ...UNREADABLE, installed: false, model: { ...BASE.model, ready: false } });
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]));
+    await section.open();
+    expect(root.textContent).toContain(UNREADABLE_TEXT);
+    expect(root.textContent).toMatch(/uv sync --extra speaker/);
+    expect(buttons(root).has('Forget my voice')).toBe(true);
+  });
+
+  it('teaching her again replaces a voice file that cannot be read', async () => {
+    const root = document.createElement('div');
+    const { api } = server(UNREADABLE, {
+      'POST /api/voiceprint/phrase': [
+        { ok: true, problem: null, recorded: [0] },
+        { ok: true, problem: null, recorded: [0, 1] },
+        { ok: true, problem: null, recorded: [0, 1, 2] },
+      ],
+      'POST /api/voiceprint/save': [{ ...BASE, ok: true, enrolled: true, working: true, unreadable: null, recorded: [] }],
+    });
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([second(), second()]));
+    await section.open();
+    buttons(root).get('Teach her again')!.click();
+    await flush();
+    for (let i = 0; i < 3; i++) {
+      buttons(root).get('Record')!.click();
+      await flush();
+      buttons(root).get('Stop')!.click();
+      await flush();
+    }
+    expect(root.textContent).not.toContain(UNREADABLE_TEXT);
+    expect(section.summary()).toBe('She knows your voice');
+  });
+
+  it('forgetting a voice file that cannot be read is not set up again', async () => {
+    const root = document.createElement('div');
+    const { api, calls } = server(UNREADABLE);
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]), { changed: () => {}, confirm: () => true });
+    await section.open();
+    buttons(root).get('Forget my voice')!.click();
+    await flush();
+    expect(calls.some((c) => c.method === 'DELETE' && c.path === '/api/voiceprint')).toBe(true);
+    expect(root.textContent).not.toContain(UNREADABLE_TEXT);
+    expect(section.summary()).toBe('Not set up');
   });
 });
