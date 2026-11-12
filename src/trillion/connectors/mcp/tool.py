@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from trillion.connectors.mcp.config import ServerConfig
+from trillion.spine.card import ONLY_A_TAP
 from trillion.spine.contract import (
+    GATED,
     JSON,
     ActionSummary,
     BaseTool,
@@ -100,6 +102,11 @@ def _brief(value: Any) -> str:
     return text if len(text) <= 120 else text[:117] + "…"
 
 
+def _whole(value: Any) -> str:
+    """An argument whole: text as it is, anything else as indented JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
+
+
 class McpTool(BaseTool):
     def __init__(self, server: ServerConfig, offered: Offered, name: str, call: Call) -> None:
         schema, pathy = schema_for(offered.input_schema)
@@ -109,16 +116,25 @@ class McpTool(BaseTool):
             else ""
         )
         description = (offered.description or offered.name).strip()
+        risk = server.risk_of(offered.name)
+        # Trillion can't know what a server's tool does, or whether it can be undone: one
+        # that asks first is approved only by a tap on its card (SPN-14). Never from what
+        # the server says: a structure test pins it.
+        tap = f" {ONLY_A_TAP}" if risk in GATED else ""
         self.definition = ToolDefinition(
             name=name,
             description=(
-                f"[{server.name}, a connected MCP server] {description}"[:MAX_DESCRIPTION]
+                f"[{server.name}, a connected MCP server] {description}"[
+                    : MAX_DESCRIPTION - len(tap)
+                ]
+                + tap
             ),
             input_schema=schema,
-            risk=server.risk_of(offered.name),
+            risk=risk,
             category=CATEGORY,
             timeout_s=server.timeout_s,
             outside_path_args=pathy,
+            recoverable=False,
         )
         self.server = server.name
         # The name its tile has, which a widget built from it names as its source.
@@ -129,10 +145,14 @@ class McpTool(BaseTool):
         self._call = call
 
     def describe(self, args: JSON) -> ActionSummary:
-        """The card: which server, which tool, and every argument it will be sent."""
+        """The card: which server, which tool, and every argument it will be sent. The
+        line cuts long ones; the detail shows each whole, as it will go (SPN-2a)."""
         shown = ", ".join(f"{k}: {_brief(v)}" for k, v in args.items())
+        head = f"Use {self.server}'s {self.remote_name}"
+        whole = [f"{k}: {_whole(v)}" for k, v in args.items()]
         return ActionSummary(
-            text=f"Use {self.server}'s {self.remote_name}" + (f" with {shown}" if shown else "")
+            text=head + (f" with {shown}" if shown else ""),
+            detail="\n".join([head, *whole]) if whole else "",
         )
 
     def target(self, args: JSON) -> str:

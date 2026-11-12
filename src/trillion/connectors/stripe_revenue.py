@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trillion.connectors.mcp.config import ServerConfig
 from trillion.connectors.mcp.tool import CATEGORY, Call, Outcome
+from trillion.spine.card import ONLY_A_TAP
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     GATED,
@@ -378,7 +379,7 @@ class StripeRevenue(BaseTool):
                 "or trend; never page charges yourself, and never use stripe_analytics, "
                 "which needs a paid plan. Periods are in the user's timezone; custom takes "
                 "from and to as YYYY-MM-DD. Good for a kpis or chart widget with source "
-                "Stripe." + (f" {ASKS_BY_CARD}" if asks else "")
+                "Stripe." + (f" {ASKS_BY_CARD} {ONLY_A_TAP}" if asks else "")
             ),
             input_schema={
                 "type": "object",
@@ -400,6 +401,9 @@ class StripeRevenue(BaseTool):
             category=CATEGORY,
             # Its own cap is a minute; the rest is room to say what it counted.
             timeout_s=MAX_SECONDS + 30,
+            # A connected server's tool: one that asks first takes a tap, like any
+            # other (the registry holds every gated MCP tool to this).
+            recoverable=False,
         )
         self.server = server.name
         # The name its tile has: a widget built from it names this as its source.

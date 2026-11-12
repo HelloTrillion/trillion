@@ -3,10 +3,14 @@
  * These are not widgets: they are drawn from the core's `confirm.*` messages only, and show only
  * what the host composed. Every piece of text is set with textContent, never parsed as HTML.
  */
+import { cardDetail } from './card-detail';
 import { icon } from './icons';
 import { picture } from './look';
 import { clock } from './showcase';
 import { type CardStatus, type Entry, EXPIRED_NOTE, type Reason } from './view';
+
+// The conversation's card shows the same full detail (main.ts).
+export { cardDetail };
 
 export type Card = Extract<Entry, { kind: 'card' }>;
 
@@ -221,6 +225,9 @@ function askCard(it: StripItem, o: StripOptions): Drawn {
     row.append(picture(c.look, 28), summary);
     el.append(head, row);
   } else el.append(head, summary);
+  // All of what it sends or writes, whole, under the summary: what Approve approves (SPN-2a).
+  const detail = it.mode === 'ask' ? cardDetail(c.detail ?? '', 'ap-detail') : null;
+  if (detail) el.append(detail);
   const reason = reasonWords(c.reason);
   if (reason) el.append(h('p', 'ap-reason', reason));
 

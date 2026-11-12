@@ -390,3 +390,82 @@ describe('your voice: your own words as the yes (SPN-20)', () => {
     expect(row(root).hidden).toBe(true);
   });
 });
+
+describe('your voice: your own words as the yes (SPN-20)', () => {
+  const ENROLLED: VoiceprintState = { ...BASE, enrolled: true, working: true, own_words: false };
+  const box = (root: HTMLElement): HTMLInputElement => root.querySelector<HTMLInputElement>('#voiceprint-own-words')!;
+  const row = (root: HTMLElement): HTMLElement => box(root).closest('label') as HTMLElement;
+
+  it('is offered only once she knows the voice, and not while teaching', () => {
+    expect(showsOwnWords(null, false)).toBe(false);
+    expect(showsOwnWords(BASE, false)).toBe(false);
+    expect(showsOwnWords(ENROLLED, false)).toBe(true);
+    expect(showsOwnWords(ENROLLED, true)).toBe(false);
+  });
+
+  it('is hidden with nobody enrolled', async () => {
+    const root = document.createElement('div');
+    const { api } = server(BASE);
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]));
+    await section.open();
+    expect(row(root).hidden).toBe(true);
+  });
+
+  it('is shown off once a voice is enrolled, with what it does and what always asks', async () => {
+    const root = document.createElement('div');
+    const { api } = server(ENROLLED);
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]));
+    await section.open();
+    expect(row(root).hidden).toBe(false);
+    expect(box(root).checked).toBe(false);
+    expect(box(root).getAttribute('role')).toBe('switch');
+    expect(row(root).textContent).toContain(OWN_WORDS_LABEL);
+    expect(row(root).textContent).toMatch(/Spending, sending and anything that can.t be undone always ask/);
+  });
+
+  it('turns it on and off through the core, which says where it stands', async () => {
+    const root = document.createElement('div');
+    const { api, calls } = server(ENROLLED, {
+      'PUT /api/voiceprint': [
+        { ...ENROLLED, own_words: true },
+        { ...ENROLLED, own_words: false },
+      ],
+    });
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]));
+    await section.open();
+    box(root).checked = true;
+    box(root).dispatchEvent(new Event('change'));
+    await flush();
+    expect(calls.filter((c) => c.method === 'PUT')).toEqual([{ method: 'PUT', path: '/api/voiceprint', body: { own_words: true } }]);
+    expect(box(root).checked).toBe(true);
+    expect(root.textContent).toMatch(/On\. Your own words approve/);
+    box(root).checked = false;
+    box(root).dispatchEvent(new Event('change'));
+    await flush();
+    expect(calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([{ own_words: true }, { own_words: false }]);
+    expect(box(root).checked).toBe(false);
+  });
+
+  it('shows what the core says, not what was clicked, when it refuses', async () => {
+    const root = document.createElement('div');
+    const { api } = server(ENROLLED, { 'PUT /api/voiceprint': [{ error: 'not_enrolled' }] });
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]));
+    await section.open();
+    box(root).checked = true;
+    box(root).dispatchEvent(new Event('change'));
+    await flush();
+    expect(box(root).checked).toBe(false);
+    expect(root.textContent).toMatch(/Teach her your voice first/);
+  });
+
+  it('goes away when the voice is forgotten', async () => {
+    const root = document.createElement('div');
+    const { api } = server({ ...ENROLLED, own_words: true });
+    const section = createVoiceprintSettings(fakeHost(root), api, recorder([]), { changed: () => {}, confirm: () => true });
+    await section.open();
+    expect(box(root).checked).toBe(true);
+    buttons(root).get('Forget my voice')!.click();
+    await flush();
+    expect(row(root).hidden).toBe(true);
+  });
+});

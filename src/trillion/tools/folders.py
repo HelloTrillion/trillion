@@ -39,10 +39,10 @@ from trillion.files.shares import (
     ShareError,
     Shares,
     WidensError,
-    hidden_marks,
     routine_scope,
     widens,
 )
+from trillion.spine.card import hidden_marks
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,

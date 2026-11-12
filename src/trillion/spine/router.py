@@ -26,6 +26,7 @@ from jsonschema.exceptions import best_match
 
 from trillion.spine import deny_floor
 from trillion.spine.audit import AuditRecord
+from trillion.spine.card import card_detail, visible
 from trillion.spine.clock import Clock, system_clock
 from trillion.spine.confirm import (
     CANCEL_TOOL,
@@ -40,6 +41,7 @@ from trillion.spine.confirm import (
     Refusal,
     Rejection,
     Status,
+    Waiting,
     decide,
     own_words,
 )
@@ -228,6 +230,22 @@ def safe_summary(text: str) -> str:
         clean = clean.replace(ws, " ")
     clean = "".join(c for c in clean if unicodedata.category(c) not in ("Cc", "Cf"))
     return clean[:SUMMARY_LIMIT]
+
+
+def _detail(described: ActionSummary, summary: str) -> tuple[str, str | None]:
+    """What the card shows besides its summary, and None; or why there can be no card.
+
+    The tool's own detail when it gives one: exactly as given, or refused if anything
+    in it could not be seen. Otherwise its text, whenever the summary is not all of it
+    (cut, or put on one line): a card never shows part of what it does (SPN-2a). Either
+    way line breaks are kept, and it is bounded (spine/card.py)."""
+    if described.detail:
+        return card_detail(described.detail)
+    if summary == described.text:
+        return "", None
+    # Text the tool did not mean to go anywhere as it stands (a model-chosen file name,
+    # say): shown whole, anything unseen in it as a visible token rather than refused.
+    return card_detail(visible(described.text))
 
 
 def _lossless_note(text: str) -> str | None:
@@ -530,11 +548,16 @@ class Router:
         frozen: dict[str, Any] = json.loads(canonical_json(dict(args)))
         try:
             target = tool.target(frozen)
-            summary = safe_summary(tool.describe(frozen).text)
+            described = tool.describe(frozen)
+            summary = safe_summary(described.text)
             token = _fingerprint(tool, frozen)
         except Exception as e:
             logger.warning("describing %s raised %s", name, type(e).__name__)
             return _refused(Refusal.PRECONDITION_FAILED, "the action could not be described")
+        detail, unshowable = _detail(described, summary)
+        if unshowable is not None:
+            # The card shows all of it or there is no card (SPN-2a): never part of it.
+            return _refused(Refusal.PRECONDITION_FAILED, unshowable)
         if represented_from is None:
             waiting = await self._waiting(ctx, name, target, args_hash(frozen), token, now)
             if waiting is not None:
@@ -568,6 +591,7 @@ class Router:
             expires_at=now + EXPIRY_MS,
             represented_from=represented_from,
             precondition_token=token,
+            detail=detail,
         )
         # Any open proposal for the same target is retired in the same transaction.
         await self._store.insert_pending(
@@ -627,7 +651,9 @@ class Router:
             response = _refused(Refusal.NOT_FOR_HELPERS, _NOT_FOR_HELPERS)
             return await self._audit_resolution(a, ctx, start, response)
         a = await self._expire_if_due(a, start, ctx)
-        verdict = decide(a, decision, ctx, start)
+        # A tap is for its own card, whichever is newest: only a yes is weighed.
+        waiting = await self._waiting_cards(a) if decision == "confirm" and ctx.via != "tap" else ()
+        verdict = decide(a, decision, ctx, start, waiting=waiting)
         if isinstance(verdict, Rejection):
             if verdict.reason is Refusal.ALREADY_RESOLVED:
                 # The settled outcome, said to be one: a second "confirm" after a tap ran
@@ -663,6 +689,24 @@ class Router:
         # never a "yes" half-carried-out (#83, #84, VOI-15c). The tool's own timeout
         # still bounds it, and the cancellation is honoured once all of it is written.
         return await _see_through(self._decide_and_run(a, verdict, ctx, start))
+
+    async def _waiting_cards(self, a: PendingAction) -> list[Waiting]:
+        """Every card still waiting in `a`'s session, with when each was first shown:
+        what `decide` weighs a yes that is not a tap against."""
+        out = []
+        for w in await self._store.list_by_status(Status.PROPOSED):
+            if w.owner_id != a.owner_id or w.session_id != a.session_id:
+                continue
+            shown = await self._store.get_delivery(w.id)
+            out.append(
+                Waiting(
+                    id=w.id,
+                    created_at=w.created_at,
+                    expires_at=w.expires_at,
+                    shown_at=shown.delivered_at if shown is not None else None,
+                )
+            )
+        return out
 
     async def cancel_on_no(
         self, words: str, ctx: ToolContext, *, asked: Collection[str] | None = None

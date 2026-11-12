@@ -1,0 +1,34 @@
+/* A card's full detail: all of it, scrolled inside the card, never clipped or cut. */
+.card-detail,
+.ap-detail {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-text-0) 12%, transparent);
+  background: color-mix(in srgb, var(--color-bg-0) 40%, transparent);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.card-detail:focus-visible,
+.ap-detail:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.card-detail pre,
+.ap-detail pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ap-detail {
+  margin: 10px 0 0;
+}

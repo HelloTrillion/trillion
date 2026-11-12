@@ -29,7 +29,7 @@ _PENDING_COLUMNS = (
 _SELECT_PENDING = (
     "SELECT "  # noqa: S608
     + ", ".join(f"p.{c.strip()}" for c in _PENDING_COLUMNS.split(","))
-    + ", x.args_json AS full_args_json, x.cleared_at AS args_cleared_at"
+    + ", x.args_json AS full_args_json, x.cleared_at AS args_cleared_at, x.detail AS detail"
     " FROM pending_actions p LEFT JOIN pending_action_args x ON x.pending_id = p.id"
 )
 # An audited call that ran: a card the user turned down is no use of anything.
@@ -48,7 +48,7 @@ _LIFECYCLE = (
 _SELECT_SLIM = (
     "SELECT "  # noqa: S608
     + ", ".join(f"p.{c.strip()}" for c in _PENDING_COLUMNS.split(","))
-    + ", NULL AS full_args_json, NULL AS args_cleared_at, "
+    + ", NULL AS full_args_json, NULL AS args_cleared_at, NULL AS detail, "
     + _LIFECYCLE
     + " AS lifecycle FROM pending_actions p WHERE p.owner_id = ? AND p.created_at >= ?"
 )
@@ -85,6 +85,8 @@ def _row_to_pending(r: aiosqlite.Row) -> PendingAction:
         ),
         args_cleared=cleared,
         updated_at=int(r["updated_at"]),
+        # What the card shows in full (SPN-2a): kept, and cleared, with the arguments.
+        detail=str(r["detail"]) if r["detail"] is not None else "",
     )
 
 
@@ -175,9 +177,9 @@ class SqliteSpineStore:
                 ),
             )
             await conn.execute(
-                "INSERT INTO pending_action_args (pending_id, owner_id, args_json)"
-                " VALUES (?, ?, ?)",
-                (a.id, a.owner_id, canonical_json(a.args)),
+                "INSERT INTO pending_action_args (pending_id, owner_id, args_json, detail)"
+                " VALUES (?, ?, ?, ?)",
+                (a.id, a.owner_id, canonical_json(a.args), a.detail or None),
             )
             await self._decision(conn, a.owner_id, a.id, decision, a.created_at)
         if self.changed is not None:
@@ -289,7 +291,8 @@ class SqliteSpineStore:
         marks = ", ".join("?" for _ in statuses)
         async with self._tx() as conn:
             cur = await conn.execute(
-                "UPDATE pending_action_args SET args_json = NULL, cleared_at = ?"  # noqa: S608
+                "UPDATE pending_action_args SET args_json = NULL, detail = NULL,"  # noqa: S608
+                " cleared_at = ?"
                 " WHERE args_json IS NOT NULL AND pending_id IN ("
                 f"  SELECT id FROM pending_actions WHERE status IN ({marks})"
                 "   AND updated_at <= ?)",

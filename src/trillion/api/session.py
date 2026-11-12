@@ -4086,6 +4086,9 @@ class Session:
             tool_label=label,
             reason=labels.reason(a.risk, a.recoverable),
             summary=summary,
+            # Everything it sends or writes, exactly as it will go (SPN-2a): the card
+            # shows it whole beneath the summary. Empty when the summary says it all.
+            detail=a.detail,
             expires_at=a.expires_at,
             # Spend and anything unrecoverable can only be approved here, by a tap (SPN-14).
             tap_only=a.risk is Risk.SPEND or not a.recoverable,

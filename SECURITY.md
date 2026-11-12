@@ -66,12 +66,24 @@ Phase 0 assumes **one trusted owner at the machine**. Concretely:
 - A pending action can only be closed from the session that raised it. A
   message on another channel never closes one.
 - Actions that spend money, or that can't be undone, need a **tap** on the
-  confirmation card.
+  confirmation card. Anything that reaches other people counts as one that
+  can't be undone: sending an email, adding, changing or deleting a calendar
+  event (Google emails its guests), posting in Slack, and every tool of a
+  connected MCP server that asks first (Trillion can't know what it does).
+- The card shows everything the action sends, exactly as it will go: every
+  recipient, the subject and the whole text, beneath a one-line summary. A
+  card that couldn't show all of it, or couldn't show it unmistakably (an
+  invisible or direction-changing character, an address in another alphabet),
+  is refused before it is shown. A tap or a yes approves what the card shows.
+- A yes that isn't a tap is refused on a turn that read something from outside
+  (a page, an email, a file), and for any card but the newest one on screen.
+  Only the card's own tap approves then, so text she read can't say the yes,
+  and can't point a yes at an older card.
 - A spoken "yes" is **not** tied to who said it. Anyone in the room, or a
   recording, can confirm an action that is allowed to be confirmed by voice.
   Speaker verification is planned for Phase 1 (PRD §5.3a).
 
-If you find a way around the first two, that is a vulnerability. The third
+If you find a way around the first four, that is a vulnerability. The last
 is a known limit of this phase.
 
 ### Once you teach her your voice (§5.3a, optional)
@@ -119,6 +131,30 @@ What it does **not** protect against, by design:
 If a voice that isn't enrolled gets a spoken yes through on a card, or a tool
 outside the guest list runs on its turn, that is a vulnerability. So is any
 spoken yes that approves while the voiceprint can't be read.
+
+### Your own words as the yes (SPN-20, optional, off by default)
+
+With a voice enrolled, the owner can turn on "Let my own words approve things
+I can undo" in Settings → Your voice. Then keeping a standing rule, or dropping
+a rule or forgetting a memory named by its words, runs in the turn it was said,
+with no second turn, but only when code finds all of these: the turn was spoken
+(not typed, a tap, a host note, a helper's chat or a routine); the voice was
+judged the enrolled owner's; nothing from outside (a page, a file, a connected
+account's mail) was read in that turn; the tool is one of those three, which
+are Trillion's own and can be undone; every argument that says what it does
+appears word for word in that turn's committed transcript; and no other action
+took this path in that turn. It trusts two things the host supplies, never the
+model: the speaker check above and the speech-to-text transcript. Beyond the
+limits of the speaker check, it does not protect against **a speech-to-text
+mistake that still makes sense** (a misheard word is kept in a rule as heard),
+nor against **words said with another meaning** ("don't keep a rule that says
+never book anything before nine" holds the rule word for word). Both are why
+only things that can be undone qualify: the action is recorded as approved by
+the owner's words, shown on a settled card, and undone by asking for its
+opposite. Spending, sending, anything unrecoverable, and every connector, MCP
+server, skill and plugin tool always keep the second turn; the registry refuses
+any of them that asks for this path. If an action takes this path without all
+of those holding, that is a vulnerability.
 
 ### Your own words as the yes (SPN-20, optional, off by default)
 
@@ -202,8 +238,9 @@ of those holding, that is a vulnerability.
   server's address, is shown before it is connected. The featured list in
   Settings points only at each service's own server, and a package it runs is
   pinned to a version.
-  Every MCP tool asks first unless the user marked it to run without asking;
-  a server's own claim that a tool only reads is shown, never trusted. What an
+  Every MCP tool asks first unless the user marked it to run without asking,
+  and one that asks is approved only by a tap on its card, never a spoken or
+  typed yes; a server's own claim that a tool only reads is shown, never trusted. What an
   MCP tool returns is wrapped as untrusted, and a turn that read it is treated
   like one that read a web page. An argument that may hold a path is checked
   by the deny floor wherever it points: keys, the keychain, `.ssh`, `.git`,
@@ -226,7 +263,9 @@ of those holding, that is a vulnerability.
   the keychain and revoked with Google when the account is removed. Each
   service asks only for the access its tools need. Reading asks first until the
   user lets it run; sending email, changing or deleting events and posting in
-  Slack are `irreversible` and always ask, and the user cannot change that.
+  Slack are `irreversible` and always ask, and the user cannot change that;
+  they reach other people, so only a tap on the card approves them, never a
+  spoken or typed yes.
   Changing or deleting an event must name its title, checked against Google
   before the card is shown. Mail, events, documents and Slack messages are
   wrapped as untrusted, and a turn that read them is treated like one that read
