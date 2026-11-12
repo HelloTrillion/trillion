@@ -6,6 +6,9 @@ combination of state, event and context can be tested exhaustively.
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -83,6 +86,13 @@ class Refusal(StrEnum):
     VOICE_UNSURE = "voice_unsure"
     # The voice this turn is not the owner's: nothing personal runs (PER-13).
     PRIVATE = "private"
+    # Why the owner's own words were not the yes (SPN-20). Recorded, never said: the
+    # answer in every one of these cases is the ordinary card.
+    OWN_WORDS_OFF = "own_words_off"
+    NOT_SPOKEN = "not_spoken"
+    READ_OUTSIDE = "read_outside"
+    NOT_ELIGIBLE = "not_eligible"
+    NOT_VERBATIM = "not_verbatim"
 
 
 @dataclass(frozen=True)
@@ -158,6 +168,90 @@ def decide(a: PendingAction, event: Event, ctx: ToolContext, now_ms: int) -> Sta
             return Rejection(Refusal.NOT_OWNER, REPLAY_DETAIL)
         return Rejection(Refusal.NOT_OWNER, NOT_OWNER_DETAIL)
     return Status.APPROVED
+
+
+# ── SPN-20: the owner's own words as the yes ─────────────────────────────
+
+# What `decided_by` says on a decision made by the owner's own words.
+OWN_WORDS = "own_words"
+# The shortest argument that may be its own yes: a single word, or a few letters, is
+# too easily found in anything anyone says.
+MIN_OWN_WORDS = 2
+MIN_OWN_CHARS = 8
+_QUOTES = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u2032": "'",
+        "\u02bc": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2033": '"',
+    }
+)
+# A run of anything that is not a letter, a digit or an apostrophe.
+_SPLIT = re.compile(r"[^\w']+|_+")
+
+
+def said_words(text: str) -> tuple[str, ...]:
+    """`text` as the words that are compared: NFKC, casefolded, quotes made straight,
+    split on every run that is not a letter, digit or apostrophe. An apostrophe at
+    either end of a word is a quotation mark, not part of it ("'nine'" is "nine")."""
+    plain = unicodedata.normalize("NFKC", text).casefold().translate(_QUOTES)
+    words = (w.strip("'") for w in _SPLIT.split(plain))
+    return tuple(w for w in words if w)
+
+
+def verbatim(arg: str, utterance: str) -> bool:
+    """Whether `arg`'s words appear as one unbroken run, on word boundaries, in what
+    was said. Long enough to mean something: at least two words and eight characters.
+    Nothing is rewritten: "nine" is not "9"."""
+    want, heard = said_words(arg), said_words(utterance)
+    if len(want) < MIN_OWN_WORDS or len(" ".join(want)) < MIN_OWN_CHARS:
+        return False
+    n = len(want)
+    return any(heard[i : i + n] == want for i in range(len(heard) - n + 1))
+
+
+def own_words_eligible(d: ToolDefinition) -> bool:
+    """A tool whose own words may approve it: it opted in, and it is irreversible (never
+    spend) and recoverable underneath. The registry holds the rest (first-party, and
+    every name a property of its schema); this is asked again where it is used."""
+    return bool(d.own_words) and d.risk is Risk.IRREVERSIBLE and d.recoverable
+
+
+def own_words(
+    d: ToolDefinition, args: Mapping[str, Any], ctx: ToolContext, enabled: bool
+) -> Rejection | None:
+    """None when the owner's words this turn are themselves the yes for this call
+    (SPN-20), or why not. Every one must hold: the owner turned it on; the turn was
+    spoken, not a host turn or a helper's; the voice was the enrolled owner's; nothing
+    from outside was read this turn; the tool may take this path; and every argument it
+    lists, and no other, is in the owner's words. Pure, so every case is tested."""
+    if not enabled:
+        return Rejection(Refusal.OWN_WORDS_OFF)
+    if ctx.via != "voice" or ctx.heard is None or ctx.host_turn:
+        return Rejection(Refusal.NOT_SPOKEN)
+    if ctx.speaker != "owner":
+        return Rejection(Refusal.NOT_OWNER)
+    if ctx.helper_id is not None or ctx.routine_target is not None:
+        return Rejection(Refusal.NOT_ELIGIBLE, "a helper's chat or a routine's run")
+    if ctx.read_outside:
+        return Rejection(Refusal.READ_OUTSIDE)
+    if not own_words_eligible(d):
+        return Rejection(Refusal.NOT_ELIGIBLE)
+    if set(args) != set(d.own_words):
+        # A listed argument missing, or one present that nobody says (an id).
+        return Rejection(Refusal.NOT_VERBATIM, "not every argument is the owner's words")
+    for name in d.own_words:
+        value = args[name]
+        if not isinstance(value, str) or not verbatim(value, ctx.heard):
+            return Rejection(Refusal.NOT_VERBATIM)
+    return None
 
 
 _ID_ONLY = {

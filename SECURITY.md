@@ -109,6 +109,30 @@ What it does **not** protect against, by design:
 If a voice that isn't enrolled gets a spoken yes through on a card, or a tool
 outside the guest list runs on its turn, that is a vulnerability.
 
+### Your own words as the yes (SPN-20, optional, off by default)
+
+With a voice enrolled, the owner can turn on "Let my own words approve things
+I can undo" in Settings → Your voice. Then keeping a standing rule, or dropping
+a rule or forgetting a memory named by its words, runs in the turn it was said,
+with no second turn, but only when code finds all of these: the turn was spoken
+(not typed, a tap, a host note, a helper's chat or a routine); the voice was
+judged the enrolled owner's; nothing from outside (a page, a file, a connected
+account's mail) was read in that turn; the tool is one of those three, which
+are Trillion's own and can be undone; every argument that says what it does
+appears word for word in that turn's committed transcript; and no other action
+took this path in that turn. It trusts two things the host supplies, never the
+model: the speaker check above and the speech-to-text transcript. Beyond the
+limits of the speaker check, it does not protect against **a speech-to-text
+mistake that still makes sense** (a misheard word is kept in a rule as heard),
+nor against **words said with another meaning** ("don't keep a rule that says
+never book anything before nine" holds the rule word for word). Both are why
+only things that can be undone qualify: the action is recorded as approved by
+the owner's words, shown on a settled card, and undone by asking for its
+opposite. Spending, sending, anything unrecoverable, and every connector, MCP
+server, skill and plugin tool always keep the second turn; the registry refuses
+any of them that asks for this path. If an action takes this path without all
+of those holding, that is a vulnerability.
+
 ## What is true today
 
 - **There is no shell tool.** The tools are the file tools (confined to

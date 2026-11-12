@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { Host } from '../src/panel';
 import {
   answeredText,
+  byText,
   channelText,
   chipText,
   chips,
@@ -79,6 +80,11 @@ describe('confirmations in words', () => {
     expect(answeredText(row({ decision: 'superseded' }), when)).toBe('No answer: a newer request replaced it, t3000');
     expect(answeredText(row({ status: 'pending', decision: null, decided_at: null }), when)).toBe('Not answered yet');
     expect(answeredText(row({ status: 'expired', decision: null, decided_at: null }), when)).toBe('No answer');
+  });
+
+  it('says an approval by the user\'s own words as just that (SPN-20)', () => {
+    expect(answeredText(row({ channel: 'voice', decided_by_kind: 'own_words' }), when)).toBe('Approved by your words, t3000');
+    expect(byText('own_words')).toBe('by your words');
   });
 
   it('only calls a card waiting for your answer once it was shown', () => {

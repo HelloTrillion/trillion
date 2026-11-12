@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Protocol
 
 from trillion.brain.standing import RuleEvent
-from trillion.spine.confirm import PendingAction, Status
+from trillion.spine.confirm import OWN_WORDS, PendingAction, Status
 from trillion.spine.contract import (
     JSON,
     BaseTool,
@@ -114,6 +114,9 @@ def describe(
     answer = next((d for d in decisions if d.event in ("approved", "rejected")), None)
     if answer is not None:
         how = _VIA.get(answer.via, answer.via)
+        if answer.decided_by == OWN_WORDS:
+            # SPN-20: what the owner said was itself the yes; no card was answered.
+            how = "by the user's own spoken words, with no second turn"
         verb = "approved" if answer.event == "approved" else "declined"
         lines.append(f"  answer: {verb} ({how}) at {_when(answer.at)}")
     elif any(d.event == "cancelled" for d in decisions):
