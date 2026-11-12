@@ -891,6 +891,35 @@ def check_skills(path: Path) -> Check:
     return Check(name="Skills", status="ok" if on else "info", detail="; ".join([count, *notes]))
 
 
+def check_voice(path: Path) -> Check:
+    """Settings → Your voice (§5.3a): whether her check of a spoken yes can run. A
+    voiceprint that is there but can't be read fails closed, so nothing is less safe,
+    but every approval needs a tap until it is put right. Only read, never repaired:
+    the file is left as it is."""
+    from trillion.voice.speaker import Unreadable, Voiceprints
+
+    name = "Your voice"
+    found = Voiceprints(lambda: path).get()
+    if found is None:
+        return Check(name=name, status="info", detail="not set up")
+    if not isinstance(found, Unreadable):
+        return Check(name=name, status="ok", detail="she knows your voice")
+    fix = "Open Settings → Your voice and teach her again, or forget your voice."
+    if found.why == "locked":
+        return Check(
+            name=name,
+            status="warn",
+            detail="the voice file can't be opened, so every approval needs a tap",
+            fix=f"Let your account read {path} again. Or: {fix}",
+        )
+    return Check(
+        name=name,
+        status="warn",
+        detail="the voice file is damaged, so every approval needs a tap",
+        fix=fix,
+    )
+
+
 def check_scheduler(path: Path, now_ms: int) -> Check:
     """Reminders and timed asks (AGT-4): how many are set and when the next is due. A run
     blocked or failed in the last day is worth a look. Read from the database only:
@@ -951,6 +980,7 @@ async def examine(
         check_meaning(paths.models_dir()),
         *check_mcp(paths.mcp_config_path(), secrets),
         check_skills(paths.skills_config_path()),
+        check_voice(paths.voiceprint_path()),
         check_scheduler(paths.db_path(), time.time_ns() // 1_000_000),
     ]
     if options.secrets:

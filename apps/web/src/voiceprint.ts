@@ -11,6 +11,9 @@
  *
  * Once a voice is enrolled, a switch lets the user's own words approve what can be
  * undone (SPN-20). Off until they turn it on; the core checks everything else.
+ * If the voiceprint file is there but can't be read, she can't check any voice: every
+ * approval needs a tap until the user teaches her again or forgets it. Said plainly
+ * here, never as "not set up".
  */
 
 import type { Host } from './panel';
@@ -28,16 +31,23 @@ export interface VoiceprintState {
   readonly recorded: readonly number[];
   /** The user's own words approve things that can be undone (SPN-20). */
   readonly own_words?: boolean;
+  /** The voiceprint file is there but can't be read: no voice is checked. */
+  readonly unreadable?: 'locked' | 'damaged' | null;
 }
 
 export const OWN_WORDS_LABEL = 'Let my own words approve things I can undo';
 export const OWN_WORDS_HINT =
   'When you say exactly what to keep, drop or forget, she does it without asking again. Only for things that can be undone, and only in your voice. Spending, sending and anything that can’t be undone always ask.';
 
-/** The switch is offered only once she knows the voice, and not while teaching her. */
+/** The switch is offered only once she knows the voice, not while teaching her, and not
+ * while the voice file can't be read (no voice can be checked then). */
 export function showsOwnWords(s: VoiceprintState | null, teaching: boolean): boolean {
-  return !!s?.enrolled && !teaching;
+  return !!s?.enrolled && !s.unreadable && !teaching;
 }
+
+/** What the section says when the voiceprint can't be read. */
+export const UNREADABLE_TEXT =
+  "Your voice file can't be read, so she can't tell your voice from anyone's. Until you teach her again, every approval needs a tap.";
 
 /** Records one phrase: frames of PCM16 while on. */
 export interface Recorder {
@@ -78,6 +88,7 @@ export function problemText(code: string | null | undefined): string {
 /** One line on where things stand, beside "Your voice" and at the top of the section. */
 export function statusText(s: VoiceprintState | null): string {
   if (!s) return '';
+  if (s.unreadable) return "Your voice file can't be read";
   if (s.enrolled && !s.working) return 'Set up, but the voice model is missing';
   if (s.enrolled) return 'She knows your voice';
   return 'Not set up';
@@ -182,7 +193,8 @@ export function createVoiceprintSettings(
 
   function render(): void {
     const s = state;
-    where.textContent = statusText(s) ? `${statusText(s)}.` : '';
+    const said = s?.unreadable ? UNREADABLE_TEXT : statusText(s) ? `${statusText(s)}.` : '';
+    where.textContent = said;
     const ready = !!s?.installed && !!s.model.ready;
     download.hidden = !s || !s.installed || s.model.ready;
     download.textContent = s ? `Get the voice model (${megabytes(s.model.size)} download)` : 'Get the voice model';
@@ -196,7 +208,7 @@ export function createVoiceprintSettings(
       credit.append(link);
     }
     if (s && !s.installed) {
-      where.textContent = `${statusText(s)}. Telling voices apart needs an optional part of Trillion: run "uv sync --extra speaker" where Trillion is installed, then come back.`;
+      where.textContent = `${said} Telling voices apart needs an optional part of Trillion: run "uv sync --extra speaker" where Trillion is installed, then come back.`;
     }
     const next = s ? nextPhrase(s.recorded, s.prompts.length) : null;
     const showPhrases = ready && teaching && next !== null;

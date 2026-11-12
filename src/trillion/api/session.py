@@ -646,11 +646,24 @@ _UNSURE = (
     "tap the card."
 )
 
+# The owner enrolled, but the voiceprint can't be read (2026-11-12 spec): every voice
+# is treated as anyone's until they teach her again.
+_UNCHECKED = (
+    "[host] The owner's voice file can't be read, so you can't check whose voice this "
+    "turn is: it could be anyone in the room. Keep to what would be fine to say to "
+    "anyone there. Nothing said aloud can approve a card now; a tap on the card can. "
+    "If they ask for something personal, or approve a card, say plainly that you can't "
+    "check voices right now, so they can type it or tap the card, and that the owner "
+    "fixes it in Settings, Your voice, by teaching you their voice again."
+)
+
 
 def guest_note(who: str) -> str:
     """What she is told on a turn whose voice isn't the owner's (PER-13)."""
     if who == "unsure":
         return _UNSURE
+    if who == "unchecked":
+        return _UNCHECKED
     how = ": it matched a recording of something already said" if who == "replay" else ""
     return _GUEST.format(how=how)
 

@@ -153,7 +153,7 @@ from trillion.voice import models as voice_models
 from trillion.voice.catalog import listen_option, speech_option
 from trillion.voice.providers import whisper
 from trillion.voice.providers.wespeaker import embedder as speaker_embedder
-from trillion.voice.speaker import Voiceprints
+from trillion.voice.speaker import Profile, Unreadable, Voiceprints
 from trillion.voice.types import SpeakerEmbedder, STTProvider, TTSProvider, UnknownSpeaker
 from trillion.workspace.board import Board
 from trillion.workspace.home import DEFAULT as DEFAULT_LAYOUT
@@ -1665,7 +1665,9 @@ async def open_runtime(
     store_of_shares.on_change = rt.shares_changed(asyncio.get_running_loop())
     # Whose voice it is (§5.3a): the owner's voiceprint, and the embedder it needs.
     rt.voiceprints = Voiceprints()
-    rt.speakers = speaker_embedder(await asyncio.to_thread(rt.voiceprints.get) is not None)
+    voiceprint = await asyncio.to_thread(rt.voiceprints.get)
+    # One that can't be read checks no voice: the stub, and every voice is unchecked.
+    rt.speakers = speaker_embedder(isinstance(voiceprint, Profile))
     describe = registry.get(DESCRIBE_SELF)
     if isinstance(describe, DescribeSelf):
         describe.bind(
@@ -1784,6 +1786,9 @@ async def open_runtime(
         provider=lambda: rt.background_provider,
     )
     rt.channels.knocked = rt.security.knocked
+    if isinstance(voiceprint, Unreadable):
+        # Told once, when it is found on start; every spoken turn after fails closed.
+        rt.security.voiceprint_unreadable(voiceprint.why)
     for name in (SPEAK_NARROW, SPEAK_WIDEN):
         speak_tool = registry.get(name)
         if isinstance(speak_tool, SpeakUpNarrow | SpeakUpWiden):
