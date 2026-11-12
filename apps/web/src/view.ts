@@ -800,6 +800,8 @@ function step(view: View, msg: ServerMsg): View {
       return settleOffer(view, str(msg['area']), (e) => (e.status === 'creating' ? { ...e, status: 'made' } : e));
     case 'confirm.resolved': {
       const outcome = cardOutcome(str(msg['status']), str(msg['reason']), str(msg['detail']));
+      // Approved by what the user said, in their own voice, this turn (SPN-20).
+      if (msg['by'] === 'own_words' && outcome.status === 'done') outcome.note = 'Done, on your word.';
       return {
         ...view,
         entries: replaceLast(

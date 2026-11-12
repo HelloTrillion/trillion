@@ -107,6 +107,21 @@ def validate(tool: Tool, module: str, definition: ToolDefinition | None = None) 
     if not d.writes_paths and not first_party:
         # A server or skill that could say it writes nothing would pass a read share.
         raise RegistryError(f"{d.name}: writes_paths is reserved for first-party tools")
+    if d.own_words:
+        # SPN-20: the owner's words as the yes. Only a tool of Trillion's own, that asks
+        # first (never spend) and can be undone, and only for arguments it really takes.
+        # A connector, an MCP server, a skill or a plugin can never take this path.
+        if not first_party:
+            raise RegistryError(f"{d.name}: own_words is reserved for first-party tools")
+        if d.risk is not Risk.IRREVERSIBLE:
+            raise RegistryError(f"{d.name}: own_words needs risk irreversible, not {d.risk}")
+        if not d.recoverable:
+            raise RegistryError(f"{d.name}: own_words needs a recoverable tool")
+        if len(set(d.own_words)) != len(d.own_words):
+            raise RegistryError(f"{d.name}: own_words names an argument twice")
+        for name in d.own_words:
+            if name not in props:
+                raise RegistryError(f"{d.name}: own_words entry {name!r} is not in the schema")
     if d.risk in GATED and isinstance(tool, BaseTool) and type(tool).describe is BaseTool.describe:
         raise RegistryError(f"{d.name}: gated tools must implement describe() (SPN-2a)")
 

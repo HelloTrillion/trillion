@@ -33,6 +33,7 @@ from trillion.spine.confirm import (
     CONFIRM_TOOL,
     EXPIRY_MS,
     META_TOOLS,
+    OWN_WORDS,
     REPRESENT_TOOL,
     REPRESENTABLE,
     UNSURE_TAP,
@@ -42,6 +43,7 @@ from trillion.spine.confirm import (
     Status,
     Waiting,
     decide,
+    own_words,
 )
 from trillion.spine.contract import (
     GATED,
@@ -181,6 +183,9 @@ class RouterResponse:
     # The same call was proposed again while its card waited: no new card. Never sent
     # to the model; `detail` tells it.
     already_asked: bool = False
+    # Approved by the owner's own words this turn (SPN-20): its card is shown already
+    # settled. Never sent to the model; `detail` tells it.
+    own_words: bool = False
 
     def to_model(self) -> str:
         """The JSON the model sees. Only fields that carry information."""
@@ -298,6 +303,13 @@ class _Registered:
         return await self._tool.reconcile(args, ctx)
 
 
+# What she is told when the owner's own words approved a call (SPN-20).
+_ON_THEIR_WORD = (
+    "approved by the user's own spoken words this turn, so no card is waiting; say in one "
+    "sentence what was done"
+)
+
+
 def _by(ctx: ToolContext, event: str) -> DecisionIn:
     return DecisionIn(event=event, decided_by=ctx.session_id, via=ctx.via)
 
@@ -347,6 +359,7 @@ class Router:
         new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
         audit_key: bytes | None = None,
         require_delivery: bool = False,
+        own_words_on: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._registry = registry
         self._store = store
@@ -359,6 +372,11 @@ class Router:
         # When set, a card must have been shown on a screen before it can be approved,
         # so nobody approves what they never saw (#4). The running app sets it.
         self._require_delivery = require_delivery
+        # Whether the owner turned on their own words as the yes (SPN-20): a setting only
+        # the owner changes, read for each call that could take that path. None: off.
+        self._own_words_on = own_words_on
+        # The turn, per session, whose one own-words yes is spent (SPN-20, D10).
+        self._own_words_turn: dict[str, int] = {}
         self._owners: set[str] = set()
         # Spoken yeses judged unsure, per card (SPN-15a). In memory: a restart asks again.
         self._unsure: dict[str, int] = {}
@@ -496,7 +514,17 @@ class Router:
             response = await self._propose(tool, call.args, ctx, represented_from=None)
             proposed = response.status == "confirmation_required"
             asked = "duplicate" if response.already_asked else "proposed"
-            return await audited(risk, response, asked if proposed else "refused")
+            response = await audited(risk, response, asked if proposed else "refused")
+            if (
+                proposed
+                and not response.already_asked
+                and response.pending_id is not None
+                and await self._by_own_words(tool.definition, call.args, ctx)
+            ):
+                # The owner's words this turn are the yes (SPN-20): recorded and run
+                # through the confirmed path, exactly as a yes on a later turn would be.
+                return await self._approve_own_words(response.pending_id, ctx, guard)
+            return response
 
         result = await self._run(tool, call.args, ctx)
         if guard is not None:
@@ -716,11 +744,60 @@ class Router:
         # Only a cancel of its own: an earlier answer reads "cancelled" too.
         return r if r.status == "cancelled" and r.reason is None else None
 
+    async def _by_own_words(self, d: ToolDefinition, args: JSON, ctx: ToolContext) -> bool:
+        """Whether the owner's words this turn are the yes for this call (SPN-20). One
+        per turn: a second gated call in the same turn gets a card."""
+        if self._own_words_on is None or self._own_words_turn.get(ctx.session_id) == ctx.turn:
+            return False
+        try:
+            enabled = await self._own_words_on() is True
+        except Exception as e:
+            logger.warning("reading the own-words setting raised %s", type(e).__name__)
+            enabled = False
+        verdict = own_words(d, args, ctx, enabled)
+        if verdict is not None:
+            # Why, by its code only, never the words: the answer is the card.
+            logger.info("own words not the yes for %s: %s", d.name, verdict.reason.value)
+            return False
+        return True
+
+    async def _approve_own_words(
+        self, pending_id: str, ctx: ToolContext, guard: LoopGuard | None
+    ) -> RouterResponse:
+        """Approve a card just proposed, on the owner's own words (SPN-20): a decision
+        `approved` by `own_words` via voice, then the confirmed path as after any yes:
+        the deny floor, the precheck and fingerprint (SPN-2c), the one execution claim
+        (SPN-17b) and the recorded outcome (SPN-17a). Only the later turn is skipped,
+        and with it the card on a screen: the owner said what it does."""
+        start = self._clock()
+        self._own_words_turn[ctx.session_id] = ctx.turn
+        a = await self._store.get_pending(pending_id)
+        if a is None or a.status is not Status.PROPOSED:  # pragma: no cover - just written
+            return _refused(Refusal.NOT_FOUND)
+        by = DecisionIn(event="approved", decided_by=OWN_WORDS, via="voice")
+        logger.info("pending action %s approved by the owner's own words", a.id)
+        response = await _see_through(self._decide_and_run(a, Status.APPROVED, ctx, start, by=by))
+        if guard is not None and response.status in ("failed", "unknown"):
+            guard.record_result(a.tool, ok=False)
+        return dataclasses.replace(
+            response,
+            own_words=True,
+            pending_id=a.id,
+            detail=_ON_THEIR_WORD if response.status == "succeeded" else response.detail,
+        )
+
     async def _decide_and_run(
-        self, a: PendingAction, verdict: Status, ctx: ToolContext, start: int
+        self,
+        a: PendingAction,
+        verdict: Status,
+        ctx: ToolContext,
+        start: int,
+        *,
+        by: DecisionIn | None = None,
     ) -> RouterResponse:
         event = "rejected" if verdict is Status.REJECTED else "approved"
-        won = await self._move(a.id, Status.PROPOSED, verdict, _by(ctx, event), now=start)
+        decision = by if by is not None else _by(ctx, event)
+        won = await self._move(a.id, Status.PROPOSED, verdict, decision, now=start)
         if not won or verdict is Status.REJECTED:
             # Lost a race, or cancelled: either way the stored row is the answer.
             return await self._audit_resolution(

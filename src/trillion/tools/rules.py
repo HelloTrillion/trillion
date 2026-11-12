@@ -175,6 +175,9 @@ class RuleKeep(_RuleTool):
         timeout_s=10.0,
         # Undone by dropping it again: a yes is enough.
         recoverable=True,
+        # The rule is kept in the user's words: when they said it exactly, on the owner's
+        # turn, their words are the yes (SPN-20).
+        own_words=("text",),
     )
 
     def describe(self, args: JSON) -> ActionSummary:
@@ -333,7 +336,11 @@ class RuleDrop(_RuleTool):
         risk=Risk.IRREVERSIBLE,
         category="rules",
         timeout_s=10.0,
+        # Undone by keeping it again.
         recoverable=True,
+        # "Drop the rule about X", said by the owner: their words are the yes (SPN-20).
+        # Never by id: an id is not something anyone says.
+        own_words=("about",),
     )
 
     def _matches(self, args: JSON) -> list[Rule]:

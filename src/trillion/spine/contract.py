@@ -57,6 +57,11 @@ class ToolDefinition:
     # exactly, so a read → write round trip cannot rewrite the user's file. First-party
     # tools only.
     lossless_output: bool = False
+    # SPN-20: the arguments that must appear word for word in what the owner just said
+    # for the owner's own words to be the yes, with no second turn. Empty: never. The
+    # registry allows it only on a first-party tool that is irreversible, recoverable
+    # and names properties of its own schema; a structure test lists the tools that do.
+    own_words: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -98,6 +103,10 @@ class ToolContext:
     # Anything but "owner" can't approve a card, and only `GUEST_TOOLS` run for it. Set
     # by the session from the speaker check, never from anything the model says.
     speaker: Speaker | None = None
+    # SPN-20: the committed transcript of this turn's spoken words (VOI-15a). None on a
+    # typed turn, a tap, a host turn, a channel message, a timed ask or a routine. Set by
+    # the session from the speech-to-text result, never from anything the model says.
+    heard: str | None = None
 
     @property
     def private(self) -> bool:
