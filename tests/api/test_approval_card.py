@@ -98,3 +98,19 @@ async def test_the_same_call_twice_in_one_reply_puts_up_one_card(rt: Runtime) ->
     # The repeat gets no card of its own; a different file still does.
     assert len(cards) == 2 and cards[0]["pending_id"] != cards[1]["pending_id"]
     assert str(cards[0]["summary"]).startswith("Create ")
+
+
+async def test_the_card_carries_everything_it_writes_whole(rt: Runtime) -> None:
+    """SPN-2a, §8.3: `confirm.request` carries the host's full detail beneath the
+    one-line summary: all of the text, line breaks kept, never cut."""
+    path = str(rt.granted_roots[0] / "a.txt")
+    text = "first line\n" + "x" * 400 + "\nthe last line, which a 200-character card cut"
+    card = await card_for(rt, "file_create", {"path": path, "content": text})
+    assert len(str(card["summary"])) <= 200 and "the last line" not in str(card["summary"])
+    assert text in str(card["detail"])
+
+
+async def test_a_card_whose_summary_says_it_all_carries_no_detail(rt: Runtime) -> None:
+    rt.registry.register(SpendTool())
+    card = await card_for(rt, "spend_money", {"amount_cents": 500})
+    assert card["detail"] == ""

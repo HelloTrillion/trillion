@@ -16,7 +16,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-_MIGRATION = re.compile(r"^(\d{3})_([a-z0-9_]+)\.sql$")
+_MIGRATION = re.compile(r"^(\d{3}|\d{12})_([a-z0-9_]+)\.sql$")
 
 
 class Unreadable(Exception):

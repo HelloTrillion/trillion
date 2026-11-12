@@ -143,9 +143,15 @@ UNREACHABLE = "unreachable"
 
 @dataclass(frozen=True, kw_only=True)
 class ActionSummary:
-    """What the user approves, composed by the host from frozen arguments (SPN-2a)."""
+    """What the user approves, composed by the host from frozen arguments (SPN-2a).
+
+    `text` is the card's headline, shown on one line and cut to fit. `detail` is
+    everything the action sends or writes, exactly as it will go, line breaks kept and
+    never cut (spine/card.py): every recipient, the subject, the whole text. Empty when
+    the headline already says all of it."""
 
     text: str
+    detail: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from trillion.spine import deny_floor
+from trillion.spine.card import visible
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,
@@ -97,6 +98,15 @@ def _where(p: Path) -> str:
         return "~/" + p.relative_to(Path.home()).as_posix()
     except ValueError:
         return p.as_posix()
+
+
+def _whole(head: str, *parts: tuple[str, str]) -> str:
+    """The card's full detail for a write (SPN-2a): what it does, then each text it
+    writes, whole and exactly, anything unseen in it shown as a visible token."""
+    out = [visible(head)]
+    for label, text in parts:
+        out += ["", label, visible(text)]
+    return "\n".join(out)
 
 
 def _folder(p: Path, *, new: bool = False) -> str:
@@ -296,7 +306,11 @@ class FileCreate(_OffLoop):
 
     def describe(self, args: JSON) -> ActionSummary:
         size = human_size(len(_bytes(args)))
-        return ActionSummary(text=f"Create {_where(_path(args))} ({size}): {_preview(_text(args))}")
+        where = _where(_path(args))
+        return ActionSummary(
+            text=f"Create {where} ({size}): {_preview(_text(args))}",
+            detail=_whole(f"Create {where} ({size})", ("Its text:", _text(args))),
+        )
 
     def target(self, args: JSON) -> str:
         return str(_path(args))
@@ -365,10 +379,11 @@ class FileOverwrite(_OffLoop):
         old = p.stat().st_size if p.is_file() else 0
         new = len(_bytes(args))
         head = f"Replace {_where(p)} ({human_size(old)} → {human_size(new)})"
+        detail = _whole(head, ("Its whole new text:", _text(args)))
         current = _read_text(p)
         if current is None:
-            return ActionSummary(text=head)
-        return ActionSummary(text=f"{head}, {_line_changes(current, _text(args))}")
+            return ActionSummary(text=head, detail=detail)
+        return ActionSummary(text=f"{head}, {_line_changes(current, _text(args))}", detail=detail)
 
     def target(self, args: JSON) -> str:
         return str(_path(args))
@@ -411,8 +426,10 @@ class FileAppend(_OffLoop):
 
     def describe(self, args: JSON) -> ActionSummary:
         size = human_size(len(_bytes(args)))
+        where = _where(_path(args))
         return ActionSummary(
-            text=f"Append {size} to {_where(_path(args))}: {_preview(_text(args))}"
+            text=f"Append {size} to {where}: {_preview(_text(args))}",
+            detail=_whole(f"Append {size} to {where}", ("Added at the end:", _text(args))),
         )
 
     def target(self, args: JSON) -> str:
@@ -477,10 +494,14 @@ class FileEdit(_OffLoop):
         change = f"{_preview(old, _EDIT_PREVIEW_CHARS)} → {_preview(new, _EDIT_PREVIEW_CHARS)}"
         current = _read_text(p)
         at = current.find(old) if current is not None else -1
+        whole = (("This text:", old), ("Becomes:", new))
         if at < 0 or current is None:
-            return ActionSummary(text=f"Edit {_where(p)}: {change}")
+            return ActionSummary(
+                text=f"Edit {_where(p)}: {change}", detail=_whole(f"Edit {_where(p)}", *whole)
+            )
         line = current.count("\n", 0, at) + 1
-        return ActionSummary(text=f"Edit {_where(p)} at line {line}: {change}")
+        head = f"Edit {_where(p)} at line {line}"
+        return ActionSummary(text=f"{head}: {change}", detail=_whole(head, *whole))
 
     def target(self, args: JSON) -> str:
         return str(_path(args))

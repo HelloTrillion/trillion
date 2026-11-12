@@ -62,6 +62,7 @@ NOT_DECISIONS: dict[str, str] = {
     "*.updated_at": "when the row last changed",
     "pending_action_args.args_json": "cleared for retention once settled (SPN-9)",
     "pending_action_args.cleared_at": "when it was cleared",
+    "pending_action_args.detail": "what the card showed, cleared with the arguments (SPN-2a)",
     "turn_timings.played_ms": "a measurement (ONB-11)",
     "conversations.title": "a label for the thread list; decides nothing (SUR-1)",
     "conversations.title_source": "who named it, so her title never replaces the user's",

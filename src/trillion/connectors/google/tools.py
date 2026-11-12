@@ -25,6 +25,7 @@ from typing import Any
 
 from trillion.connectors.google.client import Google, GoogleCallError
 from trillion.connectors.google.config import Client, Service
+from trillion.spine.card import ONLY_A_TAP
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,
@@ -61,6 +62,11 @@ class _Problem(Exception):
 
 def _cut(text: str, limit: int = MAX_TEXT) -> str:
     return text if len(text) <= limit else text[:limit] + "\n[cut]"
+
+
+def _whole(value: Any) -> str:
+    """An argument as the card shows it in full: a list one item after another."""
+    return ", ".join(map(str, value)) if isinstance(value, list) else str(value)
 
 
 def _one_line(value: Any, limit: int = 160) -> str:
@@ -116,9 +122,14 @@ class GoogleTool(BaseTool):
             }
         risk = self.native if (free and self.freeable) else Risk.IRREVERSIBLE
         asks = risk is Risk.IRREVERSIBLE
+        # What reaches other people (an email, an invitation, a change they are told
+        # about) can't be taken back, so only a tap approves it (SPN-14). A read or a
+        # draft that asks only because the user chose so changes nothing anyone sees.
+        recoverable = self.native is not Risk.IRREVERSIBLE
+        tap = "" if recoverable else f" {ONLY_A_TAP}"
         self.definition = ToolDefinition(
             name=self.name(),
-            description=self.blurb() + (f" {ASKS_BY_CARD}" if asks else ""),
+            description=self.blurb() + (f" {ASKS_BY_CARD}{tap}" if asks else ""),
             input_schema={
                 "type": "object",
                 "properties": props,
@@ -129,6 +140,7 @@ class GoogleTool(BaseTool):
             category=CATEGORY,
             timeout_s=60.0,
             outside_path_args=self.ids,
+            recoverable=recoverable,
         )
 
     # What each tool declares.
@@ -167,8 +179,12 @@ class GoogleTool(BaseTool):
     def describe(self, args: JSON) -> ActionSummary:
         shown = ", ".join(f"{k}: {_one_line(v, 120)}" for k, v in args.items() if k != "account")
         who = f" ({args['account']})" if args.get("account") else ""
+        head = f"{self.remote.capitalize()}{who}"
+        # The card shows every argument whole: the line above cuts long ones (SPN-2a).
+        whole = [f"{k}: {_whole(v)}" for k, v in args.items() if k != "account"]
         return ActionSummary(
-            text=f"{self.remote.capitalize()}{who}" + (f": {shown}" if shown else "")
+            text=head + (f": {shown}" if shown else ""),
+            detail="\n".join([head, *whole]) if whole else "",
         )
 
     def target(self, args: JSON) -> str:
@@ -233,6 +249,13 @@ def _addresses(raw: Any, what: str) -> list[str]:
     for a in out:
         if not _EMAIL.match(a):
             raise _Problem(f"{a!r} in {what} is not an email address")
+        if not a.isascii():
+            # A letter from another alphabet can make one address read as another
+            # (a Cyrillic a in an apple.com that is not): a card can't show it unmistakably.
+            raise _Problem(
+                f"{a!r} in {what} has a letter a card can't show unmistakably (it could"
+                " read as another address); give it in plain letters"
+            )
     return out
 
 
@@ -355,7 +378,8 @@ class _Compose(GoogleTool):
             "",
             str(args.get("body", "")),
         ]
-        return ActionSummary(text="\n".join(lines))
+        # The card shows it whole, as it will go: every recipient and all of the text.
+        return ActionSummary(text="\n".join(lines), detail="\n".join(lines))
 
     def verb(self) -> str:
         raise NotImplementedError
@@ -795,11 +819,11 @@ class CalendarCreate(_EventChange):
 
     def describe(self, args: JSON) -> ActionSummary:
         who = f" ({args['account']})" if args.get("account") else ""
-        return ActionSummary(
-            text="\n".join(
-                [f"Add to Google Calendar{who}: {args.get('title', '')}", *self.lines(args)]
-            )
+        text = "\n".join(
+            [f"Add to Google Calendar{who}: {args.get('title', '')}", *self.lines(args)]
         )
+        # Every guest and all of the notes, whole: Google emails them (SPN-2a).
+        return ActionSummary(text=text, detail=text)
 
     async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         body = self.event_body(args)
@@ -847,11 +871,10 @@ class CalendarUpdate(_EventChange):
 
     def describe(self, args: JSON) -> ActionSummary:
         who = f" ({args['account']})" if args.get("account") else ""
-        return ActionSummary(
-            text="\n".join(
-                [f"Change {args.get('title', '')!r} on Google Calendar{who}", *self.lines(args)]
-            )
+        text = "\n".join(
+            [f"Change {args.get('title', '')!r} on Google Calendar{who}", *self.lines(args)]
         )
+        return ActionSummary(text=text, detail=text)
 
     async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         await self.check_title(account, args)
@@ -905,10 +928,11 @@ class CalendarDelete(_EventChange):
 
     def describe(self, args: JSON) -> ActionSummary:
         who = f" ({args['account']})" if args.get("account") else ""
-        return ActionSummary(
-            text=f"Delete {args.get('title', '')!r} from Google Calendar{who}."
+        text = (
+            f"Delete {args.get('title', '')!r} from Google Calendar{who}."
             " Guests are told it is cancelled."
         )
+        return ActionSummary(text=text, detail=text)
 
     async def run(self, account: str, args: JSON, ctx: ToolContext) -> str:
         await self.check_title(account, args)

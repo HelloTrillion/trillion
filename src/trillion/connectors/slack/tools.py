@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from trillion.connectors.slack.client import SERVER_SIDE, Slack, SlackError
+from trillion.spine.card import ONLY_A_TAP
 from trillion.spine.contract import (
     ASKS_BY_CARD,
     JSON,
@@ -90,9 +91,14 @@ class SlackTool(BaseTool):
     def __init__(self, wiring: Wiring, *, free: bool) -> None:
         self.w = wiring
         risk = self.native if (free and self.freeable) else Risk.IRREVERSIBLE
+        # A post reaches everyone there at once and can't be unseen, so only a tap
+        # approves it (SPN-14). A read that asks because the user chose so changes nothing.
+        recoverable = self.native is not Risk.IRREVERSIBLE
+        tap = "" if recoverable else f" {ONLY_A_TAP}"
         self.definition = ToolDefinition(
             name=self.name(),
-            description=self.blurb() + (f" {ASKS_BY_CARD}" if risk is Risk.IRREVERSIBLE else ""),
+            description=self.blurb()
+            + (f" {ASKS_BY_CARD}{tap}" if risk is Risk.IRREVERSIBLE else ""),
             input_schema={
                 "type": "object",
                 "properties": dict(self.properties()),
@@ -102,6 +108,7 @@ class SlackTool(BaseTool):
             risk=risk,
             category=CATEGORY,
             timeout_s=60.0,
+            recoverable=recoverable,
         )
 
     @classmethod
@@ -128,7 +135,12 @@ class SlackTool(BaseTool):
 
     def describe(self, args: JSON) -> ActionSummary:
         shown = ", ".join(f"{k}: {_one_line(v, 120)}" for k, v in args.items())
-        return ActionSummary(text=f"Slack: {self.remote}" + (f" ({shown})" if shown else ""))
+        # The card shows every argument whole: the line cuts long ones (SPN-2a).
+        whole = [f"{k}: {v}" for k, v in args.items()]
+        return ActionSummary(
+            text=f"Slack: {self.remote}" + (f" ({shown})" if shown else ""),
+            detail="\n".join([f"Slack: {self.remote}", *whole]) if whole else "",
+        )
 
     def target(self, args: JSON) -> str:
         return f"slack:{self.name()}"
@@ -330,9 +342,9 @@ class SlackPost(SlackTool):
     def describe(self, args: JSON) -> ActionSummary:
         where = str(args.get("channel", ""))
         thread = " as a reply in a thread" if args.get("thread_ts") else ""
-        return ActionSummary(
-            text=f"Post in Slack as you, in {where}{thread}:\n\n{args.get('text', '')}"
-        )
+        text = f"Post in Slack as you, in {where}{thread}:\n\n{args.get('text', '')}"
+        # All of the text, as it will go (SPN-2a).
+        return ActionSummary(text=text, detail=text)
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         try:
