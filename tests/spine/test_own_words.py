@@ -428,7 +428,7 @@ def test_exactly_these_tools_opt_in() -> None:
 def test_no_other_source_sets_own_words() -> None:
     # Adding a tool to the list is a reviewed change to this test, never a side effect.
     setters = sorted(
-        str(p.relative_to(SRC))
+        p.relative_to(SRC).as_posix()
         for p in SRC.rglob("*.py")
         if re.search(r"\bown_words\s*=\s*\(", p.read_text(encoding="utf-8"))
     )
