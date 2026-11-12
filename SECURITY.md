@@ -80,8 +80,8 @@ Phase 0 assumes **one trusted owner at the machine**. Concretely:
   Only the card's own tap approves then, so text she read can't say the yes,
   and can't point a yes at an older card.
 - A spoken "yes" is **not** tied to who said it. Anyone in the room, or a
-  recording, can confirm an action that is allowed to be confirmed by voice.
-  Speaker verification is planned for Phase 1 (PRD §5.3a).
+  recording, can confirm an action that is allowed to be confirmed by voice,
+  unless you teach her your voice (next section).
 
 If you find a way around the first four, that is a vulnerability. The last
 is a known limit of this phase.
@@ -131,30 +131,6 @@ What it does **not** protect against, by design:
 If a voice that isn't enrolled gets a spoken yes through on a card, or a tool
 outside the guest list runs on its turn, that is a vulnerability. So is any
 spoken yes that approves while the voiceprint can't be read.
-
-### Your own words as the yes (SPN-20, optional, off by default)
-
-With a voice enrolled, the owner can turn on "Let my own words approve things
-I can undo" in Settings → Your voice. Then keeping a standing rule, or dropping
-a rule or forgetting a memory named by its words, runs in the turn it was said,
-with no second turn, but only when code finds all of these: the turn was spoken
-(not typed, a tap, a host note, a helper's chat or a routine); the voice was
-judged the enrolled owner's; nothing from outside (a page, a file, a connected
-account's mail) was read in that turn; the tool is one of those three, which
-are Trillion's own and can be undone; every argument that says what it does
-appears word for word in that turn's committed transcript; and no other action
-took this path in that turn. It trusts two things the host supplies, never the
-model: the speaker check above and the speech-to-text transcript. Beyond the
-limits of the speaker check, it does not protect against **a speech-to-text
-mistake that still makes sense** (a misheard word is kept in a rule as heard),
-nor against **words said with another meaning** ("don't keep a rule that says
-never book anything before nine" holds the rule word for word). Both are why
-only things that can be undone qualify: the action is recorded as approved by
-the owner's words, shown on a settled card, and undone by asking for its
-opposite. Spending, sending, anything unrecoverable, and every connector, MCP
-server, skill and plugin tool always keep the second turn; the registry refuses
-any of them that asks for this path. If an action takes this path without all
-of those holding, that is a vulnerability.
 
 ### Your own words as the yes (SPN-20, optional, off by default)
 
@@ -362,8 +338,11 @@ of those holding, that is a vulnerability.
   it may sit in a service file. Prefer typing the passphrase, or a keychain.
 - **Tool output is untrusted data.** Every result is wrapped and marked as
   data, not instructions; only first-party tools may opt out.
-- **The database is owner-only** (folder `0700`, files `0600`) on macOS and
-  Linux.
+- **The database is owner-only**: folder `0700` and files `0600` on macOS and
+  Linux; on Windows the data folder, the database and the key file get an
+  access list of their own, for the user and SYSTEM only, with nothing
+  inherited (SUR-3c). Proven by `tests/unit/test_windows_hardening.py` and
+  `tests/unit/test_migrate.py` on Windows.
 - **There is no telemetry.** No analytics or crash-reporting code exists.
 
 ## Not true yet — required before the first release
@@ -375,11 +354,6 @@ rely on them:
   is held in memory for one launch, not in the keychain, and there is no
   way to revoke it early. There is no remote access, and so no pairing
   tunnel.
-- **Owner-only access for the key file on Windows.** Off Windows it is
-  `0600`; on Windows it relies on the home folder's permissions until the
-  owner-only access list (SUR-3c) lands.
-- **Database hardening on Windows** (SUR-3c). Windows relies on the home
-  folder's own permissions for now.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.
   Only first-party tools are loaded in Phase 0.
 

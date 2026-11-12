@@ -1,0 +1,40 @@
+name: Feature request
+description: An idea for Trillion.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every feature has to strengthen at least one pillar: the Galaxy, the Voice or the Spine. [CONTRIBUTING.md](https://github.com/HelloTrillion/trillion/blob/main/CONTRIBUTING.md) explains why. Open this before you build anything large, so we can say honestly whether it fits.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+    validations:
+      required: true
+  - type: dropdown
+    id: pillar
+    attributes:
+      label: Which pillar it strengthens
+      options: [The Galaxy (the orb and visuals), The Voice (conversation and personality), The Spine (safety in code), Not sure]
+    validations:
+      required: true
+  - type: input
+    id: requirement
+    attributes:
+      label: Requirement ID
+      description: If it matches a requirement in docs/PRD.md, its ID, for example VOI-10a.
+  - type: checkboxes
+    id: never
+    attributes:
+      label: The never list
+      options:
+        - label: I've read the never list in CONTRIBUTING.md, and this doesn't need to break it.
+          required: true

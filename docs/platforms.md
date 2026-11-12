@@ -48,7 +48,7 @@ What works on macOS, Windows and Linux, in a browser tab and in the desktop app,
 
 ### The gaps, and why
 
-- **No keychain on a headless Linux machine.** A key can't be saved in the app there. A local model still works. The encrypted-file store (SEC-2) is not built yet; when it is, its file goes through the same owner-only call (`trillion.owner_only.restrict`) on Windows.
+- **No keychain on a headless Linux machine.** A key can't be saved in a keychain there. A local model still works, and `trillion setup --secrets-file` keeps keys in an encrypted file instead (SEC-2). On Windows that file gets the same owner-only access list as the data folder (`trillion.owner_only.restrict`).
 - **Credential Manager holds 2,560 bytes an entry.** A sign-in's tokens can be longer, so on Windows a value over 640 characters is kept in numbered entries (`<name>~piece-1`, …) beside its own, which says how many. Credential Manager's own errors are caught like the other keychains': the key's name is logged, never its value.
 - **Credential Manager matches names without case.** `mcp/GitHub/token` there is `mcp/github/token`, so two MCP servers whose names differ only in capitals would share keys. On every system, `mcp.json` entries like that both wait until one is renamed, and Settings picks names without regard to capitals ([spec](specs/2026-11-12-mcp-key-scope.md)).
 - **A data folder on a drive without access lists** (FAT, exFAT, some network shares) can't be limited to its owner on Windows. Trillion still works there; the log says it couldn't, and `doctor` says it can't tell.

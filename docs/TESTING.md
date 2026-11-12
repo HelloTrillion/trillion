@@ -4,6 +4,17 @@ The PRD states what must be true. This document states **how we prove it** — t
 
 Every scenario names the requirement it proves. If you add a requirement, add its scenario here. If a bug escapes, the fix is a scenario in this file, not a sentence in the PRD.
 
+**Running the tests**
+
+```bash
+export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring   # never touch your real keychain
+uv run pytest                          # every Python test; no keys, no network, no sound
+uv run pytest tests/spine              # one directory
+pnpm test                              # the web app and the Galaxy (Vitest)
+```
+
+Nothing here needs a paid service. The evals below call a real model, so they run only by hand; a free local model through [Ollama](https://ollama.com) is enough. The full list of checks CI runs is in [`CONTRIBUTING.md`](../CONTRIBUTING.md#getting-started).
+
 **Layout**
 
 | Path | Holds |
@@ -17,7 +28,12 @@ Every scenario names the requirement it proves. If you add a requirement, add it
 | `tests/integration/` | Cross-component behaviour: degradation, compaction, recovery, offline. |
 | `evals/` | Model-judged behaviour, run by hand against a real model; no model is ever called in CI. Persona (EVL-1): `uv run python -m evals.persona.run`. Honest failure (EVL-6): `uv run python -m evals.honest_failure.run`. Injection (EVL-2): `uv run python -m evals.injection.run`. The persona gate (EVL-4): `uv run python -m evals.gate`. Drift (EVL-5): `uv run python -m evals.drift.run`. The gate and drift are in [§3.2](#32-persona-evl-1-evl-4-evl-5). Each runs her inside the eval process on a throwaway home (`evals/harness.py`) and takes `--model` (default `gemma4:e4b` on Ollama; a `claude-` model needs `TRILLION_ANTHROPIC_API_KEY`), `--url`, `--judge-model`, `--judge-url`, `--only <case>` (persona also takes a group name; the gate refuses it; drift takes `on` or `off`) and `--json <path>`. The judge is Claude when `TRILLION_ANTHROPIC_API_KEY` is set, otherwise the local model, and the report's first line says which; nothing is read from the keychain. Exit 0 pass, 1 fail, 2 could not run (no model answered, or anything else stopped it before a verdict). Results go to `evals/results/` (gitignored). The latency bench (EVL-3), against a running Trillion with listening and a voice on: `uv run python -m evals.latency.run --url <the address it printed>`. |
 | `tests/evals/` | The evals' code checks against stored replies, the shared runner and sandbox, the scoring, the injection eval, the gate's baselines and rules, and drift, all with a scripted model and a scripted judge. Runs in CI. |
-| `tests/e2e/` | The full loop, with providers faked at the interface. |
+| `tests/scheduler/`, `tests/delivery/` | Reminders, timed asks, routines and watchers, and the one door that delivers what they find. |
+| `tests/storage/` | The SQLite stores and the migrations. |
+| `tests/mcp/`, `tests/skills/` | Connected MCP servers (against local fixture servers), Google, and `SKILL.md` skills. |
+| `tests/workspace/`, `tests/helpers/`, `tests/mind/` | Her board and widgets, the Helpers panel, and the Living Mind. |
+| `tests/spend/`, `tests/tools/`, `tests/importers/` | Spend caps, a few tools of their own, and importing from other assistants. |
+| `apps/web/test/`, `packages/galaxy/test/` | The page and the orb, in TypeScript (`pnpm test`). The orb also has visual snapshot tests in `packages/galaxy/visual/`: `pnpm --filter @hellotrillion/galaxy exec playwright install chromium` once, then `pnpm --filter @hellotrillion/galaxy test:visual`. |
 
 ---
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/HelloTrillion/trillion/security/advisories/new
+    about: Please don't open a public issue. Report it privately here, or by email as SECURITY.md says.
+  - name: Read the contributing guide
+    url: https://github.com/HelloTrillion/trillion/blob/main/CONTRIBUTING.md
+    about: How to set up, the never list, and the sign-off every commit needs.

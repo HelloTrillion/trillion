@@ -22,17 +22,17 @@ Most open-source agents are chat programs that learned to talk later. Trillion i
 
 ### 1. The Galaxy
 
-She has a face. An orb of noise-displaced light breathes while idle, turns gold when the mic is hot, shifts purple while she thinks, and rides the waveform of her own voice while she speaks. Sub-agents orbit her as a constellation. Tool calls arc out as energy. It is a real visual system, not a spinner — and it ships as a standalone package you can embed anywhere.
+She has a face. An orb of noise-displaced light breathes while idle, turns gold when the mic is hot, shifts purple while she thinks, and rides the waveform of her own voice while she speaks. When she uses a tool, an arc of light runs from the orb to the tool's chip on screen. It is a real visual system, not a spinner — and it ships as a standalone package you can embed anywhere.
 
 ### 2. The Voice
 
-Sub-second turn-taking, a wake word, barge-in, and a microphone that is already warm when you start speaking, so your first syllable is never clipped. With Deepgram you can pause mid-thought without being cut off, and say "yeah" over her without stopping her; anything else stops her and she listens. "Start thinking before I finish" (Settings → Hearing, on by default) lets her begin her answer early, at the cost of some extra model calls. Usage counts a draft once the provider reports it; one cut short before then isn't counted, though the provider may still bill its input. Under that sits a personality with actual opinions: brief, dry, deadpan. She pressure-tests your plan in one question instead of five bullet points, and she never opens with "Great question!"
+Sub-second turn-taking (with Deepgram), barge-in, and a microphone that is already warm when you start speaking, so your first syllable is never clipped. With Deepgram you can pause mid-thought without being cut off, and say "yeah" over her without stopping her; anything else stops her and she listens. A wake word is planned but not built yet. "Start thinking before I finish" (Settings → Hearing, on by default) lets her begin her answer early, at the cost of some extra model calls. Usage counts a draft once the provider reports it; one cut short before then isn't counted, though the provider may still bill its input. Under that sits a personality with actual opinions: brief, dry, deadpan. She pressure-tests your plan in one question instead of five bullet points, and she never opens with "Great question!"
 
 ### 3. The Spine
 
 **Confirmation is enforced in code, not requested in a prompt.**
 
-A tool that sends, spends or destroys can never run on the turn it is proposed. Its arguments are frozen the moment she asks you, the confirmation call carries no argument fields at all, and the deny floor applies on both paths. Compaction can't erase the rule, because the rule was never in the context window.
+A tool that sends, spends or destroys can never run on the turn it is proposed. Its arguments are frozen the moment she asks you, the confirmation call carries no argument fields at all, and the deny floor (the places no tool may touch, such as your keys, `.ssh` and her own files) applies on both paths. Compaction, which shortens a long conversation to fit the model, can't erase the rule, because the rule was never in the context window.
 
 Other agents have deleted inboxes while an instruction to "confirm first" scrolled out of memory. That class of failure is structurally impossible here.
 
@@ -42,8 +42,10 @@ Other agents have deleted inboxes while an instruction to "confirm first" scroll
 |---|---|---|
 | **0 · The Shell** | Galaxy engine, voice loop, agent core, spine, memory, persona, onboarding, CI. macOS and Linux; the core also runs on Windows | 🔨 in progress |
 | **1 · Private alpha** | Waitlist cohort, Google + MCP + skills, local no-key voice, signed builds, Windows hardening | planned |
-| **2 · Public beta** | The repo goes public, Slack + Telegram, docs site | planned |
+| **2 · Public beta** | Slack + Telegram, docs site | planned |
 | **3 · 1.0** | Signed skill registry, semantic turn detection | planned |
+
+The repository went public in November 2026, during Phase 0, earlier than first planned. Some later-phase pieces already work, such as Google, MCP, skills, Slack, Telegram and the free local voice; the PRD marks each requirement that exists with "Exists:".
 
 The full specification, including every requirement ID that Phase 0 must satisfy, is in [`docs/PRD.md`](https://github.com/HelloTrillion/trillion/blob/main/docs/PRD.md). How each one gets proven is in [`docs/TESTING.md`](https://github.com/HelloTrillion/trillion/blob/main/docs/TESTING.md).
 
@@ -59,13 +61,16 @@ src/trillion/    Python core
   spine/         tool contract, confirmation, deny floor, untrusted wrapping
   persona/       soul loading, modality overlays, tonal checkpoint
   memory/        markdown + sqlite-vec hybrid recall
-  agents/        manifests, loops, loop guard, supervisor
+  connectors/    MCP, Google, Slack
+  scheduler/     reminders, timed asks, routines
   storage/       SQLite (no hosted database required)
 ```
 
 Everything runs on your machine, in one process, against a local SQLite file. There is no server to expose, no account to create, and no infrastructure of ours involved at any point — your API keys live in your operating system's keychain, and the only outbound traffic goes to providers you connected yourself. With the network off, Trillion still starts. Model, speech-to-text and text-to-speech providers all sit behind interfaces: you choose each one, and each has a free, fully local option beside the paid ones (Anthropic, OpenAI, ElevenLabs, Deepgram).
 
 ## Try it
+
+**Not on PyPI yet.** The one-line installer and `uv tool install trillion` fetch Trillion from [PyPI](https://pypi.org/project/trillion/), and the first release there will be 0.0.2. Until it is out, both fail with "not found". Use a release file or a source checkout instead (both below).
 
 **One line** (the easy way). On macOS or Linux, in a terminal:
 
@@ -90,8 +95,6 @@ trillion setup
 
 To upgrade later: `uv tool upgrade trillion`, which keeps anything you added, such as Whisper. (`uv tool install trillion` again would drop it.)
 
-Both install from [PyPI](https://pypi.org/project/trillion/), starting with release 0.0.2. Until that is out, use a release file:
-
 **From a release file.** You need [uv](https://docs.astral.sh/uv/). Download the `.whl` file from the latest [release](https://github.com/HelloTrillion/trillion/releases), then:
 
 ```bash
@@ -104,6 +107,8 @@ To upgrade later, download the newer file and run `uv tool install --force` with
 **From source**, to work on it: you need uv, Node 22.22.2 or later and pnpm.
 
 ```bash
+git clone https://github.com/HelloTrillion/trillion.git
+cd trillion
 uv sync
 pnpm install
 pnpm --filter @hellotrillion/web build
@@ -119,6 +124,16 @@ The app opens in your browser and asks who should answer: Anthropic (Claude), Op
 
 Developers can skip the panel with `TRILLION_ANTHROPIC_API_KEY`, or `TRILLION_OPENAI_BASE_URL` plus `TRILLION_MODEL`; the environment wins when set.
 
+To run the tests and the checks CI runs, see [`CONTRIBUTING.md`](https://github.com/HelloTrillion/trillion/blob/main/CONTRIBUTING.md#getting-started).
+
+**Free, with no keys.** Each part has a free choice that runs on your own computer. Nothing you say leaves it.
+
+1. **A model.** Install [Ollama](https://ollama.com) and fetch a model, for example `ollama pull gemma4:e4b` (the one the project's own evals use). Leave Ollama running. In the app, choose **A model on this computer**. A small local model is slower and less sharp than a paid one, but it works.
+2. **A voice.** Settings → **Voice** → **This computer's voice**. It works at once and sounds robotic.
+3. **Hearing.** Settings → **Hearing** → **On this computer (Whisper)**. It needs one extra install (see "Talking to her" below) and a one-time download from that panel.
+
+From a source checkout you can skip the model panel: `TRILLION_OPENAI_BASE_URL=http://localhost:11434/v1 TRILLION_MODEL=gemma4:e4b uv run trillion run`.
+
 **If something isn't working**, ask it:
 
 ```bash
@@ -133,7 +148,7 @@ It checks the data folder, the database, the port, the keychain, your model, voi
 
 Her file tools reach only folders you share. Share one during onboarding (she offers your Desktop or Documents), in Settings → **Shared folders**, by asking her (she proposes it on a card you approve), or for one run with `--grant`. With none shared, the file tools are off. A home folder or a whole drive is never shared. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
-**Talking to her.** Open **Settings** (the menu button, top left), then **Hearing**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv tool install --upgrade --python 3.13 'trillion[whisper]'` (from a source checkout, `uv sync --extra whisper`; upgrading with the one-line installer or `uv tool upgrade trillion` keeps it), and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
+**Talking to her.** Open **Settings** (the menu button, top left), then **Hearing**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv tool install --upgrade --python 3.13 'trillion[whisper]'` (from a release file, `uv tool install --force --python 3.13 'trillion[whisper] @ ./trillion-0.0.1-py3-none-any.whl'`; from a source checkout, `uv sync --extra whisper`; upgrading with the one-line installer or `uv tool upgrade trillion` keeps it), and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 

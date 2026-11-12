@@ -1,0 +1,63 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Never paste an API key, a token, or a log that holds one.** Redact first.
+        A security problem (a way round a confirmation card, the deny floor or the session token, or a key leaking) goes to [SECURITY.md](https://github.com/HelloTrillion/trillion/blob/main/SECURITY.md), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      placeholder: |
+        1. Start Trillion with ...
+        2. Say or type ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `trillion --version`, or the commit if you run from source.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS, Windows, Linux, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options: [One-line installer, uv tool install, Release file, Source checkout, Desktop app]
+  - type: input
+    id: providers
+    attributes:
+      label: Model, voice and hearing
+      description: Which you chose, for example "Ollama gemma4:e4b, this computer's voice, Whisper".
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `trillion doctor`
+      description: For anything to do with voice or the microphone, also name your microphone or audio interface. Mic bugs are almost always device-specific.
+      render: text
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Before you send
+      options:
+        - label: Nothing above contains a key, a token or anything else private.
+          required: true
