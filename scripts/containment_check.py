@@ -14,6 +14,7 @@ Exit code 0 means clean; 1 means something needs to come out.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -27,17 +28,18 @@ FORBIDDEN = {
     # "/Users/KEVIN/..." slipped through while this block was case-sensitive.
     "owner identity": [
         r"kevin\s*fremon",
-        r"/Users/[A-Za-z0-9._-]+/code/Hello-Trillion",
         r"\bkevin\b",
+    ],
+    # A path on a maintainer's machine is private in every file, docs/ included: it
+    # names their account. Example paths use a made-up user.
+    "machine paths": [
+        r"/Users/(?!someone/|you/|me/|<)[A-Za-z0-9._-]+/code/Hello-Trillion",
+        r"-Users-(?!someone-)[A-Za-z0-9._]+-code-Hello-Trillion",
     ],
     "businesses": [
         r"Lightbulb Moment Labs(?!, Inc\.)",  # the legal name in LICENSE/NOTICE is fine
-        r"SuperSchema",
-        r"Clean\s?Pro",
-        r"Future Proof",
-        r"Creating Space",
-        r"Locked In",
-        r"Whitefish",
+        # The owner's other businesses are matched by fingerprint (PRIVATE_NAMES below),
+        # so this public file doesn't publish the names it protects.
     ],
     "private infrastructure": [
         r"trillion-cloud",
@@ -56,6 +58,57 @@ FORBIDDEN = {
         r"ghp_[A-Za-z0-9]{20,}",
     ],
 }
+
+# Private names, kept as fingerprints: the first 20 hex characters of
+# sha256(SALT + phrase), where the phrase is the name's words in lower case, joined
+# by one space and again with none ("example corp" and "examplecorp"). Text is matched the
+# same way, one to three words at a time, whatever the case or punctuation between
+# them. Add a name with `python3 scripts/containment_check.py --hash "Some Name"`.
+# A fingerprint hides a name from a reader; someone who already guesses a name can
+# still test it. Names already in the git history stay there.
+SALT = "trillion-containment:"
+PRIVATE_NAMES = frozenset(
+    {
+        "0deb44aa04b3ae0b94e9",
+        "0e472f5a23c204f9c41d",
+        "12507f7a8c0d7b5f3e0c",
+        "3d1e5f68be3460fbeb46",
+        "3de1e9fa9f09f1aaa040",
+        "5894e4efa93d490ee8b8",
+        "6d2d5905b09e24fab109",
+        "bb633edb6a2ca50fb230",
+        "c7c601acf2cc5b1e3c62",
+        "d5acd2208990f7c5a30e",
+    }
+)
+_WORD = re.compile(r"[a-z0-9]+")
+_MAX_WORDS = 3
+
+
+def fingerprint(phrase: str) -> str:
+    return hashlib.sha256((SALT + phrase).encode("utf-8")).hexdigest()[:20]
+
+
+def fingerprints(name: str) -> set[str]:
+    """The fingerprints a name is stored as: its words spaced, and run together."""
+    words = _WORD.findall(name.lower())
+    return {fingerprint(" ".join(words)), fingerprint("".join(words))}
+
+
+def private_name_hits(text: str, names: frozenset[str] = PRIVATE_NAMES) -> list[int]:
+    """Offsets in `text` where a run of one to three words is a private name."""
+    found = [(m.start(), m.group()) for m in _WORD.finditer(text.lower())]
+    hits: list[int] = []
+    for i in range(len(found)):
+        for n in range(1, _MAX_WORDS + 1):
+            run = [w for _, w in found[i : i + n]]
+            if len(run) < n:
+                break
+            if fingerprint(" ".join(run)) in names or fingerprint("".join(run)) in names:
+                hits.append(found[i][0])
+                break
+    return hits
+
 
 # Maintainer names belong in these files and nowhere else.
 NAME_ALLOWED = {"LICENSE", "NOTICE", "CODEOWNERS", "TRADEMARKS.md"}
@@ -116,9 +169,7 @@ SELFTEST_CAUGHT = [
     "KevinFremon",
     "Kevin Fremon",
     "/Users/KEVIN/code/Hello-Trillion",
-    "/Users/kevinfremon/code/Hello-Trillion",
-    "superschema",
-    "SuperSchema",
+    "/private/tmp/claude-501/-Users-maintainer-code-Hello-Trillion-Public/x",
     "doppler run -- uv run python",
     "DOPPLER_TOKEN=abc",
     "sk-ant-api03-AAAAAAAAAAAA",
@@ -126,6 +177,7 @@ SELFTEST_CAUGHT = [
     "ghp_AAAAAAAAAAAAAAAAAAAAAAAA",
 ]
 SELFTEST_ALLOWED = [
+    "Clone it to /Users/someone/code/Hello-Trillion and run it.",
     "Trillion is a voice-first agent.",
     "We do not depend on a secrets manager such as Doppler or Vault.",
     "The orb turns gold when the microphone is hot.",
@@ -147,6 +199,20 @@ def selftest() -> int:
             for p in patterns:
                 if re.search(p, sample, re.IGNORECASE):
                     failures.append(f"  FALSE POSITIVE: {sample!r} matched {p!r} [{category}]")
+
+    # Private names: a made-up name stands in, so this file never holds a real one.
+    fake = frozenset(fingerprints("Example Corp"))
+    for sample in ("Example Corp", "examplecorp", "EXAMPLE-CORP", "at ExampleCorp's office"):
+        if not private_name_hits(sample, fake):
+            failures.append(f"  MISSED: {sample!r} should match a fingerprinted name")
+    for sample in ("an example corporation", "examples corp", "example of corp"):
+        if private_name_hits(sample, fake):
+            failures.append(f"  FALSE POSITIVE: {sample!r} matched a fingerprinted name")
+    if len(PRIVATE_NAMES) == 0 or any(not re.fullmatch(r"[0-9a-f]{20}", h) for h in PRIVATE_NAMES):
+        failures.append("  PRIVATE_NAMES must be 20-hex-character fingerprints")
+    for sample in SELFTEST_ALLOWED:
+        if private_name_hits(sample):
+            failures.append(f"  FALSE POSITIVE: {sample!r} matched a private name")
 
     if failures:
         print("Containment self-test FAILED:\n" + "\n".join(failures))
@@ -177,6 +243,10 @@ def main() -> int:
                     line = text.count("\n", 0, m.start()) + 1
                     findings.append(f"  {rel}:{line}  [{category}]  matched {pattern!r}")
 
+        for offset in private_name_hits(text):
+            line = text.count("\n", 0, offset) + 1
+            findings.append(f"  {rel}:{line}  [businesses]  matched a private name")
+
     if findings:
         print("Containment check FAILED. Private material must not ship:\n")
         print("\n".join(findings))
@@ -191,6 +261,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--hash":
+        print("\n".join(sorted(fingerprints(sys.argv[2]))))
+        sys.exit(0)
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     sys.exit(main())

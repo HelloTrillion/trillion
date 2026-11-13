@@ -13,7 +13,7 @@
 
 **Tech stack:** Python 3.13 (uv, pytest, ruff, strict mypy); TypeScript (Vite, vitest, jsdom).
 
-**Worktree and branch:** `/private/tmp/claude-501/-Users-kevinfremon-code-Hello-Trillion-Public/5f127305-340b-46e3-b9fd-057da687edcf/scratchpad/background`, on branch `voice/background-reads` (from main). Work only there.
+**Worktree and branch:** a worktree of its own, on branch `voice/background-reads` (from main). Work only there.
 
 **House rules:**
 - Commit with `git commit -s`, the message ending in a blank line and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Only `git add` your own files.
