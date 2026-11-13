@@ -77,6 +77,8 @@ async def driven(
     site: str | None = None,
     attended: bool = True,
     storage_state: Any = None,
+    search_url: str = "http://fixture.test/search?q={q}",
+    search_fallback: str | None = None,
 ) -> AsyncIterator[Driven]:
     conn = await connect(paths.db_path())
     await migrate(conn)
@@ -95,7 +97,8 @@ async def driven(
         site=site,
         attended=attended,
         storage_state=storage_state,
-        search_url="http://fixture.test/search?q={q}",
+        search_url=search_url,
+        search_fallback=search_fallback,
     )
     router = Router(
         task_registry(task), store, policy=DenyPolicy.default(), clock=clock, require_delivery=True

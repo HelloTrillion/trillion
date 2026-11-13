@@ -78,7 +78,8 @@ class Task:
         task_id: str | None = None,
         site: str | None = None,
         storage_state: Mapping[str, Any] | None = None,
-        search_url: str = "https://html.duckduckgo.com/html/?q={q}",
+        search_url: str = "https://www.bing.com/search?q={q}",
+        search_fallback: str | None = None,
         attended: bool = True,
         step_limit: int = STEP_LIMIT,
         changed: Callable[[], None] = lambda: None,
@@ -93,11 +94,14 @@ class Task:
         self.site = site
         self.storage_state = storage_state
         self.search_url = search_url
+        # The engines to try, in order; one that turned her browser away is dropped.
+        self.search_urls = [u for u in (search_url, search_fallback) if u]
         self.attended = attended
         self.step_limit = step_limit
         self.changed = changed
         self.broker = Broker(mode=mode, named_hosts=named_hosts, log=log, site=site)
-        self.broker.allow(search_url.replace("{q}", ""))
+        for u in self.search_urls:
+            self.broker.allow(u.replace("{q}", ""))
         self.state: State = "queued"
         self.ask: Ask | None = None
         self.steps = 0

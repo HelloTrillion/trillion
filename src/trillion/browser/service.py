@@ -76,6 +76,19 @@ FINAL_S = 60.0
 NUDGES = 1
 _UNWATCHED: frozenset[str] = frozenset({"schedule", "routine", "refresh"})
 
+# What she is told when the broker stopped a task: the host's words, never a page's.
+STOPPED_WORDS = {
+    "payment": (
+        "Her browser stopped at a checkout or payment page, which needs the user; a "
+        "purchase is never made from her browser."
+    ),
+    "tls": "Her browser stopped: a site's security certificate wasn't valid.",
+    "search": (
+        "The search engine turned her browser away, so the task stopped. The user can "
+        "choose another search engine in Settings → Her browser, or name a site to open."
+    ),
+}
+
 Outcome = Literal["answered", "stopped", "steps", "time", "failed", "cancelled"]
 
 PROMPT = """\
@@ -504,7 +517,8 @@ class BrowserService:
             task_id=running.id,
             site=site,
             storage_state=storage_state,
-            search_url=settings.search_url,
+            search_url=settings.search_urls[0],
+            search_fallback=settings.search_urls[1],
             attended=attended,
             step_limit=self.step_limit,
             changed=self._changed,
@@ -654,17 +668,9 @@ class BrowserService:
             if task.answer is not None:
                 return Outcomes(outcome="answered", text=task.answer)
             if task.broker.stopped is not None:
-                await task.log.event(
-                    "stopped",
-                    code=task.broker.stopped if task.broker.stopped == "tls" else "payment",
-                )
-                text = (
-                    "Her browser stopped at a checkout or payment page, which needs the user; "
-                    "a purchase is never made from her browser."
-                    if task.broker.stopped == "payment"
-                    else "Her browser stopped: a site's security certificate wasn't valid."
-                )
-                return Outcomes(outcome="stopped", text=text)
+                if task.broker.stopped != "search":
+                    await task.log.event("stopped", code=task.broker.stopped)
+                return Outcomes(outcome="stopped", text=STOPPED_WORDS[task.broker.stopped])
             if task.ask is not None:
                 note = await self._wait(task)
                 if note is None:
@@ -769,8 +775,8 @@ class _Paused:
         return self._inner.pricing()
 
     async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
-        if self._task.ask is not None:
-            yield TextDelta(text="Waiting for the user.")
+        if self._task.ask is not None or self._task.broker.stopped is not None:
+            yield TextDelta(text="Waiting for the user." if self._task.ask else "Stopped.")
             yield Done(stop_reason="end", usage=Usage())
             return
         async for ev in self._inner.stream(**kw):

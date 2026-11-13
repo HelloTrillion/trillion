@@ -43,7 +43,7 @@ from trillion.tools import web
 logger = logging.getLogger(__name__)
 
 Mode = Literal["research", "act"]
-Stop = Literal["tls", "payment"]
+Stop = Literal["tls", "payment", "search"]
 # How long a press waits for what it sends, and for any more after the first.
 HOLD_WAIT_S = 2.5
 HOLD_MORE_S = 0.4
@@ -439,6 +439,33 @@ class Broker:
         for task in list(self._tasks):
             with contextlib.suppress(Exception):
                 await task
+
+
+# Words a search engine's block or check page says. Such a page is a stop, never a
+# puzzle: her browser doesn't try to get past it.
+_TURNED_AWAY = (
+    "unusual traffic",
+    "not a robot",
+    "are you a robot",
+    "captcha",
+    "if this persists, please",
+    "access denied",
+    "403 - forbidden",
+    "error getting results",
+    "verify you are human",
+)
+_TURNED_AWAY_PATHS = ("/sorry/", "captcha", "error-pages", "home-error", "/blocked")
+
+
+def search_refused(url: str, title: str, text: str, links: Iterable[str]) -> bool:
+    """Whether a search engine turned her browser away: a block or check page, or a
+    page with no results to follow."""
+    words = f"{title}\n{text}".lower()
+    if any(w in words for w in _TURNED_AWAY):
+        return True
+    if any(p in urlsplit(url).path.lower() for p in _TURNED_AWAY_PATHS):
+        return True
+    return sum(1 for u in links if u.startswith(("http://", "https://"))) < 3
 
 
 def _private_literal(host: str) -> bool:

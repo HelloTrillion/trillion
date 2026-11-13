@@ -29,6 +29,7 @@ from trillion.browser.broker import (
     classify,
     held_key,
     host_of,
+    search_refused,
     valid_ref,
 )
 from trillion.browser.snapshot import find, shown
@@ -66,6 +67,7 @@ _STOPPED = {
         "this is a checkout or payment page: that needs the user, and a purchase is never "
         "made from her browser. Call browser_done and say so"
     ),
+    "search": "the search engine turned her browser away, so the task stopped",
 }
 
 
@@ -181,16 +183,29 @@ class BrowserSearch(BrowserTool):
     )
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        """The chosen engine; if it turns her browser away (a block or check page, or no
+        results to follow), the next one, once, in the same step. Then the task stops:
+        a refusal is never retried, and nothing tries to get past it."""
         t = self.task
         query = " ".join(str(args.get("query", "")).split())
-        url = t.search_url.replace("{q}", quote_plus(query))
-        await t.log.searched(url, query)
-        try:
-            await t.goto(url)
-            return ToolResult(ok=True, content=await self._moved(), effect="none")
-        except Refused as e:
-            await t.log.event("refused", url=url, code=e.kind)
-            return _no(str(e), e.kind)
+        while t.search_urls:
+            url = t.search_urls[0].replace("{q}", quote_plus(query))
+            await t.log.searched(url, query)
+            try:
+                await t.goto(url)
+                if t.broker.stopped is not None:
+                    return _no(_STOPPED[t.broker.stopped], t.broker.stopped)
+                snap = await t.read()
+            except Refused as e:
+                await t.log.event("refused", url=url, code=e.kind)
+                return _no(str(e), e.kind)
+            if not search_refused(str(t.page.url), snap.title, snap.text, snap.links):
+                return ToolResult(ok=True, content=shown(snap), effect="none")
+            await t.log.event("refused", url=url, code="search_refused")
+            t.search_urls.pop(0)
+        t.broker.stopped = "search"
+        await t.log.event("stopped", code="search")
+        return _no(_STOPPED["search"], "search")
 
 
 class BrowserRead(BrowserTool):

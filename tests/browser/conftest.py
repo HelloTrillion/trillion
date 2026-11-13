@@ -106,7 +106,23 @@ def _handler(seen: Seen) -> type[BaseHTTPRequestHandler]:
             if path in ("/", ""):
                 path = "/index.html"
             file = PAGES / path.lstrip("/")
-            if path == "/search" or not file.is_file():
+            if path == "/search":
+                body = (
+                    b"<html><head><title>Results</title></head><body><h1>Results</h1>"
+                    b'<a href="http://fixture.test/two.html">Second page</a>'
+                    b'<a href="http://fixture.test/index.html">Fixture home</a>'
+                    b'<a href="http://other.test/two.html">Another site</a></body></html>'
+                )
+            elif path == "/refused":
+                # As a search engine's block page reads: no results, a plea to write in.
+                body = (
+                    b"<html><body><p>If this persists, please <a href='mailto:x@example.com'>"
+                    b"email us</a>. Our support email address includes an anonymized error "
+                    b"code.</p></body></html>"
+                )
+            elif path == "/empty":
+                body = b"<html><head><title>Search</title></head><body>No results.</body></html>"
+            elif not file.is_file():
                 body = (
                     b"<html><head><title>Results</title></head><body><h1>Results</h1></body></html>"
                 )

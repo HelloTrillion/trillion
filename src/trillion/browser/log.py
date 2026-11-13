@@ -56,6 +56,7 @@ DETAILS = frozenset(
         "tls",
         "not_act",
         "not_given",
+        "search_refused",
         # chips, cards and steps, and their answers
         "asked",
         "allowed",
@@ -74,6 +75,7 @@ DETAILS = frozenset(
         "steps",
         "time",
         "failed",
+        "search",
         "cancelled",
         "retry",
         "stronger",

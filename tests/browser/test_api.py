@@ -28,7 +28,7 @@ def test_the_state_needs_the_token_and_starts_with_everything_off(make: Any) -> 
     assert body["settings"] == {
         "act": False,
         "stronger": False,
-        "search": "duckduckgo",
+        "search": "bing",
         "live": True,
     }
     assert "isn't a virtual machine" in body["about"]
@@ -47,7 +47,7 @@ def test_settings_take_only_known_values(make: Any) -> None:
     assert r.json()["settings"] == {
         "act": True,
         "stronger": False,
-        "search": "duckduckgo",
+        "search": "bing",
         "live": True,
     }
 

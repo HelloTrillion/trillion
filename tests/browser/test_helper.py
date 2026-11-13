@@ -349,9 +349,11 @@ async def test_a_task_that_fails_twice_is_retried_on_the_stronger_model_only_if_
         assert ("started", "stronger") in [(r.event, r.detail) for r in rows]
 
 
-@pytest.mark.parametrize("stop", ["payment", "tls"])
-def test_outcome_words_are_the_hosts(stop):
-    # What a stopped task says is written here, never by the page or the model.
-    source = (ROOT / "src" / "trillion" / "browser" / "service.py").read_text(encoding="utf-8")
-    assert "a purchase is never made from her browser" in source
-    assert "security certificate" in source
+@pytest.mark.parametrize("stop", ["payment", "tls", "search"])
+def test_what_a_stopped_task_says_is_the_hosts(stop):
+    # Written here, never by the page or the model.
+    from trillion.browser.service import STOPPED_WORDS
+
+    words = STOPPED_WORDS[stop]
+    assert {"payment": "a purchase is never made", "tls": "security certificate",
+            "search": "turned her browser away"}[stop] in words  # fmt: skip

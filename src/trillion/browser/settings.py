@@ -10,15 +10,17 @@ from dataclasses import dataclass
 from typing import Any
 
 PREF = "browser"
-# The search engines she may use, each by its results page for a query. One is used
-# at a time, the one the user chose (decision 9).
+# The search engines she may use, each by its results page for a query: the one the
+# user chose, and, if it turns her browser away, the next one once (decision 9). Bing
+# first: tested from a home connection on 2026-11-13, it was the one of these that
+# served her browser results; the others showed a block or a CAPTCHA page.
 ENGINES: dict[str, tuple[str, str]] = {
-    "duckduckgo": ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}"),
     "bing": ("Bing", "https://www.bing.com/search?q={q}"),
+    "duckduckgo": ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}"),
     "brave": ("Brave Search", "https://search.brave.com/search?q={q}"),
     "google": ("Google", "https://www.google.com/search?q={q}"),
 }
-DEFAULT_ENGINE = "duckduckgo"
+DEFAULT_ENGINE = "bing"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -31,6 +33,13 @@ class BrowserSettings:
     @property
     def search_url(self) -> str:
         return ENGINES.get(self.search, ENGINES[DEFAULT_ENGINE])[1]
+
+    @property
+    def search_urls(self) -> tuple[str, ...]:
+        """The chosen engine, then the one to fall back to once if it refuses."""
+        chosen = self.search if self.search in ENGINES else DEFAULT_ENGINE
+        fallback = next(k for k in ENGINES if k != chosen)
+        return (ENGINES[chosen][1], ENGINES[fallback][1])
 
     def to_json(self) -> dict[str, Any]:
         return {
