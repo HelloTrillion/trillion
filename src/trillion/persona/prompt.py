@@ -185,7 +185,7 @@ def system_blocks(
     )
     # Names are filled into the authored text only, never into a folder path.
     parts = [
-        _fill(_HTML_COMMENT.sub("", soul).strip(), identity),
+        *_persona_parts(identity, soul),
         _fill(_prompt("rules.md"), identity),
         f"Shared folders:\n{shared}",
         _fill(_prompt("text.md"), identity),
@@ -199,9 +199,23 @@ def system_blocks(
     if standing:
         listed = "\n".join(f"- [{rid}] {text}" for rid, text in standing)
         parts.append(f"{_fill(_prompt('standing.md'), identity)}\n{listed}")
-    if identity.directness in _TONES:
-        parts.insert(1, _fill(_prompt(f"tone_{identity.directness}.md"), identity))
     return [SystemBlock(text="\n\n".join(parts), cache=True)]
+
+
+def _persona_parts(identity: Identity, soul: str) -> list[str]:
+    """Who she is and how she speaks: her soul, then her directness when it is set."""
+    parts = [_fill(_HTML_COMMENT.sub("", soul).strip(), identity)]
+    if identity.directness in _TONES:
+        parts.append(_fill(_prompt(f"tone_{identity.directness}.md"), identity))
+    return parts
+
+
+def persona_block(identity: Identity, soul: str) -> SystemBlock:
+    """Her persona, exactly as it opens her replies' system block: the head of every
+    small call that writes words she says or shows on her own (a watcher's line, a
+    security alert, a word on an interrupted send), so they are hers, in one voice
+    (BRN-11, the seamless spec, decision 2). Its own task instructions follow it."""
+    return SystemBlock(text="\n\n".join(_persona_parts(identity, soul)), cache=True)
 
 
 def stable_parts(
@@ -274,7 +288,9 @@ Leg = Literal["model", "hearing", "voice"]
 @cache
 def _degraded() -> dict[str, str]:
     out: dict[str, str] = {}
-    for line in _HTML_COMMENT.sub("", _prompt("degraded.md")).splitlines():
+    # The app's words, not a prompt: kept beside the prompts, never among them.
+    shipped = (files("trillion.persona") / "degraded.md").read_text(encoding="utf-8")
+    for line in _HTML_COMMENT.sub("", shipped).splitlines():
         key, sep, said = line.partition(":")
         if sep and key.strip():
             out[key.strip()] = said.strip()
@@ -282,7 +298,8 @@ def _degraded() -> dict[str, str]:
 
 
 def degraded(leg: Leg, kind: str) -> str:
-    """Her one sentence for one leg being down (VOI-14): what broke, and what happens next."""
+    """The app's one line for one leg being down (VOI-14, SUR-8): what broke, and what
+    happens next. Shown, never spoken: it is the app's, not hers (PER-11)."""
     lines = _degraded()
     return lines.get(f"{leg}.{kind}") or lines[f"{leg}.other"]
 

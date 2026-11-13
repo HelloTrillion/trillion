@@ -1,9 +1,11 @@
 """VOI-14 and SUR-8: one provider down, the other two healthy.
 
 For each leg (her model, her voice, her ears) the turn degrades to text rather
-than hanging or crashing, and she says what broke in one sentence: spoken when her
-voice is the healthy leg, shown in the banner either way. Also: when her voice
-fails after an action already succeeded, the action never runs again.
+than hanging or crashing, and the banner names what broke in the app's one line.
+Only her own words are ever spoken (PER-11, the seamless spec, decision 2): with her
+model down nothing is, and the app's line is shown as the app's, never saved as hers;
+with her ears down and her model up, she says what broke in her own words. Also:
+when her voice fails after an action already succeeded, the action never runs again.
 """
 
 # ruff: noqa: F811 - the fixtures are shared with the server tests
@@ -63,19 +65,26 @@ def spoken(msgs: list[dict[str, Any]]) -> list[str]:
 # ── Her model down, her voice up ─────────────────────────────────────────
 
 
-def test_with_the_model_down_she_says_so_out_loud(make: Any) -> None:
+def test_with_the_model_down_nothing_is_spoken_and_the_app_says_what_broke(make: Any) -> None:
+    """Changed deliberately by the seamless spec (decision 2): this used to speak the
+    authored line in her voice. With her model down there is nobody to compose a line,
+    so nothing is spoken; the app's line is in the banner, and in the conversation as
+    the app's status (the page draws it), never saved as her message."""
     app = make(ProviderError("unreachable", "connection refused"))
     voice = voiced(app)
     with app.connect() as chat:
         chat.ws.send_json({"type": "turn.text", "text": "hello?"})
         msgs, frames = collect(chat, "turn.complete")
-    said = degraded("model", "unreachable")
-    assert spoken(msgs) == [said]  # spoken through the healthy voice...
-    assert voice.asked == [said] and frames  # ...and actually synthesized
+    shown = degraded("model", "unreachable")
+    assert spoken(msgs) == [] and voice.asked == [] and not frames  # nothing spoken
     error = only(msgs, "error")
-    assert error["code"] == "provider" and error["sentence"] == said  # ...and in the banner
+    assert error["code"] == "provider" and error["sentence"] == shown  # in the banner
     assert not [m for m in msgs if m["type"] == "reply.delta"]  # no reply was invented
     assert "connection refused" not in json.dumps(msgs)
+    # Never saved as hers: no message of hers, and the line nowhere in the conversation.
+    assert app.rows("SELECT count(*) FROM messages WHERE role = 'assistant'") == [(0,)]
+    saved = [row[0] for row in app.rows("SELECT blocks_json FROM messages")]
+    assert not any(shown in blocks for blocks in saved)
 
 
 def test_with_the_model_down_and_no_voice_the_sentence_is_written(make: Any) -> None:
@@ -108,23 +117,55 @@ def test_with_the_voice_down_the_reply_arrives_as_text(make: Any) -> None:
 
 
 def test_with_the_ears_down_she_says_so_and_typing_still_works(make: Any) -> None:
-    app = make(say("Typed is fine."))
+    """Changed deliberately by the seamless spec (decision 2): her sentence for it is
+    her own, composed by her model on the app's note, never the authored line spoken
+    in her voice. It is spoken, shown and saved as hers; the banner has the app's."""
+    mine = "I can't hear you right now, but typing works."
+    app = make(say(mine), say("Typed is fine."))
     voice = voiced(app)
     app.rt.stt = FakeSTT(fail="unreachable")
     app.rt.listening = ListenSettings(kind="deepgram", choice="en")
     with app.connect() as chat:
         chat.ws.send_json({"type": "listen.start"})
-        msgs, frames = collect(chat, "audio.end")
-        said = degraded("hearing", "unreachable")
-        assert only(msgs, "error")["sentence"] == said
-        assert spoken(msgs) == [said] and voice.asked == [said] and frames
+        msgs, frames = collect(chat, "turn.complete")
+        shown = degraded("hearing", "unreachable")
+        assert only(msgs, "error")["sentence"] == shown  # the app's line, in the banner
+        assert spoken(msgs) == [mine] and voice.asked == [mine] and frames  # hers, aloud
+        assert shown not in voice.asked
+        # Composed on the app's note, which names what broke.
+        _system, sent = app.provider.calls[-1]
+        assert shown in "".join(getattr(b, "text", "") for b in sent[-1].blocks)
         # The end of that sentence must not reopen the microphone that just failed.
-        chat.ws.send_json({"type": "playback.ended", "turn_id": 0, "played_ms": 900})
+        turn = next(m["turn"] for m in msgs if m["type"] == "reply.sentence")
+        chat.ws.send_json({"type": "playback.ended", "turn_id": turn, "played_ms": 900})
         chat.ws.send_json({"type": "turn.text", "text": "and typed?"})
         msgs, _ = collect(chat, "turn.complete")
     assert not [m for m in msgs if m["type"] == "mic.start"]
     assert "".join(m["text"] for m in msgs if m["type"] == "reply.delta") == "Typed is fine."
     assert len(app.rt.stt.choices_asked) == 1  # the failing recognizer was tried once
+    # Hers, saved as hers; the app's line never is.
+    saved = [
+        row[0] for row in app.rows("SELECT blocks_json FROM messages WHERE role = 'assistant'")
+    ]
+    assert any(mine in blocks for blocks in saved)
+    assert not any(shown in blocks for blocks in saved)
+
+
+def test_with_the_ears_and_the_model_down_nothing_is_spoken(make: Any) -> None:
+    app = make(ProviderError("unreachable"))
+    voice = voiced(app)
+    app.rt.stt = FakeSTT(fail="unreachable")
+    app.rt.listening = ListenSettings(kind="deepgram", choice="en")
+    with app.connect() as chat:
+        chat.ws.send_json({"type": "listen.start"})
+        msgs, frames = collect(chat, "turn.complete")
+    errors = [m for m in msgs if m["type"] == "error"]
+    assert [e["sentence"] for e in errors] == [
+        degraded("hearing", "unreachable"),
+        degraded("model", "unreachable"),
+    ]
+    assert spoken(msgs) == [] and voice.asked == [] and not frames
+    assert app.rows("SELECT count(*) FROM messages WHERE role = 'assistant'") == [(0,)]
 
 
 # ── Her voice down after an action already succeeded ─────────────────────

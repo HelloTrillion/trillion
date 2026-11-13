@@ -64,6 +64,7 @@ from trillion.persona.prompt import (
     SharedFolder,
     load_identity,
     load_soul,
+    persona_block,
     system_blocks,
 )
 from trillion.scheduler import when
@@ -614,6 +615,11 @@ class Runtime:
         if self._model_switch(chosen) is None:
             return self.provider
         return self._usual_model
+
+    def persona(self) -> SystemBlock:
+        """Her persona block, as her replies open on it: the head of every small call
+        that writes what she says or shows on her own (BRN-11, one voice)."""
+        return persona_block(self.identity, self.soul)
 
     def _pick_model(self) -> tuple[MeteredModel | None, Source]:
         provider, source = metered_resolve(self.meter, self.settings, self.secrets, self.env)
@@ -1266,6 +1272,7 @@ class Runtime:
                     settled,
                     self.spine_store.get_pending,
                     now_ms=self.clock(),
+                    persona=self.persona(),
                 )
             for n in made:
                 await self.door.added(n)
@@ -1764,6 +1771,8 @@ async def open_runtime(
         clock=lambda: rt.clock(),
         owner=OWNER,
         provider=lambda: rt.background_provider,
+        # Her lines are hers: her model, and her persona ahead of each call (BRN-11).
+        persona=rt.persona,
         settings=lambda: rt.attention_settings,
         google=lambda: rt.google,
         registry=registry,
@@ -1784,6 +1793,7 @@ async def open_runtime(
         clock=lambda: rt.clock(),
         owner=OWNER,
         provider=lambda: rt.background_provider,
+        persona=rt.persona,
     )
     rt.channels.knocked = rt.security.knocked
     if isinstance(voiceprint, Unreadable):

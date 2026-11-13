@@ -209,7 +209,7 @@ async def test_three_failures_in_a_row_pause_it_with_one_notice(
     assert [n.title for n in door.notices] == [
         "Monday revenue",
         "Monday revenue",
-        "Monday revenue failed three times, so I've paused it",
+        "Monday revenue failed three times, so it's paused",
     ]
     s = await store.get("a1b2c3d4")
     assert s is not None and s.paused_ms is not None and s.failures == 3
@@ -244,7 +244,7 @@ async def test_a_timeout_counts_as_a_failure(
     sched, door, _ = make(store, DUE, routines=Routines(TimeoutError()))
     await sched.tick()
     (n,) = door.notices
-    assert n.kind == "failed" and n.title.endswith("so I've paused it")
+    assert n.kind == "failed" and n.title.endswith("so it's paused")
 
 
 async def test_no_model_blocks_a_routine_without_counting(store: SqliteScheduleStore) -> None:

@@ -19,7 +19,6 @@ from tests.scheduler.test_ask import Hangs, Recording
 from tests.voice.test_speaker import FakeVoice
 from trillion.api.runtime import Runtime, SpeechSettings, open_runtime
 from trillion.api.session import (
-    OUT_OF_TURN,
     ROUTINE_BUILDING,
     Session,
     ready_line,
@@ -101,7 +100,9 @@ def request(title: str) -> Msg:
     )
 
 
-async def test_the_ready_line_is_spoken_once_and_kept(rt: Runtime) -> None:
+async def test_the_ready_line_is_shown_never_spoken_and_kept(rt: Runtime) -> None:
+    """Changed deliberately by the seamless spec (decision 2): a ready line is the
+    host's words, so it is shown and never spoken (PER-11)."""
     assert rt.schedules is not None and rt.door is not None
     rt.tts, rt.speech = FakeVoice(), SpeechSettings(kind="elevenlabs", voice="v1")
     page = Page(rt)
@@ -114,8 +115,7 @@ async def test_the_ready_line_is_spoken_once_and_kept(rt: Runtime) -> None:
     await idle(session)
     (shown,) = page.all("notice")
     assert (shown["kind"], shown["text"]) == ("ready", line)
-    (said,) = page.all("reply.sentence")
-    assert said["text"] == line and said["turn"] == OUT_OF_TURN + 1
+    assert shown["spoken"] is False and page.all("reply.sentence") == []
     history = await rt.conversations.history(session.id, "local")
     # Kept as the app's line, never as hers (test_session_notices has the reload).
     assert history[-1][0] == "tap"
