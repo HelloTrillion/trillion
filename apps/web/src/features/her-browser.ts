@@ -344,7 +344,8 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (!target) return;
     pill.classList.toggle('needs-you', target.needsYou);
     pillText.textContent = target.words;
-    thumb.hidden = !framed || !(state?.settings.live ?? true);
+    const where = target.id === 'free' ? state?.free : state?.tasks.find((t) => t.id === target.id);
+    thumb.hidden = !framed || !where?.url || !(state?.settings.live ?? true);
   };
 
   const target = (): TaskView | null => {
@@ -379,9 +380,11 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     // Kept, not redrawn: what the user is typing, and where the focus is, stay put.
     if (free && t && document.activeElement !== addressInput) addressInput.value = t.url ?? '';
     frame.classList.toggle('in-control', Boolean(t?.in_control) || free);
-    waiting.textContent = t ? 'Waiting for the first picture…' : 'Nothing is running in her browser now.';
-    waiting.hidden = framed && Boolean(t);
-    picture.hidden = !framed || !t;
+    // Until it has opened a page there is nothing to see but a blank one: said in words.
+    const shown = framed && Boolean(t?.url);
+    waiting.textContent = !t ? 'Nothing is running in her browser now.' : t.url ? 'Waiting for the first picture…' : free ? 'Type an address to open a page.' : 'Starting…';
+    waiting.hidden = shown;
+    picture.hidden = !shown;
     ask.replaceChildren();
     if (t?.ask && !free) await drawAsk(ask, t, t.ask);
     else if (t && !free && t.in_control) ask.append(el('p', 'her-browser-note', 'She sees nothing and nothing is recorded until you click “I’m done”.'));
@@ -446,13 +449,12 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     framed = true;
     if (isOpen()) {
       picture.src = src;
-      picture.hidden = false;
-      waiting.hidden = true;
+      const shown = Boolean(target()?.url);
+      picture.hidden = !shown;
+      waiting.hidden = shown;
     }
-    if (state?.settings.live ?? true) {
-      thumb.src = src;
-      thumb.hidden = pill.hidden;
-    }
+    if (state?.settings.live ?? true) thumb.src = src;
+    drawPill();
   };
 
   const canInput = (): boolean => {
