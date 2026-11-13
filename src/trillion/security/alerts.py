@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from trillion.attention import words
-from trillion.brain.types import ModelProvider
+from trillion.brain.types import ModelProvider, SystemBlock
 from trillion.scheduler.store import Notice
 from trillion.security.devices import LABELS, Device, DeviceBook
 from trillion.spend.caller import as_caller
@@ -63,7 +63,7 @@ EventKind = Literal["new_device", "refused", "knock", "voiceprint"]
 PLATFORM_NAMES = {"slack": "Slack", "telegram": "Telegram"}
 
 INSTRUCTIONS = (
-    "You are the user's assistant. The app noticed something about who is reaching "
+    "Speak up on your own, in your own voice. The app noticed something about who is reaching "
     "Trillion, or who can approve what it does, listed below in the app's own words. Tell "
     "the user in one or two short sentences to say aloud, at most 35 words in all, plain "
     "speech with no markup, lists or emoji: what happened, and what to do about it or if "
@@ -130,6 +130,7 @@ class SecurityAlerts:
         clock: Callable[[], int],
         owner: str,
         provider: Callable[[], ModelProvider | None],
+        persona: Callable[[], SystemBlock | None] = lambda: None,
         settle_s: float = SETTLE_S,
         gap_ms: int = GAP_MS,
     ) -> None:
@@ -139,6 +140,8 @@ class SecurityAlerts:
         self._clock = clock
         self._owner = owner
         self._provider = provider
+        # Her persona block, ahead of the call that writes her line (BRN-11).
+        self._persona = persona
         self._settle_s = settle_s
         self._gap_ms = gap_ms
         self._pending: list[Event] = []
@@ -315,7 +318,11 @@ class SecurityAlerts:
         with as_caller("background"):
             try:
                 text, _usage = await words.ask(
-                    provider, INSTRUCTIONS, shown(events, dropped), "security"
+                    provider,
+                    INSTRUCTIONS,
+                    shown(events, dropped),
+                    "security",
+                    persona=self._persona(),
                 )
             except SpendCapped:
                 logger.info("security: no line at the spend cap")

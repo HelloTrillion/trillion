@@ -133,7 +133,7 @@ def test_without_clause_first_nothing_changes() -> None:
 
 
 def test_a_sentence_already_whole_is_not_cut_at_a_pause() -> None:
-    """Her authored one-sentence notices arrive whole: nothing is gained by a pause."""
+    """A one-sentence line that arrives whole is not cut: nothing is gained by a pause."""
     s = SentenceSplitter(clause_first=True)
-    said = "I can't hear you: I can't reach the listening provider, but you can still type."
+    said = "I can't hear you: the listening provider is down, but you can still type."
     assert s.feed(said) + s.flush() == [said]

@@ -196,7 +196,7 @@ async def resume(store: ScheduleStore, owner_id: str, schedule_id: str, now_ms: 
 
 def paused_title(s: Schedule) -> str:
     """The one notice that says a routine paused itself."""
-    return f"{s.title} failed {PAUSE_AFTER_WORDS} times, so I've paused it"
+    return f"{s.title} failed {PAUSE_AFTER_WORDS} times, so it's paused"
 
 
 class _Handled(Exception):
