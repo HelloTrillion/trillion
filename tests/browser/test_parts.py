@@ -477,3 +477,11 @@ def test_the_main_part_of_a_page_comes_first():
         '  - heading "Hours" [ref=e4]',
         "  - text: Open 9 to 6",
     ]
+
+
+def test_a_double_submit_is_one_card_that_says_so():
+    one = held("POST", "https://e.example/f", "application/x-www-form-urlencoded", b"a=1")
+    two = held("POST", "https://e.example/f", "application/x-www-form-urlencoded", b"a=1")
+    card = card_for([one, two])
+    assert card.detail.count("POST https://e.example/f") == 1
+    assert "(2 identical requests)" in card.detail

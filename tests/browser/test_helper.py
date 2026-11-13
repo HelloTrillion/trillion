@@ -373,3 +373,55 @@ async def test_an_answer_ends_the_turn_and_is_never_lost_to_the_time_limit(
         result = await run(svc)
         assert result.outcome == "answered" and result.text == "It is 330 m tall."
         assert model.calls == 1
+
+
+@needs_chromium
+async def test_a_declined_card_ends_the_task_declined_and_her_conversation_is_told(
+    browser_rt, tmp_path, fixtures
+):
+    told: list[tuple[str, ...]] = []
+
+    async def waits(cid: str, text: str, pid: str | None, kind: str) -> None:
+        told.append(("waits", cid, text, pid or "", kind))
+
+    async def settles(cid: str, pid: str, status: str) -> None:
+        told.append(("settled", cid, pid, status))
+
+    model = Steps(
+        call("browser_open", url="http://fixture.test/form.html"),
+        lambda page: call("browser_type", ref=ref(page, r'textbox "Name"'), text="Kim"),
+        lambda _: call("browser_read"),
+        lambda page: call("browser_press", ref=ref(page, r'button "Next"')),
+        # Never reached: a decline ends the task, with no retry.
+        call("browser_done", answer="It was sent."),
+        say(""),
+    )
+    settings = BrowserSettings(act=True)
+    async with service(
+        browser_rt, tmp_path, model, settings=settings, waits=waits, settles=settles
+    ) as (svc, log):
+        before = len(fixtures.seen.posts())
+        job = asyncio.create_task(run(svc, act=True))
+        await until(lambda: svc.current() is not None and svc.current().task.ask is not None)  # type: ignore[union-attr]
+        running = svc.current()
+        pid = running.task.ask.pending_id  # type: ignore[union-attr]
+        await until(lambda: any(t[0] == "waits" for t in told))
+        line = "Before it sends the form to fixture.test, it needs your OK."
+        assert told[0] == ("waits", "conv", line, pid, "card")
+        # Settled from her conversation's card: the same pending request.
+        assert svc.waiting_for(pid)
+        no = await svc.tap_pending(pid, "cancel")
+        assert no is not None and no.status == "cancelled"
+        result = await asyncio.wait_for(job, 20)
+        rows = await log.for_task("local", running.id, svc._clock())
+        assert result.outcome == "declined", (result, [(r.event, r.detail) for r in rows])
+        assert result.text == "You declined; nothing was sent to fixture.test."
+        assert ("settled", "conv", pid, "cancelled") in told
+        assert len(fixtures.seen.posts()) == before
+        # The model is never asked again after a decline.
+        assert model.calls == 4
+        # It is in the decision record, so Settings → Confirmations lists it.
+        found = await svc._store.confirmations(  # type: ignore[attr-defined]
+            "local", since_ms=0, now_ms=svc._clock() + 1, lifecycle=None, limit=10
+        )
+        assert any(a.tool == "browser_press" for _, a, _, _ in found)

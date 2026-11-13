@@ -12,9 +12,10 @@ It connects itself (`attach`): nothing in the runtime is edited for it.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from trillion import paths
+from trillion.api import taps
 from trillion.browser.quarantine import Quarantine
 from trillion.browser.runtime import BrowserRuntime, Install, playwright_available
 from trillion.browser.service import OWNER, BrowserService
@@ -94,6 +95,8 @@ class Browse(BaseTool):
             audit_key=audit_key(paths.audit_key_path()),
             changed=rt.helpers_changed,
             log=self.log,
+            waits=lambda cid, text, pid, kind: tell_waits(rt, cid, text, pid),
+            settles=lambda cid, pid, status: tell_settled(rt, cid, pid, status),
         )
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
@@ -121,6 +124,13 @@ class Browse(BaseTool):
             if service.current() is None and service.free is None:
                 # Nothing else is waiting: Chromium stops until the next task.
                 await service.runtime.stop()
+        if result.outcome == "declined":
+            # Declined is not a failure, and nothing was found: she says just that.
+            return ToolResult(
+                ok=True,
+                content=f"{result.text} Tell the user just that, in one line.",
+                effect="none",
+            )
         ok = result.outcome in ("answered", "time", "steps")
         return ToolResult(
             ok=ok,
@@ -149,6 +159,38 @@ async def stronger_model(rt: Runtime) -> ModelProvider | None:
         if provider is not None:
             return provider
     return None
+
+
+def _sessions(rt: Any, conversation_id: str) -> list[Any]:
+    return [s for s in list(rt.sessions) if getattr(s, "id", None) == conversation_id]
+
+
+async def tell_waits(rt: Any, conversation_id: str, text: str, pending_id: str | None) -> None:
+    """Her conversation shows what a task waits on: the same card, with its own tap,
+    for a press, and the host's one plain line."""
+    for session in _sessions(rt, conversation_id):
+        if pending_id is not None:
+            await session._send_card(pending_id)
+        await session._send("notice", code="browser", text=text)
+
+
+async def tell_settled(rt: Any, conversation_id: str, pending_id: str, status: str) -> None:
+    """A card answered in her browser's window is settled in her conversation too."""
+    for session in _sessions(rt, conversation_id):
+        await session._send(
+            "confirm.resolved", pending_id=pending_id, status=status, reason=None, detail=None
+        )
+
+
+async def _tap(rt: Any, pending_id: str, decision: Literal["confirm", "cancel"]) -> Any:
+    """A tap in her conversation on a browsing helper's card: settled by the helper."""
+    service = service_of(rt)
+    if service is None or not service.waiting_for(pending_id):
+        return None
+    return await service.tap_pending(pending_id, decision)
+
+
+taps.register(_tap)
 
 
 def service_of(rt: Any) -> BrowserService | None:

@@ -60,8 +60,19 @@ class Goto(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 
 
+def sentence(text: str) -> str:
+    """A reason as the user reads it: a sentence, capital first and a full stop last.
+    The core's reasons are written for the model, in lower case and of "its network"."""
+    text = text.strip().replace("this machine or its network", "this computer or your network")
+    text = text.replace("this computer or its network", "this computer or your network")
+    if not text:
+        return "That didn't work. Try again in a moment."
+    text = text[0].upper() + text[1:]
+    return text if text.endswith((".", "?", "!")) else text + "."
+
+
 def _fail(error: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": error}, status_code=status)
+    return JSONResponse({"error": sentence(error)}, status_code=status)
 
 
 def create_browser_router(rt: Runtime) -> APIRouter:

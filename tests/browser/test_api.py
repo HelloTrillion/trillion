@@ -99,3 +99,45 @@ def test_the_live_picture_needs_the_token(make: Any) -> None:
         # Watching nothing that runs is nothing.
         ws.send_json({"type": "watch", "task": "abcdef0123456789"})
         ws.send_json({"type": "input", "task": "free", "kind": "text", "text": "x"})
+
+
+def test_a_reason_reads_as_a_sentence() -> None:
+    from trillion.api.browser import sentence
+
+    assert sentence("only the standard web ports are opened") == (
+        "Only the standard web ports are opened."
+    )
+    assert sentence("that is on this computer or its network") == (
+        "That is on this computer or your network."
+    )
+    assert sentence("Already a sentence.") == "Already a sentence."
+
+
+def test_a_tap_in_her_conversation_on_a_helpers_card_is_settled_by_the_helper(make: Any) -> None:
+    from trillion.api import taps
+    from trillion.spine.router import RouterResponse
+
+    seen: list[tuple[str, str]] = []
+
+    async def mine(rt: Any, pending_id: str, decision: Any) -> RouterResponse | None:
+        if pending_id != "helper-card":
+            return None
+        seen.append((pending_id, decision))
+        return RouterResponse(status="cancelled", pending_id=pending_id)
+
+    taps.register(mine)
+    try:
+        app = make(model=False)
+        with app.client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_json({"type": "hello", "token": app.rt.token, "protocol": 1, "client": "web"})
+            while ws.receive_json()["type"] != "state":
+                pass
+            ws.send_json({"type": "cancel", "pending_id": "helper-card"})
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "confirm.resolved":
+                    break
+            assert msg["pending_id"] == "helper-card" and msg["status"] == "cancelled"
+        assert seen == [("helper-card", "cancel")]
+    finally:
+        taps.HANDLERS.remove(mine)

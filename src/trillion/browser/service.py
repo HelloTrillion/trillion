@@ -90,7 +90,20 @@ STOPPED_WORDS = {
     ),
 }
 
-Outcome = Literal["answered", "stopped", "steps", "time", "failed", "cancelled"]
+Outcome = Literal["answered", "declined", "stopped", "steps", "time", "failed", "cancelled"]
+# The host's note when the user declined a card: what she says, and all she says.
+DECLINED = "You declined; nothing was sent to {host}."
+# A task waiting on the user, as her conversation is told (the host's words).
+WAITS = {
+    "card": "Before it sends the form to {host}, it needs your OK.",
+    "chip": "Her browsing helper wants to open {host}: it needs your OK.",
+    "signin": "Her browsing helper can use your sign-in for {host}: it needs your OK.",
+    "step": "Her browsing helper needs you on {host}: open her browser to take over.",
+}
+
+# Told when a task waits on the user, and when a card it showed is settled.
+Waits = Callable[[str, str, "str | None", str], Awaitable[None]]
+Settles = Callable[[str, str, str], Awaitable[None]]
 
 PROMPT = """\
 You are a browsing helper. You have a web browser of your own, separate from the
@@ -181,6 +194,8 @@ class BrowserService:
         ask_wait_s: float = ASK_WAIT_S,
         signins: SignIns | None = None,
         log: Any = None,
+        waits: Waits | None = None,
+        settles: Settles | None = None,
     ) -> None:
         self.runtime = runtime
         self.signins = (
@@ -191,6 +206,9 @@ class BrowserService:
         # Her browser opened outside a task, for the user to sign in ahead of time.
         self.free: Task | None = None
         self._signed_here: set[str] = set()
+        # Her conversation, told of what a task waits on, and when a card is settled.
+        self._waits = waits
+        self._settles = settles
         self.quarantine = quarantine
         self._store = store
         self._sink = log_sink
@@ -270,11 +288,52 @@ class BrowserService:
             await task.broker.drop()
         code = "approved" if response.status == "succeeded" else "declined"
         await task.log.event("card", url=str(task.page.url), code=code)
-        action = "Approve" if decision == "confirm" else "Decline"
-        task.answer_ask(
-            task.ask.id, f"The user tapped {action} on the card. Result: {response.to_model()}"
-        )
+        ask = task.ask
+        if decision == "cancel":
+            task.answer_ask(ask.id, "declined")
+        else:
+            action = "Approve" if decision == "confirm" else "Decline"
+            task.answer_ask(
+                ask.id, f"The user tapped {action} on the card. Result: {response.to_model()}"
+            )
+        await self._settled(running, pending_id, response.status)
         return response
+
+    async def tap_pending(
+        self, pending_id: str, decision: Literal["confirm", "cancel"]
+    ) -> RouterResponse | None:
+        """A tap on the same card in her conversation: settled as here."""
+        for running in self.tasks.values():
+            task = running.task
+            if task is not None and task.ask is not None and task.ask.pending_id == pending_id:
+                return await self.tap(running.id, pending_id, decision)
+        return None
+
+    def waiting_for(self, pending_id: str) -> bool:
+        return any(
+            r.task is not None and r.task.ask is not None and r.task.ask.pending_id == pending_id
+            for r in self.tasks.values()
+        )
+
+    async def _settled(self, running: Running, pending_id: str, status: str) -> None:
+        if self._settles is None:
+            return
+        try:
+            await self._settles(running.conversation_id, pending_id, status)
+        except Exception as e:
+            logger.warning("a settled card wasn't told: %s", type(e).__name__)
+
+    async def _told_waits(self, running: Running, task: Task) -> None:
+        ask = task.ask
+        if self._waits is None or ask is None:
+            return
+        host = host_of(ask.url or str(task.page.url)) or "the site"
+        try:
+            await self._waits(
+                running.conversation_id, WAITS[ask.kind].format(host=host), ask.pending_id, ask.kind
+            )
+        except Exception as e:
+            logger.warning("a wait wasn't told: %s", type(e).__name__)
 
     async def take_control(self, task_id: str) -> bool:
         task = self._task(task_id)
@@ -385,7 +444,7 @@ class BrowserService:
         except web.Refused as e:
             return str(e)
         if _private_literal(host_of(url)):
-            return "her browser never opens this computer or its network"
+            return "Her browser never opens this computer or your network."
         try:
             await task.goto(url)
         except Refused as e:
@@ -481,7 +540,7 @@ class BrowserService:
                 running, provider, settings, named, via, site, storage_state, stronger
             )
             running.outcome = last.outcome
-            if last.outcome in ("answered", "stopped", "time", "cancelled"):
+            if last.outcome in ("answered", "declined", "stopped", "time", "cancelled"):
                 return last
             failures += 1
             if stronger:
@@ -563,6 +622,7 @@ class BrowserService:
                 return
             ask = task.raise_ask("signin", f"Use your sign-in for {site}?", f"https://{site}")
             await task.log.event("signin", url=f"https://{site}", code="asked")
+            await self._told_waits(running, task)
             try:
                 answer = await asyncio.wait_for(asyncio.shield(ask.answer), self.ask_wait_s)
             except TimeoutError:
@@ -675,9 +735,15 @@ class BrowserService:
                     await task.log.event("stopped", code=task.broker.stopped)
                 return Outcomes(outcome="stopped", text=STOPPED_WORDS[task.broker.stopped])
             if task.ask is not None:
+                host = host_of(task.ask.url or "") or "the site"
+                await self._told_waits(running, task)
                 note = await self._wait(task)
                 if note is None:
                     return Outcomes(outcome="cancelled", text="The task was stopped.")
+                if note == DECLINED:
+                    # Declined is the end of it: nothing is sent, and nothing more is tried.
+                    await task.log.event("stopped", code="declined")
+                    return Outcomes(outcome="declined", text=DECLINED.format(host=host))
                 history.append(Msg(role="user", blocks=(TextBlock(text=note),)))
                 running.turn += 1
                 continue
@@ -721,6 +787,8 @@ class BrowserService:
         if task.closed or answer in ("cancelled", "superseded"):
             return None if task.closed else "[host] That was replaced; carry on."
         if ask.kind == "card":
+            if answer == "declined":
+                return DECLINED
             if answer == "expired":
                 await task.broker.drop()
                 await task.log.event("card", url=ask.url, code="expired")

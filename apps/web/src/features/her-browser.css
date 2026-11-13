@@ -265,6 +265,12 @@
 }
 .her-browser-pill.needs-you {
   border-color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 14%, var(--color-bg-1));
+  color: var(--color-text-0);
+  font-weight: 600;
+}
+.her-browser-pill.needs-you .her-browser-pill-text {
+  color: var(--color-amber);
 }
 .her-browser-pill-text {
   overflow: hidden;

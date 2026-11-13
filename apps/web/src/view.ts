@@ -840,6 +840,10 @@ function step(view: View, msg: ServerMsg): View {
         const during = view.replyOpen || view.busy;
         return during ? { ...view, held: [...view.held, entry] } : { ...view, entries: [...view.entries, entry] };
       }
+      // Her browsing helper waits on the user: the host's own line (features/her-browser.ts).
+      if (msg['code'] === 'browser' && typeof msg['text'] === 'string') {
+        return { ...view, entries: [...view.entries, { kind: 'notice', text: msg['text'] }] };
+      }
       // A long conversation was summarized for her. Nothing on screen goes away.
       const text =
         msg['code'] === 'compacted'

@@ -109,10 +109,24 @@ export function activeTask(state: BrowserState | null): TaskView | null {
 }
 
 /** What the pill says. */
-export function pillWords(task: TaskView): string {
-  if (task.state === 'needs_you') return task.ask?.text ?? 'Needs you';
+/** What the pill says. `openUrl` is the page the live picture shows, when known. */
+export function pillWords(task: TaskView, openUrl?: string | null): string {
+  if (task.state === 'needs_you') {
+    const what = task.ask?.text ?? '';
+    return what ? `Needs you · ${what.endsWith('?') ? what : `${what}?`}`.replace(/^Needs you · Needs you: /, 'Needs you · ') : 'Needs you';
+  }
   if (task.in_control) return 'You have control';
-  return task.origin ? `Browsing ${task.origin.replace(/^https?:\/\//, '')}` : 'Browsing';
+  const where = hostOf(openUrl ?? null) ?? hostOf(task.url ?? null) ?? hostOf(task.origin ?? null);
+  return where ? `Browsing ${where}` : 'Browsing';
+}
+
+function hostOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
 }
 
 /** A page coordinate for a click on the picture, drawn letterboxed (contain) in `box`. */
@@ -207,9 +221,9 @@ export interface HerBrowser {
 }
 
 /** The task or free browser the pill speaks for, and what it says. */
-export function pillTarget(state: BrowserState | null): { id: string; words: string; needsYou: boolean } | null {
+export function pillTarget(state: BrowserState | null, openUrl?: string | null): { id: string; words: string; needsYou: boolean } | null {
   const task = activeTask(state);
-  if (task) return { id: task.id, words: pillWords(task), needsYou: task.state === 'needs_you' };
+  if (task) return { id: task.id, words: pillWords(task, openUrl), needsYou: task.state === 'needs_you' };
   if (state?.free) return { id: 'free', words: 'Her browser is open', needsYou: false };
   return null;
 }
@@ -233,6 +247,15 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
   let installing = false;
   let poll: ReturnType<typeof setInterval> | null = null;
   let framed = false;
+  // The last picture of each, kept in this page only, so opening the window shows it at
+  // once (a still page sends no new frames). And the page it shows.
+  const lastFrame = new Map<string, string>();
+  const lastUrl = new Map<string, string>();
+  let watching: string | null = null;
+  // Each card's detail, fetched once, and whether it was reported on screen.
+  const cards = new Map<string, Card>();
+  const reported = new Set<string>();
+  let drawing = 0;
 
   // The overlay: a window of its own above everything, in the top layer.
   const overlay = el('dialog', 'her-browser-overlay');
@@ -343,7 +366,8 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     pill.hidden = target === null || isOpen();
     if (!target) return;
     pill.classList.toggle('needs-you', target.needsYou);
-    pillText.textContent = target.words;
+    const words = pillTarget(state, lastUrl.get(target.id))?.words ?? target.words;
+    pillText.textContent = words;
     const where = target.id === 'free' ? state?.free : state?.tasks.find((t) => t.id === target.id);
     thumb.hidden = !framed || !where?.url || !(state?.settings.live ?? true);
   };
@@ -385,10 +409,15 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     waiting.textContent = !t ? 'Nothing is running in her browser now.' : t.url ? 'Waiting for the first picture…' : free ? 'Type an address to open a page.' : 'Starting…';
     waiting.hidden = shown;
     picture.hidden = !shown;
-    ask.replaceChildren();
-    if (t?.ask && !free) await drawAsk(ask, t, t.ask);
-    else if (t && !free && t.in_control) ask.append(el('p', 'her-browser-note', 'She sees nothing and nothing is recorded until you click “I’m done”.'));
-    else if (free && t) ask.append(el('p', 'her-browser-note', 'Sign in to a site, then choose “Keep me signed in here”. Only that site’s sign-in is kept, never your password.'));
+    // Built aside and put in whole, by the newest draw only: a draw that overlaps
+    // another never shows a card twice.
+    const mine = ++drawing;
+    const fresh = el('div');
+    if (t?.ask && !free) await drawAsk(fresh, t, t.ask);
+    else if (t && !free && t.in_control) fresh.append(el('p', 'her-browser-note', 'She sees nothing and nothing is recorded until you click “I’m done”.'));
+    else if (free && t) fresh.append(el('p', 'her-browser-note', 'Sign in to a site, then choose “Keep me signed in here”. Only that site’s sign-in is kept, never your password.'));
+    if (mine !== drawing) return;
+    ask.replaceChildren(...fresh.childNodes);
     status.textContent = message;
   };
 
@@ -413,12 +442,21 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (a.kind === 'card' && a.pending_id) {
       const pid = a.pending_id;
       try {
-        const r = await api('GET', `/api/browser/tasks/${t.id}/card`);
-        if (r.ok) {
-          const card = (await r.json()) as Card;
+        let card = cards.get(pid);
+        if (!card) {
+          const r = await api('GET', `/api/browser/tasks/${t.id}/card`);
+          if (r.ok) {
+            card = (await r.json()) as Card;
+            cards.set(pid, card);
+          }
+        }
+        if (card) {
           into.append(el('pre', 'her-browser-card-detail', card.detail));
-          // On the screen now: only from here can a tap approve it.
-          await api('POST', `/api/browser/tasks/${t.id}/cards/${pid}/shown`, {});
+          if (!reported.has(pid)) {
+            // On the screen now: only from here can a tap approve it.
+            reported.add(pid);
+            await api('POST', `/api/browser/tasks/${t.id}/cards/${pid}/shown`, {});
+          }
         }
       } catch {
         into.append(el('p', 'her-browser-note', 'The card couldn’t be shown. Decline it, or try again.'));
@@ -443,10 +481,14 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (sectionHost.open) drawSection();
   };
 
-  const onFrame = (f: { data: string; width: number; height: number }): void => {
+  const onFrame = (f: { data: string; width: number; height: number; url: string | null }): void => {
     page = { width: f.width, height: f.height };
     const src = `data:image/jpeg;base64,${f.data}`;
     framed = true;
+    if (watching) {
+      lastFrame.set(watching, src);
+      if (f.url) lastUrl.set(watching, f.url);
+    }
     if (isOpen()) {
       picture.src = src;
       const shown = Boolean(target()?.url);
@@ -494,11 +536,15 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (target && !watch) watch = connect(onFrame);
     if (watch) {
       const want = viewing ?? (state?.settings.live ? target?.id : null) ?? null;
-      if (want) watch.watch(want);
+      if (want && want !== watching) {
+        watching = want;
+        watch.watch(want);
+      }
     }
     if (!target && !viewing && watch) {
       watch.close();
       watch = null;
+      watching = null;
       framed = false;
       thumb.removeAttribute('src');
     }
@@ -600,9 +646,14 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
   const view = async (task?: string): Promise<void> => {
     await load();
     viewing = task ?? pillTarget(state)?.id ?? null;
-    framed = false;
+    const kept = viewing ? lastFrame.get(viewing) : undefined;
+    framed = kept !== undefined;
+    if (kept) picture.src = kept;
     if (!watch) watch = connect(onFrame);
-    if (viewing) watch.watch(viewing);
+    if (viewing) {
+      watching = viewing;
+      watch.watch(viewing);
+    }
     if (!isOpen()) {
       if (typeof (overlay as HTMLDialogElement).showModal === 'function') (overlay as HTMLDialogElement).showModal();
       else overlay.setAttribute('open', '');
@@ -620,9 +671,12 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
   return {
     overlay,
     async section() {
-      await load();
+      // Shown at once, then filled in: never shown late, after the user moved on to
+      // another section, which left the tab bar and the body disagreeing.
       drawSection();
       if (!sectionHost.open) sectionHost.showModal();
+      await load();
+      if (sectionHost.open) drawSection();
     },
     view,
     async refresh() {

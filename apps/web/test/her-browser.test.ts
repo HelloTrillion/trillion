@@ -58,8 +58,11 @@ describe('her browser: the small rules', () => {
       ],
     });
     expect(activeTask(s)?.id).toBe('b');
-    expect(pillWords(activeTask(s)!)).toBe('Open example.org?');
+    expect(pillWords(activeTask(s)!)).toBe('Needs you · Open example.org?');
     expect(pillWords(s.tasks[0]!)).toBe('Browsing example.com');
+    // The page the picture shows, not where the task began.
+    expect(pillWords(s.tasks[0]!, 'https://www.bing.com/search?q=x')).toBe('Browsing www.bing.com');
+    expect(pillWords({ id: 'c', state: 'needs_you', mode: 'act', ask: { kind: 'card', id: 'k', text: 'Send to httpbin.org', origin: null, pending_id: 'p' } })).toBe('Needs you · Send to httpbin.org?');
     expect(activeTask(state())).toBeNull();
   });
 
@@ -191,5 +194,34 @@ describe('the overlay', () => {
     b.overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(b.overlay.hasAttribute('open')).toBe(false);
     expect(calls.some((c) => c.includes('/stop'))).toBe(false);
+  });
+});
+
+describe('a card in the window', () => {
+  it('is drawn once, however many draws overlap, and is reported on screen once', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    const calls: string[] = [];
+    const task = {
+      id: 'abcdef0123456789',
+      state: 'needs_you' as const,
+      mode: 'act' as const,
+      url: 'https://httpbin.org/forms/post',
+      ask: { kind: 'card' as const, id: 'k', text: 'Send to httpbin.org', origin: 'https://httpbin.org', pending_id: 'p9' },
+    };
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      if (path.endsWith('/card')) {
+        await flush();
+        return json({ summary: 'Send to httpbin.org', detail: 'POST https://httpbin.org/post\n  custname: Kim', expires_at: 0 });
+      }
+      return json(state({ tasks: [task] }));
+    };
+    const b = createHerBrowser(host(), api, document.body);
+    await Promise.all([b.view(task.id), b.view(task.id), b.refresh()]);
+    await flush();
+    const approve = [...b.overlay.querySelectorAll('button')].filter((x) => x.textContent === 'Approve and send');
+    expect(approve).toHaveLength(1);
+    expect(b.overlay.querySelectorAll('pre')).toHaveLength(1);
+    expect(calls.filter((c) => c.endsWith('/cards/p9/shown'))).toHaveLength(1);
   });
 });

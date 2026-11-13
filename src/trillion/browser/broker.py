@@ -605,10 +605,19 @@ def card_for(held: list[Held]) -> Card:
         raise Refused("sends", "nothing was about to be sent")
     blocks: list[str] = []
     hosts: list[str] = []
+    # The same request twice (a double submit) is shown once, saying so.
+    times: dict[str, int] = {}
+    unique: list[Held] = []
     for h in held:
+        k = h.key()
+        if k not in times:
+            unique.append(h)
+        times[k] = times.get(k, 0) + 1
+    for h in unique:
         url = shown_url(h.url)
         hosts.append(host_of(h.url))
-        lines = [f"{h.method} {url}"]
+        again = times[h.key()]
+        lines = [f"{h.method} {url}" + (f"  ({again} identical requests)" if again > 1 else "")]
         found = fields_of(h)
         if isinstance(found, str):
             lines.append("  body:")
@@ -626,7 +635,7 @@ def card_for(held: list[Held]) -> Card:
     distinct = list(dict.fromkeys(hosts))
     where = distinct[0] if len(distinct) == 1 else ", ".join(distinct)
     international = any("xn--" in host for host in distinct)
-    verb = "Open" if all(h.method == "GET" for h in held) else "Send to"
+    verb = "Open" if all(h.method == "GET" for h in unique) else "Send to"
     headline = f"{verb} {where}" + (
         " (an international name: check it is the site you mean)" if international else ""
     )
