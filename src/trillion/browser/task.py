@@ -102,7 +102,7 @@ class Task:
         self.ask: Ask | None = None
         self.steps = 0
         self.answer: str | None = None
-        self.in_control = False
+        self._in_control = False
         self.downloads: list[Kept] = []
         self.pressing: tuple[str, str] | None = None
         self.last_snapshot: Snapshot | None = None
@@ -163,6 +163,29 @@ class Task:
     def _closed_page(self, page: Any) -> None:
         with contextlib.suppress(ValueError):
             self._pages.remove(page)
+
+    @property
+    def in_control(self) -> bool:
+        """The user has the browser: the model is shown nothing and acts on nothing."""
+        return self._in_control
+
+    @in_control.setter
+    def in_control(self, value: bool) -> None:
+        self._in_control = value
+        self.broker.user = value
+
+    async def reopen(self, *, site: str, storage_state: Mapping[str, Any]) -> None:
+        """Start again in a fresh context that has the saved sign-in it was allowed, and
+        stay on its site."""
+        if self._context is not None:
+            with contextlib.suppress(Exception):
+                await self._context.close()
+        if self._egress is not None:
+            await self._egress.close()
+        self._pages.clear()
+        self.site, self.storage_state = site, storage_state
+        self.broker.site = site
+        await self.open()
 
     @property
     def page(self) -> Any:

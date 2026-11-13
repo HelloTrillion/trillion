@@ -85,6 +85,15 @@ def _handler(seen: Seen) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Location", "http://127.0.0.1/admin")
                 self.end_headers()
                 return
+            if path == "/signed-in":
+                body = b"<html><title>Signed in</title><body>Welcome back</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Set-Cookie", "session=yes; Path=/; HttpOnly")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path == "/file.bin":
                 body = b"#!/bin/sh\necho hello\n"
                 self.send_response(200)

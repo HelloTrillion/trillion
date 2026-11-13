@@ -93,6 +93,7 @@ class Browse(BaseTool):
             stronger=lambda: stronger_model(rt),
             audit_key=audit_key(paths.audit_key_path()),
             changed=rt.helpers_changed,
+            log=self.log,
         )
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
@@ -117,7 +118,7 @@ class Browse(BaseTool):
                 via=ctx.via,
             )
         finally:
-            if service.current() is None:
+            if service.current() is None and service.free is None:
                 # Nothing else is waiting: Chromium stops until the next task.
                 await service.runtime.stop()
         ok = result.outcome in ("answered", "time", "steps")

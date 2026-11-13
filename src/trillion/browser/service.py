@@ -33,19 +33,30 @@ import logging
 import secrets
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from trillion.brain.loop import LoopEvent, ToolEnded, run_turn
-from trillion.brain.types import ModelProvider, Msg, SystemBlock, TextBlock
-from trillion.browser.broker import Mode
+from trillion.brain.types import (
+    Done,
+    ModelEvent,
+    ModelProvider,
+    Msg,
+    SystemBlock,
+    TextBlock,
+    TextDelta,
+    Usage,
+)
+from trillion.browser.broker import Mode, host_of
 from trillion.browser.log import Sink, TaskLog
 from trillion.browser.quarantine import Quarantine
 from trillion.browser.runtime import BrowserRuntime
 from trillion.browser.settings import BrowserSettings
+from trillion.browser.signins import SignIns, site_of
 from trillion.browser.task import STEP_LIMIT, TIME_LIMIT_S, Task
 from trillion.browser.tools import PRESS, offered, task_registry
+from trillion.browser.view import Screencast, Send
 from trillion.spine.confirm import EXPIRY_MS
 from trillion.spine.contract import ToolContext, Via
 from trillion.spine.deny_floor import DenyPolicy
@@ -119,6 +130,8 @@ class Running:
     started_ms: int = 0
     outcome: Outcome | None = None
     attempt: int = 0
+    # The saved sign-in this task was allowed: None until asked, "" for none.
+    signin: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -152,8 +165,18 @@ class BrowserService:
         step_limit: int = STEP_LIMIT,
         time_limit_s: float = TIME_LIMIT_S,
         ask_wait_s: float = ASK_WAIT_S,
+        signins: SignIns | None = None,
+        log: Any = None,
     ) -> None:
         self.runtime = runtime
+        self.signins = (
+            signins if signins is not None else SignIns(quarantine.root.parent / "signins")
+        )
+        # The task log, for the app to read (`SqliteBrowserLog`).
+        self.log = log
+        # Her browser opened outside a task, for the user to sign in ahead of time.
+        self.free: Task | None = None
+        self._signed_here: set[str] = set()
         self.quarantine = quarantine
         self._store = store
         self._sink = log_sink
@@ -255,7 +278,12 @@ class BrowserService:
             return False
         task.in_control = False
         await task.log.event("control", url=str(task.page.url), code="returned")
-        if task.ask is not None and task.ask.kind == "step":
+        stepped = task.ask is not None and task.ask.kind == "step"
+        if stepped or task_id in self._signed_here:
+            # The user may have signed in here: the task stays on this site from now
+            # on, as a task on a saved sign-in does (decision 11a).
+            task.broker.lock_to(str(task.page.url))
+        if task.ask is not None and stepped:
             task.answer_ask(task.ask.id, "done")
         task.changed()
         return True
@@ -269,6 +297,98 @@ class BrowserService:
             await running.task.log.event("stopped", code="cancelled")
             await running.task.close()
         return True
+
+    def target(self, task_id: str) -> Task | None:
+        """What the view watches: a running task, or her browser outside a task."""
+        if task_id == "free":
+            return self.free if self.free is not None and not self.free.closed else None
+        return self._task(task_id)
+
+    async def watch(self, target: Task, send: Send) -> Screencast:
+        cast = Screencast(target, send)
+        await cast.start()
+        return cast
+
+    async def card(self, task_id: str) -> dict[str, Any] | None:
+        """The card a task waits on, for the view to show whole (SPN-2a)."""
+        task = self._task(task_id)
+        if task is None or task.ask is None or task.ask.kind != "card" or not task.ask.pending_id:
+            return None
+        card = await self._store.get_pending(task.ask.pending_id)
+        if card is None:
+            return None
+        return {"summary": card.summary, "detail": card.detail, "expires_at": card.expires_at}
+
+    async def keep_signin(self, task_id: str) -> str | None:
+        """ "Keep me signed in here": the site the user has open keeps its cookies in her
+        browser's own folder. Only while the user has the browser; never a password."""
+        target = self.target(task_id)
+        if target is None or not target.in_control:
+            return None
+        site = site_of(host_of(str(target.page.url)))
+        if site is None:
+            return None
+        state = await target.context.storage_state()
+        self.signins.keep(site, state)
+        await target.log.event("signin", url=f"https://{site}", code="allowed")
+        if task_id != "free":
+            self._signed_here.add(task_id)
+        self._changed()
+        return site
+
+    async def open_free(self) -> Task:
+        if self.free is not None and not self.free.closed:
+            return self.free
+        task_id = secrets.token_hex(8)
+        task = Task(
+            runtime=self.runtime,
+            log=TaskLog(self._sink, OWNER, task_id, self._clock),
+            quarantine=self.quarantine,
+            request="",
+            mode="research",
+            named_hosts=frozenset(),
+            clock=self._clock,
+            task_id=task_id,
+            changed=self._changed,
+        )
+        await task.open()
+        task.in_control = True
+        task.state = "working"
+        self.free = task
+        self._changed()
+        return task
+
+    async def goto_free(self, url: str) -> str | None:
+        """The user typed an address in her browser: why it can't open, or None."""
+        from trillion.browser.broker import Refused, _private_literal
+        from trillion.tools import web
+
+        task = self.target("free")
+        if task is None:
+            return "her browser isn't open"
+        try:
+            url = web.normalize(url)
+        except web.Refused as e:
+            return str(e)
+        if _private_literal(host_of(url)):
+            return "her browser never opens this computer or its network"
+        try:
+            await task.goto(url)
+        except Refused as e:
+            return str(e)
+        return None
+
+    async def close_free(self) -> None:
+        free, self.free = self.free, None
+        if free is not None:
+            await free.close()
+        if self.current() is None:
+            await self.runtime.stop()
+        self._changed()
+
+    def free_json(self) -> dict[str, Any] | None:
+        free = self.target("free")
+        return free.to_json() if free is not None else None
 
     # ── Running a task ──────────────────────────────────────────────────────
 
@@ -406,12 +526,38 @@ class BrowserService:
             await task.open()
             task.state = "working"
             self._changed()
+            await self._use_signin(running, task, named, attended)
             return await self._work(running, task, router, offered(registry), provider, via)
         except Exception as e:
             logger.warning("browsing task failed: %s", type(e).__name__)
             return Outcomes(outcome="failed", text="Her browser couldn't finish the task.")
         finally:
             await task.close()
+
+    async def _use_signin(
+        self, running: Running, task: Task, named: frozenset[str], attended: bool
+    ) -> None:
+        """A saved sign-in, only for a site the user's request named, only after their
+        chip, and then the task stays on that site (decision 11a)."""
+        if task.site is not None:
+            return
+        if running.signin is None:
+            site = self.signins.named(named)
+            if site is None or not attended:
+                running.signin = ""
+                return
+            ask = task.raise_ask("signin", f"Use your sign-in for {site}?", f"https://{site}")
+            await task.log.event("signin", url=f"https://{site}", code="asked")
+            try:
+                answer = await asyncio.wait_for(asyncio.shield(ask.answer), self.ask_wait_s)
+            except TimeoutError:
+                answer = "expired"
+            task.clear_ask()
+            running.signin = site if answer == "allowed" else ""
+        if running.signin:
+            state = self.signins.load(running.signin)
+            if state is not None:
+                await task.reopen(site=running.signin, storage_state=state)
 
     def _ctx(self, running: Running, task: Task, *, via: Via, turn: int) -> ToolContext:
         return ToolContext(
@@ -489,7 +635,7 @@ class BrowserService:
             try:
                 done = await asyncio.wait_for(
                     run_turn(
-                        provider=provider,
+                        provider=_Paused(provider, task),
                         router=router,
                         registry=tools,
                         system=system,
@@ -597,8 +743,6 @@ class BrowserService:
         ) + "In a few plain sentences, say what you found so far, with the addresses."
         msgs = [*history, Msg(role="user", blocks=(TextBlock(text=note),))]
         text: list[str] = []
-        from trillion.brain.types import TextDelta
-
         with contextlib.suppress(Exception):
             async with asyncio.timeout(FINAL_S):
                 async for ev in provider.stream(
@@ -609,6 +753,28 @@ class BrowserService:
         found = "".join(text).strip()
         lead = "Her browser ran out of time." if why == "time" else "Her browser ran out of steps."
         return Outcomes(outcome=why, text=f"{lead} {found}".strip())
+
+
+class _Paused:
+    """The helper's model, which says nothing more once the task waits on the user: the
+    turn ends there, however small the model, and the wait begins at once."""
+
+    def __init__(self, inner: ModelProvider, task: Task) -> None:
+        self._inner = inner
+        self._task = task
+        self.name = inner.name
+        self.model = inner.model
+
+    def pricing(self) -> Any:
+        return self._inner.pricing()
+
+    async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
+        if self._task.ask is not None:
+            yield TextDelta(text="Waiting for the user.")
+            yield Done(stop_reason="end", usage=Usage())
+            return
+        async for ev in self._inner.stream(**kw):
+            yield ev
 
 
 def _last_text(history: list[Msg]) -> str:

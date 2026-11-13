@@ -131,6 +131,8 @@ async def test_her_browse_result_reaches_her_wrapped_as_untrusted(tmp_path, monk
     browse = Browse()
 
     class Fake:
+        free = None
+
         def current(self) -> None:
             return None
 
@@ -235,9 +237,7 @@ async def test_one_task_at_a_time_and_the_second_waits(browser_rt, tmp_path, fix
 async def test_a_chip_waits_for_the_users_answer_and_only_theirs(browser_rt, tmp_path, fixtures):
     model = Steps(
         call("browser_open", url="http://other.test/two.html"),
-        # Trying to finish while the chip waits is refused, and the turn ends.
-        call("browser_done", answer="Gave up."),
-        say("Waiting for the user."),
+        # The turn ends there, by itself: the next call is after the user's answer.
         call("browser_open", url="http://other.test/two.html"),
         call("browser_done", answer="It says 42."),
         say(""),

@@ -224,6 +224,9 @@ class Broker:
         self.stopped: Stop | None = None
         self.held: list[Held] = []
         self.typed_on_page = False
+        # The user has the browser (their step, or her browser opened outside a task):
+        # what they send is theirs. Only the proxy's rules, and no uploads, still hold.
+        self.user = False
         self._window: _Window | None = None
         self._held_changed = asyncio.Event()
         # Refusals of a page's own background sends, told once per origin.
@@ -269,6 +272,13 @@ class Broker:
             with contextlib.suppress(web.Refused):
                 self.links.add(web.key(web.normalize(u)))
 
+    def lock_to(self, url: str) -> None:
+        """From now on, this task stays on the site of `url` (after the user signed in
+        on it during the task, as a saved sign-in's task does)."""
+        host = host_of(url)
+        if self.site is None and host:
+            self.site = host.removeprefix("www.")
+
     def reached_page(self, url: str) -> None:
         origin = origin_of(url)
         if origin is not None:
@@ -293,6 +303,9 @@ class Broker:
         if _uploads(req.headers.get("content-type", ""), body):
             await self._abort(route)
             self._tell_once("refused", url, "upload")
+            return
+        if self.user and window is None:
+            await route.continue_()
             return
         if window is not None and window.kind == "press" and (method != "GET" or main_nav):
             self.held.append(
