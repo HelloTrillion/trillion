@@ -312,6 +312,7 @@ NOT_PROVIDERS = {
     ("spine/deny_floor.py", "os"): "a file descriptor",
     ("tools/beneath.py", "os"): "a file descriptor",
     ("secrets/fallback.py", "os"): "a file descriptor",
+    ("browser/runtime.py", "path"): "a file being hashed",
 }
 NAMES = frozenset({"stream", "synthesize", "open"})
 

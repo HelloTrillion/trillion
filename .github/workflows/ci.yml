@@ -87,7 +87,7 @@ jobs:
       - run: uv run mypy
       # Every directory under tests/ but tests/spine, which the Spine job runs.
       - name: Every test directory but the spine's
-        run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills tests/delivery tests/scheduler tests/storage tests/workspace tests/spend tests/helpers tests/tools tests/evals tests/importers tests/mind
+        run: uv run pytest tests/unit tests/integration tests/brain tests/api tests/voice tests/memory tests/mcp tests/skills tests/delivery tests/scheduler tests/storage tests/workspace tests/spend tests/helpers tests/tools tests/evals tests/importers tests/mind tests/browser
       # On macOS the spine suite runs here, not in a job of its own: one Mac runner
       # instead of two (they are scarce, and a job that waits too long is cancelled).
       - name: tests/unit + tests/spine (95% branch coverage on trillion.spine)
@@ -111,6 +111,33 @@ jobs:
       - run: uv sync --locked
       - name: tests/unit + tests/spine (95% branch coverage on trillion.spine)
         run: uv run pytest tests/unit tests/spine --cov=trillion.spine --cov-branch --cov-report=term-missing --cov-fail-under=95
+
+  browser:
+    # Her browser (CMP-1 to CMP-9): the broker, the quarantine helper and the injection
+    # fixtures, in the pinned headless Chromium, against fixture pages on loopback. The
+    # Python job runs tests/browser too, without Chromium, so these skip there.
+    name: Her browser (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TRILLION_TEST_BROWSER: ${{ runner.temp }}/trillion-browser
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra browser
+      # Chromium's own sandbox stays on (decision 3). Ubuntu 24.04 keeps the user
+      # namespaces it needs from unprivileged programs; this lets them be used here.
+      - name: Let Chromium's sandbox start
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: The pinned Chromium, where Trillion would fetch it, and its system libraries
+        run: |
+          PLAYWRIGHT_BROWSERS_PATH="$TRILLION_TEST_BROWSER/chromium" \
+            uv run playwright install --with-deps --only-shell chromium
+      - name: tests/browser in Chromium
+        run: uv run pytest tests/browser -rs
 
   structure:
     name: Structural rules
