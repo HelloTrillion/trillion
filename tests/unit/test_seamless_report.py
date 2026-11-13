@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -85,16 +86,34 @@ def test_a_first_run_still_waiting_for_her_reply() -> None:
     assert "to her first reply: not yet: she hasn't replied" in out
 
 
-def _no_network(*_: object, **__: object) -> None:
-    raise AssertionError("doctor --seamless must not use the network")
+# This machine. On Windows an event loop wakes itself through a socket pair, which it
+# makes by connecting to itself: that never leaves the machine, so it is allowed.
+LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def test_the_command_reads_this_computer_offline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(socket, "create_connection", _no_network)
-    monkeypatch.setattr(socket.socket, "connect", _no_network)
+    left: list[str] = []
+    real_lookup, real_connect = socket.getaddrinfo, socket.socket.connect
+
+    def lookup(host: Any, *args: Any, **kw: Any) -> Any:
+        name = host.decode() if isinstance(host, bytes) else str(host)
+        if name not in LOOPBACK:
+            left.append(name)
+            raise socket.gaierror(socket.EAI_NONAME, "the network is off")
+        return real_lookup(host, *args, **kw)
+
+    def dial(sock: socket.socket, address: Any) -> Any:
+        host = address[0] if isinstance(address, tuple) else str(address)
+        if sock.family in (socket.AF_INET, socket.AF_INET6) and host not in LOOPBACK:
+            left.append(str(host))
+            raise OSError("the network is off")
+        return real_connect(sock, address)
+
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    monkeypatch.setattr(socket.socket, "connect", dial)
     # Nothing at all yet: no database.
     assert main(["doctor", "--seamless"]) == 0
     assert capsys.readouterr().out.count("not recorded") == 5
@@ -113,3 +132,5 @@ def test_the_command_reads_this_computer_offline(
     out = capsys.readouterr().out
     assert "Questions before her first reply: 1 (a model was available)" in out
     assert "Seconds from opening the app to her first reply: 8 (a model was available)" in out
+    # Nothing tried to leave this machine.
+    assert left == []

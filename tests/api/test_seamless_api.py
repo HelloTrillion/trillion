@@ -12,14 +12,25 @@ import pytest
 
 from tests.api.test_server import App, home, make, only, propose  # noqa: F401
 from tests.brain.fakes import say, use
-from trillion.api import trace
+from trillion.api import seamless, trace
 from trillion.api.trace import Trace
 
 PATH = "/api/seamless"
 ASKED = "/api/seamless/asked"
+# A real moment, 2027: a time near 1970 is not one a clock gives, and Windows refuses
+# to turn one into a local date.
+NOW = 1_800_000_000_000
+
+
+def settle(app: App) -> None:
+    """Recording goes on beside a turn: wait for it before reading what was kept."""
+    portal = app.client.portal
+    assert portal is not None
+    portal.call(seamless.settle)
 
 
 def get(app: App) -> dict[str, Any]:
+    settle(app)
     r = app.client.get(PATH, headers=app.auth)
     assert r.status_code == 200, r.text
     body: dict[str, Any] = r.json()
@@ -51,7 +62,7 @@ def test_with_nothing_recorded_it_says_so(make: Any) -> None:
 
 def test_the_first_run_is_timed_from_opening_to_her_first_reply(make: Any) -> None:
     app: App = make(say("Hello."), say("Again."))
-    now = [1_000_000]
+    now = [NOW]
     app.rt.clock = lambda: now[0]
     with app.connect() as chat:
         # No persona yet, so onboarding is due: opening the page begins the first run.
@@ -59,15 +70,16 @@ def test_the_first_run_is_timed_from_opening_to_her_first_reply(make: Any) -> No
         # The page reports two onboarding steps that asked something.
         assert app.client.post(ASKED, json={}, headers=app.auth).status_code == 204
         assert app.client.post(ASKED, json={}, headers=app.auth).status_code == 204
-        now[0] = 1_025_000
+        now[0] = NOW + 25_000
         chat.say("hi")
-        now[0] = 1_090_000
+        now[0] = NOW + 90_000
         chat.say("and again")
         # Asked after her first reply: not a question before it.
         assert app.client.post(ASKED, json={}, headers=app.auth).status_code == 204
+    settle(app)
     assert app.rows(
         "SELECT opened_at, model_ready, questions, first_reply_at FROM seamless_first_run"
-    ) == [(1_000_000, 1, 2, 1_025_000)]
+    ) == [(NOW, 1, 2, NOW + 25_000)]
     first = get(app)["first_run"]
     assert first["questions"] == 2 and first["model_ready"] is True and first["seconds"] == 25.0
 
@@ -76,6 +88,7 @@ def test_with_no_model_the_first_run_says_none_was_ready(make: Any) -> None:
     app: App = make(model=False)
     with app.connect():
         pass
+    settle(app)
     assert app.rows("SELECT model_ready, first_reply_at FROM seamless_first_run") == [(0, None)]
 
 
@@ -108,6 +121,7 @@ def test_a_slow_tool_turn_is_kept_as_numbers_and_never_as_words(
     ]
     with app.connect() as chat:
         chat.say("Bartholomew here: what does pineapple.txt say?")
+    settle(app)
     rows = app.rows("SELECT * FROM seamless_tool_turns")
     ((_, owner, at, voiced, in_time),) = rows
     # Her voice was off: kept, but not one of the turns the figure counts.
@@ -128,6 +142,7 @@ def test_a_quick_tool_turn_is_not_kept(make: Any) -> None:
     app.provider._replies += [use("file_read", {"path": str(target)}), say("It says hi.")]
     with app.connect() as chat:
         chat.say("read it")
+    settle(app)
     assert app.rows("SELECT count(*) FROM seamless_tool_turns") == [(0,)]
 
 
@@ -144,6 +159,7 @@ def test_a_failure_to_record_never_fails_the_turn(make: Any) -> None:
     with app.connect() as chat:
         msgs = chat.say("hello")
     assert only(msgs, "turn.complete")["stop"] == "end"
+    settle(app)
     assert app.client.post(ASKED, json={}, headers=app.auth).status_code == 204
 
 

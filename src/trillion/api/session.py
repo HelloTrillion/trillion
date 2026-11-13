@@ -942,7 +942,7 @@ class Session:
         )
         if rt.onboarding() == "due":
             # The first run begins (the Seamless measures): numbers and times only.
-            await seamless.opened(rt)
+            seamless.opened(rt)
         rt.sessions.add(session)
         rt.by_conversation[session.id] = session
         # Nothing is built while no page is open: this one's opening sets it going again.
@@ -3170,7 +3170,7 @@ class Session:
             rt.observe.publish("turn", conversation_id=self.id)
             if done.stop == "end" and reply_id is not None:
                 # A reply of hers reached the page: the first run's end, if it waits.
-                await seamless.replied(rt)
+                seamless.replied(rt)
             # A provider this turn took to its warning is said once, through the door.
             await self._spend_warn()
         except asyncio.CancelledError:
@@ -3573,7 +3573,7 @@ class Session:
         )
         self._timed += 1
         # A tool over two seconds: whether she was heard before two seconds into it.
-        await seamless.tool_turn(rt, trace, voiced=voiced)
+        seamless.tool_turn(rt, trace, voiced=voiced)
         try:
             trace.row_id = await rt.conversations.record_timing(OWNER, row, rt.clock())
             if not had_played and "played" in trace.marks:

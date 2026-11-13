@@ -11,7 +11,8 @@ What is recorded, and from where:
   decision record (SPN-17), which already logs every card and its answer.
 
 Numbers and times only, and nothing leaves the machine (ONB-6). Recording never fails a
-turn: a failure is logged at debug, by its class name only.
+turn, and a turn never waits on it: each write goes on beside the turn, and a failure
+is logged at debug, by its class name only.
 
 `GET /api/seamless` reads them, behind the session token like every /api/ route
 (SPN-11), for the one line in Settings → Confirmations. `POST /api/seamless/asked` is
@@ -20,7 +21,9 @@ the page saying an onboarding step asked something; it carries nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable
 from typing import Any
 
 from fastapi import APIRouter
@@ -30,39 +33,56 @@ from trillion.api.trace import Trace
 
 logger = logging.getLogger(__name__)
 
+# The writes on their way. A turn never waits on one: the moment is taken when it
+# happens, and the write goes on beside the turn, so recording adds no pause to it and
+# changes nothing about what the turn does or in what order.
+_writing: set[asyncio.Task[None]] = set()
 
-async def opened(rt: Runtime) -> None:
+
+def _beside(what: str, write: Awaitable[None]) -> None:
+    async def run() -> None:
+        try:
+            await write
+        except Exception as e:
+            logger.debug("%s not recorded: %s", what, type(e).__name__)
+
+    task = asyncio.get_running_loop().create_task(run())
+    _writing.add(task)
+    task.add_done_callback(_writing.discard)
+
+
+async def settle() -> None:
+    """Wait for the writes on their way (tests, and anything that reads straight after)."""
+    while _writing:
+        await asyncio.gather(*list(_writing), return_exceptions=True)
+
+
+def opened(rt: Runtime) -> None:
     """A page opened while onboarding is due: the first run begins, once."""
     store = rt.measures
     if store is None:
         return
-    try:
-        await store.opened(OWNER, at=rt.clock(), model_ready=rt.provider is not None)
-    except Exception as e:
-        logger.debug("first run not recorded: %s", type(e).__name__)
+    _beside("first run", store.opened(OWNER, at=rt.clock(), model_ready=rt.provider is not None))
 
 
-async def replied(rt: Runtime) -> None:
+def replied(rt: Runtime) -> None:
     """A reply of hers reached the page."""
     store = rt.measures
     if store is None:
         return
-    try:
-        await store.replied(OWNER, at=rt.clock())
-    except Exception as e:
-        logger.debug("first reply not recorded: %s", type(e).__name__)
+    _beside("first reply", store.replied(OWNER, at=rt.clock()))
 
 
-async def tool_turn(rt: Runtime, trace: Trace, *, voiced: bool) -> None:
+def tool_turn(rt: Runtime, trace: Trace, *, voiced: bool) -> None:
     """A turn is over: if a tool in it ran over two seconds, whether she was heard in time."""
     store = rt.measures
     in_time = trace.spoke_in_time()
     if store is None or in_time is None:
         return
-    try:
-        await store.tool_turn(OWNER, at=rt.clock(), voiced=voiced, spoke_in_time=in_time)
-    except Exception as e:
-        logger.debug("tool turn not recorded: %s", type(e).__name__)
+    _beside(
+        "tool turn",
+        store.tool_turn(OWNER, at=rt.clock(), voiced=voiced, spoke_in_time=in_time),
+    )
 
 
 def create_seamless_router(rt: Runtime) -> APIRouter:
