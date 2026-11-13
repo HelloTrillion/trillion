@@ -694,6 +694,37 @@ def check_meaning(models_dir: Path) -> Check:
     return Check(name=name, status="ok", detail=f"on: {meaning.PACK.id}")
 
 
+def check_browser(raw: Any, home: Path) -> Check:
+    """Her browser (the her browser spec): installed and its version, act mode, and
+    how many sites it is signed in to. Looks at files only; starts nothing."""
+    from trillion.browser.runtime import Install, playwright_available
+    from trillion.browser.settings import BrowserSettings
+    from trillion.browser.signins import SignIns
+
+    name = "Her browser"
+    if not playwright_available():
+        return Check(
+            name=name,
+            status="info",
+            detail="off: not included in this install",
+            fix="Install trillion[browser], then set it up in Settings → Her browser",
+        )
+    install = Install(home / "browser")
+    state = install.state()
+    if state is None:
+        return Check(
+            name=name,
+            status="info",
+            detail="off: not set up",
+            fix="Settings → Her browser → Get her a browser of her own",
+        )
+    settings = BrowserSettings.from_json(raw)
+    sites = len(SignIns(install.base / "signins").sites())
+    act = "act mode on" if settings.act else "act mode off"
+    signed = f"signed in to {sites} site{'s' if sites != 1 else ''}"
+    return Check(name=name, status="ok", detail=f"Chromium {state.version}, {act}, {signed}")
+
+
 # ── Every saved credential (SEC-9) ───────────────────────────────────────
 
 
@@ -978,6 +1009,7 @@ async def examine(
         check_introduction(paths.persona_dir()),
         check_memory(paths.memory_dir()),
         check_meaning(paths.models_dir()),
+        check_browser(prefs.get("browser"), paths.home()),
         *check_mcp(paths.mcp_config_path(), secrets),
         check_skills(paths.skills_config_path()),
         check_voice(paths.voiceprint_path()),

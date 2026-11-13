@@ -156,3 +156,25 @@ All free and local, and run in CI. A headless Chromium runs against fixture page
 - Screenshots to a vision model, local GUI models, recorded routines replayed without a model, and a full planner/reader split: phase 4.
 - Purchases, uploads, and passwords filled by the agent.
 - Driving the user's own browser. That isn't planned at all.
+
+## As built
+
+Built on `browser/phase-1` in four stages. Every decision above holds; where the code showed a better way, it is tighter, never looser:
+
+- **The private-address rule is enforced by a proxy, not by request routing** (decision 9). Playwright's routing never sees a redirect's next hop, so a public page redirecting to `127.0.0.1` would have passed a check made there. Each task gets its own proxy on loopback (`browser/proxy.py`), which every Chromium connection goes through (`<-loopback>` takes away Chromium's own bypass, and WebRTC can't go around it). It applies `web_fetch`'s own check, moved into one shared function (`web.public_addresses`), after DNS, and connects to the address it checked. It asks for a password made fresh for each task, so nothing else on the computer can use it. The site limit for a saved sign-in is enforced there too, so a redirect or an image can't leave the site either.
+- **A press holds what it sends** (decision 8). The control is pressed with the broker holding every request it makes inside Chromium; the card is written from those held requests, the fingerprint is their hash, and on the tap exactly those requests are let go. Declined, expired or changed: they are refused. A form with a password, code or card field filled in is never sent by her: it is the user's step.
+- **Search is its own read tool, `browser_search`**, on the engine chosen in Settings, with the query in the log (decision 9 asked for one engine and a logged query; the table had no tool for it).
+- **The model is offered only the browser tools**, not even the spine's confirm and cancel tools, which every registry carries; they couldn't approve a press anyway (a press is never recoverable, so only a tap approves it).
+- **The log is never deleted from** (SPN-9): at 30 days a row's origin and detail are cleared, which the database allows only then, and reads show only the last 30 days.
+- **Checkouts stop the task** with "this needs you", and no step is offered for a payment: a purchase never runs from her browser in phase 1.
+- **WebSockets are refused** in phase 1, like uploads: a page could otherwise send what was typed without a request the broker sees.
+- **After the user's own sign-in step, the task stays on that site**, as a task on a saved sign-in does: whatever they signed in to can't be carried elsewhere by the rest of the task.
+- **Saved sign-ins are files, not a browser profile**: each site's own cookies and storage only, in `<home>/browser/signins/<site>.json` (0600). Every task context still starts empty, with at most the one sign-in it was allowed.
+- **The live picture has a socket of its own**, `/ws/browser`, behind the same door as every socket (`app.admit`: Host, Origin, the token), rather than the conversation's socket, so it never travels where a turn's messages do and `session.py` is untouched.
+- **The tile is a pill of the feature's own** (`features/her-browser.ts`): a working task shows bottom right with its live thumbnail, and says "Needs you" with the waiting chip, card or step. It is not yet a row in the Helpers panel, which would mean editing the panel's shared files.
+- **Chromium's checksum**: the pinned Playwright release pins the Chromium revision, and Playwright's own installer fetches it. Trillion records the executable's SHA-256 when it is fetched and refuses to launch one that changed since; a checksum known in advance, for each platform, is not shipped yet.
+- **A helper's turn ends as soon as it waits on the user** (a chip, a card, their step): the host answers its next model call with "Waiting for the user." instead of asking the model, so a small model that keeps calling tools can't hold the wait open.
+- **Settings → Her browser is in the same feature file as the view** (`features/her-browser.ts`), and opening her browser outside a task gives the user a page with an address bar of its own. What they send there is theirs; the proxy's rules and the refusal of uploads still hold.
+- **Chromium runs with a clean environment**: a home of its own, a mock keychain and a plain password store, so it never reads the user's home, profiles, keys or keychain.
+
+What is left: the Helpers panel row for a browsing task, saving a quarantined download into a shared folder on a card (downloads are quarantined and listed; nothing moves them out yet), and the optional `trillion eval browser` run.
