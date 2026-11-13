@@ -21,6 +21,9 @@ from trillion.brain.loop import CallTimed
 
 Via = Literal["voice", "text", "tap", "greet"]
 MARKS = ("heard", "first_text", "first_sentence", "first_audio", "played", "saved")
+# A tool that runs longer than this leaves a silence the user notices (the Seamless
+# spec's "words spoken before the 2-second mark").
+SLOW_TOOL_S = 2.0
 # The page says how far ahead the audio it just scheduled will be heard. Anything
 # beyond this is not a schedule, it is a mistake.
 MAX_AHEAD_MS = 5000
@@ -44,6 +47,30 @@ class Trace:
     calls: list[dict[str, int | None]] = field(default_factory=list)
     # The stored row, once the turn is over: a late `played` updates it.
     row_id: int | None = None
+    # When each tool call still running started, and when the earliest one to run over
+    # SLOW_TOOL_S started. Times only, never a tool's name or arguments.
+    _tools_running: dict[str, float] = field(default_factory=dict)
+    slow_tool: float | None = None
+
+    def tool_started(self, call_id: str, at: float) -> None:
+        self._tools_running[call_id] = at
+
+    def tool_ended(self, call_id: str, at: float) -> None:
+        began = self._tools_running.pop(call_id, None)
+        if began is None or at - began <= SLOW_TOOL_S:
+            return
+        # The earliest to start, of those that ran over: the silence began there.
+        if self.slow_tool is None or began < self.slow_tool:
+            self.slow_tool = began
+
+    def spoke_in_time(self) -> bool | None:
+        """For a turn with a tool over two seconds: whether her first words were heard
+        before two seconds into it. None for a turn without one. Heard is the page's
+        report; without one, the first audio sent is the nearest thing (as `--trace`)."""
+        if self.slow_tool is None:
+            return None
+        first = self.marks.get("played", self.marks.get("first_audio"))
+        return first is not None and first < self.slow_tool + SLOW_TOOL_S
 
     def mark(self, name: str, at: float) -> bool:
         """The first time only. Returns whether this was it."""
