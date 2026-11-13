@@ -857,7 +857,7 @@ function step(view: View, msg: ServerMsg): View {
         // Any error but a refusal ends what was sent: a later busy must not pull it back.
         view = { ...view, pending: null };
       }
-      // Her own sentence for a leg that is down (VOI-14, SUR-8), when the core sends one.
+      // The app's line for a leg that is down (VOI-14, SUR-8), when the core sends one.
       const sentence = str(msg['sentence']);
       if (code === 'unauthenticated') return { ...view, link: 'unauthenticated', busy: false };
       if (code === 'replaced') return { ...view, link: 'replaced', busy: false };
@@ -892,10 +892,13 @@ function step(view: View, msg: ServerMsg): View {
           banner: ERRORS[code] ?? null,
         };
       }
-      const text =
-        code === 'provider'
-          ? sentence || (PROVIDER_ERRORS[str(msg['kind'])] ?? 'The model provider failed.')
-          : sentence || (ERRORS[code] ?? unknownError(code));
+      if (code === 'provider') {
+        // Her model is down: the app says what broke, in the banner and as an app status
+        // line in the conversation, never as her message (SUR-8, PER-11). Not saved.
+        const down = sentence || (PROVIDER_ERRORS[str(msg['kind'])] ?? 'The model provider failed.');
+        return { ...view, banner: down, busy: false, entries: [...view.entries, { kind: 'notice', text: down }] };
+      }
+      const text = sentence || (ERRORS[code] ?? unknownError(code));
       return { ...view, banner: text, busy: code === 'busy' ? view.busy : false };
     }
     default:

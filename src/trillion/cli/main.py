@@ -63,6 +63,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="N",
         help="show how long her last N turns took, and where the time went (10 if no N)",
     )
+    doctor.add_argument(
+        "--seamless",
+        action="store_true",
+        help="show what she asks of you against the Seamless targets, counted on this "
+        "computer only",
+    )
     for checks in (doctor, setup):
         checks.add_argument(
             "--offline", action="store_true", help="skip the checks that need the network"
@@ -238,9 +244,24 @@ def _keys_line(store: object) -> str:
 async def _doctor(args: argparse.Namespace) -> int:
     if args.trace is not None:
         return _trace(args)
+    if args.seamless:
+        return _seamless()
     report, healthy = await _examine(args, secrets=args.secrets)
     sys.stdout.write(report)
     return 0 if healthy else 1
+
+
+def _seamless() -> int:
+    """The Seamless measures. Read-only, offline, and fine with nothing recorded."""
+    import time
+
+    from trillion import paths
+    from trillion.cli import doctor, seamless
+    from trillion.storage import inspect
+
+    now = time.time_ns() // 1_000_000
+    sys.stdout.write(seamless.report(inspect.seamless(paths.db_path(), doctor.OWNER, now)))
+    return 0
 
 
 def _trace(args: argparse.Namespace) -> int:

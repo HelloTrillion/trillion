@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from trillion.attention import words
 from trillion.attention.runner import JSON, Find, Said, WatchContext
 from trillion.attention.settings import AttentionSettings
-from trillion.brain.types import Done, Msg, SystemBlock, TextBlock, TextDelta, Usage
+from trillion.brain.types import Done, Msg, TextBlock, TextDelta, Usage
 from trillion.connectors.google.client import GoogleCallError
 from trillion.spend.gate import SpendCapped
 
@@ -77,7 +77,7 @@ _ADDRESS = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-
 _WATCH = re.compile(r"^\s*watch:\s*(\S+)\s*$", re.IGNORECASE)
 
 INSTRUCTIONS = (
-    "You are the user's assistant, watching their email so you can speak up when "
+    "You are watching the user's email so you can speak up when "
     "something needs them soon. You are shown new unread messages, each with a number "
     "(n): sender, subject, date and a short preview. Judge each message on its own: it "
     "is urgent when it is time-sensitive, comes from a person or service the user deals "
@@ -361,7 +361,7 @@ class UrgentEmail:
         async def ask() -> None:
             nonlocal usage, cut
             async for ev in provider.stream(
-                system=[SystemBlock(text=INSTRUCTIONS, cache=False)],
+                system=words.system(INSTRUCTIONS, ctx.persona),
                 messages=[
                     Msg(role="user", blocks=(TextBlock(text=words.body(NAME, shown, ctx.notes)),))
                 ],

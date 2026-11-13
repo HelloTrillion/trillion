@@ -33,14 +33,25 @@ describe('view', () => {
     expect((v.entries[1] as { text: string }).text).toContain('summarized the earlier messages');
   });
 
-  it('puts her one sentence for a failed leg in the banner', () => {
+  it("puts the app's line for a failed leg in the banner", () => {
     for (const code of ['provider', 'listening', 'speech']) {
-      const v = feed([{ type: 'error', code, kind: 'unreachable', sentence: 'I cannot reach it, so here is what next.' }]);
-      expect(v.banner).toBe('I cannot reach it, so here is what next.');
+      const v = feed([{ type: 'error', code, kind: 'unreachable', sentence: 'The provider cannot be reached.' }]);
+      expect(v.banner).toBe('The provider cannot be reached.');
     }
     expect(feed([{ type: 'error', code: 'provider', kind: 'unreachable' }]).banner).toBe(
       'The model provider could not be reached.',
     );
+  });
+
+  it('with her model down, shows the app line in the conversation as a status, never as hers (SUR-8, PER-11)', () => {
+    const v = feed([
+      { type: 'reply.delta', text: 'Earlier' },
+      { type: 'turn.complete' },
+      { type: 'error', code: 'provider', kind: 'unreachable', sentence: "The model provider can't be reached." },
+    ]);
+    expect(v.banner).toBe("The model provider can't be reached.");
+    expect(v.entries.at(-1)).toEqual({ kind: 'notice', text: "The model provider can't be reached." });
+    expect(v.entries.filter((e) => e.kind === 'assistant')).toHaveLength(1);
   });
 
   it('never shows a catch-all line for an error it has no words for (PER-11)', () => {

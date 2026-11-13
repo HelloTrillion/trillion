@@ -64,6 +64,16 @@ NOT_DECISIONS: dict[str, str] = {
     "pending_action_args.cleared_at": "when it was cleared",
     "pending_action_args.detail": "what the card showed, cleared with the arguments (SPN-2a)",
     "turn_timings.played_ms": "a measurement (ONB-11)",
+    **{
+        f"seamless_first_run.{c}": "a measurement (the Seamless spec): a count or a time,"
+        " it approves nothing"
+        for c in ("questions", "first_reply_at")
+    },
+    **{
+        f"seamless_tool_turns.{c}": "a measurement (the Seamless spec), a row past 90 days"
+        " written over by a newer one: it approves nothing"
+        for c in ("at", "voiced", "spoke_in_time")
+    },
     "conversations.title": "a label for the thread list; decides nothing (SUR-1)",
     "conversations.title_source": "who named it, so her title never replaces the user's",
     "conversations.last_message_at": "recency for sorting the thread list",

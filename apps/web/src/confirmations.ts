@@ -253,6 +253,8 @@ export function createConfirmations(
   changed: () => void,
   /** Go to the conversation where a waiting card is. Settings closes first. */
   openConversation: (id: string) => void = () => undefined,
+  /** The Seamless measures' one line about asks this week (`seamless.ts`), if wanted. */
+  asks?: () => Promise<string>,
 ): { open(): Promise<void>; summary(): string } {
   let last: ConfirmationsState | null = null;
   let loadError = '';
@@ -269,6 +271,9 @@ export function createConfirmations(
     'settings-note',
     'Everything she asked your yes for, read from the record: when its card was shown, who answered and how, and what happened. To answer one, use its card in the conversation that asked.',
   );
+  const asksEl = el('p', 'settings-hint confirmations-asks');
+  asksEl.hidden = true;
+  let asksText = '';
   const banner = el('p', 'settings-warn confirmations-unknown');
   banner.setAttribute('role', 'status');
   banner.hidden = true;
@@ -291,10 +296,13 @@ export function createConfirmations(
   windowLabel.append(el('span', '', 'When'), windowPick);
   controls.append(chipRow, windowLabel);
   const body = el('div', 'confirmations-body');
-  form.append(title, note, banner, controls, body);
+  form.append(title, note, asksEl, banner, controls, body);
   host.replaceChildren(form);
 
   async function load(): Promise<void> {
+    const counting = asks?.().then((t) => {
+      asksText = t;
+    });
     try {
       const r = await api('GET', query(status, days));
       if (!r.ok) throw new Error(String(r.status));
@@ -303,6 +311,7 @@ export function createConfirmations(
     } catch {
       loadError = last ? '' : 'Confirmations could not be loaded.';
     }
+    await counting;
     changed();
   }
 
@@ -360,6 +369,8 @@ export function createConfirmations(
   }
 
   function draw(): void {
+    if (asksEl.textContent !== asksText) asksEl.textContent = asksText;
+    asksEl.hidden = !asksText;
     const warn = unknownBanner(last?.counts ?? null);
     if (banner.textContent !== warn) banner.textContent = warn;
     banner.hidden = !warn;

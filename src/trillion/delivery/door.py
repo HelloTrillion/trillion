@@ -60,8 +60,10 @@ Tier = Literal["small", "medium", "large"]
 _TIER_RANK: dict[Tier, int] = {"small": 0, "medium": 1, "large": 2}
 # Shown for a timed ask: her answer may quote an email, and a lock screen is public.
 READY = "Ready in Trillion"
-# The kinds that carry her words, to be shown and spoken.
+# The kinds that carry words, to be shown.
 _WORDED: frozenset[NoticeKind] = frozenset({"reminder", "ask", "ready", "heads_up"})
+# The kinds whose words are hers, and so may be spoken: never a ready line, the host's.
+_SPOKEN: frozenset[NoticeKind] = _WORDED - {"ready"}
 _QUIET: dict[NoticeKind, str] = {
     "missed": "Missed: Trillion was not running at the time",
     "failed": "Didn't finish. Open Trillion to see why",
@@ -200,7 +202,8 @@ class SessionLike(Protocol):
     def facts(self) -> Facts: ...
 
     async def deliver(self, notices: Sequence[Delivery]) -> None:
-        """Save each as her message and show it; speak the ones with words. Queues the
+        """Save each in this page's conversation, her words as hers, before showing it;
+        speak the ones marked spoken. Queues the
         speech and returns, never waiting for it to play. Raises `NotFree`, taking none,
         if the page is no longer free."""
         ...
@@ -339,9 +342,11 @@ class Door:
                     if n.source == "attention":
                         watched.add(n.id)
                     # Only she writes words; a missed or failed notice has none (D7).
-                    # A ready line is the host's, and spoken once like hers (D3).
+                    # A ready line is the host's: shown, and never spoken, since only
+                    # her own words reach the speaker (PER-11, the seamless spec).
                     text = n.text if n.kind in _WORDED else None
-                    held_by = await self._quiet(n, now, host) if text else None
+                    voiced = bool(text) and n.kind in _SPOKEN
+                    held_by = await self._quiet(n, now, host) if voiced else None
                     out.append(
                         Delivery(
                             id=n.id,
@@ -352,7 +357,7 @@ class Door:
                             late=n.late or now - n.due_ms > LATE_MS,
                             due=await self._due(n, now, zones),
                             conversation_id=n.conversation_id,
-                            spoken=bool(text) and not _stale(n, now) and held_by is None,
+                            spoken=voiced and not _stale(n, now) and held_by is None,
                             quiet=held_by,
                             link=n.link,
                             detail=n.detail,
@@ -395,7 +400,13 @@ class Door:
             got = await self.offer(live)
             return got if live is session else 0
         quiet = [d.id for d in out if d.quiet is not None]
-        unspoken = [d.id for d in out if d.quiet is None and not d.spoken and d.id in watched]
+        # A ready line is never spoken: the computer shows it instead, as it would a
+        # watcher's unspoken one, so a user away from the page still hears of it.
+        unspoken = [
+            d.id
+            for d in out
+            if d.quiet is None and not d.spoken and (d.id in watched or d.kind == "ready")
+        ]
         if quiet or unspoken:
             sending = asyncio.ensure_future(self._notify_after(quiet, unspoken, host))
             self._sending.add(sending)

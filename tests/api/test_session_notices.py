@@ -275,7 +275,8 @@ async def test_typing_while_a_notice_is_spoken_stops_it_and_is_answered(rt: Runt
     assert stopped["turn"] > OUT_OF_TURN
     assert len(page.all("turn.complete")) == 1
     history = await rt.conversations.history(session.id, "local")
-    assert [k for k, _ in history] == ["assistant", "user", "assistant"]
+    # The notice's note and her line, then the turn (the seamless spec, decision 2).
+    assert [k for k, _ in history] == ["tap", "assistant", "user", "assistant"]
     await session.close()
 
 
@@ -324,7 +325,8 @@ async def test_a_notice_due_while_a_message_is_saved_never_runs_beside_its_turn(
     kinds = [m["type"] for m in page.got]
     assert kinds.index("turn.complete") < kinds.index("notice")
     history = await rt.conversations.history(session.id, "local")
-    assert [k for k, _ in history] == ["user", "assistant", "assistant"]
+    # The turn, then the notice's note and her line (the seamless spec, decision 2).
+    assert [k for k, _ in history] == ["user", "assistant", "tap", "assistant"]
     await session.close()
 
 
@@ -455,12 +457,20 @@ async def test_a_save_that_fails_leaves_nothing_behind(
 async def test_a_sentence_about_a_leg_that_is_down_is_heard_under_its_own_number(
     rt: Runtime,
 ) -> None:
+    """Her own sentence for it (the seamless spec, decision 2) is a turn on the app's
+    note, after a spoken turn of the same number: it is heard under a number of its own."""
     voiced(rt)
+    rt.provider = Gated(say("Hello."), say("I can't hear you, but typing works."))
     page = Page(rt)
     session = await Session.start(rt, page.send, None)
+    await session.handle({"type": "turn.text", "text": "hi"})
+    await idle(session)
+    await session.handle({"type": "playback.ended", "turn_id": 1})
     await session._hearing_down("inaudible")
-    (said,) = page.all("reply.sentence")
-    assert said["turn"] > OUT_OF_TURN
+    await idle(session)
+    first, said = page.all("reply.sentence")
+    assert said["text"] == "I can't hear you, but typing works."
+    assert said["turn"] > OUT_OF_TURN and said["turn"] != first["turn"]
     assert session.facts().spoken_turn == said["turn"]
     await session.close()
 
@@ -580,8 +590,9 @@ async def test_a_ready_line_is_kept_as_the_hosts_never_as_hers(rt: Runtime) -> N
     )
     await rt.door.added(n)
     await idle(session)
-    # Still spoken once, from its words.
-    assert [m["text"] for m in page.all("reply.sentence")] == [f"{line}."]
+    # The host's words: shown, never spoken (PER-11, the seamless spec, decision 2).
+    assert page.all("reply.sentence") == []
+    assert [m["spoken"] for m in page.all("notice")] == [False]
     history = await rt.conversations.history(session.id, "local")
     assert [k for k, _ in history] == ["tap"]
     msg = history[0][1]

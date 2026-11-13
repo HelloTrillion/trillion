@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from trillion.attention import words
 from trillion.attention.settings import AttentionSettings
 from trillion.attention.store import KEEP, AttentionStore, Cursor, WatcherState
-from trillion.brain.types import ModelProvider, Usage
+from trillion.brain.types import ModelProvider, SystemBlock, Usage
 from trillion.connectors.google.client import GoogleCallError
 from trillion.scheduler.store import Notice, ScheduleStore, https_link
 from trillion.spend.caller import as_caller
@@ -108,6 +108,8 @@ class WatchContext:
     cursor: str | None
     last_check_ms: int | None
     provider: ModelProvider | None
+    # Her persona block, ahead of any line a watcher has the model write (BRN-11).
+    persona: SystemBlock | None = None
     # The runtime's handles the watchers read through (Calendar and Gmail, MCP tools).
     google: GoogleConnection | None = None
     registry: ToolRegistry | None = None
@@ -183,6 +185,7 @@ class AttentionRunner:
         owner: str,
         provider: Callable[[], ModelProvider | None],
         settings: Callable[[], AttentionSettings],
+        persona: Callable[[], SystemBlock | None] = lambda: None,
         google: Callable[[], GoogleConnection | None] = lambda: None,
         registry: ToolRegistry | None = None,
         held: Callable[[Work], Awaitable[bool]] | None = None,
@@ -199,6 +202,7 @@ class AttentionRunner:
         self._clock = clock
         self._owner = owner
         self._provider = provider
+        self._persona = persona
         self._settings = settings
         self._google = google
         self._registry = registry
@@ -351,6 +355,7 @@ class AttentionRunner:
             cursor=state.cursor,
             last_check_ms=state.last_check_ms,
             provider=self._provider(),
+            persona=self._persona(),
             google=self._google(),
             registry=self._registry,
         )
@@ -453,7 +458,9 @@ class AttentionRunner:
         else:
             told, text = finds, None
             if provider is not None and not _all_stale(finds, ctx.now_ms):
-                text, _usage = await words.line(provider, w.name, finds, ctx.notes)
+                text, _usage = await words.line(
+                    provider, w.name, finds, ctx.notes, persona=ctx.persona
+                )
         keys = [f.key for f in told]
         notice_id = uuid.uuid4().hex
         await self._store.telling(self._owner, keys, notice_id)
