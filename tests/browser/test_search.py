@@ -14,6 +14,7 @@ from trillion.browser.settings import DEFAULT_ENGINE, ENGINES, BrowserSettings
 REFUSED = "http://fixture.test/refused?q={q}"
 EMPTY = "http://fixture.test/empty?q={q}"
 WORKS = "http://fixture.test/search?q={q}"
+FEED = "http://fixture.test/feed?q={q}"
 LINKS = ["https://a.example/1", "https://b.example/2", "https://c.example/3"]
 
 
@@ -66,3 +67,18 @@ async def test_when_both_refuse_the_task_stops_and_says_so_without_burning_steps
         assert len([x for x in rows if x.event == "searched"]) == 2
         assert ("stopped", "search") in [(x.event, x.detail) for x in rows]
         assert model.calls == 1
+
+
+@needs_chromium
+async def test_a_results_feed_is_read_and_its_links_open_as_followed(
+    browser_rt, tmp_path, fixtures
+):
+    async with driven(browser_rt, tmp_path, search_url=FEED) as d:
+        r = await d.call("browser_search", query="the answer")
+        assert r.status == "succeeded", r
+        assert "1. Second page" in (r.content or "") and "http://other.test/two.html" in (
+            r.content or ""
+        )
+        # A result is a link the page showed: no chip to open it.
+        opened = await d.call("browser_open", url="http://other.test/two.html")
+        assert opened.status == "succeeded", opened

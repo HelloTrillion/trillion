@@ -32,7 +32,7 @@ from trillion.browser.broker import (
     search_refused,
     valid_ref,
 )
-from trillion.browser.snapshot import find, shown
+from trillion.browser.snapshot import feed_results, find, shown, shown_results
 from trillion.browser.task import STEP_WORDS, Task
 from trillion.spine.card import ONLY_A_TAP
 from trillion.spine.contract import (
@@ -195,11 +195,18 @@ class BrowserSearch(BrowserTool):
                 await t.goto(url)
                 if t.broker.stopped is not None:
                     return _no(_STOPPED[t.broker.stopped], t.broker.stopped)
-                snap = await t.read()
+                results = await feed_results(t.page)
+                snap = None if results is not None else await t.read()
             except Refused as e:
                 await t.log.event("refused", url=url, code=e.kind)
                 return _no(str(e), e.kind)
-            if not search_refused(str(t.page.url), snap.title, snap.text, snap.links):
+            if results:
+                # Links the results page showed: opening one is following it.
+                t.broker.saw_links(r.link for r in results)
+                return ToolResult(ok=True, content=shown_results(query, results), effect="none")
+            if snap is not None and not search_refused(
+                str(t.page.url), snap.title, snap.text, snap.links
+            ):
                 return ToolResult(ok=True, content=shown(snap), effect="none")
             await t.log.event("refused", url=url, code="search_refused")
             t.search_urls.pop(0)

@@ -75,3 +75,55 @@ def find(snap_text: str, text: str, limit: int = 30) -> list[str]:
         return []
     found = [line.strip() for line in snap_text.splitlines() if needle in line.casefold()]
     return found[:limit]
+
+
+# A search engine's results as a feed (RSS): what each result is called, where it
+# leads and what it says, read from the feed itself in the page.
+_FEED = """() => {
+  if (!(document instanceof XMLDocument) && !document.querySelector('rss, feed')) return null;
+  return [...document.querySelectorAll('item')].slice(0, 12).map((i) => ({
+    title: (i.querySelector('title')?.textContent || '').trim(),
+    link: (i.querySelector('link')?.textContent || '').trim(),
+    text: (i.querySelector('description')?.textContent || '').trim().slice(0, 400),
+  }));
+}"""
+
+
+@dataclass(frozen=True, kw_only=True)
+class Result:
+    title: str
+    link: str
+    text: str
+
+
+async def feed_results(page: Any) -> list[Result] | None:
+    """The results, when the page is a search feed; None when it isn't one."""
+    try:
+        found = await page.evaluate(_FEED)
+    except Exception:
+        return None
+    if not isinstance(found, list):
+        return None
+    out = []
+    for item in found:
+        if isinstance(item, dict) and str(item.get("link", "")).startswith(("http://", "https://")):
+            out.append(
+                Result(
+                    title=" ".join(str(item.get("title", "")).split()),
+                    link=str(item["link"]),
+                    text=" ".join(str(item.get("text", "")).split()),
+                )
+            )
+    return out
+
+
+def shown_results(query: str, results: list[Result]) -> str:
+    lines = [f"Search results for: {query}", ""]
+    for n, r in enumerate(results, 1):
+        lines.append(f"{n}. {r.title or r.link}")
+        lines.append(f"   {r.link}")
+        if r.text:
+            lines.append(f"   {r.text}")
+    lines.append("")
+    lines.append("Open a result with browser_open and its address exactly as shown.")
+    return "\n".join(lines)

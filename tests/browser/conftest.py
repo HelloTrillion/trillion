@@ -120,6 +120,20 @@ def _handler(seen: Seen) -> type[BaseHTTPRequestHandler]:
                     b"email us</a>. Our support email address includes an anonymized error "
                     b"code.</p></body></html>"
                 )
+            elif path == "/feed":
+                feed = (
+                    b'<?xml version="1.0"?><rss version="2.0"><channel><title>Results</title>'
+                    b"<item><title>Second page</title><link>http://other.test/two.html</link>"
+                    b"<description>The answer is here.</description></item>"
+                    b"<item><title>Home</title><link>http://fixture.test/index.html</link>"
+                    b"<description>A plain page.</description></item></channel></rss>"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/xml; charset=utf-8")
+                self.send_header("Content-Length", str(len(feed)))
+                self.end_headers()
+                self.wfile.write(feed)
+                return
             elif path == "/empty":
                 body = b"<html><head><title>Search</title></head><body>No results.</body></html>"
             elif not file.is_file():

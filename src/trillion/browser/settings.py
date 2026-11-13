@@ -12,10 +12,11 @@ from typing import Any
 PREF = "browser"
 # The search engines she may use, each by its results page for a query: the one the
 # user chose, and, if it turns her browser away, the next one once (decision 9). Bing
-# first: tested from a home connection on 2026-11-13, it was the one of these that
-# served her browser results; the others showed a block or a CAPTCHA page.
+# first, by its results feed: tested from a home connection on 2026-11-13, it was the
+# one of these that served her browser results (its page sometimes came back with no
+# results at all; its feed didn't). The others showed a block or a CAPTCHA page.
 ENGINES: dict[str, tuple[str, str]] = {
-    "bing": ("Bing", "https://www.bing.com/search?q={q}"),
+    "bing": ("Bing", "https://www.bing.com/search?format=rss&q={q}"),
     "duckduckgo": ("DuckDuckGo", "https://html.duckduckgo.com/html/?q={q}"),
     "brave": ("Brave Search", "https://search.brave.com/search?q={q}"),
     "google": ("Google", "https://www.google.com/search?q={q}"),
