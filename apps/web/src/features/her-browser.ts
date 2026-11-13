@@ -115,15 +115,18 @@ export function pillWords(task: TaskView): string {
   return task.origin ? `Browsing ${task.origin.replace(/^https?:\/\//, '')}` : 'Browsing';
 }
 
-/** A page coordinate for a click on the picture, from where it was drawn. */
+/** A page coordinate for a click on the picture, drawn letterboxed (contain) in `box`. */
 export function pagePoint(
   clientX: number,
   clientY: number,
   box: { left: number; top: number; width: number; height: number },
   page: { width: number; height: number },
 ): { x: number; y: number } {
-  const x = ((clientX - box.left) / Math.max(box.width, 1)) * page.width;
-  const y = ((clientY - box.top) / Math.max(box.height, 1)) * page.height;
+  const scale = Math.min(box.width / Math.max(page.width, 1), box.height / Math.max(page.height, 1)) || 1;
+  const left = box.left + (box.width - page.width * scale) / 2;
+  const top = box.top + (box.height - page.height * scale) / 2;
+  const x = (clientX - left) / scale;
+  const y = (clientY - top) / scale;
   return { x: Math.max(0, Math.min(page.width, x)), y: Math.max(0, Math.min(page.height, y)) };
 }
 
@@ -199,30 +202,116 @@ export interface HerBrowser {
   view(task?: string): Promise<void>;
   refresh(): Promise<void>;
   summary(): string;
+  /** The overlay, for tests. */
+  readonly overlay: HTMLElement;
 }
 
-export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pillParent: HTMLElement): HerBrowser {
+/** The task or free browser the pill speaks for, and what it says. */
+export function pillTarget(state: BrowserState | null): { id: string; words: string; needsYou: boolean } | null {
+  const task = activeTask(state);
+  if (task) return { id: task.id, words: pillWords(task), needsYou: task.state === 'needs_you' };
+  if (state?.free) return { id: 'free', words: 'Her browser is open', needsYou: false };
+  return null;
+}
+
+/** What the title bar says of where it is and what is happening. */
+export function stateWords(t: TaskView | null, free: boolean): string {
+  if (!t) return free ? 'Closed' : 'Nothing running';
+  if (free) return 'You have control';
+  if (t.in_control) return 'You have control';
+  if (t.state === 'needs_you') return 'Needs you';
+  if (t.state === 'queued') return 'Waiting its turn';
+  return t.mode === 'act' ? 'Working (may fill in a form)' : 'Working';
+}
+
+export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement): HerBrowser {
   let state: BrowserState | null = null;
   let viewing: string | null = null;
   let watch: Watch | null = null;
   let page = { width: 1280, height: 800 };
   let message = '';
+  let installing = false;
   let poll: ReturnType<typeof setInterval> | null = null;
+  let framed = false;
+
+  // The overlay: a window of its own above everything, in the top layer.
+  const overlay = el('dialog', 'her-browser-overlay');
+  overlay.setAttribute('aria-labelledby', 'her-browser-title');
+  const win = el('div', 'her-browser-window');
+  const bar = el('header', 'her-browser-titlebar');
+  const title = el('h2', 'her-browser-title', 'Her browser');
+  title.id = 'her-browser-title';
+  const site = el('span', 'her-browser-site-name');
+  const stateLine = el('span', 'her-browser-state');
+  const barActions = el('div', 'her-browser-bar-actions');
+  bar.append(title, site, stateLine, barActions);
+  const address = el('div', 'her-browser-addressbar');
+  const addressForm = el('form', 'her-browser-address');
+  const addressInput = el('input');
+  addressInput.type = 'text';
+  addressInput.placeholder = 'Type an address, such as example.com';
+  addressInput.setAttribute('aria-label', 'Address');
+  const go = el('button', 'approve', 'Go');
+  go.type = 'submit';
+  addressForm.append(addressInput, go);
+  addressForm.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    void call('POST', '/api/browser/free/goto', { url: addressInput.value }).then(redraw);
+  });
+  address.append(addressForm);
+  const frame = el('div', 'her-browser-frame');
   const picture = el('img', 'her-browser-picture');
   picture.alt = 'Her browser, live';
   picture.tabIndex = 0;
-  const thumb = el('img', 'her-browser-thumb');
-  thumb.alt = '';
-  const pill = el('button', 'her-browser-pill');
-  pill.type = 'button';
-  pill.hidden = true;
-  const pillText = el('span', 'her-browser-pill-text');
-  pill.append(thumb, pillText);
-  pill.addEventListener('click', () => void view(activeTask(state)?.id));
-  pillParent.append(pill);
+  picture.hidden = true;
+  const waiting = el('p', 'her-browser-waiting', 'Waiting for the first picture…');
+  frame.append(picture, waiting);
+  const foot = el('div', 'her-browser-foot');
+  const ask = el('div', 'her-browser-ask');
   const status = el('p', 'her-browser-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
+  foot.append(ask, status);
+  win.append(bar, address, frame, foot);
+  overlay.append(win);
+  root.append(overlay);
+
+  const isOpen = (): boolean => overlay.isConnected && overlay.hasAttribute('open');
+  const closeOverlay = (): void => {
+    if (typeof (overlay as HTMLDialogElement).close === 'function') (overlay as HTMLDialogElement).close();
+    else overlay.removeAttribute('open');
+    onClosed();
+  };
+  // Esc closes the overlay only: Settings below it stays as it was. Closing never stops a task.
+  overlay.addEventListener('cancel', (ev) => {
+    ev.preventDefault();
+    closeOverlay();
+  });
+  overlay.addEventListener('keydown', (ev) => ev.stopPropagation());
+  // Esc while it's open is the overlay's, wherever the focus is: Settings and the
+  // conversation below never see it.
+  addEventListener(
+    'keydown',
+    (ev) => {
+      if (ev.key !== 'Escape' || !isOpen()) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      closeOverlay();
+    },
+    true,
+  );
+
+  // The pill: a working task, or her browser open, above the voice dock.
+  const pill = el('button', 'her-browser-pill');
+  pill.type = 'button';
+  pill.hidden = true;
+  const thumb = el('img', 'her-browser-thumb');
+  thumb.alt = '';
+  thumb.hidden = true;
+  const pillText = el('span', 'her-browser-pill-text');
+  pill.append(thumb, pillText);
+  pill.addEventListener('click', () => void view(pillTarget(state)?.id));
+  root.append(pill);
 
   const call = async (method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<boolean> => {
     try {
@@ -242,17 +331,20 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
     }
   };
 
+  // A refresh in the background never puts up an error: only what the user did can.
   const load = async (): Promise<void> => {
+    const keep = message;
     await call('GET', '/api/browser');
+    message = keep;
   };
 
   const drawPill = (): void => {
-    const task = activeTask(state);
-    pill.hidden = task === null || viewHost.open;
-    if (!task) return;
-    pill.classList.toggle('needs-you', task.state === 'needs_you');
-    pillText.textContent = pillWords(task);
-    thumb.hidden = !(state?.settings.live ?? true) || !thumb.src;
+    const target = pillTarget(state);
+    pill.hidden = target === null || isOpen();
+    if (!target) return;
+    pill.classList.toggle('needs-you', target.needsYou);
+    pillText.textContent = target.words;
+    thumb.hidden = !framed || !(state?.settings.live ?? true);
   };
 
   const target = (): TaskView | null => {
@@ -261,68 +353,44 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
     return state.tasks.find((t) => t.id === viewing) ?? null;
   };
 
+  const control = (id: string, take: boolean) => () => void call('POST', `/api/browser/tasks/${id}/control`, { take }).then(redraw);
+
   const drawView = async (): Promise<void> => {
     const t = target();
-    const wrap = el('div', 'her-browser-view');
-    const head = el('div', 'her-browser-head');
-    const title = el('h2', '', 'Her browser');
-    title.id = 'her-browser-title';
-    viewHost.setAttribute('aria-labelledby', title.id);
-    head.append(title);
-    const where = el('div', 'her-browser-where');
-    if (viewing === 'free' && t) {
-      const form = el('form', 'her-browser-address');
-      const input = el('input');
-      input.type = 'text';
-      input.placeholder = 'Type an address, such as example.com';
-      input.value = t.url ?? '';
-      input.setAttribute('aria-label', 'Address');
-      form.append(input, button('Go', 'approve', () => form.requestSubmit()));
-      form.addEventListener('submit', (ev) => {
-        ev.preventDefault();
-        void call('POST', '/api/browser/free/goto', { url: input.value }).then(redraw);
-      });
-      where.append(form);
-    } else {
-      where.append(el('span', 'her-browser-url', t?.url ?? 'Waiting for a page…'));
+    const free = viewing === 'free';
+    site.textContent = t?.origin ? t.origin.replace(/^https?:\/\//, '') : '';
+    stateLine.textContent = stateWords(t, free);
+    barActions.replaceChildren();
+    if (t && !free) {
+      if (t.in_control) barActions.append(button('I’m done', 'approve', control(t.id, false)));
+      else barActions.append(button('Take control', '', control(t.id, true)));
+      if (t.in_control) barActions.append(button('Keep me signed in here', '', () => void keep(t.id)));
+      barActions.append(button('Stop', '', () => void call('POST', `/api/browser/tasks/${t.id}/stop`).then(redraw)));
     }
-    const line = el(
-      'p',
-      'her-browser-line',
-      !t
-        ? 'Nothing is running in her browser now.'
-        : viewing === 'free'
-          ? 'You have control. Sign in to a site, then choose “Keep me signed in here”.'
-          : t.in_control
-            ? 'You have control. She sees nothing and nothing is recorded until you click “I’m done”.'
-            : t.state === 'needs_you'
-              ? 'She’s waiting for you.'
-              : `Watching her work${t.mode === 'act' ? ' (she may fill in a form; you approve anything it sends)' : ''}.`,
-    );
-    const frame = el('div', 'her-browser-frame');
-    frame.classList.toggle('in-control', Boolean(t?.in_control) || viewing === 'free');
-    frame.append(picture);
-    const ask = el('div', 'her-browser-ask');
-    if (t?.ask && viewing !== 'free') await drawAsk(ask, t, t.ask);
-    const actions = el('div', 'settings-actions');
-    if (t && viewing !== 'free') {
-      if (t.in_control) actions.append(button('I’m done', 'approve', () => void call('POST', `/api/browser/tasks/${t.id}/control`, { take: false }).then(redraw)));
-      else actions.append(button('Take control', '', () => void call('POST', `/api/browser/tasks/${t.id}/control`, { take: true }).then(redraw)));
-      if (t.in_control) actions.append(button('Keep me signed in here', '', () => void keep(t.id)));
-      actions.append(button('Stop', 'danger', () => void call('POST', `/api/browser/tasks/${t.id}/stop`).then(redraw)));
+    if (free && t) {
+      barActions.append(button('Keep me signed in here', 'approve', () => void keep('free')));
+      barActions.append(button('Close her browser', '', () => void call('DELETE', '/api/browser/free').then(closeOverlay)));
     }
-    if (viewing === 'free' && t) {
-      actions.append(button('Keep me signed in here', 'approve', () => void keep('free')));
-      actions.append(button('Close her browser', '', () => void call('DELETE', '/api/browser/free').then(() => viewHost.close())));
-    }
-    actions.append(button('Close', 'settings-close', () => viewHost.close()));
+    const x = button('×', 'her-browser-x', closeOverlay);
+    x.setAttribute('aria-label', 'Close');
+    x.title = 'Close (Esc). A task keeps working.';
+    barActions.append(x);
+    address.hidden = !(free && t);
+    // Kept, not redrawn: what the user is typing, and where the focus is, stay put.
+    if (free && t && document.activeElement !== addressInput) addressInput.value = t.url ?? '';
+    frame.classList.toggle('in-control', Boolean(t?.in_control) || free);
+    waiting.textContent = t ? 'Waiting for the first picture…' : 'Nothing is running in her browser now.';
+    waiting.hidden = framed && Boolean(t);
+    picture.hidden = !framed || !t;
+    ask.replaceChildren();
+    if (t?.ask && !free) await drawAsk(ask, t, t.ask);
+    else if (t && !free && t.in_control) ask.append(el('p', 'her-browser-note', 'She sees nothing and nothing is recorded until you click “I’m done”.'));
+    else if (free && t) ask.append(el('p', 'her-browser-note', 'Sign in to a site, then choose “Keep me signed in here”. Only that site’s sign-in is kept, never your password.'));
     status.textContent = message;
-    wrap.append(head, where, line, frame, ask, status, actions);
-    viewHost.replaceChildren(wrap);
   };
 
   const keep = async (id: string): Promise<void> => {
-    const path = id === 'free' ? '/api/browser/tasks/free/keep' : `/api/browser/tasks/${id}/keep`;
+    const path = `/api/browser/tasks/${id}/keep`;
     try {
       const r = await api('POST', path, {});
       if (!r.ok) message = await reason(r);
@@ -337,10 +405,10 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
     await redraw();
   };
 
-  const drawAsk = async (into: HTMLElement, t: TaskView, ask: Ask): Promise<void> => {
-    into.append(el('p', 'her-browser-ask-text', ask.text));
-    if (ask.kind === 'card' && ask.pending_id) {
-      const pid = ask.pending_id;
+  const drawAsk = async (into: HTMLElement, t: TaskView, a: Ask): Promise<void> => {
+    into.append(el('p', 'her-browser-ask-text', a.text));
+    if (a.kind === 'card' && a.pending_id) {
+      const pid = a.pending_id;
       try {
         const r = await api('GET', `/api/browser/tasks/${t.id}/card`);
         if (r.ok) {
@@ -350,76 +418,89 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
           await api('POST', `/api/browser/tasks/${t.id}/cards/${pid}/shown`, {});
         }
       } catch {
-        into.append(el('p', 'settings-note', 'The card couldn’t be shown. Decline it, or try again.'));
+        into.append(el('p', 'her-browser-note', 'The card couldn’t be shown. Decline it, or try again.'));
       }
       into.append(
         button('Approve and send', 'approve', () => void call('POST', `/api/browser/tasks/${t.id}/cards/${pid}`, { decision: 'confirm' }).then(redraw)),
         button('Decline', '', () => void call('POST', `/api/browser/tasks/${t.id}/cards/${pid}`, { decision: 'cancel' }).then(redraw)),
       );
-    } else if (ask.kind === 'step') {
-      into.append(button('Take control', 'approve', () => void call('POST', `/api/browser/tasks/${t.id}/control`, { take: true }).then(redraw)));
+    } else if (a.kind === 'step') {
+      into.append(button('Take control', 'approve', control(t.id, true)));
     } else {
       into.append(
-        button(ask.kind === 'signin' ? 'Use it' : 'Allow', 'approve', () => void call('POST', `/api/browser/tasks/${t.id}/asks/${ask.id}`, { answer: 'allowed' }).then(redraw)),
-        button('Not now', '', () => void call('POST', `/api/browser/tasks/${t.id}/asks/${ask.id}`, { answer: 'declined' }).then(redraw)),
+        button(a.kind === 'signin' ? 'Use it' : 'Allow', 'approve', () => void call('POST', `/api/browser/tasks/${t.id}/asks/${a.id}`, { answer: 'allowed' }).then(redraw)),
+        button('Not now', '', () => void call('POST', `/api/browser/tasks/${t.id}/asks/${a.id}`, { answer: 'declined' }).then(redraw)),
       );
     }
   };
 
   const redraw = async (): Promise<void> => {
     drawPill();
-    if (viewHost.open) await drawView();
+    if (isOpen()) await drawView();
     if (sectionHost.open) drawSection();
   };
 
   const onFrame = (f: { data: string; width: number; height: number }): void => {
     page = { width: f.width, height: f.height };
     const src = `data:image/jpeg;base64,${f.data}`;
-    if (viewHost.open) picture.src = src;
-    if (state?.settings.live ?? true) thumb.src = src;
+    framed = true;
+    if (isOpen()) {
+      picture.src = src;
+      picture.hidden = false;
+      waiting.hidden = true;
+    }
+    if (state?.settings.live ?? true) {
+      thumb.src = src;
+      thumb.hidden = pill.hidden;
+    }
   };
 
-  picture.addEventListener('click', (ev) => {
+  const canInput = (): boolean => {
     const t = target();
-    if (!watch || !viewing || !(t?.in_control || viewing === 'free')) return;
-    const box = picture.getBoundingClientRect();
-    watch.input(viewing, { kind: 'click', ...pagePoint(ev.clientX, ev.clientY, box, page) });
+    return Boolean(watch && viewing && (t?.in_control || viewing === 'free'));
+  };
+  picture.addEventListener('click', (ev) => {
+    if (!canInput() || !watch || !viewing) return;
+    watch.input(viewing, { kind: 'click', ...pagePoint(ev.clientX, ev.clientY, picture.getBoundingClientRect(), page) });
     picture.focus();
   });
   picture.addEventListener('keydown', (ev) => {
-    const t = target();
-    if (!watch || !viewing || !(t?.in_control || viewing === 'free')) return;
+    if (!canInput() || !watch || !viewing) return;
     const body = keyInput(ev);
     if (body) {
       ev.preventDefault();
+      ev.stopPropagation();
       watch.input(viewing, body);
     }
   });
   picture.addEventListener('wheel', (ev) => {
-    const t = target();
-    if (!watch || !viewing || !(t?.in_control || viewing === 'free')) return;
+    if (!canInput() || !watch || !viewing) return;
     ev.preventDefault();
     watch.input(viewing, { kind: 'wheel', dy: ev.deltaY });
   });
-  viewHost.addEventListener('close', () => {
+
+  function onClosed(): void {
     viewing = null;
     picture.removeAttribute('src');
+    picture.hidden = true;
     drawPill();
-  });
+  }
 
   const tick = async (): Promise<void> => {
     await load();
-    const task = activeTask(state);
-    if (task && !watch) watch = connect(onFrame);
+    const target = pillTarget(state);
+    if (target && !watch) watch = connect(onFrame);
     if (watch) {
-      const want = viewing ?? (state?.settings.live ? task?.id : null) ?? null;
+      const want = viewing ?? (state?.settings.live ? target?.id : null) ?? null;
       if (want) watch.watch(want);
     }
-    if (!task && !viewing && watch) {
+    if (!target && !viewing && watch) {
       watch.close();
       watch = null;
+      framed = false;
       thumb.removeAttribute('src');
     }
+    if (installing && state && (state.installed || state.install_error || !state.installing)) installing = false;
     await redraw();
   };
 
@@ -431,31 +512,45 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
     const s = state;
     const form = el('form', 'settings her-browser-settings');
     form.addEventListener('submit', (ev) => ev.preventDefault());
-    const title = el('h2', '', 'Her browser');
-    title.id = 'her-browser-section-title';
-    sectionHost.setAttribute('aria-labelledby', title.id);
-    form.append(title, el('p', 'settings-note', s?.about ?? 'Her own browser, separate from yours.'));
+    const head = el('h2', '', 'Her browser');
+    head.id = 'her-browser-section-title';
+    sectionHost.setAttribute('aria-labelledby', head.id);
+    form.append(head, el('p', 'settings-note', s?.about ?? 'Her own browser, separate from yours.'));
     if (!s) {
       form.append(el('p', 'settings-note', message || 'Loading…'));
     } else if (!s.available) {
       form.append(el('p', 'settings-note', 'This install of Trillion doesn’t include her browser. Install the browser extra (uv sync --extra browser), then restart Trillion.'));
     } else if (!s.installed) {
-      const get = button(s.installing ? 'Getting it…' : `Get her a browser of her own (about ${s.size_mb} MB)`, 'approve', () => {
-        void call('POST', '/api/browser/install').then(redraw);
-        startPolling();
-      });
-      get.disabled = s.installing;
-      form.append(get, el('p', 'settings-note', 'This is never your browser. It is fetched once, now, and kept in Trillion’s own folder.'));
-      if (s.install_error) form.append(el('p', 'settings-error', s.install_error));
+      if (installing || s.installing) {
+        const busy = el('p', 'her-browser-installing');
+        busy.setAttribute('role', 'status');
+        busy.append(el('span', 'her-browser-spinner'), el('span', '', `Getting her browser… (about ${s.size_mb} MB, a minute or two)`));
+        form.append(busy);
+      } else {
+        form.append(
+          button(`Get her a browser of her own (about ${s.size_mb} MB)`, 'approve', () => {
+            installing = true;
+            message = '';
+            drawSection();
+            void call('POST', '/api/browser/install').then(() => {
+              if (message) installing = false;
+              return redraw();
+            });
+            startPolling();
+          }),
+        );
+      }
+      form.append(el('p', 'settings-note', 'This is never your browser. It is fetched once, now, and kept in Trillion’s own folder.'));
+      if (s.install_error && !installing) form.append(el('p', 'settings-error', `It didn’t finish: ${s.install_error}. Try again in a moment.`));
     } else {
       form.append(el('p', 'settings-note', `Installed: Chromium ${s.version}.`));
       form.append(button('Open her browser', 'approve', () => void openFree()));
       const sites = el('div', 'her-browser-sites');
       sites.append(el('h3', '', 'Signed-in sites'));
       if (s.sites.length === 0) sites.append(el('p', 'settings-note', 'None yet. Open her browser, sign in to a site, and choose “Keep me signed in here”.'));
-      for (const site of s.sites) {
+      for (const name of s.sites) {
         const row = el('div', 'her-browser-site');
-        row.append(el('span', '', site), button('Remove', '', () => void call('DELETE', `/api/browser/sites/${encodeURIComponent(site)}`).then(redraw)));
+        row.append(el('span', '', name), button('Remove', '', () => void call('DELETE', `/api/browser/sites/${encodeURIComponent(name)}`).then(redraw)));
         sites.append(row);
       }
       form.append(sites);
@@ -497,27 +592,31 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
       drawSection();
       return;
     }
-    sectionHost.close();
     await view('free');
   };
 
   const view = async (task?: string): Promise<void> => {
     await load();
-    viewing = task ?? activeTask(state)?.id ?? null;
+    viewing = task ?? pillTarget(state)?.id ?? null;
+    framed = false;
     if (!watch) watch = connect(onFrame);
     if (viewing) watch.watch(viewing);
+    if (!isOpen()) {
+      if (typeof (overlay as HTMLDialogElement).showModal === 'function') (overlay as HTMLDialogElement).showModal();
+      else overlay.setAttribute('open', '');
+    }
     await drawView();
-    if (!viewHost.open) viewHost.showModal();
     drawPill();
     startPolling();
   };
 
   void load().then(() => {
-    if (activeTask(state)) startPolling();
+    if (pillTarget(state)) startPolling();
     drawPill();
   });
 
   return {
+    overlay,
     async section() {
       await load();
       drawSection();
@@ -526,7 +625,7 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
     view,
     async refresh() {
       await tick();
-      if (activeTask(state)) startPolling();
+      if (pillTarget(state)) startPolling();
     },
     summary() {
       if (!state) return '';
@@ -538,7 +637,7 @@ export function createHerBrowser(sectionHost: Host, viewHost: Host, api: Api, pi
 
 export const feature: Feature = {
   setup({ panel, api, on }) {
-    const browser = createHerBrowser(panel.host('her-browser'), panel.host('her-browser-view'), api, document.body);
+    const browser = createHerBrowser(panel.host('her-browser'), api, document.body);
     panel.add({
       id: 'her-browser',
       label: 'Her browser',

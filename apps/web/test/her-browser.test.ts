@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { type BrowserState, activeTask, createHerBrowser, keyInput, pagePoint, pillWords, reason } from '../src/features/her-browser';
+import { type BrowserState, activeTask, createHerBrowser, keyInput, pagePoint, pillTarget, pillWords, reason, stateWords } from '../src/features/her-browser';
 import type { Host } from '../src/panel';
 
 function host(): Host & { children: Node[]; isOpen: boolean } {
@@ -63,10 +63,22 @@ describe('her browser: the small rules', () => {
     expect(activeTask(state())).toBeNull();
   });
 
-  it('maps a click on the picture to the page and keeps it inside', () => {
+  it('maps a click on the letterboxed picture to the page and keeps it inside', () => {
     const box = { left: 10, top: 20, width: 640, height: 400 };
     expect(pagePoint(330, 220, box, { width: 1280, height: 800 })).toEqual({ x: 640, y: 400 });
     expect(pagePoint(-50, 900, box, { width: 1280, height: 800 })).toEqual({ x: 0, y: 800 });
+    // A wide box: the picture sits in its middle, with bands at the sides.
+    const wide = { left: 0, top: 0, width: 1000, height: 400 };
+    expect(pagePoint(500, 200, wide, { width: 1280, height: 800 })).toEqual({ x: 640, y: 400 });
+    expect(pagePoint(180, 0, wide, { width: 1280, height: 800 })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('the pill speaks for her browser open with no task, and the title bar says the state', () => {
+    expect(pillTarget(state())).toBeNull();
+    expect(pillTarget(state({ free: { id: 'x', state: 'working', mode: 'research' } }))).toEqual({ id: 'free', words: 'Her browser is open', needsYou: false });
+    expect(stateWords(null, false)).toBe('Nothing running');
+    expect(stateWords({ id: 'a', state: 'needs_you', mode: 'research' }, false)).toBe('Needs you');
+    expect(stateWords({ id: 'a', state: 'working', mode: 'research', in_control: true }, false)).toBe('You have control');
   });
 
   it('sends plain keys and letters, never a shortcut', () => {
@@ -90,13 +102,15 @@ describe('Settings → Her browser', () => {
       calls.push(`${method} ${path}`);
       return json(state({ installed: false }));
     };
-    const b = createHerBrowser(section, host(), api, document.body);
+    const b = createHerBrowser(section, api, document.body);
     await b.section();
     const form = section.children[0] as HTMLElement;
     expect(form.textContent).toContain('never your browser');
     const get = [...form.querySelectorAll('button')].find((x) => x.textContent?.startsWith('Get her a browser of her own (about 150 MB)'));
     expect(get).toBeTruthy();
     get!.click();
+    // Said at once, before the server answers.
+    expect((section.children[0] as HTMLElement).textContent).toContain('Getting her browser…');
     await flush();
     expect(calls).toContain('POST /api/browser/install');
     expect(b.summary()).toBe('Not set up');
@@ -105,7 +119,7 @@ describe('Settings → Her browser', () => {
   it('lists signed-in sites with Remove, and the switches start off', async () => {
     const section = host();
     const api = async () => json(state({ sites: ['library.org'] }));
-    const b = createHerBrowser(section, host(), api, document.body);
+    const b = createHerBrowser(section, api, document.body);
     await b.section();
     const form = section.children[0] as HTMLElement;
     expect(form.textContent).toContain('library.org');
@@ -118,7 +132,6 @@ describe('Settings → Her browser', () => {
 
 describe('the view', () => {
   it('shows a card whole, says it is on screen, and approves only on a click', async () => {
-    const view = host();
     const calls: string[] = [];
     const task = {
       id: 'abcdef0123456789',
@@ -132,9 +145,9 @@ describe('the view', () => {
       if (path.endsWith('/card')) return json({ summary: 'Send to example.com', detail: 'POST https://example.com/enquiry\n  name: Kim', expires_at: 0 });
       return json(state({ tasks: [task] }));
     };
-    const b = createHerBrowser(host(), view, api, document.body);
+    const b = createHerBrowser(host(), api, document.body);
     await b.view(task.id);
-    const wrap = view.children[0] as HTMLElement;
+    const wrap = b.overlay;
     expect(wrap.querySelector('pre')?.textContent).toBe('POST https://example.com/enquiry\n  name: Kim');
     expect(calls).toContain('POST /api/browser/tasks/abcdef0123456789/cards/p1/shown');
     expect(calls.some((c) => c === 'POST /api/browser/tasks/abcdef0123456789/cards/p1')).toBe(false);
@@ -145,19 +158,38 @@ describe('the view', () => {
   });
 
   it('offers Take control while she works, and I’m done once the user has it', async () => {
-    const view = host();
     let inControl = false;
     const api = async () =>
       json(state({ tasks: [{ id: 'abcdef0123456789', state: 'working', mode: 'research', url: 'https://example.com/', in_control: inControl }] }));
-    const b = createHerBrowser(host(), view, api, document.body);
+    const b = createHerBrowser(host(), api, document.body);
     await b.view('abcdef0123456789');
-    let labels = [...(view.children[0] as HTMLElement).querySelectorAll('button')].map((x) => x.textContent);
+    let labels = [...b.overlay.querySelectorAll('button')].map((x) => x.textContent);
     expect(labels).toContain('Take control');
     expect(labels).toContain('Stop');
     inControl = true;
     await b.view('abcdef0123456789');
-    labels = [...(view.children[0] as HTMLElement).querySelectorAll('button')].map((x) => x.textContent);
+    labels = [...b.overlay.querySelectorAll('button')].map((x) => x.textContent);
     expect(labels).toContain('I’m done');
     expect(labels).toContain('Keep me signed in here');
+  });
+});
+
+describe('the overlay', () => {
+  it('opens above everything, closes on Esc, and closing never stops the task', async () => {
+    // One app has one of these; the tests above left theirs open.
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return json(state({ tasks: [{ id: 'abcdef0123456789', state: 'working', mode: 'research', url: 'https://example.com/', origin: 'https://example.com' }] }));
+    };
+    const b = createHerBrowser(host(), api, document.body);
+    await b.view('abcdef0123456789');
+    expect(b.overlay.hasAttribute('open')).toBe(true);
+    expect(b.overlay.querySelector('.her-browser-site-name')?.textContent).toBe('example.com');
+    expect(b.overlay.querySelector('.her-browser-state')?.textContent).toBe('Working');
+    b.overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(b.overlay.hasAttribute('open')).toBe(false);
+    expect(calls.some((c) => c.includes('/stop'))).toBe(false);
   });
 });
