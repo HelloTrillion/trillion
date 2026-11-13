@@ -421,3 +421,59 @@ async def test_public_addresses_refuses_any_private_answer():
     assert e.value.kind == "private_address"
     with pytest.raises(web.Refused):
         await web.public_addresses("x.example", 443, none)
+
+
+def test_a_snapshot_drops_bare_boxes_and_keeps_what_can_be_read_or_pressed():
+    from trillion.browser.snapshot import shape
+
+    raw = "\n".join(
+        [
+            "- generic [ref=e1]:",
+            "  - generic [ref=e2]:",
+            '    - link "Hours" [ref=e3]:',
+            "      - /url: /hours",
+            "  - text: Open 9 to 6",
+        ]
+    )
+    snap = shape("https://m.example/", "M", raw)
+    assert "generic" not in snap.text
+    assert 'link "Hours" [ref=e3]' in snap.text and "Open 9 to 6" in snap.text
+    assert snap.links == ("https://m.example/hours",)
+
+
+def test_older_pages_are_cut_short_for_the_model_and_calls_stay_paired():
+    from trillion.brain.types import Msg, ToolResultBlock, ToolUseBlock
+    from trillion.browser.service import EARLIER, _older_pages_short
+
+    def page(n: int) -> list[Msg]:
+        return [
+            Msg(role="assistant", blocks=(ToolUseBlock(id=f"c{n}", name="browser_read", args={}),)),
+            Msg(role="user", blocks=(ToolResultBlock(tool_use_id=f"c{n}", content="x" * 2000),)),
+        ]
+
+    msgs = [m for n in range(4) for m in page(n)]
+    out = _older_pages_short(msgs)
+    results = [b for m in out for b in m.blocks if isinstance(b, ToolResultBlock)]
+    assert [r.tool_use_id for r in results] == ["c0", "c1", "c2", "c3"]
+    assert [r.content == EARLIER for r in results] == [True, True, False, False]
+
+
+def test_the_main_part_of_a_page_comes_first():
+    from trillion.browser.snapshot import compact
+
+    raw = "\n".join(
+        [
+            "- banner [ref=e1]:",
+            '  - link "Menu" [ref=e2]',
+            "- main [ref=e3]:",
+            '  - heading "Hours" [ref=e4]',
+            "  - text: Open 9 to 6",
+            "- contentinfo [ref=e5]:",
+            "  - text: Footer",
+        ]
+    )
+    assert compact(raw).splitlines()[:3] == [
+        "- main [ref=e3]:",
+        '  - heading "Hours" [ref=e4]',
+        "  - text: Open 9 to 6",
+    ]

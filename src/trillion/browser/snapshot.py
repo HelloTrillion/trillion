@@ -16,7 +16,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin
 
-MAX_CHARS = 12_000
+# Small enough that a local model reads a page in seconds, not minutes; the rest is
+# found with browser_find.
+MAX_CHARS = 6_000
 CUT = "\n[the rest of the page was cut; use browser_find to look for something in it]"
 _REF = re.compile(r"\[ref=([a-z0-9]+)\]")
 _URL = re.compile(r"^\s*-\s*/url:\s*(\S+)\s*$")
@@ -41,9 +43,35 @@ def links_in(text: str, base: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
+# A line that is only a box around other lines: no words, nothing to press.
+_BARE = re.compile(r"^\s*- (generic|group|list|listitem|none|presentation)( \[ref=[a-z0-9]+\])?:?$")
+
+
+_MAIN = re.compile(r"^(\s*)- main\b")
+
+
+def compact(raw: str) -> str:
+    """The snapshot without the lines that are only boxes round other lines, and the
+    page's main part first when it marks one, so a small budget is spent on what the
+    page is about rather than its menus."""
+    lines = [line for line in raw.splitlines() if not _BARE.match(line)]
+    for i, line in enumerate(lines):
+        m = _MAIN.match(line)
+        if m is None:
+            continue
+        depth = len(m.group(1))
+        end = i + 1
+        while end < len(lines) and len(lines[end]) - len(lines[end].lstrip()) > depth:
+            end += 1
+        rest = lines[:i] + lines[end:]
+        return "\n".join([*lines[i:end], *rest])
+    return "\n".join(lines)
+
+
 def shape(url: str, title: str, raw: str, budget: int = MAX_CHARS) -> Snapshot:
-    cut = len(raw) > budget
-    text = raw[:budget] + CUT if cut else raw
+    text = compact(raw)
+    cut = len(text) > budget
+    text = text[:budget] + CUT if cut else text
     return Snapshot(
         url=url,
         title=" ".join(title.split()),

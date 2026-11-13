@@ -46,6 +46,7 @@ from trillion.brain.types import (
     SystemBlock,
     TextBlock,
     TextDelta,
+    ToolResultBlock,
     Usage,
 )
 from trillion.browser.broker import Mode, host_of
@@ -747,7 +748,7 @@ class BrowserService:
         note = (
             "[host] You are out of time. " if why == "time" else "[host] You are out of steps. "
         ) + "In a few plain sentences, say what you found so far, with the addresses."
-        msgs = [*history, Msg(role="user", blocks=(TextBlock(text=note),))]
+        msgs = _older_pages_short([*history, Msg(role="user", blocks=(TextBlock(text=note),))])
         text: list[str] = []
         with contextlib.suppress(Exception):
             async with asyncio.timeout(FINAL_S):
@@ -779,8 +780,35 @@ class _Paused:
             yield TextDelta(text="Waiting for the user." if self._task.ask else "Stopped.")
             yield Done(stop_reason="end", usage=Usage())
             return
+        kw["messages"] = _older_pages_short(kw["messages"])
         async for ev in self._inner.stream(**kw):
             yield ev
+
+
+# What an earlier page reads as once a newer one came: a small model reads only the
+# page it is on, and every call stays quick.
+EARLIER = "(an earlier page, no longer shown; open or read it again if you need it)"
+KEEP_PAGES = 2
+LONG = 600
+
+
+def _older_pages_short(messages: Any) -> list[Msg]:
+    """The conversation with every long tool result but the newest two cut to a line.
+    Each call and its result stay paired; only what the older results say is shorter."""
+    msgs = list(messages)
+    seen = 0
+    out: list[Msg] = []
+    for msg in reversed(msgs):
+        blocks = []
+        for b in msg.blocks:
+            if isinstance(b, ToolResultBlock) and len(b.content) > LONG:
+                seen += 1
+                if seen > KEEP_PAGES:
+                    b = dataclasses.replace(b, content=EARLIER)
+            blocks.append(b)
+        out.append(dataclasses.replace(msg, blocks=tuple(blocks)))
+    out.reverse()
+    return out
 
 
 def _last_text(history: list[Msg]) -> str:
