@@ -663,6 +663,8 @@ class BrowserService:
                     max(left, 0.1),
                 )
             except TimeoutError:
+                if task.answer is not None:
+                    return Outcomes(outcome="answered", text=task.answer)
                 await task.log.event("stopped", code="time")
                 return await self._wrap_up(running, task, provider, system, history, "time")
             left -= time.monotonic() - began
@@ -763,8 +765,9 @@ class BrowserService:
 
 
 class _Paused:
-    """The helper's model, which says nothing more once the task waits on the user: the
-    turn ends there, however small the model, and the wait begins at once."""
+    """The helper's model, which says nothing more once the task has its answer, waits
+    on the user, or was stopped: the turn ends there, however small or slow the model,
+    and an answer given is never lost to the time limit."""
 
     def __init__(self, inner: ModelProvider, task: Task) -> None:
         self._inner = inner
@@ -776,8 +779,10 @@ class _Paused:
         return self._inner.pricing()
 
     async def stream(self, **kw: Any) -> AsyncIterator[ModelEvent]:
-        if self._task.ask is not None or self._task.broker.stopped is not None:
-            yield TextDelta(text="Waiting for the user." if self._task.ask else "Stopped.")
+        t = self._task
+        if t.answer is not None or t.ask is not None or t.broker.stopped is not None:
+            # Answered, waiting on the user, or stopped: nothing more to ask the model.
+            yield TextDelta(text="Done." if t.answer is not None else "Waiting for the user.")
             yield Done(stop_reason="end", usage=Usage())
             return
         kw["messages"] = _older_pages_short(kw["messages"])

@@ -357,3 +357,19 @@ def test_what_a_stopped_task_says_is_the_hosts(stop):
     words = STOPPED_WORDS[stop]
     assert {"payment": "a purchase is never made", "tls": "security certificate",
             "search": "turned her browser away"}[stop] in words  # fmt: skip
+
+
+@needs_chromium
+async def test_an_answer_ends_the_turn_and_is_never_lost_to_the_time_limit(
+    browser_rt, tmp_path, fixtures
+):
+    model = Steps(
+        call("browser_done", answer="It is 330 m tall."),
+        # A slow model's next call would run past the limit: it is never made.
+        say("And more…"),
+        delay_s=0.3,
+    )
+    async with service(browser_rt, tmp_path, model, time_limit_s=0.5) as (svc, _):
+        result = await run(svc)
+        assert result.outcome == "answered" and result.text == "It is 330 m tall."
+        assert model.calls == 1
