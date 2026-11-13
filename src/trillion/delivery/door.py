@@ -54,6 +54,8 @@ PLAYBACK_GRACE_MS = 120_000
 QUIET_TIMEOUT_S = 2.5
 # The same for the attention engine's celebration check: can't tell is no celebration.
 CELEBRATE_TIMEOUT_S = 1.0
+# Far longer than showing a notification takes; one not shown by then won't be.
+DRAIN_S = 5.0
 # The supernova's tiers, as the attention engine names them (`attention.celebrate`, not
 # imported: the door sits below the watchers).
 Tier = Literal["small", "medium", "large"]
@@ -402,10 +404,16 @@ class Door:
             sending.add_done_callback(self._sending.discard)
         return len(out)
 
-    async def drain(self) -> None:
-        """Wait for the quiet notifications on their way: for a stop, and for tests."""
-        while self._sending:
-            await asyncio.gather(*list(self._sending), return_exceptions=True)
+    async def drain(self, timeout_s: float = DRAIN_S) -> None:
+        """Wait, at most `timeout_s`, for the quiet notifications on their way: for a
+        stop, and for tests. Whatever is left then is cancelled. Never raises.
+
+        It looks at whether each is done, not at whether its done-callback has taken it
+        out of the set yet: a loop that shut down before running that callback leaves a
+        finished one behind, and waiting on it again would spin forever."""
+        left = await _drain(self._sending, timeout_s)
+        if left:
+            logger.debug("%d notification(s) cancelled at stop", left)
 
     async def _quiet(self, n: Notice, now: int, host: str | None) -> str | None:
         """Why to hold her voice for `n`, if anything. Past its moment it is not spoken
@@ -576,3 +584,28 @@ async def _finished(task: asyncio.Future[None]) -> None:
     while not task.done():
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait({task})
+
+
+async def _drain(tasks: set[asyncio.Future[None]], timeout_s: float) -> int:
+    """Wait, at most `timeout_s`, for `tasks` to finish, taking the done ones out as it
+    goes, then cancel what is left. How many were cancelled. Never raises."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        # In place: each one's done-callback discards it from this same set.
+        for t in [t for t in tasks if t.done()]:
+            tasks.discard(t)
+        if not tasks:
+            return 0
+        wait = deadline - loop.time()
+        if wait <= 0:
+            break
+        with contextlib.suppress(Exception):
+            await asyncio.wait(list(tasks), timeout=wait)
+    left = list(tasks)
+    for t in left:
+        t.cancel()
+    with contextlib.suppress(Exception):
+        await asyncio.wait(left, timeout=1.0)
+    tasks.clear()
+    return len(left)

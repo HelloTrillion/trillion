@@ -25,6 +25,7 @@ counted for whoever started it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import functools
 import json
@@ -112,6 +113,8 @@ class PriceBook:
 # How long a caller's `ready` may take before its row is written without its
 # conversation.
 READY_TIMEOUT_S = 5.0
+# Far longer than one usage row takes to write; one not written by then won't be.
+DRAIN_S = 5.0
 
 
 class Meter:
@@ -248,11 +251,35 @@ class Meter:
         task.add_done_callback(self._recording.discard)
         await asyncio.shield(task)
 
-    async def drain(self) -> None:
-        """Wait for every record still being written. Call it before the database
-        closes. Never raises."""
-        while self._recording:
-            await asyncio.gather(*list(self._recording), return_exceptions=True)
+    async def drain(self, timeout_s: float = DRAIN_S) -> None:
+        """Wait, at most `timeout_s`, for every record still being written, then cancel
+        what is left. Call it before the database closes. Never raises.
+
+        It looks at whether each is done, not at whether its done-callback has taken it
+        out of the set yet: a loop that shut down before running that callback leaves a
+        finished one behind, and waiting on it again would spin forever."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        recording = self._recording
+        while True:
+            # In place: each one's done-callback discards it from this same set.
+            for t in [t for t in recording if t.done()]:
+                recording.discard(t)
+            if not recording:
+                return
+            wait = deadline - loop.time()
+            if wait <= 0:
+                break
+            with contextlib.suppress(Exception):
+                await asyncio.wait(list(recording), timeout=wait)
+        left = list(recording)
+        # The count only: never what they were recording.
+        log.warning("%d usage record(s) not finished before close", len(left))
+        for t in left:
+            t.cancel()
+        with contextlib.suppress(Exception):
+            await asyncio.wait(left, timeout=1.0)
+        recording.clear()
 
 
 async def _close(stream: object) -> None:
