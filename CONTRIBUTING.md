@@ -2,6 +2,8 @@
 
 Thanks for being here. This project is early, which means your work will shape it more than it would in a mature repository.
 
+New here? Look for issues labelled [`good first issue`](https://github.com/HelloTrillion/trillion/labels/good%20first%20issue), and say on one that you're taking it. "Words you'll see" at the end of this page explains the project's terms.
+
 Read this page before your first pull request. It is short, and two sections of it are not negotiable: **the never list** and **sign-off**.
 
 ---
@@ -10,11 +12,11 @@ Read this page before your first pull request. It is short, and two sections of 
 
 Trillion is a voice-first agent with a face and a safety spine. Every feature has to strengthen at least one pillar:
 
-1. **The Galaxy** — the visual system: orb, landscape, constellation, arcs, celebrations.
+1. **The Galaxy** — the visual system: orb, landscape, arcs, celebrations.
 2. **The Voice** — real-time conversation and the personality that carries it.
 3. **The Spine** — safety enforced in code.
 
-A good idea that strengthens none of them is still a good idea, just not for this repository yet. Open a discussion before you build it, and we'll tell you honestly.
+A good idea that strengthens none of them is still a good idea, just not for this repository yet. Open an issue (a feature request) before you build it, and we'll tell you honestly.
 
 We are deliberately **not** competing on the number of chat integrations, on agents that write their own skills, or on a public skill marketplace.
 
@@ -55,25 +57,28 @@ If you think one of these rules is wrong, open an issue and argue the case. Don'
 git clone https://github.com/HelloTrillion/trillion.git
 cd trillion
 uv sync                 # Python 3.13 toolchain and dependencies
-uv run pytest           # every Python test
+uv run pytest           # every Python test (a few minutes; no keys or network needed)
 pnpm install            # JS workspace (Node >=22.22.2)
 pnpm --filter @hellotrillion/galaxy dev   # the orb, in your browser
 ```
 
-To run the app itself, see "Try it" in the [README](README.md). While working on the web app, run `uv run trillion run --dev` in one terminal and `pnpm --filter @hellotrillion/web dev` in another, and open the link the first one prints.
+To be sure no test touches your real keychain, set `PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring` first. Tests never play sound and never need a key; the evals, which do call a model, run only by hand ([`docs/TESTING.md`](docs/TESTING.md)).
+
+To run the app itself, see "Try it" in the [README](README.md); it can run free, with no keys. While working on the web app, run `uv run trillion run --dev` in one terminal and `pnpm --filter @hellotrillion/web dev` in another, and open the link the first one prints.
 
 Before you push, the same checks CI runs:
 
 ```bash
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 uv run pytest
-for s in containment_check check_agent_name check_raw_hex check_one_writer; do
+for s in containment_check check_agent_name check_raw_hex check_css check_plug_in check_one_writer; do
   uv run python scripts/$s.py --selftest && uv run python scripts/$s.py
 done
+uv run python scripts/version.py check
 pnpm typecheck && pnpm test && pnpm -r --if-present --filter '!@hellotrillion/desktop' run build
 ```
 
-On Windows, run the loop in Git Bash, or run the eight `uv run python scripts/…` commands one by one in PowerShell. In PowerShell, type `pnpm.cmd` wherever these steps say `pnpm`: the default execution policy refuses to run the `pnpm.ps1` shim.
+On Windows, run the loop in Git Bash, or run the `uv run python scripts/…` commands one by one in PowerShell. In PowerShell, type `pnpm.cmd` wherever these steps say `pnpm`: the default execution policy refuses to run the `pnpm.ps1` shim.
 
 [`docs/PRD.md`](docs/PRD.md) is the specification: every requirement carries an ID (`GAL-3`, `VOI-2`, `SPN-5`, …), and issues reference those IDs. [`docs/TESTING.md`](docs/TESTING.md) says how each one is proven. [`docs/architecture.md`](docs/architecture.md) is the map.
 
@@ -145,7 +150,7 @@ We use a DCO rather than a contributor license agreement, so there is nothing to
 
 ## Reporting bugs
 
-Open an issue with what you expected, what happened, and how to reproduce it. For anything voice-related, include the output of `trillion doctor` and your operating system and microphone or audio interface. Microphone bugs are almost always device-specific.
+Open an issue with the bug report form: what you expected, what happened, and how to reproduce it. For anything voice-related, include the output of `trillion doctor` and your operating system and microphone or audio interface. Microphone bugs are almost always device-specific.
 
 **Never paste an API key, a token or a log containing one.** Redact before you post.
 
@@ -154,3 +159,16 @@ For security vulnerabilities, follow [`SECURITY.md`](SECURITY.md) instead. Do no
 ## Code of conduct
 
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Reports go to me@hellotrillion.ai.
+
+## Words you'll see
+
+- **PRD**: the product specification, [`docs/PRD.md`](docs/PRD.md). Every requirement has an ID such as `SPN-2` (the prefix is the area, such as `GAL` the Galaxy, `VOI` the Voice, `SPN` the Spine, `BRN` the agent core, `MEM` memory, `CON` connectors, `SUR` surfaces and `EVL` evals).
+- **P0, P1, P2**: a requirement's priority, which is also its phase. P0 is part of **the Shell** (Phase 0, the first milestone); P1 is the private alpha; P2 the public beta.
+- **The spine**: the code every tool call passes through. It checks the tool, holds anything risky for your yes, and records what happened.
+- **Risk**: what a tool declares it can do: `read`, `write`, `irreversible` or `spend`. The last two always wait for your yes.
+- **The deny floor**: places no tool may touch, approved or not: keys, `.ssh`, `.git`, `.env` files and Trillion's own folder.
+- **Untrusted output**: what a tool brings back from outside (a page, an email, a file). It is marked as data, never followed as instructions.
+- **The soul**: `persona/SOUL.md`, her personality. Only the user can change it.
+- **MCP**: the Model Context Protocol, the common way to plug other apps' tools into an assistant.
+- **The airplane test**: Trillion must start and work with the network off.
+- **DCO**: the Developer Certificate of Origin, the `Signed-off-by` line above.
