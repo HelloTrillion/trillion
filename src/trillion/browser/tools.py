@@ -538,6 +538,11 @@ class BrowserDone(BrowserTool):
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if self.task.closed:
             return Precondition.failed("the task has ended")
+        if self.task.ask is not None:
+            return Precondition.failed(
+                f"waiting for the user ({self.task.ask.text}); stop here, you will be told "
+                "their answer"
+            )
         return Precondition.passed()
 
     async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:

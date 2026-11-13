@@ -296,6 +296,9 @@ ALLOWED_CALLS = {
     ("channels/answer.py", "Answerer.answer", "stream", "provider"): f"a channel: {HANDED}",
     ("api/speech.py", "Speaker._synthesize", "synthesize", "self._provider"): f"voice: {HANDED}",
     ("api/listening.py", "Listener.start", "open", "self._provider"): f"hearing: {HANDED}",
+    ("browser/service.py", "BrowserService._wrap_up", "stream", "provider"): (
+        f"a browsing task's last word: {HANDED}"
+    ),
 }
 # (module, receiver): what is not a provider at all.
 NOT_PROVIDERS = {
@@ -313,6 +316,7 @@ NOT_PROVIDERS = {
     ("tools/beneath.py", "os"): "a file descriptor",
     ("secrets/fallback.py", "os"): "a file descriptor",
     ("browser/runtime.py", "path"): "a file being hashed",
+    ("browser/service.py", "task"): "a browsing task opening its browser context",
 }
 NAMES = frozenset({"stream", "synthesize", "open"})
 

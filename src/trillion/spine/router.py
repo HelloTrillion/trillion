@@ -99,7 +99,7 @@ _REFRESH_READS_ONLY = "a refresh only reads"
 # Never replayed by a refresh, whatever their risk: a page is chosen by what she read
 # (SPN-5), and her own tools say nothing about a connector. Named here so the spine
 # needs nothing from the tools (tests check the names still match).
-REFRESH_NEVER = frozenset({"web_fetch", "describe_self"})
+REFRESH_NEVER = frozenset({"web_fetch", "describe_self", "browse"})
 REFRESH_NEVER_CATEGORIES = frozenset({"memory"})
 # Only she dispatches (AGT-2): never in a helper's chat or run, whatever the via.
 # Named here so the spine needs nothing from the tools (tests check the names match).
