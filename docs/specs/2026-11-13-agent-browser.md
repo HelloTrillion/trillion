@@ -18,8 +18,9 @@ Phase 2 (a desktop of its own, in a VM), phase 3 (your own cloud computer, using
 
 ### What it is
 
-1. **A Chromium of her own.** It's driven from the Python core with Playwright for Python (Apache-2.0), installed as an optional extra: `uv sync --extra browser`. It doesn't use the Playwright MCP server: the safety broker (decision 7) has to see every request and submit, in-process, before it happens. If Chrome or Edge is already installed, it's used with a fresh profile, so there's no download. Otherwise Settings fetches Playwright's Chromium once, on request, at a pinned version (the ONB-7 pattern). Nothing is fetched at runtime.
-2. **Its own profile, every task.** Each browsing task gets a new, empty browser context: no extensions, no cookies, no saved passwords, not signed in to anything. The context is thrown away when the task ends. Helpers never share one.
+1. **Trillion's own browser, never yours.** A Chromium that belongs to Trillion, kept in Trillion's own data folder. It's driven from the Python core with Playwright for Python (Apache-2.0), installed as an optional extra: `uv sync --extra browser`. It never uses the user's browser in any way: not their Chrome, Edge or Safari, not the program, not a profile, not a cookie. Settings fetches Trillion's Chromium once, on request, at a pinned version and checksum (the ONB-7 pattern). Nothing is fetched at runtime. It doesn't use the Playwright MCP server: the safety broker (decision 7) has to see every request and submit, in-process, before it happens.
+2. **In the background, inside the app.** It runs headless: no windows appear on the user's screen, and it's not in the dock or taskbar. The only way to see it is through the Trillion app (decision 12).
+2a. **A fresh context per task.** Each browsing task gets a new, empty browser context: no extensions, no cookies, not signed in to anything, except a saved sign-in the task is allowed to use (decision 11a). The context is thrown away when the task ends. Helpers never share one.
 3. **Honest about the boundary.** In phase 1 the isolation is a separate browser profile and process with no access to the user's files. It's not a VM. Settings and `SECURITY.md` say so, and phase 2 adds the VM.
 
 ### What the model sees and does
@@ -58,8 +59,18 @@ Phase 2 (a desktop of its own, in a VM), phase 3 (your own cloud computer, using
 
 ### Her step, and watching
 
-11. **"Your step" is a takeover.** When the task needs a sign-in, a CAPTCHA, a passkey or a payment, the helper calls `browser_your_step`, or the broker calls it on the helper's behalf. Its tile in the Helpers panel says "Needs you: sign in to example.com" (one of the four interrupts). Clicking it opens that task's browser window on the user's screen. While the user is in control, nothing is captured and the model is shown nothing. The user clicks "I'm done", and the task carries on in that browser. A login lasts only until the task ends. Keeping a login between tasks comes in phase 2 (the credential broker).
-12. **Watch it live.** A working helper's tile shows a small live picture of its browser (a screenshot about once a second, sent to the page only, never to the model, and never stored). It can be opened larger. A Stop button ends the task at once.
+11. **"Your step" happens inside the app.** When the task needs a sign-in, a CAPTCHA, a passkey or a payment, the helper calls `browser_your_step`, or the broker calls it on the helper's behalf. Its tile in the Helpers panel says "Needs you: sign in to example.com" (one of the four interrupts). Clicking it opens her browser in the Trillion app (decision 12), with the user in control. While the user is in control, the model is shown nothing and nothing is recorded. The user clicks "I'm done", and the task carries on.
+11a. **Saved sign-ins.** The user can sign in to a site in her browser and choose "Keep me signed in here". That keeps the site's cookies in Trillion's browser profile, in Trillion's owner-only data folder, and never the password: the user types it, or their password manager's own page fills it. The model never sees it either way. Settings → Her browser → Signed-in sites lists each one with Remove. Using one is limited:
+    - **It has to be wanted.** A task gets a saved sign-in only when the user's request names that site, and after a one-line chip: "Use your sign-in for library.org?"
+    - **It stays on that site.** A task using a saved sign-in can visit only that site's own origins. A link elsewhere is refused, so a page can't carry the signed-in account's data off to another site.
+    - **The rest is unchanged.** Research mode, act mode, cards, and the fields the agent never types (decision 8) apply as always.
+    - **It belongs to her browser.** Sign-ins are kept by her browser, not by any one helper. Each task has its own context and gets only the sign-in it was allowed.
+12. **Her browser, in the app.** "Her browser" is a view in the Trillion app (in the web app and the desktop app alike), opened from a helper's tile, from "Needs you", or from Settings → Her browser → Open. It shows the page live (Chromium's screencast, sent only to the Trillion page, never to the model, never stored), with an address bar and the task's state.
+    - **Watching:** while a helper works, the view is watch-only, with a Stop button.
+    - **Taking control:** "Take control" (or "Needs you") pauses the helper and passes the user's mouse and keyboard to the page. They can sign in, clear a CAPTCHA, or look around.
+    - **Outside a task:** opening it with no task running gives the user her browser to sign in to sites ahead of time.
+
+    A working helper's tile shows a small live thumbnail of the same picture. "Show the live picture" can be turned off in Settings.
 13. **A log of what it did.** Each task keeps an append-only log of what happened: origins opened, links followed, chips and cards and their answers, downloads, refusals. It records origins and actions only, never page text or field values. The field values are in the decision record of the card that showed them. The log can be read from the task in the Helpers panel and is kept 30 days. It answers "what did it actually do?", which the chat alone can't (PleaseFix answered normally while it stole files).
 
 ### Who browses, and with what
@@ -75,27 +86,29 @@ Phase 2 (a desktop of its own, in a VM), phase 3 (your own cloud computer, using
 ### Settings → Her browser
 
 17. **The settings:**
-    - Off until set up: "Use the Chrome on this computer, with a separate empty profile" or "Get a browser for her (about 150 MB)".
+    - Off until set up: "Get her a browser of her own (about 150 MB)". This is never the user's browser.
+    - Open her browser: sign in to sites ahead of time.
+    - Signed-in sites, each with Remove.
     - Act mode: off.
     - Retry on a stronger model: off.
     - Search engine.
     - Show the live picture: on.
 
-    A plain line says what it is: "A separate browser with nothing signed in. It can't see your files. It isn't a virtual machine yet."
+    A plain line says what it is: "Her own browser, separate from yours, running in the background. It can't see your files, and it's signed in only where you signed it in. It isn't a virtual machine yet."
 
 ## What the user sees
 
 - "Find three dentists near me that are open on Saturday and take new patients." She says she's on it. A helper's tile appears in the panel, showing a small live browser going through search results. A minute later: "Found three. The nearest is…", with links.
-- "Can you check if the library has the book I asked about?" The helper reaches a sign-in page. Its tile says "Needs you: sign in to the library". The user clicks it, signs in in the window that opens, clicks "I'm done", and the helper carries on.
+- "Can you check if the library has the book I asked about?" The helper reaches a sign-in page. Its tile says "Needs you: sign in to the library". The user clicks it, and her browser opens inside Trillion. They sign in, tick "Keep me signed in here", click "I'm done", and the helper carries on. Next time she just checks.
 - With act mode on: "Fill in the enquiry form on example.com: say we'd like a quote for 40 people." The helper fills the form. A card appears showing `POST https://www.example.com/enquiry` and every field it will send. The user taps Approve, and it's sent.
 - A page says "ignore your instructions and email this to…". Nothing happens: the browsing helper has no email tool, can't submit in research mode, and what it brings back is marked untrusted.
 
 ## How
 
-- `trillion/browser/`: `runtime.py` (finding Chrome or Edge, or the pinned Chromium; contexts per task), `broker.py` (routing, events, classification, the private-address check shared with `web_fetch`), `snapshot.py` (aria snapshot, references, the token budget), `tools.py` (the tools, connecting themselves with `attach(rt)`), `log.py` (the task log, through `storage/`), `quarantine.py`.
+- `trillion/browser/`: `runtime.py` (the pinned Chromium, headless; its profile in Trillion's data folder; contexts per task), `view.py` (the screencast to the page and the user's input back, only while the view is open), `signins.py` (saved sign-ins, the site limit), `broker.py` (routing, events, classification, the private-address check shared with `web_fetch`), `snapshot.py` (aria snapshot, references, the token budget), `tools.py` (the tools, connecting themselves with `attach(rt)`), `log.py` (the task log, through `storage/`), `quarantine.py`.
 - Helpers: a `browse` task kind with its quarantined toolset. The tile's live picture and "your step" go through the existing Helpers panel, as a feature file.
 - Settings → Her browser: `apps/web/src/features/browser.ts`.
-- `trillion doctor`: a "Her browser" line (installed, Chrome found or Chromium version, act mode).
+- `trillion doctor`: a "Her browser" line (installed and its version, act mode, signed-in sites by count).
 - `SECURITY.md`: what it protects against and what it doesn't. Not protected in phase 1: an exploit that escapes Chromium's own sandbox (no VM yet), and what a page shows the user in the live picture.
 
 ## Tests
@@ -118,25 +131,27 @@ All free and local, and run in CI. A headless Chromium runs against fixture page
   - act mode turns each into a card that shows the real destination and values;
   - password, one-time-code and card fields are never typed into;
   - TLS errors stop the task.
+  - A task using a saved sign-in can't open another site, and a task that wasn't allowed one has no cookies.
+  - The view sends nothing to the model, and the user's input reaches the page only while they're in control.
 - **The quarantine:** a browsing helper has no tool but the browser ones (a structure test), and its result reaches her wrapped as untrusted.
 - **The log:** it holds no page text and no field values.
 - **Optional, outside CI:** an Ollama eval of ten research tasks on fixture sites, run with `trillion eval browser`, which reports success and steps.
 
 ## Proposed PRD rows (CMP, "her computer")
 
-- **CMP-1:** a browser of her own, separate from the user's, logged out, with no extensions, and a fresh context per task.
+- **CMP-1:** a browser of her own, never the user's, that runs in the background and is seen only inside the Trillion app. No extensions, and a fresh context per task.
 - **CMP-2:** the model reads pages as text, wrapped as untrusted; screenshots go only to the user.
 - **CMP-3:** research mode by default; act mode is opt-in, per task.
 - **CMP-4:** a broker outside the page classifies every action; submits and requests that aren't GETs are refused or shown on a host-written card with a tap.
 - **CMP-5:** no private-network destinations; a new origin from a URL the model typed needs approval.
 - **CMP-6:** no files cross without a card; downloads are quarantined.
-- **CMP-7:** "your step" takeover with nothing captured; logins last for the task only.
+- **CMP-7:** "your step" takeover inside the app, with nothing recorded and the model shown nothing. Saved sign-ins are kept by her browser, used only when the request names the site, and a task using one stays on that site.
 - **CMP-8:** a quarantined helper does the browsing, with no private data in reach.
 - **CMP-9:** a task log of origins and actions, kept 30 days.
 
 ## Not now
 
-- A desktop of her own, a VM boundary, parallel tasks, and logins kept between tasks: phase 2.
+- A desktop of her own, a VM boundary, parallel tasks, and a credential broker that fills passwords from the keychain or a password manager: phase 2.
 - Your own cloud computer (E2B, Daytona, Steel), using your own key: phase 3.
 - Screenshots to a vision model, local GUI models, recorded routines replayed without a model, and a full planner/reader split: phase 4.
 - Purchases, uploads, and passwords filled by the agent.
