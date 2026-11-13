@@ -365,6 +365,16 @@ export const climbing = (o: Onboarding | null): boolean => o !== null && CLIMBIN
 /** True while she is waiting on an answer, so what is typed goes to her script. */
 export const active = (o: Onboarding | null): boolean => o !== null && ASKING.includes(o.step);
 
+/**
+ * The step that is asking the user something now, on a first run, if it was not told
+ * already (the Seamless measures count them, as numbers only). `sharing` is the page at
+ * work, not a question; a returning user is not on a first run.
+ */
+export function newlyAsked(o: Onboarding | null, told: ReadonlySet<Step>): Step | null {
+  if (o === null || o.returning || !active(o) || o.step === 'sharing' || told.has(o.step)) return null;
+  return o.step;
+}
+
 function add(o: Onboarding, patch: Partial<Onboarding>, ...lines: Line[]): Onboarding {
   return { ...o, ...patch, lines: [...o.lines, ...lines] };
 }

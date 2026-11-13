@@ -22,6 +22,7 @@ import {
   type Profile,
   type Offer,
   type Ready,
+  type Step,
   active,
   answer,
   begin,
@@ -31,6 +32,7 @@ import {
   decide,
   failed,
   folderOffers,
+  newlyAsked,
   placeholder,
   placesFound,
   saved,
@@ -842,7 +844,16 @@ thinkingEl.setAttribute('aria-hidden', 'true');
 // The words she has made out so far, while the user is still speaking.
 const hearingEl = el('p', 'msg user hearing');
 
+// Onboarding steps already counted as a question on this page (the Seamless measures).
+const obAsked = new Set<Step>();
+
 function render(): void {
+  const asking = newlyAsked(ob, obAsked);
+  if (asking !== null) {
+    obAsked.add(asking);
+    // A count, nothing more: no answer and no name goes with it.
+    void api('POST', '/api/seamless/asked', {}).catch(() => undefined);
+  }
   const nearBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 80;
   // Streaming text touches only the last node; anything else rebuilds the list.
   const all = entries();

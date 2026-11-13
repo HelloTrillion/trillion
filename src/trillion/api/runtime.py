@@ -18,6 +18,7 @@ import aiosqlite
 
 from trillion import paths
 from trillion.api.jobs import Jobs
+from trillion.api.writes import Writes
 from trillion.attention import settings as watch_prefs
 from trillion.attention.celebrate import Celebrations
 from trillion.attention.mail import GoogleMail, UrgentEmail
@@ -94,6 +95,7 @@ from trillion.storage.sqlite.attention_store import SqliteAttentionStore
 from trillion.storage.sqlite.board_store import SqliteBoardStore
 from trillion.storage.sqlite.conversation_store import SqliteConversationStore, SqlitePreferences
 from trillion.storage.sqlite.helper_store import SqliteHelperStore
+from trillion.storage.sqlite.measures_store import SqliteMeasuresStore
 from trillion.storage.sqlite.memory_store import SqliteMemoryStore
 from trillion.storage.sqlite.notes_store import SqliteNotesStore
 from trillion.storage.sqlite.schedule_store import SqliteScheduleStore
@@ -504,6 +506,12 @@ class Runtime:
     # The conversations' connection, for a feature's read-only queries (a tool's
     # `attach`): a read here never waits on a write elsewhere.
     read_conn: aiosqlite.Connection | None = None
+    # The Seamless measures (docs/specs/2026-11-12-seamless.md): numbers and times only,
+    # on this computer only (ONB-6). None where a test builds a runtime without one.
+    measures: SqliteMeasuresStore | None = None
+    # Its writes, which go on beside a turn: drained, or cancelled, before the database
+    # closes, so none outlives this runtime.
+    measure_writes: Writes = field(default_factory=Writes)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     # Pages being told the shares changed.
     _telling: set[asyncio.Task[None]] = field(default_factory=set)
@@ -1490,6 +1498,7 @@ class Runtime:
         # Rows whose caller was stopped above are still being written: they finish
         # before the database closes.
         await self.meter.drain()
+        await self.measure_writes.close()
         for conn in self._connections:
             await conn.close()
         self._connections.clear()
@@ -1654,6 +1663,7 @@ async def open_runtime(
         token_from_app=token_from_app,
         attention_settings=watch_prefs.from_json(await preferences.get(OWNER, watch_prefs.PREF)),
         read_conn=chat_conn,
+        measures=SqliteMeasuresStore(chat_conn),
         _connections=[spine_conn, chat_conn, schedule_conn, attention_conn, helper_conn],
     )
     # Before anything that can reach a provider is started: the gate never fails open.

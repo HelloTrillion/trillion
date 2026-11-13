@@ -16,6 +16,9 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from trillion.storage.sqlite import measures_store
+from trillion.storage.sqlite.measures_store import Measures
+
 _MIGRATION = re.compile(r"^(\d{3}|\d{12})_([a-z0-9_]+)\.sql$")
 
 
@@ -140,3 +143,15 @@ def schedules(path: Path, owner_id: str, since_ms: int) -> dict[str, Any] | None
         "zone": str(soonest[1]) if soonest is not None else "",
         "troubled": int(troubled),
     }
+
+
+def seamless(path: Path, owner_id: str, now_ms: int) -> Measures | None:
+    """The Seamless measures (`trillion doctor --seamless`). None with no database yet,
+    or one that cannot be read; a part from before its table reads as not recorded."""
+    if not path.exists():
+        return None
+    try:
+        with contextlib.closing(_read_only(path)) as conn:
+            return measures_store.read_sync(conn, owner_id, now_ms)
+    except sqlite3.Error:
+        return None
