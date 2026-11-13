@@ -18,6 +18,7 @@ import aiosqlite
 
 from trillion import paths
 from trillion.api.jobs import Jobs
+from trillion.api.writes import Writes
 from trillion.attention import settings as watch_prefs
 from trillion.attention.celebrate import Celebrations
 from trillion.attention.mail import GoogleMail, UrgentEmail
@@ -507,6 +508,9 @@ class Runtime:
     # The Seamless measures (docs/specs/2026-11-12-seamless.md): numbers and times only,
     # on this computer only (ONB-6). None where a test builds a runtime without one.
     measures: SqliteMeasuresStore | None = None
+    # Its writes, which go on beside a turn: drained, or cancelled, before the database
+    # closes, so none outlives this runtime.
+    measure_writes: Writes = field(default_factory=Writes)
     _connections: list[aiosqlite.Connection] = field(default_factory=list)
     # Pages being told the shares changed.
     _telling: set[asyncio.Task[None]] = field(default_factory=set)
@@ -1487,6 +1491,7 @@ class Runtime:
         # Rows whose caller was stopped above are still being written: they finish
         # before the database closes.
         await self.meter.drain()
+        await self.measure_writes.close()
         for conn in self._connections:
             await conn.close()
         self._connections.clear()

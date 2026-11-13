@@ -11,8 +11,8 @@ What is recorded, and from where:
   decision record (SPN-17), which already logs every card and its answer.
 
 Numbers and times only, and nothing leaves the machine (ONB-6). Recording never fails a
-turn, and a turn never waits on it: each write goes on beside the turn, and a failure
-is logged at debug, by its class name only.
+turn, and a turn never waits on it: each write goes on beside the turn, owned by the
+runtime (`api/writes.py`), and a failure is logged at debug, by its class name only.
 
 `GET /api/seamless` reads them, behind the session token like every /api/ route
 (SPN-11), for the one line in Settings → Confirmations. `POST /api/seamless/asked` is
@@ -21,40 +21,22 @@ the page saying an onboarding step asked something; it carries nothing.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections.abc import Awaitable
 from typing import Any
 
 from fastapi import APIRouter
 
 from trillion.api.runtime import OWNER, Runtime
 from trillion.api.trace import Trace
+from trillion.api.writes import SETTLE_S
 
 logger = logging.getLogger(__name__)
 
-# The writes on their way. A turn never waits on one: the moment is taken when it
-# happens, and the write goes on beside the turn, so recording adds no pause to it and
-# changes nothing about what the turn does or in what order.
-_writing: set[asyncio.Task[None]] = set()
 
-
-def _beside(what: str, write: Awaitable[None]) -> None:
-    async def run() -> None:
-        try:
-            await write
-        except Exception as e:
-            logger.debug("%s not recorded: %s", what, type(e).__name__)
-
-    task = asyncio.get_running_loop().create_task(run())
-    _writing.add(task)
-    task.add_done_callback(_writing.discard)
-
-
-async def settle() -> None:
-    """Wait for the writes on their way (tests, and anything that reads straight after)."""
-    while _writing:
-        await asyncio.gather(*list(_writing), return_exceptions=True)
+async def settle(rt: Runtime, timeout_s: float = SETTLE_S) -> bool:
+    """Wait, for a bounded time, for this runtime's writes on their way (tests, and
+    anything that reads straight after). True if they all finished."""
+    return await rt.measure_writes.settle(timeout_s)
 
 
 def opened(rt: Runtime) -> None:
@@ -62,7 +44,9 @@ def opened(rt: Runtime) -> None:
     store = rt.measures
     if store is None:
         return
-    _beside("first run", store.opened(OWNER, at=rt.clock(), model_ready=rt.provider is not None))
+    rt.measure_writes.start(
+        "first run", store.opened(OWNER, at=rt.clock(), model_ready=rt.provider is not None)
+    )
 
 
 def replied(rt: Runtime) -> None:
@@ -70,7 +54,7 @@ def replied(rt: Runtime) -> None:
     store = rt.measures
     if store is None:
         return
-    _beside("first reply", store.replied(OWNER, at=rt.clock()))
+    rt.measure_writes.start("first reply", store.replied(OWNER, at=rt.clock()))
 
 
 def tool_turn(rt: Runtime, trace: Trace, *, voiced: bool) -> None:
@@ -79,7 +63,7 @@ def tool_turn(rt: Runtime, trace: Trace, *, voiced: bool) -> None:
     in_time = trace.spoke_in_time()
     if store is None or in_time is None:
         return
-    _beside(
+    rt.measure_writes.start(
         "tool turn",
         store.tool_turn(OWNER, at=rt.clock(), voiced=voiced, spoke_in_time=in_time),
     )

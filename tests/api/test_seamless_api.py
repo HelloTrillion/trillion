@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -26,7 +28,7 @@ def settle(app: App) -> None:
     """Recording goes on beside a turn: wait for it before reading what was kept."""
     portal = app.client.portal
     assert portal is not None
-    portal.call(seamless.settle)
+    assert portal.call(seamless.settle, app.rt)
 
 
 def get(app: App) -> dict[str, Any]:
@@ -161,6 +163,30 @@ def test_a_failure_to_record_never_fails_the_turn(make: Any) -> None:
     assert only(msgs, "turn.complete")["stop"] == "end"
     settle(app)
     assert app.client.post(ASKED, json={}, headers=app.auth).status_code == 204
+
+
+def test_a_write_that_never_finishes_holds_up_nothing(make: Any) -> None:
+    """A write stuck forever: the turn is not held, settling gives up in its time, and
+    closing the runtime cancels it rather than waiting on it."""
+    app: App = make(say("Still here."))
+    stuck = asyncio.Event()
+
+    class Stuck:
+        async def opened(self, *_: Any, **__: Any) -> None:
+            await stuck.wait()
+
+        replied = tool_turn = opened
+
+    app.rt.measures = Stuck()  # type: ignore[assignment]
+    portal = app.client.portal
+    assert portal is not None
+    started = time.monotonic()
+    with app.connect() as chat:
+        assert only(chat.say("hello"), "turn.complete")["stop"] == "end"
+    assert portal.call(seamless.settle, app.rt, 0.2) is False
+    portal.call(asyncio.wait_for, app.rt.measure_writes.close(timeout_s=0.2), 5.0)
+    assert portal.call(seamless.settle, app.rt, 0.2) is True
+    assert time.monotonic() - started < 10.0
 
 
 # ── Whether she was heard in time, with fixed clocks ──────────────────────
