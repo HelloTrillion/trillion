@@ -758,3 +758,22 @@ def test_your_voice_says_when_its_file_cannot_be_opened(home: Path) -> None:
 
 def test_the_examination_includes_your_voice(home: Path, offers: list) -> None:
     assert examine()["Your voice"].status == "info"
+
+
+def test_check_plugins_is_silent_when_nothing_is_skipped(monkeypatch):
+    import trillion.spine.registry as registry
+
+    monkeypatch.setattr(registry, "skipped_plugins", lambda: [])
+    assert doctor.check_plugins() is None
+
+
+def test_check_plugins_counts_and_names_skipped_tool_plugins(monkeypatch):
+    import trillion.spine.registry as registry
+
+    monkeypatch.setattr(registry, "skipped_plugins", lambda: ["evil_tool"])
+    c = doctor.check_plugins()
+    assert c is not None and c.status == "info"
+    assert c.detail == "Skipped 1 tool plugin that aren't part of Trillion: evil_tool"
+    monkeypatch.setattr(registry, "skipped_plugins", lambda: ["a", "b"])
+    c = doctor.check_plugins()
+    assert c is not None and c.detail.startswith("Skipped 2 tool plugins ")

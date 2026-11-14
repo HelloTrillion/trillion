@@ -232,3 +232,85 @@ def test_redefine_changes_only_the_description_and_schema(change):
     with pytest.raises(RegistryError, match="only its description and input_schema"):
         r.redefine("good_tool", d(description="new", **change))
     assert r.definition("good_tool") == before
+
+
+# ── CON-6a: only Trillion's own entry points are imported ────────────────
+
+
+class _Dist:
+    def __init__(self, name: object) -> None:
+        self.name = name
+
+
+class _EP:
+    """An entry point as `discover` reads it: a name, a value, a dist, and `load`."""
+
+    def __init__(self, name: str, value: str, dist: object, obj: object = None) -> None:
+        self.name = name
+        self.value = value
+        self.dist = dist
+        self._obj = obj
+        self.loads = 0
+
+    def load(self) -> object:
+        self.loads += 1
+        return self._obj
+
+
+def _faked(monkeypatch: pytest.MonkeyPatch, eps: list[_EP]) -> None:
+    import trillion.spine.registry as registry
+
+    monkeypatch.setattr(registry, "entry_points", lambda *, group: list(eps))
+
+
+def _tool(name: str) -> type[BaseTool]:
+    return type(make(d(name=name)))
+
+
+def test_discover_never_loads_another_packages_entry_point(monkeypatch, caplog):
+    ours = _EP("good_tool", "trillion.tools.x:T", _Dist("trillion"), _tool("good_tool"))
+    foreign = _EP("evil_tool", "trillion.tools.evil:T", _Dist("trillion-evil"))
+    _faked(monkeypatch, [ours, foreign])
+    with caplog.at_level("WARNING", logger="trillion.spine.registry"):
+        r = ToolRegistry.discover()
+    assert foreign.loads == 0
+    assert ours.loads == 1
+    assert r.get("good_tool") is not None
+    assert "evil_tool" in caplog.text
+    # Only the name: never what it points at.
+    assert "trillion.tools.evil" not in caplog.text
+
+
+def test_discover_skips_an_entry_point_with_no_distribution(monkeypatch):
+    lost = _EP("lost_tool", "trillion.tools.lost:T", None)
+    nameless = _EP("nameless_tool", "trillion.tools.nameless:T", _Dist(None))
+    _faked(monkeypatch, [lost, nameless])
+    r = ToolRegistry.discover()
+    assert lost.loads == 0 and nameless.loads == 0
+    assert r.definitions() == ToolRegistry().definitions()
+
+
+@pytest.mark.parametrize("dist", ["trillion", "Trillion", "TRILLION"])
+def test_discover_loads_first_party_entry_points_by_normalized_name(monkeypatch, dist):
+    ours = _EP("good_tool", "trillion.tools.x:T", _Dist(dist), _tool("good_tool"))
+    _faked(monkeypatch, [ours])
+    assert ToolRegistry.discover().get("good_tool") is not None
+    assert ours.loads == 1
+
+
+def test_skipped_plugins_names_them_without_loading(monkeypatch):
+    from trillion.spine.registry import skipped_plugins
+
+    ours = _EP("good_tool", "trillion.tools.x:T", _Dist("trillion"))
+    foreign = _EP("evil_tool", "evil:T", _Dist("trillion_tools_plus"))
+    _faked(monkeypatch, [ours, foreign])
+    assert skipped_plugins() == ["evil_tool"]
+    assert ours.loads == 0 and foreign.loads == 0
+
+
+def test_the_installed_trillion_has_no_skipped_tools():
+    """However Trillion is installed here (editable in development), its own tools are
+    reported as its own, so none of them is skipped."""
+    from trillion.spine.registry import skipped_plugins
+
+    assert skipped_plugins() == []

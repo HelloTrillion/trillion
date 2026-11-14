@@ -61,12 +61,13 @@ from trillion.spine.contract import (
 from trillion.spine.hashing import args_hash, canonical_json
 from trillion.spine.loop_guard import LoopGuard, Verdict
 from trillion.spine.lossless import encode
-from trillion.spine.neutralize import neutralize
+from trillion.spine.neutralize import Counts, as_json, cleaned
+from trillion.spine.neutralize import shown as shown_counts
 from trillion.spine.refusal import plain_no
 from trillion.spine.registry import ROUTINE_BOARD, ToolRegistry, runs_in_routine, runs_unattended
 from trillion.spine.retention import RETENTION_DAYS, RETENTION_MS
 from trillion.spine.store import DecisionIn, SpineStore
-from trillion.spine.untrusted import wrap
+from trillion.spine.untrusted import wrap_counted
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,9 @@ class RouterResponse:
     # Approved by the owner's own words this turn (SPN-20): its card is shown already
     # settled. Never sent to the model; `detail` tells it.
     own_words: bool = False
+    # What the neutralizer removed from `content`, as counts by kind (SPN-6), for the
+    # audit. Never sent to the model, and never the removed text.
+    neutralized: Counts = ()
 
     def to_model(self) -> str:
         """The JSON the model sees. Only fields that carry information."""
@@ -218,14 +222,14 @@ def _refused(reason: Refusal, detail: str = "") -> RouterResponse:
 
 def _tool_detail(text: str) -> str:
     """Text a tool wrote (a precheck reason, say) is defanged and cut before the model sees it."""
-    return neutralize(text)[0][:_TOOL_DETAIL_LIMIT]
+    return cleaned(text, "a tool's detail")[:_TOOL_DETAIL_LIMIT]
 
 
 def safe_summary(text: str) -> str:
     """The approval card is what the user consents to (SPN-2a). Whatever a tool put in it
     (a model-chosen file name, say) is neutralized, kept to one line with no control or
     format characters (no bidi overrides), and cut to a length a card can show."""
-    clean = neutralize(text)[0]
+    clean = cleaned(text, "a card's summary")
     for ws in ("\r\n", "\n", "\r", "\t"):
         clean = clean.replace(ws, " ")
     clean = "".join(c for c in clean if unicodedata.category(c) not in ("Cc", "Cf"))
@@ -1204,7 +1208,7 @@ class Router:
             logger.warning("tool %s raised %s", name, type(e).__name__)
             return ToolResult(
                 ok=False,
-                content=neutralize(str(e))[0][:500],
+                content=cleaned(str(e), "a tool's error")[:500],
                 effect="unknown",
                 error_kind=type(e).__name__,
             )
@@ -1218,28 +1222,41 @@ class Router:
         warning: str | None = None,
     ) -> RouterResponse:
         d = tool.definition
+        found: Counts = ()
         if d.trusted_output:
-            shown = content
+            text = content
         else:
-            shown = wrap(d.name, content, lossless=d.lossless_output)
+            text, found = wrap_counted(d.name, content, lossless=d.lossless_output)
         if d.lossless_output and content:
             note = _lossless_note(content)
             warning = "; ".join(w for w in (warning, note) if w) or None
         kind = _OUTCOME.get(status, "failed")
-        return RouterResponse(status=kind, content=shown, error_kind=error_kind, warning=warning)
+        return RouterResponse(
+            status=kind, content=text, error_kind=error_kind, warning=warning, neutralized=found
+        )
 
     def _from_record(self, a: PendingAction) -> RouterResponse:
         detail = a.outcome_detail or ""
         tool = self._get(a.tool)
         trusted = tool is not None and tool.definition.trusted_output
-        shown = detail if trusted or not detail else wrap(a.tool, detail)
+        found: Counts = ()
+        if trusted or not detail:
+            text = detail
+        else:
+            text, found = wrap_counted(a.tool, detail)
         match a.status:
             case Status.SUCCEEDED:
-                return RouterResponse(status="succeeded", pending_id=a.id, content=shown)
+                return RouterResponse(
+                    status="succeeded", pending_id=a.id, content=text, neutralized=found
+                )
             case Status.FAILED:
-                return RouterResponse(status="failed", pending_id=a.id, content=shown)
+                return RouterResponse(
+                    status="failed", pending_id=a.id, content=text, neutralized=found
+                )
             case Status.UNKNOWN:
-                return RouterResponse(status="unknown", pending_id=a.id, content=shown)
+                return RouterResponse(
+                    status="unknown", pending_id=a.id, content=text, neutralized=found
+                )
             case Status.REJECTED:
                 return RouterResponse(status="cancelled", pending_id=a.id)
             case Status.APPROVED | Status.EXECUTING:
@@ -1291,8 +1308,15 @@ class Router:
                 duration_ms=max(0, now - start),
                 session_id=ctx.session_id,
                 at=now,
+                neutralized=as_json(response.neutralized),
             )
         )
+        if response.neutralized:
+            # Counts only: what was removed is someone else's hostile words (SPN-6).
+            # Not said to the user: a fence is common in harmless text.
+            logger.info(
+                "neutralized %s in the result of %s", shown_counts(response.neutralized), tool
+            )
         return response
 
     async def _audit_resolution(
