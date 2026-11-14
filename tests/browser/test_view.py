@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,8 @@ def test_a_saved_sign_in_keeps_only_its_own_site(tmp_path):
     signins = SignIns(tmp_path / "signins")
     assert signins.keep("library.org", state) == 2
     path = tmp_path / "signins" / "library.org.json"
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    if sys.platform != "win32":  # Windows has no POSIX modes
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
     assert signins.sites() == ["library.org"]
     assert signins.named(frozenset({"www.library.org", "other.example"})) == "library.org"
     assert signins.named(frozenset({"other.example"})) is None

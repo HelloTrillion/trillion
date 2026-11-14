@@ -7,6 +7,7 @@ import asyncio
 import base64
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -372,10 +373,11 @@ def test_a_long_name_keeps_its_ending():
 def test_a_kept_file_is_owner_only_and_never_runnable(tmp_path: Path):
     q = Quarantine(tmp_path / "q")
     _, path = q.place("a" * 16, "run.sh")
-    path.write_text("#!/bin/sh\n")
+    path.write_bytes(b"#!/bin/sh\n")
     os.chmod(path, 0o700)
-    assert q.settle(path) == len("#!/bin/sh\n")
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert q.settle(path) == len(b"#!/bin/sh\n")
+    if sys.platform != "win32":  # Windows has no POSIX modes; its folder ACL governs
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     with pytest.raises(ValueError):
         q.folder("../escape")
 
