@@ -66,7 +66,7 @@ from trillion.spine.neutralize import shown as shown_counts
 from trillion.spine.refusal import plain_no
 from trillion.spine.registry import ROUTINE_BOARD, ToolRegistry, runs_in_routine, runs_unattended
 from trillion.spine.retention import RETENTION_DAYS, RETENTION_MS
-from trillion.spine.store import DecisionIn, SpineStore
+from trillion.spine.store import DISMISSED, DecisionIn, SpineStore
 from trillion.spine.untrusted import wrap_counted
 
 logger = logging.getLogger(__name__)
@@ -123,6 +123,10 @@ CHECK_FOR_MS = 24 * 60 * 60 * 1000
 # A "never went" answer about an action already awaiting a check counts only once it
 # has been quiet this long: a request whose answer was lost may still be landing.
 SETTLE_NONE_AFTER_MS = 5 * 60 * 1000
+# How far back an unseen decision is listed under Needs you (SPN-17, SPN-2b), and at
+# most how many: a card that expired unanswered in the last 7 days.
+MISSED_MS = 7 * 24 * 60 * 60 * 1000
+MISSED_LIMIT = 50
 UNCHECKED = "unchecked"
 NOT_SENT = "interrupted before it went out"
 _STILL_CHECKING = (
@@ -969,6 +973,31 @@ class Router:
         if not pre.ok:
             return _refused(Refusal.PRECONDITION_FAILED, _tool_detail(pre.reason))
         return await self._propose(tool, a.args, ctx, represented_from=a.id)
+
+    async def missed(self, owner_id: str) -> list[PendingAction]:
+        """The owner's unseen decisions: each card that expired unanswered in the last
+        7 days and was neither asked for again nor dismissed, newest first (SPN-17). For
+        the page's Needs you list only: nothing here is ever said or handed to her."""
+        now = self._clock()
+        return await self._store.missed(
+            owner_id, since_ms=now - MISSED_MS, now_ms=now, limit=MISSED_LIMIT
+        )
+
+    async def dismiss(self, pending_id: str, ctx: ToolContext) -> bool:
+        """The user dismissed an unseen decision from Needs you: final, and recorded as a
+        decision of its own. Only a card that expired unanswered can be dismissed; one
+        still waiting, answered, asked for again or already dismissed is left alone.
+        Never automatic, and never on an unattended run."""
+        if ctx.via in _UNWATCHED or not await self._known(ctx.owner_id):
+            return False
+        a = await self._store.get_pending(pending_id)
+        if a is None or a.owner_id != ctx.owner_id:
+            return False
+        now = self._clock()
+        a = await self._expire_if_due(a, now, ctx)
+        if a.status is not Status.EXPIRED:
+            return False
+        return await self._store.dismiss(a.id, a.owner_id, _by(ctx, DISMISSED), now)
 
     async def forget_settled_arguments(self) -> int:
         """Clear the full arguments of actions settled more than 30 days ago (#20).

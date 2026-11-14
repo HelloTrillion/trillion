@@ -17,7 +17,7 @@ from trillion.spine.contract import Risk
 from trillion.spine.deny_floor import fold
 from trillion.spine.hashing import canonical_json
 from trillion.spine.retention import SETTLED, slim
-from trillion.spine.store import DecisionIn, DecisionRow, DeliveryRow
+from trillion.spine.store import DISMISSED, DecisionIn, DecisionRow, DeliveryRow
 
 _PENDING_COLUMNS = (
     "id, owner_id, tool, args_json, args_hash, summary, target, risk, recoverable, session_id,"
@@ -32,6 +32,8 @@ _SELECT_PENDING = (
     + ", x.args_json AS full_args_json, x.cleared_at AS args_cleared_at, x.detail AS detail"
     " FROM pending_actions p LEFT JOIN pending_action_args x ON x.pending_id = p.id"
 )
+# Decisions that take an action off the unseen list: an answer, or a dismissal.
+_ANSWERED = ("approved", "rejected", DISMISSED)
 # An audited call that ran: a card the user turned down is no use of anything.
 _ALLOWED = frozenset({"executed"})
 # What the user reads an action's status as (SUR-7): a proposal is waiting until it
@@ -281,6 +283,55 @@ class SqliteSpineStore:
             (pending_id,),
         ) as cur:
             return [_row_to_pending(r) for r in await cur.fetchall()]
+
+    async def missed(
+        self, owner_id: str, *, since_ms: int, now_ms: int, limit: int
+    ) -> list[PendingAction]:
+        """The owner's unseen decisions (SPN-17, SPN-2b): each action whose card expired
+        unanswered at or after `since_ms`, newest first. Expiry is written lazily, when
+        something next touches the card, so one still `proposed` past its `expires_at`
+        is as expired as one marked so. An action leaves the list once it is asked for
+        again (another was re-presented from it) or the user dismissed it."""
+        async with self._conn.execute(
+            f"{_SELECT_PENDING} WHERE p.owner_id = ?"  # noqa: S608 - fixed text only
+            " AND p.expires_at >= ? AND p.expires_at <= ?"
+            " AND (p.status = ? OR p.status = ?)"
+            " AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.pending_id = p.id"
+            "  AND d.event IN (?, ?, ?))"
+            " AND NOT EXISTS (SELECT 1 FROM pending_actions c WHERE c.represented_from = p.id)"
+            " ORDER BY p.expires_at DESC, p.id LIMIT ?",
+            (
+                owner_id,
+                since_ms,
+                now_ms,
+                Status.EXPIRED.value,
+                Status.PROPOSED.value,
+                *_ANSWERED,
+                limit,
+            ),
+        ) as cur:
+            return [_row_to_pending(r) for r in await cur.fetchall()]
+
+    async def dismiss(self, pending_id: str, owner_id: str, decision: DecisionIn, at: int) -> bool:
+        """Append the user's dismissal of an unseen decision: only to an action of
+        theirs that expired, was never answered, asked for again or dismissed. The
+        status stays `expired`; the dismissal is one more immutable decision."""
+        async with self._tx() as conn:
+            async with conn.execute(
+                "SELECT 1 FROM pending_actions p WHERE p.id = ? AND p.owner_id = ?"
+                " AND p.status = ?"
+                " AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.pending_id = p.id"
+                "  AND d.event IN (?, ?, ?))"
+                " AND NOT EXISTS (SELECT 1 FROM pending_actions c"
+                "  WHERE c.represented_from = p.id)",
+                (pending_id, owner_id, Status.EXPIRED.value, *_ANSWERED),
+            ) as cur:
+                if await cur.fetchone() is None:
+                    return False
+            await self._decision(conn, owner_id, pending_id, decision, at)
+        if self.changed is not None:
+            self.changed()
+        return True
 
     async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:
         """Clear the full arguments of every action that settled before the cutoff.

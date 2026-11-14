@@ -9,6 +9,9 @@ from typing import Protocol
 from trillion.spine.audit import AuditRecord
 from trillion.spine.confirm import PendingAction, Status
 
+# The decision event the user's Dismiss on an unseen decision appends (SPN-17).
+DISMISSED = "dismissed"
+
 
 @dataclass(frozen=True, kw_only=True)
 class DecisionIn:
@@ -69,6 +72,19 @@ class SpineStore(Protocol):
     async def last_decisions_since(self, events: Sequence[str], since_ms: int) -> list[DecisionRow]:
         """Each action whose latest decision is one of `events`, made at or after
         `since_ms`: that decision."""
+        ...
+
+    async def missed(
+        self, owner_id: str, *, since_ms: int, now_ms: int, limit: int
+    ) -> list[PendingAction]:
+        """The owner's unseen decisions (SPN-17): each action that expired unanswered,
+        at or after `since_ms`, and was neither asked for again nor dismissed. Newest
+        first. One still `proposed` past its expiry counts as expired."""
+        ...
+
+    async def dismiss(self, pending_id: str, owner_id: str, decision: DecisionIn, at: int) -> bool:
+        """Record that the user dismissed an expired, unanswered action from Needs you:
+        a decision appended, once, while it is still one. False when it is not."""
         ...
 
     async def clear_settled_args(self, *, settled_before_ms: int, now_ms: int) -> int:
