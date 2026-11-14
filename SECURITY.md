@@ -416,8 +416,8 @@ These are in the specification and are not built. Until they are, do not
 rely on them:
 
 - **The rest of the session-token lifecycle** (SPN-11, SPN-11a). The token
-  is held in memory for one launch, not in the keychain, and there is no
-  way to revoke it early. There is no remote access, and so no pairing
+  lives in memory for one launch by design and is never written down, but
+  there is no way to revoke it early. There is no remote access, and so no pairing
   tunnel.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.
   Only first-party tools are loaded in Phase 0.

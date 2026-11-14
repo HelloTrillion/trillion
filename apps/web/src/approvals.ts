@@ -80,7 +80,7 @@ export function outcomeWords(status: CardStatus, note: string): string {
     case 'waiting':
       return '';
     default:
-      if (note === EXPIRED_NOTE) return "Expired · she'll ask again";
+      if (note === EXPIRED_NOTE) return 'Expired · ask her again';
       return `Didn't go through: ${lowerFirst(note) || 'nothing ran.'}`;
   }
 }
