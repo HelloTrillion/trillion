@@ -190,6 +190,21 @@ model or a button's label:
 - **Silent action.** Each task keeps a log of origins and actions, never page
   text or field values, for 30 days.
 
+**The Brave Search API (optional, off unless chosen).** If the user picks
+"Brave Search API (your key)" as her search engine and saves a key, her
+searches go from Trillion's own process, not her browser, to one fixed
+address, `https://api.search.brave.com/res/v1/web/search`, never one the
+model chose. Each sends only the query (words from the user's request) and
+the key, in a header. Saving a key sends one search of a fixed word to check
+it. The key goes from Settings → Her browser straight into the system keychain
+(`trillion/brave_search/api_key`); it is never written to a file, the database
+or a log, never shown again (the app learns only that one is saved), never
+returned to the model, and never in an error. It never enters her browser.
+With no key, a refused key, the plan's monthly limit or no answer, the search
+falls back once to Bing in her browser and the log says why; the API is not
+retried. Nothing is sent to Brave unless the user chose this engine and saved
+a key.
+
 What it does **not** protect against in phase 1: **an exploit that escapes
 Chromium's own sandbox** (this is a separate browser process and profile, not
 a virtual machine yet), and **what a page shows the user** in the live picture

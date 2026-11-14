@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from trillion import paths
 from trillion.api import taps
+from trillion.browser import brave
 from trillion.browser.quarantine import Quarantine
 from trillion.browser.runtime import BrowserRuntime, Install, playwright_available
 from trillion.browser.service import OWNER, RAN_OUT, BrowserService
@@ -103,6 +104,8 @@ class Browse(BaseTool):
             log=self.log,
             waits=lambda cid, text, pid, kind: tell_waits(rt, cid, text, pid),
             settles=lambda cid, pid, status, detail: tell_settled(rt, cid, pid, status, detail),
+            # Read from the keychain only when the API engine searches (`brave.py`).
+            search_key=lambda: rt.secrets.get(brave.SECRET),
         )
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:

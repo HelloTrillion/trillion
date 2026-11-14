@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from trillion.browser import brave
 from trillion.browser.broker import Broker, Mode, Refused, host_of
 from trillion.browser.log import TaskLog, origin_of
 from trillion.browser.quarantine import Kept, Quarantine
@@ -83,6 +84,8 @@ class Task:
         storage_state: Mapping[str, Any] | None = None,
         search_url: str = "https://www.bing.com/search?q={q}",
         search_fallback: str | None = None,
+        search_key: Callable[[], str | None] = lambda: None,
+        search_transport: Any = None,
         attended: bool = True,
         open_any: bool = False,
         step_limit: int = STEP_LIMIT,
@@ -100,6 +103,10 @@ class Task:
         self.search_url = search_url
         # The engines to try, in order; one that turned her browser away is dropped.
         self.search_urls = [u for u in (search_url, search_fallback) if u]
+        # The Brave Search API's key, read from the keychain only when a search is
+        # made, and never kept here (`browser/brave.py`). The transport is for tests.
+        self.search_key = search_key
+        self.search_transport = search_transport
         self.attended = attended
         self.step_limit = step_limit
         self.changed = changed
@@ -107,7 +114,9 @@ class Task:
             mode=mode, named_hosts=named_hosts, log=log, site=site, open_any=open_any
         )
         for u in self.search_urls:
-            self.broker.allow(u.replace("{q}", ""))
+            # The API is called from this process, never opened in her browser.
+            if not brave.is_api(u):
+                self.broker.allow(u.replace("{q}", ""))
         self.state: State = "queued"
         self.ask: Ask | None = None
         self.steps = 0

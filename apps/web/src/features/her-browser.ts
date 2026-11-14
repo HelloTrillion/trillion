@@ -61,6 +61,17 @@ export interface BrowserState {
   readonly sites: readonly string[];
   readonly tasks: readonly TaskView[];
   readonly free: TaskView | null;
+  /** The Brave Search API: whether a key is saved, never the key. */
+  readonly brave?: BraveState;
+  /** A line to show after a change, such as a key saved at its plan's limit. */
+  readonly note?: string;
+}
+
+export interface BraveState {
+  readonly engine: string;
+  readonly saved: boolean;
+  readonly keychain: boolean;
+  readonly key_link: string;
 }
 
 export interface Card {
@@ -506,11 +517,77 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
   // close an open select, or take the focus from a checkbox, before its change came.
   const sectionShows = (): string => {
     const s = state;
-    const what = s && { a: s.available, i: s.installed, g: s.installing, e: s.install_error, v: s.version, m: s.size_mb, t: s.about, s: s.sites, o: s.settings, n: s.engines };
+    const what = s && { a: s.available, i: s.installed, g: s.installing, e: s.install_error, v: s.version, m: s.size_mb, t: s.about, s: s.sites, o: s.settings, n: s.engines, b: s.brave };
     return JSON.stringify([what, message, installing]);
   };
   let sectionDrawn: string | null = null;
   let sectionForm: HTMLElement | null = null;
+  // A Brave key being typed, kept in this page only until it is saved, so a redraw
+  // never loses it. Never stored anywhere else, and cleared once it is saved.
+  let braveDraft = '';
+
+  /** The key goes from the field straight to the keychain; the page keeps nothing. */
+  const braveKey = async (method: 'PUT' | 'DELETE', body: unknown): Promise<void> => {
+    try {
+      const r = await api(method, '/api/browser/brave-key', body);
+      if (!r.ok) message = await reason(r);
+      else {
+        state = (await r.json()) as BrowserState;
+        message = '';
+        braveDraft = '';
+        if (state.note) message = state.note;
+      }
+    } catch {
+      message = 'That didn’t work. Try again in a moment.';
+    }
+    await redraw();
+  };
+
+  const drawBrave = (s: BrowserState, b: BraveState): HTMLElement => {
+    const box = el('div', 'her-browser-brave');
+    const chosen = s.settings.search === b.engine;
+    if (!chosen && b.saved) {
+      // Not in use: only that one is kept, and a way to remove it.
+      const row = el('div', 'her-browser-site');
+      row.append(el('span', '', 'A Brave Search API key is saved in your keychain.'), button('Remove', '', () => void braveKey('DELETE', {})));
+      box.append(row);
+      return box;
+    }
+    box.append(el('h3', '', 'Brave Search API key'));
+    const field = el('label', 'her-browser-brave-field');
+    const input = el('input');
+    input.type = 'password';
+    input.id = 'her-browser-brave-key';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = b.saved ? 'Saved. Type a new key to replace it' : 'Paste your key';
+    input.value = braveDraft;
+    input.addEventListener('input', () => {
+      braveDraft = input.value;
+    });
+    field.append(el('span', '', 'Key'), input);
+    const save = button('Save', 'approve', () => {
+      if (input.value.trim()) void braveKey('PUT', { key: input.value });
+    });
+    const actions = el('div', 'her-browser-brave-actions');
+    actions.append(save);
+    if (b.saved) actions.append(button('Remove', '', () => void braveKey('DELETE', {})));
+    const link = el('a', '', 'Get a key from Brave');
+    link.href = b.key_link;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    actions.append(link);
+    box.append(field, actions);
+    box.append(
+      el(
+        'p',
+        'settings-note',
+        `${b.saved ? 'A key is saved in your keychain. ' : chosen ? 'No key yet: searches use Bing until you save one. ' : ''}Searches go to Brave with your key, from Trillion itself, never from her browser. The free plan has a monthly limit; when it runs out, she searches with Bing.`,
+      ),
+    );
+    if (!b.keychain) box.append(el('p', 'settings-error', 'This computer has no keychain to keep a key in.'));
+    return box;
+  };
 
   /** After what the user did: everything is drawn again. */
   const redraw = async (): Promise<void> => {
@@ -676,6 +753,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       pick.addEventListener('change', () => void call('PUT', '/api/browser/settings', { search: pick.value }).then(redraw));
       engine.append(el('span', '', 'Search engine'), pick);
       form.append(engine);
+      if (s.brave) form.append(drawBrave(s, s.brave));
     }
     if (message) form.append(el('p', 'settings-error', message));
     const actions = el('div', 'settings-actions');

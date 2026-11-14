@@ -9,6 +9,11 @@ Nothing here can approve anything but a card the view showed, and only by the us
 click on it: `cards/{id}/shown` first (the card is on screen), then `cards/{id}` with
 the decision. A chip or a step is answered with `asks/{id}`; a chip's "always" also
 turns on `open_any` (opening any public site without asking). Errors are plain words.
+
+The Brave Search API's key goes from the page to `brave-key`, straight into the
+operating system's keychain, as a model provider's key does (`api/settings.py`): it is
+checked with one search first, and never written to a file, the database or a log. The
+state says only whether one is saved.
 """
 
 from __future__ import annotations
@@ -21,10 +26,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from trillion.api.app import admit
 from trillion.api.runtime import OWNER, Runtime
+from trillion.browser import brave
 from trillion.browser.browse import service_of, settings_of
 from trillion.browser.runtime import (
     APPROX_MB,
@@ -34,6 +40,7 @@ from trillion.browser.runtime import (
 )
 from trillion.browser.settings import ENGINES, PREF
 from trillion.browser.view import give_input
+from trillion.secrets.store import SecretStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +63,20 @@ class Decision(BaseModel):
 
 class Control(BaseModel):
     take: bool
+
+
+class BraveKey(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=1, max_length=brave.KEY_MAX)
+
+
+# What a key Brave didn't take says. A key at its limit is saved, and says so.
+_KEY_WORDS = {
+    "key_refused": "Brave didn't accept that key. Check it and try again",
+    "unreachable": "Brave couldn't be reached to check the key. Try again in a moment",
+    "unavailable": "Brave didn't answer as expected, so the key wasn't saved. Try again",
+}
 
 
 class Goto(BaseModel):
@@ -96,6 +117,13 @@ def create_browser_router(rt: Runtime) -> APIRouter:
             "install_error": installing["error"],
             "settings": settings.to_json(),
             "engines": [{"id": k, "name": v[0]} for k, v in ENGINES.items()],
+            # Whether a Brave Search API key is saved: never the key, nor how it ends.
+            "brave": {
+                "engine": brave.ENGINE,
+                "saved": bool(rt.secrets.get(brave.SECRET)),
+                "keychain": rt.secrets.available(),
+                "key_link": brave.KEY_LINK,
+            },
             "sites": svc.signins.sites() if svc is not None else [],
             "tasks": svc.listing() if svc is not None else [],
             "free": svc.free_json() if svc is not None else None,
@@ -109,6 +137,42 @@ def create_browser_router(rt: Runtime) -> APIRouter:
     async def put_settings(body: dict[str, Any]) -> Any:
         settings = (await settings_of(rt)).changed(body)
         await rt.preferences.put(OWNER, PREF, settings.to_json(), rt.clock())
+        return await state()
+
+    @router.put("/api/browser/brave-key")
+    async def save_brave_key(body: BraveKey) -> Any:
+        """Check the key with one search, then keep it in the keychain. Only the kind of
+        a failure is ever logged, never the key or Brave's reply."""
+        if not rt.secrets.available():
+            return _fail("this computer has no keychain to keep the key in", 409)
+        svc = service_of(rt)
+        why = await brave.check(
+            body.key, transport=svc.search_transport if svc is not None else None
+        )
+        if why is not None and why != "limit_reached":
+            logger.info("brave search key not saved: %s", why)
+            return _fail(_KEY_WORDS.get(why, _KEY_WORDS["unavailable"]))
+        try:
+            rt.secrets.set(brave.SECRET, body.key)
+        except SecretStoreError:
+            return _fail("the keychain refused to keep the key", 500)
+        logger.info("brave search key saved")
+        out = await state()
+        if why == "limit_reached":
+            out["note"] = sentence(
+                "The key is saved, but Brave's monthly limit is reached: searches use Bing "
+                "until it resets"
+            )
+        return out
+
+    @router.delete("/api/browser/brave-key")
+    async def forget_brave_key() -> Any:
+        """Remove the key from the keychain at once (SEC-7)."""
+        try:
+            rt.secrets.delete(brave.SECRET)
+        except SecretStoreError:
+            return _fail("the keychain refused to remove the key", 500)
+        logger.info("brave search key removed")
         return await state()
 
     @router.post("/api/browser/install")

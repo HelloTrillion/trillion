@@ -57,6 +57,11 @@ DETAILS = frozenset(
         "not_act",
         "not_given",
         "search_refused",
+        # why the Brave Search API gave no results (`browser/brave.py`)
+        "no_key",
+        "key_refused",
+        "limit_reached",
+        "unavailable",
         # chips, cards and steps, and their answers
         "asked",
         "allowed",
