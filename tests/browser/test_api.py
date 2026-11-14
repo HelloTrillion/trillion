@@ -30,6 +30,7 @@ def test_the_state_needs_the_token_and_starts_with_everything_off(make: Any) -> 
         "stronger": False,
         "search": "bing",
         "live": True,
+        "open_any": False,
     }
     assert "isn't a virtual machine" in body["about"]
     assert body["tasks"] == [] and body["sites"] == [] and body["free"] is None
@@ -40,7 +41,7 @@ def test_settings_take_only_known_values(make: Any) -> None:
     put = {**app.auth, "content-type": "application/json"}
     r = app.client.put(
         "/api/browser/settings",
-        json={"act": True, "search": "nowhere", "stronger": "yes", "extra": 1},
+        json={"act": True, "search": "nowhere", "stronger": "yes", "extra": 1, "open_any": "on"},
         headers=put,
     )
     assert r.status_code == 200
@@ -49,7 +50,53 @@ def test_settings_take_only_known_values(make: Any) -> None:
         "stronger": False,
         "search": "bing",
         "live": True,
+        "open_any": False,
     }
+
+
+def test_settings_save_and_read_back_the_engine_and_open_any(make: Any) -> None:
+    app = make(model=False)
+    put = {**app.auth, "content-type": "application/json"}
+    r = app.client.put(
+        "/api/browser/settings", json={"search": "google", "open_any": True}, headers=put
+    )
+    assert r.status_code == 200
+    body = app.client.get("/api/browser", headers=app.auth).json()
+    assert body["settings"]["search"] == "google" and body["settings"]["open_any"] is True
+    r = app.client.put("/api/browser/settings", json={"open_any": False}, headers=put)
+    assert r.json()["settings"]["open_any"] is False
+    assert r.json()["settings"]["search"] == "google"
+
+
+def test_always_allow_on_a_chip_turns_on_open_any(make: Any, monkeypatch: Any) -> None:
+    app = make(model=False)
+    svc = service_of(app.rt)
+    assert svc is not None
+    headers = {**app.auth, "content-type": "application/json"}
+    path = "/api/browser/tasks/abcdef0123456789/asks/a1b2c3"
+    # Nothing waiting: refused, and the setting stays off.
+    r = app.client.post(path, headers=headers, json={"answer": "always"})
+    assert r.status_code == 409
+    got = app.client.get("/api/browser", headers=app.auth).json()
+    assert got["settings"]["open_any"] is False
+    answered: list[tuple[str, str, str]] = []
+
+    async def answer(task_id: str, ask_id: str, word: str) -> bool:
+        answered.append((task_id, ask_id, word))
+        return True
+
+    monkeypatch.setattr(svc, "answer", answer)
+    r = app.client.post(path, headers=headers, json={"answer": "always"})
+    assert r.status_code == 200
+    assert answered == [("abcdef0123456789", "a1b2c3", "always")]
+    assert r.json()["settings"]["open_any"] is True
+    # A plain Allow allows the one site, and changes no setting.
+    app.client.put("/api/browser/settings", json={"open_any": False}, headers=headers)
+    r = app.client.post(path, headers=headers, json={"answer": "allowed"})
+    assert r.status_code == 200 and r.json()["settings"]["open_any"] is False
+    # Only the known answers.
+    r = app.client.post(path, headers=headers, json={"answer": "forever"})
+    assert r.status_code == 422
 
 
 @pytest.mark.parametrize(

@@ -16,9 +16,10 @@ model and never from a button's label:
   anything in a payment frame. A form holding one is the user's to send.
 - **Checkout and payment pages** stop the task. **A TLS error** stops the task.
 - **Uploads and WebSockets** are refused in phase 1.
-- **Where it may go:** an origin the user named, one reached in this task, a link a
-  page showed, or one the user allowed on a chip. A task on a saved sign-in may go
-  only to that site, enforced again at the connection (`may_visit`).
+- **Where it may go:** an origin the user named, one reached in this task, a site
+  that search results or a page's links showed, or one the user allowed on a chip;
+  or any public site, when the user chose to let her (`open_any`). A task on a saved
+  sign-in may go only to that site, enforced again at the connection (`may_visit`).
 """
 
 from __future__ import annotations
@@ -170,6 +171,24 @@ def host_of(url: str) -> str:
     return clean_host(urlsplit(url).hostname or "") or ""
 
 
+def site_key(url: str) -> str | None:
+    """A site as results and links count it: its host without `www.`, and its port when
+    it isn't the usual one. `https://www.pcmag.com/x` and `http://pcmag.com/` are the
+    same site; `news.pcmag.com` is another."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return None
+    host = clean_host(parts.hostname or "")
+    if not host:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    host = host.removeprefix("www.")
+    return host if port in (None, 80, 443) else f"{host}:{port}"
+
+
 def same_site(host: str, site: str) -> bool:
     """`host` is `site` or one of its own names (`www.site`, `catalog.site`)."""
     host, site = host.rstrip(".").lower(), site.rstrip(".").lower()
@@ -213,6 +232,7 @@ class Broker:
         named_hosts: Iterable[str],
         log: TaskLog,
         site: str | None = None,
+        open_any: bool = False,
     ) -> None:
         self.mode: Mode = mode
         self.named = frozenset(h for h in (clean_host(n) for n in named_hosts) if h)
@@ -221,6 +241,12 @@ class Broker:
         self.reached: set[str] = set()
         self.allowed: set[str] = set()
         self.links: set[str] = set()
+        # The sites those links were on (`site_key`): another page on one of them, or
+        # its bare domain, opens without a chip too.
+        self.seen: set[str] = set()
+        # The user let her open any public site without asking (Settings, or "Always
+        # allow" on a chip). The fences below hold all the same.
+        self.open_any = open_any
         self.stopped: Stop | None = None
         self.held: list[Held] = []
         self.typed_on_page = False
@@ -254,10 +280,12 @@ class Broker:
             raise Refused("off_site", f"this task is signed in to {self.site} and stays there")
         origin = origin_of(url)
         if (
-            origin in self.reached
+            self.open_any
+            or origin in self.reached
             or origin in self.allowed
             or any(same_site(host, n) and (host == n or host == "www." + n) for n in self.named)
             or web.key(url) in self.links
+            or site_key(url) in self.seen
         ):
             return "open"
         return "chip"
@@ -270,7 +298,11 @@ class Broker:
     def saw_links(self, urls: Iterable[str]) -> None:
         for u in urls:
             with contextlib.suppress(web.Refused):
-                self.links.add(web.key(web.normalize(u)))
+                url = web.normalize(u)
+                self.links.add(web.key(url))
+                key = site_key(url)
+                if key is not None:
+                    self.seen.add(key)
 
     def lock_to(self, url: str) -> None:
         """From now on, this task stays on the site of `url` (after the user signed in

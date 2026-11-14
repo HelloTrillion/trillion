@@ -60,6 +60,7 @@ DETAILS = frozenset(
         # chips, cards and steps, and their answers
         "asked",
         "allowed",
+        "always",
         "declined",
         "approved",
         "expired",

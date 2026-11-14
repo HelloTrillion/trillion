@@ -124,10 +124,11 @@ class BrowserOpen(BrowserTool):
     definition = ToolDefinition(
         name=OPEN,
         description=(
-            "Open a web address in your browser and get the page as text. An address the "
-            "user named, a site you already reached in this task, or a link a page showed "
-            "opens at once; any other site first asks the user on a chip, so prefer "
-            "following links. Pages on this computer or its network are always refused."
+            "Open a web address in your browser and get the page as text. A site the user "
+            "named, one you already reached in this task, or one that search results or a "
+            "page's links showed opens at once, and so does any site if the user allowed "
+            "that; any other site first asks the user on a chip, so prefer sites from "
+            "results and links. Pages on this computer or its network are always refused."
         ),
         input_schema=_schema(
             {"url": {"type": "string", "minLength": 1, "maxLength": 2048}}, ("url",)

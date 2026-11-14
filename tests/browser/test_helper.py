@@ -257,6 +257,73 @@ async def test_a_chip_waits_for_the_users_answer_and_only_theirs(browser_rt, tmp
 
 
 @needs_chromium
+async def test_always_allow_on_a_chip_opens_this_site_and_every_one_after(
+    browser_rt, tmp_path, fixtures
+):
+    model = Steps(
+        call("browser_open", url="http://other.test/two.html"),
+        call("browser_open", url="http://other.test/two.html"),
+        # A site nothing named or showed: after "Always allow", no chip.
+        call("browser_open", url="http://fixture.test/hidden.html"),
+        call("browser_done", answer="It says 42."),
+        say(""),
+    )
+    async with service(browser_rt, tmp_path, model) as (svc, log):
+        job = asyncio.create_task(run(svc, named_hosts=frozenset()))
+        await until(lambda: svc.current() is not None and svc.current().task.ask is not None)  # type: ignore[union-attr]
+        running = svc.current()
+        assert running is not None and running.task is not None and running.task.ask is not None
+        ask = running.task.ask
+        assert ask.kind == "chip"
+        assert await svc.answer(running.id, ask.id, "always")
+        # Answered once: a second answer finds nothing waiting.
+        assert not await svc.answer(running.id, ask.id, "always")
+        assert running.task.broker.open_any is True
+        result = await asyncio.wait_for(job, 20)
+        assert result.outcome == "answered" and result.text == "It says 42."
+        rows = await log.for_task("local", running.id, 1_700_000_000_000)
+        chips = [(r.origin, r.detail) for r in rows if r.event == "chip"]
+        assert chips == [("http://other.test", "asked"), ("http://other.test", "always")]
+        assert ("opened", "http://fixture.test") in {(r.event, r.origin) for r in rows}
+
+
+@needs_chromium
+async def test_open_any_in_settings_opens_a_new_site_even_with_nobody_watching(
+    browser_rt, tmp_path, fixtures
+):
+    model = Steps(
+        call("browser_open", url="http://other.test/two.html"),
+        call("browser_done", answer="It says 42."),
+        say(""),
+    )
+    settings = BrowserSettings(open_any=True)
+    async with service(browser_rt, tmp_path, model, settings=settings) as (svc, log):
+        result = await run(svc, named_hosts=frozenset(), via="schedule")
+        assert result.outcome == "answered"
+        task_id = svc.listing()[0]["id"]
+        rows = await log.for_task("local", task_id, 1_700_000_000_000)
+        assert not [r for r in rows if r.event == "chip"]
+        assert ("opened", "http://other.test") in {(r.event, r.origin) for r in rows}
+
+
+@needs_chromium
+async def test_open_any_still_refuses_this_computer_and_its_network(browser_rt, tmp_path, fixtures):
+    model = Steps(
+        call("browser_open", url="http://lan.test/"),
+        call("browser_done", answer="Couldn't open it."),
+        say(""),
+    )
+    settings = BrowserSettings(open_any=True)
+    async with service(browser_rt, tmp_path, model, settings=settings) as (svc, log):
+        result = await run(svc, named_hosts=frozenset())
+        assert result.outcome == "answered"
+        task_id = svc.listing()[0]["id"]
+        rows = await log.for_task("local", task_id, 1_700_000_000_000)
+        assert ("refused", "private_address") in {(r.event, r.detail) for r in rows}
+        assert "opened" not in {r.event for r in rows}
+
+
+@needs_chromium
 async def test_an_act_task_presses_only_after_the_users_tap_on_its_card(
     browser_rt, tmp_path, fixtures
 ):

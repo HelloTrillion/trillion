@@ -128,7 +128,10 @@ describe('Settings → Her browser', () => {
     expect(form.textContent).toContain('library.org');
     expect([...form.querySelectorAll('button')].some((x) => x.textContent === 'Remove')).toBe(true);
     const boxes = [...form.querySelectorAll('input[type=checkbox]')] as HTMLInputElement[];
-    expect(boxes.map((x) => x.checked)).toEqual([false, false, true]);
+    // Act mode, the stronger model and opening any site start off; the live picture on.
+    expect(boxes.map((x) => x.checked)).toEqual([false, false, false, true]);
+    expect(form.textContent).toContain('Let her open any site without asking');
+    expect(form.textContent).toContain('Pages on this computer and your network stay refused');
     expect(b.summary()).toBe('Signed in to 1');
   });
 });
@@ -239,5 +242,143 @@ describe('when a task has ended', () => {
     const labels = [...b.overlay.querySelectorAll('button')].map((x) => x.textContent);
     expect(labels).not.toContain('Take control');
     expect(labels).not.toContain('Stop');
+  });
+});
+
+describe('Settings → Her browser while a helper works', () => {
+  // A helper at work: the page polls every few seconds, and a poll must never rebuild
+  // the section under the user.
+  const working = { id: 'abcdef0123456789', state: 'working' as const, mode: 'research' as const, url: 'https://example.com/' };
+  const engines = [
+    { id: 'bing', name: 'Bing' },
+    { id: 'google', name: 'Google' },
+  ];
+
+  function setup() {
+    for (const d of document.querySelectorAll('.her-browser-overlay, .her-browser-pill')) d.remove();
+    const section = host();
+    // In the document, as in the app, so the focus can be inside it.
+    const place = document.createElement('div');
+    document.body.append(place);
+    const replace = section.replaceChildren;
+    section.replaceChildren = (...nodes: (Node | string)[]) => {
+      replace(...nodes);
+      place.replaceChildren(...nodes);
+    };
+    const puts: unknown[] = [];
+    let settings = { act: false, stronger: false, search: 'bing', live: true, open_any: false };
+    const api = async (method: string, path: string, body?: unknown) => {
+      if (method === 'PUT' && path === '/api/browser/settings') {
+        puts.push(body);
+        settings = { ...settings, ...(body as object) };
+      }
+      return json(state({ engines, settings, tasks: [working] }));
+    };
+    const b = createHerBrowser(section, api, document.body);
+    return { section, b, puts };
+  }
+
+  it('keeps an open search engine select through a poll, and saves the choice', async () => {
+    const { section, b, puts } = setup();
+    await b.section();
+    const form = section.children[0] as HTMLElement;
+    const pick = form.querySelector('select') as HTMLSelectElement;
+    expect(pick.value).toBe('bing');
+    pick.focus();
+    expect(document.activeElement).toBe(pick);
+    await b.refresh();
+    await b.refresh();
+    // The same form and the same select: nothing was rebuilt under the user.
+    expect(section.children[0]).toBe(form);
+    expect(form.querySelector('select')).toBe(pick);
+    expect(pick.isConnected).toBe(true);
+    pick.value = 'google';
+    pick.dispatchEvent(new Event('change'));
+    await flush();
+    await flush();
+    expect(puts).toEqual([{ search: 'google' }]);
+    // What the user did is drawn: the new choice shows.
+    expect((section.children[0] as HTMLElement).querySelector('select')?.value).toBe('google');
+  });
+
+  it('keeps the checkboxes through a poll, and saves each change', async () => {
+    const { section, b, puts } = setup();
+    await b.section();
+    const form = section.children[0] as HTMLElement;
+    const first = form.querySelectorAll('input[type=checkbox]')[0] as HTMLInputElement;
+    first.focus();
+    await b.refresh();
+    expect(section.children[0]).toBe(form);
+    expect(document.activeElement).toBe(first);
+    first.checked = true;
+    first.dispatchEvent(new Event('change'));
+    await flush();
+    await flush();
+    expect(puts).toEqual([{ act: true }]);
+    // Not focused, and nothing changed: a poll still leaves it be.
+    const now = section.children[0] as HTMLElement;
+    (document.activeElement as HTMLElement | null)?.blur();
+    await b.refresh();
+    expect(section.children[0]).toBe(now);
+    const any = [...now.querySelectorAll('label')].find((x) => x.textContent?.includes('open any site'))?.querySelector('input') as HTMLInputElement;
+    any.checked = true;
+    any.dispatchEvent(new Event('change'));
+    await flush();
+    await flush();
+    expect(puts).toEqual([{ act: true }, { open_any: true }]);
+  });
+
+  it('draws the section again on a poll when what it shows changed', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay, .her-browser-pill')) d.remove();
+    const section = host();
+    let sites: string[] = [];
+    const api = async () => json(state({ sites, tasks: [working] }));
+    const b = createHerBrowser(section, api, document.body);
+    await b.section();
+    const form = section.children[0];
+    await b.refresh();
+    expect(section.children[0]).toBe(form);
+    sites = ['library.org'];
+    await b.refresh();
+    expect(section.children[0]).not.toBe(form);
+    expect((section.children[0] as HTMLElement).textContent).toContain('library.org');
+  });
+});
+
+describe('a chip in the window', () => {
+  function chipTask(kind: 'chip' | 'signin') {
+    return {
+      id: 'abcdef0123456789',
+      state: 'needs_you' as const,
+      mode: 'research' as const,
+      url: 'https://www.bing.com/search?q=x',
+      ask: { kind, id: 'a1b2c3', text: kind === 'chip' ? 'Open www.pcmag.com?' : 'Use your sign-in for library.org?', origin: null, pending_id: null },
+    };
+  }
+
+  it('offers Allow, Always allow and Not now, and Always allow says so to the server', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const api = async (method: string, path: string, body?: unknown) => {
+      calls.push({ method, path, body });
+      return json(state({ tasks: [chipTask('chip')] }));
+    };
+    const b = createHerBrowser(host(), api, document.body);
+    await b.view('abcdef0123456789');
+    const buttons = [...b.overlay.querySelectorAll('.her-browser-ask button')];
+    expect(buttons.map((x) => x.textContent)).toEqual(['Allow', 'Always allow', 'Not now']);
+    expect((buttons[1] as HTMLElement).title).toContain('nothing is sent without your OK');
+    (buttons[1] as HTMLButtonElement).click();
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: '/api/browser/tasks/abcdef0123456789/asks/a1b2c3', body: { answer: 'always' } });
+  });
+
+  it('never offers Always allow for a saved sign-in', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    const api = async () => json(state({ tasks: [chipTask('signin')] }));
+    const b = createHerBrowser(host(), api, document.body);
+    await b.view('abcdef0123456789');
+    const labels = [...b.overlay.querySelectorAll('.her-browser-ask button')].map((x) => x.textContent);
+    expect(labels).toEqual(['Use it', 'Not now']);
   });
 });
