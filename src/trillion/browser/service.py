@@ -209,8 +209,14 @@ class BrowserService:
         log: Any = None,
         waits: Waits | None = None,
         settles: Settles | None = None,
+        search_key: Callable[[], str | None] = lambda: None,
+        search_transport: Any = None,
     ) -> None:
         self.runtime = runtime
+        # The Brave Search API's key, read from the keychain at each search; never kept.
+        self._search_key = search_key
+        # Tests only: the API's calls go to a stand-in, never to Brave.
+        self.search_transport = search_transport
         self.signins = (
             signins if signins is not None else SignIns(quarantine.root.parent / "signins")
         )
@@ -633,6 +639,8 @@ class BrowserService:
             storage_state=storage_state,
             search_url=settings.search_urls[0],
             search_fallback=settings.search_urls[1],
+            search_key=self._search_key,
+            search_transport=self.search_transport,
             attended=attended,
             open_any=open_any,
             step_limit=self.step_limit,

@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote_plus
 
+from trillion.browser import brave
 from trillion.browser.broker import (
     Refused,
     card_for,
@@ -32,7 +33,7 @@ from trillion.browser.broker import (
     search_refused,
     valid_ref,
 )
-from trillion.browser.snapshot import feed_results, find, shown, shown_results
+from trillion.browser.snapshot import Result, feed_results, find, shown, shown_results
 from trillion.browser.task import STEP_WORDS, Task
 from trillion.spine.card import ONLY_A_TAP
 from trillion.spine.contract import (
@@ -189,7 +190,20 @@ class BrowserSearch(BrowserTool):
         a refusal is never retried, and nothing tries to get past it."""
         t = self.task
         query = " ".join(str(args.get("query", "")).split())
+        note = ""
         while t.search_urls:
+            if brave.is_api(t.search_urls[0]):
+                try:
+                    found = await self._api(query)
+                except brave.SearchFailed as e:
+                    # Never asked again in this task: the next engine, once.
+                    await t.log.event("refused", url=brave.ORIGIN, code=e.kind)
+                    t.search_urls.pop(0)
+                    why = str(e)
+                    note = f"({why[:1].upper()}{why[1:]}, so these come from another engine.)\n\n"
+                    continue
+                t.broker.saw_links(r.link for r in found)
+                return ToolResult(ok=True, content=shown_results(query, found), effect="none")
             url = t.search_urls[0].replace("{q}", quote_plus(query))
             await t.log.searched(url, query)
             try:
@@ -204,16 +218,29 @@ class BrowserSearch(BrowserTool):
             if results:
                 # Links the results page showed: opening one is following it.
                 t.broker.saw_links(r.link for r in results)
-                return ToolResult(ok=True, content=shown_results(query, results), effect="none")
+                return ToolResult(
+                    ok=True, content=note + shown_results(query, results), effect="none"
+                )
             if snap is not None and not search_refused(
                 str(t.page.url), snap.title, snap.text, snap.links
             ):
-                return ToolResult(ok=True, content=shown(snap), effect="none")
+                return ToolResult(ok=True, content=note + shown(snap), effect="none")
             await t.log.event("refused", url=url, code="search_refused")
             t.search_urls.pop(0)
         t.broker.stopped = "search"
         await t.log.event("stopped", code="search")
         return _no(_STOPPED["search"], "search")
+
+    async def _api(self, query: str) -> list[Result]:
+        """The Brave Search API, from this process with the user's key: one request to
+        its one fixed address, with only the query. The key is read now, and goes
+        nowhere but that request's header."""
+        t = self.task
+        key = t.search_key()
+        if not key:
+            raise brave.SearchFailed("no_key")
+        await t.log.searched(brave.ORIGIN, query)
+        return await brave.search(query, key, transport=t.search_transport)
 
 
 class BrowserRead(BrowserTool):
