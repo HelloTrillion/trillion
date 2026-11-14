@@ -519,6 +519,16 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (sectionHost.open) drawSection();
   };
 
+  /** After a poll: the section only when what it shows changed, and the user isn't in it. */
+  const redrawPolled = async (): Promise<void> => {
+    drawPill();
+    if (isOpen()) await drawView();
+    if (!sectionHost.open || sectionShows() === sectionDrawn) return;
+    const active = document.activeElement;
+    if (sectionForm && active && active !== document.body && sectionForm.contains(active)) return;
+    drawSection();
+  };
+
   const onFrame = (f: { data: string; width: number; height: number; url: string | null }): void => {
     page = { width: f.width, height: f.height };
     const src = `data:image/jpeg;base64,${f.data}`;
@@ -587,7 +597,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       thumb.removeAttribute('src');
     }
     if (installing && state && (state.installed || state.install_error || !state.installing)) installing = false;
-    await redraw();
+    await redrawPolled();
   };
 
   const startPolling = (): void => {
@@ -672,6 +682,8 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     actions.append(button('Close', 'settings-close', () => sectionHost.close()));
     form.append(actions);
     sectionHost.replaceChildren(form);
+    sectionForm = form;
+    sectionDrawn = sectionShows();
   };
 
   const openFree = async (): Promise<void> => {
