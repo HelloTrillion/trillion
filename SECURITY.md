@@ -420,7 +420,13 @@ rely on them:
   way to revoke it early. There is no remote access, and so no pairing
   tunnel.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.
-  Only first-party tools are loaded in Phase 0.
+  What exists is a policy gate, not a sandbox: `ToolRegistry.discover` imports
+  only the `trillion.tools` entry points of Trillion's own distribution, and
+  skips any other installed package's before importing it, logging only its
+  name (CON-6a, `tests/unit/test_registry.py`; `trillion doctor` counts them).
+  A package installed into Trillion's environment can still run code in other
+  ways (a `.pth` file, an import hook, or being imported by something else),
+  so install nothing there you don't trust.
 
 When one of these lands, it moves up to "What is true today" in the same
 pull request, with the test that proves it.
