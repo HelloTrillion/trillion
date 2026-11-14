@@ -51,6 +51,9 @@ speaker = ["onnxruntime>=1.20", "numpy>=2.0"]
 # Recall by meaning (MEM-2). Optional because it is large: without it, memory is
 # found by its words alone. The model itself is fetched by `trillion setup` (ONB-7).
 meaning = ["onnxruntime>=1.19", "tokenizers>=0.20", "numpy>=2"]
+browser = [
+    "playwright==1.65.1",
+]
 
 [project.scripts]
 trillion = "trillion.cli.main:entrypoint"
@@ -101,6 +104,7 @@ helper_narrow = "trillion.tools.helper:HelperNarrow"
 helper_widen = "trillion.tools.helper:HelperWiden"
 helper_ask = "trillion.tools.helper:HelperAsk"
 helper_suggest = "trillion.tools.helper:HelperSuggest"
+browse = "trillion.browser.browse:Browse"
 [project.entry-points."trillion.connectors"]
 [project.entry-points."trillion.checkers"]
 [project.entry-points."trillion.channels"]
@@ -168,7 +172,7 @@ module = ["tests.*"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*", "trillion.workspace.*", "trillion.attention.*", "trillion.files.*"]
+module = ["trillion.spine.*", "trillion.storage.*", "trillion.tools.*", "trillion.voice.*", "trillion.brain.*", "trillion.persona.*", "trillion.api.*", "trillion.memory.*", "trillion.scheduler.*", "trillion.delivery.*", "trillion.workspace.*", "trillion.attention.*", "trillion.files.*", "trillion.browser.*"]
 strict = true
 
 [tool.pytest.ini_options]
@@ -180,7 +184,7 @@ faulthandler_timeout = 120
 
 # Optional installs: typed as Any whether or not they are present.
 [[tool.mypy.overrides]]
-module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*", "onnxruntime", "onnxruntime.*", "tokenizers", "tokenizers.*"]
+module = ["faster_whisper", "faster_whisper.*", "numpy", "numpy.*", "onnxruntime", "onnxruntime.*", "tokenizers", "tokenizers.*", "playwright", "playwright.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false
 follow_imports = "skip"

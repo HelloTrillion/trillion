@@ -50,6 +50,8 @@ LABELS: dict[str, str] = {
     "slack_read": "Read a Slack conversation",
     "slack_post": "Post to Slack",
     "stripe_revenue": "Add up Stripe revenue",
+    # Her browsing helper's press (the her browser spec): sent only on this card's tap.
+    "browser_press": "Send a form from her browser",
 }
 
 

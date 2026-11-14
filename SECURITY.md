@@ -156,6 +156,50 @@ server, skill and plugin tool always keep the second turn; the registry refuses
 any of them that asks for this path. If an action takes this path without all
 of those holding, that is a vulnerability.
 
+### Her browser (optional, off until set up)
+
+Her browser is a headless Chromium of Trillion's own, fetched on request into
+Trillion's data folder at the revision the locked Playwright release pins, and
+launched only from there, with Chromium's sandbox on. It is never the user's
+browser: not their Chrome, Edge or Safari, not a profile, not a cookie, not
+the keychain (it runs with a mock keychain, a clean environment and a home of
+its own). Each browsing task gets a fresh, empty context, closed when it ends.
+
+What it protects against, enforced in code outside the page, never by the
+model or a button's label:
+
+- **Reaching this computer or its network.** Every connection goes through a
+  proxy of the task's own that applies `web_fetch`'s public-address check after
+  DNS and connects to the address it checked: subresources, redirects and
+  loopback included. Only the standard web ports. WebRTC can't go around it.
+- **Sending anything the user didn't approve.** In research mode every request
+  that isn't a GET is refused, and a control that submits a form is refused
+  before it is pressed. In act mode (off by default) a press holds what it
+  sends inside Chromium; the card is written from those held requests (the
+  destination normalised, the method, every field) and only a tap on it lets
+  exactly those go.
+- **Passwords, codes and card details.** The agent never types in such a
+  field, and a form holding one is the user's to send. Checkouts and payment
+  pages stop the task. TLS errors stop the task. Uploads and WebSockets are
+  refused. Downloads go to an owner-only quarantine, never opened.
+- **Private data leaving through a page.** Browsing runs as a helper with only
+  the browser tools: no memories, files, accounts, board, rules or helpers.
+  What it brings back reaches her wrapped as untrusted. A saved sign-in is
+  used only when the user's request names its site, after a chip, and that
+  task can reach only that site's own hosts.
+- **Silent action.** Each task keeps a log of origins and actions, never page
+  text or field values, for 30 days.
+
+What it does **not** protect against in phase 1: **an exploit that escapes
+Chromium's own sandbox** (this is a separate browser process and profile, not
+a virtual machine yet), and **what a page shows the user** in the live picture
+or while they have control (a page can still try to trick a person). A model
+that is told by a page to search for something can put words from the user's
+request into the query sent to the search engine the user chose; it has
+nothing else of theirs to put there. If her browser reaches a private address,
+sends a request in research mode, or lets a press send anything other than
+what its card showed, that is a vulnerability.
+
 ## What is true today
 
 - **There is no shell tool.** The tools are the file tools (confined to

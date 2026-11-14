@@ -46,6 +46,9 @@ export type Entry =
       readonly note: string;
       /** The host's friendly name for the tool ("Send a message"). */
       readonly toolLabel: string;
+      /** What it says when its time runs out, when the core says (a browsing helper's
+       * card: nothing is sent and she doesn't ask again). */
+      readonly expiredNote?: string;
       /** Why it needs the user, from the action's risk; null when the core did not say. */
       readonly reason: Reason | null;
       /** A new helper's picture, on its create card; absent on any other. */
@@ -772,6 +775,7 @@ function step(view: View, msg: ServerMsg): View {
         reason: REASONS.find((r) => r === msg['reason']) ?? null,
         ...(lookIn(msg['look']) ? { look: lookIn(msg['look']) } : {}),
         ...(draft ? { draft } : {}),
+        ...(typeof msg['expired_note'] === 'string' && msg['expired_note'] ? { expiredNote: msg['expired_note'] } : {}),
       };
       // A new helper draft replaces the one still waiting, where it was: the core retired
       // that card when this one was made, so there is only ever one.
@@ -839,6 +843,10 @@ function step(view: View, msg: ServerMsg): View {
         // Nothing lands inside a reply that is still under way (VOI-17): it waits for the end.
         const during = view.replyOpen || view.busy;
         return during ? { ...view, held: [...view.held, entry] } : { ...view, entries: [...view.entries, entry] };
+      }
+      // Her browsing helper waits on the user: the host's own line (features/her-browser.ts).
+      if (msg['code'] === 'browser' && typeof msg['text'] === 'string') {
+        return { ...view, entries: [...view.entries, { kind: 'notice', text: msg['text'] }] };
       }
       // A long conversation was summarized for her. Nothing on screen goes away.
       const text =
@@ -923,7 +931,7 @@ export function expire(view: View, now: number): View {
     ...view,
     entries: view.entries.map((e) =>
       e.kind === 'card' && e.status === 'waiting' && e.expiresAt <= now
-        ? { ...e, status: 'closed', note: REFUSALS['expired'] ?? '' }
+        ? { ...e, status: 'closed', note: e.expiredNote ?? REFUSALS['expired'] ?? '' }
         : e,
     ),
   };

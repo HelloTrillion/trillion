@@ -1,0 +1,306 @@
+/* Her browser (features/her-browser.ts): Settings, the view and the pill. Loads after app.css. */
+
+.her-browser-settings h3 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+.her-browser-site {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.her-browser-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  row-gap: 2px;
+  margin-top: 12px;
+}
+.her-browser-toggle small {
+  grid-column: 2;
+  color: var(--color-text-1);
+}
+.her-browser-engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* The view: a window of its own above everything, the page letterboxed in it. */
+.her-browser-overlay {
+  box-sizing: border-box;
+  width: 90vw;
+  max-width: 90vw;
+  height: 85vh;
+  max-height: 85vh;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-bg-1);
+  color: var(--color-text-0);
+}
+.her-browser-overlay::backdrop {
+  background: color-mix(in srgb, var(--color-bg-0) 72%, transparent);
+}
+.her-browser-window {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+.her-browser-window * {
+  box-sizing: border-box;
+}
+.her-browser-titlebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-2);
+}
+.her-browser-title {
+  margin: 0;
+  font-size: 15px;
+}
+.her-browser-site-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-0);
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.her-browser-state {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-1);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.her-browser-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.her-browser-bar-actions .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.her-browser-x {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+.her-browser-addressbar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.her-browser-addressbar[hidden] {
+  display: none;
+}
+.her-browser-address {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.her-browser-address input {
+  flex: 1;
+  min-width: 0;
+}
+.her-browser-address .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+}
+.her-browser-frame {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg-0);
+}
+.her-browser-frame.in-control {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+.her-browser-picture {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: default;
+}
+.her-browser-picture[hidden],
+.her-browser-waiting[hidden] {
+  display: none;
+}
+.her-browser-frame.in-control .her-browser-picture {
+  cursor: pointer;
+}
+.her-browser-picture:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.her-browser-waiting {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+.her-browser-foot {
+  display: grid;
+  gap: 6px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-border);
+}
+.her-browser-foot:has(.her-browser-ask:empty):has(.her-browser-status:empty) {
+  display: none;
+}
+.her-browser-note {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+.her-browser-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.her-browser-ask:empty {
+  display: none;
+}
+.her-browser-ask .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}
+.her-browser-ask-text {
+  margin: 0;
+  flex-basis: 100%;
+  font-weight: 600;
+  color: var(--color-text-0);
+}
+.her-browser-card-detail {
+  flex-basis: 100%;
+  max-height: 22vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-0);
+  color: var(--color-text-0);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.her-browser-status:empty {
+  display: none;
+}
+.her-browser-status {
+  margin: 0;
+  color: var(--color-amber);
+  font-size: 13px;
+}
+
+/* Settings: getting it. */
+.her-browser-installing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-0);
+}
+.her-browser-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+}
+
+/* The pill: above the voice dock, never over it. */
+.her-browser-pill {
+  position: fixed;
+  right: var(--dock-inset, 24px);
+  bottom: calc(var(--dock-inset, 24px) + var(--dock-size, 96px) + 12px);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 6px 14px 6px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-glass);
+  color: var(--color-text-0);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.her-browser-pill[hidden],
+.her-browser-thumb[hidden] {
+  display: none;
+}
+.her-browser-pill.needs-you {
+  border-color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 14%, var(--color-bg-1));
+  color: var(--color-text-0);
+  font-weight: 600;
+}
+.her-browser-pill.needs-you .her-browser-pill-text {
+  color: var(--color-amber);
+}
+.her-browser-pill-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.her-browser-thumb {
+  flex: none;
+  width: 96px;
+  height: 60px;
+  border-radius: 8px;
+  object-fit: cover;
+  object-position: top;
+  background: var(--color-bg-2);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .her-browser-pill.needs-you {
+    animation: her-browser-call 2s ease-in-out infinite;
+  }
+  .her-browser-spinner {
+    animation: her-browser-spin 0.9s linear infinite;
+  }
+}
+@keyframes her-browser-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes her-browser-call {
+  50% {
+    border-color: var(--color-accent);
+  }
+}

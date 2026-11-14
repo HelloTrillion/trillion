@@ -117,13 +117,14 @@ async def test_a_read_runs_and_the_deny_floor_still_applies(spine: Spine) -> Non
 
 
 async def test_a_refresh_never_replays_the_web_herself_or_memory(spine: Spine) -> None:
+    from trillion.browser.browse import NAME as BROWSE
     from trillion.spine.router import REFRESH_NEVER, REFRESH_NEVER_CATEGORIES
     from trillion.tools.describe import NAME, DescribeSelf
     from trillion.tools.memory import MemoryRecall
     from trillion.tools.web import FETCH, WebFetch
 
     # The names the spine keeps are the tools' own.
-    assert {FETCH, NAME} == REFRESH_NEVER
+    assert {FETCH, NAME, BROWSE} == REFRESH_NEVER
     recall = MemoryRecall()
     assert recall.definition.category in REFRESH_NEVER_CATEGORIES
     reg = ToolRegistry()

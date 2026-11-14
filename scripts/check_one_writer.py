@@ -88,6 +88,11 @@ NOT_DECISIONS: dict[str, str] = {
         for c in ("blocks_json", "raw_json")
     },
     "preferences.value_json": "a setting the user chose",
+    **{
+        f"browser_log.{c}": "her browser's task log, cleared at 30 days (decision 13): it"
+        " approves nothing"
+        for c in ("origin", "detail")
+    },
     "boards.board_json": "what her board shows (SUR-1): it approves nothing",
     "memories.file_missing": "whether the file is on disk: read from the disk, not decided",
     **{

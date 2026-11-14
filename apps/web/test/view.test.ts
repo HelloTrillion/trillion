@@ -726,3 +726,21 @@ describe('staying quiet (VOI-7)', () => {
     expect(empty.entries).toEqual([{ kind: 'notice', text: 'The model sent back nothing. Try again, or rephrase.' }]);
   });
 });
+
+describe('a card that carries its own words for running out of time', () => {
+  it('says them instead of “she will ask again”', () => {
+    let v = reduce(INITIAL, {
+      type: 'confirm.request',
+      pending_id: 'p1',
+      tool: 'browser_press',
+      tool_label: 'Send a form from her browser',
+      summary: 'Send to httpbin.org',
+      expires_at: 1000,
+      tap_only: true,
+      expired_note: 'It ran out of time, so nothing was sent.',
+    });
+    v = expire(v, 2000);
+    const card = v.entries.find((e) => e.kind === 'card');
+    expect(card && card.kind === 'card' ? card.note : '').toBe('It ran out of time, so nothing was sent.');
+  });
+});

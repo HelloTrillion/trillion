@@ -107,7 +107,9 @@ def normalize(raw: str) -> str:
         raise Refused("bad_port", "only the standard web ports are opened")
     if any(ch.isspace() or ord(ch) < 0x20 for ch in parts.path + parts.query):
         raise Refused("bad_address", "that address has characters it cannot contain")
-    return urlunsplit((scheme, host, parts.path or "/", parts.query, ""))
+    # An IPv6 address keeps its brackets, or the address would read as something else.
+    netloc = f"[{host}]" if ":" in host else host
+    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
 
 
 def _idna_ok(url: str) -> bool:
@@ -142,6 +144,19 @@ async def resolve(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(str(info[4][0]) for info in found))
 
 
+async def public_addresses(host: str, port: int, resolver: Resolve = resolve) -> list[str]:
+    """Every address `host` has, each one public, or Refused. The one rule both doors
+    out share: `web_fetch` here, and her browser's egress (`browser/proxy.py`). The
+    caller connects to the first address returned, never to the name again, so a name
+    that answers differently a second time cannot move it (SPN-11b)."""
+    addresses = await resolver(host, port)
+    if not addresses:
+        raise Refused("unreachable", f"{host} could not be found")
+    if not all(public(a) for a in addresses):
+        raise Refused("private_address", f"{host} is on this machine or its network")
+    return addresses
+
+
 class _Fence(httpcore.AsyncNetworkBackend):
     """Opens a connection only to a public address, checked here and used as checked.
 
@@ -160,11 +175,7 @@ class _Fence(httpcore.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[Any] | None = None,
     ) -> httpcore.AsyncNetworkStream:
-        addresses = await self._resolve(host, port)
-        if not addresses:
-            raise Refused("unreachable", f"{host} could not be found")
-        if not all(public(a) for a in addresses):
-            raise Refused("private_address", f"{host} is on this machine or its network")
+        addresses = await public_addresses(host, port, self._resolve)
         return await self._inner.connect_tcp(
             addresses[0], port, timeout=timeout, local_address=local_address,
             socket_options=socket_options,
@@ -320,9 +331,20 @@ class Ledger:
 
     def __init__(self) -> None:
         self._open: dict[str, set[str]] = {}
+        # The hosts of what the user gave, apart from links: the sites a browsing task
+        # may open freely (the her browser spec, decision 9).
+        self._hosts: dict[str, set[str]] = {}
 
     def said(self, conversation_id: str, text: str) -> None:
-        self._open.setdefault(conversation_id, set()).update(key(u) for u in addresses_in(text))
+        given = addresses_in(text)
+        self._open.setdefault(conversation_id, set()).update(key(u) for u in given)
+        self._hosts.setdefault(conversation_id, set()).update(
+            h for u in given if (h := urlsplit(u).hostname)
+        )
+
+    def hosts_said(self, conversation_id: str) -> frozenset[str]:
+        """The hosts the user named in this conversation, never one a page linked to."""
+        return frozenset(self._hosts.get(conversation_id, set()))
 
     def linked(self, conversation_id: str, urls: Iterable[str]) -> None:
         self._open.setdefault(conversation_id, set()).update(key(u) for u in urls)

@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>Beacon</title></head>
+<body><h1>A page that phones home</h1>
+<script>
+fetch('/collect', {method: 'POST', body: 'visited=1'}).catch(() => {});
+navigator.sendBeacon && navigator.sendBeacon('/collect', 'beacon=1');
+try { new WebSocket('ws://fixture.test/ws'); } catch (e) {}
+</script>
+<a href="#" id="sneaky" onclick="fetch('/collect',{method:'POST',body:'clicked=1'});return false">Read more</a>
+</body></html>

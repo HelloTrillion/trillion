@@ -23,7 +23,7 @@ from typing import Any, Concatenate, Literal, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
 from trillion import __version__
-from trillion.api import listening, seamless
+from trillion.api import listening, seamless, taps
 from trillion.api.draft import Draft, same_words
 from trillion.api.jobs import STARTED, Full, Job, goes_to_background
 from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S, Judge, Listener
@@ -444,8 +444,9 @@ BACKGROUND = (
     "</context>"
 )
 _IN = (
-    "Say in one short line that it is in, show it on the board if it is better seen, "
-    "then say at most two sentences on what matters."
+    "Say in one short line that it is in, then say the answer itself in words, numbers "
+    "included, in at most two sentences on what matters. Show it on the board too only if "
+    "it is better seen: the board is extra, never instead of saying it."
 )
 _NOT_IN = "Say plainly, once, that it did not come back, and offer to try again."
 # A note's host line, from its first line: one note per message.
@@ -2820,6 +2821,17 @@ class Session:
             return
         # Whose chat this is, read now: a tap can come before any turn here.
         await self._read_place()
+        # A card whose action is another router's (a browsing helper's) is settled there.
+        routed = await taps.route(self._rt, pending_id, decision)
+        if routed is not None:
+            await self._send(
+                "confirm.resolved",
+                pending_id=pending_id,
+                status=routed.status,
+                reason=routed.reason.value if routed.reason is not None else None,
+                detail=routed.detail or None,
+            )
+            return
         # A tap is the user's own act on one card, so it is allowed at once: it is judged
         # as the turn after the newest thing said. It does not advance the turn the model
         # acts in. If it did, tapping one card mid-turn would let the model confirm
