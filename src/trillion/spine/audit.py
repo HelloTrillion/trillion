@@ -19,6 +19,9 @@ class AuditRecord:
     duration_ms: int
     session_id: str
     at: int
+    # SPN-6: what the neutralizer removed from the result, as JSON counts by kind
+    # (`{"fence": 1, "role_marker": 2}`), or None. Never the text it removed.
+    neutralized: str | None = None
 
 
 KEY_BYTES = 32
