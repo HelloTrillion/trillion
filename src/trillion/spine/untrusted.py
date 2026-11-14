@@ -44,7 +44,7 @@ def wrap(tool_name: str, text: str, *, lossless: bool = False) -> str:
     also audits them, calls `wrap_counted` instead."""
     wrapped, found = wrap_counted(tool_name, text, lossless=lossless)
     if found:
-        logger.info("neutralized %s in %s", shown(found), _UNSAFE_NAME.sub("_", tool_name))
+        logger.debug("neutralized %s in %s", shown(found), _UNSAFE_NAME.sub("_", tool_name))
     return wrapped
 
 
