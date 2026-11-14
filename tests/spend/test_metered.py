@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -561,6 +563,57 @@ async def test_drain_waits_for_rows_whose_caller_has_gone() -> None:
     assert len(store.rows) == 1
     # Nothing left to wait for.
     await meter.drain()
+
+
+def _ends(run: Any) -> float:
+    """Run `run` on its own loop in another thread, and how long it took. A drain that
+    spins can't be cancelled from its own loop, so it is watched from outside."""
+    took: list[float] = []
+
+    def main() -> None:
+        t0 = time.monotonic()
+        asyncio.run(run())
+        took.append(time.monotonic() - t0)
+
+    worker = threading.Thread(target=main, daemon=True)
+    worker.start()
+    worker.join(10.0)
+    assert not worker.is_alive(), "drain did not end"
+    assert took, "drain raised"
+    return took[0]
+
+
+def test_drain_is_not_hung_by_a_finished_record_left_in_the_set() -> None:
+    async def run() -> None:
+        meter, _, _, _ = await meter_for()
+        stale = asyncio.get_running_loop().create_future()
+        stale.set_result(None)
+        # Done, but its discard never ran: the loop shut down first.
+        meter._recording.add(stale)
+        await meter.drain()
+        assert not meter._recording
+
+    assert _ends(run) < 1.0
+
+
+def test_drain_cancels_a_record_that_never_finishes_after_the_bound(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def run() -> None:
+        meter, store, _, _ = await meter_for()
+        store.wait = asyncio.Event()  # never set: the write never finishes
+        task = asyncio.create_task(ask(meter.model(Model(), "anthropic")))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert meter._recording
+        await meter.drain(timeout_s=0.2)
+        assert not meter._recording
+
+    assert _ends(run) < 2.0
+    assert "1 usage record(s) not finished" in caplog.text
 
 
 async def test_wrapping_a_metered_provider_with_another_id_wraps_what_it_wraps() -> None:
