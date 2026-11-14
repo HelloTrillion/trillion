@@ -257,6 +257,77 @@ async def test_a_chip_waits_for_the_users_answer_and_only_theirs(browser_rt, tmp
 
 
 @needs_chromium
+async def test_a_chip_answered_in_her_conversation_reaches_the_helper_and_settles_both(
+    browser_rt, tmp_path, fixtures
+):
+    told: list[tuple[str, ...]] = []
+
+    async def waits(cid: str, text: str, pid: str | None, kind: str, task: str, ask: str) -> None:
+        told.append(("waits", cid, text, kind, task, ask))
+
+    async def answered(cid: str, ask_id: str, answer: str) -> None:
+        told.append(("answered", cid, ask_id, answer))
+
+    model = Steps(
+        call("browser_open", url="http://other.test/two.html"),
+        call("browser_open", url="http://other.test/two.html"),
+        call("browser_done", answer="It says 42."),
+        say(""),
+    )
+    async with service(browser_rt, tmp_path, model, waits=waits, answered=answered) as (svc, _):
+        job = asyncio.create_task(run(svc, named_hosts=frozenset()))
+        await until(lambda: any(t[0] == "waits" for t in told))
+        running = svc.current()
+        assert running is not None and running.task is not None and running.task.ask is not None
+        ask = running.task.ask
+        # Her conversation is told which task and which ask: what its buttons answer.
+        line = "Her browsing helper wants to open other.test: it needs your OK."
+        assert told[0] == ("waits", "conv", line, "chip", running.id, ask.id)
+        # The conversation's Always allow: the same answer the window gives.
+        assert await svc.answer(running.id, ask.id, "always")
+        # A stale button, here or in the window, is refused.
+        assert not await svc.answer(running.id, ask.id, "declined")
+        assert not await svc.answer(running.id, "000000000000", "allowed")
+        result = await asyncio.wait_for(job, 20)
+        assert result.outcome == "answered" and result.text == "It says 42."
+        # Both settle: her conversation's line, and the window's (no ask is left).
+        assert ("answered", "conv", ask.id, "always") in told
+        assert running.task is None or running.task.ask is None
+        assert all(t.get("ask") is None for t in svc.listing())
+
+
+@needs_chromium
+async def test_a_chip_nobody_answers_settles_in_her_conversation_as_run_out(
+    browser_rt, tmp_path, fixtures, monkeypatch
+):
+    import trillion.browser.service as service_module
+
+    monkeypatch.setattr(service_module, "WAKE_S", 0.05)
+    told: list[tuple[str, ...]] = []
+
+    async def answered(cid: str, ask_id: str, answer: str) -> None:
+        told.append((cid, ask_id, answer))
+
+    model = Steps(
+        call("browser_open", url="http://other.test/two.html"),
+        call("browser_done", answer="Nothing there."),
+        say(""),
+    )
+    async with service(browser_rt, tmp_path, model, answered=answered) as (svc, _):
+        job = asyncio.create_task(run(svc, named_hosts=frozenset()))
+        await until(lambda: svc.current() is not None and svc.current().task.ask is not None)  # type: ignore[union-attr]
+        running = svc.current()
+        assert running is not None and running.task is not None and running.task.ask is not None
+        ask = running.task.ask
+        svc._clock.now += int(svc.ask_wait_s * 1000) + 1_000  # type: ignore[attr-defined]
+        result = await asyncio.wait_for(job, 20)
+        assert result.outcome == "answered"
+        assert told == [("conv", ask.id, "expired")]
+        # Too late: the line's buttons, and the window's, are refused.
+        assert not await svc.answer(running.id, ask.id, "allowed")
+
+
+@needs_chromium
 async def test_always_allow_on_a_chip_opens_this_site_and_every_one_after(
     browser_rt, tmp_path, fixtures
 ):
@@ -448,7 +519,7 @@ async def test_a_declined_card_ends_the_task_declined_and_her_conversation_is_to
 ):
     told: list[tuple[str, ...]] = []
 
-    async def waits(cid: str, text: str, pid: str | None, kind: str) -> None:
+    async def waits(cid: str, text: str, pid: str | None, kind: str, task: str, ask: str) -> None:
         told.append(("waits", cid, text, pid or "", kind))
 
     async def settles(cid: str, pid: str, status: str, detail: str) -> None:

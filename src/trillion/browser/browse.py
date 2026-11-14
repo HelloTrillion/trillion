@@ -102,8 +102,11 @@ class Browse(BaseTool):
             audit_key=audit_key(paths.audit_key_path()),
             changed=rt.helpers_changed,
             log=self.log,
-            waits=lambda cid, text, pid, kind: tell_waits(rt, cid, text, pid),
+            waits=lambda cid, text, pid, kind, task_id, ask_id: tell_waits(
+                rt, cid, text, pid, kind=kind, task_id=task_id, ask_id=ask_id
+            ),
             settles=lambda cid, pid, status, detail: tell_settled(rt, cid, pid, status, detail),
+            answered=lambda cid, ask_id, answer: tell_answered(rt, cid, ask_id, answer),
             # Read from the keychain only when the API engine searches (`brave.py`).
             search_key=lambda: rt.secrets.get(brave.SECRET),
         )
@@ -174,10 +177,25 @@ def _sessions(rt: Any, conversation_id: str) -> list[Any]:
     return [s for s in list(rt.sessions) if getattr(s, "id", None) == conversation_id]
 
 
-async def tell_waits(rt: Any, conversation_id: str, text: str, pending_id: str | None) -> None:
+# What can be answered from her conversation's line, as from her browser's window.
+ANSWERED_HERE = ("chip", "signin", "step")
+
+
+async def tell_waits(
+    rt: Any,
+    conversation_id: str,
+    text: str,
+    pending_id: str | None,
+    *,
+    kind: str = "card",
+    task_id: str = "",
+    ask_id: str = "",
+) -> None:
     """Her conversation shows what a task waits on: the same card, with its own tap,
     for a press, and the host's one plain line (the app's, under one voice: shown,
-    never spoken or saved as hers)."""
+    never spoken or saved as hers). A chip's or a sign-in's line carries its ask, so
+    the page can answer it there (`POST /api/browser/tasks/{task}/asks/{ask}`, as the
+    window does); a step's, so the page can open the window at it."""
     card = await rt.spine_store.get_pending(pending_id) if pending_id is not None else None
     for session in _sessions(rt, conversation_id):
         if card is not None and card.owner_id == OWNER:
@@ -194,7 +212,11 @@ async def tell_waits(rt: Any, conversation_id: str, text: str, pending_id: str |
                 # What it says if its time runs out: the helper doesn't ask again.
                 expired_note=RAN_OUT,
             )
-        await session._send("notice", code="browser", text=text)
+        if kind in ANSWERED_HERE and task_id and ask_id:
+            ask = {"task": task_id, "id": ask_id, "kind": kind}
+            await session._send("notice", code="browser", text=text, ask=ask)
+        else:
+            await session._send("notice", code="browser", text=text)
 
 
 async def tell_settled(
@@ -210,6 +232,14 @@ async def tell_settled(
             reason=None,
             detail=detail or None,
         )
+
+
+async def tell_answered(rt: Any, conversation_id: str, ask_id: str, answer: str) -> None:
+    """A chip, a sign-in or a step stopped waiting, answered in her browser's window
+    or her conversation, run out or stopped: its line in her conversation is settled
+    too, so no button on it is left to press."""
+    for session in _sessions(rt, conversation_id):
+        await session._send("browser.ask.resolved", ask_id=ask_id, answer=answer)
 
 
 async def _tap(rt: Any, pending_id: str, decision: Literal["confirm", "cancel"]) -> Any:
