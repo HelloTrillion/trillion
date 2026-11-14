@@ -120,10 +120,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      TRILLION_TEST_BROWSER: ${{ runner.temp }}/trillion-browser
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner context isn't allowed in a job's env, so the path is set here.
+      - name: Where the test Chromium lives
+        run: echo "TRILLION_TEST_BROWSER=$RUNNER_TEMP/trillion-browser" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
