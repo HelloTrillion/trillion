@@ -44,6 +44,7 @@ STANDARD_PORTS = frozenset({80, 443})
 MAX_HEAD = 64 * 1024
 CONNECT_TIMEOUT_S = 15.0
 READ_HEAD_TIMEOUT_S = 30.0
+CLOSE_TIMEOUT_S = 3.0
 _CHUNK = 64 * 1024
 # Hop-by-hop headers a proxy never passes on.
 _HOP = frozenset({b"proxy-authorization", b"proxy-connection", b"connection", b"keep-alive"})
@@ -100,6 +101,8 @@ class Egress:
         self._expected = b"Basic " + base64.b64encode(f"{self._user}:{self._password}".encode())
         self._server: asyncio.Server | None = None
         self._open: set[asyncio.Task[None]] = set()
+        # Every connection's writer, Chromium's side and the far side, to cut on close.
+        self._writers: set[asyncio.StreamWriter] = set()
 
     async def start(self) -> ProxySettings:
         self._server = await asyncio.start_server(self._serve, LOOPBACK, 0)
@@ -109,21 +112,28 @@ class Egress:
         )
 
     async def close(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            for task in list(self._open):
-                task.cancel()
-            for task in list(self._open):
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+        """Stop at once: every connection is cut, not waited on, and nothing here can
+        hold up the task that is ending (a tunnel Chromium keeps open stays open)."""
+        server, self._server = self._server, None
+        if server is None:
+            return
+        server.close()
+        for writer in list(self._writers):
             with contextlib.suppress(Exception):
-                await self._server.wait_closed()
-            self._server = None
+                writer.transport.abort()
+        tasks = list(self._open)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=CLOSE_TIMEOUT_S)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(server.wait_closed(), CLOSE_TIMEOUT_S)
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         if task is not None:
             self._open.add(task)
+        self._writers.add(writer)
         try:
             await self._one(reader, writer)
         except (ConnectionError, asyncio.IncompleteReadError, TimeoutError, OSError):
@@ -133,9 +143,8 @@ class Egress:
         finally:
             if task is not None:
                 self._open.discard(task)
+            self._writers.discard(writer)
             writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
 
     async def _one(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), READ_HEAD_TIMEOUT_S)
@@ -184,6 +193,7 @@ class Egress:
         except (OSError, TimeoutError):
             await _answer(writer, 502, "Bad Gateway")
             return
+        self._writers.add(up_writer)
         try:
             if method == b"CONNECT":
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -196,9 +206,8 @@ class Egress:
                 await up_writer.drain()
             await _pipe_both(reader, writer, up_reader, up_writer)
         finally:
+            self._writers.discard(up_writer)
             up_writer.close()
-            with contextlib.suppress(Exception):
-                await up_writer.wait_closed()
 
     async def _check(self, host: str, port: int) -> str | None:
         """The address to connect to for `host`, or None when it is refused."""

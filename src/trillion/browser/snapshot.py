@@ -44,28 +44,50 @@ def links_in(text: str, base: str) -> tuple[str, ...]:
 
 
 # A line that is only a box around other lines: no words, nothing to press.
-_BARE = re.compile(r"^\s*- (generic|group|list|listitem|none|presentation)( \[ref=[a-z0-9]+\])?:?$")
+_BARE = re.compile(
+    r"^\s*- (generic|group|list|listitem|none|presentation|table|rowgroup|row|cell|superscript"
+    r"|note|paragraph)( \[ref=[a-z0-9]+\])?:?$"
+)
 
 
 _MAIN = re.compile(r"^(\s*)- main\b")
+# Menus and page furniture: read last, after what the page is about.
+_ASIDE = re.compile(r"^(\s*)- (navigation|banner|contentinfo|complementary|search)\b")
+
+
+def _subtree(lines: list[str], i: int) -> int:
+    """Where the subtree that starts at line `i` ends."""
+    depth = len(lines[i]) - len(lines[i].lstrip())
+    end = i + 1
+    while end < len(lines) and len(lines[end]) - len(lines[end].lstrip()) > depth:
+        end += 1
+    return end
 
 
 def compact(raw: str) -> str:
-    """The snapshot without the lines that are only boxes round other lines, and the
-    page's main part first when it marks one, so a small budget is spent on what the
-    page is about rather than its menus."""
-    lines = [line for line in raw.splitlines() if not _BARE.match(line)]
+    """The snapshot without the lines that are only boxes round other lines; the page's
+    main part first when it marks one; and its menus and furniture last, so a small
+    budget is spent on what the page is about."""
+    lines = [
+        line.replace(" [cursor=pointer]", "") for line in raw.splitlines() if not _BARE.match(line)
+    ]
     for i, line in enumerate(lines):
-        m = _MAIN.match(line)
-        if m is None:
-            continue
-        depth = len(m.group(1))
-        end = i + 1
-        while end < len(lines) and len(lines[end]) - len(lines[end].lstrip()) > depth:
-            end += 1
-        rest = lines[:i] + lines[end:]
-        return "\n".join([*lines[i:end], *rest])
-    return "\n".join(lines)
+        if _MAIN.match(line):
+            end = _subtree(lines, i)
+            lines = lines[i:end] + lines[:i] + lines[end:]
+            break
+    first: list[str] = []
+    later: list[str] = []
+    i = 0
+    while i < len(lines):
+        if _ASIDE.match(lines[i]):
+            end = _subtree(lines, i)
+            later += lines[i:end]
+            i = end
+        else:
+            first.append(lines[i])
+            i += 1
+    return "\n".join(first + later)
 
 
 def shape(url: str, title: str, raw: str, budget: int = MAX_CHARS) -> Snapshot:

@@ -32,6 +32,7 @@ STEP_LIMIT = 30
 TIME_LIMIT_S = 300.0
 NAV_TIMEOUT_MS = 20_000
 SETTLE_S = 0.4
+CLOSE_S = 10.0
 STEP_WORDS: dict[str, str] = {
     "sign_in": "sign in",
     "captcha": "prove you're a person",
@@ -245,10 +246,12 @@ class Task:
         self.closed = True
         if self.ask is not None and not self.ask.answer.done():
             self.ask.answer.set_result("cancelled")
-        await self.broker.close()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.broker.close(), CLOSE_S)
         if self._context is not None:
+            # Bounded: a page that won't let go never holds up the end of a task.
             with contextlib.suppress(Exception):
-                await self._context.close()
+                await asyncio.wait_for(self._context.close(), CLOSE_S)
         for work in list(self._work):
             work.cancel()
         if self._egress is not None:

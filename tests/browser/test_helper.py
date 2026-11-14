@@ -425,3 +425,28 @@ async def test_a_declined_card_ends_the_task_declined_and_her_conversation_is_to
             "local", since_ms=0, now_ms=svc._clock() + 1, lifecycle=None, limit=10
         )
         assert any(a.tool == "browser_press" for _, a, _, _ in found)
+
+
+class Stubborn(Steps):
+    """A model whose call won't let go when cancelled."""
+
+    async def stream(self, **kw: Any):  # type: ignore[no-untyped-def,override]
+        self.calls += 1
+        await asyncio.shield(asyncio.sleep(30))
+        for ev in say(""):
+            yield ev
+
+
+@needs_chromium
+async def test_the_time_limit_holds_even_when_a_model_call_wont_let_go(
+    browser_rt, tmp_path, fixtures, monkeypatch
+):
+    import trillion.browser.service as service_module
+
+    monkeypatch.setattr(service_module, "LET_GO_S", 0.2)
+    monkeypatch.setattr(service_module, "FINAL_S", 0.5)
+    async with service(browser_rt, tmp_path, Stubborn(), time_limit_s=0.5) as (svc, _):
+        began = asyncio.get_running_loop().time()
+        result = await asyncio.wait_for(run(svc), 10)
+        assert result.outcome == "time"
+        assert asyncio.get_running_loop().time() - began < 5

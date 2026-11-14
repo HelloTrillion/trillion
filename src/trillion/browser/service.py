@@ -74,6 +74,8 @@ ASK_WAIT_S = 10 * 60.0
 # How long a task waits for the one before it.
 QUEUE_WAIT_S = 30 * 60.0
 FINAL_S = 60.0
+# How long a cancelled turn is given to end before the task moves on without it.
+LET_GO_S = 5.0
 NUDGES = 1
 _UNWATCHED: frozenset[str] = frozenset({"schedule", "routine", "refresh"})
 
@@ -113,6 +115,8 @@ How to work:
 - Start with browser_search, or browser_open for a site the user named.
 - Each page comes back as text, with a reference like [ref=e12] for each element.
   Use browser_follow with a reference to follow a link or open a menu or tab.
+- A long page comes back cut. To find one fact on it (a height, a price, opening
+  hours), call browser_find with a word for it, such as "height" or "open".
 - Read what you need, then answer. Use few steps: you have at most {steps}.
 - browser_done's answer is a few plain sentences with the addresses of the pages
   your answer came from.
@@ -707,26 +711,30 @@ class BrowserService:
             if running.outcome == "cancelled" or task.closed:
                 return Outcomes(outcome="cancelled", text="The task was stopped.")
             began = time.monotonic()
-            try:
-                done = await asyncio.wait_for(
-                    run_turn(
-                        provider=_Paused(provider, task),
-                        router=router,
-                        registry=tools,
-                        system=system,
-                        history=list(history),
-                        ctx=ctx,
-                        emit=emit,
-                        save=save,
-                        limits=Limits(max_rounds=task.step_limit + 2, max_seconds=max(left, 1.0)),
-                    ),
-                    max(left, 0.1),
+            turn = asyncio.ensure_future(
+                run_turn(
+                    provider=_Paused(provider, task),
+                    router=router,
+                    registry=tools,
+                    system=system,
+                    history=list(history),
+                    ctx=ctx,
+                    emit=emit,
+                    save=save,
+                    limits=Limits(max_rounds=task.step_limit + 2, max_seconds=max(left, 1.0)),
                 )
-            except TimeoutError:
+            )
+            # The limit holds even if a model call won't let go: the turn is cancelled
+            # and given a moment, never waited on without end.
+            finished, _ = await asyncio.wait({turn}, timeout=max(left, 0.1))
+            if turn not in finished:
+                turn.cancel()
+                await asyncio.wait({turn}, timeout=LET_GO_S)
                 if task.answer is not None:
                     return Outcomes(outcome="answered", text=task.answer)
                 await task.log.event("stopped", code="time")
                 return await self._wrap_up(running, task, provider, system, history, "time")
+            done = turn.result()
             left -= time.monotonic() - began
             if task.answer is not None:
                 return Outcomes(outcome="answered", text=task.answer)
