@@ -62,7 +62,7 @@ import {
 } from './prefs';
 import { announcement, statusText } from './announce';
 import { readyLine } from './ready';
-import { renderScheduled } from './notice';
+import { answerAsk, askLine, openHerBrowser, renderScheduled } from './notice';
 import { createReminders } from './reminders';
 import { createSpeaking } from './speaking';
 import { createSidebar, revealForCard } from './sidebar';
@@ -99,6 +99,8 @@ import {
   expire,
   micFailed,
   offerChosen,
+  askAnswered,
+  askSending,
   pinnedDraft,
   reduce,
   sent,
@@ -741,8 +743,21 @@ function renderEntry(e: Entry): HTMLElement {
       chip.dataset['call'] = e.callId;
       return chip;
     }
-    case 'notice':
-      return el('p', 'notice', e.text);
+    case 'notice': {
+      const ask = e.ask;
+      if (!ask) return el('p', 'notice', e.text);
+      // A browsing helper's chip, sign-in or step: answered here as in her browser's window.
+      return askLine(
+        { ...e, ask },
+        (word) => {
+          apply(askSending(view, ask.id));
+          void answerAsk(api, ask, word).then((got) =>
+            apply(askAnswered(view, ask.id, got, got === null ? 'That didn’t go through. Try again in a moment.' : '')),
+          );
+        },
+        openHerBrowser,
+      );
+    }
     case 'offer':
       // Her offer of a helper: the tap is the user's own, sent as it is.
       return offerLine(

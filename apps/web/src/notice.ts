@@ -1,7 +1,8 @@
 /**
  * A notice through the door, as the conversation shows it (the reminders and speaking
  * up specs): her line, or its title when she has none; a Join button for a link; the
- * host's short detail; and "Held: <reason>" when she kept her voice.
+ * host's short detail; and "Held: <reason>" when she kept her voice. And a browsing
+ * helper's line, with what it waits on, to answer it here.
  *
  * Titles, details and reasons can carry someone else's words (an invite title, an
  * email subject): every one is set as text, never as markup.
@@ -9,7 +10,8 @@
 
 import { inApp, openExternal } from './desktop';
 import { type Look, picture } from './look';
-import { dueLabel, quietLine, type Entry } from './view';
+import type { Api } from './settings';
+import { type BrowserAsk, dueLabel, quietLine, type Entry } from './view';
 
 export type Scheduled = Extract<Entry, { kind: 'scheduled' }>;
 
@@ -128,4 +130,88 @@ export function renderScheduled(
   if (e.late) box.append(el('span', 'mark', dueLabel(e.due)));
   box.append(...more);
   return box;
+}
+
+// ── A browsing helper waiting on the user ─────────────────────────────────────
+//
+// The host's one plain line (the her browser spec), and under it what her browser's
+// window offers too: Allow, Always allow (a chip only) and Not now for a chip or a
+// sign-in, through the window's own route (`POST /api/browser/tasks/{task}/asks/{ask}`);
+// View for the user's own step, which opens the window. Whichever place answers, both
+// are settled. The line is the app's, under one voice: never spoken, never saved as hers.
+
+export type AskNotice = Extract<Entry, { kind: 'notice' }> & { readonly ask: BrowserAsk };
+export type AskAnswer = 'allowed' | 'always' | 'declined';
+
+/** Asked of the window (features/her-browser.ts) to open at a task: `detail` is its id. */
+export const OPEN_HER_BROWSER = 'trillion:her-browser-open';
+
+/** What a settled line says, after the host's line. */
+const SETTLED: Readonly<Record<string, string>> = {
+  allowed: 'Allowed.',
+  always: 'Allowed. From now on she opens any site without asking.',
+  declined: 'Not now.',
+  done: 'Done.',
+  expired: 'No answer in time, so she carried on without it.',
+  cancelled: 'The task stopped.',
+  superseded: 'She asked something else instead.',
+  stale: 'That isn’t waiting any more.',
+};
+
+export function settledWords(answer: string): string {
+  return SETTLED[answer] ?? 'Answered.';
+}
+
+function button(text: string, cls: string, onClick: () => void, disabled: boolean): HTMLButtonElement {
+  const b = el('button', cls, text);
+  b.type = 'button';
+  b.disabled = disabled;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+/** The line and its buttons; once settled, the line and what came of it, with none. */
+export function askLine(e: AskNotice, answer: (word: AskAnswer) => void, open: (task: string) => void): HTMLElement {
+  const a = e.ask;
+  const line = el('div', `notice browser-ask ${a.status}`);
+  line.append(el('p', 'browser-ask-words', e.text));
+  if (a.status === 'settled') {
+    line.append(el('p', 'browser-ask-settled', settledWords(a.answer)));
+    return line;
+  }
+  const row = el('div', 'offer-actions');
+  const busy = a.status === 'sending';
+  if (a.kind === 'step') {
+    row.append(button('View', 'approve', () => open(a.task), false));
+  } else {
+    row.append(button(a.kind === 'signin' ? 'Use it' : 'Allow', 'approve', () => answer('allowed'), busy));
+    if (a.kind === 'chip') {
+      const always = button('Always allow', 'quiet', () => answer('always'), busy);
+      always.title = 'Let her open any site without asking. Pages on this computer and your network stay refused, and nothing is sent without your OK.';
+      row.append(always);
+    }
+    row.append(button('Not now', 'quiet', () => answer('declined'), busy));
+  }
+  line.append(row);
+  if (a.note) line.append(el('p', 'browser-ask-note', a.note));
+  return line;
+}
+
+/**
+ * Send the user's answer through the window's own route: the word it was taken as,
+ * "stale" when nothing waits for it any more, or null when it didn't go.
+ */
+export async function answerAsk(api: Api, a: BrowserAsk, word: AskAnswer): Promise<string | null> {
+  try {
+    const r = await api('POST', `/api/browser/tasks/${encodeURIComponent(a.task)}/asks/${encodeURIComponent(a.id)}`, { answer: word });
+    if (r.ok) return word;
+    return r.status === 409 ? 'stale' : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Open her browser's window at this task, if it isn't open there already. */
+export function openHerBrowser(task: string): void {
+  dispatchEvent(new CustomEvent(OPEN_HER_BROWSER, { detail: task }));
 }

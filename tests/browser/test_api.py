@@ -235,3 +235,46 @@ async def test_her_conversation_gets_the_card_with_its_own_words_for_running_out
             "detail": "It ran out of time, so nothing was sent.",
         },
     )
+
+
+async def test_her_conversation_can_answer_a_chip_a_signin_and_open_a_step() -> None:
+    """A chip's, a sign-in's and a step's line carry their task and ask, which the page
+    answers through `asks/{id}`, as the window does; a card's carries none (its card has
+    its own tap). Each is settled there once it stops waiting. All of it is the app's:
+    sent as a notice, never a reply, so it is never spoken or saved as hers."""
+    from types import SimpleNamespace
+
+    from trillion.browser.browse import tell_answered, tell_waits
+
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    class Page:
+        id = "conv"
+
+        async def _send(self, kind: str, **body: Any) -> None:
+            sent.append((kind, body))
+
+    class Other:
+        id = "elsewhere"
+
+        async def _send(self, kind: str, **body: Any) -> None:
+            raise AssertionError("told to another conversation")
+
+    rt = SimpleNamespace(sessions={Page(), Other()})
+    task = "abcdef0123456789"
+    for kind in ("chip", "signin", "step"):
+        await tell_waits(rt, "conv", f"{kind} line", None, kind=kind, task_id=task, ask_id="a1b2")
+    await tell_waits(rt, "conv", "card line", None, kind="card", task_id=task, ask_id="c3d4")
+    assert sent == [
+        (
+            "notice",
+            {
+                "code": "browser",
+                "text": f"{k} line",
+                "ask": {"task": task, "id": "a1b2", "kind": k},
+            },
+        )
+        for k in ("chip", "signin", "step")
+    ] + [("notice", {"code": "browser", "text": "card line"})]
+    await tell_answered(rt, "conv", "a1b2", "always")
+    assert sent[-1] == ("browser.ask.resolved", {"ask_id": "a1b2", "answer": "always"})

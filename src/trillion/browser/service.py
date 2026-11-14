@@ -55,7 +55,7 @@ from trillion.browser.quarantine import Quarantine
 from trillion.browser.runtime import BrowserRuntime
 from trillion.browser.settings import BrowserSettings
 from trillion.browser.signins import SignIns, site_of
-from trillion.browser.task import STEP_LIMIT, TIME_LIMIT_S, Task
+from trillion.browser.task import STEP_LIMIT, TIME_LIMIT_S, Ask, Task
 from trillion.browser.tools import PRESS, offered, task_registry
 from trillion.browser.view import Screencast, Send
 from trillion.spine.confirm import EXPIRY_MS
@@ -105,9 +105,12 @@ WAITS = {
     "step": "Her browsing helper needs you on {host}: open her browser to take over.",
 }
 
-# Told when a task waits on the user, and when a card it showed is settled.
-Waits = Callable[[str, str, "str | None", str], Awaitable[None]]
+# Told when a task waits on the user (conversation, words, card's pending id, kind,
+# task, ask), when a card it showed is settled, and when a chip, a sign-in or a step
+# stops waiting (conversation, ask, how it ended).
+Waits = Callable[[str, str, "str | None", str, str, str], Awaitable[None]]
 Settles = Callable[[str, str, str, str], Awaitable[None]]
+Answered = Callable[[str, str, str], Awaitable[None]]
 # What a card that ran out of time says, in the window and in her conversation.
 RAN_OUT = "It ran out of time, so nothing was sent."
 # The note the helper is given when its card ran out of time: it ends the task.
@@ -209,6 +212,7 @@ class BrowserService:
         log: Any = None,
         waits: Waits | None = None,
         settles: Settles | None = None,
+        answered: Answered | None = None,
         search_key: Callable[[], str | None] = lambda: None,
         search_transport: Any = None,
     ) -> None:
@@ -228,6 +232,7 @@ class BrowserService:
         # Her conversation, told of what a task waits on, and when a card is settled.
         self._waits = waits
         self._settles = settles
+        self._answered = answered
         self.quarantine = quarantine
         self._store = store
         self._sink = log_sink
@@ -262,10 +267,11 @@ class BrowserService:
         ask_id: str,
         answer: Literal["allowed", "always", "declined", "done"],
     ) -> bool:
-        """The user's answer to a chip or their step, from the app. A card is answered
+        """The user's answer to a chip, a sign-in or their step, from the app: her
+        browser's window or her conversation, which both come here. A card is answered
         only by `tap`. "always" is a chip's "Always allow": this site now, and from now
         on any public site without asking (the caller saves that setting; this task
-        takes it at once)."""
+        takes it at once). False for an ask already answered, or no longer waiting."""
         task = self._task(task_id)
         if task is None or task.ask is None or task.ask.id != ask_id or task.ask.kind == "card":
             return False
@@ -284,7 +290,7 @@ class BrowserService:
             task.broker.open_any = True
         event: Any = "step" if ask.kind == "step" else "chip"
         await task.log.event(event, url=ask.url, code="returned" if answer == "done" else answer)
-        return task.answer_ask(ask_id, "allowed" if answer == "always" else answer)
+        return task.answer_ask(ask_id, answer)
 
     async def shown(self, task_id: str, pending_id: str) -> bool:
         """The view put this card on the screen: only now can it be approved."""
@@ -366,10 +372,25 @@ class BrowserService:
         host = host_of(ask.url or str(task.page.url)) or "the site"
         try:
             await self._waits(
-                running.conversation_id, WAITS[ask.kind].format(host=host), ask.pending_id, ask.kind
+                running.conversation_id,
+                WAITS[ask.kind].format(host=host),
+                ask.pending_id,
+                ask.kind,
+                running.id,
+                ask.id,
             )
         except Exception as e:
             logger.warning("a wait wasn't told: %s", type(e).__name__)
+
+    async def _told_answered(self, running: Running, ask: Ask, answer: str) -> None:
+        """A chip, a sign-in or a step stopped waiting, however it ended: her
+        conversation's line for it is settled too. A card is settled by `_settled`."""
+        if self._answered is None or ask.kind == "card":
+            return
+        try:
+            await self._answered(running.conversation_id, ask.id, answer)
+        except Exception as e:
+            logger.warning("an answer wasn't told: %s", type(e).__name__)
 
     async def take_control(self, task_id: str) -> bool:
         task = self._task(task_id)
@@ -692,6 +713,7 @@ class BrowserService:
                 answer = await asyncio.wait_for(asyncio.shield(ask.answer), self.ask_wait_s)
             except TimeoutError:
                 answer = "expired"
+            await self._told_answered(running, ask, answer)
             task.clear_ask()
             running.signin = site if answer == "allowed" else ""
         if running.signin:
@@ -810,7 +832,7 @@ class BrowserService:
             if task.ask is not None:
                 host = host_of(task.ask.url or "") or "the site"
                 await self._told_waits(running, task)
-                note = await self._wait(task)
+                note = await self._wait(running, task)
                 if note is None:
                     return Outcomes(outcome="cancelled", text="The task was stopped.")
                 if note == DECLINED:
@@ -849,7 +871,7 @@ class BrowserService:
             )
             running.turn += 1
 
-    async def _wait(self, task: Task) -> str | None:
+    async def _wait(self, running: Running, task: Task) -> str | None:
         """Wait for the user's answer to what the task asked; the note the helper is
         given then, or None when the task was stopped."""
         ask = task.ask
@@ -862,6 +884,8 @@ class BrowserService:
         answer = "expired"
         if await self._until(ask.answer, deadline):
             answer = ask.answer.result()
+        if ask.kind != "card":
+            await self._told_answered(running, ask, answer)
         if task.closed or answer in ("cancelled", "superseded"):
             task.clear_ask()
             return None if task.closed else "[host] That was replaced; carry on."
@@ -872,7 +896,7 @@ class BrowserService:
             if answer == "expired":
                 if not ask.answer.done():
                     # Its time ran out with nobody answering: settled here, as expired.
-                    await self._end_card(running_of(self, task), task)
+                    await self._end_card(running, task)
                 task.clear_ask()
                 return EXPIRED_NOTE
             task.clear_ask()
@@ -884,7 +908,7 @@ class BrowserService:
             )
             return "[host] The user didn't answer in time. Carry on without it, or finish."
         if ask.kind == "chip":
-            if answer == "allowed":
+            if answer in ("allowed", "always"):
                 return f"[host] The user allowed it: open {ask.url} with browser_open now."
             return "[host] The user said no to that site. Don't open it; carry on without it."
         return "[host] The user finished their step. Read the page again and carry on."
@@ -993,8 +1017,3 @@ def _last_text(history: list[Msg]) -> str:
         if words:
             return words
     return ""
-
-
-def running_of(service: BrowserService, task: Task) -> Running:
-    """The running entry that holds `task`."""
-    return next(r for r in service.tasks.values() if r.task is task)
