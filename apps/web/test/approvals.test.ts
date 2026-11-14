@@ -81,7 +81,7 @@ describe('words', () => {
     expect(outcomeWords('done', 'Done.')).toBe('Approved · done');
     expect(outcomeWords('declined', '')).toBe('Declined');
     expect(outcomeWords('failed', 'It failed. Nothing was changed.')).toBe("Didn't go through: it failed. Nothing was changed.");
-    expect(outcomeWords('closed', EXPIRED_NOTE)).toBe("Expired · she'll ask again");
+    expect(outcomeWords('closed', EXPIRED_NOTE)).toBe('Expired · ask her again');
     expect(outcomeWords('closed', 'A newer request replaced this one.')).toBe("Didn't go through: a newer request replaced this one.");
     expect(outcomeWords('working', '')).toMatch(/^Approved/);
   });
