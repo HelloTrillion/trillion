@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 NAME = "browse"
 TIMEOUT_S = 3600.0
+# How often her browser's log is cleared of what it held past 30 days (CMP-9): at
+# startup, then at most once a day, when a task runs.
+CLEAR_EVERY_MS = 86_400_000
 NOT_SET_UP = "her browser isn't set up yet: the user can get it in Settings → Her browser; say so"
 
 
@@ -79,6 +82,8 @@ class Browse(BaseTool):
         self.log: SqliteBrowserLog | None = None
         self.install = Install()
         self._rt: Runtime | None = None
+        # When the log was last cleared of rows past 30 days; None before the first.
+        self._cleared_ms: int | None = None
 
     async def attach(self, rt: Runtime) -> None:
         from trillion.spine.audit import audit_key
@@ -107,6 +112,28 @@ class Browse(BaseTool):
             # Read from the keychain only when the API engine searches (`brave.py`).
             search_key=lambda: rt.secrets.get(brave.SECRET),
         )
+        # What the log held for more than 30 days goes from the disk, not only the view.
+        await self.clear_log()
+
+    async def clear_log(self) -> int:
+        """Clear the origins and details of log rows past 30 days (decision 13, CMP-9):
+        at startup, then at most once a day, as tasks run. Rows are never deleted, so
+        each keeps only its event and time. How many were cleared. A clearing that fails
+        is logged and never stops her browser."""
+        if self.log is None or self._rt is None:
+            return 0
+        now = self._rt.clock()
+        if self._cleared_ms is not None and now - self._cleared_ms < CLEAR_EVERY_MS:
+            return 0
+        self._cleared_ms = now
+        try:
+            cleared = await self.log.clear_old(now)
+        except Exception as e:
+            logger.warning("her browser's old log not cleared: %s", type(e).__name__)
+            return 0
+        if cleared:
+            logger.info("cleared %d of her browser's log rows past 30 days", cleared)
+        return cleared
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
         if self.service is None or not playwright_available() or self.install.state() is None:
@@ -119,6 +146,7 @@ class Browse(BaseTool):
         service = self.service
         if service is None:
             return ToolResult(ok=False, content=NOT_SET_UP, effect="none", error_kind="not_set_up")
+        await self.clear_log()
         web = self._rt.web if self._rt is not None else None
         named = web.ledger.hosts_said(ctx.session_id) if web is not None else frozenset()
         try:
