@@ -266,8 +266,7 @@ def test_she_is_told_about_reads_in_the_background_in_both_modalities() -> None:
         assert 'A read that answers "started" is on its way in the background' in text
         assert "never call it again while it runs" in text and "say it is coming" in text
         assert "say in one short line that it is in" in text
-        assert "say the answer itself in words, numbers included" in text
-        assert "the board is extra, never instead of saying it" in text
+        assert "show it on the board if it is better seen" in text
         assert "at most two sentences" in text
         assert "\u2014" not in text and "\u2013" not in text
 
