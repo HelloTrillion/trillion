@@ -30,6 +30,22 @@
   gap: 8px;
   margin-top: 12px;
 }
+.her-browser-brave-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.her-browser-brave-field input {
+  flex: 1;
+  min-width: 0;
+}
+.her-browser-brave-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 
 /* The view: a window of its own above everything, the page letterboxed in it. */
 .her-browser-overlay {

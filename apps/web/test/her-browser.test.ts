@@ -345,6 +345,100 @@ describe('Settings → Her browser while a helper works', () => {
   });
 });
 
+describe('Settings → Her browser: the Brave Search API key', () => {
+  const working = { id: 'abcdef0123456789', state: 'working' as const, mode: 'research' as const, url: 'https://example.com/' };
+  const engines = [
+    { id: 'bing', name: 'Bing' },
+    { id: 'brave_api', name: 'Brave Search API (your key)' },
+  ];
+  const brave = (saved: boolean) => ({ engine: 'brave_api', saved, keychain: true, key_link: 'https://api-dashboard.search.brave.com/' });
+
+  function setup(search: string, saved = false) {
+    for (const d of document.querySelectorAll('.her-browser-overlay, .her-browser-pill')) d.remove();
+    const section = host();
+    const place = document.createElement('div');
+    document.body.append(place);
+    const replace = section.replaceChildren;
+    section.replaceChildren = (...nodes: (Node | string)[]) => {
+      replace(...nodes);
+      place.replaceChildren(...nodes);
+    };
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const now = { saved, sites: [] as string[] };
+    const api = async (method: string, path: string, body?: unknown) => {
+      if (method !== 'GET') calls.push({ method, path, body });
+      if (path === '/api/browser/brave-key') now.saved = method === 'PUT';
+      return json(state({ engines, settings: { act: false, stronger: false, search, live: true }, sites: now.sites, brave: brave(now.saved), tasks: [working] }));
+    };
+    const b = createHerBrowser(section, api, document.body);
+    return { section, b, calls, now };
+  }
+
+  const keyField = (section: Host & { children: Node[] }) => (section.children[0] as HTMLElement).querySelector('#her-browser-brave-key') as HTMLInputElement | null;
+
+  it('shows a key field with Save, a link and the note when the API engine is chosen', async () => {
+    const { section, b } = setup('brave_api');
+    await b.section();
+    const field = keyField(section);
+    expect(field).not.toBeNull();
+    expect(field?.type).toBe('password');
+    const text = (section.children[0] as HTMLElement).textContent ?? '';
+    expect(text).toContain('Searches go to Brave with your key');
+    expect(text).toContain('monthly limit');
+    const link = (section.children[0] as HTMLElement).querySelector('a[href="https://api-dashboard.search.brave.com/"]');
+    expect(link).not.toBeNull();
+  });
+
+  it('Save sends the key to the keychain route, then forgets it here; Remove deletes it', async () => {
+    const { section, b, calls } = setup('brave_api');
+    await b.section();
+    const field = keyField(section)!;
+    field.value = 'BSA-test-key-0000';
+    field.dispatchEvent(new Event('input'));
+    const save = [...(section.children[0] as HTMLElement).querySelectorAll('button')].find((x) => x.textContent === 'Save')!;
+    save.click();
+    await flush();
+    await flush();
+    expect(calls).toEqual([{ method: 'PUT', path: '/api/browser/brave-key', body: { key: 'BSA-test-key-0000' } }]);
+    // Saved: the field is empty again and the section says a key is kept.
+    expect(keyField(section)?.value).toBe('');
+    expect((section.children[0] as HTMLElement).textContent).toContain('A key is saved in your keychain');
+    const remove = [...(section.children[0] as HTMLElement).querySelectorAll('button')].find((x) => x.textContent === 'Remove')!;
+    remove.click();
+    await flush();
+    await flush();
+    expect(calls[1]).toEqual({ method: 'DELETE', path: '/api/browser/brave-key', body: {} });
+  });
+
+  it('keeps a half-typed key through a poll', async () => {
+    const { section, b, now } = setup('brave_api');
+    await b.section();
+    const form = section.children[0] as HTMLElement;
+    const field = keyField(section)!;
+    field.focus();
+    field.value = 'BSA-half';
+    field.dispatchEvent(new Event('input'));
+    // Something the section shows changes while the user types: the poll leaves it be.
+    now.sites = ['library.org'];
+    await b.refresh();
+    expect(section.children[0]).toBe(form);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe('BSA-half');
+    // Even once the focus has gone, a redraw keeps what was typed.
+    field.blur();
+    await b.refresh();
+    expect(section.children[0]).not.toBe(form);
+    expect(keyField(section)?.value).toBe('BSA-half');
+  });
+
+  it('with another engine and a key saved, offers only Remove', async () => {
+    const { section, b } = setup('bing', true);
+    await b.section();
+    expect(keyField(section)).toBeNull();
+    expect((section.children[0] as HTMLElement).textContent).toContain('A Brave Search API key is saved');
+  });
+});
+
 describe('a chip in the window', () => {
   function chipTask(kind: 'chip' | 'signin') {
     return {
