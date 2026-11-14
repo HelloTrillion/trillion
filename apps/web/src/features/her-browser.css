@@ -320,3 +320,23 @@
     border-color: var(--color-accent);
   }
 }
+
+/* In her conversation (notice.ts): a browsing helper's chip, sign-in or step, the
+   host's line, then what it offers. */
+.browser-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.browser-ask-words,
+.browser-ask-settled,
+.browser-ask-note {
+  margin: 0;
+}
+.browser-ask .approve {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-bg-0);
+  font-weight: 600;
+}

@@ -14,6 +14,7 @@
 
 import { HER, type Feature } from '../features';
 import { addIcon } from '../icons';
+import { OPEN_HER_BROWSER } from '../notice';
 import type { Host } from '../panel';
 import type { Api } from '../settings';
 import './her-browser.css';
@@ -834,8 +835,14 @@ export const feature: Feature = {
       open: () => void browser.section(),
     });
     on((msg) => {
-      // A browsing task changing is told as a helpers change.
-      if (msg.type === 'helpers.changed') void browser.refresh();
+      // A browsing task changing is told as a helpers change. An ask answered in her
+      // conversation shows here at once, not at the next poll.
+      if (msg.type === 'helpers.changed' || msg.type === 'browser.ask.resolved') void browser.refresh();
+    });
+    // View, on a step's line in her conversation: the window, at that task.
+    addEventListener(OPEN_HER_BROWSER, (ev) => {
+      const task = (ev as CustomEvent<unknown>).detail;
+      void browser.view(typeof task === 'string' && task ? task : undefined);
     });
   },
 };

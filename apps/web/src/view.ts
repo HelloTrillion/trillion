@@ -56,7 +56,8 @@ export type Entry =
       /** A new helper's draft, on its create card: pinned above the message box. */
       readonly draft?: HelperDraft;
     }
-  | { readonly kind: 'notice'; readonly text: string }
+  /** The app's line; her browsing helper's carries what it waits on, to answer here. */
+  | { readonly kind: 'notice'; readonly text: string; readonly ask?: BrowserAsk }
   /**
    * Her offer of a helper (the your helpers spec, Suggestions): Create or No thanks, then
    * what came of it. This page's only: never saved, never drawn again from history.
@@ -113,6 +114,66 @@ export interface HelperDraft {
   readonly notes: string;
   readonly connectors: readonly DraftConnection[];
   readonly asks: readonly string[];
+}
+
+/**
+ * A browsing helper's chip, sign-in or step, on its line in the conversation (the her
+ * browser spec): answered here as in her browser's window, through the same route, and
+ * settled here whichever place answered. Never saved, never drawn again from history.
+ */
+export interface BrowserAsk {
+  readonly task: string;
+  readonly id: string;
+  readonly kind: 'chip' | 'signin' | 'step';
+  /** `sending`: an answer is on its way, so no second one goes. */
+  readonly status: 'open' | 'sending' | 'settled';
+  /** How it ended: the core's word ("allowed", "always", "expired"…), or "stale". */
+  readonly answer: string;
+  /** Why an answer didn't go, in plain words; empty otherwise. */
+  readonly note: string;
+}
+
+const ASK_KINDS: readonly BrowserAsk['kind'][] = ['chip', 'signin', 'step'];
+
+function askIn(raw: unknown): BrowserAsk | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const kind = ASK_KINDS.find((k) => k === r['kind']);
+  const id = typeof r['id'] === 'string' ? r['id'] : '';
+  const task = typeof r['task'] === 'string' ? r['task'] : '';
+  // Only ids the routes take: nothing else is ever put in a path.
+  if (!kind || !/^[a-f0-9]{1,32}$/.test(id) || !/^[a-f0-9]{8,32}$/.test(task)) return undefined;
+  return { task, id, kind, status: 'open', answer: '', note: '' };
+}
+
+/** The browsing helper's line for ask `id`, changed by `change`; the view as it was if none. */
+function settleAsk(view: View, id: string, change: (a: BrowserAsk) => BrowserAsk): View {
+  let changed = false;
+  const entries = view.entries.map((e) => {
+    if (e.kind !== 'notice' || e.ask?.id !== id) return e;
+    const ask = change(e.ask);
+    if (ask === e.ask) return e;
+    changed = true;
+    return { ...e, ask };
+  });
+  return changed ? { ...view, entries } : view;
+}
+
+/** The user pressed an answer on the line: it is on its way. */
+export function askSending(view: View, id: string): View {
+  return settleAsk(view, id, (a) => (a.status === 'open' ? { ...a, status: 'sending', note: '' } : a));
+}
+
+/**
+ * What came of the answer the page sent: `answer` once taken, "stale" when it was no
+ * longer waiting, or null when it didn't go (open again, with `note`). A line the core
+ * already settled stays as the core said.
+ */
+export function askAnswered(view: View, id: string, answer: string | null, note = ''): View {
+  return settleAsk(view, id, (a) => {
+    if (a.status === 'settled') return a;
+    return answer === null ? { ...a, status: 'open', note } : { ...a, status: 'settled', answer, note: '' };
+  });
 }
 
 /** `past`: an older offer, once a newer one came: only the newest can be answered. */
@@ -815,6 +876,9 @@ function step(view: View, msg: ServerMsg): View {
         ),
       };
     }
+    case 'browser.ask.resolved':
+      // Answered here or in her browser's window, run out or stopped: as the core says.
+      return settleAsk(view, str(msg['ask_id']), (a) => (a.status === 'settled' && a.answer === str(msg['answer']) ? a : { ...a, status: 'settled', answer: str(msg['answer']), note: '' }));
     case 'interrupted':
       return release({
         ...view,
@@ -844,9 +908,12 @@ function step(view: View, msg: ServerMsg): View {
         const during = view.replyOpen || view.busy;
         return during ? { ...view, held: [...view.held, entry] } : { ...view, entries: [...view.entries, entry] };
       }
-      // Her browsing helper waits on the user: the host's own line (features/her-browser.ts).
+      // Her browsing helper waits on the user: the host's own line (features/her-browser.ts),
+      // with what it waits on when it can be answered here.
       if (msg['code'] === 'browser' && typeof msg['text'] === 'string') {
-        return { ...view, entries: [...view.entries, { kind: 'notice', text: msg['text'] }] };
+        const ask = askIn(msg['ask']);
+        if (ask && view.entries.some((e) => e.kind === 'notice' && e.ask?.id === ask.id)) return view;
+        return { ...view, entries: [...view.entries, { kind: 'notice', text: msg['text'], ...(ask ? { ask } : {}) }] };
       }
       // A long conversation was summarized for her. Nothing on screen goes away.
       const text =
