@@ -451,7 +451,8 @@ class SqliteSpineStore:
         async with self._tx() as conn:
             await conn.execute(
                 "INSERT INTO tool_audit (owner_id, call_id, tool, args_hash, risk, decision,"
-                " outcome, duration_ms, session_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " outcome, duration_ms, session_id, at, neutralized)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     r.owner_id,
                     r.call_id,
@@ -463,6 +464,7 @@ class SqliteSpineStore:
                     r.duration_ms,
                     r.session_id,
                     r.at,
+                    r.neutralized,
                 ),
             )
 
@@ -527,7 +529,7 @@ class SqliteSpineStore:
     async def list_audit(self) -> list[AuditRecord]:
         async with self._conn.execute(
             "SELECT owner_id, call_id, tool, args_hash, risk, decision, outcome, duration_ms,"
-            " session_id, at FROM tool_audit ORDER BY id"
+            " session_id, at, neutralized FROM tool_audit ORDER BY id"
         ) as cur:
             return [
                 AuditRecord(
@@ -541,6 +543,7 @@ class SqliteSpineStore:
                     duration_ms=int(r["duration_ms"]),
                     session_id=str(r["session_id"]),
                     at=int(r["at"]),
+                    neutralized=None if r["neutralized"] is None else str(r["neutralized"]),
                 )
                 for r in await cur.fetchall()
             ]

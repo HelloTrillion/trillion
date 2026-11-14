@@ -922,6 +922,23 @@ def check_skills(path: Path) -> Check:
     return Check(name="Skills", status="ok" if on else "info", detail="; ".join([count, *notes]))
 
 
+def check_plugins() -> Check | None:
+    """Tool plugins (CON-6a): another package's tools are never loaded. Said only when
+    one is installed, by name, found without importing it."""
+    from trillion.spine.registry import skipped_plugins
+
+    skipped = skipped_plugins()
+    if not skipped:
+        return None
+    n = len(skipped)
+    return Check(
+        name="Tool plugins",
+        status="info",
+        detail=f"Skipped {n} tool plugin{'s' if n != 1 else ''} that aren't part of Trillion: "
+        + ", ".join(skipped),
+    )
+
+
 def check_voice(path: Path) -> Check:
     """Settings → Your voice (§5.3a): whether her check of a spoken yes can run. A
     voiceprint that is there but can't be read fails closed, so nothing is less safe,
@@ -1012,6 +1029,7 @@ async def examine(
         check_browser(prefs.get("browser"), paths.home()),
         *check_mcp(paths.mcp_config_path(), secrets),
         check_skills(paths.skills_config_path()),
+        *([plugins] if (plugins := check_plugins()) else []),
         check_voice(paths.voiceprint_path()),
         check_scheduler(paths.db_path(), time.time_ns() // 1_000_000),
     ]

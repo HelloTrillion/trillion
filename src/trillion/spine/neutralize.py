@@ -8,15 +8,26 @@ control, role-marker and fence rules run, on the text a model would effectively 
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import unicodedata
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class Finding:
     kind: str
+    # The hostile text itself. Never logged or stored anywhere: only `counts` leave here.
     sample: str
+
+
+# How many of each kind were found, sorted by kind: `(("fence", 1), ("role_marker", 2))`.
+Counts = tuple[tuple[str, int], ...]
 
 
 # Format characters live only in these planes (a unit test re-checks the whole range).
@@ -73,3 +84,27 @@ def neutralize(text: str) -> tuple[str, tuple[Finding, ...]]:
     text = _sub(_ROLE, "role_marker", "[role marker removed]", text, findings)
     text = _sub(_FENCE, "fence", "[fence removed]", text, findings)
     return text, tuple(findings)
+
+
+def counts(findings: Iterable[Finding]) -> Counts:
+    """How many of each kind: what is kept of a finding. Never its sample."""
+    return tuple(sorted(Counter(f.kind for f in findings).items()))
+
+
+def as_json(found: Counts) -> str | None:
+    """Counts as the audit stores them (`{"fence": 1, "role_marker": 2}`), or None."""
+    return json.dumps(dict(found), sort_keys=True, separators=(",", ":")) if found else None
+
+
+def shown(found: Counts) -> str:
+    """Counts as a log line shows them: `fence:1 role_marker:2`."""
+    return " ".join(f"{kind}:{n}" for kind, n in found)
+
+
+def cleaned(text: str, where: str) -> str:
+    """`neutralize`, for a caller that keeps only the text: what was found is logged as
+    counts, with `where` (a fixed name from the code, never the text) to say whose."""
+    clean, findings = neutralize(text)
+    if findings:
+        logger.info("neutralized %s in %s", shown(counts(findings)), where)
+    return clean

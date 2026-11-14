@@ -55,7 +55,7 @@ from trillion.spine.contract import (
     ToolResult,
 )
 from trillion.spine.deny_floor import CASE_BLIND, fold
-from trillion.spine.neutralize import FENCE, ROLE, neutralize
+from trillion.spine.neutralize import FENCE, ROLE, cleaned
 from trillion.spine.router import SUMMARY_LIMIT
 
 CATEGORY = "files"
@@ -170,7 +170,7 @@ def _misleading(part: str) -> bool:
 def _shown_as_another(real: Path) -> bool:
     """Whether the card, as the router draws it (NFKC: "™" as "TM", "ﬁ" as "fi"), would
     name a different folder that is there. Blocking."""
-    shown = neutralize(str(real))[0]
+    shown = cleaned(str(real), "a shared folder's path")
     if shown == unicodedata.normalize("NFC", str(real)):
         return False
     try:
@@ -287,7 +287,7 @@ async def open_place(current: Path | None, target: str, shares: Shares, look: Lo
 def quoted(text: str, limit: int = _QUOTED) -> str:
     """Words from the disk as one JSON string: neutralized as any tool's words are
     (SPN-6), cut, and quoted, so nothing in a folder's name can read as the host's."""
-    clean = neutralize(text)[0]
+    clean = cleaned(text, "words from a shared folder")
     if len(clean) > limit:
         clean = clean[: limit - 1] + "\u2026"
     return json.dumps(clean, ensure_ascii=False)
@@ -504,7 +504,7 @@ class FolderShare(_FolderTool):
     def _unshowable(self, args: JSON, real: Path) -> str | None:
         """Why the card could not name what is approved unmistakably, or None."""
         # Cut to what a card shows after the router makes it safe, which can lengthen it.
-        if len(neutralize(self.describe(args).text)[0]) > SUMMARY_LIMIT:
+        if len(cleaned(self.describe(args).text, "a folder card's summary")) > SUMMARY_LIMIT:
             return _TOO_LONG
         where, name, _access, who = self._parts(args)
         if any(_misleading(part) for part in (str(real), where, name, who)):

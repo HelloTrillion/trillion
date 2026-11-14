@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import logging
 import re
 from collections.abc import Callable
-from importlib.metadata import entry_points
+from importlib.metadata import EntryPoint, entry_points
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -17,6 +18,11 @@ from trillion.spine.contract import GATED, BaseTool, Risk, Tool, ToolDefinition
 _NAME = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _PATHY = re.compile(r"path|file|dir|folder", re.IGNORECASE)
 FIRST_PARTY_PACKAGE = "trillion.tools"
+# The distribution whose entry points are loaded (CON-6a): Trillion's own, as named in
+# pyproject.toml. Any other package's entry point is never imported.
+FIRST_PARTY_DIST = "trillion"
+TOOLS_GROUP = "trillion.tools"
+logger = logging.getLogger(__name__)
 # Top-level keywords that let arguments through that `properties` never names.
 _OPEN_SCHEMA_KEYS = ("patternProperties", "unevaluatedProperties", "$ref")
 # Families an unattended run never gets, whatever their risk: a run nobody watches does
@@ -222,13 +228,54 @@ class ToolRegistry:
         return _Offered(self, keep)
 
     @classmethod
-    def discover(cls, group: str = "trillion.tools") -> ToolRegistry:
+    def discover(cls, group: str = TOOLS_GROUP) -> ToolRegistry:
+        """Trillion's own tools, from its entry points. An entry point another installed
+        package declares is skipped before it is imported (CON-6a), and only its name is
+        logged. This is a policy gate, not a sandbox: an installed package can still run
+        code in other ways."""
         reg = cls()
-        for ep in entry_points(group=group):
+        mine, skipped = _split(group)
+        if skipped:
+            logger.warning(
+                "skipped %d tool plugin(s) that aren't part of Trillion: %s",
+                len(skipped),
+                ", ".join(skipped),
+            )
+        for ep in mine:
             obj = ep.load()
             tool = obj() if isinstance(obj, type) else obj
             reg.register(tool, module=ep.value.split(":", 1)[0])
         return reg
+
+
+def _normalized(name: str) -> str:
+    # PEP 503: runs of -, _ and . are one -, case-insensitively.
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def first_party(ep: EntryPoint) -> bool:
+    """Whether an entry point comes from Trillion's own distribution. One with no
+    distribution to name is not, whatever module it points at."""
+    dist = ep.dist
+    name = None if dist is None else dist.name
+    # A distribution whose metadata names nothing reads as None.
+    return isinstance(name, str) and _normalized(name) == FIRST_PARTY_DIST
+
+
+def _split(group: str) -> tuple[list[EntryPoint], list[str]]:
+    mine: list[EntryPoint] = []
+    skipped: list[str] = []
+    for ep in entry_points(group=group):
+        if first_party(ep):
+            mine.append(ep)
+        else:
+            skipped.append(ep.name)
+    return mine, skipped
+
+
+def skipped_plugins(group: str = TOOLS_GROUP) -> list[str]:
+    """The names of the entry points `discover` skips, found without importing any."""
+    return _split(group)[1]
 
 
 class _ReadOnly(ToolRegistry):
