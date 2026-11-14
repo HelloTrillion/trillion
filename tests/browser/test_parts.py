@@ -144,12 +144,60 @@ def test_named_reached_linked_and_allowed_open_anything_else_is_a_chip():
     assert b.opening("https://evil.example/") == "chip"
     b.saw_links(["https://evil.example/page?x=1"])
     assert b.opening("https://evil.example/page?x=1") == "open"
-    # A link is that link, not anything on its site the model might make up.
-    assert b.opening("https://evil.example/page?x=secret") == "chip"
     b.reached_page("https://news.example/today")
     assert b.opening("https://news.example/other") == "open"
     b.allow("https://chosen.example/")
     assert b.opening("https://chosen.example/x") == "open"
+
+
+def test_a_site_from_results_or_links_opens_by_site_not_only_by_exact_address():
+    b = broker()
+    b.saw_links(["https://www.pcmag.com/picks/the-best-laptops", "https://spacex.com/launches/"])
+    # A guessed deeper page, the bare domain, the www name, or plain http: same site.
+    assert b.opening("https://www.pcmag.com/reviews/some-guess") == "open"
+    assert b.opening("https://pcmag.com") == "open"
+    assert b.opening("http://www.spacex.com/updates") == "open"
+    # A site that never showed still asks, and so do other names on a site that did.
+    assert b.opening("https://nextspaceflight.com/launches") == "chip"
+    assert b.opening("https://news.pcmag.com/") == "chip"
+    assert b.opening("https://pcmag.com.evil.example/") == "chip"
+
+
+def test_a_link_to_a_private_address_still_never_opens():
+    b = broker()
+    b.saw_links(["http://127.0.0.1/admin", "http://localhost/x", "http://10.0.0.1/"])
+    for url in ("http://127.0.0.1/admin", "http://localhost/other", "http://10.0.0.1/"):
+        with pytest.raises(Refused) as e:
+            b.opening(url)
+        assert e.value.kind == "private_address"
+
+
+def test_open_any_opens_any_public_site_but_keeps_every_fence():
+    b = broker(open_any=True)
+    assert b.opening("https://nextspaceflight.com/launches") == "open"
+    assert b.opening("https://anything.example/?q=1") == "open"
+    for url in ("http://localhost/", "http://127.0.0.1:80/", "http://192.168.1.1/"):
+        with pytest.raises(Refused) as e:
+            b.opening(url)
+        assert e.value.kind == "private_address"
+    with pytest.raises(Refused):
+        b.opening("file:///etc/passwd")
+    # A task on a saved sign-in stays on its site, open_any or not.
+    locked = broker(open_any=True, site="library.org")
+    with pytest.raises(Refused) as e:
+        locked.opening("https://elsewhere.example/")
+    assert e.value.kind == "off_site"
+    assert not locked.may_visit("elsewhere.example")
+    # Research mode still sends nothing and a press still needs act mode.
+    assert b.mode == "research"
+
+
+async def test_open_any_never_lets_a_press_out_in_research_mode():
+    b = broker(open_any=True)
+    with pytest.raises(Refused) as e:
+        async with b.pressing():
+            pass
+    assert e.value.kind == "not_act"
 
 
 @pytest.mark.parametrize(
@@ -194,6 +242,19 @@ def test_a_signed_in_task_stays_on_its_site():
     with pytest.raises(Refused) as e:
         b.opening("https://elsewhere.example/")
     assert e.value.kind == "off_site"
+
+
+def test_settings_keep_open_any_off_until_it_is_turned_on():
+    from trillion.browser.settings import BrowserSettings
+
+    assert BrowserSettings().open_any is False
+    assert BrowserSettings.from_json({}).open_any is False
+    assert BrowserSettings.from_json({"open_any": "yes"}).open_any is False
+    on = BrowserSettings().changed({"open_any": True, "search": "google"})
+    assert on.open_any is True and on.search == "google"
+    assert BrowserSettings.from_json(on.to_json()) == on
+    assert on.changed({"open_any": 1}).open_any is True
+    assert on.changed({"open_any": False}).open_any is False
 
 
 def test_same_site_and_payment_hosts():

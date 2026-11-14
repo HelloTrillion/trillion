@@ -1,7 +1,9 @@
 """Settings → Her browser (the her browser spec, decision 17).
 
 Kept as one preference (`browser`). Everything that widens what she may do is off
-until the user turns it on: act mode and retrying on a stronger model.
+until the user turns it on: act mode, retrying on a stronger model, and opening any
+public site without a chip (`open_any`). Even with that on, pages on this computer and
+its network stay refused, and nothing is sent without the user's tap on a card.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ class BrowserSettings:
     stronger: bool = False
     search: str = DEFAULT_ENGINE
     live: bool = True
+    open_any: bool = False
 
     @property
     def search_url(self) -> str:
@@ -48,6 +51,7 @@ class BrowserSettings:
             "stronger": self.stronger,
             "search": self.search,
             "live": self.live,
+            "open_any": self.open_any,
         }
 
     @classmethod
@@ -60,6 +64,7 @@ class BrowserSettings:
             stronger=raw.get("stronger") is True,
             search=search if isinstance(search, str) and search in ENGINES else DEFAULT_ENGINE,
             live=raw.get("live") is not False,
+            open_any=raw.get("open_any") is True,
         )
 
     def changed(self, raw: Any) -> BrowserSettings:
@@ -67,7 +72,7 @@ class BrowserSettings:
         if not isinstance(raw, dict):
             return self
         out = self.to_json()
-        for key in ("act", "stronger", "live"):
+        for key in ("act", "stronger", "live", "open_any"):
             if isinstance(raw.get(key), bool):
                 out[key] = raw[key]
         if isinstance(raw.get("search"), str) and raw["search"] in ENGINES:

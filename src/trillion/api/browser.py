@@ -7,7 +7,8 @@ turn's messages do.
 
 Nothing here can approve anything but a card the view showed, and only by the user's
 click on it: `cards/{id}/shown` first (the card is on screen), then `cards/{id}` with
-the decision. A chip or a step is answered with `asks/{id}`. Errors are plain words.
+the decision. A chip or a step is answered with `asks/{id}`; a chip's "always" also
+turns on `open_any` (opening any public site without asking). Errors are plain words.
 """
 
 from __future__ import annotations
@@ -45,7 +46,8 @@ ABOUT = (
 
 
 class Answer(BaseModel):
-    answer: Literal["allowed", "declined", "done"]
+    # "always": a chip's "Always allow", which also turns on opening any site.
+    answer: Literal["allowed", "always", "declined", "done"]
 
 
 class Decision(BaseModel):
@@ -142,6 +144,11 @@ def create_browser_router(rt: Runtime) -> APIRouter:
         svc = service_of(rt)
         if svc is None or not await svc.answer(task_id, ask_id, body.answer):
             return _fail("that isn't waiting any more", 409)
+        if body.answer == "always":
+            # From now on she opens any public site without asking, as if switched on
+            # in Settings → Her browser, where it can be switched off again.
+            settings = (await settings_of(rt)).changed({"open_any": True})
+            await rt.preferences.put(OWNER, PREF, settings.to_json(), rt.clock())
         return await state()
 
     @router.post("/api/browser/tasks/{task_id}/cards/{pending_id}/shown")

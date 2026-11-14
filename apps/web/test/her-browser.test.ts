@@ -128,7 +128,10 @@ describe('Settings → Her browser', () => {
     expect(form.textContent).toContain('library.org');
     expect([...form.querySelectorAll('button')].some((x) => x.textContent === 'Remove')).toBe(true);
     const boxes = [...form.querySelectorAll('input[type=checkbox]')] as HTMLInputElement[];
-    expect(boxes.map((x) => x.checked)).toEqual([false, false, true]);
+    // Act mode, the stronger model and opening any site start off; the live picture on.
+    expect(boxes.map((x) => x.checked)).toEqual([false, false, false, true]);
+    expect(form.textContent).toContain('Let her open any site without asking');
+    expect(form.textContent).toContain('Pages on this computer and your network stay refused');
     expect(b.summary()).toBe('Signed in to 1');
   });
 });
@@ -239,5 +242,43 @@ describe('when a task has ended', () => {
     const labels = [...b.overlay.querySelectorAll('button')].map((x) => x.textContent);
     expect(labels).not.toContain('Take control');
     expect(labels).not.toContain('Stop');
+  });
+});
+
+describe('a chip in the window', () => {
+  function chipTask(kind: 'chip' | 'signin') {
+    return {
+      id: 'abcdef0123456789',
+      state: 'needs_you' as const,
+      mode: 'research' as const,
+      url: 'https://www.bing.com/search?q=x',
+      ask: { kind, id: 'a1b2c3', text: kind === 'chip' ? 'Open www.pcmag.com?' : 'Use your sign-in for library.org?', origin: null, pending_id: null },
+    };
+  }
+
+  it('offers Allow, Always allow and Not now, and Always allow says so to the server', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const api = async (method: string, path: string, body?: unknown) => {
+      calls.push({ method, path, body });
+      return json(state({ tasks: [chipTask('chip')] }));
+    };
+    const b = createHerBrowser(host(), api, document.body);
+    await b.view('abcdef0123456789');
+    const buttons = [...b.overlay.querySelectorAll('.her-browser-ask button')];
+    expect(buttons.map((x) => x.textContent)).toEqual(['Allow', 'Always allow', 'Not now']);
+    expect((buttons[1] as HTMLElement).title).toContain('nothing is sent without your OK');
+    (buttons[1] as HTMLButtonElement).click();
+    await flush();
+    expect(calls).toContainEqual({ method: 'POST', path: '/api/browser/tasks/abcdef0123456789/asks/a1b2c3', body: { answer: 'always' } });
+  });
+
+  it('never offers Always allow for a saved sign-in', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    const api = async () => json(state({ tasks: [chipTask('signin')] }));
+    const b = createHerBrowser(host(), api, document.body);
+    await b.view('abcdef0123456789');
+    const labels = [...b.overlay.querySelectorAll('.her-browser-ask button')].map((x) => x.textContent);
+    expect(labels).toEqual(['Use it', 'Not now']);
   });
 });

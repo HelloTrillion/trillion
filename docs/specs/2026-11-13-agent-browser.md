@@ -91,6 +91,7 @@ Phase 2 (a desktop of its own, in a VM), phase 3 (your own cloud computer, using
     - Signed-in sites, each with Remove.
     - Act mode: off.
     - Retry on a stronger model: off.
+    - Let her open any site without asking: off (see As built).
     - Search engine.
     - Show the live picture: on.
 
@@ -182,5 +183,7 @@ Built on `browser/phase-1` in four stages. Every decision above holds; where the
 - **A helper's turn ends as soon as it waits on the user** (a chip, a card, their step): the host answers its next model call with "Waiting for the user." instead of asking the model, so a small model that keeps calling tools can't hold the wait open.
 - **Settings → Her browser is in the same feature file as the view** (`features/her-browser.ts`), and opening her browser outside a task gives the user a page with an address bar of its own. What they send there is theirs; the proxy's rules and the refusal of uploads still hold.
 - **Chromium runs with a clean environment**: a home of its own, a mock keychain and a plain password store, so it never reads the user's home, profiles, keys or keychain.
+- **Results and links count by site, not by exact address** (decision 9, loosened on 2026-11-14 after the owner's live use). Asked after nearly every search ("Open www.pcmag.com?"), because the model opened a guessed deeper page or the bare domain of a site the results showed, not the exact link. Now a site whose pages appeared in search results or among a page's links (its host without `www.`, any scheme) opens without a chip; another name on it (`news.pcmag.com`) still asks. This is looser than the exact-link rule: the model can now put words in an address on such a site. The fences are unchanged: private addresses and the network are refused (written out, and again after DNS at the proxy), a task on a saved sign-in stays on its site, research mode sends nothing but GETs, and anything sent is on a card with a tap.
+- **"Let her open any site without asking"** (`open_any`, Settings → Her browser, off by default). On, she opens any public site with no chip, in a run nobody watches too (where a chip would only have been refused). The note under it says what still holds: pages on this computer and the network stay refused, and nothing is sent without the user's OK. The chip in her browser's window has a third button, **Always allow**, next to Allow and Not now: it allows this site and turns `open_any` on (`asks/{id}` with `"always"`, logged as `always`), for this task at once and every task after. A saved sign-in's chip has no such button. Her conversation shows a chip as the host's one line, with no buttons; it is answered in the window, where the pill leads.
 
 What is left: the Helpers panel row for a browsing task, saving a quarantined download into a shared folder on a card (downloads are quarantined and listed; nothing moves them out yet), and the optional `trillion eval browser` run.

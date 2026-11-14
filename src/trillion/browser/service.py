@@ -251,23 +251,34 @@ class BrowserService:
         return running.task if running is not None and running.state == "working" else None
 
     async def answer(
-        self, task_id: str, ask_id: str, answer: Literal["allowed", "declined", "done"]
+        self,
+        task_id: str,
+        ask_id: str,
+        answer: Literal["allowed", "always", "declined", "done"],
     ) -> bool:
         """The user's answer to a chip or their step, from the app. A card is answered
-        only by `tap`."""
+        only by `tap`. "always" is a chip's "Always allow": this site now, and from now
+        on any public site without asking (the caller saves that setting; this task
+        takes it at once)."""
         task = self._task(task_id)
         if task is None or task.ask is None or task.ask.id != ask_id or task.ask.kind == "card":
             return False
         ask = task.ask
-        if ask.kind in ("chip", "signin") and answer not in ("allowed", "declined"):
+        if ask.answer.done():
+            return False
+        if ask.kind == "chip" and answer not in ("allowed", "always", "declined"):
+            return False
+        if ask.kind == "signin" and answer not in ("allowed", "declined"):
             return False
         if ask.kind == "step" and answer != "done":
             return False
-        if ask.kind == "chip" and answer == "allowed" and ask.url is not None:
+        if ask.kind == "chip" and answer in ("allowed", "always") and ask.url is not None:
             task.broker.allow(ask.url)
+        if answer == "always":
+            task.broker.open_any = True
         event: Any = "step" if ask.kind == "step" else "chip"
         await task.log.event(event, url=ask.url, code="returned" if answer == "done" else answer)
-        return task.answer_ask(ask_id, answer)
+        return task.answer_ask(ask_id, "allowed" if answer == "always" else answer)
 
     async def shown(self, task_id: str, pending_id: str) -> bool:
         """The view put this card on the screen: only now can it be approved."""
@@ -606,6 +617,8 @@ class BrowserService:
         stronger: bool,
     ) -> Outcomes:
         attended = via not in _UNWATCHED
+        # Read again for each attempt: "Always allow" on an earlier one holds for this.
+        open_any = settings.open_any or (await self._settings()).open_any
         log = TaskLog(self._sink, OWNER, running.id, self._clock)
         task = Task(
             runtime=self.runtime,
@@ -621,6 +634,7 @@ class BrowserService:
             search_url=settings.search_urls[0],
             search_fallback=settings.search_urls[1],
             attended=attended,
+            open_any=open_any,
             step_limit=self.step_limit,
             changed=self._changed,
         )

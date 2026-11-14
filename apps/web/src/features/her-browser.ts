@@ -56,7 +56,7 @@ export interface BrowserState {
   readonly size_mb: number;
   readonly installing: boolean;
   readonly install_error: string | null;
-  readonly settings: { act: boolean; stronger: boolean; search: string; live: boolean };
+  readonly settings: { act: boolean; stronger: boolean; search: string; live: boolean; open_any?: boolean };
   readonly engines: readonly { id: string; name: string }[];
   readonly sites: readonly string[];
   readonly tasks: readonly TaskView[];
@@ -489,13 +489,30 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     } else if (a.kind === 'step') {
       into.append(button('Take control', 'approve', control(t.id, true)));
     } else {
-      into.append(
-        button(a.kind === 'signin' ? 'Use it' : 'Allow', 'approve', () => void call('POST', `/api/browser/tasks/${t.id}/asks/${a.id}`, { answer: 'allowed' }).then(redraw)),
-        button('Not now', '', () => void call('POST', `/api/browser/tasks/${t.id}/asks/${a.id}`, { answer: 'declined' }).then(redraw)),
-      );
+      const answer = (word: 'allowed' | 'always' | 'declined') => () => void call('POST', `/api/browser/tasks/${t.id}/asks/${a.id}`, { answer: word }).then(redraw);
+      into.append(button(a.kind === 'signin' ? 'Use it' : 'Allow', 'approve', answer('allowed')));
+      if (a.kind === 'chip') {
+        // Once and done: this site now, and any public site from now on, without asking.
+        const always = button('Always allow', '', answer('always'));
+        always.title = 'Let her open any site without asking. Pages on this computer and your network stay refused, and nothing is sent without your OK.';
+        into.append(always);
+      }
+      into.append(button('Not now', '', answer('declined')));
     }
   };
 
+  // What the section shows, and what it showed when it was last drawn. A poll redraws
+  // it only when this changed, and never while the user is in it: rebuilding it would
+  // close an open select, or take the focus from a checkbox, before its change came.
+  const sectionShows = (): string => {
+    const s = state;
+    const what = s && { a: s.available, i: s.installed, g: s.installing, e: s.install_error, v: s.version, m: s.size_mb, t: s.about, s: s.sites, o: s.settings, n: s.engines };
+    return JSON.stringify([what, message, installing]);
+  };
+  let sectionDrawn: string | null = null;
+  let sectionForm: HTMLElement | null = null;
+
+  /** After what the user did: everything is drawn again. */
   const redraw = async (): Promise<void> => {
     drawPill();
     if (isOpen()) await drawView();
@@ -623,11 +640,11 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
         sites.append(row);
       }
       form.append(sites);
-      const toggle = (key: 'act' | 'stronger' | 'live', label: string, note: string): HTMLElement => {
+      const toggle = (key: 'act' | 'stronger' | 'live' | 'open_any', label: string, note: string): HTMLElement => {
         const wrap = el('label', 'her-browser-toggle');
         const box = el('input');
         box.type = 'checkbox';
-        box.checked = s.settings[key];
+        box.checked = s.settings[key] === true;
         box.addEventListener('change', () => void call('PUT', '/api/browser/settings', { [key]: box.checked }).then(redraw));
         wrap.append(box, el('span', '', label), el('small', '', note));
         return wrap;
@@ -635,6 +652,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       form.append(
         toggle('act', 'Act mode', 'Let a task fill in a form when you ask it to. You approve everything it sends, on a card.'),
         toggle('stronger', 'Retry on a stronger model', 'When a task fails twice, try it once more on a cloud model you set up.'),
+        toggle('open_any', 'Let her open any site without asking', 'No “Open this site?” question. Pages on this computer and your network stay refused, and nothing is sent without your OK.'),
         toggle('live', 'Show the live picture', 'A small live picture of her browser while a helper works.'),
       );
       const engine = el('label', 'her-browser-engine');

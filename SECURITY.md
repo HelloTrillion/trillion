@@ -196,7 +196,10 @@ a virtual machine yet), and **what a page shows the user** in the live picture
 or while they have control (a page can still try to trick a person). A model
 that is told by a page to search for something can put words from the user's
 request into the query sent to the search engine the user chose; it has
-nothing else of theirs to put there. If her browser reaches a private address,
+nothing else of theirs to put there. The same holds for addresses: a public
+site that search results or a page's links showed opens without asking, and
+with "Let her open any site without asking" on (off by default), any public
+site does, so words from the request can ride in an address there too. If her browser reaches a private address,
 sends a request in research mode, or lets a press send anything other than
 what its card showed, that is a vulnerability.
 

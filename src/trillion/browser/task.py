@@ -84,6 +84,7 @@ class Task:
         search_url: str = "https://www.bing.com/search?q={q}",
         search_fallback: str | None = None,
         attended: bool = True,
+        open_any: bool = False,
         step_limit: int = STEP_LIMIT,
         changed: Callable[[], None] = lambda: None,
     ) -> None:
@@ -102,7 +103,9 @@ class Task:
         self.attended = attended
         self.step_limit = step_limit
         self.changed = changed
-        self.broker = Broker(mode=mode, named_hosts=named_hosts, log=log, site=site)
+        self.broker = Broker(
+            mode=mode, named_hosts=named_hosts, log=log, site=site, open_any=open_any
+        )
         for u in self.search_urls:
             self.broker.allow(u.replace("{q}", ""))
         self.state: State = "queued"
