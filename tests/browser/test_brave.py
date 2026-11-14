@@ -155,6 +155,7 @@ async def test_the_request_goes_to_the_one_fixed_address_with_only_the_query():
     [
         (Brave(401), "key_refused"),
         (Brave(403), "key_refused"),
+        (Brave(422), "key_refused"),
         (Brave(429), "limit_reached"),
         (Brave(500), "unavailable"),
         (Brave(200, raw=b"<html>not json"), "unavailable"),

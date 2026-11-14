@@ -105,7 +105,7 @@ async def _get(query: str, key: str, count: int, transport: httpx.AsyncBaseTrans
     except httpx.HTTPError:
         # `from None`: nothing of the request travels on with the error.
         raise SearchFailed("unreachable") from None
-    if r.status_code in (401, 403):
+    if r.status_code in (401, 403, 422):  # 422: Brave's answer to an invalid token
         raise SearchFailed("key_refused")
     if r.status_code == 429:
         raise SearchFailed("limit_reached")
