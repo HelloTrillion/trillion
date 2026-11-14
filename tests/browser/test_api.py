@@ -141,3 +141,50 @@ def test_a_tap_in_her_conversation_on_a_helpers_card_is_settled_by_the_helper(ma
         assert seen == [("helper-card", "cancel")]
     finally:
         taps.HANDLERS.remove(mine)
+
+
+async def test_her_conversation_gets_the_card_with_its_own_words_for_running_out() -> None:
+    from types import SimpleNamespace
+
+    from trillion.browser.browse import tell_settled, tell_waits
+    from trillion.spine.contract import Risk
+
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    class Page:
+        id = "conv"
+
+        async def _send(self, kind: str, **body: Any) -> None:
+            sent.append((kind, body))
+
+    card = SimpleNamespace(
+        id="p1", owner_id="local", tool="browser_press", risk=Risk.IRREVERSIBLE,
+        recoverable=False, summary="Send to httpbin.org", detail="POST https://httpbin.org/post",
+        expires_at=123,
+    )  # fmt: skip
+
+    async def get_pending(pid: str) -> Any:
+        return card
+
+    rt = SimpleNamespace(sessions={Page()}, spine_store=SimpleNamespace(get_pending=get_pending))
+    await tell_waits(rt, "conv", "Before it sends the form to httpbin.org, it needs your OK.", "p1")
+    kinds = [k for k, _ in sent]
+    assert kinds == ["confirm.request", "notice"]
+    request = sent[0][1]
+    assert request["tool_label"] == "Send a form from her browser"
+    assert request["tap_only"] is True
+    assert request["expired_note"] == "It ran out of time, so nothing was sent."
+    assert sent[1][1] == {
+        "code": "browser",
+        "text": "Before it sends the form to httpbin.org, it needs your OK.",
+    }
+    await tell_settled(rt, "conv", "p1", "refused", "It ran out of time, so nothing was sent.")
+    assert sent[-1] == (
+        "confirm.resolved",
+        {
+            "pending_id": "p1",
+            "status": "refused",
+            "reason": None,
+            "detail": "It ran out of time, so nothing was sent.",
+        },
+    )

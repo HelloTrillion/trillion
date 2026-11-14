@@ -50,6 +50,8 @@ class Ask:
     at_ms: int
     # The pending action's id, for a card.
     pending_id: str | None = None
+    # When it stops waiting, by the wall clock (epoch ms): a card's own expiry.
+    expires_ms: int | None = None
     answer: asyncio.Future[str] = field(
         default_factory=lambda: asyncio.get_running_loop().create_future()
     )

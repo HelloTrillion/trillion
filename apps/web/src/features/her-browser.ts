@@ -229,8 +229,20 @@ export function pillTarget(state: BrowserState | null, openUrl?: string | null):
 }
 
 /** What the title bar says of where it is and what is happening. */
+const ENDED: Readonly<Record<string, string>> = {
+  answered: 'Finished',
+  declined: 'Declined: nothing was sent',
+  expired: 'Ran out of time: nothing was sent',
+  stopped: 'Stopped',
+  cancelled: 'Stopped',
+  time: 'Ran out of time',
+  steps: 'Ran out of steps',
+  failed: 'Couldn’t finish',
+};
+
 export function stateWords(t: TaskView | null, free: boolean): string {
   if (!t) return free ? 'Closed' : 'Nothing running';
+  if (t.state === 'done') return ENDED[t.outcome ?? ''] ?? 'Finished';
   if (free) return 'You have control';
   if (t.in_control) return 'You have control';
   if (t.state === 'needs_you') return 'Needs you';
@@ -386,7 +398,8 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     site.textContent = t?.origin ? t.origin.replace(/^https?:\/\//, '') : '';
     stateLine.textContent = stateWords(t, free);
     barActions.replaceChildren();
-    if (t && !free) {
+    const live = Boolean(t) && t?.state !== 'done';
+    if (t && !free && live) {
       if (t.in_control) barActions.append(button('I’m done', 'approve', control(t.id, false)));
       else barActions.append(button('Take control', '', control(t.id, true)));
       if (t.in_control) barActions.append(button('Keep me signed in here', '', () => void keep(t.id)));
@@ -405,8 +418,16 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (free && t && document.activeElement !== addressInput) addressInput.value = t.url ?? '';
     frame.classList.toggle('in-control', Boolean(t?.in_control) || free);
     // Until it has opened a page there is nothing to see but a blank one: said in words.
-    const shown = framed && Boolean(t?.url);
-    waiting.textContent = !t ? 'Nothing is running in her browser now.' : t.url ? 'Waiting for the first picture…' : free ? 'Type an address to open a page.' : 'Starting…';
+    const shown = framed && Boolean(t?.url) && t?.state !== 'done';
+    waiting.textContent = !t
+      ? 'Nothing is running in her browser now.'
+      : t.state === 'done'
+        ? 'This task has ended.'
+        : t.url
+          ? 'Waiting for the first picture…'
+          : free
+            ? 'Type an address to open a page.'
+            : 'Starting…';
     waiting.hidden = shown;
     picture.hidden = !shown;
     // Built aside and put in whole, by the newest draw only: a draw that overlaps

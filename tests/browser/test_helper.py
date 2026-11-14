@@ -384,7 +384,7 @@ async def test_a_declined_card_ends_the_task_declined_and_her_conversation_is_to
     async def waits(cid: str, text: str, pid: str | None, kind: str) -> None:
         told.append(("waits", cid, text, pid or "", kind))
 
-    async def settles(cid: str, pid: str, status: str) -> None:
+    async def settles(cid: str, pid: str, status: str, detail: str) -> None:
         told.append(("settled", cid, pid, status))
 
     model = Steps(
@@ -450,3 +450,105 @@ async def test_the_time_limit_holds_even_when_a_model_call_wont_let_go(
         result = await asyncio.wait_for(run(svc), 10)
         assert result.outcome == "time"
         assert asyncio.get_running_loop().time() - began < 5
+
+
+def _press_model() -> Steps:
+    return Steps(
+        call("browser_open", url="http://fixture.test/form.html"),
+        lambda page: call("browser_type", ref=ref(page, r'textbox "Name"'), text="Kim"),
+        lambda _: call("browser_read"),
+        lambda page: call("browser_press", ref=ref(page, r'button "Next"')),
+        call("browser_done", answer="Never reached."),
+        say(""),
+    )
+
+
+async def _card_waiting(svc: BrowserService) -> tuple[Any, str]:
+    await until(lambda: svc.current() is not None and svc.current().task.ask is not None)  # type: ignore[union-attr]
+    running = svc.current()
+    assert running is not None and running.task is not None and running.task.ask is not None
+    assert running.task.ask.kind == "card"
+    return running, str(running.task.ask.pending_id)
+
+
+@needs_chromium
+async def test_stopping_a_task_settles_its_open_card(browser_rt, tmp_path, fixtures):
+    told: list[tuple[str, ...]] = []
+
+    async def settles(cid: str, pid: str, status: str, detail: str) -> None:
+        told.append((pid, status))
+
+    settings = BrowserSettings(act=True)
+    async with service(
+        browser_rt, tmp_path, _press_model(), settings=settings, settles=settles
+    ) as (svc, _):
+        job = asyncio.create_task(run(svc, act=True))
+        running, pid = await _card_waiting(svc)
+        assert await svc.stop(running.id)
+        result = await asyncio.wait_for(job, 20)
+        assert result.outcome == "cancelled"
+        card = await svc._store.get_pending(pid)  # type: ignore[attr-defined]
+        assert card is not None and card.status.value == "rejected"
+        assert (pid, "cancelled") in told
+        assert not svc.waiting_for(pid)
+
+
+@needs_chromium
+async def test_a_card_runs_out_by_the_wall_clock_even_if_the_computer_slept(
+    browser_rt, tmp_path, fixtures, monkeypatch
+):
+    """The event loop's clock doesn't count a sleep; the card's time is the wall
+    clock's. Here the wall clock jumps past the card's time while the loop's barely
+    moves, as after a wake."""
+    import trillion.browser.service as service_module
+    from trillion.spine.confirm import EXPIRY_MS
+
+    monkeypatch.setattr(service_module, "WAKE_S", 0.05)
+    told: list[tuple[str, ...]] = []
+
+    async def settles(cid: str, pid: str, status: str, detail: str) -> None:
+        told.append((pid, status, detail))
+
+    settings = BrowserSettings(act=True)
+    async with service(
+        browser_rt, tmp_path, _press_model(), settings=settings, settles=settles
+    ) as (svc, log):
+        job = asyncio.create_task(run(svc, act=True))
+        running, pid = await _card_waiting(svc)
+        before = len(fixtures.seen.posts())
+        svc._clock.now += EXPIRY_MS + 1_000  # type: ignore[attr-defined]
+        result = await asyncio.wait_for(job, 10)
+        assert result.outcome == "expired"
+        assert result.text == "The card ran out of time; nothing was sent to fixture.test."
+        card = await svc._store.get_pending(pid)  # type: ignore[attr-defined]
+        assert card is not None and card.status.value == "expired"
+        assert (pid, "refused", "It ran out of time, so nothing was sent.") in told
+        rows = await log.for_task("local", running.id, svc._clock())
+        assert ("card", "expired") in [(r.event, r.detail) for r in rows]
+        assert ("card", "declined") not in [(r.event, r.detail) for r in rows]
+        assert len(fixtures.seen.posts()) == before
+
+
+@needs_chromium
+async def test_a_late_tap_on_an_expired_card_is_logged_expired(
+    browser_rt, tmp_path, fixtures, monkeypatch
+):
+    import trillion.browser.service as service_module
+    from trillion.spine.confirm import EXPIRY_MS
+
+    # The wait looks at the clock rarely here, so the tap comes first.
+    monkeypatch.setattr(service_module, "WAKE_S", 5.0)
+    settings = BrowserSettings(act=True)
+    async with service(browser_rt, tmp_path, _press_model(), settings=settings) as (svc, log):
+        job = asyncio.create_task(run(svc, act=True))
+        running, pid = await _card_waiting(svc)
+        await svc.shown(running.id, pid)
+        svc._clock.now += EXPIRY_MS + 1_000  # type: ignore[attr-defined]
+        late = await svc.tap(running.id, pid, "confirm")
+        assert late is not None and late.status == "refused"
+        assert late.detail == "It ran out of time, so nothing was sent."
+        result = await asyncio.wait_for(job, 15)
+        assert result.outcome == "expired"
+        rows = await log.for_task("local", running.id, svc._clock())
+        events = [(r.event, r.detail) for r in rows]
+        assert ("card", "expired") in events and ("card", "declined") not in events

@@ -92,7 +92,9 @@ STOPPED_WORDS = {
     ),
 }
 
-Outcome = Literal["answered", "declined", "stopped", "steps", "time", "failed", "cancelled"]
+Outcome = Literal[
+    "answered", "declined", "expired", "stopped", "steps", "time", "failed", "cancelled"
+]
 # The host's note when the user declined a card: what she says, and all she says.
 DECLINED = "You declined; nothing was sent to {host}."
 # A task waiting on the user, as her conversation is told (the host's words).
@@ -105,7 +107,14 @@ WAITS = {
 
 # Told when a task waits on the user, and when a card it showed is settled.
 Waits = Callable[[str, str, "str | None", str], Awaitable[None]]
-Settles = Callable[[str, str, str], Awaitable[None]]
+Settles = Callable[[str, str, str, str], Awaitable[None]]
+# What a card that ran out of time says, in the window and in her conversation.
+RAN_OUT = "It ran out of time, so nothing was sent."
+# The note the helper is given when its card ran out of time: it ends the task.
+EXPIRED_NOTE = "The card ran out of time; nothing was sent to {host}."
+# How often a wait looks at the wall clock: a computer that slept wakes past a card's
+# time, and the event loop's own clock doesn't count the sleep.
+WAKE_S = 2.0
 
 PROMPT = """\
 You are a browsing helper. You have a web browser of your own, separate from the
@@ -288,11 +297,17 @@ class BrowserService:
             and response.reason.value == "not_shown"
         ):
             return response
+        ask = task.ask
         if response.status != "succeeded":
             await task.broker.drop()
+        if response.reason is not None and response.reason.value == "expired":
+            # A tap after the card's time: it ran out, whatever was tapped.
+            await task.log.event("card", url=ask.url, code="expired")
+            task.answer_ask(ask.id, "expired")
+            await self._settled(running, pending_id, "refused", RAN_OUT)
+            return RouterResponse(status="refused", pending_id=pending_id, detail=RAN_OUT)
         code = "approved" if response.status == "succeeded" else "declined"
         await task.log.event("card", url=str(task.page.url), code=code)
-        ask = task.ask
         if decision == "cancel":
             task.answer_ask(ask.id, "declined")
         else:
@@ -300,7 +315,7 @@ class BrowserService:
             task.answer_ask(
                 ask.id, f"The user tapped {action} on the card. Result: {response.to_model()}"
             )
-        await self._settled(running, pending_id, response.status)
+        await self._settled(running, pending_id, response.status, "")
         return response
 
     async def tap_pending(
@@ -319,11 +334,11 @@ class BrowserService:
             for r in self.tasks.values()
         )
 
-    async def _settled(self, running: Running, pending_id: str, status: str) -> None:
+    async def _settled(self, running: Running, pending_id: str, status: str, detail: str) -> None:
         if self._settles is None:
             return
         try:
-            await self._settles(running.conversation_id, pending_id, status)
+            await self._settles(running.conversation_id, pending_id, status, detail)
         except Exception as e:
             logger.warning("a settled card wasn't told: %s", type(e).__name__)
 
@@ -371,9 +386,31 @@ class BrowserService:
             return False
         running.outcome = "cancelled"
         if running.task is not None:
+            await self._end_card(running, running.task)
             await running.task.log.event("stopped", code="cancelled")
             await running.task.close()
         return True
+
+    async def _end_card(self, running: Running, task: Task) -> None:
+        """A task ending with its card still open settles the card, so no tap on it
+        anywhere reaches a helper that is gone: cancelled, or expired when its time
+        ran out, through the router like any answer, and her conversation is told."""
+        ask = task.ask
+        if ask is None or ask.kind != "card" or not ask.pending_id or running.router is None:
+            return
+        pid = ask.pending_id
+        card = await self._store.get_pending(pid)
+        if card is None or card.status.value != "proposed":
+            return
+        ctx = self._ctx(running, task, via="tap", turn=running.turn + 1)
+        response = await running.router.resolve(pid, "cancel", ctx)
+        await task.broker.drop()
+        expired = response.reason is not None and response.reason.value == "expired"
+        await task.log.event("card", url=ask.url, code="expired" if expired else "cancelled")
+        if expired:
+            await self._settled(running, pid, "refused", RAN_OUT)
+        else:
+            await self._settled(running, pid, response.status, "")
 
     def target(self, task_id: str) -> Task | None:
         """What the view watches: a running task, or her browser outside a task."""
@@ -544,7 +581,7 @@ class BrowserService:
                 running, provider, settings, named, via, site, storage_state, stronger
             )
             running.outcome = last.outcome
-            if last.outcome in ("answered", "declined", "stopped", "time", "cancelled"):
+            if last.outcome in ("answered", "declined", "expired", "stopped", "time", "cancelled"):
                 return last
             failures += 1
             if stronger:
@@ -610,6 +647,8 @@ class BrowserService:
             logger.warning("browsing task failed: %s", type(e).__name__)
             return Outcomes(outcome="failed", text="Her browser couldn't finish the task.")
         finally:
+            with contextlib.suppress(Exception):
+                await self._end_card(running, task)
             await task.close()
 
     async def _use_signin(
@@ -700,7 +739,9 @@ class BrowserService:
                 card = await self._store.get_pending(ev.response.pending_id)
                 text = card.summary if card is not None else "Send this?"
                 held = task.broker.held[0].url if task.broker.held else None
-                task.raise_ask("card", text, held, pending_id=ev.response.pending_id)
+                ask = task.raise_ask("card", text, held, pending_id=ev.response.pending_id)
+                # Its own time, by the wall clock, as the card shows it.
+                ask.expires_ms = card.expires_at if card is not None else None
             elif ev.response.status != "succeeded":
                 await task.broker.drop()
 
@@ -711,6 +752,7 @@ class BrowserService:
             if running.outcome == "cancelled" or task.closed:
                 return Outcomes(outcome="cancelled", text="The task was stopped.")
             began = time.monotonic()
+            began_ms = self._clock()
             turn = asyncio.ensure_future(
                 run_turn(
                     provider=_Paused(provider, task),
@@ -726,8 +768,9 @@ class BrowserService:
             )
             # The limit holds even if a model call won't let go: the turn is cancelled
             # and given a moment, never waited on without end.
-            finished, _ = await asyncio.wait({turn}, timeout=max(left, 0.1))
-            if turn not in finished:
+            # Five minutes of work by both clocks: the wall clock's counts a sleep.
+            limit = max(left, 0.1)
+            if not await self._until(turn, began_ms + int(limit * 1000), within_s=limit):
                 turn.cancel()
                 await asyncio.wait({turn}, timeout=LET_GO_S)
                 if task.answer is not None:
@@ -735,7 +778,7 @@ class BrowserService:
                 await task.log.event("stopped", code="time")
                 return await self._wrap_up(running, task, provider, system, history, "time")
             done = turn.result()
-            left -= time.monotonic() - began
+            left -= max(time.monotonic() - began, (self._clock() - began_ms) / 1000)
             if task.answer is not None:
                 return Outcomes(outcome="answered", text=task.answer)
             if task.broker.stopped is not None:
@@ -752,6 +795,10 @@ class BrowserService:
                     # Declined is the end of it: nothing is sent, and nothing more is tried.
                     await task.log.event("stopped", code="declined")
                     return Outcomes(outcome="declined", text=DECLINED.format(host=host))
+                if note == EXPIRED_NOTE:
+                    # So is a card that ran out of time: she doesn't ask again.
+                    await task.log.event("stopped", code="expired")
+                    return Outcomes(outcome="expired", text=EXPIRED_NOTE.format(host=host))
                 history.append(Msg(role="user", blocks=(TextBlock(text=note),)))
                 running.turn += 1
                 continue
@@ -786,22 +833,29 @@ class BrowserService:
         ask = task.ask
         if ask is None:
             return "[host] Carry on."
-        limit = EXPIRY_MS / 1000 if ask.kind == "card" else self.ask_wait_s
-        try:
-            answer = await asyncio.wait_for(asyncio.shield(ask.answer), limit)
-        except TimeoutError:
-            answer = "expired"
-        task.clear_ask()
+        if ask.kind == "card":
+            deadline = ask.expires_ms if ask.expires_ms is not None else ask.at_ms + EXPIRY_MS
+        else:
+            deadline = ask.at_ms + int(self.ask_wait_s * 1000)
+        answer = "expired"
+        if await self._until(ask.answer, deadline):
+            answer = ask.answer.result()
         if task.closed or answer in ("cancelled", "superseded"):
+            task.clear_ask()
             return None if task.closed else "[host] That was replaced; carry on."
         if ask.kind == "card":
             if answer == "declined":
+                task.clear_ask()
                 return DECLINED
             if answer == "expired":
-                await task.broker.drop()
-                await task.log.event("card", url=ask.url, code="expired")
-                return "[host] The card expired without an answer, so nothing was sent."
+                if not ask.answer.done():
+                    # Its time ran out with nobody answering: settled here, as expired.
+                    await self._end_card(running_of(self, task), task)
+                task.clear_ask()
+                return EXPIRED_NOTE
+            task.clear_ask()
             return f"[host] {answer}"
+        task.clear_ask()
         if answer == "expired":
             await task.log.event(
                 "step" if ask.kind == "step" else "chip", url=ask.url, code="expired"
@@ -812,6 +866,23 @@ class BrowserService:
                 return f"[host] The user allowed it: open {ask.url} with browser_open now."
             return "[host] The user said no to that site. Don't open it; carry on without it."
         return "[host] The user finished their step. Read the page again and carry on."
+
+    async def _until(
+        self, fut: asyncio.Future[Any], deadline_ms: int, *, within_s: float | None = None
+    ) -> bool:
+        """Wait for `fut` until a wall-clock time (epoch ms), and at most `within_s` of
+        the event loop's own time when given: True when it came. The wall clock is
+        looked at every few seconds, so a sleep of the computer counts."""
+        loop = asyncio.get_running_loop()
+        stop = loop.time() + within_s if within_s is not None else None
+        while not fut.done():
+            left = (deadline_ms - self._clock()) / 1000
+            if stop is not None:
+                left = min(left, stop - loop.time())
+            if left <= 0:
+                return False
+            await asyncio.wait({fut}, timeout=min(WAKE_S, left))
+        return True
 
     async def _wrap_up(
         self,
@@ -900,3 +971,8 @@ def _last_text(history: list[Msg]) -> str:
         if words:
             return words
     return ""
+
+
+def running_of(service: BrowserService, task: Task) -> Running:
+    """The running entry that holds `task`."""
+    return next(r for r in service.tasks.values() if r.task is task)

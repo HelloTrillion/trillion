@@ -225,3 +225,19 @@ describe('a card in the window', () => {
     expect(calls.filter((c) => c.endsWith('/cards/p9/shown'))).toHaveLength(1);
   });
 });
+
+describe('when a task has ended', () => {
+  it('the window says how it ended, never “Starting…”', async () => {
+    for (const d of document.querySelectorAll('.her-browser-overlay')) d.remove();
+    expect(stateWords({ id: 'a', state: 'done', mode: 'act', outcome: 'expired' }, false)).toBe('Ran out of time: nothing was sent');
+    expect(stateWords({ id: 'a', state: 'done', mode: 'act', outcome: 'declined' }, false)).toBe('Declined: nothing was sent');
+    const api = async () => json(state({ tasks: [{ id: 'abcdef0123456789', state: 'done', mode: 'act', outcome: 'answered' }] }));
+    const b = createHerBrowser(host(), api, document.body);
+    await b.view('abcdef0123456789');
+    expect(b.overlay.querySelector('.her-browser-state')?.textContent).toBe('Finished');
+    expect(b.overlay.querySelector('.her-browser-waiting')?.textContent).toBe('This task has ended.');
+    const labels = [...b.overlay.querySelectorAll('button')].map((x) => x.textContent);
+    expect(labels).not.toContain('Take control');
+    expect(labels).not.toContain('Stop');
+  });
+});

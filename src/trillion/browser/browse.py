@@ -18,8 +18,9 @@ from trillion import paths
 from trillion.api import taps
 from trillion.browser.quarantine import Quarantine
 from trillion.browser.runtime import BrowserRuntime, Install, playwright_available
-from trillion.browser.service import OWNER, BrowserService
+from trillion.browser.service import OWNER, RAN_OUT, BrowserService
 from trillion.browser.settings import PREF, BrowserSettings
+from trillion.spine import labels
 from trillion.spine.contract import (
     JSON,
     BaseTool,
@@ -96,7 +97,7 @@ class Browse(BaseTool):
             changed=rt.helpers_changed,
             log=self.log,
             waits=lambda cid, text, pid, kind: tell_waits(rt, cid, text, pid),
-            settles=lambda cid, pid, status: tell_settled(rt, cid, pid, status),
+            settles=lambda cid, pid, status, detail: tell_settled(rt, cid, pid, status, detail),
         )
 
     async def precheck(self, args: JSON, ctx: ToolContext) -> Precondition:
@@ -124,7 +125,7 @@ class Browse(BaseTool):
             if service.current() is None and service.free is None:
                 # Nothing else is waiting: Chromium stops until the next task.
                 await service.runtime.stop()
-        if result.outcome == "declined":
+        if result.outcome in ("declined", "expired"):
             # Declined is not a failure, and nothing was found: she says just that.
             return ToolResult(
                 ok=True,
@@ -167,18 +168,39 @@ def _sessions(rt: Any, conversation_id: str) -> list[Any]:
 
 async def tell_waits(rt: Any, conversation_id: str, text: str, pending_id: str | None) -> None:
     """Her conversation shows what a task waits on: the same card, with its own tap,
-    for a press, and the host's one plain line."""
+    for a press, and the host's one plain line (the app's, under one voice: shown,
+    never spoken or saved as hers)."""
+    card = await rt.spine_store.get_pending(pending_id) if pending_id is not None else None
     for session in _sessions(rt, conversation_id):
-        if pending_id is not None:
-            await session._send_card(pending_id)
+        if card is not None and card.owner_id == OWNER:
+            await session._send(
+                "confirm.request",
+                pending_id=card.id,
+                tool=card.tool,
+                tool_label=labels.tool_label(card.tool),
+                reason=labels.reason(card.risk, card.recoverable),
+                summary=card.summary,
+                detail=card.detail,
+                expires_at=card.expires_at,
+                tap_only=card.risk is Risk.SPEND or not card.recoverable,
+                # What it says if its time runs out: the helper doesn't ask again.
+                expired_note=RAN_OUT,
+            )
         await session._send("notice", code="browser", text=text)
 
 
-async def tell_settled(rt: Any, conversation_id: str, pending_id: str, status: str) -> None:
-    """A card answered in her browser's window is settled in her conversation too."""
+async def tell_settled(
+    rt: Any, conversation_id: str, pending_id: str, status: str, detail: str
+) -> None:
+    """A card answered in her browser's window, or ended with its task, is settled in
+    her conversation too."""
     for session in _sessions(rt, conversation_id):
         await session._send(
-            "confirm.resolved", pending_id=pending_id, status=status, reason=None, detail=None
+            "confirm.resolved",
+            pending_id=pending_id,
+            status=status,
+            reason=None,
+            detail=detail or None,
         )
 
 
