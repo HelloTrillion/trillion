@@ -23,7 +23,7 @@ from typing import Any, Concatenate, Literal, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
 from trillion import __version__
-from trillion.api import listening, seamless, taps
+from trillion.api import listening, missed, seamless, taps
 from trillion.api.draft import Draft, same_words
 from trillion.api.jobs import STARTED, Full, Job, goes_to_background
 from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S, Judge, Listener
@@ -1017,6 +1017,9 @@ class Session:
                 await session._send("jobs", count=running)
             for a in await session._open_actions():
                 await session._send_card(a.id)
+            # Approvals that expired unanswered, listed under Needs you: the app's lines,
+            # never spoken or handed to her (SPN-17).
+            await session._send_missed()
             # A spend card still to be answered, with its choices as they are now, and a
             # switch in force, for the banner. A switch made for a month now over ends
             # first.
@@ -1618,6 +1621,8 @@ class Session:
                 await self._conclude("end")
         elif kind in ("confirm", "cancel"):
             await self._on_tap(msg.get("pending_id"), kind)
+        elif kind in ("unseen.ask", "unseen.dismiss"):
+            await self._on_missed(msg.get("pending_id"), ask=kind == "unseen.ask")
         elif kind == "memory.forget":
             await self._on_memory_forget(msg.get("id"))
         elif kind == "spend.choice":
@@ -2866,6 +2871,49 @@ class Session:
         self._queued.append(note + response.to_model())
         if self._task is None:
             self._begin()
+
+    async def _send_missed(self) -> None:
+        """The unseen decisions, for Needs you. One that can't be read never stops a
+        page opening: the list is sent empty."""
+        try:
+            found = await missed.items(self._rt)
+        except Exception as e:
+            logger.warning("missed approvals not read: %s", type(e).__name__)
+            found = []
+        await self._send("unseen", items=found)
+
+    async def _on_missed(self, pending_id: object, *, ask: bool) -> None:
+        """Ask again or Dismiss, tapped on a line under Needs you (SPN-17, SPN-2b). The
+        user's own act on the page: nothing reaches her, and nothing here asks her to
+        raise anything. Ask again is the ordinary re-present, in the conversation the
+        card was raised in, so the page opens that one first."""
+        if not isinstance(pending_id, str) or not pending_id:
+            await self._error("bad_message")
+            return
+        self.active_ms = self._rt.clock()
+        async with self._taking_input():
+            outcome, text = await self._missed(pending_id, ask=ask)
+        await self._send("unseen.done", pending_id=pending_id, outcome=outcome, text=text)
+
+    async def _missed(self, pending_id: str, *, ask: bool) -> tuple[str, str | None]:
+        a = await missed.listed(self._rt, pending_id)
+        if a is None:
+            return "gone", missed.GONE
+        await self._read_place()
+        ctx = await self._ctx(f"page-{uuid.uuid4().hex}", via="tap")
+        if not ask:
+            done = await self._rt.router.dismiss(pending_id, ctx)
+            return ("dismissed", None) if done else ("gone", missed.GONE)
+        why = await missed.why_not(self._rt, a)
+        if why is not None:
+            return "refused", why
+        response = await self._rt.router.represent(pending_id, ctx)
+        if response.status != "confirmation_required" or response.pending_id is None:
+            # Still listed: it was not asked again.
+            return "refused", missed.refused_words(response)
+        if not response.already_asked:
+            await self._send_card(response.pending_id)
+        return "asked", None
 
     async def _on_memory_forget(self, memory_id: object) -> None:
         """Forget, tapped on the Memories screen (MEM-6). It is `memory_forget`, proposed

@@ -1,0 +1,70 @@
+/* Missed approvals under Needs you (features/missed.ts). Loads after app.css. */
+
+/* Above the conversation, never in it: the app's lines, not hers. */
+.missed {
+  flex: none;
+  max-height: 40vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-amber) 40%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-amber) 8%, transparent);
+}
+.missed[hidden] {
+  display: none;
+}
+
+.missed-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.missed-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.missed-row {
+  display: grid;
+  gap: 4px;
+}
+
+.missed-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.missed-what {
+  color: var(--color-text-0);
+  overflow-wrap: anywhere;
+}
+
+.missed-when {
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+
+.missed-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+.missed-note:empty {
+  display: none;
+}
+
+.missed-actions {
+  display: flex;
+  gap: 4px;
+}
