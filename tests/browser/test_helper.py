@@ -53,7 +53,9 @@ async def service(
 ) -> AsyncIterator[tuple[BrowserService, SqliteBrowserLog]]:
     conn = await connect(paths.db_path())
     await migrate(conn)
-    log = SqliteBrowserLog(conn)
+    # The log's own connection, as `browse.py` gives it.
+    log_conn = await connect(paths.db_path())
+    log = SqliteBrowserLog(log_conn)
     chosen = settings or BrowserSettings()
 
     async def get_settings() -> BrowserSettings:
@@ -76,6 +78,7 @@ async def service(
     try:
         yield svc, log
     finally:
+        await log_conn.close()
         await conn.close()
 
 

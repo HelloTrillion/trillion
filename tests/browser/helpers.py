@@ -83,7 +83,9 @@ async def driven(
     conn = await connect(paths.db_path())
     await migrate(conn)
     store = SqliteSpineStore(conn)
-    sink = SqliteBrowserLog(conn)
+    # The log's own connection, as `browse.py` gives it.
+    log_conn = await connect(paths.db_path())
+    sink = SqliteBrowserLog(log_conn)
     clock = Clock()
     task = Task(
         runtime=rt,
@@ -108,4 +110,5 @@ async def driven(
         yield Driven(task=task, router=router, store=store, log=sink)
     finally:
         await task.close()
+        await log_conn.close()
         await conn.close()

@@ -3,6 +3,10 @@
 Append-only: one writer, `append`, and the database refuses an edit. Nothing is ever
 deleted (SPN-9): at 30 days `clear_old` clears a row's origin and detail, which the
 database allows only then, and reads show only the last 30 days.
+
+Each write is one statement on an autocommit connection (`storage/db.py`), so it is
+on the disk at once and never commits for itself: a `commit()` here would end another
+store's transaction halfway on a connection they share.
 """
 
 from __future__ import annotations
@@ -41,7 +45,6 @@ class SqliteBrowserLog:
             " VALUES (?, ?, ?, ?, ?, ?)",
             (owner_id, task_id, at, event, origin, detail),
         )
-        await self._conn.commit()
 
     async def for_task(self, owner_id: str, task_id: str, now_ms: int) -> list[LogRow]:
         async with self._conn.execute(
@@ -70,7 +73,6 @@ class SqliteBrowserLog:
             " WHERE at < ? AND (origin IS NOT NULL OR detail IS NOT NULL)",
             (now_ms - KEPT_MS,),
         )
-        await self._conn.commit()
         return cur.rowcount or 0
 
 
