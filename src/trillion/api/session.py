@@ -30,7 +30,7 @@ from trillion.api.listening import FOLLOW_UP_S, QUIET_LISTEN_S, Judge, Listener
 from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.api.trace import Trace, Via, ahead_ms
-from trillion.brain import compact
+from trillion.brain import compact, ollama
 from trillion.brain import title as naming
 from trillion.brain.loop import (
     INTERRUPTED,
@@ -3267,9 +3267,17 @@ class Session:
             # refusal is already saved, and is spoken before it.
             at_cap = done.stop == "provider_error" and done.error_kind == "capped"
             capped_pid = getattr(provider, "provider_id", None) if at_cap else None
+            # A local Ollama model with too little room for her says so, not "failed".
+            small = (
+                await self._small_context(provider)
+                if done.stop == "provider_error" and capped_pid is None
+                else None
+            )
             down = (
                 self._capped_line("model", capped_pid)
                 if capped_pid is not None
+                else ollama.line(small)
+                if small is not None
                 else degraded("model", done.error_kind or "other")
                 if done.stop == "provider_error"
                 else None
@@ -3307,6 +3315,9 @@ class Session:
                 await self._send("notice", code="stopped", reason=done.stop)
             # Kept before the page hears the turn is over, so the next one never waits on it.
             await self._keep_trace(trace, done.stop, voiced=speaker is not None)
+            if done.stop == "end":
+                # Part of the turn it is about: before the page hears the turn is over.
+                await self._context_notice(provider)
             u = done.usage
             await self._send(
                 "turn.complete",
@@ -4489,6 +4500,34 @@ class Session:
 
     async def _error(self, code: str, **extra: Any) -> None:
         await self._send("error", code=code, **extra)
+
+    # ── A local model with too little room (the Ollama context spec) ─────────
+
+    async def _small_context(self, provider: Any) -> int | None:
+        """A local Ollama model's context when it is too small for her, read once a
+        launch; None when it is enough, or can't be told (not Ollama, not loaded)."""
+        url, model = getattr(provider, "base_url", None), getattr(provider, "model", None)
+        if not (isinstance(url, str) and isinstance(model, str) and ollama.on_own_network(url)):
+            return None
+        key = (url, model)
+        size = self._rt.contexts.get(key)
+        if size is None:
+            size = await ollama.served_context(url, model)
+            if size is None:
+                return None
+            self._rt.contexts[key] = size
+        return size if ollama.too_small(size) else None
+
+    async def _context_notice(self, provider: Any) -> None:
+        """Said once a launch, after a reply: her instructions were cut to fit."""
+        size = await self._small_context(provider)
+        if size is None:
+            return
+        key = (provider.base_url, provider.model)
+        if key in self._rt.contexts_told:
+            return
+        self._rt.contexts_told.add(key)
+        await self._send("notice", code="context", text=ollama.line(size))
 
     # ── At the spend caps (BRN-7, BRN-8) ─────────────────────────────────
 
