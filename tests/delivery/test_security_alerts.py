@@ -351,3 +351,16 @@ async def test_a_voiceprint_alert_is_said_in_her_words(
     ((_system, messages),) = p.calls
     told = "".join(b.text for m in messages for b in m.blocks if hasattr(b, "text"))
     assert "permissions" in told and "Settings, Your voice" in told
+
+
+async def test_signing_out_every_other_page_is_told_once(
+    tmp_path: Path, store: SqliteScheduleStore
+) -> None:
+    # The token revocation spec: a press nobody meant is seen, through the door.
+    door = Recorder()
+    a, _ = alerts(tmp_path, store, door, None)
+    a.signed_out_others(2)
+    await a.idle()
+    (n,) = door.got
+    assert n.title == TITLE and n.source_id.startswith("security:")
+    assert n.detail == "Signed out every other page (2)"

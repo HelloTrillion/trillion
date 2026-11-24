@@ -27,3 +27,22 @@
   font-weight: 400;
   color: var(--color-text-1);
 }
+
+/* Sign out every other page (SPN-11a). */
+.devices-signout {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+}
+.devices-signout h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.devices-signout-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.devices-signout-row button {
+  min-height: 44px;
+}

@@ -172,11 +172,12 @@ interface Watch {
 }
 
 function connect(onFrame: (frame: { data: string; width: number; height: number; url: string | null; in_control: boolean }) => void): Watch {
-  const token = storedToken();
   let ws: WebSocket | null = null;
   let wanted: string | null = null;
   let ready = false;
   const open = (): void => {
+    // Read at each open: after Sign out every other page, this tab holds a new one.
+    const token = storedToken();
     if (!token) return;
     ws = new WebSocket(WS_URL);
     ws.addEventListener('open', () => ws?.send(JSON.stringify({ type: 'hello', token })));

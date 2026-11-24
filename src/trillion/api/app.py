@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +42,7 @@ from trillion.api.runtime import Runtime
 from trillion.api.schedules import create_schedules_router
 from trillion.api.session import PROTOCOL, Session, page_host
 from trillion.api.settings import create_router
+from trillion.api.signout import sign_out_others
 from trillion.api.skills import create_skills_router
 from trillion.api.slack import create_slack_router
 from trillion.api.usage import create_spend_router, create_usage_router
@@ -113,6 +115,9 @@ def create_app(
     # Read by every socket's check (`admit`), the plugged-in ones too.
     app.state.hosts = hosts
     app.state.origins = origins
+    # Every socket that signed in, so signing out every other page can close them
+    # (SPN-11a). Weak: a socket that has ended drops out by itself.
+    app.state.sockets = weakref.WeakSet()
 
     @app.exception_handler(RequestValidationError)
     async def invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -177,6 +182,10 @@ def create_app(
                     await send({"type": "error", "code": "bad_message"})
                 elif msg.get("type") == "session.end":
                     break
+                elif msg.get("type") == "session.rotate":
+                    # Sign out every other page (SPN-11a): this one gets the new token.
+                    token = await sign_out_others(rt, socket.app.state.sockets, keep=socket)
+                    await send({"type": "session.token", "token": token})
                 else:
                     await session.handle(msg)
         except WebSocketDisconnect:
@@ -290,6 +299,9 @@ async def admit(socket: WebSocket, rt: Runtime) -> dict[str, Any] | None:
         _refused(rt, "socket", "token")
         await _refuse(socket, send)
         return None
+    sockets = getattr(socket.app.state, "sockets", None)
+    if sockets is not None:
+        sockets.add(socket)
     return hello
 
 

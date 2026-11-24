@@ -486,6 +486,16 @@ async def _serve(args: argparse.Namespace, session: dict[str, str | None]) -> in
         base = DEV_ORIGIN if args.dev else f"http://{HOST}:{args.port}"
         url = f"{base}/#token={rt.token}"
         open_line = "started by the desktop app" if from_app else url
+        if not from_app:
+            # Every other page signed out (SPN-11a): the link above no longer works.
+            def _relink(token: str) -> None:
+                sys.stdout.write(
+                    "Every other page was signed out. Open Trillion with:\n"
+                    f"  open:    {base}/#token={token}\n"
+                )
+                sys.stdout.flush()
+
+            rt.token_hooks.append(_relink)
         model = (
             f"{provider.name} ({provider.model})"
             if provider

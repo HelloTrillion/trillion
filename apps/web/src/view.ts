@@ -179,7 +179,7 @@ export function askAnswered(view: View, id: string, answer: string | null, note 
 /** `past`: an older offer, once a newer one came: only the newest can be answered. */
 export type OfferStatus = 'open' | 'past' | 'creating' | 'made' | 'declined' | 'failed';
 
-export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'offline' | 'replaced';
+export type Link = 'connecting' | 'ready' | 'unauthenticated' | 'signed_out' | 'offline' | 'replaced';
 
 export interface Speech {
   readonly kind: string;
@@ -931,6 +931,8 @@ function step(view: View, msg: ServerMsg): View {
       // The app's line for a leg that is down (VOI-14, SUR-8), when the core sends one.
       const sentence = str(msg['sentence']);
       if (code === 'unauthenticated') return { ...view, link: 'unauthenticated', busy: false };
+      // Another page pressed Sign out every other page (SPN-11a): this one's token is gone.
+      if (code === 'signed_out') return { ...view, link: 'signed_out', busy: false };
       if (code === 'replaced') return { ...view, link: 'replaced', busy: false };
       if (code === 'listening') {
         // One leg down: she cannot hear right now, and typing still works (VOI-14).

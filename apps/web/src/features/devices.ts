@@ -9,8 +9,11 @@ import './devices.css';
 addIcon('devices', ['M3.5 5.5h17v11h-17z', 'M9 20h6', 'M12 16.5V20']);
 
 export const feature: Feature = {
-  setup({ panel, api }) {
-    const devices = createDevicesSettings(panel.host('devices'), api);
+  setup({ panel, api, send, on }) {
+    const devices = createDevicesSettings(panel.host('devices'), api, send);
+    on((msg) => {
+      if (msg.type === 'session.rotated') devices.rotated();
+    });
     panel.add({
       id: 'devices',
       label: 'Devices',

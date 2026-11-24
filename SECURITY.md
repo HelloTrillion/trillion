@@ -384,6 +384,27 @@ what its card showed, that is a vulnerability.
   it. Every request and socket needs the session token, which is issued
   fresh at each launch; another origin is refused even with the token, and
   an unauthenticated socket is told so and can do nothing else.
+- **The session token, start to end** (SPN-11a). One token per launch, shared
+  by every page on this computer, held only in memory and never logged or
+  written down.
+  - *How each client gets it.* The desktop app makes it, hands it to the
+    server it starts (which removes it from its environment at once), proves
+    the server is its own with a challenge that never sends the token, and
+    opens its window with the token in the address's fragment. `trillion run`
+    on its own makes a fresh one and prints the link in its terminal. A
+    browser tab takes the token from the fragment, keeps it in that tab's
+    session storage and removes it from the address bar. The CLI's other
+    commands don't use it.
+  - *How long it lives.* Until the server stops, or until it is revoked.
+  - *How it is revoked.* Settings → Devices → **Sign out every other page**
+    replaces it at once: from then on the old token is refused on every
+    request (401) and every socket's hello (4401), every other open socket is
+    told it was signed out and closed, the page that pressed it keeps working
+    on the new token, `trillion run` prints a fresh link, and a security
+    notice says it happened. Use it if the link was shared or seen. Whoever
+    holds the old token and presses first signs you out instead: they could
+    already do anything you can, and quitting and restarting Trillion makes a
+    new token. Proven by `tests/api/test_sign_out.py`.
 - **API keys live in the OS keychain**, or, only if the user chose it in
   `trillion setup`, in one encrypted file (SEC-2). On a machine with neither, a
   key is refused rather than written to disk. The file, `secrets.age` in
@@ -413,14 +434,9 @@ what its card showed, that is a vulnerability.
 ## Not true yet
 
 These are in the specification and are not built. Until they are, do not
-rely on them. Early revocation of the session token is required before the
-first stable release; plugin isolation is planned for a later phase (CON-6a).
-Betas ship without both.
+rely on them. Plugin isolation is planned for a later phase (CON-6a).
 
-- **The rest of the session-token lifecycle** (SPN-11, SPN-11a). The token
-  lives in memory for one launch by design and is never written down, but
-  there is no way to revoke it early. There is no remote access, and so no pairing
-  tunnel.
+- **Remote access** (SPN-11). There is none, and so no pairing tunnel.
 - **Isolation for plugins.** In-process plugins share Trillion's privileges.
   What exists is a policy gate, not a sandbox: `ToolRegistry.discover` imports
   only the `trillion.tools` entry points of Trillion's own distribution, and

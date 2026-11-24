@@ -1,11 +1,11 @@
 """Security alerts (SEC-11, the security alerts spec): the one producer of them.
 
-Four things are reported here: a page signed in (`signed_in`), a connection or
-request was refused (`refused`), someone not on a channel's allow-list wrote
-(`knocked`), and the owner's voiceprint can't be read (`voiceprint_unreadable`), told
-once when it is found on start. A device already known is silence (D1, D2). A refusal on its own is
-silence too: only five separate attempts within ten minutes are an event, and then at
-most once an hour (D6).
+Five things are reported here: a page signed in (`signed_in`), every other page was
+signed out (`signed_out_others`), a connection or request was refused (`refused`),
+someone not on a channel's allow-list wrote (`knocked`), and the owner's voiceprint
+can't be read (`voiceprint_unreadable`), told once when it is found on start. A device
+already known is silence (D1, D2). A refusal on its own is silence too: only five
+separate attempts within ten minutes are an event, and then at most once an hour (D6).
 
 Events become notices in batches: the first waits a few seconds for others, and after
 a notice is written the next waits at least `GAP_MS`, gathering everything meanwhile
@@ -59,7 +59,7 @@ NAME_MAX = 80
 DETAIL_MAX = 300
 TELL_TIMEOUT_S = 20.0
 
-EventKind = Literal["new_device", "refused", "knock", "voiceprint"]
+EventKind = Literal["new_device", "refused", "knock", "voiceprint", "signed_out"]
 PLATFORM_NAMES = {"slack": "Slack", "telegram": "Telegram"}
 
 INSTRUCTIONS = (
@@ -203,6 +203,23 @@ class SecurityAlerts:
                     f"refused in the last {minutes} minutes. Nothing got in."
                 ),
                 detail=f"Refused: {n} attempts in {minutes} minutes",
+            )
+        )
+
+    def signed_out_others(self, count: int) -> None:
+        """The owner signed out every other page (SPN-11a): the old session key no longer
+        works anywhere. Told once, so a press nobody meant is seen. Never raises."""
+        pages = "1 other page was" if count == 1 else f"{count} other pages were"
+        self._note(
+            Event(
+                kind="signed_out",
+                at_ms=self._clock(),
+                fact=(
+                    "Someone on this computer pressed Sign out every other page in Settings, "
+                    f"Devices. The session key was replaced, and {pages} signed out. If it "
+                    "was not the user, they should quit Trillion and start it again."
+                ),
+                detail=f"Signed out every other page ({count})",
             )
         )
 

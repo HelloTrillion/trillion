@@ -842,6 +842,7 @@ const LINK_TEXT: Readonly<Record<View['link'], string>> = {
   ready: '',
   offline: 'Trillion is not running. Start it with: trillion run',
   unauthenticated: 'This page is not signed in. Open the link that "trillion run" printed.',
+  signed_out: 'Signed out. Open Trillion again from the app, or from the link in its terminal.',
   replaced: 'This conversation is now open in another tab. Close this one, or start a new conversation.',
 };
 
@@ -1664,7 +1665,14 @@ function connect(): void {
       return;
     }
     if (typeof msg?.type !== 'string') return;
-    if (msg.type === 'error' && msg['code'] === 'unauthenticated') store(TOKEN_KEY, null);
+    if (msg.type === 'error' && (msg['code'] === 'unauthenticated' || msg['code'] === 'signed_out')) store(TOKEN_KEY, null);
+    // This page signed out every other page (SPN-11a): it keeps working on the new token,
+    // which goes only into this tab's storage, never onto the screen or to a feature.
+    if (msg.type === 'session.token') {
+      if (typeof msg['token'] === 'string') store(TOKEN_KEY, msg['token']);
+      features.dispatch({ type: 'session.rotated' });
+      return;
+    }
     // This conversation was deleted (here or in another tab): the core has closed it, so start a new one.
     if (msg.type === 'error' && msg['code'] === 'deleted') {
       switchTo(null);
@@ -1930,7 +1938,7 @@ function connect(): void {
     if (socket !== ws) return;
     socket = null;
     quiet();
-    if (view.link === 'unauthenticated' || view.link === 'replaced') return;
+    if (view.link === 'unauthenticated' || view.link === 'signed_out' || view.link === 'replaced') return;
     apply({ ...view, link: 'offline', busy: false, orb: 'idle' });
     retryTimer = setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10_000);
@@ -2130,7 +2138,7 @@ setInterval(() => apply(expire(view, Date.now())), 15_000);
 
 // Pasting the launch link into a tab that is already open changes only the fragment.
 addEventListener('hashchange', () => {
-  if (view.link === 'unauthenticated' && takeToken()) {
+  if ((view.link === 'unauthenticated' || view.link === 'signed_out') && takeToken()) {
     apply({ ...view, link: 'connecting' });
     connect();
   }

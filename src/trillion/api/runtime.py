@@ -491,6 +491,9 @@ class Runtime:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     # The desktop app made the token: the server answers its challenge (api/app.py).
     token_from_app: bool = False
+    # Told the new token when every other page is signed out (api/signout.py): the CLI
+    # prints a fresh link. Never logged.
+    token_hooks: list[Callable[[str], None]] = field(default_factory=list)
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)
