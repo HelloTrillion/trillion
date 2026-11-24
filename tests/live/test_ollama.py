@@ -58,8 +58,21 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[App]:
         built.close()
 
 
+# What she did on the last turn, for a failure to show: a small model's miss is read
+# from this, not guessed at.
+LAST: list[str] = []
+
+
+def did(msgs: list[dict[str, Any]]) -> str:
+    tools = [str(m.get("name") or m.get("tool")) for m in msgs if m["type"] == "tool.start"]
+    said = " ".join(reply(msgs).split())
+    usage = next((m.get("usage") for m in msgs if m["type"] == "turn.complete"), None)
+    return f"tools={tools} usage={usage} said={said[:300]!r}"
+
+
 def turn(chat: Chat, text: str) -> list[dict[str, Any]]:
     msgs = chat.say(text)
+    LAST[:] = [did(msgs)]
     errors = [m for m in msgs if m["type"] == "error"]
     assert not errors, errors
     assert msgs[-1]["type"] == "turn.complete", msgs[-1]
@@ -72,7 +85,8 @@ def tries(check: Callable[[], bool], what: str) -> None:
             if attempt > 1:
                 logger.warning("live: %s needed try %d of %d", what, attempt, TRIES)
             return
-    pytest.fail(f"{what}: not in {TRIES} tries with {MODEL}")
+        logger.warning("live: %s, try %d: %s", what, attempt, LAST[-1] if LAST else "-")
+    pytest.fail(f"{what}: not in {TRIES} tries with {MODEL}; last turn {LAST[-1] if LAST else '-'}")
 
 
 def test_a_typed_turn_gets_a_reply_and_is_stored(app: App) -> None:
@@ -114,5 +128,5 @@ def test_a_file_is_never_written_without_a_tap(app: App) -> None:
             assert chat.tap("cancel", cards[-1]["pending_id"])["status"] == "cancelled"
             chat.until("turn.complete")
         else:
-            logger.warning("live: %s raised no card for a file write", MODEL)
+            logger.warning("live: %s raised no card for a file write: %s", MODEL, did(msgs))
     assert not note.exists()
