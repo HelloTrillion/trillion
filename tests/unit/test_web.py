@@ -116,6 +116,36 @@ def test_addresses_are_found_in_what_people_type() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("said", "site"),
+    [
+        ("Open the browser and open light bulb moment dot com.", "lightbulbmoment.com"),
+        ("go to lightbulbmoment dot com please", "lightbulbmoment.com"),
+        ("Pull up hello trillion dot AI", "hellotrillion.ai"),
+        ("check the bbc dot co dot uk", "bbc.co.uk"),
+        ("Try example dot org, then", "example.org"),
+    ],
+)
+def test_an_address_said_aloud_counts_as_given(said: str, site: str) -> None:
+    """A voice transcript has "dot com", never a dot: the site the user said is theirs."""
+    ledger = Ledger()
+    ledger.said("c1", said)
+    assert ledger.allows("c1", f"https://{site}")
+    assert site in ledger.hosts_said("c1")
+
+
+def test_a_spoken_address_is_only_ever_made_of_the_users_own_words() -> None:
+    ledger = Ledger()
+    ledger.said("c1", "open light bulb moment dot com")
+    # Each run of the words before "dot com" is a site they may have meant; nothing else.
+    assert ledger.allows("c1", "https://moment.com")
+    assert not ledger.allows("c1", "https://lightbulbmoment.com/account?x=1")
+    assert not ledger.allows("c1", "https://evil.com")
+    # "dot" with no web ending after it is not an address.
+    ledger.said("c2", "put a dot on the map")
+    assert ledger.hosts_said("c2") == frozenset()
+
+
 def test_the_ledger_knows_only_what_was_given_or_linked() -> None:
     ledger = Ledger()
     ledger.said("c1", "please read example.com/story")

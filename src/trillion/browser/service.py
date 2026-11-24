@@ -228,6 +228,9 @@ class BrowserService:
         self.log = log
         # Her browser opened outside a task, for the user to sign in ahead of time.
         self.free: Task | None = None
+        # One opening at a time: the window, a reconnect and a second click can all ask
+        # at once, and each would otherwise start a browser of its own.
+        self._opening = asyncio.Lock()
         self._signed_here: set[str] = set()
         # Her conversation, told of what a task waits on, and when a card is settled.
         self._waits = waits
@@ -489,6 +492,10 @@ class BrowserService:
         return site
 
     async def open_free(self) -> Task:
+        async with self._opening:
+            return await self._open_free()
+
+    async def _open_free(self) -> Task:
         if self.free is not None and not self.free.closed:
             return self.free
         task_id = secrets.token_hex(8)
