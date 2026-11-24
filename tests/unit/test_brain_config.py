@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trillion.brain import config
+from trillion.brain import config, sse
 from trillion.brain.config import (
     ConfigError,
     ModelSettings,
@@ -156,3 +156,35 @@ def test_a_key_never_travels_over_plain_http() -> None:
     with pytest.raises(ConfigError) as e:
         provider_from_env(env | {"TRILLION_OPENAI_API_KEY": "k"})
     assert e.value.code == "key_needs_https"
+
+
+# ── How long she waits for a model's first word ─────────────────────────
+
+
+def _read_wait(provider: object) -> float | None:
+    return provider._client.timeout.read  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://192.168.1.20:11434/v1"],
+)
+def test_a_model_on_this_computer_or_its_network_is_given_minutes(url: str) -> None:
+    """With no GPU, reading her first request (about 13,300 tokens) takes minutes before
+    the first word: a model of the user's own is waited for, not called stopped."""
+    built = config.build(ModelSettings(kind="custom", model="m", base_url=url), MemoryStore())
+    assert _read_wait(built) == sse.LOCAL_TIMEOUT.read == 600.0
+    # A server that is not there still fails at once.
+    assert built._client.timeout.connect == 10.0  # type: ignore[attr-defined]
+    local = config.provider_from_env({config.OPENAI_BASE_URL: url, config.MODEL: "m"})
+    assert _read_wait(local) == 600.0
+
+
+def test_a_hosted_service_keeps_the_usual_wait() -> None:
+    hosted = config.build(
+        ModelSettings(kind="custom", model="m", base_url="https://openrouter.ai/api/v1"),
+        MemoryStore(),
+    )
+    assert _read_wait(hosted) == sse.TIMEOUT.read == 120.0
+    openai = config.build(ModelSettings(kind="openai", model="gpt"), MemoryStore())
+    assert _read_wait(openai) == 120.0
