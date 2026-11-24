@@ -12,6 +12,10 @@ from trillion.brain.types import ProviderError
 
 # Connecting is quick or it is broken; a model may think for a while between tokens.
 TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+# A model on this computer or the user's own network: with no GPU, reading her first
+# request (about 13,300 tokens) takes minutes before the first word. A server that
+# isn't there still fails at once on connecting, and she can always be interrupted.
+LOCAL_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
 
 _STATUS_KINDS = {
     401: "unauthorized",

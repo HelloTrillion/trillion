@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from typing import Any, Literal, get_args
 from urllib.parse import urlsplit
 
+import httpx
+
+from trillion.brain import sse
 from trillion.brain.providers import anthropic as anthropic_api
 from trillion.brain.providers import openai_compat
 from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
@@ -107,6 +110,18 @@ def _is_private(host: str) -> bool:
     return any(ip in net for net in _PRIVATE)
 
 
+def on_own_network(url: str) -> bool:
+    """This computer or the user's own network: a model of the user's own."""
+    host = urlsplit(url).hostname or ""
+    return _is_loopback(host) or _is_private(host)
+
+
+def wait_for(url: str) -> httpx.Timeout:
+    """How long she waits for a model's first word: minutes for one of the user's own,
+    which may have no GPU, and the usual for a hosted service."""
+    return sse.LOCAL_TIMEOUT if on_own_network(url) else sse.TIMEOUT
+
+
 def keyless(url: str) -> bool:
     """True for plain HTTP to another machine. Allowed on the user's own network
     only, and a key is never sent there: anyone on that network could read it."""
@@ -164,6 +179,7 @@ def build(settings: ModelSettings, secrets: SecretStore) -> ModelProvider:
         else (lambda: None),
         cap_field="max_completion_tokens" if settings.kind == "openai" else "max_tokens",
         max_output=settings.max_output,
+        timeout=wait_for(url),
     )
 
 
@@ -187,7 +203,10 @@ def provider_from_env(env: Mapping[str, str] | None = None) -> ModelProvider | N
         if keyless(checked) and env.get(OPENAI_KEY, "").strip():
             raise ConfigError("key_needs_https", f"{OPENAI_KEY} is only sent over https")
         return OpenAICompatProvider(
-            base_url=checked, model=model, api_key=lambda: env.get(OPENAI_KEY) or None
+            base_url=checked,
+            model=model,
+            api_key=lambda: env.get(OPENAI_KEY) or None,
+            timeout=wait_for(checked),
         )
     if env.get(ANTHROPIC_KEY, "").strip():
         return AnthropicProvider(

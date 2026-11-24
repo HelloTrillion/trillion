@@ -150,6 +150,7 @@ class OpenAICompatProvider:
         api_key: Callable[[], str | None] = lambda: None,
         cap_field: str = "max_tokens",
         max_output: int | None = None,
+        timeout: httpx.Timeout = sse.TIMEOUT,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
@@ -166,7 +167,7 @@ class OpenAICompatProvider:
         self._url = self.base_url + "/chat/completions"
         # OpenRouter says what each call cost, which beats any price table.
         self._reports_cost = urlsplit(base_url).hostname == OPENROUTER_HOST
-        self._client = client or httpx.AsyncClient(timeout=sse.TIMEOUT, limits=net.KEEP_ALIVE)
+        self._client = client or httpx.AsyncClient(timeout=timeout, limits=net.KEEP_ALIVE)
 
     async def warm(self) -> None:
         """Open the connection before the next request needs it. Sends nothing."""

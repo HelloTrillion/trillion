@@ -19,7 +19,7 @@ Ollama picks each model's context from the memory it can use. Without a large GP
 
 ## Known limits
 
-- **Slow computers.** On a computer with no GPU, reading a 13,300-token request can take longer than the provider waits for a first byte (120 seconds). She then says the model "stopped answering", even with enough context. CI's 4-core runner shows it. Not fixed here.
+- **Slow computers.** On a computer with no GPU, reading a 13,300-token request takes minutes before the first word. A model on this computer or the user's own network is now given 10 minutes for it (`sse.LOCAL_TIMEOUT`); a hosted service keeps 120 seconds.
 - **Unloaded models.** The context is read only once the model is loaded, which is after her first request. If the model never loads, there is nothing to read.
 
 ## Tests

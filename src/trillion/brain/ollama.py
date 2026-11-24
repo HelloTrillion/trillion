@@ -16,11 +16,10 @@ model not loaded, an older Ollama that doesn't say) is not known, never a warnin
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
-from trillion.brain.config import _is_loopback, _is_private
+from trillion.brain import config
 
 # Her first request is about 13,300 tokens (her instructions and her tools), and a
 # conversation grows from there.
@@ -28,11 +27,9 @@ NEEDED = 32_768
 _TIMEOUT = httpx.Timeout(3.0)
 
 
-def on_own_network(base_url: str) -> bool:
-    """Ollama runs on this computer or the user's own network; a hosted service is
-    never asked about Ollama's paths."""
-    host = urlsplit(base_url).hostname or ""
-    return _is_loopback(host) or _is_private(host)
+# Ollama runs on this computer or the user's own network; a hosted service is never
+# asked about Ollama's paths.
+on_own_network = config.on_own_network
 
 
 def _root(base_url: str) -> str:
