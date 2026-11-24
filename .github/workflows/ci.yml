@@ -152,7 +152,7 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
-      TRILLION_LIVE_MODEL: gemma4:e4b
+      TRILLION_LIVE_MODEL: qwen2.5:1.5b
       TRILLION_LIVE_URL: http://localhost:11434/v1
     services:
       ollama:
