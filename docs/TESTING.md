@@ -352,6 +352,16 @@ Two that matter most:
 - **A moving value** — a balance, a price, a device state — is never answered from recall alone. It forces a live read and stamps `as_of` (MEM-8).
 - **The summarizer does not resurrect forgotten material.** Run it over a conversation containing something later forgotten, and it stays forgotten (P1, with the summarizer).
 
+### 3.4 A real local model (BRN-2, the definition of done, item 5)
+
+With only a local Ollama, a full typed conversation works, memory and all: a typed turn gets a reply and is stored; she remembers a name she is told and says it in a new conversation; and a file she is asked to write is never on the disk without a tap, with a card that is declined. — [test](../tests/live/test_ollama.py), against a real model, not a scripted one. A small model isn't the same every time, so each memory check gets one more try and the log says when it needed it; the confirmation rule gets none.
+
+The tests skip unless a model is named. CI's `ollama` job runs them nightly and on demand, on `qwen2.5:1.5b` in a pinned Ollama container, never on a pull request (it downloads a model, and a reply on a CPU is slow). It needs no key or secret, so you can run the same thing on your own computer for free:
+
+```bash
+TRILLION_LIVE_MODEL=gemma4:e4b TRILLION_LIVE_URL=http://localhost:11434/v1 uv run pytest tests/live -rs
+```
+
 ---
 
 ## 4. Recovery and routines (Phase 1)
