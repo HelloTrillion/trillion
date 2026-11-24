@@ -1721,7 +1721,7 @@ wheels = [
 
 [[package]]
 name = "trillion"
-version = "0.0.2"
+version = "2026.11.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

@@ -410,10 +410,12 @@ what its card showed, that is a vulnerability.
   `tests/unit/test_migrate.py` on Windows.
 - **There is no telemetry.** No analytics or crash-reporting code exists.
 
-## Not true yet — required before the first release
+## Not true yet
 
 These are in the specification and are not built. Until they are, do not
-rely on them:
+rely on them. Early revocation of the session token is required before the
+first stable release; plugin isolation is planned for a later phase (CON-6a).
+Betas ship without both.
 
 - **The rest of the session-token lifecycle** (SPN-11, SPN-11a). The token
   lives in memory for one launch by design and is never written down, but

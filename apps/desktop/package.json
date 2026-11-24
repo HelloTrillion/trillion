@@ -1,6 +1,6 @@
 {
   "name": "@hellotrillion/desktop",
-  "version": "0.0.2",
+  "version": "2026.11.0-beta.1",
   "private": true,
   "description": "Trillion as a desktop app: starts the server, a splash, the menu bar or tray.",
   "license": "Apache-2.0",

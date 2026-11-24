@@ -1,6 +1,6 @@
 [project]
 name = "trillion"
-version = "0.0.2"
+version = "2026.11.0b1"
 description = "The voice-first AI agent with a face."
 readme = "README.md"
 license = "Apache-2.0"

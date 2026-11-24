@@ -70,7 +70,7 @@ Everything runs on your machine, in one process, against a local SQLite file. Th
 
 ## Try it
 
-**Not on PyPI yet.** The one-line installer and `uv tool install trillion` fetch Trillion from [PyPI](https://pypi.org/project/trillion/), and the first release there will be 0.0.2. Until it is out, both fail with "not found". Use a release file or a source checkout instead (both below).
+**Not on PyPI yet.** The one-line installer and `uv tool install trillion` fetch Trillion from [PyPI](https://pypi.org/project/trillion/), and the first release there will be the beta 2026.11.0b1. Until it is out, both fail with "not found". Use a release file or a source checkout instead (both below).
 
 **One line** (the easy way). On macOS or Linux, in a terminal:
 
@@ -98,7 +98,7 @@ To upgrade later: `uv tool upgrade trillion`, which keeps anything you added, su
 **From a release file.** You need [uv](https://docs.astral.sh/uv/). Download the `.whl` file from the latest [release](https://github.com/HelloTrillion/trillion/releases), then:
 
 ```bash
-uv tool install ./trillion-0.0.1-py3-none-any.whl
+uv tool install ./trillion-*-py3-none-any.whl
 trillion setup
 ```
 
@@ -148,7 +148,7 @@ It checks the data folder, the database, the port, the keychain, your model, voi
 
 Her file tools reach only folders you share. Share one during onboarding (she offers your Desktop or Documents), in Settings → **Shared folders**, by asking her (she proposes it on a card you approve), or for one run with `--grant`. With none shared, the file tools are off. A home folder or a whole drive is never shared. Any folder that exists will do: if you have no `~/Desktop` (common on Linux), make one for Trillion, such as `mkdir ~/trillion-files`, and grant that. Every write asks first, on a card you approve. Trillion listens on `127.0.0.1` only.
 
-**Talking to her.** Open **Settings** (the menu button, top left), then **Hearing**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv tool install --upgrade --python 3.13 'trillion[whisper]'` (from a release file, `uv tool install --force --python 3.13 'trillion[whisper] @ ./trillion-0.0.1-py3-none-any.whl'`; from a source checkout, `uv sync --extra whisper`; upgrading with the one-line installer or `uv tool upgrade trillion` keeps it), and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
+**Talking to her.** Open **Settings** (the menu button, top left), then **Hearing**, and choose how she hears. *On this computer (Whisper)* is free and nothing you say leaves the machine; it needs one extra install, `uv tool install --upgrade --python 3.13 'trillion[whisper]'` (from a release file, `uv tool install --force --python 3.13 'trillion[whisper] @ ./trillion-<version>-py3-none-any.whl'`, with the name of the file you downloaded; from a source checkout, `uv sync --extra whisper`; upgrading with the one-line installer or `uv tool upgrade trillion` keeps it), and a one-time download you start from that panel. *Deepgram* is faster and shows your words as you speak; it needs your own key. Then press **Speak**, or **Space** when the message box is empty, talk, and stop: she answers when you go quiet. Settings, under Shortcuts, lets you record any other key or combination, or turn it off. The microphone is on while you are speaking to her and, with "Interrupt her by talking" on, while she answers you, so you can cut in. With Whisper that audio stays on this computer and nothing is sent until you cut in; with Deepgram it goes to Deepgram while she talks, so it can tell your words from her voice coming back.
 
 Just the orb: `pnpm --filter @hellotrillion/galaxy dev`
 
