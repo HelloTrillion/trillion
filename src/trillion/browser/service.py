@@ -73,6 +73,10 @@ OWNER = "local"
 ASK_WAIT_S = 10 * 60.0
 # How long a task waits for the one before it.
 QUEUE_WAIT_S = 30 * 60.0
+# How long the page a task answered on stays open for a follow-up, untouched.
+LEFT_OPEN_S = 15 * 60.0
+# What a task ended with that leaves its page open.
+_LEAVES_OPEN = ("answered", "time", "steps")
 FINAL_S = 60.0
 # How long a cancelled turn is given to end before the task moves on without it.
 LET_GO_S = 5.0
@@ -175,6 +179,12 @@ class Running:
     attempt: int = 0
     # The saved sign-in this task was allowed: None until asked, "" for none.
     signin: str | None = None
+    # A follow-up: the page her browser was left on, and what was asked and answered
+    # there before (the stays-open spec).
+    start_url: str | None = None
+    before: tuple[str, str] | None = None
+    # Where it ended, to stay open after an answer: the page, its cookies, its site.
+    ended: tuple[str, Any, str | None] | None = None
 
     def to_json(self) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -226,8 +236,13 @@ class BrowserService:
         )
         # The task log, for the app to read (`SqliteBrowserLog`).
         self.log = log
-        # Her browser opened outside a task, for the user to sign in ahead of time.
+        # Her browser outside a task: opened by the user to sign in ahead of time, or
+        # the page a task ended on, left open for a follow-up (the stays-open spec).
         self.free: Task | None = None
+        # For the page a task left open: its conversation, what was asked and what she
+        # answered. None for a browser the user opened.
+        self._left: tuple[str, str, str] | None = None
+        self._left_timer: asyncio.Task[None] | None = None
         # One opening at a time: the window, a reconnect and a second click can all ask
         # at once, and each would otherwise start a browser of its own.
         self._opening = asyncio.Lock()
@@ -539,15 +554,105 @@ class BrowserService:
 
     async def close_free(self) -> None:
         free, self.free = self.free, None
+        self._forget_left()
         if free is not None:
             await free.close()
         if self.current() is None:
             await self.runtime.stop()
         self._changed()
 
+    def _forget_left(self) -> None:
+        self._left = None
+        if self._left_timer is not None:
+            self._left_timer.cancel()
+            self._left_timer = None
+
+    async def _leave_open(self, running: Running, answer: str) -> None:
+        """A task answered: its page stays open as her browser, for the user to look at
+        and for a follow-up to carry on from. It is opened again, in a context of its
+        own, with the task's cookies and its site limit, never the task's broker."""
+        if running.ended is None:
+            return
+        url, state, site = running.ended
+        async with self._opening:
+            if self.free is not None:
+                old, self.free = self.free, None
+                with contextlib.suppress(Exception):
+                    await old.close()
+            self._forget_left()
+            task = Task(
+                runtime=self.runtime,
+                log=TaskLog(self._sink, OWNER, secrets.token_hex(8), self._clock),
+                quarantine=self.quarantine,
+                request="",
+                mode="research",
+                named_hosts=frozenset(h for h in (host_of(url),) if h),
+                clock=self._clock,
+                site=site,
+                storage_state=state,
+                changed=self._changed,
+            )
+            try:
+                await task.open()
+                task.in_control = True
+                task.state = "working"
+                await task.goto(url)
+            except Exception as e:
+                logger.warning("her browser's page wasn't left open: %s", type(e).__name__)
+                with contextlib.suppress(Exception):
+                    await task.close()
+                return
+            self.free = task
+            self._left = (running.conversation_id, running.request, answer)
+            self._left_timer = asyncio.ensure_future(self._close_left_later(task))
+        self._changed()
+
+    async def _close_left_later(self, task: Task) -> None:
+        await asyncio.sleep(LEFT_OPEN_S)
+        if self.free is task:
+            self._left_timer = None
+            await self.close_free()
+
+    async def _take_over(
+        self, conversation_id: str
+    ) -> tuple[str | None, Any, str | None, tuple[str, str] | None]:
+        """A new task takes over her open browser: where it is, and, when a task of this
+        conversation left it, its cookies, site limit and what came before. A browser
+        the user opened passes on only its address: a sign-in of theirs never reaches a
+        task without its site limit. Another conversation's page is left alone."""
+        free = self.free
+        if free is None or free.closed:
+            return None, None, None, None
+        left = self._left
+        if left is not None and left[0] != conversation_id:
+            return None, None, None, None
+        try:
+            url = str(free.page.url)
+        except Exception:
+            url = ""
+        if not url.startswith(("http://", "https://")):
+            url = ""
+        state: Any = None
+        site: str | None = None
+        before: tuple[str, str] | None = None
+        if left is not None:
+            with contextlib.suppress(Exception):
+                state = await free.context.storage_state()
+            site = free.site
+            before = (left[1], left[2])
+        self.free = None
+        self._forget_left()
+        with contextlib.suppress(Exception):
+            await free.close()
+        self._changed()
+        return url or None, state, site, before
+
     def free_json(self) -> dict[str, Any] | None:
         free = self.target("free")
-        return free.to_json() if free is not None else None
+        if free is None:
+            return None
+        # "left": the page a task answered on, kept open for a follow-up.
+        return free.to_json() | {"left": self._left is not None}
 
     # ── Running a task ──────────────────────────────────────────────────────
 
@@ -589,7 +694,19 @@ class BrowserService:
             if running.outcome == "cancelled":
                 return Outcomes(outcome="cancelled", text="The task was stopped.")
             running.state = "working"
+            if site is None and storage_state is None:
+                # A follow-up carries on from the page her browser was left on.
+                url, kept, kept_site, before = await self._take_over(conversation_id)
+                running.start_url, running.before = url, before
+                if url is not None:
+                    named_hosts = named_hosts | {h for h in (host_of(url),) if h}
+                if kept_site is not None:
+                    site, storage_state = kept_site, kept
+                elif kept is not None:
+                    storage_state = kept
             result = await self._attempts(running, settings, named_hosts, via, site, storage_state)
+            if result.outcome in _LEAVES_OPEN and via not in _UNWATCHED:
+                await self._leave_open(running, result.text)
             if act and not settings.act:
                 result.text = (
                     "Act mode is off in Settings → Her browser, so this task only read pages. "
@@ -692,7 +809,16 @@ class BrowserService:
             task.state = "working"
             self._changed()
             await self._use_signin(running, task, named, attended)
-            return await self._work(running, task, router, offered(registry), provider, via)
+            if running.start_url is not None:
+                with contextlib.suppress(Exception):
+                    await task.goto(running.start_url)
+            result = await self._work(running, task, router, offered(registry), provider, via)
+            if result.outcome in _LEAVES_OPEN:
+                with contextlib.suppress(Exception):
+                    url = str(task.page.url)
+                    if url.startswith(("http://", "https://")):
+                        running.ended = (url, await task.context.storage_state(), task.site)
+            return result
         except Exception as e:
             logger.warning("browsing task failed: %s", type(e).__name__)
             return Outcomes(outcome="failed", text="Her browser couldn't finish the task.")
@@ -766,6 +892,7 @@ class BrowserService:
                     TextBlock(
                         text=(
                             f"The user's request: {running.request}\nSites the user named: {named}"
+                            + _carrying_on(running)
                         )
                     ),
                 ),
@@ -1014,6 +1141,20 @@ def _older_pages_short(messages: Any) -> list[Msg]:
         out.append(dataclasses.replace(msg, blocks=tuple(blocks)))
     out.reverse()
     return out
+
+
+def _carrying_on(running: Running) -> str:
+    """A follow-up's note: where her browser already is, and what came before."""
+    if running.start_url is None:
+        return ""
+    note = f"\nYour browser is already on {running.start_url}: start from this page."
+    if running.before is not None:
+        asked, answered = running.before
+        note += (
+            f"\nThe request before this one, on this page: {asked[:500]}"
+            f"\nWhat you answered then: {answered[:1000]}"
+        )
+    return note
 
 
 def _last_text(history: list[Msg]) -> str:

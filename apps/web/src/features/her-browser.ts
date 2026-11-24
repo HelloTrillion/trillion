@@ -47,6 +47,8 @@ export interface TaskView {
   readonly steps?: number;
   readonly step_limit?: number;
   readonly outcome?: string | null;
+  /** Her open browser is the page a task answered on, kept for a follow-up. */
+  readonly left?: boolean;
 }
 
 export interface BrowserState {
@@ -237,7 +239,10 @@ export interface HerBrowser {
 export function pillTarget(state: BrowserState | null, openUrl?: string | null): { id: string; words: string; needsYou: boolean } | null {
   const task = activeTask(state);
   if (task) return { id: task.id, words: pillWords(task, openUrl), needsYou: task.state === 'needs_you' };
-  if (state?.free) return { id: 'free', words: 'Her browser is open', needsYou: false };
+  if (state?.free) {
+    const where = state.free.origin?.replace(/^https?:\/\//, '');
+    return { id: 'free', words: where ? `Her browser: ${where}` : 'Her browser is open', needsYou: false };
+  }
   return null;
 }
 
@@ -449,6 +454,8 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     const fresh = el('div');
     if (t?.ask && !free) await drawAsk(fresh, t, t.ask);
     else if (t && !free && t.in_control) fresh.append(el('p', 'her-browser-note', 'She sees nothing and nothing is recorded until you click “I’m done”.'));
+    else if (free && t?.left)
+      fresh.append(el('p', 'her-browser-note', 'She left this page open. Ask her a follow-up and she carries on from here, or look around yourself.'));
     else if (free && t) fresh.append(el('p', 'her-browser-note', 'Sign in to a site, then choose “Keep me signed in here”. Only that site’s sign-in is kept, never your password.'));
     if (mine !== drawing) return;
     ask.replaceChildren(...fresh.childNodes);
@@ -659,6 +666,16 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
 
   const tick = async (): Promise<void> => {
     await load();
+    // The task being watched has ended and left its page open: the window follows it.
+    if (viewing && viewing !== 'free' && state?.free && !state.tasks.some((t) => t.id === viewing && t.state !== 'done')) {
+      viewing = 'free';
+      framed = lastFrame.has('free');
+      if (watch) {
+        watching = 'free';
+        watch.watch('free');
+      }
+      await drawView();
+    }
     const target = pillTarget(state);
     if (target && !watch) watch = connect(onFrame);
     if (watch) {

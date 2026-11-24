@@ -79,6 +79,9 @@ describe('her browser: the small rules', () => {
   it('the pill speaks for her browser open with no task, and the title bar says the state', () => {
     expect(pillTarget(state())).toBeNull();
     expect(pillTarget(state({ free: { id: 'x', state: 'working', mode: 'research' } }))).toEqual({ id: 'free', words: 'Her browser is open', needsYou: false });
+    // The page a task answered on, left open: the pill says where.
+    const left = state({ free: { id: 'x', state: 'working', mode: 'research', origin: 'https://lightbulbmoment.com', left: true } });
+    expect(pillTarget(left)).toEqual({ id: 'free', words: 'Her browser: lightbulbmoment.com', needsYou: false });
     expect(stateWords(null, false)).toBe('Nothing running');
     expect(stateWords({ id: 'a', state: 'needs_you', mode: 'research' }, false)).toBe('Needs you');
     expect(stateWords({ id: 'a', state: 'working', mode: 'research', in_control: true }, false)).toBe('You have control');
