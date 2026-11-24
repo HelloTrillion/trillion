@@ -203,3 +203,15 @@ async def test_after_the_users_sign_in_step_the_task_stays_on_that_site(
         assert running.task.broker.site == "fixture.test"  # type: ignore[union-attr]
         rows = await log.for_task("local", running.id, svc._clock())
     assert ("refused", "off_site") in [(r.event, r.detail) for r in rows]
+
+
+@needs_chromium
+async def test_her_browser_opens_once_however_many_ask_at_once(browser_rt, tmp_path, fixtures):
+    """The window, a reconnect and a second click can all ask together: one browser."""
+    async with service(browser_rt, tmp_path, Steps(say(""))) as (svc, log):
+        opened = await asyncio.gather(*(svc.open_free() for _ in range(6)))
+        assert len({t.id for t in opened}) == 1
+        assert svc.free is opened[0]
+        started = [r for r in await log.tasks("local", svc._clock()) if r.event == "started"]
+        assert len(started) == 1
+        await svc.close_free()
