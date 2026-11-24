@@ -34,6 +34,9 @@ TIME_LIMIT_S = 300.0
 NAV_TIMEOUT_MS = 20_000
 SETTLE_S = 0.4
 CLOSE_S = 10.0
+# Her pointer: how long to bring an element into view, and to pause on it when watched.
+POINT_SCROLL_MS = 2_000
+POINT_PAUSE_S = 0.4
 STEP_WORDS: dict[str, str] = {
     "sign_in": "sign in",
     "captcha": "prove you're a person",
@@ -132,6 +135,10 @@ class Task:
         self._work: set[asyncio.Task[None]] = set()
         self._refused_hosts: dict[str, str] = {}
         self.closed = False
+        # Where she is about to act, in the page's own pixels, for the view to draw her
+        # pointer (never the model's): told to whoever watches, kept nowhere else.
+        self.pointer: dict[str, Any] | None = None
+        self._pointer_watchers: list[Callable[[dict[str, Any]], Awaitable[None]]] = []
 
     # ── The context ─────────────────────────────────────────────────────────
 
@@ -272,6 +279,38 @@ class Task:
             await self._egress.close()
         self.state = "done"
         self.changed()
+
+    # ── Her pointer ─────────────────────────────────────────────────────────
+
+    def watch_pointer(self, told: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        self._pointer_watchers.append(told)
+
+    def unwatch_pointer(self, told: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        with contextlib.suppress(ValueError):
+            self._pointer_watchers.remove(told)
+
+    async def point_at(self, locator: Any, action: str) -> None:
+        """Before she acts on an element: scroll it into view and move her pointer to
+        it, so whoever watches sees where she goes and what she clicks. Only a picture:
+        what she does next is decided as before, and a failure here changes nothing."""
+        with contextlib.suppress(Exception):
+            await locator.scroll_into_view_if_needed(timeout=POINT_SCROLL_MS)
+        box = None
+        with contextlib.suppress(Exception):
+            box = await locator.bounding_box(timeout=POINT_SCROLL_MS)
+        if not box:
+            return
+        self.pointer = {
+            "x": round(box["x"] + box["width"] / 2, 1),
+            "y": round(box["y"] + box["height"] / 2, 1),
+            "action": action,
+        }
+        for told in list(self._pointer_watchers):
+            with contextlib.suppress(Exception):
+                await told(self.pointer)
+        if self._pointer_watchers:
+            # Long enough to see her pointer arrive before the page changes.
+            await asyncio.sleep(POINT_PAUSE_S)
 
     # ── Going places ────────────────────────────────────────────────────────
 

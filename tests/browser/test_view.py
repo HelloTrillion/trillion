@@ -215,3 +215,43 @@ async def test_her_browser_opens_once_however_many_ask_at_once(browser_rt, tmp_p
         started = [r for r in await log.tasks("local", svc._clock()) if r.event == "started"]
         assert len(started) == 1
         await svc.close_free()
+
+
+@needs_chromium
+async def test_her_pointer_goes_to_the_watcher_before_she_clicks(browser_rt, tmp_path, fixtures):
+    """Where she is about to act, drawn by the app over the picture: told before the
+    click, in the page's own pixels, inside the picture."""
+    from tests.browser.test_broker import ref_of
+
+    async with driven(browser_rt, tmp_path) as d:
+        await d.call("browser_open", url="http://fixture.test/index.html")
+        sent: list[dict[str, Any]] = []
+
+        async def send(body: dict[str, Any]) -> None:
+            sent.append(body)
+
+        cast = Screencast(d.task, send)
+        await cast.start()
+        page = (await d.call("browser_read")).content or ""
+        r = await d.call("browser_follow", ref=ref_of(page, r'button "Show more"'))
+        assert r.status == "succeeded", r
+        (pointer,) = [m for m in sent if m["type"] == "browser.pointer"]
+        assert pointer["action"] == "click"
+        assert 0 < pointer["x"] < pointer["width"] and 0 < pointer["y"] < pointer["height"]
+        await cast.stop()
+        # A watcher that has gone is told nothing more.
+        await d.call("browser_follow", ref=ref_of(page, r'button "Show more"'))
+        assert len([m for m in sent if m["type"] == "browser.pointer"]) == 1
+
+
+@needs_chromium
+async def test_a_watcher_may_scroll_while_she_works_but_never_click_or_type(
+    browser_rt, tmp_path, fixtures
+):
+    async with driven(browser_rt, tmp_path, mode="act") as d:
+        await d.call("browser_open", url="http://fixture.test/form.html")
+        assert not d.task.in_control
+        assert await give_input(d.task, {"kind": "wheel", "dy": 300})
+        assert not await give_input(d.task, {"kind": "click", "x": 10, "y": 10})
+        assert not await give_input(d.task, {"kind": "text", "text": "typed by the user"})
+        assert not await give_input(d.task, {"kind": "key", "key": "Enter"})
