@@ -109,3 +109,12 @@ def test_her_own_turn_never_has_the_browser_tools():
 def test_the_browser_tests_run_in_ci():
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "tests/browser" in ci
+
+
+def test_a_reading_task_is_told_it_may_click_through_a_site() -> None:
+    """Asked to click a button, a reading task said it couldn't: clicking to move
+    around a site is allowed in every task, and only typing and sending are not."""
+    from trillion.browser.service import PROMPT, RESEARCH
+
+    assert "click links and buttons" in RESEARCH and "can't type" in RESEARCH
+    assert "always" in PROMPT and "browser_follow" in PROMPT
