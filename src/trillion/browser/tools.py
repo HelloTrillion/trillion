@@ -288,9 +288,9 @@ class BrowserFollow(BrowserTool):
     definition = ToolDefinition(
         name=FOLLOW,
         description=(
-            "Follow a link, or press a control that only opens or shows something (a tab, a "
-            "menu, 'more'). It never sends anything: a control that submits a form is "
-            "refused here."
+            "Click a link, or a button that takes you to another page or only opens or shows "
+            "something (a tab, a menu, 'more', 'Get started'). It never sends anything: a "
+            "control that submits a form is refused here."
         ),
         input_schema=_schema({"ref": _REF}, ("ref",)),
         risk=Risk.READ,

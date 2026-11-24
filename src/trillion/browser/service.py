@@ -130,7 +130,9 @@ user's, and one task to do in it. When it is done, call browser_done with your a
 How to work:
 - Start with browser_search, or browser_open for a site the user named.
 - Each page comes back as text, with a reference like [ref=e12] for each element.
-  Use browser_follow with a reference to follow a link or open a menu or tab.
+  Use browser_follow with a reference to click a link, or a button that takes you to
+  another page or opens a menu or tab. Clicking around a site this way is always
+  allowed: when the user asks you to click something, find it and click it.
 - A long page comes back cut. To find one fact on it (a height, a price, opening
   hours), call browser_find with a word for it, such as "height" or "open".
 - Read what you need, then answer. Use few steps: you have at most {steps}.
@@ -147,8 +149,9 @@ Rules that always hold:
   be told their answer.
 """
 RESEARCH = (
-    "This task only reads: you can't type into pages or send forms. If the task needs "
-    "that, say so in your answer."
+    "In this task you can open pages and click links and buttons that take you to "
+    "another page (browser_follow), but you can't type into pages or send forms. If "
+    "the task needs typing or sending, say so in your answer."
 )
 ACT = (
     "This task may fill in a form: type with browser_type, then send it with "
