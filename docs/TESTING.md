@@ -363,7 +363,7 @@ The tests skip unless a model is named. CI's `ollama` job runs them nightly and 
 TRILLION_LIVE_MODEL=gemma4:e4b TRILLION_LIVE_URL=http://localhost:11434/v1 uv run pytest tests/live -rs
 ```
 
-If your Ollama runs without a GPU, start it with `OLLAMA_CONTEXT_LENGTH=16384 ollama serve` first.
+If your Ollama runs without a GPU, start it with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` first.
 
 ---
 

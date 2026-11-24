@@ -149,7 +149,7 @@ jobs:
     name: Real model (Ollama, ubuntu-latest)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
       TRILLION_LIVE_MODEL: qwen2.5:1.5b
@@ -157,10 +157,10 @@ jobs:
     services:
       ollama:
         image: ollama/ollama:0.40.17@sha256:ccc42bcd3d5fcf7ab0d532b300382154e1a4da56fc666bdb313b78ebdd912754
-        # With no GPU, Ollama's default context is 4,096 tokens, and her system prompt
-        # alone is more: it is cut (a small model then never sees its tools) or refused.
+        # With no GPU, Ollama's default context is 4,096 tokens, and her first request
+        # is about 13,300: it is cut (a small model then never sees its tools) or refused.
         env:
-          OLLAMA_CONTEXT_LENGTH: "16384"
+          OLLAMA_CONTEXT_LENGTH: "32768"
         ports:
           - 11434:11434
     steps:
