@@ -264,8 +264,10 @@ git tag v2026.12.0-beta.1 && git push origin v2026.12.0-beta.1
 ```
 
 The GitHub release is marked pre-release, and PyPI treats `2026.12.0b1` as one, so
-`uv tool install trillion` and the stable channel never pick it. The beta channel
-does, and also gets any stable release newer than the newest beta. When the beta is
+once a stable release exists, `uv tool install trillion` and the stable channel
+never pick it. While PyPI has only betas, as after the first one, uv takes the
+newest beta even without asking, because there is nothing else to install. The
+beta channel always does, and also gets any stable release newer than the newest beta. When the beta is
 good, set `2026.12.0`, merge, and tag `v2026.12.0`.
 
 ## The dev channel
@@ -332,8 +334,8 @@ API for the wheel on the `dev` release and installs it with `--reinstall`. The
 channel asked for is remembered in `~/.trillion/channel` (or under `TRILLION_HOME`),
 so a re-run and `trillion update` stay on it; moving to another channel reinstalls,
 so going back to stable gets the newest stable even from a newer beta.
-`--channel dev` with `--version` is refused: dev has no versions. They work from release 0.0.2, the
-first on PyPI. If Trillion is already installed from PyPI, they run
+`--channel dev` with `--version` is refused: dev has no versions. They work from the first release on
+PyPI. If Trillion is already installed from PyPI, they run
 `uv tool upgrade trillion`, which keeps the extras someone added (such as
 `[whisper]`) and the tool's Python; if that fails, they stop and say how to
 reinstall, rather than install again without the extras. Otherwise, including an
