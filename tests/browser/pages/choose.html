@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><title>Choose</title></head>
+<body>
+<h1>Tell us about your project</h1>
+<form method="post" action="/enquiry">
+  <label>Name <input name="name"></label>
+  <label>What can we help with?
+    <select name="help" id="help" onchange="document.getElementById('seen').textContent = 'changed to ' + this.value">
+      <option value="">Choose one</option>
+      <option value="strategy">AI Strategy &amp; Transformation</option>
+      <option value="automation">AI Implementation &amp; Automation</option>
+      <option value="gone" disabled>Not offered now</option>
+    </select>
+  </label>
+  <label>Card expiry
+    <select name="exp" autocomplete="cc-exp-month"><option>01</option><option>02</option></select>
+  </label>
+  <p id="seen">unchanged</p>
+  <button type="submit">Send inquiry</button>
+</form>
+</body></html>

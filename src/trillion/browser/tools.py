@@ -52,8 +52,8 @@ from trillion.spine.registry import ToolRegistry
 CATEGORY = "browser"
 OPEN, SEARCH, READ, FIND = "browser_open", "browser_search", "browser_read", "browser_find"
 FOLLOW, BACK, TYPE, PRESS = "browser_follow", "browser_back", "browser_type", "browser_press"
-YOUR_STEP, DONE = "browser_your_step", "browser_done"
-NAMES = (OPEN, SEARCH, READ, FIND, FOLLOW, BACK, TYPE, PRESS, YOUR_STEP, DONE)
+YOUR_STEP, DONE, SELECT = "browser_your_step", "browser_done", "browser_select"
+NAMES = (OPEN, SEARCH, READ, FIND, FOLLOW, BACK, TYPE, SELECT, PRESS, YOUR_STEP, DONE)
 TIMEOUT_S = 60.0
 CLICK_TIMEOUT_MS = 5_000
 _UNWATCHED = frozenset({"schedule", "routine", "refresh"})
@@ -412,6 +412,8 @@ class BrowserType(BrowserTool):
         if el.sensitive:
             await t.log.event("refused", url=url, code="sensitive_field")
             return await _step(t, ctx, "sign_in", url)
+        if el.tag == "select":
+            return _no("that is a dropdown: choose an option with browser_select")
         if not el.editable:
             return _no("that element is not a field you can type in")
         await t.point_at(locator, "type")
@@ -424,6 +426,94 @@ class BrowserType(BrowserTool):
         return ToolResult(
             ok=True, content="Typed. Nothing is sent until you press.", effect="confirmed"
         )
+
+
+class BrowserSelect(BrowserTool):
+    """A dropdown's option, chosen by its words. Chromium draws a dropdown's list outside
+    the page, where neither she nor the live picture can reach it, so she picks from it
+    here: like typing, only in a task that asked to act, and nothing is sent until a
+    press the user taps."""
+
+    definition = ToolDefinition(
+        name=SELECT,
+        description=(
+            "Choose an option in a dropdown on the page (a select box, often showing "
+            "'Choose one'), by the option's words as the page shows them (only in a task "
+            "that asked to act). Never a card's details: those are the user's step."
+        ),
+        input_schema=_schema(
+            {"ref": _REF, "option": {"type": "string", "minLength": 1, "maxLength": 200}},
+            ("ref", "option"),
+        ),
+        risk=Risk.WRITE,
+        category=CATEGORY,
+        timeout_s=TIMEOUT_S,
+    )
+
+    async def execute(self, args: JSON, ctx: ToolContext) -> ToolResult:
+        t = self.task
+        url = str(t.page.url)
+        if t.mode != "act":
+            await t.log.event("refused", url=url, code="not_act")
+            return _no("this task only reads: nothing is chosen", "not_act")
+        ref = str(args.get("ref", ""))
+        if not valid_ref(ref):
+            return _no("that is not an element's reference")
+        locator = t.locate(ref)
+        try:
+            if await locator.count() != 1:
+                return _no("no such element on this page now; read the page again")
+            el = await classify(locator)
+        except Exception:
+            return _no("no such element on this page now; read the page again")
+        if el.in_payment_frame or el.autocomplete.startswith("cc-") or " cc-" in el.autocomplete:
+            t.broker.stopped = "payment"
+            await t.log.event("refused", url=url, code="payment")
+            return _no(_STOPPED["payment"], "payment")
+        if el.sensitive:
+            await t.log.event("refused", url=url, code="sensitive_field")
+            return await _step(t, ctx, "sign_in", url)
+        if el.tag != "select":
+            return _no("that element is not a dropdown; type into a field with browser_type")
+        wanted = str(args.get("option", "")).strip()
+        try:
+            options = await locator.evaluate(
+                "s => Array.from(s.options).map(o => [o.value, o.label || o.text, o.disabled])"
+            )
+        except Exception:
+            return _no("that dropdown could not be read; read the page again")
+        chosen = _option(options, wanted)
+        if chosen is None:
+            shown = ", ".join(f'"{label}"' for _, label, off in options if label and not off)
+            return _no(f"that dropdown has no option {wanted!r}; it offers {shown[:600]}")
+        await t.point_at(locator, "type")
+        try:
+            await locator.select_option(value=chosen, timeout=CLICK_TIMEOUT_MS)
+        except Exception:
+            return _no("that option could not be chosen")
+        t.broker.typed_on_page = True
+        await t.log.event("typed", url=url, code="chose")
+        return ToolResult(
+            ok=True, content="Chosen. Nothing is sent until you press.", effect="confirmed"
+        )
+
+
+def _option(options: Any, wanted: str) -> str | None:
+    """The value of the option the words name: exactly, then ignoring case and spaces,
+    then the one option that starts with them. A disabled option is never chosen."""
+    if not isinstance(options, list):
+        return None
+    live = [(str(v), " ".join(str(label).split())) for v, label, off in options if not off]
+    want = " ".join(wanted.split())
+    for value, label in live:
+        if label == want or value == want:
+            return value
+    low = want.casefold()
+    for value, label in live:
+        if label.casefold() == low:
+            return value
+    starts = [value for value, label in live if label.casefold().startswith(low)]
+    return starts[0] if len(starts) == 1 else None
 
 
 class BrowserPress(BrowserTool):
@@ -612,6 +702,7 @@ TOOLS: tuple[type[BrowserTool], ...] = (
     BrowserFollow,
     BrowserBack,
     BrowserType,
+    BrowserSelect,
     BrowserPress,
     BrowserYourStep,
     BrowserDone,

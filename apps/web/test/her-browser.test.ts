@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { type BrowserState, activeTask, createHerBrowser, keyInput, pagePoint, pillTarget, pillWords, reason, screenPoint, stateWords } from '../src/features/her-browser';
+import { type BrowserState, activeTask, createHerBrowser, dropdownOf, keyInput, pagePoint, pillTarget, pillWords, reason, screenPoint, stateWords } from '../src/features/her-browser';
 import type { Host } from '../src/panel';
 
 function host(): Host & { children: Node[]; isOpen: boolean } {
@@ -493,5 +493,29 @@ describe('her pointer over the picture', () => {
       expect(back.x).toBeCloseTo(640, 6);
       expect(back.y).toBeCloseTo(200, 6);
     }
+  });
+});
+
+describe('a dropdown clicked while in control', () => {
+  it('is read from what the core sent, and anything malformed is nothing', () => {
+    const d = dropdownOf({
+      type: 'browser.dropdown',
+      task: 'free',
+      x: 400,
+      y: 320,
+      width: 300,
+      page_width: 1280,
+      page_height: 800,
+      selected: 0,
+      options: [
+        { value: '', label: 'Choose one', disabled: false },
+        { value: 'automation', label: 'AI Implementation & Automation', disabled: false },
+        { value: 'gone', label: 'Not offered now', disabled: true },
+      ],
+    });
+    expect(d?.options.map((o) => o.label)).toEqual(['Choose one', 'AI Implementation & Automation', 'Not offered now']);
+    expect(d?.options[2]?.disabled).toBe(true);
+    expect(dropdownOf({ type: 'browser.dropdown', options: [] })).toBeNull();
+    expect(dropdownOf({ type: 'browser.frame', options: [{ value: 'a', label: 'A' }] })).toBeNull();
   });
 });
