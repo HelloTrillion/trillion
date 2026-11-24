@@ -80,7 +80,7 @@ export function connectObserve(opts: LiveOptions): Live {
         return;
       }
       const m = msg as { type?: unknown; code?: unknown };
-      if (m?.type === 'error' && m.code === 'unauthenticated') {
+      if (m?.type === 'error' && (m.code === 'unauthenticated' || m.code === 'signed_out')) {
         refuse();
         return;
       }

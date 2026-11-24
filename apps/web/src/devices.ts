@@ -77,7 +77,12 @@ export function seenLine(d: Pick<Device, 'first_seen_ms' | 'last_seen_ms'>, now:
 export interface DevicesSettings {
   open(): Promise<void>;
   summary(): string;
+  /** The core gave this page a new token: every other page is signed out. */
+  rotated(): void;
 }
+
+/** Sends one message to the session; false when it is not connected. */
+type Send = (body: Record<string, unknown>) => boolean;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -86,7 +91,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
   return node;
 }
 
-export function createDevicesSettings(host: Host, api: Api, now: () => Date = () => new Date()): DevicesSettings {
+export function createDevicesSettings(host: Host, api: Api, send: Send, now: () => Date = () => new Date()): DevicesSettings {
   let devices: readonly Device[] | null = null;
   const form = el('form', 'settings');
   form.addEventListener('submit', (ev) => ev.preventDefault());
@@ -107,7 +112,44 @@ export function createDevicesSettings(host: Host, api: Api, now: () => Date = ()
   close.type = 'button';
   close.addEventListener('click', () => host.close());
   actions.append(close);
-  form.append(title, intro, list, status, actions);
+
+  // Sign out every other page (SPN-11a): for a sign-in link that was shared or seen.
+  const out = el('section', 'devices-signout');
+  out.setAttribute('aria-labelledby', 'devices-signout-title');
+  const outTitle = el('h3', '', 'Sign out every other page');
+  outTitle.id = 'devices-signout-title';
+  const outNote = el(
+    'p',
+    'settings-note',
+    'Use this if your sign-in link was shared or seen. The link stops working, every other page and tab is signed out, and this one stays signed in. To open Trillion elsewhere again, use the app, or the new link in the terminal where it runs.',
+  );
+  const outRow = el('div', 'devices-signout-row');
+  const ask = el('button', 'quiet', 'Sign out every other page');
+  ask.type = 'button';
+  const yes = el('button', '', 'Yes, sign them out');
+  yes.type = 'button';
+  const no = el('button', 'quiet', 'Cancel');
+  no.type = 'button';
+  const asking = (on: boolean): void => {
+    ask.hidden = on;
+    yes.hidden = !on;
+    no.hidden = !on;
+    if (on) yes.focus();
+  };
+  asking(false);
+  ask.addEventListener('click', () => asking(true));
+  no.addEventListener('click', () => {
+    asking(false);
+    ask.focus();
+  });
+  yes.addEventListener('click', () => {
+    asking(false);
+    if (send({ type: 'session.rotate' })) status.textContent = 'Signing out every other page…';
+    else status.textContent = "Couldn't sign them out: this page isn't connected right now.";
+  });
+  outRow.append(ask, yes, no);
+  out.append(outTitle, outNote, outRow);
+  form.append(title, intro, list, out, status, actions);
   host.replaceChildren(form);
 
   async function draw(): Promise<void> {
@@ -163,6 +205,10 @@ export function createDevicesSettings(host: Host, api: Api, now: () => Date = ()
     async open() {
       host.showModal();
       await load();
+    },
+    rotated() {
+      status.textContent = 'Every other page is signed out. This one stays signed in.';
+      ask.focus();
     },
     summary() {
       if (!devices) return '';

@@ -12,6 +12,7 @@ export function statusText(view: View): string {
     if (view.noticeSpeaking) return 'Speaking';
     return view.capped && view.orb === 'idle' ? CAPPED_TEXT : STATE_TEXT[view.orb];
   }
+  if (view.link === 'signed_out') return 'Signed out';
   return view.link === 'connecting' ? 'Connecting' : 'Offline';
 }
 
