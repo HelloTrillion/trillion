@@ -4,7 +4,7 @@ Phase 0 definition of done, item 5), against a real model, not a scripted one.
 These skip unless `TRILLION_LIVE_MODEL` and `TRILLION_LIVE_URL` are set: CI's nightly
 `ollama` job sets them, and anyone can run them for free on their own computer:
 
-    TRILLION_LIVE_MODEL=qwen2.5:1.5b TRILLION_LIVE_URL=http://localhost:11434/v1 \\
+    TRILLION_LIVE_MODEL=gemma4:e4b TRILLION_LIVE_URL=http://localhost:11434/v1 \\
         uv run pytest tests/live -rs
 
 The server is the same one the API tests drive, with the real model in place of the
