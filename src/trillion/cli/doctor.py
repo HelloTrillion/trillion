@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from trillion import __version__, build, owner_only, paths
-from trillion.brain import config
+from trillion.brain import config, ollama
 from trillion.brain.config import ConfigError, ModelSettings
 from trillion.brain.types import ProviderError
 from trillion.secrets.fallback import PASSPHRASE_ENV, FileStore
@@ -548,6 +548,22 @@ async def check_model(
             detail=f"{said} answered, but does not list that model",
             fix="Open the app and choose a model it offers.",
         )
+    at = config.endpoint(kind, url) if kind != "anthropic" else None
+    if at is not None and ollama.on_own_network(at):
+        size = await ollama.served_context(at, provider.model)
+        if size is not None and ollama.too_small(size):
+            return Check(
+                name=name,
+                status="warn",
+                detail=f"{said} answers, but Ollama runs it with only {size:,} tokens of "
+                f"context; she needs about {ollama.NEEDED:,}, so her instructions get cut off",
+                fix=f"Restart Ollama with OLLAMA_CONTEXT_LENGTH={ollama.NEEDED}, or raise "
+                "Context length in the Ollama app's settings.",
+            )
+        if size is not None:
+            return Check(
+                name=name, status="ok", detail=f"{said} answers, {size:,} tokens of context"
+            )
     return Check(name=name, status="ok", detail=f"{said} answers")
 
 
