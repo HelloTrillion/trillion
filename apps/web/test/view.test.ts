@@ -33,6 +33,15 @@ describe('view', () => {
     expect((v.entries[1] as { text: string }).text).toContain('summarized the earlier messages');
   });
 
+  it("shows the app's line when a local model has too little room for her", () => {
+    const text = 'Ollama is running this model with only 4,096 tokens of context.';
+    const v = feed([{ type: 'reply.delta', text: 'Hi.' }, { type: 'notice', code: 'context', text }]);
+    expect(v.entries[1]).toEqual({ kind: 'notice', text });
+    // Without its line there is nothing to show, not a made-up one.
+    const bare = feed([{ type: 'notice', code: 'context' }]);
+    expect(bare.entries.some((e) => e.kind === 'notice' && e.text.includes('Ollama'))).toBe(false);
+  });
+
   it("puts the app's line for a failed leg in the banner", () => {
     for (const code of ['provider', 'listening', 'speech']) {
       const v = feed([{ type: 'error', code, kind: 'unreachable', sentence: 'The provider cannot be reached.' }]);

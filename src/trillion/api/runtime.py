@@ -494,6 +494,10 @@ class Runtime:
     # Told the new token when every other page is signed out (api/signout.py): the CLI
     # prints a fresh link. Never logged.
     token_hooks: list[Callable[[str], None]] = field(default_factory=list)
+    # Each local model's context as Ollama runs it, read once a launch, and which of
+    # them she was told is too small (the Ollama context spec, `brain/ollama.py`).
+    contexts: dict[tuple[str, str], int] = field(default_factory=dict)
+    contexts_told: set[tuple[str, str]] = field(default_factory=set)
     clock: Callable[[], int] = _now_ms
     # Live sessions, told when the model changes so every open tab follows.
     sessions: set[Any] = field(default_factory=set)

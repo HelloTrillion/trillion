@@ -25,17 +25,17 @@ import pytest
 
 import tests.api.test_server as server
 from tests.api.test_server import App, Chat, reply
-from trillion.brain import config, sse
+from trillion.brain import config
 from trillion.brain.config import ModelSettings
 from trillion.secrets.store import MemoryStore
 
 MODEL = os.environ.get("TRILLION_LIVE_MODEL", "").strip()
 URL = os.environ.get("TRILLION_LIVE_URL", "").strip()
 # A turn on a computer with no GPU, as CI's runner is: her first request is about
-# 13,300 tokens, which four CPUs take minutes to read before the first word, longer
-# than the app waits (120 s). So the tests wait longer, here only.
+# 13,300 tokens, which four CPUs take minutes to read before the first word. The app
+# itself waits up to 10 minutes for a model of the user's own (`sse.LOCAL_TIMEOUT`),
+# and that is what these test: this wait, the page's, is only longer.
 TURN_S = 900.0
-FIRST_BYTE_S = 600.0
 TRIES = 2
 
 pytestmark = pytest.mark.skipif(
@@ -50,11 +50,6 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[App]:
     monkeypatch.setenv("TRILLION_HOME", str(tmp_path / "home"))
     # A real model on a CPU takes far longer than a scripted one.
     monkeypatch.setattr(server, "RECEIVE_TIMEOUT_S", TURN_S)
-    monkeypatch.setattr(
-        sse,
-        "TIMEOUT",
-        sse.TIMEOUT.__class__(connect=10.0, read=FIRST_BYTE_S, write=30.0, pool=10.0),
-    )
     provider = config.build(ModelSettings(kind="custom", model=MODEL, base_url=URL), MemoryStore())
     built = App(tmp_path, provider)
     try:

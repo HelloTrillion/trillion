@@ -915,6 +915,10 @@ function step(view: View, msg: ServerMsg): View {
         if (ask && view.entries.some((e) => e.kind === 'notice' && e.ask?.id === ask.id)) return view;
         return { ...view, entries: [...view.entries, { kind: 'notice', text: msg['text'], ...(ask ? { ask } : {}) }] };
       }
+      // A local Ollama model has too little room for her: the app's line, with the fix.
+      if (msg['code'] === 'context' && typeof msg['text'] === 'string') {
+        return { ...view, entries: [...view.entries, { kind: 'notice', text: msg['text'] }] };
+      }
       // A long conversation was summarized for her. Nothing on screen goes away.
       const text =
         msg['code'] === 'compacted'

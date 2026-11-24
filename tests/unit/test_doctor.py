@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from trillion import paths
-from trillion.brain import config
+from trillion.brain import config, ollama
 from trillion.brain.types import ModelChoice, ProviderError
 from trillion.cli import doctor
 from trillion.cli.doctor import Check, Options
@@ -88,6 +88,12 @@ def offers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None, str |
         return [ModelChoice(id="model-a", label="Model A", max_output=8000)]
 
     monkeypatch.setattr(config, "list_models", fake)
+
+    async def no_ollama(base_url: str, model: str, **_: Any) -> int | None:
+        return None
+
+    # Never the real Ollama on whatever machine runs these.
+    monkeypatch.setattr(ollama, "served_context", no_ollama)
     return asked
 
 
@@ -273,6 +279,38 @@ def test_a_model_that_answers_is_ok_and_one_that_does_not_says_why(
     chosen(home, model={"kind": "local", "model": "gone", "base_url": None})
     missing = examine()["Model"]
     assert missing.status == "warn" and "does not list that model" in missing.detail
+
+
+@pytest.mark.parametrize(("size", "status"), [(4096, "warn"), (131_072, "ok")])
+def test_a_local_model_with_too_little_context_is_a_warning_with_the_fix(
+    home: Path, offers: list, monkeypatch: pytest.MonkeyPatch, size: int, status: str
+) -> None:
+    asked: list[tuple[str, str]] = []
+
+    async def served(base_url: str, model: str, **_: Any) -> int | None:
+        asked.append((base_url, model))
+        return size
+
+    monkeypatch.setattr(ollama, "served_context", served)
+    chosen(home, model={"kind": "local", "model": "model-a", "base_url": None})
+    check = examine()["Model"]
+    assert asked == [(config.LOCAL_URL, "model-a")]
+    assert check.status == status and f"{size:,} tokens of context" in check.detail
+    if status == "warn":
+        assert "OLLAMA_CONTEXT_LENGTH=32768" in check.fix
+
+
+def test_a_hosted_model_is_never_asked_about_ollama(
+    home: Path, offers: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def served(base_url: str, model: str, **_: Any) -> int | None:
+        raise AssertionError("asked a hosted service about Ollama")
+
+    monkeypatch.setattr(ollama, "served_context", served)
+    chosen(home, model={"kind": "custom", "model": "model-a", "base_url": "https://example.com/v1"})
+    secrets = MemoryStore()
+    secrets.set(config.secret_name("custom"), "k")
+    assert examine(secrets)["Model"].status == "ok"
 
 
 def test_a_key_that_is_refused_is_a_failure_and_is_never_printed(home: Path, offers: list) -> None:

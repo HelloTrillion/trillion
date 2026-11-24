@@ -128,7 +128,7 @@ To run the tests and the checks CI runs, see [`CONTRIBUTING.md`](https://github.
 
 **Free, with no keys.** Each part has a free choice that runs on your own computer. Nothing you say leaves it.
 
-1. **A model.** Install [Ollama](https://ollama.com) and fetch a model, for example `ollama pull gemma4:e4b` (the one the project's own evals use). Leave Ollama running. In the app, choose **A model on this computer**. A small local model is slower and less sharp than a paid one, but it works.
+1. **A model.** Install [Ollama](https://ollama.com) and fetch a model, for example `ollama pull gemma4:e4b` (the one the project's own evals use). Leave Ollama running. Without a large GPU, Ollama gives a model only 4,096 tokens of context, which cuts off her instructions: start it with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`, or raise **Context length** in the Ollama app's settings (Trillion and `trillion doctor` tell you if it's too small). In the app, choose **A model on this computer**. A small local model is slower and less sharp than a paid one, but it works.
 2. **A voice.** Settings → **Voice** → **This computer's voice**. It works at once and sounds robotic.
 3. **Hearing.** Settings → **Hearing** → **On this computer (Whisper)**. It needs one extra install (see "Talking to her" below) and a one-time download from that panel.
 
