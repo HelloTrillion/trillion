@@ -158,6 +158,28 @@ export function pagePoint(
   return { x: Math.max(0, Math.min(page.width, x)), y: Math.max(0, Math.min(page.height, y)) };
 }
 
+/** Where a point of the page shows inside the picture's box (the inverse of pagePoint). */
+export function screenPoint(
+  x: number,
+  y: number,
+  box: { width: number; height: number },
+  page: { width: number; height: number },
+): { left: number; top: number } {
+  const scale = Math.min(box.width / Math.max(page.width, 1), box.height / Math.max(page.height, 1)) || 1;
+  const left = (box.width - page.width * scale) / 2 + x * scale;
+  const top = (box.height - page.height * scale) / 2 + y * scale;
+  return { left, top };
+}
+
+/** Her pointer, as the core sends it: where she is about to act. */
+export interface Pointer {
+  readonly x: number;
+  readonly y: number;
+  readonly action: string;
+  readonly width: number;
+  readonly height: number;
+}
+
 /** What a key press sends to the page while the user has control, or null for nothing. */
 export function keyInput(ev: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): Record<string, unknown> | null {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return null;
@@ -173,7 +195,10 @@ interface Watch {
   close(): void;
 }
 
-function connect(onFrame: (frame: { data: string; width: number; height: number; url: string | null; in_control: boolean }) => void): Watch {
+function connect(
+  onFrame: (frame: { data: string; width: number; height: number; url: string | null; in_control: boolean }) => void,
+  onPointer: (pointer: Pointer) => void = () => undefined,
+): Watch {
   let ws: WebSocket | null = null;
   let wanted: string | null = null;
   let ready = false;
@@ -200,6 +225,14 @@ function connect(onFrame: (frame: { data: string; width: number; height: number;
           height: typeof msg.height === 'number' ? msg.height : 800,
           url: typeof msg.url === 'string' ? msg.url : null,
           in_control: msg.in_control === true,
+        });
+      } else if (msg.type === 'browser.pointer' && typeof msg.x === 'number' && typeof msg.y === 'number') {
+        onPointer({
+          x: msg.x,
+          y: msg.y,
+          action: typeof msg.action === 'string' ? msg.action : 'click',
+          width: typeof msg.width === 'number' ? msg.width : 1280,
+          height: typeof msg.height === 'number' ? msg.height : 800,
         });
       }
     });
@@ -318,7 +351,11 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
   picture.tabIndex = 0;
   picture.hidden = true;
   const waiting = el('p', 'her-browser-waiting', 'Waiting for the first picture…');
-  frame.append(picture, waiting);
+  // Her pointer: drawn here from where the core says she acts, never put in the page.
+  const pointer = el('div', 'her-browser-pointer');
+  pointer.setAttribute('aria-hidden', 'true');
+  pointer.hidden = true;
+  frame.append(picture, waiting, pointer);
   const foot = el('div', 'her-browser-foot');
   const ask = el('div', 'her-browser-ask');
   const status = el('p', 'her-browser-status');
@@ -630,7 +667,30 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       waiting.hidden = shown;
     }
     if (state?.settings.live ?? true) thumb.src = src;
+    placePointer();
     drawPill();
+  };
+
+  let lastPointer: Pointer | null = null;
+  const placePointer = (): void => {
+    const t = target();
+    if (!lastPointer || picture.hidden || !t || t.in_control || viewing === 'free') {
+      pointer.hidden = true;
+      return;
+    }
+    const box = picture.getBoundingClientRect();
+    const at = screenPoint(lastPointer.x, lastPointer.y, box, lastPointer);
+    pointer.style.left = `${at.left}px`;
+    pointer.style.top = `${at.top}px`;
+    pointer.hidden = false;
+  };
+  const onPointer = (p: Pointer): void => {
+    lastPointer = p;
+    placePointer();
+    pointer.classList.remove('clicking', 'typing');
+    // Restarted each time: the ripple plays once per action.
+    void pointer.offsetWidth;
+    pointer.classList.add(p.action === 'type' ? 'typing' : 'clicking');
   };
 
   const canInput = (): boolean => {
@@ -651,8 +711,14 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       watch.input(viewing, body);
     }
   });
+  // A scroll reaches the page while she works too: the user can look around what she
+  // reads. A click or a key still needs Take control.
+  const canScroll = (): boolean => {
+    const t = target();
+    return Boolean(watch && viewing && t && t.state !== 'done');
+  };
   picture.addEventListener('wheel', (ev) => {
-    if (!canInput() || !watch || !viewing) return;
+    if (!canScroll() || !watch || !viewing) return;
     ev.preventDefault();
     watch.input(viewing, { kind: 'wheel', dy: ev.deltaY });
   });
@@ -666,6 +732,17 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
 
   const tick = async (): Promise<void> => {
     await load();
+    // Opened before anything ran (she was asked to show it as she starts): the window
+    // takes up the task, or the page she leaves open, as soon as there is one.
+    const next = pillTarget(state);
+    if (isOpen() && !viewing && next) {
+      viewing = next.id;
+      framed = lastFrame.has(next.id);
+      if (!watch) watch = connect(onFrame, onPointer);
+      watching = next.id;
+      watch.watch(next.id);
+      await drawView();
+    }
     // The task being watched has ended and left its page open: the window follows it.
     if (viewing && viewing !== 'free' && state?.free && !state.tasks.some((t) => t.id === viewing && t.state !== 'done')) {
       viewing = 'free';
@@ -677,7 +754,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       await drawView();
     }
     const target = pillTarget(state);
-    if (target && !watch) watch = connect(onFrame);
+    if (target && !watch) watch = connect(onFrame, onPointer);
     if (watch) {
       const want = viewing ?? (state?.settings.live ? target?.id : null) ?? null;
       if (want && want !== watching) {
@@ -793,11 +870,17 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
 
   const view = async (task?: string): Promise<void> => {
     await load();
+    const was = viewing;
     viewing = task ?? pillTarget(state)?.id ?? null;
+    if (viewing !== was) {
+      // Another page: its pointer comes with its next action.
+      lastPointer = null;
+      pointer.hidden = true;
+    }
     const kept = viewing ? lastFrame.get(viewing) : undefined;
     framed = kept !== undefined;
     if (kept) picture.src = kept;
-    if (!watch) watch = connect(onFrame);
+    if (!watch) watch = connect(onFrame, onPointer);
     if (viewing) {
       watching = viewing;
       watch.watch(viewing);
@@ -856,6 +939,8 @@ export const feature: Feature = {
       // A browsing task changing is told as a helpers change. An ask answered in her
       // conversation shows here at once, not at the next poll.
       if (msg.type === 'helpers.changed' || msg.type === 'browser.ask.resolved') void browser.refresh();
+      // She was asked to show her browser big (browser_show): the window opens.
+      if (msg.type === 'browser.show') void browser.view();
     });
     // View, on a step's line in her conversation: the window, at that task.
     addEventListener(OPEN_HER_BROWSER, (ev) => {

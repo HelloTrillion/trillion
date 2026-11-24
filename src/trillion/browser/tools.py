@@ -323,6 +323,7 @@ class BrowserFollow(BrowserTool):
                 + ("; use browser_press" if t.mode == "act" else ": this task only reads"),
                 "submits",
             )
+        await t.point_at(locator, "click")
         async with t.broker.following(el.href) as window:
             try:
                 await locator.click(timeout=CLICK_TIMEOUT_MS)
@@ -413,6 +414,7 @@ class BrowserType(BrowserTool):
             return await _step(t, ctx, "sign_in", url)
         if not el.editable:
             return _no("that element is not a field you can type in")
+        await t.point_at(locator, "type")
         try:
             await locator.fill(str(args.get("text", "")), timeout=CLICK_TIMEOUT_MS)
         except Exception:
@@ -491,6 +493,7 @@ class BrowserPress(BrowserTool):
                 "that form holds a password, a code or card details: sending it is the user's "
                 "step, and they were asked. Stop here and wait."
             )
+        await t.point_at(locator, "click")
         await t.broker.drop()
         try:
             async with t.broker.pressing():

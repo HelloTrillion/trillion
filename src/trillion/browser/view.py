@@ -46,6 +46,29 @@ class Screencast:
     async def start(self) -> None:
         await self._attach()
         self._follow = asyncio.get_running_loop().create_task(self._watch_tabs())
+        watch = getattr(self._target, "watch_pointer", None)
+        if watch is not None:
+            watch(self._pointer)
+            if getattr(self._target, "pointer", None):
+                await self._pointer(self._target.pointer)
+
+    async def _pointer(self, at: dict[str, Any]) -> None:
+        """Where she is about to act, drawn by the app over the picture: never put in
+        the page, so a page can neither fake it nor hide it."""
+        if self._stopped:
+            return
+        size = (self._page.viewport_size if self._page is not None else None) or {}
+        with contextlib.suppress(Exception):
+            await self._send(
+                {
+                    "type": "browser.pointer",
+                    "x": at.get("x"),
+                    "y": at.get("y"),
+                    "action": at.get("action"),
+                    "width": size.get("width"),
+                    "height": size.get("height"),
+                }
+            )
 
     async def _attach(self) -> None:
         await self._detach()
@@ -112,6 +135,9 @@ class Screencast:
 
     async def stop(self) -> None:
         self._stopped = True
+        unwatch = getattr(self._target, "unwatch_pointer", None)
+        if unwatch is not None:
+            unwatch(self._pointer)
         if self._follow is not None:
             self._follow.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -120,9 +146,12 @@ class Screencast:
 
 
 async def give_input(target: Any, message: dict[str, Any]) -> bool:
-    """The user's mouse or keyboard, to the page, only while they have control. True
-    when it reached the page."""
-    if not getattr(target, "in_control", False) or getattr(target, "closed", True):
+    """The user's mouse or keyboard, to the page, only while they have control; their
+    scroll, also while she works, so they can look around what she is reading (a click
+    or a key still needs control). True when it reached the page."""
+    if getattr(target, "closed", True):
+        return False
+    if not getattr(target, "in_control", False) and message.get("kind") != "wheel":
         return False
     page = target.page
     kind = message.get("kind")

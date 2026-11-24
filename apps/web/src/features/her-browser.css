@@ -340,3 +340,56 @@
   color: var(--color-bg-0);
   font-weight: 600;
 }
+
+/* Her pointer over the live picture: where she is about to click or type. Drawn by
+   the app from what the core says, never by the page. */
+.her-browser-pointer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  margin: -3px 0 0 -3px;
+  pointer-events: none;
+  background: var(--color-accent);
+  clip-path: polygon(0 0, 0 78%, 24% 60%, 40% 96%, 54% 90%, 38% 56%, 70% 56%);
+  filter: drop-shadow(0 1px 2px var(--color-bg-0));
+}
+.her-browser-pointer[hidden] {
+  display: none;
+}
+.her-browser-pointer::after {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: -14px;
+  width: 30px;
+  height: 30px;
+  border: 2px solid var(--color-accent);
+  border-radius: 50%;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .her-browser-pointer {
+    transition:
+      left 0.35s ease-out,
+      top 0.35s ease-out;
+  }
+  .her-browser-pointer.clicking::after {
+    animation: her-browser-click 0.6s ease-out 0.35s;
+  }
+  .her-browser-pointer.typing::after {
+    animation: her-browser-click 0.6s ease-out 0.35s;
+    border-color: var(--color-amber);
+  }
+}
+@keyframes her-browser-click {
+  from {
+    opacity: 0.9;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}

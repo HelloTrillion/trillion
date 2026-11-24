@@ -133,7 +133,7 @@ All free and local, and run in CI. A headless Chromium runs against fixture page
   - password, one-time-code and card fields are never typed into;
   - TLS errors stop the task.
   - A task using a saved sign-in can't open another site, and a task that wasn't allowed one has no cookies.
-  - The view sends nothing to the model, and the user's input reaches the page only while they're in control.
+  - The view sends nothing to the model, and the user's clicks and keys reach the page only while they're in control (their scroll also while she works).
 - **The quarantine:** a browsing helper has no tool but the browser ones (a structure test), and its result reaches her wrapped as untrusted.
 - **The log:** it holds no page text and no field values.
 - **Optional, outside CI:** an Ollama eval of ten research tasks on fixture sites, run with `trillion eval browser`, which reports success and steps.
@@ -193,3 +193,13 @@ Built on `browser/phase-1` in four stages. Every decision above holds; where the
   - **No phone-home.** Nothing is sent to Brave unless the user chose this engine and saved a key.
 
 What is left: the Helpers panel row for a browsing task, saving a quarantined download into a shared folder on a card (downloads are quarantined and listed; nothing moves them out yet), and the optional `trillion eval browser` run.
+
+### Her pointer, scrolling while she works, and the big view (2026-11-24)
+
+Asked for after the owner's demo: more of her moving around the page in view, and the big window on request.
+
+- **Her pointer.** Before she clicks (`browser_follow`, `browser_press`) or types (`browser_type`), the element is scrolled into view, and its centre is sent to whoever watches as `browser.pointer` (the page's own pixels). The window draws an arrow there, eased from the last spot, with a ripple as she acts, and she pauses 0.4 s when watched. It is drawn by the app over the picture, never put in the page, so a page can neither fake it nor hide it. The model never sees it.
+- **Scrolling while she works.** The watcher's scroll reaches the page while she works, so they can look around what she reads. A click or a key still needs Take control. Her clicks find their element by reference, wherever the page is scrolled. A scroll can load more of a page, which she might then read.
+- **`browser_show`.** A tool of hers that opens her browser's window big on the user's screen when they ask to see it. It sends one message to her conversation's page and does nothing else. A window opened before anything runs takes up the next task, or the page one leaves open, as soon as there is one.
+- **The whole request.** `browse`'s description says to pass everything the user asked, every click included, never only the address: asked to "open light bulb moment dot com and click the Start a conversation button", a small model passed only the address, so nothing was clicked.
+

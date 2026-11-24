@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { type BrowserState, activeTask, createHerBrowser, keyInput, pagePoint, pillTarget, pillWords, reason, stateWords } from '../src/features/her-browser';
+import { type BrowserState, activeTask, createHerBrowser, keyInput, pagePoint, pillTarget, pillWords, reason, screenPoint, stateWords } from '../src/features/her-browser';
 import type { Host } from '../src/panel';
 
 function host(): Host & { children: Node[]; isOpen: boolean } {
@@ -477,5 +477,21 @@ describe('a chip in the window', () => {
     await b.view('abcdef0123456789');
     const labels = [...b.overlay.querySelectorAll('.her-browser-ask button')].map((x) => x.textContent);
     expect(labels).toEqual(['Use it', 'Not now']);
+  });
+});
+
+describe('her pointer over the picture', () => {
+  it('lands where the same point of the page shows: the inverse of a click', () => {
+    const page = { width: 1280, height: 800 };
+    for (const box of [
+      { left: 0, top: 0, width: 1280, height: 800 },
+      { left: 40, top: 90, width: 900, height: 700 }, // taller than the page: bands above and below
+      { left: 10, top: 20, width: 1600, height: 600 }, // wider: bands at the sides
+    ]) {
+      const at = screenPoint(640, 200, box, page);
+      const back = pagePoint(box.left + at.left, box.top + at.top, box, page);
+      expect(back.x).toBeCloseTo(640, 6);
+      expect(back.y).toBeCloseTo(200, 6);
+    }
   });
 });
