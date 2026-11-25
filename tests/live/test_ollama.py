@@ -89,6 +89,13 @@ def tries(check: Callable[[], bool], what: str) -> None:
     pytest.fail(f"{what}: not in {TRIES} tries with {MODEL}; last turn {LAST[-1] if LAST else '-'}")
 
 
+def never_stopped_by_the_clock(app: App) -> None:
+    # A slow model is not a stuck one: with no GPU her first tool call comes minutes
+    # into the turn, and the guard must still let it run (`config.LOCAL_TURN_S`).
+    stopped = app.rows("SELECT tool FROM tool_audit WHERE outcome = 'loop_guard'")
+    assert not stopped, f"the loop guard refused {[r[0] for r in stopped]}; {LAST[-1:]}"
+
+
 def test_a_typed_turn_gets_a_reply_and_is_stored(app: App) -> None:
     with app.connect() as chat:
         said = reply(turn(chat, "Hi! In one short sentence, how are you?"))
@@ -104,6 +111,7 @@ def test_she_remembers_and_recalls_it_in_a_new_conversation(app: App) -> None:
         return any("priya" in m.text.lower() for m in app.rt.memory.current())
 
     tries(remembered, "a memory_write with the name")
+    never_stopped_by_the_clock(app)
 
     def recalled() -> bool:
         # No resume: a new conversation, so only memory can carry the name.
@@ -130,3 +138,4 @@ def test_a_file_is_never_written_without_a_tap(app: App) -> None:
         else:
             logger.warning("live: %s raised no card for a file write: %s", MODEL, did(msgs))
     assert not note.exists()
+    never_stopped_by_the_clock(app)
