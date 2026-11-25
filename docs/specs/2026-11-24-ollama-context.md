@@ -33,3 +33,13 @@ Ollama picks each model's context from the memory it can use. Without a large GP
 - `tests/unit/test_doctor.py`: the warning and its fix, the context shown when it's enough, and a hosted model never asked. The shared fixture keeps the doctor tests off whatever Ollama the machine runs.
 - `apps/web/test/view.test.ts`: the notice shows the app's line, and nothing without one.
 - **Live**, against this computer's Ollama: `served_context` read 131,072 for a loaded `gemma4:e4b`, and nothing for a model that wasn't loaded or a server that wasn't there.
+
+## A turn's clock (2026-11-25)
+
+The nightly real-model job found that, on a computer with no GPU, every tool she asked
+for was refused: "remember this" saved nothing and "create a file" raised no card. The
+loop guard stops a turn after 120 seconds (SPN-7), and reading her first request took
+about four minutes before her first tool call. A model on the user's own computer or
+network (`config.on_own_network`) now gets `config.LOCAL_TURN_S`, 900 seconds, as long
+as the page waits for a turn; the rounds and cost limits are unchanged, and a hosted
+model keeps 120 seconds. The live tests fail if the guard refuses anything.

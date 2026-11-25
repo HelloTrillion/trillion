@@ -31,6 +31,7 @@ from trillion.api.runtime import OUT_OF_TURN, OWNER, Runtime
 from trillion.api.speech import SendBytes, Speaker, describe
 from trillion.api.trace import Trace, Via, ahead_ms
 from trillion.brain import compact, ollama
+from trillion.brain import config as brain_config
 from trillion.brain import title as naming
 from trillion.brain.loop import (
     INTERRUPTED,
@@ -3257,6 +3258,7 @@ class Session:
                 first=using.replay() if using is not None else None,
                 heard=heard if listened else None,
                 quick=quick,
+                limits=brain_config.turn_limits(provider),
             )
             written = True
             # The model failed: the app's one line for it, in the banner and in the

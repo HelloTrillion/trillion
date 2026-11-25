@@ -27,6 +27,7 @@ from trillion.brain.providers.anthropic import DEFAULT_MODEL, AnthropicProvider
 from trillion.brain.providers.openai_compat import OpenAICompatProvider
 from trillion.brain.types import ModelChoice, ModelProvider
 from trillion.secrets.store import SecretStore
+from trillion.spine.loop_guard import Limits
 
 ANTHROPIC_KEY = "TRILLION_ANTHROPIC_API_KEY"
 OPENAI_BASE_URL = "TRILLION_OPENAI_BASE_URL"
@@ -120,6 +121,21 @@ def wait_for(url: str) -> httpx.Timeout:
     """How long she waits for a model's first word: minutes for one of the user's own,
     which may have no GPU, and the usual for a hosted service."""
     return sse.LOCAL_TIMEOUT if on_own_network(url) else sse.TIMEOUT
+
+
+# How long a turn may run with a model of the user's own (SPN-7). With no GPU, reading
+# her first request takes minutes before her first word or tool, and a hosted model's
+# two minutes refused every tool she asked for. As long as the page waits for a turn.
+LOCAL_TURN_S = 900.0
+
+
+def turn_limits(provider: object) -> Limits:
+    """The loop guard's limits for a turn with this model: a longer clock for one on
+    the user's own computer or network, the usual for anything else."""
+    url = getattr(provider, "base_url", None)
+    if isinstance(url, str) and on_own_network(url):
+        return Limits(max_seconds=LOCAL_TURN_S)
+    return Limits()
 
 
 def keyless(url: str) -> bool:
