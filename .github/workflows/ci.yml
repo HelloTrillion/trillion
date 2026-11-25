@@ -141,6 +141,41 @@ jobs:
       - name: tests/browser in Chromium
         run: uv run pytest tests/browser -rs
 
+  ollama:
+    # A full typed conversation, memory and all, against a real local model (the
+    # Phase 0 definition of done, item 5). Never on a pull request: it downloads a
+    # model and a CPU reply is slow. Nightly and on demand; no keys or secrets, so
+    # anyone can run the same tests for free (tests/live/test_ollama.py).
+    name: Real model (Ollama, ubuntu-latest)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+      TRILLION_LIVE_MODEL: gemma4:e4b
+      TRILLION_LIVE_URL: http://localhost:11434/v1
+    services:
+      ollama:
+        image: ollama/ollama:0.40.17@sha256:ccc42bcd3d5fcf7ab0d532b300382154e1a4da56fc666bdb313b78ebdd912754
+        # With no GPU, Ollama's default context is 4,096 tokens, and her first request
+        # is about 13,300: it is cut (a small model then never sees its tools) or refused.
+        env:
+          OLLAMA_CONTEXT_LENGTH: "32768"
+        ports:
+          - 11434:11434
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Ollama answers, and has the model
+        run: |
+          for i in $(seq 1 30); do curl -sf http://localhost:11434/api/version && break; sleep 2; done
+          curl -sf http://localhost:11434/api/pull -d "{\"model\": \"$TRILLION_LIVE_MODEL\", \"stream\": false}"
+      - name: tests/live against the real model
+        run: uv run pytest tests/live -rs -o log_cli=true --log-cli-level=WARNING
+
   structure:
     name: Structural rules
     runs-on: ubuntu-latest

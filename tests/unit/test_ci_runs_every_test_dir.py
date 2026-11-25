@@ -34,3 +34,15 @@ def test_macos_still_runs_on_main_and_nightly() -> None:
     for job in ("python", "installer"):
         body = workflow.split(f"\n  {job}:\n", 1)[1]
         assert '"ubuntu-latest", "macos-latest", "windows-latest"' in body.split("steps:", 1)[0]
+
+
+def test_the_real_model_job_is_nightly_and_never_on_a_pull_request() -> None:
+    """It downloads a model and needs no secret: off the pull request path, and the
+    tests it runs skip anywhere the model isn't set."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = workflow.split("\n  ollama:\n", 1)[1].split("\n  structure:\n", 1)[0]
+    assert "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in job
+    assert "secrets." not in job
+    assert "uv run pytest tests/live" in job
+    # The image is pinned by digest, as every action here is pinned by commit.
+    assert re.search(r"image: ollama/ollama:[\d.]+@sha256:[0-9a-f]{64}", job)
