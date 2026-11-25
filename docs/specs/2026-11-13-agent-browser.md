@@ -203,3 +203,10 @@ Asked for after the owner's demo: more of her moving around the page in view, an
 - **`browser_show`.** A tool of hers that opens her browser's window big on the user's screen when they ask to see it. It sends one message to her conversation's page and does nothing else. A window opened before anything runs takes up the next task, or the page one leaves open, as soon as there is one.
 - **The whole request.** `browse`'s description says to pass everything the user asked, every click included, never only the address: asked to "open light bulb moment dot com and click the Start a conversation button", a small model passed only the address, so nothing was clicked.
 
+### Dropdowns (2026-11-24)
+
+Chromium draws a native dropdown's list (`<select>`) outside the page. In her headless browser it never shows in the live picture, and no click reaches it, so neither she nor the user in control could pick an option (the owner's demo, on lightbulbmoment.com's inquiry form).
+
+- **She picks by the option's words** with `browser_select(ref, option)`: exactly, then ignoring case and spacing, then the one option that starts with them. A disabled option is never chosen, and a miss is answered with what the dropdown offers. Like typing, it is act mode only, never a card's details (`cc-*` autocomplete or a payment frame), and nothing is sent until a press the user taps. Anything sent outside a press is refused by the broker as before, so a dropdown that submits its form on change sends nothing. Typing into a dropdown points her to it. The log has `typed` with the detail `chose`, never which option.
+- **The user in control gets the app's own list.** After their click, if a dropdown has the focus, its options are sent to the window (`browser.dropdown`), which shows them under it, with keyboard support. The choice comes back as a `choose` input, set on the focused dropdown with the page told it changed (`input` and `change`), as picking from Chromium's list would. Only while they have control. A disabled option, or one that isn't there, is refused.
+

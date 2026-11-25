@@ -180,6 +180,39 @@ export interface Pointer {
   readonly height: number;
 }
 
+/** A dropdown the user clicked while in control: Chromium draws its list outside the
+ * page, so the app shows its own. Where, in the page's pixels, and what it offers. */
+export interface Dropdown {
+  readonly task: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly page_width: number;
+  readonly page_height: number;
+  readonly selected: number;
+  readonly options: readonly { value: string; label: string; disabled: boolean }[];
+}
+
+/** A dropdown's options as the core sent them, or null for anything malformed. */
+export function dropdownOf(msg: Record<string, unknown>): Dropdown | null {
+  if (msg.type !== 'browser.dropdown' || !Array.isArray(msg.options)) return null;
+  const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  const options = msg.options
+    .filter((o): o is Record<string, unknown> => typeof o === 'object' && o !== null)
+    .map((o) => ({ value: String(o.value ?? ''), label: String(o.label ?? ''), disabled: o.disabled === true }));
+  if (!options.length) return null;
+  return {
+    task: String(msg.task ?? ''),
+    x: num(msg.x, 0),
+    y: num(msg.y, 0),
+    width: num(msg.width, 200),
+    page_width: num(msg.page_width, 1280),
+    page_height: num(msg.page_height, 800),
+    selected: num(msg.selected, -1),
+    options,
+  };
+}
+
 /** What a key press sends to the page while the user has control, or null for nothing. */
 export function keyInput(ev: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): Record<string, unknown> | null {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return null;
@@ -198,6 +231,7 @@ interface Watch {
 function connect(
   onFrame: (frame: { data: string; width: number; height: number; url: string | null; in_control: boolean }) => void,
   onPointer: (pointer: Pointer) => void = () => undefined,
+  onDropdown: (dropdown: Dropdown) => void = () => undefined,
 ): Watch {
   let ws: WebSocket | null = null;
   let wanted: string | null = null;
@@ -226,6 +260,9 @@ function connect(
           url: typeof msg.url === 'string' ? msg.url : null,
           in_control: msg.in_control === true,
         });
+      } else if (msg.type === 'browser.dropdown') {
+        const d = dropdownOf(msg);
+        if (d) onDropdown(d);
       } else if (msg.type === 'browser.pointer' && typeof msg.x === 'number' && typeof msg.y === 'number') {
         onPointer({
           x: msg.x,
@@ -355,7 +392,11 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
   const pointer = el('div', 'her-browser-pointer');
   pointer.setAttribute('aria-hidden', 'true');
   pointer.hidden = true;
-  frame.append(picture, waiting, pointer);
+  // A dropdown's list, the app's own (Chromium's is drawn outside the page).
+  const menu = el('div', 'her-browser-dropdown');
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+  frame.append(picture, waiting, pointer, menu);
   const foot = el('div', 'her-browser-foot');
   const ask = el('div', 'her-browser-ask');
   const status = el('p', 'her-browser-status');
@@ -693,11 +734,56 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     pointer.classList.add(p.action === 'type' ? 'typing' : 'clicking');
   };
 
+  const closeMenu = (): void => {
+    menu.hidden = true;
+    menu.replaceChildren();
+  };
+  const onDropdown = (d: Dropdown): void => {
+    if (!viewing || d.task !== viewing) return;
+    const box = picture.getBoundingClientRect();
+    const page = { width: d.page_width, height: d.page_height };
+    const at = screenPoint(d.x, d.y, box, page);
+    const scale = Math.min(box.width / Math.max(page.width, 1), box.height / Math.max(page.height, 1)) || 1;
+    menu.style.left = `${at.left}px`;
+    menu.style.top = `${at.top + 2}px`;
+    menu.style.minWidth = `${Math.max(160, d.width * scale)}px`;
+    menu.setAttribute('aria-label', 'Choose an option');
+    menu.replaceChildren(
+      ...d.options.map((o, i) => {
+        const b = button(o.label || '(blank)', i === d.selected ? 'selected' : '', () => {
+          if (watch && viewing) watch.input(viewing, { kind: 'choose', value: o.value });
+          closeMenu();
+          picture.focus();
+        });
+        b.setAttribute('role', 'option');
+        b.setAttribute('aria-selected', String(i === d.selected));
+        b.disabled = o.disabled;
+        return b;
+      }),
+    );
+    menu.hidden = false;
+    (menu.querySelector<HTMLButtonElement>('button.selected:not(:disabled)') ?? menu.querySelector<HTMLButtonElement>('button:not(:disabled)'))?.focus();
+  };
+  menu.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeMenu();
+      picture.focus();
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+      const i = items.indexOf(document.activeElement as HTMLButtonElement);
+      items[(i + (ev.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+    }
+  });
+
   const canInput = (): boolean => {
     const t = target();
     return Boolean(watch && viewing && (t?.in_control || viewing === 'free'));
   };
   picture.addEventListener('click', (ev) => {
+    closeMenu();
     if (!canInput() || !watch || !viewing) return;
     watch.input(viewing, { kind: 'click', ...pagePoint(ev.clientX, ev.clientY, picture.getBoundingClientRect(), page) });
     picture.focus();
@@ -738,7 +824,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     if (isOpen() && !viewing && next) {
       viewing = next.id;
       framed = lastFrame.has(next.id);
-      if (!watch) watch = connect(onFrame, onPointer);
+      if (!watch) watch = connect(onFrame, onPointer, onDropdown);
       watching = next.id;
       watch.watch(next.id);
       await drawView();
@@ -754,7 +840,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
       await drawView();
     }
     const target = pillTarget(state);
-    if (target && !watch) watch = connect(onFrame, onPointer);
+    if (target && !watch) watch = connect(onFrame, onPointer, onDropdown);
     if (watch) {
       const want = viewing ?? (state?.settings.live ? target?.id : null) ?? null;
       if (want && want !== watching) {
@@ -880,7 +966,7 @@ export function createHerBrowser(sectionHost: Host, api: Api, root: HTMLElement)
     const kept = viewing ? lastFrame.get(viewing) : undefined;
     framed = kept !== undefined;
     if (kept) picture.src = kept;
-    if (!watch) watch = connect(onFrame, onPointer);
+    if (!watch) watch = connect(onFrame, onPointer, onDropdown);
     if (viewing) {
       watching = viewing;
       watch.watch(viewing);

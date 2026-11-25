@@ -39,7 +39,7 @@ from trillion.browser.runtime import (
     playwright_available,
 )
 from trillion.browser.settings import ENGINES, PREF
-from trillion.browser.view import give_input
+from trillion.browser.view import dropdown_here, give_input
 from trillion.secrets.store import SecretStoreError
 
 logger = logging.getLogger(__name__)
@@ -341,8 +341,13 @@ def create_browser_router(rt: Runtime) -> APIRouter:
                         cast = await svc.watch(target, send)
                 elif msg.get("type") == "input":
                     target = svc.target(str(msg.get("task", "")))
-                    if target is not None:
-                        await give_input(target, msg)
+                    if target is not None and await give_input(target, msg):
+                        if msg.get("kind") == "click":
+                            # A dropdown's list is drawn outside the page: the app shows
+                            # its own, and the choice comes back as a "choose".
+                            dropdown = await dropdown_here(target)
+                            if dropdown is not None:
+                                await send(dropdown | {"task": msg.get("task")})
         except (WebSocketDisconnect, RuntimeError, OSError):
             pass
         finally:

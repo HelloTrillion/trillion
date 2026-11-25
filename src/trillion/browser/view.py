@@ -166,6 +166,14 @@ async def give_input(target: Any, message: dict[str, Any]) -> bool:
             if key not in KEYS:
                 return False
             await page.keyboard.press(" " if key == "Space" else key)
+        elif kind == "choose":
+            # An option the user picked from the app's own list of a dropdown they
+            # clicked (`dropdown_here`): set on the dropdown that has the focus, and the
+            # page told it changed, as picking from Chromium's own list would.
+            value = str(message.get("value", ""))[:MAX_TEXT]
+            chosen = await page.evaluate(_CHOOSE, value)
+            if not chosen:
+                return False
         elif kind == "text":
             text = str(message.get("text", ""))[:MAX_TEXT]
             await page.keyboard.insert_text(text)
@@ -177,3 +185,49 @@ async def give_input(target: Any, message: dict[str, Any]) -> bool:
         logger.info("input didn't reach the page: %s", type(e).__name__)
         return False
     return True
+
+
+# The focused dropdown, if any, and its options. Chromium draws a dropdown's list
+# outside the page, so it never shows in the live picture and can't be clicked there.
+_DROPDOWN = """() => {
+  const s = document.activeElement;
+  if (!s || s.tagName !== 'SELECT' || s.disabled || s.multiple) return null;
+  const r = s.getBoundingClientRect();
+  return {
+    options: Array.from(s.options).slice(0, 200).map(o => ({
+      value: o.value, label: (o.label || o.text || '').trim().slice(0, 200), disabled: o.disabled,
+    })),
+    selected: s.selectedIndex,
+    x: r.left, y: r.bottom, width: r.width,
+  };
+}"""
+
+_CHOOSE = """(value) => {
+  const s = document.activeElement;
+  if (!s || s.tagName !== 'SELECT' || s.disabled) return false;
+  const o = Array.from(s.options).find(o => o.value === value && !o.disabled);
+  if (!o) return false;
+  s.value = value;
+  s.dispatchEvent(new Event('input', { bubbles: true }));
+  s.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}"""
+
+
+async def dropdown_here(target: Any) -> dict[str, Any] | None:
+    """After the user's click, while they have control: the dropdown it focused, with
+    its options, for the app to show its own list. None for anything else."""
+    if not getattr(target, "in_control", False) or getattr(target, "closed", True):
+        return None
+    try:
+        found = await target.page.evaluate(_DROPDOWN)
+    except Exception:
+        return None
+    if not isinstance(found, dict) or not found.get("options"):
+        return None
+    size = target.page.viewport_size or {}
+    return found | {
+        "type": "browser.dropdown",
+        "page_width": size.get("width"),
+        "page_height": size.get("height"),
+    }

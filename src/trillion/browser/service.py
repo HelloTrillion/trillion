@@ -154,7 +154,8 @@ RESEARCH = (
     "the task needs typing or sending, say so in your answer."
 )
 ACT = (
-    "This task may fill in a form: type with browser_type, then send it with "
+    "This task may fill in a form: type with browser_type, choose in a dropdown with "
+    "browser_select (clicking a dropdown doesn't open its list), then send it with "
     "browser_press. The user sees exactly what it sends and approves it themselves."
 )
 

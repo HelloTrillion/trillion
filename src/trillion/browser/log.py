@@ -62,6 +62,8 @@ DETAILS = frozenset(
         "key_refused",
         "limit_reached",
         "unavailable",
+        # an option chosen in a dropdown (`browser_select`), never which one
+        "chose",
         # chips, cards and steps, and their answers
         "asked",
         "allowed",
